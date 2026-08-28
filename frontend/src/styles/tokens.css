@@ -1,0 +1,100 @@
+/*
+ * Design tokens: the single source of truth for color, spacing, radii, and
+ * type scale. Every other stylesheet reads these custom properties instead
+ * of hardcoding values.
+ *
+ * Theme resolution order:
+ *   1. `prefers-color-scheme` picks a default.
+ *   2. An explicit `data-theme="light"|"dark"` on <html> (set by the theme
+ *      toggle, see src/lib/theme.ts) overrides the media query.
+ */
+
+:root {
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-8: 3rem;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica,
+    Arial, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.75rem;
+
+  --line-tight: 1.2;
+  --line-normal: 1.5;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.12);
+
+  --border-width: 1px;
+
+  /* Light palette (default). */
+  --color-bg: #f7f8fa;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-border: #e2e5ea;
+  --color-text: #1a1d24;
+  --color-text-muted: #5b616e;
+  --color-text-faint: #8a909c;
+  --color-accent: #3661d6;
+  --color-accent-contrast: #ffffff;
+  --color-accent-muted: #e8edfc;
+  --color-success: #1f8a4c;
+  --color-warning: #b06a00;
+  --color-danger: #c0341f;
+  --color-danger-muted: #fbe9e6;
+  --color-focus-ring: #3661d6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: #0e1116;
+    --color-surface: #161a22;
+    --color-surface-raised: #1c2129;
+    --color-border: #2a3038;
+    --color-text: #eef0f4;
+    --color-text-muted: #a7adba;
+    --color-text-faint: #6c7280;
+    --color-accent: #7fa4ff;
+    --color-accent-contrast: #0e1116;
+    --color-accent-muted: #1e2740;
+    --color-success: #4bc27a;
+    --color-warning: #e0a336;
+    --color-danger: #e2685a;
+    --color-danger-muted: #3a1f1c;
+    --color-focus-ring: #7fa4ff;
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #0e1116;
+  --color-surface: #161a22;
+  --color-surface-raised: #1c2129;
+  --color-border: #2a3038;
+  --color-text: #eef0f4;
+  --color-text-muted: #a7adba;
+  --color-text-faint: #6c7280;
+  --color-accent: #7fa4ff;
+  --color-accent-contrast: #0e1116;
+  --color-accent-muted: #1e2740;
+  --color-success: #4bc27a;
+  --color-warning: #e0a336;
+  --color-danger: #e2685a;
+  --color-danger-muted: #3a1f1c;
+  --color-focus-ring: #7fa4ff;
+}

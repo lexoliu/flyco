@@ -1,0 +1,27 @@
+.tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.tabHeader h2 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-md);
+}
+
+.tabDescription {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  max-width: 60ch;
+}
+
+.empty {
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+  border: var(--border-width) dashed var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  text-align: center;
+  margin: 0;
+}
