@@ -1,7 +1,5 @@
 //! Router assembly and the handlers that are not part of the OAuth flow.
 
-use core::str::FromStr;
-
 use flyco_core::{
     ApiKeyId, ApiKeySummary, ApprovalId, ApprovalState, ApprovalView, BudgetConfig, BudgetView,
     ControlToDaemon, CreateApiKey, CreateSession, CreatedApiKey, CurrentUser, DaemonToken,
@@ -19,7 +17,7 @@ use skyzen_services::{Db, Kv, Storage};
 use crate::authenticator::FlycoAuthenticator;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
-use crate::extract::Headers;
+use crate::extract::{Headers, path_id, path_segment};
 use crate::github::{GithubOauth, ZenwaveGithub};
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
@@ -28,7 +26,7 @@ use crate::respond::{Created, no_content};
 use crate::room::EventPage;
 use crate::rooms::Rooms;
 use crate::{
-    agents_md, api_keys, approvals, daemon_tokens, database, harness_accounts, machines, mcp,
+    agents_md, api_keys, approvals, daemon_tokens, database, env, harness_accounts, machines, mcp,
     memory, oauth, problem, provider_accounts, push, relay, repos, responses, sessions, skills,
     transcripts, users, webhooks,
 };
@@ -118,15 +116,6 @@ async fn revoke_api_key(
 async fn revoke(user: &CurrentUser, params: &Params, db: &Db) -> Result<Response, ApiError> {
     api_keys::revoke(db, user.id, path_id::<ApiKeyId>(params, "id")?).await?;
     Ok(no_content())
-}
-
-/// Reads a `{id}` path parameter as a typed identifier.
-fn path_id<T: FromStr>(params: &Params, name: &'static str) -> Result<T, ApiError> {
-    let raw = params
-        .get(name)
-        .map_err(|_| ApiError::CorruptRecord("the router did not bind a path parameter"))?;
-    raw.parse()
-        .map_err(|_| ApiError::MalformedId(raw.to_owned()))
 }
 
 /// Starts a session: reserves the budget and puts the session in the
@@ -515,26 +504,54 @@ async fn list_turns(
 /// values instead of hard-coding it.
 #[skyzen::openapi]
 async fn get_session_env(
-    State(_user): State<CurrentUser>,
-    _params: Params,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
+    params: Params,
+    db: Db,
 ) -> Outcome<Json<EnvDocument>> {
-    todo!("M3c: read the session's stored environment and wrap it in EnvDocument::new")
+    read_env(&user, &config, &params, &db).await.into()
+}
+
+async fn read_env(
+    user: &CurrentUser,
+    config: &ApiConfig,
+    params: &Params,
+    db: &Db,
+) -> Result<Json<EnvDocument>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    env::read(db, &config.token_cipher(), user.id, id)
+        .await
+        .map(Json)
 }
 
 /// Replaces a session's `.env`.
 ///
 /// The user's route, and the only one that writes: the agent is given the
-/// environment read-only.
+/// environment read-only. Nothing is pushed to a running session — a
+/// process's environment is fixed when it starts — so the new document is
+/// what the *next* harness start reads. See [`crate::env`].
 #[skyzen::openapi]
 async fn put_session_env(
-    State(_user): State<CurrentUser>,
-    _params: Params,
-    Json(_update): Json<UpdateEnv>,
-    _rooms: Rooms,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
+    params: Params,
+    Json(update): Json<UpdateEnv>,
+    db: Db,
 ) -> Outcome<Json<EnvDocument>> {
-    todo!("M3c: store the entries and push the new environment to the session's daemon")
+    write_env(&user, &config, &params, update, &db).await.into()
+}
+
+async fn write_env(
+    user: &CurrentUser,
+    config: &ApiConfig,
+    params: &Params,
+    update: UpdateEnv,
+    db: &Db,
+) -> Result<Json<EnvDocument>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    env::replace(db, &config.token_cipher(), user.id, id, update.entries)
+        .await
+        .map(Json)
 }
 
 /// Reports whether a session's working tree has uncommitted changes.
@@ -557,6 +574,12 @@ async fn get_repo_status(
 /// The daemon records the durable approval here *before* it announces the
 /// request on the relay, so the id a browser sees is always one the API can
 /// decide.
+///
+/// Exported like the user-facing routes even though it is daemon-scoped:
+/// flycod's contract deserves the same typed description the browser
+/// client's does, and unlike the transcript and relay routes beside it, this
+/// one answers with an ordinary JSON document.
+#[skyzen::openapi]
 async fn raise_approval(
     State(session): State<DaemonSession>,
     Json(payload): Json<ApprovalPayload>,
@@ -629,14 +652,6 @@ async fn read_transcript(
         })?,
     );
     Ok(response)
-}
-
-/// Reads a `{name}` path parameter as an owned string.
-fn path_segment(params: &Params, name: &'static str) -> Result<String, ApiError> {
-    params
-        .get(name)
-        .map(ToOwned::to_owned)
-        .map_err(|_| ApiError::CorruptRecord("the router did not bind a path parameter"))
 }
 
 /// Routes that anyone may call.
