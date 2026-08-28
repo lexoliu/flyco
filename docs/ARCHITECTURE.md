@@ -4,8 +4,8 @@ The product-level spec is [proposal.md](proposal.md). This document records the 
 
 ## Two planes
 
-- **Control plane** — `crates/flyco-api`, a [skyzen](https://crates.io/crates/skyzen) app on Cloudflare Workers (wasm32). REST API + auth, session store, budget accounting, approvals, skills/MCP registry, provisioning orchestration. Services: D1 (relational metadata), KV (caches, auth tokens), R2 (transcripts, repo snapshots, skill zips), Queues (provisioning jobs, GitHub webhooks), Durable Objects (live session rooms).
-- **Execution plane** — `flycod` (`crates/flyco-daemon`), a native Rust daemon installed on every session VM. It supervises the harness process, enforces takeovers, serves the terminal, streams events to the control plane, and handles spot-eviction notices and budget pauses.
+- **Control plane** — `crates/api`, a [skyzen](https://crates.io/crates/skyzen) app on Cloudflare Workers (wasm32). REST API + auth, session store, budget accounting, approvals, skills/MCP registry, provisioning orchestration. Services: D1 (relational metadata), KV (caches, auth tokens), R2 (transcripts, repo snapshots, skill zips), Queues (provisioning jobs, GitHub webhooks), Durable Objects (live session rooms).
+- **Execution plane** — `flycod` (`crates/daemon`), a native Rust daemon installed on every session VM. It supervises the harness process, enforces takeovers, serves the terminal, streams events to the control plane, and handles spot-eviction notices and budget pauses.
 
 The Worker is wasm32: no processes, no listening sockets, no tokio. Anything long-running or process-shaped lives in the daemon.
 
@@ -51,7 +51,7 @@ Designed against the published `v0.1.2` tag (the skyzen repo's dev branch is far
 
 - SPA embedded via `EmbeddedStaticDir` (no CF Assets support at 0.1.2).
 - `openapi.json` exported by a native debug run — `cargo run -p flyco-api --bin openapi > openapi.json` (`linkme` collection is debug+native only). The result is checked in at the repo root and CI fails on a diff; the TS client is generated from that artifact. `#[skyzen::openapi]` cannot be applied to a generic handler (it emits module-level items naming every argument type), so `auth/github/callback` exports its path without parameter schemas. Handlers returning `problem::Outcome` contribute no response schemas either, because `Responder::openapi()` is a cfg-gated provided method a downstream crate cannot implement.
-- D1 migrations via `wrangler d1 migrations`; KV/D1 resource IDs provisioned with wrangler and pasted into `crates/flyco-api/Skyzen.toml` (the manifest must sit next to the crate's `Cargo.toml` — that is where `#[skyzen::main]` looks for it).
+- D1 migrations via `wrangler d1 migrations`; KV/D1 resource IDs provisioned with wrangler and pasted into `crates/api/Skyzen.toml` (the manifest must sit next to the crate's `Cargo.toml` — that is where `#[skyzen::main]` looks for it).
 - `[[database]]` is **not** declared: skyzen 0.1.2's database codegen expands to `if <bool> { WithMiddleware<E, Db> } else { E }`, whose arms have different types, so any declared database fails to compile. `flyco_api::database` opens D1 (Worker) or SQLite (native) by hand and the router injects it. The KV namespace *is* a `[[service]]`, which works.
 - `[native.service.auth_kv] backend = "memory"` resolves to `skyzen_test::mock::InMemoryKv`, so `skyzen-test` is a dependency of flyco-api's native target — the Worker build never sees it.
 - `skyzen-cloudflare` pulls the official `worker` crate, which pulls `tokio` into the wasm dependency graph. Nothing in flyco uses it.
