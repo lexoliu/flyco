@@ -1,4 +1,4 @@
-# Deployment manifest for the flyco control plane (crates/flyco-api).
+# Deployment manifest for the flyco control plane (crates/api).
 # Services (KV, D1, R2, Queues, Durable Objects) are added as milestones land.
 #
 # Deploying requires the Cloudflare resources to exist first — skyzen 0.1.2 has
