@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::id::HarnessAccountId;
 use crate::money::Usd;
 
 /// The coding harness driving a session. Flyco supports exactly these two
@@ -101,6 +102,30 @@ pub struct UsageReport {
     pub context: Option<ContextWindow>,
     /// Cost estimate reported by the harness for this session, if any.
     pub estimated_cost: Option<Usd>,
+}
+
+/// A Claude or Codex account the user has linked, as `GET
+/// /v1/harness-accounts` lists it.
+///
+/// Linking runs against the *vendor's own* authorization page — the flow the
+/// official CLIs wrap — so flyco never sees a password, and what it stores
+/// is the resulting token, sealed. No representation of an account carries
+/// that token; it leaves the control plane only when it is provisioned onto
+/// a session machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct HarnessAccountView {
+    /// Identifier.
+    pub id: HarnessAccountId,
+    /// Which harness this account drives.
+    pub harness: HarnessKind,
+    /// Account name as the vendor reports it, so the user can tell two
+    /// linked accounts apart.
+    pub label: String,
+    /// When it was linked, seconds since the Unix epoch.
+    pub linked_at_unix: u64,
+    /// When the stored credential expires, when the vendor states a
+    /// lifetime.
+    pub expires_at_unix: Option<u64>,
 }
 
 /// A normalized event extracted from either harness's native stream.

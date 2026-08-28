@@ -147,6 +147,18 @@ pub struct ApiKeyEntity(());
 /// Marker for spend-ledger entry identifiers.
 #[derive(Debug)]
 pub struct SpendEventEntity(());
+/// Marker for linked cloud-provider account identifiers.
+#[derive(Debug)]
+pub struct ProviderAccountEntity(());
+/// Marker for linked harness account identifiers.
+#[derive(Debug)]
+pub struct HarnessAccountEntity(());
+/// Marker for registered MCP server identifiers.
+#[derive(Debug)]
+pub struct McpServerEntity(());
+/// Marker for web push subscription identifiers.
+#[derive(Debug)]
+pub struct PushSubscriptionEntity(());
 
 /// Identifies a flyco user.
 pub type UserId = Id<UserEntity>;
@@ -166,6 +178,14 @@ pub type MemoryNodeId = Id<MemoryNodeEntity>;
 pub type ApiKeyId = Id<ApiKeyEntity>;
 /// Identifies one entry in a budget's append-only spend ledger.
 pub type SpendEventId = Id<SpendEventEntity>;
+/// Identifies a linked cloud-provider account.
+pub type ProviderAccountId = Id<ProviderAccountEntity>;
+/// Identifies a linked Claude or Codex account.
+pub type HarnessAccountId = Id<HarnessAccountEntity>;
+/// Identifies a registered MCP server.
+pub type McpServerId = Id<McpServerEntity>;
+/// Identifies one browser's web push subscription.
+pub type PushSubscriptionId = Id<PushSubscriptionEntity>;
 
 #[cfg(test)]
 mod tests {
