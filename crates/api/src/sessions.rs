@@ -213,6 +213,38 @@ pub async fn is_owned_by(db: &Db, user: UserId, session: SessionId) -> Result<bo
     Ok(row.live > 0)
 }
 
+/// The lifecycle state of one of the caller's sessions.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session does not exist or
+/// belongs to somebody else.
+pub async fn state_of(db: &Db, user: UserId, id: SessionId) -> Result<SessionState, ApiError> {
+    let row = load(db, user, id).await?;
+    decode_enum::<SessionState>(&row.state, "sessions.state")
+}
+
+/// Refuses unless the session is running.
+///
+/// What every route that *drives* a session checks first. A provisioning
+/// session has no daemon to hear the command, a paused one is stopped on
+/// purpose, and an archived one has no machine at all — so the refusal names
+/// the state rather than letting the command disappear into a room nobody is
+/// listening to.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is not the caller's,
+/// or [`ApiError::SessionNotActive`] if it is not [`SessionState::Active`].
+pub async fn require_active(db: &Db, user: UserId, id: SessionId) -> Result<(), ApiError> {
+    let state = state_of(db, user, id).await?;
+    if state == SessionState::Active {
+        Ok(())
+    } else {
+        Err(ApiError::SessionNotActive { state })
+    }
+}
+
 async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiError> {
     db.query(
         "SELECT id, harness, repo, state, budget_id, created_at_unix, last_active_unix \

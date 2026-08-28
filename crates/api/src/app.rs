@@ -22,13 +22,13 @@ use crate::github::{GithubOauth, ZenwaveGithub};
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
 use crate::relay::{RelayTicket, TicketQuery};
-use crate::respond::{Created, no_content};
+use crate::respond::{Created, accepted, no_content};
 use crate::room::EventPage;
 use crate::rooms::Rooms;
 use crate::{
     agents_md, api_keys, approvals, daemon_tokens, database, env, harness_accounts, machines, mcp,
     memory, oauth, problem, provider_accounts, push, relay, repos, responses, sessions, skills,
-    transcripts, users, webhooks,
+    transcripts, turns, users, webhooks,
 };
 
 /// Health probe response.
@@ -434,13 +434,35 @@ async fn read_events(
 /// arrives on the relay, not in this response.
 #[skyzen::openapi]
 async fn send_message(
-    State(_user): State<CurrentUser>,
-    _params: Params,
-    Json(_message): Json<SendMessage>,
-    _rooms: Rooms,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(message): Json<SendMessage>,
+    rooms: Rooms,
+    db: Db,
 ) -> Outcome<Response> {
-    todo!("M3c: check ownership, then forward the message into the session room")
+    say(&user, &params, message, &rooms, &db).await.into()
+}
+
+async fn say(
+    user: &CurrentUser,
+    params: &Params,
+    message: SendMessage,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<Response, ApiError> {
+    if message.text.trim().is_empty() {
+        return Err(ApiError::EmptyMessage);
+    }
+    drive(
+        user,
+        params,
+        rooms,
+        db,
+        ControlToDaemon::UserMessage {
+            text: message.text.clone(),
+        },
+    )
+    .await
 }
 
 /// Ends a session's current turn.
@@ -450,12 +472,37 @@ async fn send_message(
 /// session.
 #[skyzen::openapi]
 async fn interrupt_session(
-    State(_user): State<CurrentUser>,
-    _params: Params,
-    _rooms: Rooms,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    params: Params,
+    rooms: Rooms,
+    db: Db,
 ) -> Outcome<Response> {
-    todo!("M3c: check ownership, then send ControlToDaemon::Interrupt to the session room")
+    drive(&user, &params, &rooms, &db, ControlToDaemon::Interrupt)
+        .await
+        .into()
+}
+
+/// Hands one command to a session's room.
+///
+/// The two checks are in this order for a reason. Ownership settles in D1,
+/// because a Durable Object cannot reach it and a room asked to do something
+/// has no way of knowing who asked. The lifecycle settles next, because a
+/// command sent to a session that is provisioning, paused, or archived would
+/// reach a room with no daemon attached and be dropped there — a `202` for
+/// work nobody will do. The refusal names the state instead.
+async fn drive(
+    user: &CurrentUser,
+    params: &Params,
+    rooms: &Rooms,
+    db: &Db,
+    command: ControlToDaemon,
+) -> Result<Response, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    sessions::require_active(db, user.id, id).await?;
+
+    rooms.command(id, &command).await?;
+    tracing::info!(session = %id, command = ?core::mem::discriminant(&command), "drove a session");
+    Ok(accepted())
 }
 
 /// Puts an interrupted or archived session back on a machine.
@@ -483,18 +530,39 @@ pub struct TurnCursor {
 
 /// Lists a session's turns, oldest first.
 ///
-/// Read from the R2 transcript rather than from a table, because the
-/// transcript is what survives a machine: a turn list built from anything
-/// else would disagree with the session a browser replays.
+/// Folded out of the room's recorded event stream rather than read from a
+/// table, because that stream is both what survives a machine and what a
+/// browser replays: a turn list built from anything else would disagree
+/// with the conversation shown beside it. See [`crate::turns`].
 #[skyzen::openapi]
 async fn list_turns(
-    State(_user): State<CurrentUser>,
-    _params: Params,
-    Query(_cursor): Query<TurnCursor>,
-    _storage: Storage,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    params: Params,
+    Query(cursor): Query<TurnCursor>,
+    rooms: Rooms,
+    db: Db,
 ) -> Outcome<Json<TurnPage>> {
-    todo!("M3c: fold the session's transcript batches into turn summaries, one page at a time")
+    read_turns(&user, &params, &cursor, &rooms, &db)
+        .await
+        .into()
+}
+
+async fn read_turns(
+    user: &CurrentUser,
+    params: &Params,
+    cursor: &TurnCursor,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<Json<TurnPage>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    // A room cannot reach D1, so ownership is settled here, before the
+    // Worker will address the room at all.
+    if !sessions::is_owned_by(db, user.id, id).await? {
+        return Err(ApiError::SessionNotFound);
+    }
+    turns::page(rooms, id, cursor.cursor.as_deref(), cursor.limit)
+        .await
+        .map(Json)
 }
 
 /// Reads a session's `.env`.
@@ -560,11 +628,25 @@ async fn write_env(
 /// tree is dirty, and archiving a dirty session warns before the disk goes.
 #[skyzen::openapi]
 async fn get_repo_status(
-    State(_user): State<CurrentUser>,
-    _params: Params,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    params: Params,
+    rooms: Rooms,
+    db: Db,
 ) -> Outcome<Json<RepoStatus>> {
-    todo!("M3c: read the working-tree status the daemon last reported for this session")
+    read_repo_status(&user, &params, &rooms, &db).await.into()
+}
+
+async fn read_repo_status(
+    user: &CurrentUser,
+    params: &Params,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<Json<RepoStatus>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    if !sessions::is_owned_by(db, user.id, id).await? {
+        return Err(ApiError::SessionNotFound);
+    }
+    rooms.repo_status(id).await.map(Json)
 }
 
 // ── Daemon-scoped routes ──
