@@ -137,6 +137,17 @@ pub enum ApiError {
         max: u32,
     },
 
+    /// A message with nothing in it was sent to an agent.
+    #[error(
+        "a message to an agent cannot be empty",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    EmptyMessage,
+
+    /// A pagination cursor was not one this API issued.
+    #[error("`{0}` is not a page cursor from this API", status = StatusCode::BAD_REQUEST)]
+    InvalidCursor(String),
+
     /// A path parameter that must be a UUID was not one.
     #[error("`{0}` is not a valid identifier", status = StatusCode::BAD_REQUEST)]
     MalformedId(String),
@@ -237,6 +248,8 @@ impl ApiError {
             Self::InvalidEnvKey(_) => "invalid-env-key",
             Self::InvalidBudget => "invalid-budget",
             Self::InvalidSessionCap { .. } => "invalid-session-cap",
+            Self::EmptyMessage => "empty-message",
+            Self::InvalidCursor(_) => "invalid-cursor",
             Self::MalformedId(_) => "malformed-id",
             Self::InvalidStreamKey(_) => "invalid-stream-key",
             Self::BatchSeqOutOfRange { .. } => "batch-seq-out-of-range",

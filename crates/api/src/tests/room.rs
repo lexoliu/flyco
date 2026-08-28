@@ -677,19 +677,42 @@ async fn an_approval_request_reaches_browsers_as_pending() {
 // ── Browsers → daemon ──
 
 #[skyzen::test]
-async fn a_user_message_is_forwarded_to_the_daemon() {
+async fn a_user_message_is_forwarded_to_the_daemon_and_echoed_to_browsers() {
     let mut room = Room::open().await;
     room.greet().await;
 
+    let text = "what does this crate do?";
     let command = ControlToDaemon::UserMessage {
-        text: "what does this crate do?".to_owned(),
+        text: text.to_owned(),
     };
     room.deliver_json(Which::Client, &command).await;
 
+    // The browser that typed it already has it; every *other* browser
+    // watching the session would otherwise see the agent answer a question
+    // it could not see.
     assert_eq!(
         room.drain(),
-        vec![to_daemon(&command)],
-        "the command reaches the daemon and is not echoed to browsers"
+        vec![
+            to_client(&ClientEvent::UserMessage {
+                text: text.to_owned()
+            }),
+            to_daemon(&command),
+        ]
+    );
+
+    let page = room.events(0).await;
+    assert_eq!(
+        page.events
+            .iter()
+            .map(|stored| stored.event.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            serde_json::to_value(ClientEvent::UserMessage {
+                text: text.to_owned()
+            })
+            .expect("serialize")
+        ],
+        "a replay must carry the user's half of the conversation too"
     );
 }
 
@@ -708,7 +731,12 @@ async fn every_command_a_client_may_send_is_forwarded() {
         },
     ] {
         room.deliver_json(Which::Client, &command).await;
-        assert_eq!(room.drain(), vec![to_daemon(&command)]);
+        let sent = room.drain();
+        assert_eq!(
+            sent.last(),
+            Some(&to_daemon(&command)),
+            "{command:?} must reach the daemon"
+        );
     }
 }
 
@@ -769,6 +797,87 @@ async fn a_decided_approval_reaches_the_daemon_and_every_browser() {
                 decision: ApprovalDecision::Approved,
             }),
         ]
+    );
+}
+
+#[skyzen::test]
+async fn a_message_forwarded_from_the_worker_is_recorded_like_any_other() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    let text = "keep going";
+    let command = ControlToDaemon::UserMessage {
+        text: text.to_owned(),
+    };
+    let (status, _) = room
+        .call(
+            Method::POST,
+            "/internal/command",
+            Some(serde_json::to_vec(&command).expect("serialize")),
+        )
+        .await;
+    assert_eq!(status, 204);
+
+    let echo = ClientEvent::UserMessage {
+        text: text.to_owned(),
+    };
+    assert_eq!(room.drain(), vec![to_client(&echo), to_daemon(&command)]);
+    assert_eq!(
+        room.events(0)
+            .await
+            .events
+            .into_iter()
+            .map(|stored| stored.event)
+            .collect::<Vec<_>>(),
+        vec![serde_json::to_value(&echo).expect("serialize")],
+        "the route a message came in by is not something a replay can tell"
+    );
+}
+
+// ── The working tree ──
+
+#[skyzen::test]
+async fn a_working_tree_nobody_has_looked_at_is_not_found() {
+    let mut room = Room::open().await;
+    let (status, _) = room.call(Method::GET, "/internal/repo-status", None).await;
+    assert_eq!(
+        status, 404,
+        "an unreported tree is not a clean one, and must not be answered as one"
+    );
+}
+
+#[skyzen::test]
+async fn the_working_tree_the_daemon_reported_is_served_back() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    room.deliver_json(
+        Which::Daemon,
+        &DaemonToControl::RepoDirty {
+            summary: " M src/lib.rs".to_owned(),
+        },
+    )
+    .await;
+
+    let (status, body) = room.call(Method::GET, "/internal/repo-status", None).await;
+    assert_eq!(status, 200);
+    let reported: flyco_core::RepoStatus = serde_json::from_slice(&body).expect("a working tree");
+    assert!(reported.dirty);
+    assert_eq!(reported.summary, " M src/lib.rs");
+
+    // A later report replaces it: the tree is a current value, not a log.
+    room.deliver_json(
+        Which::Daemon,
+        &DaemonToControl::RepoDirty {
+            summary: String::new(),
+        },
+    )
+    .await;
+    let (_, body) = room.call(Method::GET, "/internal/repo-status", None).await;
+    let reported: flyco_core::RepoStatus = serde_json::from_slice(&body).expect("a working tree");
+    assert!(
+        !reported.dirty,
+        "an empty `git status --short` is the clean tree"
     );
 }
 

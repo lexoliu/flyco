@@ -23,7 +23,7 @@
 //! survive hibernation on their own. A field would be a fourth copy of the
 //! same facts, re-serialized on every frame, and the first one to drift.
 
-use flyco_core::{ClientEvent, ControlToDaemon, DaemonToControl, SessionId};
+use flyco_core::{ClientEvent, ControlToDaemon, DaemonToControl, RepoStatus, SessionId};
 use serde::{Deserialize, Serialize};
 use skyzen::durable::{
     DurableConnections, DurableContext, DurableObject, DurableObjectError, WebSocketConnection,
@@ -147,6 +147,7 @@ impl DurableObject for SessionRoom {
             "/relay/client".at(accept_client),
             "/internal/command".post(run_command),
             "/internal/events".at(read_events),
+            "/internal/repo-status".at(read_repo_status),
         ))
         .build()
     }
@@ -171,7 +172,7 @@ impl DurableObject for SessionRoom {
 
         match role_of(ws)? {
             Role::Daemon => on_daemon_frame(ws, &text, ctx).await,
-            Role::Client => on_client_frame(ws, &text, ctx),
+            Role::Client => on_client_frame(ws, &text, ctx).await,
         }
     }
 }
@@ -304,7 +305,7 @@ async fn on_daemon_frame(
 }
 
 /// Handles one frame from a browser.
-fn on_client_frame(
+async fn on_client_frame(
     ws: &WebSocketConnection,
     text: &str,
     ctx: &DurableContext,
@@ -321,7 +322,28 @@ fn on_client_frame(
             "a client may only send `user_message`, `interrupt`, or `terminal_input`",
         );
     }
+
+    announce(ctx, &command).await?;
     forward_to_daemon(ctx.connections(), &command)
+}
+
+/// Records and echoes the half of a command that browsers must see.
+///
+/// A user message is conversation, not control: the browser that sent it
+/// already has it, every other browser watching the session does not, and a
+/// catch-up that replayed only the agent's side would show answers to
+/// questions nobody asked. Recording it is also what gives a turn in the
+/// history list the prompt it is named by.
+async fn announce(
+    ctx: &DurableContext,
+    command: &ControlToDaemon,
+) -> Result<(), DurableObjectError> {
+    let ControlToDaemon::UserMessage { text } = command else {
+        return Ok(());
+    };
+    let event = ClientEvent::UserMessage { text: text.clone() };
+    append(ctx.db(), &event).await?;
+    broadcast(ctx.connections(), &event)
 }
 
 /// Appends a frame to the room's durable stream and caches what the UI
@@ -338,19 +360,13 @@ async fn record(
 ) -> Result<(), DurableObjectError> {
     match frame {
         DaemonToControl::Harness { event } => {
-            let json = serde_json::to_string(&ClientEvent::Harness {
-                event: event.clone(),
-            })
-            .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
-
-            ensure_schema(db).await?;
-            db.query("INSERT INTO events (json, at_unix) VALUES (?, ?)")
-                .bind(json)
-                .bind(crate::sql::to_column(now_unix()))
-                .execute()
-                .await
-                .map_err(|error| stored(&error))?;
-            Ok(())
+            append(
+                db,
+                &ClientEvent::Harness {
+                    event: event.clone(),
+                },
+            )
+            .await
         }
         DaemonToControl::Started { harness_session_id } => {
             put_latest(kv, KEY_HARNESS_SESSION, harness_session_id).await
@@ -358,8 +374,39 @@ async fn record(
         DaemonToControl::Capabilities { capabilities } => {
             put_latest(kv, KEY_CAPABILITIES, capabilities).await
         }
+        DaemonToControl::RepoDirty { summary } => {
+            // The daemon is the only thing that can see the working tree, and
+            // it reports the whole `git status --short` output rather than a
+            // flag, so an empty summary is the clean tree and the absence of
+            // any report is "nobody has looked" — which is what
+            // `GET /v1/sessions/{id}/repo-status` refuses to answer.
+            put_latest(
+                kv,
+                KEY_REPO_STATUS,
+                &RepoStatus {
+                    dirty: !summary.trim().is_empty(),
+                    summary: summary.clone(),
+                },
+            )
+            .await
+        }
         _ => Ok(()),
     }
+}
+
+/// Appends one event to the room's replayable stream.
+async fn append(db: &DurableDb, event: &ClientEvent) -> Result<(), DurableObjectError> {
+    let json = serde_json::to_string(event)
+        .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
+
+    ensure_schema(db).await?;
+    db.query("INSERT INTO events (json, at_unix) VALUES (?, ?)")
+        .bind(json)
+        .bind(crate::sql::to_column(now_unix()))
+        .execute()
+        .await
+        .map_err(|error| stored(&error))?;
+    Ok(())
 }
 
 /// KV key holding the harness-native session id a resume needs.
@@ -367,6 +414,9 @@ const KEY_HARNESS_SESSION: &str = "room:harness_session_id";
 
 /// KV key holding the newest capability set the harness advertised.
 const KEY_CAPABILITIES: &str = "room:capabilities";
+
+/// KV key holding the working tree the daemon last reported.
+const KEY_REPO_STATUS: &str = "room:repo_status";
 
 async fn put_latest<T: Serialize + Sync>(
     kv: &DurableKv,
@@ -482,16 +532,31 @@ async fn run_command(
     headers: Headers,
     Json(command): Json<ControlToDaemon>,
     connections: DurableConnections,
+    db: DurableDb,
 ) -> Outcome<skyzen::Response> {
-    dispatch_command(&headers, &command, &connections).into()
+    dispatch_command(&headers, &command, &connections, &db)
+        .await
+        .into()
 }
 
-fn dispatch_command(
+async fn dispatch_command(
     headers: &Headers,
     command: &ControlToDaemon,
     connections: &DurableConnections,
+    db: &DurableDb,
 ) -> Result<skyzen::Response, ApiError> {
     internal(headers)?;
+
+    // A user message forwarded from the Worker is recorded exactly as one
+    // that arrived on a browser socket: the route it came in by is not
+    // something a replay should be able to tell.
+    if let ControlToDaemon::UserMessage { text } = command {
+        let event = ClientEvent::UserMessage { text: text.clone() };
+        append(db, &event)
+            .await
+            .map_err(|error| room_failed(&error))?;
+        broadcast(connections, &event).map_err(|error| room_failed(&error))?;
+    }
 
     let echo = match &command {
         ControlToDaemon::ApprovalDecision { id, decision } => Some(ClientEvent::ApprovalDecided {
@@ -545,6 +610,20 @@ async fn page(headers: &Headers, after: u64, db: &DurableDb) -> Result<Json<Even
         .collect::<Result<Vec<StoredEvent>, ApiError>>()?;
 
     Ok(Json(EventPage { events, more }))
+}
+
+/// Serves the working tree the daemon last reported.
+async fn read_repo_status(headers: Headers, kv: DurableKv) -> Outcome<Json<RepoStatus>> {
+    repo_status(&headers, &kv).await.into()
+}
+
+async fn repo_status(headers: &Headers, kv: &DurableKv) -> Result<Json<RepoStatus>, ApiError> {
+    internal(headers)?;
+    kv.get_json::<RepoStatus>(KEY_REPO_STATUS)
+        .await
+        .map_err(|error| ApiError::Room(error.to_string()))?
+        .map(Json)
+        .ok_or(ApiError::RepoStatusUnknown)
 }
 
 fn room_failed(error: &DurableObjectError) -> ApiError {

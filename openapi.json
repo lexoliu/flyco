@@ -2046,7 +2046,7 @@
     "/v1/sessions/{id}/turns": {
       "get": {
         "summary": "Lists a session's turns, oldest first.",
-        "description": "Lists a session's turns, oldest first.\n\nRead from the R2 transcript rather than from a table, because the\ntranscript is what survives a machine: a turn list built from anything\nelse would disagree with the session a browser replays.",
+        "description": "Lists a session's turns, oldest first.\n\nFolded out of the room's recorded event stream rather than read from a\ntable, because that stream is both what survives a machine and what a\nbrowser replays: a turn list built from anything else would disagree\nwith the conversation shown beside it. See [`crate::turns`].",
         "operationId": "flyco_api::app::list_turns",
         "parameters": [
           {
@@ -4092,7 +4092,7 @@
       },
       "TurnPage": {
         "type": "object",
-        "description": "One page of `GET /v1/sessions/{id}/turns`.\n\nThe cursor is opaque: it encodes a position in the transcript's batch\nsequence, and a client that stores it must hand it back unread.",
+        "description": "One page of `GET /v1/sessions/{id}/turns`.\n\nThe cursor is opaque: it encodes a position in the session's recorded\nevent stream, and a client that stores it must hand it back unread.",
         "required": [
           "turns"
         ],
@@ -4115,7 +4115,7 @@
       },
       "TurnSummary": {
         "type": "object",
-        "description": "One turn of a session, as the history list renders it.\n\nReconstructed from the R2 transcript rather than from a table: the\ntranscript is what survives a machine, so a turn list built from\nanything else would disagree with the session a browser replays.",
+        "description": "One turn of a session, as the history list renders it.\n\nFolded out of the event stream the session's room records rather than\nread from a table of its own: that stream is what survives a machine and\nwhat a browser replays, so a turn list built from anything else would\ndisagree with the conversation shown beside it.",
         "required": [
           "turn_id",
           "started_at_unix",
