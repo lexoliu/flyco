@@ -1,0 +1,172 @@
+//! The `api_keys` table.
+//!
+//! API keys are what non-browser clients authenticate with. The plaintext
+//! key exists exactly once, in the response that mints it; the row keeps
+//! only its SHA-256, so the table is worthless to whoever steals it.
+
+use flyco_core::{ApiKeyId, ApiKeySummary, CreatedApiKey, UserId};
+use serde::Deserialize;
+use skyzen_services::Db;
+
+use crate::clock::now_unix;
+use crate::crypto::{random_api_key, token_hash};
+use crate::error::ApiError;
+
+/// A key matched by its hash, and the user it authenticates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyOwner {
+    /// The key that matched.
+    pub key_id: ApiKeyId,
+    /// The user it belongs to.
+    pub user_id: UserId,
+}
+
+#[derive(Debug, Deserialize)]
+struct OwnerRow {
+    id: String,
+    user_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SummaryRow {
+    id: String,
+    label: String,
+    created_at_unix: i64,
+    last_used_unix: Option<i64>,
+}
+
+impl TryFrom<SummaryRow> for ApiKeySummary {
+    type Error = ApiError;
+
+    fn try_from(row: SummaryRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row
+                .id
+                .parse::<ApiKeyId>()
+                .map_err(|_| ApiError::CorruptRecord("api_keys.id is not a UUID"))?,
+            label: row.label,
+            created_at_unix: unsigned(row.created_at_unix)?,
+            last_used_unix: row.last_used_unix.map(unsigned).transpose()?,
+        })
+    }
+}
+
+fn unsigned(value: i64) -> Result<u64, ApiError> {
+    u64::try_from(value).map_err(|_| ApiError::CorruptRecord("timestamp column is negative"))
+}
+
+fn signed(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+/// Mints a key for `user_id` and stores its hash.
+///
+/// The returned [`CreatedApiKey::token`] is the only copy that will ever
+/// exist.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if entropy is unavailable or the insert fails.
+pub async fn create(db: &Db, user_id: UserId, label: String) -> Result<CreatedApiKey, ApiError> {
+    let token = random_api_key()?;
+    let id = ApiKeyId::generate();
+    let created_at_unix = now_unix();
+
+    db.query(
+        "INSERT INTO api_keys (id, user_id, token_hash, label, created_at_unix, last_used_unix) \
+         VALUES (?, ?, ?, ?, ?, NULL)",
+    )
+    .bind(id.to_string())
+    .bind(user_id.to_string())
+    .bind(token_hash(&token))
+    .bind(label.clone())
+    .bind(signed(created_at_unix))
+    .execute()
+    .await?;
+
+    Ok(CreatedApiKey {
+        id,
+        label,
+        token,
+        created_at_unix,
+    })
+}
+
+/// Lists a user's keys, oldest first.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails or a stored row is malformed.
+pub async fn list(db: &Db, user_id: UserId) -> Result<Vec<ApiKeySummary>, ApiError> {
+    let rows: Vec<SummaryRow> = db
+        .query(
+            "SELECT id, label, created_at_unix, last_used_unix FROM api_keys \
+             WHERE user_id = ? ORDER BY created_at_unix, id",
+        )
+        .bind(user_id.to_string())
+        .fetch_all()
+        .await?;
+
+    rows.into_iter().map(TryInto::try_into).collect()
+}
+
+/// Revokes one of `user_id`'s keys.
+///
+/// # Errors
+///
+/// Returns [`ApiError::ApiKeyNotFound`] if the key does not exist or belongs
+/// to somebody else — the two cases are deliberately indistinguishable.
+pub async fn revoke(db: &Db, user_id: UserId, key_id: ApiKeyId) -> Result<(), ApiError> {
+    let result = db
+        .query("DELETE FROM api_keys WHERE id = ? AND user_id = ?")
+        .bind(key_id.to_string())
+        .bind(user_id.to_string())
+        .execute()
+        .await?;
+
+    if result.rows_written == 0 {
+        return Err(ApiError::ApiKeyNotFound);
+    }
+    Ok(())
+}
+
+/// Finds the key whose hash matches a presented credential.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails or the stored row is malformed.
+pub async fn find_by_token(db: &Db, presented: &str) -> Result<Option<KeyOwner>, ApiError> {
+    let row: Option<OwnerRow> = db
+        .query("SELECT id, user_id FROM api_keys WHERE token_hash = ?")
+        .bind(token_hash(presented))
+        .fetch_optional()
+        .await?;
+
+    row.map(|row| {
+        Ok(KeyOwner {
+            key_id: row
+                .id
+                .parse()
+                .map_err(|_| ApiError::CorruptRecord("api_keys.id is not a UUID"))?,
+            user_id: row
+                .user_id
+                .parse()
+                .map_err(|_| ApiError::CorruptRecord("api_keys.user_id is not a UUID"))?,
+        })
+    })
+    .transpose()
+}
+
+/// Stamps a key as used, so a stale credential is visible in the key list.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn mark_used(db: &Db, key_id: ApiKeyId) -> Result<(), ApiError> {
+    db.query("UPDATE api_keys SET last_used_unix = ? WHERE id = ?")
+        .bind(signed(now_unix()))
+        .bind(key_id.to_string())
+        .execute()
+        .await?;
+    Ok(())
+}

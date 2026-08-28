@@ -1,0 +1,54 @@
+# Deployment manifest for the flyco control plane (crates/flyco-api).
+# Services (KV, D1, R2, Queues, Durable Objects) are added as milestones land.
+#
+# Deploying requires the Cloudflare resources to exist first — skyzen 0.1.2 has
+# no provisioning of its own, so the ids below are pasted in by hand:
+#
+#   wrangler kv namespace create flyco-auth   -> cloudflare.kv_namespaces.id
+#   wrangler d1 create flyco-main             -> cloudflare.d1_databases.database_id
+#   wrangler d1 migrations apply flyco-main   -> applies migrations/0001_init.sql
+#
+# Until that happens every unprovisioned value reads "TO-BE-PROVISIONED".
+#
+# Secrets never live in this file. Before the first deploy:
+#   wrangler secret put FLYCO_GITHUB_CLIENT_SECRET
+#   wrangler secret put FLYCO_ENCRYPTION_KEY      # 32 bytes, hex-encoded
+# Only the two non-secret values are declared under [cloudflare.vars].
+
+# The KV namespace is a portable service, so `#[skyzen::main]` wires it.
+#
+# The D1 database deliberately is NOT declared as a `[[database]]`: skyzen
+# 0.1.2's generated database wiring expands to `if <bool> { WithMiddleware<E,
+# Db> } else { E }`, whose arms have different types, so a declared database
+# never compiles. `flyco_api::database` wires D1 by hand instead. Restore the
+# declaration once that codegen is fixed upstream.
+[[service]]
+name = "auth_kv"
+type = "kv"
+
+# Native wiring exists for `skyzen dev` and the openapi.json export; skyzen
+# 0.1.2 fails to compile the native binary when a declared service has no
+# native backend. `memory` resolves to skyzen-test's in-memory KV, which is
+# why skyzen-test is a dependency of the native target only.
+[native.service.auth_kv]
+backend = "memory"
+
+[cloudflare]
+name = "flyco"
+compatibility_date = "2026-08-01"
+
+[cloudflare.vars]
+FLYCO_GITHUB_CLIENT_ID = "TO-BE-PROVISIONED"
+FLYCO_REDIRECT_URI = "TO-BE-PROVISIONED"
+
+[cloudflare.service.auth_kv]
+binding = "AUTH_KV"
+
+[[cloudflare.kv_namespaces]]
+binding = "AUTH_KV"
+id = "TO-BE-PROVISIONED"
+
+[[cloudflare.d1_databases]]
+binding = "DB"
+database_name = "flyco-main"
+database_id = "TO-BE-PROVISIONED"

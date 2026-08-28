@@ -1,0 +1,200 @@
+//! Deployment configuration, read once when the router is built.
+//!
+//! On the Worker these values come from the Cloudflare `env` object — the
+//! two non-secret ones from `[cloudflare.vars]` in `Skyzen.toml`, the two
+//! secret ones from `wrangler secret put`. On native they come from the
+//! process environment. A missing or malformed value is a startup failure,
+//! never a default.
+
+use url::Url;
+
+use crate::crypto::{KEY_LEN, TokenCipher};
+
+/// Names of the bindings the control plane reads.
+///
+/// They are identical on both platforms so a `.dev.vars` file and a deployed
+/// Worker are configured the same way.
+pub mod var {
+    /// GitHub OAuth app client id. Public; lives in `[cloudflare.vars]`.
+    pub const GITHUB_CLIENT_ID: &str = "FLYCO_GITHUB_CLIENT_ID";
+    /// GitHub OAuth app client secret. Secret; `wrangler secret put`.
+    pub const GITHUB_CLIENT_SECRET: &str = "FLYCO_GITHUB_CLIENT_SECRET";
+    /// Absolute URL GitHub redirects back to. Public.
+    pub const REDIRECT_URI: &str = "FLYCO_REDIRECT_URI";
+    /// AES-256 key for sealing third-party tokens, hex-encoded. Secret.
+    pub const ENCRYPTION_KEY: &str = "FLYCO_ENCRYPTION_KEY";
+}
+
+/// Why the control plane refused to start.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// A required binding is absent, empty, or not a string.
+    #[error("required configuration `{0}` is missing")]
+    Missing(&'static str),
+    /// `FLYCO_REDIRECT_URI` is not an absolute URL.
+    #[error("configuration `{name}` is not an absolute URL: {source}")]
+    NotAUrl {
+        /// The offending binding.
+        name: &'static str,
+        /// What the URL parser objected to.
+        source: url::ParseError,
+    },
+    /// `FLYCO_ENCRYPTION_KEY` is not hex, or is not 32 bytes long.
+    #[error("configuration `{0}` must be exactly {KEY_LEN} bytes of lowercase hex")]
+    NotAKey(&'static str),
+    /// The Cloudflare `env` object was not reachable during startup.
+    #[error("the Cloudflare Workers environment is not available")]
+    NoEnvironment,
+}
+
+/// Everything the control plane needs from its deployment environment.
+///
+/// Constructed once by [`from_environment`](Self::from_environment) and shared
+/// with handlers through skyzen's `State`.
+#[derive(Clone)]
+pub struct ApiConfig {
+    github_client_id: String,
+    github_client_secret: String,
+    redirect_uri: Url,
+    encryption_key: [u8; KEY_LEN],
+}
+
+impl core::fmt::Debug for ApiConfig {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ApiConfig")
+            .field("github_client_id", &self.github_client_id)
+            .field("redirect_uri", &self.redirect_uri.as_str())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ApiConfig {
+    /// Assembles a configuration from already-resolved values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] if the redirect URI is not absolute or the
+    /// encryption key is not 32 hex-encoded bytes.
+    pub fn new(
+        github_client_id: String,
+        github_client_secret: String,
+        redirect_uri: &str,
+        encryption_key_hex: &str,
+    ) -> Result<Self, ConfigError> {
+        let redirect_uri = Url::parse(redirect_uri).map_err(|source| ConfigError::NotAUrl {
+            name: var::REDIRECT_URI,
+            source,
+        })?;
+
+        let mut encryption_key = [0_u8; KEY_LEN];
+        hex::decode_to_slice(encryption_key_hex, &mut encryption_key)
+            .map_err(|_| ConfigError::NotAKey(var::ENCRYPTION_KEY))?;
+
+        Ok(Self {
+            github_client_id,
+            github_client_secret,
+            redirect_uri,
+            encryption_key,
+        })
+    }
+
+    /// Reads the configuration from the deployment environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] on the first binding that is absent or
+    /// unusable — the control plane never falls back to a default.
+    pub fn from_environment() -> Result<Self, ConfigError> {
+        Self::new(
+            read_var(var::GITHUB_CLIENT_ID)?,
+            read_var(var::GITHUB_CLIENT_SECRET)?,
+            &read_var(var::REDIRECT_URI)?,
+            &read_var(var::ENCRYPTION_KEY)?,
+        )
+    }
+
+    /// GitHub OAuth app client id.
+    #[must_use]
+    pub fn github_client_id(&self) -> &str {
+        &self.github_client_id
+    }
+
+    /// GitHub OAuth app client secret.
+    #[must_use]
+    pub fn github_client_secret(&self) -> &str {
+        &self.github_client_secret
+    }
+
+    /// Absolute URL GitHub redirects the browser back to.
+    #[must_use]
+    pub const fn redirect_uri(&self) -> &Url {
+        &self.redirect_uri
+    }
+
+    /// Cipher that seals third-party tokens before they reach D1.
+    #[must_use]
+    pub const fn token_cipher(&self) -> TokenCipher {
+        TokenCipher::new(self.encryption_key)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_var(name: &'static str) -> Result<String, ConfigError> {
+    let env = skyzen::runtime::wasm::current_env().ok_or(ConfigError::NoEnvironment)?;
+    let value =
+        skyzen_cloudflare::required_secret(&env, name).map_err(|_| ConfigError::Missing(name))?;
+    reject_empty(name, value)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_var(name: &'static str) -> Result<String, ConfigError> {
+    let value = std::env::var(name).map_err(|_| ConfigError::Missing(name))?;
+    reject_empty(name, value)
+}
+
+fn reject_empty(name: &'static str, value: String) -> Result<String, ConfigError> {
+    if value.trim().is_empty() {
+        return Err(ConfigError::Missing(name));
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApiConfig, ConfigError, var};
+
+    use crate::testing::{CLIENT_SECRET, ENCRYPTION_KEY_HEX, test_config};
+
+    const KEY_HEX: &str = ENCRYPTION_KEY_HEX;
+
+    #[test]
+    fn a_short_encryption_key_is_rejected() {
+        let error = ApiConfig::new(
+            "id".to_owned(),
+            "secret".to_owned(),
+            "https://flyco.test/cb",
+            "00112233",
+        )
+        .expect_err("a 4-byte key must be rejected");
+        assert!(matches!(error, ConfigError::NotAKey(var::ENCRYPTION_KEY)));
+    }
+
+    #[test]
+    fn a_relative_redirect_uri_is_rejected() {
+        let error = ApiConfig::new(
+            "id".to_owned(),
+            "secret".to_owned(),
+            "/v1/auth/github/callback",
+            KEY_HEX,
+        )
+        .expect_err("a relative redirect URI must be rejected");
+        assert!(matches!(error, ConfigError::NotAUrl { .. }));
+    }
+
+    #[test]
+    fn the_debug_rendering_never_shows_a_secret() {
+        let rendered = format!("{:?}", test_config());
+        assert!(!rendered.contains(CLIENT_SECRET));
+        assert!(!rendered.contains(KEY_HEX));
+    }
+}

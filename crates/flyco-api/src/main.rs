@@ -3,8 +3,8 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 #[skyzen::main]
-fn main() -> skyzen::routing::Router {
-    flyco_api::router()
+async fn main() -> skyzen::routing::Router {
+    flyco_api::router_from_environment().await
 }
 
 #[cfg(target_arch = "wasm32")]

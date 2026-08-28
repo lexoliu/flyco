@@ -141,6 +141,9 @@ pub struct SkillEntity(());
 /// Marker for memory-tree node identifiers.
 #[derive(Debug)]
 pub struct MemoryNodeEntity(());
+/// Marker for REST API key identifiers.
+#[derive(Debug)]
+pub struct ApiKeyEntity(());
 
 /// Identifies a flyco user.
 pub type UserId = Id<UserEntity>;
@@ -156,6 +159,8 @@ pub type ApprovalId = Id<ApprovalEntity>;
 pub type SkillId = Id<SkillEntity>;
 /// Identifies a node in the tree memory.
 pub type MemoryNodeId = Id<MemoryNodeEntity>;
+/// Identifies a REST API key.
+pub type ApiKeyId = Id<ApiKeyEntity>;
 
 #[cfg(test)]
 mod tests {
