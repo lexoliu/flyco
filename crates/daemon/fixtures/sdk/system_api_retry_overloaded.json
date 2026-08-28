@@ -1,0 +1,9 @@
+{
+  "type": "system",
+  "subtype": "api_retry",
+  "uuid": "0f0a3d8e-2f2b-4f77-9b2e-5c9ab4d2e00b",
+  "session_id": "9d0f4b1a-3b7e-4a3e-9e1a-4c2f8b6d7a10",
+  "error": "overloaded",
+  "attempt": 2,
+  "delayMs": 2000
+}

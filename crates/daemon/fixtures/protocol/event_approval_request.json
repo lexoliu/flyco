@@ -1,0 +1,1 @@
+{"id":"3f2b7c18-9a4d-4e51-b0c6-7d8e1f2a3b4c","input":{"command":"cargo test --workspace","description":"Run the workspace tests"},"suggestions":[{"behavior":"allow","destination":"session","rules":[{"ruleContent":"cargo test:*","toolName":"Bash"}],"type":"addRules"}],"tool":"Bash","type":"approval_request"}

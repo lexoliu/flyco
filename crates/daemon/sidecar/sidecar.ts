@@ -1,0 +1,406 @@
+/**
+ * flycod's Claude Code sidecar.
+ *
+ * The Claude Agent SDK is TypeScript-only, and it is the only supported
+ * route to the three things flyco's product needs: `canUseTool` approval
+ * callbacks, `interrupt()`, and a `SessionStore` flyco controls. This
+ * process owns one SDK session and does nothing else — every decision about
+ * what a message *means* is made in Rust. Its whole job is:
+ *
+ * - turn flycod's `user_message` commands into a streaming-input generator,
+ * - forward every SDK message out verbatim as `sdk_message`,
+ * - park `canUseTool` on flycod until an `approval_decision` arrives,
+ * - park `SessionStore` calls on flycod until a `store_response` arrives.
+ *
+ * It exits on `shutdown`, and it fails loudly — one `fatal` line, non-zero
+ * status — on anything it cannot honour. flycod never signals it: a turn
+ * ends through the SDK's own `interrupt()`.
+ */
+import { dirname, join } from "node:path";
+
+import {
+  query,
+  type CanUseTool,
+  type Options,
+  type PermissionResult,
+  type Query,
+  type SDKUserMessage,
+  type SessionKey as SdkSessionKey,
+  type SessionStore,
+  type SessionStoreEntry,
+} from "@anthropic-ai/claude-agent-sdk";
+
+import {
+  describeError,
+  sidecarCommandSchema,
+  type SessionKey,
+  type SidecarCommand,
+  type SidecarEvent,
+  type StartCommand,
+  type StoreOp,
+} from "./protocol.ts";
+
+/** How this sidecar identifies itself in the CLI's User-Agent. */
+const CLIENT_APP = "flycod-sidecar/0.1.0";
+
+/** How far up from the SDK's entry point to look for its manifest. */
+const MANIFEST_SEARCH_DEPTH = 8;
+
+/** Writes one protocol event to flycod. */
+function emit(event: SidecarEvent): void {
+  process.stdout.write(`${JSON.stringify(event)}\n`);
+}
+
+/** Reports a cause flycod cannot recover from and exits. */
+function fatal(error: unknown): never {
+  emit({ type: "fatal", error: describeError(error) });
+  process.exit(1);
+}
+
+/** Splits a byte stream into newline-delimited strings. */
+export async function* lines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const decoder = new TextDecoder();
+  let buffered = "";
+  for await (const chunk of stream) {
+    buffered += decoder.decode(chunk, { stream: true });
+    for (let cut = buffered.indexOf("\n"); cut >= 0; cut = buffered.indexOf("\n")) {
+      yield buffered.slice(0, cut);
+      buffered = buffered.slice(cut + 1);
+    }
+  }
+  buffered += decoder.decode();
+  if (buffered.length > 0) {
+    yield buffered;
+  }
+}
+
+/**
+ * The installed SDK's version, read from its own manifest.
+ *
+ * The package does not export `./package.json`, so this walks up from the
+ * resolved entry point until it finds the manifest that declares it.
+ */
+async function sdkVersion(): Promise<string> {
+  let directory = dirname(Bun.resolveSync("@anthropic-ai/claude-agent-sdk", import.meta.dir));
+  for (let depth = 0; depth < MANIFEST_SEARCH_DEPTH; depth += 1) {
+    const manifest = Bun.file(join(directory, "package.json"));
+    if (await manifest.exists()) {
+      const declared = (await manifest.json()) as { name?: string; version?: string };
+      if (declared.name === "@anthropic-ai/claude-agent-sdk" && declared.version !== undefined) {
+        return declared.version;
+      }
+    }
+    const parent = dirname(directory);
+    if (parent === directory) {
+      break;
+    }
+    directory = parent;
+  }
+  throw new Error("could not find the installed @anthropic-ai/claude-agent-sdk manifest");
+}
+
+/**
+ * The streaming-input generator backing the session.
+ *
+ * `query` is handed this as its prompt, which keeps the session open for
+ * many turns; `push` feeds it, and `close` ends the session.
+ */
+export class UserMessages {
+  private readonly buffered: SDKUserMessage[] = [];
+  private readonly waiting: Array<(next: SDKUserMessage | null) => void> = [];
+  private closed = false;
+
+  push(text: string): void {
+    const message: SDKUserMessage = {
+      type: "user",
+      message: { role: "user", content: text },
+      parent_tool_use_id: null,
+    };
+    const waiter = this.waiting.shift();
+    if (waiter === undefined) {
+      this.buffered.push(message);
+    } else {
+      waiter(message);
+    }
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const waiter of this.waiting.splice(0)) {
+      waiter(null);
+    }
+  }
+
+  async *stream(): AsyncGenerator<SDKUserMessage> {
+    for (;;) {
+      const buffered = this.buffered.shift();
+      if (buffered !== undefined) {
+        yield buffered;
+        continue;
+      }
+      if (this.closed) {
+        return;
+      }
+      const next = await new Promise<SDKUserMessage | null>((resolve) => {
+        this.waiting.push(resolve);
+      });
+      if (next === null) {
+        return;
+      }
+      yield next;
+    }
+  }
+}
+
+/** Round trips parked on flycod, keyed by the id it must echo back. */
+class Parked<Id, Answer> {
+  private readonly waiting = new Map<Id, (answer: Answer) => void>();
+
+  park(id: Id): Promise<Answer> {
+    return new Promise<Answer>((resolve) => {
+      this.waiting.set(id, resolve);
+    });
+  }
+
+  /** Resolves one round trip. False when nothing was waiting on `id`. */
+  answer(id: Id, value: Answer): boolean {
+    const resolve = this.waiting.get(id);
+    if (resolve === undefined) {
+      return false;
+    }
+    this.waiting.delete(id);
+    resolve(value);
+    return true;
+  }
+}
+
+/** Translates the SDK's `camelCase` session key to this protocol's. */
+export function toWireKey(key: SdkSessionKey): SessionKey {
+  return key.subpath === undefined
+    ? { project_key: key.projectKey, session_id: key.sessionId }
+    : { project_key: key.projectKey, session_id: key.sessionId, subpath: key.subpath };
+}
+
+/**
+ * The environment the supervised CLI runs under.
+ *
+ * `inherit` returns `process.env` untouched apart from the client tag, so
+ * the CLI reads the host user's own `~/.claude`. Every other mode points it
+ * at an isolated config tree and injects exactly one credential.
+ */
+export function environment(command: StartCommand): NonNullable<Options["env"]> {
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP,
+  };
+  if (command.config_dir !== null) {
+    env.CLAUDE_CONFIG_DIR = command.config_dir;
+  }
+  if (command.project_dir_name !== null) {
+    env.CLAUDE_CODE_PROJECT_DIR_NAME = command.project_dir_name;
+  }
+  switch (command.auth.mode) {
+    case "inherit":
+      break;
+    case "oauth_token":
+      env.CLAUDE_CODE_OAUTH_TOKEN = command.auth.token;
+      break;
+    case "api_key":
+      env.ANTHROPIC_API_KEY = command.auth.key;
+      break;
+  }
+  return env;
+}
+
+/** One live SDK session and everything parked on flycod for it. */
+class Session {
+  private readonly messages = new UserMessages();
+  private readonly approvals = new Parked<string, PermissionResult>();
+  private readonly stores = new Parked<number, unknown>();
+  private readonly session: Query;
+  private nextStoreId = 1;
+  readonly drained: Promise<void>;
+
+  constructor(command: StartCommand) {
+    const options: Options = {
+      cwd: command.cwd,
+      env: environment(command),
+      permissionMode: command.permission_mode,
+      canUseTool: this.canUseTool,
+      sessionStore: this.sessionStore,
+      // Assistant text reaches flyco only as partial-message deltas, so
+      // the normalizer never has to choose between a delta and the
+      // complete message that repeats it.
+      includePartialMessages: true,
+      ...(command.model === null ? {} : { model: command.model }),
+      ...(command.resume_session_id === null ? {} : { resume: command.resume_session_id }),
+    };
+    this.session = query({ prompt: this.messages.stream(), options });
+    this.drained = this.drain();
+  }
+
+  push(text: string): void {
+    this.messages.push(text);
+  }
+
+  async interrupt(): Promise<void> {
+    await this.session.interrupt();
+  }
+
+  /** Ends the streaming input, which ends the session. */
+  close(): void {
+    this.messages.close();
+  }
+
+  decideApproval(id: string, result: PermissionResult): boolean {
+    return this.approvals.answer(id, result);
+  }
+
+  answerStore(id: number, result: unknown): boolean {
+    return this.stores.answer(id, result);
+  }
+
+  /** Forwards every SDK message to flycod, verbatim. */
+  private async drain(): Promise<void> {
+    for await (const message of this.session) {
+      if (message.type === "system" && message.subtype === "init") {
+        emit({
+          type: "started",
+          session_id: message.session_id,
+          capabilities: message.capabilities ?? [],
+        });
+      }
+      emit({ type: "sdk_message", message });
+    }
+  }
+
+  /**
+   * Routes a permission prompt to flyco's own approval UI.
+   *
+   * Auto-approved tools never reach here, so what this sees is exactly the
+   * set of calls a human has to decide.
+   */
+  private readonly canUseTool: CanUseTool = async (toolName, input, options) => {
+    const id = crypto.randomUUID();
+    const decision = this.approvals.park(id);
+    // A turn can be interrupted while a prompt is still parked. Nothing
+    // would ever answer it, and the SDK has no deadline of its own, so the
+    // abort resolves it closed.
+    options.signal.addEventListener("abort", () => {
+      this.approvals.answer(id, {
+        behavior: "deny",
+        message: "The turn was interrupted before this tool call was decided.",
+      });
+    });
+    emit({
+      type: "approval_request",
+      id,
+      tool: toolName,
+      input,
+      suggestions: options.suggestions ?? null,
+    });
+    return await decision;
+  };
+
+  /**
+   * Persists the transcript through flycod rather than to the VM's disk.
+   *
+   * This is what makes flyco's History work: the session's transcript
+   * belongs to the control plane, so it can be resumed onto any machine.
+   */
+  private readonly sessionStore: SessionStore = {
+    append: async (key: SdkSessionKey, entries: SessionStoreEntry[]): Promise<void> => {
+      await this.roundTrip({ append: { key: toWireKey(key), entries } });
+    },
+    load: async (key: SdkSessionKey): Promise<SessionStoreEntry[] | null> => {
+      const result = await this.roundTrip({ load: { key: toWireKey(key) } });
+      // `null` is the SDK's "never written"; flycod sends it for a stream
+      // it has nothing for.
+      return result === null ? null : (result as SessionStoreEntry[]);
+    },
+  };
+
+  private async roundTrip(op: StoreOp): Promise<unknown> {
+    const id = this.nextStoreId;
+    this.nextStoreId += 1;
+    const answer = this.stores.park(id);
+    emit({ type: "store_request", id, op });
+    return await answer;
+  }
+}
+
+/** Applies one decoded command. Returns false once the sidecar should exit. */
+async function apply(command: SidecarCommand, session: Session | null): Promise<boolean> {
+  if (session === null) {
+    throw new Error(`received \`${command.type}\` before \`start\``);
+  }
+  switch (command.type) {
+    case "start":
+      throw new Error("received a second `start`; one sidecar drives one session");
+    case "user_message":
+      session.push(command.text);
+      return true;
+    case "interrupt":
+      await session.interrupt();
+      return true;
+    case "approval_decision": {
+      const result: PermissionResult = command.allow
+        ? {
+            behavior: "allow",
+            updatedInput: (command.updated_input ?? {}) as Record<string, unknown>,
+          }
+        : {
+            behavior: "deny",
+            message: command.message ?? "Denied by flyco.",
+          };
+      if (!session.decideApproval(command.id, result)) {
+        throw new Error(`no tool call is waiting on approval ${command.id}`);
+      }
+      return true;
+    }
+    case "store_response":
+      if (!session.answerStore(command.id, command.result)) {
+        throw new Error(`no store operation is waiting on request ${command.id}`);
+      }
+      return true;
+    case "shutdown":
+      session.close();
+      await session.drained;
+      return false;
+  }
+}
+
+async function main(): Promise<void> {
+  emit({ type: "ready", sdk_version: await sdkVersion() });
+
+  let session: Session | null = null;
+  for await (const line of lines(Bun.stdin.stream())) {
+    if (line.trim().length === 0) {
+      continue;
+    }
+    const command = sidecarCommandSchema.parse(JSON.parse(line));
+    if (command.type === "start") {
+      if (session !== null) {
+        throw new Error("received a second `start`; one sidecar drives one session");
+      }
+      session = new Session(command);
+      // A session that dies on its own is terminal for the sidecar.
+      session.drained.catch(fatal);
+      continue;
+    }
+    if (!(await apply(command, session))) {
+      return;
+    }
+  }
+  // flycod closed stdin without a `shutdown`; end the session anyway.
+  if (session !== null) {
+    session.close();
+    await session.drained;
+  }
+}
+
+// Guarded so the tests can import the helpers above without starting a
+// session.
+if (import.meta.main) {
+  await main().catch(fatal);
+}
