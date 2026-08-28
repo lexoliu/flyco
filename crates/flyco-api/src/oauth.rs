@@ -58,7 +58,8 @@ fn state_key(state: &str) -> String {
     key
 }
 
-/// `POST /v1/auth/github/start` — begins a GitHub sign-in.
+/// Begins a GitHub sign-in, returning the URL to send the browser to.
+#[skyzen::openapi]
 pub async fn start(State(config): State<ApiConfig>, kv: Kv) -> Outcome<Json<AuthorizeUrl>> {
     begin(&config, &kv).await.into()
 }
@@ -85,6 +86,12 @@ async fn begin(config: &ApiConfig, kv: &Kv) -> Result<Json<AuthorizeUrl>, ApiErr
 ///
 /// Consumes the `state`, exchanges the code, upserts the account, and sends
 /// the browser to the SPA with the session token in the URL fragment.
+///
+/// Deliberately not annotated with `#[skyzen::openapi]`: the macro emits
+/// module-level items that mention every argument type, and this handler is
+/// generic over [`GithubOauth`], whose parameter does not exist at module
+/// scope. The route still appears in the exported document, without its
+/// parameter schemas.
 pub async fn callback<G: GithubOauth>(
     Query(callback): Query<Callback>,
     State(config): State<ApiConfig>,

@@ -10,8 +10,12 @@ use crate::app::router;
 use crate::config::ApiConfig;
 use crate::github::{GithubError, GithubOauth, GithubToken, GithubUser};
 
-/// The schema every database-backed test starts from.
-const MIGRATION: &str = include_str!("../../../migrations/0001_init.sql");
+/// The schema every database-backed test starts from, in the order
+/// `wrangler d1 migrations apply` would run it.
+const MIGRATIONS: [&str; 2] = [
+    include_str!("../../../migrations/0001_init.sql"),
+    include_str!("../../../migrations/0002_sessions.sql"),
+];
 
 /// Client id the test configuration presents to GitHub.
 pub const CLIENT_ID: &str = "Iv1.flyco-test-client";
@@ -34,6 +38,13 @@ pub const GITHUB_LOGIN: &str = "lexoliu";
 
 /// GitHub's numeric id for [`GITHUB_LOGIN`].
 pub const GITHUB_ID: i64 = 4_242;
+
+/// A second GitHub account, for tests that check one user cannot reach
+/// another's data.
+pub const OTHER_LOGIN: &str = "octocat";
+
+/// GitHub's numeric id for [`OTHER_LOGIN`].
+pub const OTHER_GITHUB_ID: i64 = 8_484;
 
 /// A configuration built from the constants above.
 pub fn test_config() -> ApiConfig {
@@ -94,11 +105,13 @@ pub async fn migrated_router(db: &Db) -> Router {
 /// Skyzen 0.1.2's `Db` executes one statement per call, so the file is split
 /// on statement boundaries first.
 pub async fn migrate(db: &Db) {
-    for statement in statements(MIGRATION) {
-        db.query(&statement)
-            .execute()
-            .await
-            .unwrap_or_else(|error| panic!("failed to apply `{statement}`: {error}"));
+    for migration in MIGRATIONS {
+        for statement in statements(migration) {
+            db.query(&statement)
+                .execute()
+                .await
+                .unwrap_or_else(|error| panic!("failed to apply `{statement}`: {error}"));
+        }
     }
 }
 
@@ -121,6 +134,15 @@ fn statements(sql: &str) -> Vec<String> {
 /// Creates a user row directly, for tests that need an authenticated caller
 /// without going through the OAuth flow.
 pub async fn seed_user(db: &Db) -> CurrentUser {
+    seed_account(db, GITHUB_ID, GITHUB_LOGIN).await
+}
+
+/// Creates a second, unrelated account.
+pub async fn seed_other_user(db: &Db) -> CurrentUser {
+    seed_account(db, OTHER_GITHUB_ID, OTHER_LOGIN).await
+}
+
+async fn seed_account(db: &Db, github_id: i64, login: &str) -> CurrentUser {
     let sealed = test_config()
         .token_cipher()
         .seal(GITHUB_ACCESS_TOKEN)
@@ -128,8 +150,8 @@ pub async fn seed_user(db: &Db) -> CurrentUser {
     crate::users::upsert_from_github(
         db,
         &GithubUser {
-            id: GITHUB_ID,
-            login: GITHUB_LOGIN.to_owned(),
+            id: github_id,
+            login: login.to_owned(),
         },
         &sealed,
     )

@@ -5,7 +5,7 @@
 //! describe themselves only in the log: the response says the status and
 //! nothing that would leak internals.
 
-use flyco_core::Problem;
+use flyco_core::{ApprovalState, Problem, SessionState};
 use skyzen::{Response, StatusCode};
 use skyzen_services::{DbError, KvError};
 
@@ -36,6 +36,73 @@ pub enum ApiError {
     /// The caller asked to revoke a key that is not theirs, or does not exist.
     #[error("api key not found", status = StatusCode::NOT_FOUND)]
     ApiKeyNotFound,
+
+    /// The session does not exist, or belongs to somebody else. The two are
+    /// deliberately indistinguishable.
+    #[error("session not found", status = StatusCode::NOT_FOUND)]
+    SessionNotFound,
+
+    /// The approval does not exist, or belongs to somebody else.
+    #[error("approval not found", status = StatusCode::NOT_FOUND)]
+    ApprovalNotFound,
+
+    /// The caller already holds as many live sessions as they may.
+    #[error(
+        "you already hold {cap} sessions, which is your limit; archive one first",
+        status = StatusCode::CONFLICT
+    )]
+    SessionCapReached {
+        /// The cap that was reached.
+        cap: u32,
+    },
+
+    /// The requested lifecycle move is not part of the session state machine.
+    #[error(
+        "a session cannot move from {from:?} to {to:?}",
+        status = StatusCode::CONFLICT
+    )]
+    InvalidTransition {
+        /// State the session is in.
+        from: SessionState,
+        /// State the caller asked for.
+        to: SessionState,
+    },
+
+    /// The approval already carries a decision, and a decision is final.
+    #[error(
+        "this approval was already decided as {state:?}",
+        status = StatusCode::CONFLICT
+    )]
+    ApprovalAlreadyDecided {
+        /// The decision that stands.
+        state: ApprovalState,
+    },
+
+    /// The submitted repository is not `owner/name`.
+    #[error(
+        "`{0}` is not a GitHub repository in `owner/name` form",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    InvalidRepo(String),
+
+    /// The submitted budget limit cannot fund anything.
+    #[error(
+        "a session budget must be greater than zero",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    InvalidBudget,
+
+    /// The submitted session cap is outside the allowed range.
+    #[error(
+        "a session cap must be between {min} and {max}",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    InvalidSessionCap {
+        /// Smallest cap the control plane accepts.
+        min: u32,
+        /// Largest cap the control plane accepts.
+        max: u32,
+    },
 
     /// A path parameter that must be a UUID was not one.
     #[error("`{0}` is not a valid identifier", status = StatusCode::BAD_REQUEST)]
@@ -76,6 +143,14 @@ impl ApiError {
             Self::InvalidCredential => "invalid-credential",
             Self::UnknownOauthState => "unknown-oauth-state",
             Self::ApiKeyNotFound => "api-key-not-found",
+            Self::SessionNotFound => "session-not-found",
+            Self::ApprovalNotFound => "approval-not-found",
+            Self::SessionCapReached { .. } => "session-cap-reached",
+            Self::InvalidTransition { .. } => "invalid-session-transition",
+            Self::ApprovalAlreadyDecided { .. } => "approval-already-decided",
+            Self::InvalidRepo(_) => "invalid-repo",
+            Self::InvalidBudget => "invalid-budget",
+            Self::InvalidSessionCap { .. } => "invalid-session-cap",
             Self::MalformedId(_) => "malformed-id",
             Self::Github(_) => "github-unavailable",
             Self::CorruptRecord(_)

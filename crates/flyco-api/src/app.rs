@@ -1,41 +1,80 @@
 //! Router assembly and the handlers that are not part of the OAuth flow.
 
-use flyco_core::{ApiKeyId, ApiKeySummary, CreateApiKey, CreatedApiKey, CurrentUser};
-use serde::Serialize;
+use core::str::FromStr;
+
+use flyco_core::{
+    ApiKeyId, ApiKeySummary, ApprovalId, ApprovalState, ApprovalView, BudgetConfig, BudgetView,
+    CreateApiKey, CreateSession, CreatedApiKey, CurrentUser, DecideApproval, RepoSlug,
+    SessionDetail, SessionId, SessionState, SessionSummary, UpdateMe,
+};
+use serde::{Deserialize, Serialize};
+use skyzen::extract::Query;
 use skyzen::middleware::ErrorHandlingMiddleware;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Router, Routes as _};
 use skyzen::utils::{Json, State};
-use skyzen::{Body, HttpError as _, Response, StatusCode};
+use skyzen::{HttpError as _, Response};
 use skyzen_services::Db;
 
-use crate::api_keys;
 use crate::authenticator::FlycoAuthenticator;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::github::{GithubOauth, ZenwaveGithub};
 use crate::middleware::RequireAuth;
 use crate::problem::Outcome;
-use crate::{database, oauth, problem};
+use crate::respond::{WithStatus, created, no_content};
+use crate::{api_keys, approvals, database, oauth, problem, sessions, users};
 
 /// Health probe response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, skyzen::ToSchema)]
 struct Health {
     /// Wire protocol version this control plane speaks to daemons.
     wire_protocol_version: u32,
 }
 
+/// Reports that the control plane is up, and which wire protocol version it
+/// speaks to session daemons.
+#[skyzen::openapi]
 async fn healthz() -> Json<Health> {
     Json(Health {
         wire_protocol_version: flyco_core::WIRE_PROTOCOL_VERSION,
     })
 }
 
-/// `GET /v1/me` — the identity behind the presented credential.
+/// Describes the account behind the presented credential.
+#[skyzen::openapi]
 async fn me(State(user): State<CurrentUser>) -> Json<CurrentUser> {
     Json(user)
 }
 
-/// `POST /v1/api-keys` — mints a key and returns it once.
+/// Updates the caller's account settings.
+#[skyzen::openapi]
+async fn update_me(
+    State(user): State<CurrentUser>,
+    Json(update): Json<UpdateMe>,
+    db: Db,
+) -> Outcome<Json<CurrentUser>> {
+    apply_update_me(&user, update, &db).await.into()
+}
+
+async fn apply_update_me(
+    user: &CurrentUser,
+    update: UpdateMe,
+    db: &Db,
+) -> Result<Json<CurrentUser>, ApiError> {
+    if let Some(cap) = update.session_cap {
+        users::set_session_cap(db, user.id, cap).await?;
+    }
+
+    users::find(db, user.id)
+        .await?
+        .map(Json)
+        .ok_or(ApiError::CorruptRecord(
+            "the row for an authenticated user disappeared mid-request",
+        ))
+}
+
+/// Mints an API key, returning the plaintext key exactly once.
+#[skyzen::openapi]
 async fn create_api_key(
     State(user): State<CurrentUser>,
     Json(request): Json<CreateApiKey>,
@@ -48,7 +87,8 @@ async fn create_api_key(
         .into()
 }
 
-/// `GET /v1/api-keys` — lists the caller's keys.
+/// Lists the caller's API keys, without their secrets.
+#[skyzen::openapi]
 async fn list_api_keys(
     State(user): State<CurrentUser>,
     db: Db,
@@ -56,7 +96,8 @@ async fn list_api_keys(
     api_keys::list(&db, user.id).await.map(Json).into()
 }
 
-/// `DELETE /v1/api-keys/{id}` — revokes one of the caller's keys.
+/// Revokes one of the caller's API keys.
+#[skyzen::openapi]
 async fn revoke_api_key(
     State(user): State<CurrentUser>,
     params: Params,
@@ -66,18 +107,166 @@ async fn revoke_api_key(
 }
 
 async fn revoke(user: &CurrentUser, params: &Params, db: &Db) -> Result<Response, ApiError> {
+    api_keys::revoke(db, user.id, path_id::<ApiKeyId>(params, "id")?).await?;
+    Ok(no_content())
+}
+
+/// Reads a `{id}` path parameter as a typed identifier.
+fn path_id<T: FromStr>(params: &Params, name: &'static str) -> Result<T, ApiError> {
     let raw = params
-        .get("id")
-        .map_err(|_| ApiError::CorruptRecord("the router did not bind the `id` path parameter"))?;
-    let key_id = raw
-        .parse::<ApiKeyId>()
-        .map_err(|_| ApiError::MalformedId(raw.to_owned()))?;
+        .get(name)
+        .map_err(|_| ApiError::CorruptRecord("the router did not bind a path parameter"))?;
+    raw.parse()
+        .map_err(|_| ApiError::MalformedId(raw.to_owned()))
+}
 
-    api_keys::revoke(db, user.id, key_id).await?;
+/// Starts a session: reserves the budget and puts the session in the
+/// provisioning queue. No machine exists yet.
+#[skyzen::openapi]
+async fn create_session(
+    State(user): State<CurrentUser>,
+    Json(request): Json<CreateSession>,
+    db: Db,
+) -> Outcome<WithStatus<Json<SessionDetail>>> {
+    start_session(&user, request, &db).await.into()
+}
 
-    let mut response = Response::new(Body::empty());
-    *response.status_mut() = StatusCode::NO_CONTENT;
-    Ok(response)
+async fn start_session(
+    user: &CurrentUser,
+    request: CreateSession,
+    db: &Db,
+) -> Result<WithStatus<Json<SessionDetail>>, ApiError> {
+    let repo = request
+        .repo
+        .parse::<RepoSlug>()
+        .map_err(|_| ApiError::InvalidRepo(request.repo.clone()))?;
+    let budget = BudgetConfig::new(request.budget_limit).map_err(|_| ApiError::InvalidBudget)?;
+
+    let session = sessions::create(
+        db,
+        user.id,
+        user.session_cap,
+        request.harness,
+        &repo,
+        budget,
+    )
+    .await?;
+
+    tracing::info!(repo = %repo, harness = ?request.harness, spot = request.spot, "opened a session");
+    Ok(created(Json(session)))
+}
+
+/// Lists the caller's sessions, newest first.
+#[skyzen::openapi]
+async fn list_sessions(
+    State(user): State<CurrentUser>,
+    db: Db,
+) -> Outcome<Json<Vec<SessionSummary>>> {
+    sessions::list(&db, user.id).await.map(Json).into()
+}
+
+/// Describes one of the caller's sessions, including its budget.
+#[skyzen::openapi]
+async fn get_session(
+    State(user): State<CurrentUser>,
+    params: Params,
+    db: Db,
+) -> Outcome<Json<SessionDetail>> {
+    read_session(&user, &params, &db).await.into()
+}
+
+async fn read_session(
+    user: &CurrentUser,
+    params: &Params,
+    db: &Db,
+) -> Result<Json<SessionDetail>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    sessions::find(db, user.id, id).await.map(Json)
+}
+
+/// Archives a session, releasing its execution environment for good.
+#[skyzen::openapi]
+async fn archive_session(
+    State(user): State<CurrentUser>,
+    params: Params,
+    db: Db,
+) -> Outcome<Json<SessionDetail>> {
+    end_session(&user, &params, &db).await.into()
+}
+
+async fn end_session(
+    user: &CurrentUser,
+    params: &Params,
+    db: &Db,
+) -> Result<Json<SessionDetail>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    sessions::transition(db, user.id, id, SessionState::Archived)
+        .await
+        .map(Json)
+}
+
+/// Reports a session's budget, recomputed from its spend ledger.
+#[skyzen::openapi]
+async fn get_session_budget(
+    State(user): State<CurrentUser>,
+    params: Params,
+    db: Db,
+) -> Outcome<Json<BudgetView>> {
+    read_budget(&user, &params, &db).await.into()
+}
+
+async fn read_budget(
+    user: &CurrentUser,
+    params: &Params,
+    db: &Db,
+) -> Result<Json<BudgetView>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    Ok(Json(sessions::find(db, user.id, id).await?.budget))
+}
+
+/// Narrows a listing of approvals.
+#[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
+struct ApprovalFilter {
+    /// Only approvals raised by this session.
+    session: Option<SessionId>,
+    /// Only approvals in this state — `pending` is the useful one.
+    state: Option<ApprovalState>,
+}
+
+/// Lists approvals raised against the caller's sessions, newest first.
+#[skyzen::openapi]
+async fn list_approvals(
+    State(user): State<CurrentUser>,
+    Query(filter): Query<ApprovalFilter>,
+    db: Db,
+) -> Outcome<Json<Vec<ApprovalView>>> {
+    approvals::list(&db, user.id, filter.session, filter.state)
+        .await
+        .map(Json)
+        .into()
+}
+
+/// Records the caller's decision on a pending approval.
+#[skyzen::openapi]
+async fn decide_approval(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(request): Json<DecideApproval>,
+    db: Db,
+) -> Outcome<Json<ApprovalView>> {
+    settle_approval(&user, &params, request, &db).await.into()
+}
+
+async fn settle_approval(
+    user: &CurrentUser,
+    params: &Params,
+    request: DecideApproval,
+    db: &Db,
+) -> Result<Json<ApprovalView>, ApiError> {
+    let id = path_id::<ApprovalId>(params, "id")?;
+    let decided = approvals::decide(db, user.id, id, request.decision).await?;
+    tracing::info!(decision = ?request.decision, "decided an approval");
+    Ok(Json(decided))
 }
 
 /// Routes that anyone may call.
@@ -95,12 +284,38 @@ fn public_routes<G: GithubOauth>() -> Vec<RouteNode> {
 /// Routes that require a bearer credential.
 fn authenticated_routes() -> Vec<RouteNode> {
     Route::new((
-        "/v1/me".at(me),
+        "/v1/me".at(me).patch(update_me),
         "/v1/api-keys".post(create_api_key).get(list_api_keys),
         "/v1/api-keys/{id}".delete(revoke_api_key),
+        "/v1/sessions".post(create_session).get(list_sessions),
+        "/v1/sessions/{id}".at(get_session),
+        "/v1/sessions/{id}/archive".post(archive_session),
+        "/v1/sessions/{id}/budget".at(get_session_budget),
+        "/v1/approvals".at(list_approvals),
+        "/v1/approvals/{id}/decision".post(decide_approval),
     ))
     .middleware(RequireAuth::new(FlycoAuthenticator::new()))
     .into_route_nodes()
+}
+
+/// The complete route tree, before state or middleware is attached.
+///
+/// Separated from [`router`] so the `OpenAPI` export can describe the API
+/// without opening a database or reading any configuration.
+fn routes<G: GithubOauth>() -> Route {
+    let mut nodes = public_routes::<G>();
+    nodes.extend(authenticated_routes());
+    Route::new(nodes)
+}
+
+/// The `OpenAPI` document describing the control plane.
+///
+/// Only debug native builds collect handler metadata (skyzen gathers it
+/// through a `linkme` slice that is compiled out otherwise), so the export
+/// binary must be built in debug.
+#[must_use]
+pub fn openapi_document() -> skyzen::OpenApi {
+    routes::<ZenwaveGithub>().openapi()
 }
 
 /// Builds the control-plane router around an explicit configuration, GitHub
@@ -112,10 +327,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
 /// `#[skyzen::main]` wraps the router with it.
 #[must_use]
 pub fn router<G: GithubOauth>(config: ApiConfig, github: G, db: Db) -> Router {
-    let mut nodes = public_routes::<G>();
-    nodes.extend(authenticated_routes());
-
-    Route::new(nodes)
+    routes::<G>()
         .with(State(config))
         .with(State(github))
         .with(db)

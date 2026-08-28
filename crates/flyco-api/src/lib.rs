@@ -9,7 +9,9 @@
 
 pub mod api_keys;
 pub mod app;
+pub mod approvals;
 pub mod authenticator;
+pub mod budgets;
 pub mod clock;
 pub mod config;
 pub mod crypto;
@@ -20,13 +22,19 @@ pub mod github;
 pub mod middleware;
 pub mod oauth;
 pub mod problem;
+pub mod respond;
 pub mod session;
+pub mod sessions;
+pub mod sql;
 pub mod users;
 
 #[cfg(test)]
 mod testing;
 
-pub use app::{router, router_from_environment};
+#[cfg(test)]
+mod tests;
+
+pub use app::{openapi_document, router, router_from_environment};
 pub use config::ApiConfig;
 pub use error::ApiError;
 
