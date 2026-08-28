@@ -40,3 +40,32 @@ describe("session token storage", () => {
     expect(getSessionToken()).toBeNull();
   });
 });
+
+describe("credential hygiene", () => {
+  it("keeps the token out of the error it throws", () => {
+    resetSessionTokenCacheForTests();
+    expect(() => setSessionToken("leaky_secret_value")).toThrow(
+      /unexpected shape/,
+    );
+    try {
+      setSessionToken("leaky_secret_value");
+    } catch (error) {
+      expect((error as Error).message).not.toContain("leaky_secret_value");
+    }
+  });
+
+  it("treats a corrupted stored token as signed out and clears it", () => {
+    resetSessionTokenCacheForTests();
+    const store = new Map<string, string>([[
+      "flyco.session_token",
+      "not-a-flyco-token",
+    ]]);
+    const storage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      removeItem: (key: string) => void store.delete(key),
+    };
+
+    expect(getSessionToken(storage)).toBeNull();
+    expect(store.has("flyco.session_token")).toBe(false);
+  });
+});
