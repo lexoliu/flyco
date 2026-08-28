@@ -155,6 +155,34 @@ pub async fn decide(
     load(db, user, id).await
 }
 
+/// Loads an approval by the session that raised it.
+///
+/// The daemon-scoped counterpart of the user-scoped [`load`]: a daemon
+/// token proves which *session* is calling, never which user, so the
+/// ownership clause is the session rather than a join back to `users`.
+///
+/// # Errors
+///
+/// Returns [`ApiError::ApprovalNotFound`] if the approval does not exist or
+/// belongs to another session.
+pub async fn find_for_session(
+    db: &Db,
+    session: SessionId,
+    id: ApprovalId,
+) -> Result<ApprovalView, ApiError> {
+    let row: Option<ApprovalRow> = db
+        .query(
+            "SELECT id, session_id, payload, state, created_at_unix \
+             FROM approvals WHERE id = ? AND session_id = ?",
+        )
+        .bind(id.to_string())
+        .bind(session.to_string())
+        .fetch_optional()
+        .await?;
+
+    row.ok_or(ApiError::ApprovalNotFound)?.try_into()
+}
+
 async fn load(db: &Db, user: UserId, id: ApprovalId) -> Result<ApprovalView, ApiError> {
     let row: Option<ApprovalRow> = db
         .query(

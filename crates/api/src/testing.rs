@@ -12,9 +12,10 @@ use crate::github::{GithubError, GithubOauth, GithubToken, GithubUser};
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-const MIGRATIONS: [&str; 2] = [
+const MIGRATIONS: [&str; 3] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
+    include_str!("../../../migrations/0003_daemon.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -140,6 +141,23 @@ pub async fn seed_user(db: &Db) -> CurrentUser {
 /// Creates a second, unrelated account.
 pub async fn seed_other_user(db: &Db) -> CurrentUser {
     seed_account(db, OTHER_GITHUB_ID, OTHER_LOGIN).await
+}
+
+/// Opens a provisioning session owned by `user`, for tests that need one to
+/// exist without going through `POST /v1/sessions`.
+pub async fn seed_session(db: &Db, user: &CurrentUser) -> flyco_core::SessionId {
+    crate::sessions::create(
+        db,
+        user.id,
+        flyco_core::SESSION_CAP_MAX,
+        flyco_core::HarnessKind::ClaudeCode,
+        &"lexoliu/flyco".parse().expect("a valid repo slug"),
+        flyco_core::BudgetConfig::new(flyco_core::Usd::from_dollars(10)).expect("a valid budget"),
+    )
+    .await
+    .expect("seed a session")
+    .summary
+    .id
 }
 
 async fn seed_account(db: &Db, github_id: i64, login: &str) -> CurrentUser {

@@ -366,6 +366,27 @@
         }
       }
     },
+    "/v1/sessions/{id}/approvals": {
+      "post": {
+        "summary": "app::raise_approval",
+        "operationId": "app::raise_approval",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/archive": {
       "post": {
         "summary": "Archives a session, releasing its execution environment for good.",
@@ -396,6 +417,194 @@
         "parameters": [
           {
             "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/daemon-token": {
+      "post": {
+        "summary": "Mints the daemon token that pairs a session with its `flycod`.",
+        "description": "Mints the daemon token that pairs a session with its `flycod`.\n\nReturned once and stored only as a hash; minting again replaces the\nprevious token, so re-pairing revokes the daemon that held it.",
+        "operationId": "flyco_api::app::create_daemon_token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/events": {
+      "get": {
+        "summary": "Reads a session's recorded event tail.",
+        "description": "Reads a session's recorded event tail.\n\nThe catch-up path a browser takes before — and alongside — its live\nsocket: replay from the last position it saw, then follow the relay.",
+        "operationId": "flyco_api::app::get_session_events",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "description": "Return events strictly after this position.",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/relay-ticket": {
+      "post": {
+        "summary": "Mints a single-use ticket a browser exchanges for a relay socket.",
+        "description": "Mints a single-use ticket a browser exchanges for a relay socket.",
+        "operationId": "flyco_api::app::create_relay_ticket",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/relay/client": {
+      "get": {
+        "summary": "app::open_client_relay",
+        "operationId": "app::open_client_relay",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/relay/daemon": {
+      "get": {
+        "summary": "app::open_daemon_relay",
+        "operationId": "app::open_daemon_relay",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/transcript/{stream}": {
+      "get": {
+        "summary": "app::get_transcript",
+        "operationId": "app::get_transcript",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "stream",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/transcript/{stream}/batches/{seq}": {
+      "put": {
+        "summary": "app::put_transcript_batch",
+        "operationId": "app::put_transcript_batch",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "stream",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seq",
             "in": "path",
             "required": true,
             "schema": {
@@ -533,6 +742,21 @@
           "decision": {
             "$ref": "#/components/schemas/ApprovalDecision",
             "description": "What the user decided."
+          }
+        }
+      },
+      "EventCursor": {
+        "type": "object",
+        "description": "Where in a session's event stream to resume reading.",
+        "properties": {
+          "after": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Return events strictly after this position.",
+            "minimum": 0
           }
         }
       },

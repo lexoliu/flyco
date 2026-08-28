@@ -1,16 +1,39 @@
 //! Auth DTOs served by the control plane.
 //!
 //! Flyco has exactly one identity provider (GitHub) and one credential
-//! channel: `Authorization: Bearer`. Two kinds of token travel it — an
-//! `fs_` browser session token and an `fk_` API key — and these types
-//! describe what crosses the wire around them. A credential itself never
-//! appears in a response body except for the one moment a key is minted
-//! ([`CreatedApiKey::token`]).
+//! channel: `Authorization: Bearer`. Three kinds of token travel it — an
+//! `fs_` browser session token, an `fk_` API key, and an
+//! [`fd_`](DAEMON_TOKEN_PREFIX) daemon token — and these types describe
+//! what crosses the wire around them. A credential itself never appears in
+//! a response body except for the one moment it is minted
+//! ([`CreatedApiKey::token`], [`DaemonToken::token`]).
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::id::{ApiKeyId, UserId};
+use crate::id::{ApiKeyId, SessionId, UserId};
+
+/// Marks a session daemon's credential.
+///
+/// A daemon token authenticates exactly one session's `flycod` against the
+/// daemon-scoped routes of *that* session. It lives in `flyco_core` rather
+/// than in the control plane because the daemon checks its own
+/// configuration against this prefix at startup: a token of the wrong kind
+/// is a provisioning bug, and the daemon says so before it dials out.
+pub const DAEMON_TOKEN_PREFIX: &str = "fd_";
+
+/// A freshly minted daemon token.
+///
+/// Response of `POST /v1/sessions/{id}/daemon-token`. Minting again
+/// replaces the previous token, so a session has at most one live daemon
+/// credential and re-pairing revokes the old one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DaemonToken {
+    /// The session this token authenticates a daemon for.
+    pub session: SessionId,
+    /// The plaintext token, returned exactly once.
+    pub token: String,
+}
 
 /// Fewest concurrent sessions a user may be limited to.
 pub const SESSION_CAP_MIN: u32 = 1;
