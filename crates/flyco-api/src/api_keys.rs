@@ -9,8 +9,11 @@ use serde::Deserialize;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
-use crate::crypto::{random_api_key, token_hash};
+use crate::crypto::{prefixed_token, token_hash};
 use crate::error::ApiError;
+
+/// Marks a REST API key, so a leaked key is recognisable to secret scanners.
+pub const TOKEN_PREFIX: &str = "fk_";
 
 /// A key matched by its hash, and the user it authenticates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +71,7 @@ fn signed(value: u64) -> i64 {
 ///
 /// Returns [`ApiError`] if entropy is unavailable or the insert fails.
 pub async fn create(db: &Db, user_id: UserId, label: String) -> Result<CreatedApiKey, ApiError> {
-    let token = random_api_key()?;
+    let token = prefixed_token(TOKEN_PREFIX)?;
     let id = ApiKeyId::generate();
     let created_at_unix = now_unix();
 

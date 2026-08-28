@@ -20,9 +20,8 @@ const NONCE_LEN: usize = 12;
 /// Byte length of the random material behind session tokens and API keys.
 const TOKEN_LEN: usize = 32;
 
-/// Prefix that marks a flyco REST API key, so a leaked key is recognisable in
-/// logs and secret scanners.
-pub const API_KEY_PREFIX: &str = "fk_";
+/// Length of the base64url encoding of [`TOKEN_LEN`] bytes.
+const ENCODED_TOKEN_LEN: usize = 43;
 
 /// Failures of the cryptographic primitives.
 ///
@@ -67,16 +66,19 @@ pub fn random_token() -> Result<String, CryptoError> {
     Ok(BASE64URL.encode(random_bytes::<TOKEN_LEN>()?))
 }
 
-/// Mints a REST API key: [`API_KEY_PREFIX`] followed by [`random_token`].
+/// Mints a credential tagged with the kind of credential it is.
+///
+/// The prefix makes a leaked token recognisable to secret scanners, and lets
+/// the authenticator pick the right store without probing both.
 ///
 /// # Errors
 ///
 /// Returns [`CryptoError::Entropy`] if the host has no usable entropy source.
-pub fn random_api_key() -> Result<String, CryptoError> {
-    let mut key = String::with_capacity(API_KEY_PREFIX.len() + 43);
-    key.push_str(API_KEY_PREFIX);
-    key.push_str(&random_token()?);
-    Ok(key)
+pub fn prefixed_token(prefix: &str) -> Result<String, CryptoError> {
+    let mut token = String::with_capacity(prefix.len() + ENCODED_TOKEN_LEN);
+    token.push_str(prefix);
+    token.push_str(&random_token()?);
+    Ok(token)
 }
 
 /// Lowercase hex SHA-256 of a credential.
@@ -157,7 +159,7 @@ impl TokenCipher {
 
 #[cfg(test)]
 mod tests {
-    use super::{API_KEY_PREFIX, CryptoError, KEY_LEN, TokenCipher, random_api_key, token_hash};
+    use super::{CryptoError, KEY_LEN, TokenCipher, prefixed_token, token_hash};
 
     fn cipher() -> TokenCipher {
         TokenCipher::new([7_u8; KEY_LEN])
@@ -198,11 +200,11 @@ mod tests {
     }
 
     #[test]
-    fn api_keys_are_prefixed_and_unique() {
-        let first = random_api_key().expect("mint");
-        let second = random_api_key().expect("mint");
+    fn credentials_are_prefixed_and_unique() {
+        let first = prefixed_token("fk_").expect("mint");
+        let second = prefixed_token("fk_").expect("mint");
 
-        assert!(first.starts_with(API_KEY_PREFIX));
+        assert!(first.starts_with("fk_"));
         assert_ne!(first, second);
         assert_ne!(token_hash(&first), token_hash(&second));
         assert_eq!(token_hash(&first).len(), 64);

@@ -1,22 +1,24 @@
 //! The credential check in front of every protected route.
 //!
-//! Two credentials are accepted: an `Authorization: Bearer fk_…` API key and
-//! the `flyco_session` cookie the browser holds. An explicit `Authorization`
-//! header wins — a caller who presents a bad key is refused rather than
-//! silently falling through to whatever cookie their browser happened to
-//! carry. Skyzen's [`AuthMiddleware`](skyzen::middleware::auth::AuthMiddleware)
-//! runs this and injects the resolved [`CurrentUser`] as request state.
+//! Flyco has exactly one credential channel: `Authorization: Bearer`. There
+//! are no cookies, so there is no ambient authority and nothing that a
+//! cross-site request can ride on. The token's prefix says which store owns
+//! it — `fs_` for a browser session (KV), `fk_` for an API key (D1) —
+//! so a lookup never has to probe both.
+//!
+//! [`RequireAuth`](crate::middleware::RequireAuth) runs this and injects the
+//! resolved [`CurrentUser`] as request state.
 
 use flyco_core::CurrentUser;
-use skyzen::header::{AUTHORIZATION, COOKIE};
+use skyzen::Request;
+use skyzen::header::{AUTHORIZATION, HeaderMap};
 use skyzen::middleware::auth::Authenticator;
-use skyzen::{Request, header::HeaderMap};
 use skyzen_services::{Db, Kv};
 
 use crate::error::ApiError;
 use crate::{api_keys, session, users};
 
-/// Resolves flyco's two credential shapes against KV and D1.
+/// Resolves flyco's two token kinds against KV and D1.
 ///
 /// Stateless: the stores it needs are the ones skyzen already injected into
 /// the request, so the authenticator itself carries nothing.
@@ -36,37 +38,35 @@ impl Authenticator for FlycoAuthenticator {
     type Error = ApiError;
 
     async fn authenticate(&self, request: &Request) -> Result<Self::User, Self::Error> {
-        let kv = request
-            .extensions()
-            .get::<Kv>()
-            .cloned()
-            .ok_or(ApiError::ServiceMissing("auth_kv"))?;
+        let presented = bearer_token(request.headers()).ok_or(ApiError::MissingCredential)?;
         let db = request
             .extensions()
             .get::<Db>()
             .cloned()
             .ok_or(ApiError::ServiceMissing("main"))?;
 
-        let bearer = bearer_token(request.headers()).map(ToOwned::to_owned);
-        let cookie = session_cookie(request.headers());
-
-        let user_id = if let Some(presented) = bearer {
-            let Some(owner) = api_keys::find_by_token(&db, &presented).await? else {
-                return Err(ApiError::Unauthenticated);
-            };
+        let user_id = if presented.starts_with(session::TOKEN_PREFIX) {
+            let kv = request
+                .extensions()
+                .get::<Kv>()
+                .cloned()
+                .ok_or(ApiError::ServiceMissing("auth_kv"))?;
+            session::resolve(&kv, presented)
+                .await?
+                .ok_or(ApiError::InvalidCredential)?
+        } else if presented.starts_with(api_keys::TOKEN_PREFIX) {
+            let owner = api_keys::find_by_token(&db, presented)
+                .await?
+                .ok_or(ApiError::InvalidCredential)?;
             api_keys::mark_used(&db, owner.key_id).await?;
             owner.user_id
-        } else if let Some(token) = cookie {
-            session::resolve(&kv, &token)
-                .await?
-                .ok_or(ApiError::Unauthenticated)?
         } else {
-            return Err(ApiError::Unauthenticated);
+            return Err(ApiError::InvalidCredential);
         };
 
         users::find(&db, user_id)
             .await?
-            .ok_or(ApiError::Unauthenticated)
+            .ok_or(ApiError::InvalidCredential)
     }
 }
 
@@ -84,51 +84,30 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     (!token.is_empty()).then_some(token)
 }
 
-/// Extracts the flyco session token from the `Cookie` header.
-fn session_cookie(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get(COOKIE)?.to_str().ok()?;
-    cookie::Cookie::split_parse_encoded(value)
-        .filter_map(Result::ok)
-        .find(|cookie| cookie.name() == session::COOKIE_NAME)
-        .map(|cookie| cookie.value().to_owned())
-}
-
 #[cfg(test)]
 mod tests {
-    use skyzen::header::{AUTHORIZATION, COOKIE, HeaderMap, HeaderValue};
+    use skyzen::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 
-    use super::{bearer_token, session_cookie};
+    use super::bearer_token;
 
-    fn headers(name: skyzen::header::HeaderName, value: &str) -> HeaderMap {
+    fn headers(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(name, HeaderValue::from_str(value).expect("header value"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(value).expect("header value"),
+        );
         headers
     }
 
     #[test]
     fn the_bearer_scheme_is_case_insensitive() {
-        assert_eq!(
-            bearer_token(&headers(AUTHORIZATION, "bEaReR  fk_abc")),
-            Some("fk_abc")
-        );
+        assert_eq!(bearer_token(&headers("bEaReR  fk_abc")), Some("fk_abc"));
     }
 
     #[test]
     fn other_authorization_schemes_are_ignored() {
-        assert_eq!(bearer_token(&headers(AUTHORIZATION, "Basic abc")), None);
-        assert_eq!(bearer_token(&headers(AUTHORIZATION, "Bearer   ")), None);
+        assert_eq!(bearer_token(&headers("Basic abc")), None);
+        assert_eq!(bearer_token(&headers("Bearer   ")), None);
         assert_eq!(bearer_token(&HeaderMap::new()), None);
-    }
-
-    #[test]
-    fn the_session_cookie_is_picked_out_of_the_header() {
-        let jar = headers(COOKIE, "theme=dark; flyco_session=abc%2Fdef; other=1");
-        assert_eq!(session_cookie(&jar).as_deref(), Some("abc/def"));
-    }
-
-    #[test]
-    fn an_unrelated_cookie_header_yields_nothing() {
-        assert_eq!(session_cookie(&headers(COOKIE, "theme=dark")), None);
-        assert_eq!(session_cookie(&HeaderMap::new()), None);
     }
 }

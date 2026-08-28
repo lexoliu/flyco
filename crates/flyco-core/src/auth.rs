@@ -1,10 +1,11 @@
 //! Auth DTOs served by the control plane.
 //!
-//! Flyco has exactly one identity provider (GitHub) and two credential
-//! shapes: an opaque browser session cookie, and a bearer API key for the
-//! REST API. These types describe what crosses the wire in both cases; the
-//! credentials themselves never appear in a response body except for the one
-//! moment a key is minted ([`CreatedApiKey::token`]).
+//! Flyco has exactly one identity provider (GitHub) and one credential
+//! channel: `Authorization: Bearer`. Two kinds of token travel it — an
+//! `fs_` browser session token and an `fk_` API key — and these types
+//! describe what crosses the wire around them. A credential itself never
+//! appears in a response body except for the one moment a key is minted
+//! ([`CreatedApiKey::token`]).
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
