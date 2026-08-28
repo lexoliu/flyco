@@ -203,6 +203,33 @@ impl BudgetState {
     }
 }
 
+/// Budget accounting as the API serves it.
+///
+/// Every field is derived from replaying the spend ledger through
+/// [`BudgetState`], so the API can never disagree with the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct BudgetView {
+    /// The spending limit.
+    pub limit: Usd,
+    /// Spent so far.
+    pub spent: Usd,
+    /// Left to spend; zero once exhausted.
+    pub remaining: Usd,
+    /// How far through the budget the session is.
+    pub stage: BudgetStage,
+}
+
+impl From<BudgetState> for BudgetView {
+    fn from(state: BudgetState) -> Self {
+        Self {
+            limit: state.config().limit(),
+            spent: state.spent(),
+            remaining: state.remaining(),
+            stage: state.stage(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

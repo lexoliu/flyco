@@ -144,6 +144,9 @@ pub struct MemoryNodeEntity(());
 /// Marker for REST API key identifiers.
 #[derive(Debug)]
 pub struct ApiKeyEntity(());
+/// Marker for spend-ledger entry identifiers.
+#[derive(Debug)]
+pub struct SpendEventEntity(());
 
 /// Identifies a flyco user.
 pub type UserId = Id<UserEntity>;
@@ -161,6 +164,8 @@ pub type SkillId = Id<SkillEntity>;
 pub type MemoryNodeId = Id<MemoryNodeEntity>;
 /// Identifies a REST API key.
 pub type ApiKeyId = Id<ApiKeyEntity>;
+/// Identifies one entry in a budget's append-only spend ledger.
+pub type SpendEventId = Id<SpendEventEntity>;
 
 #[cfg(test)]
 mod tests {

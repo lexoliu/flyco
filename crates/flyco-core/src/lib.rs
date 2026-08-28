@@ -9,6 +9,7 @@
 //! It compiles on `wasm32-unknown-unknown` (the Cloudflare Worker) and on
 //! native targets (the daemon), and performs no I/O.
 
+pub mod approval;
 pub mod auth;
 pub mod budget;
 pub mod harness;
@@ -17,19 +18,30 @@ pub mod machine;
 pub mod memory;
 pub mod money;
 pub mod problem;
+pub mod repo;
 pub mod session;
 pub mod wire;
 
-pub use auth::{ApiKeySummary, AuthorizeUrl, CreateApiKey, CreatedApiKey, CurrentUser};
-pub use budget::{BudgetConfig, BudgetSignal, BudgetStage, BudgetState, SpendEvent, SpendKind};
+pub use approval::{ApprovalState, ApprovalView, DecideApproval};
+pub use auth::{
+    ApiKeySummary, AuthorizeUrl, CreateApiKey, CreatedApiKey, CurrentUser, SESSION_CAP_DEFAULT,
+    SESSION_CAP_MAX, SESSION_CAP_MIN, UpdateMe,
+};
+pub use budget::{
+    BudgetConfig, BudgetSignal, BudgetStage, BudgetState, BudgetView, SpendEvent, SpendKind,
+};
 pub use harness::{Availability, Feature, HarnessEvent, HarnessKind, UsageReport};
 pub use id::{
-    ApiKeyId, ApprovalId, BudgetId, Id, MachineId, MemoryNodeId, SessionId, SkillId, UserId,
+    ApiKeyId, ApprovalId, BudgetId, Id, MachineId, MemoryNodeId, SessionId, SkillId, SpendEventId,
+    UserId,
 };
 pub use machine::{CloudProviderKind, MachineCatalogEntry, MachineSpec, MachineState, OsFamily};
 pub use money::Usd;
 pub use problem::Problem;
-pub use session::{SessionState, SessionTransitionError};
+pub use repo::RepoSlug;
+pub use session::{
+    CreateSession, SessionDetail, SessionState, SessionSummary, SessionTransitionError,
+};
 
 /// Version of the daemon⇄control-plane wire protocol.
 ///
