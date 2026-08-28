@@ -1,0 +1,589 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Flyco control plane",
+    "version": "v1"
+  },
+  "paths": {
+    "/v1/api-keys": {
+      "get": {
+        "summary": "Lists the caller's API keys, without their secrets.",
+        "description": "Lists the caller's API keys, without their secrets.",
+        "operationId": "flyco_api::app::list_api_keys",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Mints an API key, returning the plaintext key exactly once.",
+        "description": "Mints an API key, returning the plaintext key exactly once.",
+        "operationId": "flyco_api::app::create_api_key",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/api-keys`.",
+                "required": [
+                  "label"
+                ],
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "description": "Human-readable name, shown in the key list so a key can be recognised\nbefore it is revoked."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/api-keys/{id}": {
+      "delete": {
+        "summary": "Revokes one of the caller's API keys.",
+        "description": "Revokes one of the caller's API keys.",
+        "operationId": "flyco_api::app::revoke_api_key",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/approvals": {
+      "get": {
+        "summary": "Lists approvals raised against the caller's sessions, newest first.",
+        "description": "Lists approvals raised against the caller's sessions, newest first.",
+        "operationId": "flyco_api::app::list_approvals",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/Uuid",
+                  "description": "Only approvals raised by this session."
+                }
+              ]
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/ApprovalState",
+                  "description": "Only approvals in this state — `pending` is the useful one."
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/approvals/{id}/decision": {
+      "post": {
+        "summary": "Records the caller's decision on a pending approval.",
+        "description": "Records the caller's decision on a pending approval.",
+        "operationId": "flyco_api::app::decide_approval",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/approvals/{id}/decision`.",
+                "required": [
+                  "decision"
+                ],
+                "properties": {
+                  "decision": {
+                    "$ref": "#/components/schemas/ApprovalDecision",
+                    "description": "What the user decided."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/auth/github/callback": {
+      "get": {
+        "summary": "oauth::callback<flyco_api::github::ZenwaveGithub>",
+        "operationId": "oauth::callback<flyco_api::github::ZenwaveGithub>",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/auth/github/start": {
+      "post": {
+        "summary": "Begins a GitHub sign-in, returning the URL to send the browser to.",
+        "description": "Begins a GitHub sign-in, returning the URL to send the browser to.",
+        "operationId": "flyco_api::oauth::start",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/healthz": {
+      "get": {
+        "summary": "Reports that the control plane is up, and which wire protocol version it speaks to session daemons.",
+        "description": "Reports that the control plane is up, and which wire protocol version it\nspeaks to session daemons.",
+        "operationId": "flyco_api::app::healthz",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Health probe response.",
+                  "required": [
+                    "wire_protocol_version"
+                  ],
+                  "properties": {
+                    "wire_protocol_version": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "Wire protocol version this control plane speaks to daemons.",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "summary": "Describes the account behind the presented credential.",
+        "description": "Describes the account behind the presented credential.",
+        "operationId": "flyco_api::app::me",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The authenticated caller behind a request.\n\nProduced by the control plane's authenticator from either credential\nshape, and returned verbatim by `GET /v1/me`.",
+                  "required": [
+                    "id",
+                    "login",
+                    "session_cap"
+                  ],
+                  "properties": {
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "The flyco user this request acts as."
+                    },
+                    "login": {
+                      "type": "string",
+                      "description": "The caller's GitHub login, cached at sign-in."
+                    },
+                    "session_cap": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "How many sessions this user may hold at once, counting everything\nthat is not archived.",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Updates the caller's account settings.",
+        "description": "Updates the caller's account settings.",
+        "operationId": "flyco_api::app::update_me",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `PATCH /v1/me`.\n\nEvery field is optional; an omitted field is left as it is.",
+                "properties": {
+                  "session_cap": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "int32",
+                    "description": "New concurrent-session cap, within\n[`SESSION_CAP_MIN`]..=[`SESSION_CAP_MAX`].",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/sessions": {
+      "get": {
+        "summary": "Lists the caller's sessions, newest first.",
+        "description": "Lists the caller's sessions, newest first.",
+        "operationId": "flyco_api::app::list_sessions",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Starts a session: reserves the budget and puts the session in the provisioning queue. No machine exists yet.",
+        "description": "Starts a session: reserves the budget and puts the session in the\nprovisioning queue. No machine exists yet.",
+        "operationId": "flyco_api::app::create_session",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions`.",
+                "required": [
+                  "harness",
+                  "repo",
+                  "budget_limit"
+                ],
+                "properties": {
+                  "budget_limit": {
+                    "$ref": "#/components/schemas/Usd",
+                    "description": "Spending limit for the whole session."
+                  },
+                  "harness": {
+                    "$ref": "#/components/schemas/HarnessKind",
+                    "description": "Which coding harness drives the session."
+                  },
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository to work in, `owner/name`. Untyped here because it is\nuntrusted input; the control plane parses it into a\n[`RepoSlug`](crate::repo::RepoSlug) and rejects anything else."
+                  },
+                  "spot": {
+                    "type": "boolean",
+                    "description": "Whether to use interruptible spot capacity. Spot is the default\nbecause it is the cheaper option and flyco handles eviction."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}": {
+      "get": {
+        "summary": "Describes one of the caller's sessions, including its budget.",
+        "description": "Describes one of the caller's sessions, including its budget.",
+        "operationId": "flyco_api::app::get_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/archive": {
+      "post": {
+        "summary": "Archives a session, releasing its execution environment for good.",
+        "description": "Archives a session, releasing its execution environment for good.",
+        "operationId": "flyco_api::app::archive_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/budget": {
+      "get": {
+        "summary": "Reports a session's budget, recomputed from its spend ledger.",
+        "description": "Reports a session's budget, recomputed from its spend ledger.",
+        "operationId": "flyco_api::app::get_session_budget",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApprovalDecision": {
+        "type": "string",
+        "description": "The user's decision on an approval.",
+        "enum": [
+          "approved",
+          "denied"
+        ]
+      },
+      "ApprovalFilter": {
+        "type": "object",
+        "description": "Narrows a listing of approvals.",
+        "properties": {
+          "session": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Uuid",
+                "description": "Only approvals raised by this session."
+              }
+            ]
+          },
+          "state": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ApprovalState",
+                "description": "Only approvals in this state — `pending` is the useful one."
+              }
+            ]
+          }
+        }
+      },
+      "ApprovalState": {
+        "type": "string",
+        "description": "Where an approval is in its short life.",
+        "enum": [
+          "pending",
+          "approved",
+          "denied"
+        ]
+      },
+      "CreateApiKey": {
+        "type": "object",
+        "description": "Request body of `POST /v1/api-keys`.",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Human-readable name, shown in the key list so a key can be recognised\nbefore it is revoked."
+          }
+        }
+      },
+      "CreateSession": {
+        "type": "object",
+        "description": "Request body of `POST /v1/sessions`.",
+        "required": [
+          "harness",
+          "repo",
+          "budget_limit"
+        ],
+        "properties": {
+          "budget_limit": {
+            "$ref": "#/components/schemas/Usd",
+            "description": "Spending limit for the whole session."
+          },
+          "harness": {
+            "$ref": "#/components/schemas/HarnessKind",
+            "description": "Which coding harness drives the session."
+          },
+          "repo": {
+            "type": "string",
+            "description": "Repository to work in, `owner/name`. Untyped here because it is\nuntrusted input; the control plane parses it into a\n[`RepoSlug`](crate::repo::RepoSlug) and rejects anything else."
+          },
+          "spot": {
+            "type": "boolean",
+            "description": "Whether to use interruptible spot capacity. Spot is the default\nbecause it is the cheaper option and flyco handles eviction."
+          }
+        }
+      },
+      "CurrentUser": {
+        "type": "object",
+        "description": "The authenticated caller behind a request.\n\nProduced by the control plane's authenticator from either credential\nshape, and returned verbatim by `GET /v1/me`.",
+        "required": [
+          "id",
+          "login",
+          "session_cap"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "The flyco user this request acts as."
+          },
+          "login": {
+            "type": "string",
+            "description": "The caller's GitHub login, cached at sign-in."
+          },
+          "session_cap": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many sessions this user may hold at once, counting everything\nthat is not archived.",
+            "minimum": 0
+          }
+        }
+      },
+      "DecideApproval": {
+        "type": "object",
+        "description": "Request body of `POST /v1/approvals/{id}/decision`.",
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalDecision",
+            "description": "What the user decided."
+          }
+        }
+      },
+      "HarnessKind": {
+        "type": "string",
+        "description": "The coding harness driving a session. Flyco supports exactly these two\nand never builds its own.",
+        "enum": [
+          "claude_code",
+          "codex"
+        ]
+      },
+      "Health": {
+        "type": "object",
+        "description": "Health probe response.",
+        "required": [
+          "wire_protocol_version"
+        ],
+        "properties": {
+          "wire_protocol_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Wire protocol version this control plane speaks to daemons.",
+            "minimum": 0
+          }
+        }
+      },
+      "UpdateMe": {
+        "type": "object",
+        "description": "Request body of `PATCH /v1/me`.\n\nEvery field is optional; an omitted field is left as it is.",
+        "properties": {
+          "session_cap": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "New concurrent-session cap, within\n[`SESSION_CAP_MIN`]..=[`SESSION_CAP_MAX`].",
+            "minimum": 0
+          }
+        }
+      },
+      "Usd": {
+        "type": "integer",
+        "format": "int64",
+        "description": "Amount in integer microdollars (1 USD = 1e6)",
+        "minimum": 0
+      },
+      "Uuid": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  }
+}

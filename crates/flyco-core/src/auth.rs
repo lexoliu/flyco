@@ -12,6 +12,15 @@ use utoipa::ToSchema;
 
 use crate::id::{ApiKeyId, UserId};
 
+/// Fewest concurrent sessions a user may be limited to.
+pub const SESSION_CAP_MIN: u32 = 1;
+
+/// Most concurrent sessions a user may be allowed.
+pub const SESSION_CAP_MAX: u32 = 100;
+
+/// Concurrent-session cap a new account starts with.
+pub const SESSION_CAP_DEFAULT: u32 = 5;
+
 /// The authenticated caller behind a request.
 ///
 /// Produced by the control plane's authenticator from either credential
@@ -22,6 +31,19 @@ pub struct CurrentUser {
     pub id: UserId,
     /// The caller's GitHub login, cached at sign-in.
     pub login: String,
+    /// How many sessions this user may hold at once, counting everything
+    /// that is not archived.
+    pub session_cap: u32,
+}
+
+/// Request body of `PATCH /v1/me`.
+///
+/// Every field is optional; an omitted field is left as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct UpdateMe {
+    /// New concurrent-session cap, within
+    /// [`SESSION_CAP_MIN`]..=[`SESSION_CAP_MAX`].
+    pub session_cap: Option<u32>,
 }
 
 /// Where the browser must be sent to begin a GitHub OAuth code flow.
