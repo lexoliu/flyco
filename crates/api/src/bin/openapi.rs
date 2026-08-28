@@ -10,17 +10,7 @@
 fn main() {
     use std::io::Write as _;
 
-    let document = flyco_api::openapi_document();
-    assert!(
-        document.is_enabled(),
-        "OpenAPI collection is compiled out; build this binary in debug on a native target"
-    );
-
-    let mut spec = document.to_utoipa_spec();
-    // Skyzen stamps its own crate name and version into `info`; the document
-    // describes flyco's API, whose version is the `/v1` prefix. Using the
-    // crate version instead would churn the checked-in file on every release.
-    spec.info = utoipa::openapi::Info::new("Flyco control plane", "v1");
+    let spec = flyco_api::openapi_document();
 
     let mut json = serde_json::to_vec_pretty(&spec).expect("the OpenAPI document serializes");
     json.push(b'\n');

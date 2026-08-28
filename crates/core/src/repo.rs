@@ -90,6 +90,20 @@ impl fmt::Display for RepoSlug {
     }
 }
 
+/// The working tree of a session's checkout, as `GET
+/// /v1/sessions/{id}/repo-status` reports it.
+///
+/// Dirtiness is load-bearing rather than informational: an agent may not
+/// stop while the tree is dirty, and archiving a dirty session warns the
+/// user before the disk is released. The UI needs the same fact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RepoStatus {
+    /// Whether the working tree has changes that are not committed.
+    pub dirty: bool,
+    /// `git status --short`, as the daemon last read it. Empty when clean.
+    pub summary: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{RepoSlug, RepoSlugError};

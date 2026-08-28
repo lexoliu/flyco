@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::budget::BudgetView;
-use crate::harness::HarnessKind;
+use crate::harness::{HarnessKind, UsageReport};
 use crate::id::SessionId;
 use crate::money::Usd;
 use crate::repo::RepoSlug;
@@ -116,6 +116,46 @@ pub struct SessionDetail {
     pub summary: SessionSummary,
     /// Budget accounting as of this request.
     pub budget: BudgetView,
+}
+
+/// Request body of `POST /v1/sessions/{id}/messages`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SendMessage {
+    /// What to say to the agent. A leading `!` is the terminal escape the
+    /// UI documents; the control plane forwards the text either way and the
+    /// daemon decides.
+    pub text: String,
+}
+
+/// One turn of a session, as the history list renders it.
+///
+/// Reconstructed from the R2 transcript rather than from a table: the
+/// transcript is what survives a machine, so a turn list built from
+/// anything else would disagree with the session a browser replays.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct TurnSummary {
+    /// Harness-native turn identifier, which is what the transcript keys on.
+    pub turn_id: String,
+    /// When the turn started, seconds since the Unix epoch.
+    pub started_at_unix: u64,
+    /// When it finished, if it has.
+    pub completed_at_unix: Option<u64>,
+    /// The opening of the user message that began the turn, for the list.
+    pub prompt_excerpt: String,
+    /// Token accounting after the turn, when it completed.
+    pub usage: Option<UsageReport>,
+}
+
+/// One page of `GET /v1/sessions/{id}/turns`.
+///
+/// The cursor is opaque: it encodes a position in the transcript's batch
+/// sequence, and a client that stores it must hand it back unread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct TurnPage {
+    /// The turns, oldest first.
+    pub turns: Vec<TurnSummary>,
+    /// Cursor to pass as `cursor` for the next page, or `None` at the end.
+    pub next_cursor: Option<String>,
 }
 
 #[cfg(test)]

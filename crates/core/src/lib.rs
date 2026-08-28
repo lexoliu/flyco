@@ -9,19 +9,28 @@
 //! It compiles on `wasm32-unknown-unknown` (the Cloudflare Worker) and on
 //! native targets (the daemon), and performs no I/O.
 
+pub mod agents;
 pub mod approval;
 pub mod auth;
 pub mod budget;
+pub mod env;
+pub mod github;
 pub mod harness;
 pub mod id;
 pub mod machine;
+pub mod mcp;
 pub mod memory;
 pub mod money;
 pub mod problem;
+pub mod providers;
+pub mod push;
 pub mod repo;
 pub mod session;
+pub mod skills;
+pub mod usage;
 pub mod wire;
 
+pub use agents::{AgentsDocument, UpdateAgentsDocument};
 pub use approval::{ApprovalState, ApprovalView, DecideApproval};
 pub use auth::{
     ApiKeySummary, AuthorizeUrl, CreateApiKey, CreatedApiKey, CurrentUser, DAEMON_TOKEN_PREFIX,
@@ -30,18 +39,35 @@ pub use auth::{
 pub use budget::{
     BudgetConfig, BudgetSignal, BudgetStage, BudgetState, BudgetView, SpendEvent, SpendKind,
 };
-pub use harness::{Availability, ContextWindow, Feature, HarnessEvent, HarnessKind, UsageReport};
-pub use id::{
-    ApiKeyId, ApprovalId, BudgetId, Id, MachineId, MemoryNodeId, SessionId, SkillId, SpendEventId,
-    UserId,
+pub use env::{EnvDocument, EnvEntry, NETWORK_CONTROL_WARNING, UpdateEnv};
+pub use github::RepoSummary;
+pub use harness::{
+    Availability, ContextWindow, Feature, HarnessAccountView, HarnessEvent, HarnessKind,
+    UsageReport,
 };
-pub use machine::{CloudProviderKind, MachineCatalogEntry, MachineSpec, MachineState, OsFamily};
+pub use id::{
+    ApiKeyId, ApprovalId, BudgetId, HarnessAccountId, Id, MachineId, McpServerId, MemoryNodeId,
+    ProviderAccountId, PushSubscriptionId, SessionId, SkillId, SpendEventId, UserId,
+};
+pub use machine::{
+    CloudProviderKind, MachineCatalogEntry, MachineSpec, MachineState, MachineView, OsFamily,
+    ResizeMachine,
+};
+pub use mcp::{HeaderEntry, McpServerConfig, McpServerView, UpsertMcpServer};
+pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};
 pub use money::Usd;
 pub use problem::Problem;
-pub use repo::RepoSlug;
-pub use session::{
-    CreateSession, SessionDetail, SessionState, SessionSummary, SessionTransitionError,
+pub use providers::{
+    LinkProvider, ProviderAccountView, ProviderBonusHint, ProviderCredentials, QuickstartAnswers,
 };
+pub use push::{PushKeys, PushSubscription, PushSubscriptionView, VapidPublicKey};
+pub use repo::{RepoSlug, RepoStatus};
+pub use session::{
+    CreateSession, SendMessage, SessionDetail, SessionState, SessionSummary,
+    SessionTransitionError, TurnPage, TurnSummary,
+};
+pub use skills::{SkillScope, SkillView};
+pub use usage::{CloudUsageView, LlmUsageView};
 pub use wire::{ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl};
 
 /// Version of the daemon⇄control-plane wire protocol.
