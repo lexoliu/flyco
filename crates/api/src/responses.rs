@@ -216,6 +216,10 @@ pub const DECLARED: &[(&str, Success)] = &[
         Success::Ok(Payload::One("EnvDocument")),
     ),
     (
+        "flyco_api::app::raise_approval",
+        Success::Created(Payload::One("ApprovalView")),
+    ),
+    (
         "flyco_api::app::resume_session",
         Success::Ok(Payload::One("SessionDetail")),
     ),
@@ -365,11 +369,11 @@ pub const DECLARED: &[(&str, Success)] = &[
 /// * `app::open_daemon_relay`, `app::open_client_relay` — the success of a
 ///   relay route is a `101` with a WebSocket attached, which the response
 ///   model has no way to describe.
-/// * `app::raise_approval`, `app::put_transcript_batch`,
-///   `app::get_transcript` — daemon-scoped routes, authenticated by a
-///   session's `fd_` token. They are flycod's contract, not the browser
-///   client's, and `get_transcript` answers newline-delimited JSON rather
-///   than a document.
+/// * `app::put_transcript_batch`, `app::get_transcript` — daemon-scoped
+///   routes whose bodies are raw bytes: a transcript batch is
+///   newline-delimited JSON, not a document the response model can name.
+///   (`app::raise_approval` is daemon-scoped too but answers an ordinary
+///   `ApprovalView`, so it is annotated and declared like the rest.)
 /// * `oauth::callback` — generic over the GitHub client, and
 ///   `#[skyzen::openapi]` cannot be applied to a generic handler: the macro
 ///   emits module-level items naming every argument type.
@@ -381,7 +385,6 @@ pub const UNDECLARED: &[&str] = &[
     "app::open_client_relay",
     "app::open_daemon_relay",
     "app::put_transcript_batch",
-    "app::raise_approval",
     "oauth::callback<flyco_api::github::ZenwaveGithub>",
 ];
 

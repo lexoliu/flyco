@@ -4,6 +4,7 @@
 //! `testing` fixtures without exposing them in the public API.
 
 mod contract;
+mod memory;
 mod relay;
 mod responses;
 mod room;

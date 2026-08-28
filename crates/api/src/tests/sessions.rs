@@ -3,8 +3,8 @@
 use flyco_core::wire::{ApprovalDecision, ApprovalPayload};
 use flyco_core::{
     ApprovalState, ApprovalView, BudgetStage, CreateSession, CurrentUser, DecideApproval,
-    HarnessKind, Problem, SessionDetail, SessionId, SessionState, SessionSummary, SpendKind,
-    UpdateMe, Usd,
+    EnvDocument, EnvEntry, HarnessKind, Problem, SessionDetail, SessionId, SessionState,
+    SessionSummary, SpendKind, UpdateEnv, UpdateMe, Usd,
 };
 use skyzen::routing::Router;
 use skyzen_services::{Db, Kv};
@@ -609,4 +609,195 @@ async fn ownership_is_answered_per_user(db: Db) {
             .await
             .expect("ownership check")
     );
+}
+
+// ── A session's `.env` ──
+
+const SECRET: &str = "gho_a-token-nobody-should-see";
+
+fn env(entries: &[(&str, &str)]) -> UpdateEnv {
+    UpdateEnv {
+        entries: entries
+            .iter()
+            .map(|(key, value)| EnvEntry {
+                key: (*key).to_owned(),
+                value: (*value).to_owned(),
+            })
+            .collect(),
+    }
+}
+
+#[skyzen::test]
+async fn an_unconfigured_session_has_an_empty_environment(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let client = ctx.client(router);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = create(&client, &caller, &open(REPO, 10)).await.summary.id;
+
+    let response = client
+        .get(&format!("/v1/sessions/{session}/env"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    response.assert_status(200);
+    let document: EnvDocument = response.json();
+    assert_eq!(document.entries, Vec::new());
+    assert_eq!(document.warning, flyco_core::NETWORK_CONTROL_WARNING);
+}
+
+#[skyzen::test]
+async fn a_replaced_environment_reads_back_in_the_order_it_was_given(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let router = migrated_router(&db).await;
+    let client = ctx.client(router);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = create(&client, &caller, &open(REPO, 10)).await.summary.id;
+
+    let written = client
+        .put(&format!("/v1/sessions/{session}/env"))
+        .bearer(&caller.token)
+        .json(&env(&[
+            ("GITHUB_TOKEN", SECRET),
+            ("DATABASE_URL", "sqlite://x"),
+        ]))
+        .send()
+        .await;
+    written.assert_status(200);
+    assert_eq!(
+        written.json::<EnvDocument>().warning,
+        flyco_core::NETWORK_CONTROL_WARNING,
+        "a write answers with the same caveat a read does"
+    );
+
+    let read = client
+        .get(&format!("/v1/sessions/{session}/env"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    read.assert_status(200);
+    let document: EnvDocument = read.json();
+    assert_eq!(
+        document
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["GITHUB_TOKEN", "DATABASE_URL"]
+    );
+    assert_eq!(document.entries[0].value, SECRET);
+
+    // A second write replaces the document rather than merging into it.
+    client
+        .put(&format!("/v1/sessions/{session}/env"))
+        .bearer(&caller.token)
+        .json(&env(&[("ONLY", "one")]))
+        .send()
+        .await
+        .assert_status(200);
+    let after = client
+        .get(&format!("/v1/sessions/{session}/env"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    assert_eq!(after.json::<EnvDocument>().entries.len(), 1);
+}
+
+#[skyzen::test]
+async fn a_stored_environment_is_sealed_at_rest(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let client = ctx.client(router);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = create(&client, &caller, &open(REPO, 10)).await.summary.id;
+
+    client
+        .put(&format!("/v1/sessions/{session}/env"))
+        .bearer(&caller.token)
+        .json(&env(&[("GITHUB_TOKEN", SECRET)]))
+        .send()
+        .await
+        .assert_status(200);
+
+    let row: std::collections::BTreeMap<String, String> = db
+        .query("SELECT entries_enc FROM session_env WHERE session_id = ?")
+        .bind(session.to_string())
+        .fetch_one()
+        .await
+        .expect("read the stored environment");
+    let stored = &row["entries_enc"];
+    assert!(!stored.contains(SECRET), "the value is stored in the clear");
+    assert!(
+        !stored.contains("GITHUB_TOKEN"),
+        "the name is stored in the clear"
+    );
+}
+
+#[skyzen::test]
+async fn a_name_no_shell_can_export_is_unprocessable(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let client = ctx.client(router);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = create(&client, &caller, &open(REPO, 10)).await.summary.id;
+
+    let refused = client
+        .put(&format!("/v1/sessions/{session}/env"))
+        .bearer(&caller.token)
+        .json(&env(&[("NOT A NAME", "x")]))
+        .send()
+        .await;
+    refused.assert_status(422);
+    assert_eq!(
+        refused.json::<Problem>().kind,
+        problem_kind("invalid-env-key")
+    );
+
+    // Nothing partial was written: the whole document is refused.
+    let read = client
+        .get(&format!("/v1/sessions/{session}/env"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    assert_eq!(
+        read.json::<EnvDocument>().entries,
+        Vec::new(),
+        "nothing partial was written"
+    );
+}
+
+#[skyzen::test]
+async fn another_users_environment_is_not_found(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let client = ctx.client(router);
+    let owner = sign_in(&kv, seed_user(&db).await).await;
+    let stranger = sign_in(&kv, seed_other_user(&db).await).await;
+    let session = create(&client, &owner, &open(REPO, 10)).await.summary.id;
+
+    client
+        .put(&format!("/v1/sessions/{session}/env"))
+        .bearer(&owner.token)
+        .json(&env(&[("GITHUB_TOKEN", SECRET)]))
+        .send()
+        .await
+        .assert_status(200);
+
+    let read = client
+        .get(&format!("/v1/sessions/{session}/env"))
+        .bearer(&stranger.token)
+        .send()
+        .await;
+    read.assert_status(404);
+    assert_eq!(
+        read.json::<Problem>().kind,
+        problem_kind("session-not-found")
+    );
+
+    client
+        .put(&format!("/v1/sessions/{session}/env"))
+        .bearer(&stranger.token)
+        .json(&env(&[("MINE", "now")]))
+        .send()
+        .await
+        .assert_status(404);
 }
