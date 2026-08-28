@@ -51,9 +51,13 @@ Designed against the published `v0.1.2` tag (the skyzen repo's dev branch is far
 
 - SPA embedded via `EmbeddedStaticDir` (no CF Assets support at 0.1.2).
 - `openapi.json` exported by a native debug run (`linkme` collection is debug+native only); the TS client is generated from that artifact.
-- D1 migrations via `wrangler d1 migrations`; KV/D1 resource IDs provisioned with wrangler and pasted into `Skyzen.toml`.
+- D1 migrations via `wrangler d1 migrations`; KV/D1 resource IDs provisioned with wrangler and pasted into `crates/flyco-api/Skyzen.toml` (the manifest must sit next to the crate's `Cargo.toml` — that is where `#[skyzen::main]` looks for it).
+- `[[database]]` is **not** declared: skyzen 0.1.2's database codegen expands to `if <bool> { WithMiddleware<E, Db> } else { E }`, whose arms have different types, so any declared database fails to compile. `flyco_api::database` opens D1 (Worker) or SQLite (native) by hand and the router injects it. The KV namespace *is* a `[[service]]`, which works.
+- `[native.service.auth_kv] backend = "memory"` resolves to `skyzen_test::mock::InMemoryKv`, so `skyzen-test` is a dependency of flyco-api's native target — the Worker build never sees it.
+- `skyzen-cloudflare` pulls the official `worker` crate, which pulls `tokio` into the wasm dependency graph. Nothing in flyco uses it.
+- `Kv` has no TTL parameter at 0.1.2, so `flyco_api::expiring` stores an explicit deadline alongside every value and treats an expired read as a miss. Cloudflare KV's native TTL is not relied on.
 - `WebSocketUpgrade::on_upgrade` on wasm (no `.ws()` shorthand); DO relay uses `HibernationWebSocketUpgrade` + tags.
-- No built-in sessions/OAuth/JWT on wasm: GitHub OAuth code flow via zenwave, opaque tokens in KV behind a custom `Authenticator`.
+- No built-in sessions/OAuth/JWT on wasm: GitHub OAuth code flow via zenwave, opaque tokens in KV behind a custom `Authenticator`. `AuthMiddleware` injects the user as `State<CurrentUser>` (there is no `AuthUser<T>` extractor at 0.1.2).
 
 ## Auth
 

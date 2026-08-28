@@ -9,6 +9,7 @@
 //! It compiles on `wasm32-unknown-unknown` (the Cloudflare Worker) and on
 //! native targets (the daemon), and performs no I/O.
 
+pub mod auth;
 pub mod budget;
 pub mod harness;
 pub mod id;
@@ -18,9 +19,12 @@ pub mod money;
 pub mod session;
 pub mod wire;
 
+pub use auth::{ApiKeySummary, AuthorizeUrl, CreateApiKey, CreatedApiKey, CurrentUser};
 pub use budget::{BudgetConfig, BudgetSignal, BudgetStage, BudgetState, SpendEvent, SpendKind};
 pub use harness::{Availability, Feature, HarnessEvent, HarnessKind, UsageReport};
-pub use id::{ApprovalId, BudgetId, Id, MachineId, MemoryNodeId, SessionId, SkillId, UserId};
+pub use id::{
+    ApiKeyId, ApprovalId, BudgetId, Id, MachineId, MemoryNodeId, SessionId, SkillId, UserId,
+};
 pub use machine::{CloudProviderKind, MachineCatalogEntry, MachineSpec, MachineState, OsFamily};
 pub use money::Usd;
 pub use session::{SessionState, SessionTransitionError};
