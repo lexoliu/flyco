@@ -13,13 +13,38 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 flyco-core.workspace = true
 skyzen.workspace = true
+skyzen-services.workspace = true
+zenwave.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
-[dev-dependencies]
+aes-gcm.workspace = true
+base64.workspace = true
+cookie.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+sha2.workspace = true
+url.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
+skyzen-cloudflare.workspace = true
+
+# The native binary exists for `skyzen dev` and the `openapi.json` export. Its
+# portable-service wiring in `Skyzen.toml` resolves to skyzen's in-memory KV
+# (which lives in `skyzen-test`) and a local SQLite file, so both crates are
+# real dependencies of the native build — and of the native build only.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+skyzen-services = { workspace = true, features = [
+    "sqlite",
+    "runtime-async-std-rustls",
+] }
 skyzen-test.workspace = true
-skyzen-services.workspace = true
+
+[dev-dependencies]
+skyzen-test = { workspace = true, features = ["runtime-tokio-rustls"] }
 
 [lints]
 workspace = true

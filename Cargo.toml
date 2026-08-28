@@ -27,6 +27,16 @@ uuid = { version = "1", default-features = false, features = ["v4", "serde", "js
 utoipa = { version = "5.4", default-features = false, features = ["macros"] }
 futures-core = "0.3"
 
+# Auth stack: pure-Rust crypto and encodings, all verified on wasm32.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+base64 = "0.22"
+cookie = { version = "0.18", features = ["percent-encode"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
+hex = "0.4"
+js-sys = "0.3"
+sha2 = { version = "0.10", default-features = false }
+url = "2"
+
 [workspace.lints.rust]
 missing_docs = "warn"
 missing_debug_implementations = "warn"
