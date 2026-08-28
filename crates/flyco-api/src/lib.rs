@@ -17,7 +17,9 @@ pub mod database;
 pub mod error;
 pub mod expiring;
 pub mod github;
+pub mod middleware;
 pub mod oauth;
+pub mod problem;
 pub mod session;
 pub mod users;
 
