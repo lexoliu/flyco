@@ -90,11 +90,8 @@ export const sidecarCommandSchema = z.discriminatedUnion("type", [
 /** An event the sidecar writes to flycod. */
 export const sidecarEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("ready"), sdk_version: z.string() }),
-  z.object({
-    type: z.literal("started"),
-    session_id: z.string(),
-    capabilities: z.array(z.string()),
-  }),
+  z.object({ type: z.literal("started"), session_id: z.string() }),
+  z.object({ type: z.literal("capabilities"), capabilities: z.array(z.string()) }),
   z.object({ type: z.literal("sdk_message"), message: jsonValue }),
   z.object({
     type: z.literal("approval_request"),

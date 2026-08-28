@@ -29,9 +29,10 @@ const COMMAND_TAGS: [&str; 6] = [
 ];
 
 /// Every `type` tag [`SidecarEvent`] can serialize under.
-const EVENT_TAGS: [&str; 6] = [
+const EVENT_TAGS: [&str; 7] = [
     "ready",
     "started",
+    "capabilities",
     "sdk_message",
     "approval_request",
     "store_request",

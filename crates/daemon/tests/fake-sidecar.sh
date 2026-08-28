@@ -19,7 +19,9 @@ answered_load=0
 while IFS= read -r line; do
 	case "$line" in
 	*'"type":"start"'*)
-		say '{"type":"started","session_id":"fake-session","capabilities":["interrupt_receipt_v1"]}'
+		# The session is identified as soon as the query is constructed —
+		# before any user message. Capabilities are NOT known yet.
+		say '{"type":"started","session_id":"fake-session"}'
 		# Resume asks the store for the transcript before anything else.
 		say '{"type":"store_request","id":1,"op":{"load":{"key":{"project_key":"fake-project","session_id":"fake-session"}}}}'
 		;;
@@ -30,6 +32,9 @@ while IFS= read -r line; do
 		fi
 		;;
 	*'"type":"user_message"'*)
+		# `system/init` rides the first turn, so this is the earliest the
+		# CLI can name what it supports.
+		say '{"type":"capabilities","capabilities":["interrupt_receipt_v1"]}'
 		say '{"type":"sdk_message","message":{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}}}'
 		say '{"type":"approval_request","id":"3f2b7c18-9a4d-4e51-b0c6-7d8e1f2a3b4c","tool":"Bash","input":{"command":"echo hi"},"suggestions":null}'
 		;;

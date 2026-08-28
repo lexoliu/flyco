@@ -204,12 +204,27 @@ pub enum SidecarEvent {
         /// Version of the installed `@anthropic-ai/claude-agent-sdk`.
         sdk_version: String,
     },
-    /// The SDK reported `system/init`.
+    /// The session is identified and its CLI is warming.
+    ///
+    /// Emitted as soon as the SDK query is constructed — before any user
+    /// message — so the control plane can record the session and the UI can
+    /// go live without waiting for a turn. The id is the sidecar's own
+    /// (`Options.sessionId`) on a fresh session, and the resumed id
+    /// otherwise.
     Started {
         /// Harness-native session id, used to resume this session later.
         session_id: String,
-        /// Capability tokens advertised by this CLI build. Feature
-        /// detection reads this list and never a version string.
+    },
+    /// Capability tokens advertised by this CLI build.
+    ///
+    /// Feature detection reads this list and never a version string. It is
+    /// its own event because the Agent SDK only reports it on the
+    /// `system/init` stream frame, which the CLI emits at the start of a
+    /// turn — so it necessarily arrives after
+    /// [`SidecarEvent::Started`]. Emitted on every init frame; the newest
+    /// set wins.
+    Capabilities {
+        /// The capability tokens, as the CLI names them.
         capabilities: Vec<String>,
     },
     /// One SDK stream message, verbatim. Interpreted in
@@ -250,6 +265,7 @@ impl SidecarEvent {
         match self {
             Self::Ready { .. } => "ready",
             Self::Started { .. } => "started",
+            Self::Capabilities { .. } => "capabilities",
             Self::SdkMessage { .. } => "sdk_message",
             Self::ApprovalRequest { .. } => "approval_request",
             Self::StoreRequest { .. } => "store_request",
@@ -307,6 +323,24 @@ mod tests {
         .expect("serialize");
         assert_eq!(json["mode"], "api_key");
         assert_eq!(json["key"], "sk-test");
+    }
+
+    #[test]
+    fn capabilities_travel_separately_from_session_identity() {
+        // The two cannot share an event: the SDK reports a session's
+        // identity at construction and its capabilities only on the first
+        // turn's `system/init`.
+        let started = SidecarEvent::Started {
+            session_id: "9d0f4b1a".to_owned(),
+        };
+        let json = serde_json::to_value(&started).expect("serialize");
+        assert!(json.get("capabilities").is_none());
+
+        let capabilities = SidecarEvent::Capabilities {
+            capabilities: vec!["interrupt_receipt_v1".to_owned()],
+        };
+        let json = serde_json::to_value(&capabilities).expect("serialize");
+        assert_eq!(json["type"], "capabilities");
     }
 
     #[test]

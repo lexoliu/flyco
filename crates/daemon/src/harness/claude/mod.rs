@@ -18,6 +18,29 @@
 //! reader task turns the child's stdout into messages for the same task.
 //! There is no shared state and therefore no lock.
 //!
+//! # Session identity arrives early, capabilities arrive late
+//!
+//! These are two events, [`SessionOutput::Started`] and
+//! [`SessionOutput::Capabilities`], because the SDK reports them at two
+//! different times and nothing can pull them together.
+//!
+//! Constructing the `query` spawns the CLI and sends its `initialize`
+//! control request immediately, so the session is warm and identified
+//! before the user types — the sidecar picks the session UUID itself
+//! (`Options.sessionId`), or reuses the one being resumed. `Started` is
+//! emitted right there.
+//!
+//! The capability list is only ever on the `system/init` **stream** frame,
+//! which the CLI emits at the start of a *turn*: it does not exist at boot,
+//! the `initialize` control response does not carry it, and `reinitialize()`
+//! does not re-emit it (verified against 2.1.250 — the re-initialize pushes
+//! `background_tasks_changed` and nothing else). So capabilities cannot be
+//! known until the first turn runs, and **every consumer of them must
+//! tolerate "unknown yet"**: gate a feature only once a
+//! [`SessionOutput::Capabilities`] has named it, never treat the pre-first-turn
+//! silence as "this build supports nothing", and never substitute a version
+//! check. Later init frames may revise the set, so the newest one wins.
+//!
 //! [Claude Agent SDK]: https://docs.claude.com/en/api/agent-sdk/overview
 
 pub mod normalize;
@@ -178,6 +201,7 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
                 store: self.store,
                 normalizer: Normalizer::new(),
                 outputs,
+                capabilities: None,
                 stopped: false,
             }
             .run(inbox),
@@ -370,6 +394,9 @@ struct Driver<S> {
     store: S,
     normalizer: Normalizer,
     outputs: mpsc::Sender<SessionOutput>,
+    /// The most recent capability set the harness advertised, or `None`
+    /// while it has not reported one yet.
+    capabilities: Option<Vec<String>>,
     /// Whether [`Driver::stop`] has already reaped the child. The shutdown
     /// command reaps it to report the outcome, and the loop's exit path
     /// reaps whatever is left, so the two must not both wait.
@@ -470,23 +497,24 @@ impl<S: TranscriptStore> Driver<S> {
                 .await;
                 false
             }
-            SidecarEvent::Started {
-                session_id,
-                capabilities,
-            } => {
-                tracing::info!(
-                    session_id,
-                    ?capabilities,
-                    "the Claude Code session is running"
-                );
-                emit(
-                    &self.outputs,
-                    SessionOutput::Started {
-                        session_id,
-                        capabilities,
-                    },
-                )
-                .await
+            SidecarEvent::Started { session_id } => {
+                tracing::info!(session_id, "the Claude Code session is identified");
+                emit(&self.outputs, SessionOutput::Started { session_id }).await
+            }
+            SidecarEvent::Capabilities { capabilities } => {
+                // "Newest frame wins": a later `system/init` may revise the
+                // set, so the driver keeps the latest, not the first.
+                if self.capabilities.as_ref() == Some(&capabilities) {
+                    tracing::debug!("the harness re-advertised the same capabilities");
+                } else {
+                    tracing::info!(
+                        ?capabilities,
+                        previous = ?self.capabilities,
+                        "the harness advertised its capabilities"
+                    );
+                    self.capabilities = Some(capabilities.clone());
+                }
+                emit(&self.outputs, SessionOutput::Capabilities { capabilities }).await
             }
             SidecarEvent::SdkMessage { message } => {
                 for event in self.normalizer.normalize(&message) {
@@ -643,9 +671,8 @@ mod tests {
 
     #[test]
     fn events_round_trip_through_the_line_format() {
-        let event = SidecarEvent::Started {
-            session_id: "9d0f4b1a".to_owned(),
-            capabilities: vec!["canUseTool".to_owned()],
+        let event = SidecarEvent::Capabilities {
+            capabilities: vec!["interrupt_receipt_v1".to_owned()],
         };
         let line = serde_json::to_string(&event).expect("serialize");
         assert_eq!(parse_event(&line).expect("parse"), event);

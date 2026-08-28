@@ -6,7 +6,14 @@
 import { describe, expect, test } from "bun:test";
 
 import type { StartCommand } from "./protocol.ts";
-import { environment, lines, toWireKey, UserMessages } from "./sidecar.ts";
+import {
+  environment,
+  lines,
+  sessionIdFor,
+  sessionOptions,
+  toWireKey,
+  UserMessages,
+} from "./sidecar.ts";
 
 /** A stream of the given chunks, split wherever the caller split them. */
 function streamOf(chunks: string[]): ReadableStream<Uint8Array> {
@@ -157,5 +164,54 @@ describe("streaming input", () => {
     const pending = stream.next();
     messages.close();
     expect((await pending).done).toBe(true);
+  });
+});
+
+describe("session identity", () => {
+  test("a fresh session is given an id before the CLI says anything", () => {
+    const id = sessionIdFor(start());
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(sessionIdFor(start())).not.toBe(id);
+  });
+
+  test("a resumed session keeps the id it is resuming", () => {
+    const resumed = "9d0f4b1a-3b7e-4a3e-9e1a-4c2f8b6d7a10";
+    expect(sessionIdFor(start({ resume_session_id: resumed }))).toBe(resumed);
+  });
+});
+
+describe("session options", () => {
+  const callbacks = {};
+
+  test("a fresh session hands the chosen id to the SDK and does not resume", () => {
+    const options = sessionOptions(start(), "chosen-id", callbacks);
+    expect(options.sessionId).toBe("chosen-id");
+    expect(options.resume).toBeUndefined();
+  });
+
+  test("a resumed session sets resume and never sessionId", () => {
+    // The SDK rejects a chosen id alongside a resume unless the session is
+    // being forked, so exactly one of the two is ever set.
+    const resumed = "9d0f4b1a-3b7e-4a3e-9e1a-4c2f8b6d7a10";
+    const options = sessionOptions(start({ resume_session_id: resumed }), resumed, callbacks);
+    expect(options.resume).toBe(resumed);
+    expect(options.sessionId).toBeUndefined();
+  });
+
+  test("partial messages are always on, because deltas are flyco's only text source", () => {
+    expect(sessionOptions(start(), "id", callbacks).includePartialMessages).toBe(true);
+  });
+
+  test("an omitted model leaves the CLI's own default in place", () => {
+    expect(sessionOptions(start(), "id", callbacks).model).toBeUndefined();
+    expect(sessionOptions(start({ model: "claude-sonnet-4-5-20250929" }), "id", callbacks).model).toBe(
+      "claude-sonnet-4-5-20250929",
+    );
+  });
+
+  test("the permission mode and cwd are passed through unchanged", () => {
+    const options = sessionOptions(start({ permission_mode: "acceptEdits" }), "id", callbacks);
+    expect(options.permissionMode).toBe("acceptEdits");
+    expect(options.cwd).toBe("/tmp/flycod-dev/work");
   });
 });

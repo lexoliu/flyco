@@ -7,6 +7,12 @@
  * process owns one SDK session and does nothing else — every decision about
  * what a message *means* is made in Rust. Its whole job is:
  *
+ * - announce the session (`started`) the moment the query is constructed —
+ *   the CLI is spawned and handshaking by then, so flyco has a warm,
+ *   identified session before the user types,
+ * - report the CLI's capability list (`capabilities`) from every
+ *   `system/init` frame, which is the only place it appears and therefore
+ *   only from the first turn onward,
  * - turn flycod's `user_message` commands into a streaming-input generator,
  * - forward every SDK message out verbatim as `sdk_message`,
  * - park `canUseTool` on flycod until an `approval_decision` arrives,
@@ -212,6 +218,45 @@ export function environment(command: StartCommand): NonNullable<Options["env"]> 
   return env;
 }
 
+/**
+ * The session's id, known before the CLI says anything.
+ *
+ * A fresh session gets an id the sidecar mints and hands to the SDK, so
+ * flyco can record and address the session without waiting for a turn; a
+ * resumed session already has one.
+ */
+export function sessionIdFor(command: StartCommand): string {
+  return command.resume_session_id ?? crypto.randomUUID();
+}
+
+/**
+ * The SDK options for one session.
+ *
+ * `sessionId` and `resume` are mutually exclusive — the SDK rejects a
+ * chosen id alongside a resume unless the session is being forked — so the
+ * two cases set exactly one of them.
+ */
+export function sessionOptions(
+  command: StartCommand,
+  sessionId: string,
+  callbacks: Pick<Options, "canUseTool" | "sessionStore">,
+): Options {
+  return {
+    cwd: command.cwd,
+    env: environment(command),
+    permissionMode: command.permission_mode,
+    ...callbacks,
+    // Assistant text reaches flyco only as partial-message deltas, so the
+    // normalizer never has to choose between a delta and the complete
+    // message that repeats it.
+    includePartialMessages: true,
+    ...(command.model === null ? {} : { model: command.model }),
+    ...(command.resume_session_id === null
+      ? { sessionId }
+      : { resume: command.resume_session_id }),
+  };
+}
+
 /** One live SDK session and everything parked on flycod for it. */
 class Session {
   private readonly messages = new UserMessages();
@@ -219,24 +264,52 @@ class Session {
   private readonly stores = new Parked<number, unknown>();
   private readonly session: Query;
   private nextStoreId = 1;
+  private closing = false;
+  /** The id flyco addresses this session by. */
+  readonly sessionId: string;
+  /** Resolves when the CLI has answered its `initialize` handshake. */
+  readonly warm: Promise<void>;
   readonly drained: Promise<void>;
 
   constructor(command: StartCommand) {
-    const options: Options = {
-      cwd: command.cwd,
-      env: environment(command),
-      permissionMode: command.permission_mode,
-      canUseTool: this.canUseTool,
-      sessionStore: this.sessionStore,
-      // Assistant text reaches flyco only as partial-message deltas, so
-      // the normalizer never has to choose between a delta and the
-      // complete message that repeats it.
-      includePartialMessages: true,
-      ...(command.model === null ? {} : { model: command.model }),
-      ...(command.resume_session_id === null ? {} : { resume: command.resume_session_id }),
-    };
-    this.session = query({ prompt: this.messages.stream(), options });
+    this.sessionId = sessionIdFor(command);
+    this.session = query({
+      prompt: this.messages.stream(),
+      options: sessionOptions(command, this.sessionId, {
+        canUseTool: this.canUseTool,
+        sessionStore: this.sessionStore,
+      }),
+    });
+    // Order matters: `warmUp` announces the session synchronously up to its
+    // first await, so `started` is always the first line of the session.
+    this.warm = this.warmUp();
     this.drained = this.drain();
+  }
+
+  /**
+   * Announces the session and waits for the CLI to finish booting.
+   *
+   * Constructing the query already spawned the CLI and sent its
+   * `initialize` control request, so the session is identified and warming
+   * from here — no user message required, which is the whole point. The
+   * await that follows only turns a broken login or a missing CLI into a
+   * `fatal` at start time instead of a silent wait for a turn that never
+   * comes. It must never be awaited from the command loop: the handshake
+   * can call `SessionStore.load`, which parks on a `store_response` only
+   * that loop can deliver.
+   */
+  private async warmUp(): Promise<void> {
+    emit({ type: "started", session_id: this.sessionId });
+    try {
+      await this.session.initializationResult();
+    } catch (error) {
+      // Shutting down rejects every in-flight control request; that is the
+      // exit path, not a failure.
+      if (this.closing) {
+        return;
+      }
+      throw error;
+    }
   }
 
   push(text: string): void {
@@ -249,6 +322,7 @@ class Session {
 
   /** Ends the streaming input, which ends the session. */
   close(): void {
+    this.closing = true;
     this.messages.close();
   }
 
@@ -264,11 +338,9 @@ class Session {
   private async drain(): Promise<void> {
     for await (const message of this.session) {
       if (message.type === "system" && message.subtype === "init") {
-        emit({
-          type: "started",
-          session_id: message.session_id,
-          capabilities: message.capabilities ?? [],
-        });
+        // The only place the CLI names its capabilities, and it names them
+        // per turn. Later frames revise the set; flycod keeps the newest.
+        emit({ type: "capabilities", capabilities: message.capabilities ?? [] });
       }
       emit({ type: "sdk_message", message });
     }
@@ -384,7 +456,9 @@ async function main(): Promise<void> {
         throw new Error("received a second `start`; one sidecar drives one session");
       }
       session = new Session(command);
-      // A session that dies on its own is terminal for the sidecar.
+      // Neither is awaited here: the command loop has to stay free to
+      // answer the store and approval round trips they can provoke.
+      session.warm.catch(fatal);
       session.drained.catch(fatal);
       continue;
     }
