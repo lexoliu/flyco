@@ -1,0 +1,469 @@
+//! End-to-end coverage of daemon pairing, the daemon-scoped routes, and the
+//! two ways into a session's relay.
+
+use flyco_core::{
+    ApprovalState, ApprovalView, CreateSession, CurrentUser, DaemonToken, HarnessKind, Problem,
+    SessionDetail, SessionId, Usd, wire::ApprovalPayload,
+};
+use skyzen::routing::Router;
+use skyzen_services::{Db, Kv, Storage};
+use skyzen_test::{TestClient, TestContext};
+
+use crate::relay::RelayTicket;
+use crate::session;
+use crate::testing::{migrated_router, seed_other_user, seed_user};
+use crate::transcripts::BATCH_COUNT_HEADER;
+
+const REPO: &str = "lexoliu/flyco";
+
+fn problem_kind(slug: &str) -> String {
+    let mut kind = String::from("https://flyco.dev/problems/");
+    kind.push_str(slug);
+    kind
+}
+
+/// A signed-in caller: the bearer token their browser would hold.
+struct Caller {
+    token: String,
+}
+
+async fn sign_in(kv: &Kv, user: CurrentUser) -> Caller {
+    let token = session::issue(kv, user.id).await.expect("issue a session");
+    Caller { token }
+}
+
+async fn open_session(client: &TestClient<Router>, caller: &Caller, repo: &str) -> SessionId {
+    let response = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .json(&CreateSession {
+            harness: HarnessKind::ClaudeCode,
+            repo: repo.to_owned(),
+            budget_limit: Usd::from_dollars(10),
+            spot: true,
+        })
+        .send()
+        .await;
+    response.assert_status(201);
+    response.json::<SessionDetail>().summary.id
+}
+
+async fn pair(client: &TestClient<Router>, caller: &Caller, session: SessionId) -> String {
+    let response = client
+        .post(&format!("/v1/sessions/{session}/daemon-token"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    response.assert_status(200);
+    let token: DaemonToken = response.json();
+    assert_eq!(token.session, session);
+    token.token
+}
+
+// ── Pairing ──
+
+#[skyzen::test]
+async fn a_daemon_token_is_minted_once_and_scoped_to_its_session(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let first = open_session(&client, &caller, REPO).await;
+    let second = open_session(&client, &caller, "lexoliu/skyzen").await;
+
+    let token = pair(&client, &caller, first).await;
+    assert!(token.starts_with(flyco_core::DAEMON_TOKEN_PREFIX));
+
+    // The daemon-scoped route of its own session accepts it …
+    client
+        .put(&format!("/v1/sessions/{first}/transcript/main/batches/0"))
+        .bearer(&token)
+        .body("{}\n")
+        .send()
+        .await
+        .assert_status(204);
+
+    // … and the same route of another session does not.
+    let refused = client
+        .put(&format!("/v1/sessions/{second}/transcript/main/batches/0"))
+        .bearer(&token)
+        .body("{}\n")
+        .send()
+        .await;
+    refused.assert_status(401);
+    refused.assert_header("www-authenticate", "Bearer error=\"invalid_token\"");
+    assert_eq!(
+        refused.json::<Problem>().kind,
+        problem_kind("invalid-daemon-credential")
+    );
+}
+
+#[skyzen::test]
+async fn a_user_credential_does_not_open_a_daemon_route(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+
+    let refused = client
+        .put(&format!("/v1/sessions/{session}/transcript/main/batches/0"))
+        .bearer(&caller.token)
+        .body("{}\n")
+        .send()
+        .await;
+    refused.assert_status(401);
+}
+
+#[skyzen::test]
+async fn only_the_owner_may_pair_a_daemon(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let owner = sign_in(&kv, seed_user(&db).await).await;
+    let stranger = sign_in(&kv, seed_other_user(&db).await).await;
+    let session = open_session(&client, &owner, REPO).await;
+
+    let refused = client
+        .post(&format!("/v1/sessions/{session}/daemon-token"))
+        .bearer(&stranger.token)
+        .send()
+        .await;
+    refused.assert_status(404);
+    assert_eq!(
+        refused.json::<Problem>().kind,
+        problem_kind("session-not-found")
+    );
+}
+
+// ── Transcripts ──
+
+#[skyzen::test]
+async fn transcript_batches_round_trip_through_storage(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    _storage: Storage,
+) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+    let token = pair(&client, &caller, session).await;
+
+    for (seq, line) in ["{\"n\":0}\n", "{\"n\":1}\n", "{\"n\":2}\n"]
+        .into_iter()
+        .enumerate()
+    {
+        client
+            .put(&format!(
+                "/v1/sessions/{session}/transcript/main/batches/{seq}"
+            ))
+            .bearer(&token)
+            .body(line)
+            .send()
+            .await
+            .assert_status(204);
+    }
+
+    let read = client
+        .get(&format!("/v1/sessions/{session}/transcript/main"))
+        .bearer(&token)
+        .send()
+        .await;
+    read.assert_status(200);
+    read.assert_header("content-type", crate::transcripts::CONTENT_TYPE);
+    read.assert_header(BATCH_COUNT_HEADER, "3");
+    assert_eq!(read.body_text(), "{\"n\":0}\n{\"n\":1}\n{\"n\":2}\n");
+}
+
+#[skyzen::test]
+async fn a_transcript_stream_that_was_never_written_reads_empty(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    _storage: Storage,
+) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+    let token = pair(&client, &caller, session).await;
+
+    let read = client
+        .get(&format!("/v1/sessions/{session}/transcript/main"))
+        .bearer(&token)
+        .send()
+        .await;
+    read.assert_status(200);
+    read.assert_header(BATCH_COUNT_HEADER, "0");
+    assert_eq!(read.body_text(), "");
+}
+
+#[skyzen::test]
+async fn rewriting_a_transcript_batch_is_a_conflict(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    _storage: Storage,
+) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+    let token = pair(&client, &caller, session).await;
+    let path = format!("/v1/sessions/{session}/transcript/main/batches/0");
+
+    client
+        .put(&path)
+        .bearer(&token)
+        .body("first")
+        .send()
+        .await
+        .assert_status(204);
+    let again = client.put(&path).bearer(&token).body("second").send().await;
+    again.assert_status(409);
+    assert_eq!(
+        again.json::<Problem>().kind,
+        problem_kind("batch-already-stored")
+    );
+}
+
+#[skyzen::test]
+async fn a_stream_key_that_is_not_one_path_segment_is_unprocessable(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    _storage: Storage,
+) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+    let token = pair(&client, &caller, session).await;
+
+    let refused = client
+        .put(&format!("/v1/sessions/{session}/transcript/../batches/0"))
+        .bearer(&token)
+        .body("x")
+        .send()
+        .await;
+    refused.assert_status(422);
+    assert_eq!(
+        refused.json::<Problem>().kind,
+        problem_kind("invalid-stream-key")
+    );
+}
+
+// ── Approvals raised by the daemon ──
+
+#[skyzen::test]
+async fn a_daemon_raises_an_approval_against_its_own_session(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+    let token = pair(&client, &caller, session).await;
+
+    let raised = client
+        .post(&format!("/v1/sessions/{session}/approvals"))
+        .bearer(&token)
+        .json(&ApprovalPayload::AgentsMdChange {
+            find: "old".to_owned(),
+            replace: "new".to_owned(),
+        })
+        .send()
+        .await;
+    raised.assert_status(201);
+    let raised: ApprovalView = raised.json();
+    assert_eq!(raised.session, session);
+    assert_eq!(raised.state, ApprovalState::Pending);
+
+    // The user sees the same approval through their own credential, which is
+    // what makes the daemon's REST-before-relay ordering worth anything.
+    let listed = client
+        .get(&format!("/v1/approvals?session={session}"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    listed.assert_status(200);
+    let listed: Vec<ApprovalView> = listed.json();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, raised.id);
+
+    // Deciding it still works, and the room notification is best-effort:
+    // this build has no live room, and the decision stands regardless.
+    let decided = client
+        .post(&format!("/v1/approvals/{}/decision", raised.id))
+        .bearer(&caller.token)
+        .json(&flyco_core::DecideApproval {
+            decision: flyco_core::ApprovalDecision::Approved,
+        })
+        .send()
+        .await;
+    decided.assert_status(200);
+    assert_eq!(
+        decided.json::<ApprovalView>().state,
+        ApprovalState::Approved
+    );
+}
+
+// ── The relay hops ──
+
+#[skyzen::test]
+async fn a_daemon_relay_upgrade_is_authenticated_before_it_reaches_a_room(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+    let token = pair(&client, &caller, session).await;
+    let path = format!("/v1/sessions/{session}/relay/daemon");
+
+    // No credential.
+    let anonymous = client.get(&path).send().await;
+    anonymous.assert_status(401);
+    anonymous.assert_header("www-authenticate", "Bearer");
+
+    // A user credential is not a daemon credential.
+    let wrong_kind = client.get(&path).bearer(&caller.token).send().await;
+    wrong_kind.assert_status(401);
+    assert_eq!(
+        wrong_kind.json::<Problem>().kind,
+        problem_kind("invalid-daemon-credential")
+    );
+
+    // The right credential gets past the check and stops only where this
+    // build genuinely cannot go: skyzen 0.1.2 hosts hibernating sockets on
+    // Cloudflare alone.
+    let accepted = client.get(&path).bearer(&token).send().await;
+    accepted.assert_status(501);
+    let problem: Problem = accepted.json();
+    assert_eq!(problem.kind, problem_kind("relay-unavailable"));
+    assert!(
+        problem.detail.contains("Cloudflare"),
+        "a deliberate refusal must say what is missing: {}",
+        problem.detail
+    );
+}
+
+#[skyzen::test]
+async fn a_relay_ticket_is_minted_redeemed_once_and_scoped(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+    let other = open_session(&client, &caller, "lexoliu/skyzen").await;
+
+    let mint = async || -> RelayTicket {
+        let minted = client
+            .post(&format!("/v1/sessions/{session}/relay-ticket"))
+            .bearer(&caller.token)
+            .send()
+            .await;
+        minted.assert_status(200);
+        minted.json()
+    };
+
+    let first = mint().await;
+    assert!(first.ticket.starts_with(crate::relay::TICKET_PREFIX));
+    assert!(first.expires_at_unix > 0);
+
+    // A ticket does not open another session's room — and presenting it
+    // there spends it anyway. A ticket is consumed by being *presented*,
+    // not by being accepted: that is what makes a ticket seen in a URL, a
+    // proxy log, or a `Referer` worthless, without having to reason about
+    // which failures burn it and which do not.
+    let wrong_room = client
+        .get(&format!(
+            "/v1/sessions/{other}/relay/client?ticket={}",
+            first.ticket
+        ))
+        .send()
+        .await;
+    wrong_room.assert_status(401);
+    client
+        .get(&format!(
+            "/v1/sessions/{session}/relay/client?ticket={}",
+            first.ticket
+        ))
+        .send()
+        .await
+        .assert_status(401);
+
+    // A fresh ticket opens its own room, and stops at the same wall the
+    // daemon hop does.
+    let second = mint().await;
+    let path = format!(
+        "/v1/sessions/{session}/relay/client?ticket={}",
+        second.ticket
+    );
+    client.get(&path).send().await.assert_status(501);
+
+    // And it too is spent, whatever happened after it was redeemed.
+    let replayed = client.get(&path).send().await;
+    replayed.assert_status(401);
+    assert_eq!(
+        replayed.json::<Problem>().kind,
+        problem_kind("invalid-credential")
+    );
+}
+
+#[skyzen::test]
+async fn a_client_relay_upgrade_without_a_ticket_is_challenged(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+
+    let anonymous = client
+        .get(&format!("/v1/sessions/{session}/relay/client"))
+        .send()
+        .await;
+    anonymous.assert_status(401);
+    anonymous.assert_header("www-authenticate", "Bearer");
+}
+
+#[skyzen::test]
+async fn only_the_owner_may_mint_a_relay_ticket(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let owner = sign_in(&kv, seed_user(&db).await).await;
+    let stranger = sign_in(&kv, seed_other_user(&db).await).await;
+    let session = open_session(&client, &owner, REPO).await;
+
+    client
+        .post(&format!("/v1/sessions/{session}/relay-ticket"))
+        .bearer(&stranger.token)
+        .send()
+        .await
+        .assert_status(404);
+}
+
+// ── Catching up ──
+
+#[skyzen::test]
+async fn the_event_tail_is_readable_and_scoped_to_its_owner(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let owner = sign_in(&kv, seed_user(&db).await).await;
+    let stranger = sign_in(&kv, seed_other_user(&db).await).await;
+    let session = open_session(&client, &owner, REPO).await;
+
+    // A room nobody has spoken to yet has an empty tail rather than a 404:
+    // that is the state of every session before its first turn.
+    let page = client
+        .get(&format!("/v1/sessions/{session}/events"))
+        .bearer(&owner.token)
+        .send()
+        .await;
+    page.assert_status(200);
+    let page: crate::room::EventPage = page.json();
+    assert_eq!(page.events, [] as [crate::room::StoredEvent; 0]);
+    assert!(!page.more);
+
+    // Ownership is settled in the Worker, because a room cannot reach D1.
+    let refused = client
+        .get(&format!("/v1/sessions/{session}/events"))
+        .bearer(&stranger.token)
+        .send()
+        .await;
+    refused.assert_status(404);
+    assert_eq!(
+        refused.json::<Problem>().kind,
+        problem_kind("session-not-found")
+    );
+
+    client
+        .get(&format!("/v1/sessions/{session}/events"))
+        .send()
+        .await
+        .assert_status(401);
+}

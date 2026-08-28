@@ -26,11 +26,28 @@
 name = "auth_kv"
 type = "kv"
 
+# R2 holds session transcripts: `transcripts/{session}/{stream}/{seq:08}.jsonl`,
+# written batch by batch by flycod. Bulk transcript data must never ride the
+# relay WebSocket — Cloudflare caps a frame at 1 MiB — so this is the write
+# path for History, and the read path a session resuming onto a new machine
+# uses.
+#
+#   wrangler r2 bucket create flyco-transcripts
+[[service]]
+name = "transcripts"
+type = "storage"
+
 # Native wiring exists for `skyzen dev` and the openapi.json export; skyzen
 # 0.1.2 fails to compile the native binary when a declared service has no
 # native backend. `memory` resolves to skyzen-test's in-memory KV, which is
 # why skyzen-test is a dependency of the native target only.
 [native.service.auth_kv]
+backend = "memory"
+
+# Same story for R2: skyzen 0.1.2's only other storage backend is S3, which
+# would drag `skyzen-s3` into the native build for no benefit — `skyzen dev`
+# wants a scratch bucket, not a real one.
+[native.service.transcripts]
 backend = "memory"
 
 [cloudflare]
@@ -44,11 +61,34 @@ FLYCO_REDIRECT_URI = "TO-BE-PROVISIONED"
 [cloudflare.service.auth_kv]
 binding = "AUTH_KV"
 
+[cloudflare.service.transcripts]
+binding = "TRANSCRIPTS"
+
 [[cloudflare.kv_namespaces]]
 binding = "AUTH_KV"
 id = "TO-BE-PROVISIONED"
+
+[[cloudflare.r2_buckets]]
+binding = "TRANSCRIPTS"
+bucket_name = "flyco-transcripts"
 
 [[cloudflare.d1_databases]]
 binding = "DB"
 database_name = "flyco-main"
 database_id = "TO-BE-PROVISIONED"
+
+# One Durable Object per session: the live relay room. The daemon holds one
+# hibernating socket tagged `daemon`, browsers hold sockets tagged `client`,
+# and the room forwards between them. It is addressed by the session id
+# (`get_by_name`), so a session and its room are the same identity.
+#
+# The class name is `SessionRoomObject`, not `SessionRoom`:
+# `#[skyzen::durable_object]` on a struct `T` exports the JS class as
+# `TObject`, and the binding must name what is exported.
+[[cloudflare.durable_objects.bindings]]
+name = "SESSION_ROOMS"
+class_name = "SessionRoomObject"
+
+[[cloudflare.durable_objects.migrations]]
+tag = "v1"
+new_sqlite_classes = ["SessionRoomObject"]

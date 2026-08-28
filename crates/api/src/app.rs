@@ -4,25 +4,33 @@ use core::str::FromStr;
 
 use flyco_core::{
     ApiKeyId, ApiKeySummary, ApprovalId, ApprovalState, ApprovalView, BudgetConfig, BudgetView,
-    CreateApiKey, CreateSession, CreatedApiKey, CurrentUser, DecideApproval, RepoSlug,
-    SessionDetail, SessionId, SessionState, SessionSummary, UpdateMe,
+    ControlToDaemon, CreateApiKey, CreateSession, CreatedApiKey, CurrentUser, DaemonToken,
+    DecideApproval, RepoSlug, SessionDetail, SessionId, SessionState, SessionSummary, UpdateMe,
+    wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
 use skyzen::middleware::ErrorHandlingMiddleware;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Router, Routes as _};
-use skyzen::utils::{Json, State};
+use skyzen::utils::{Bytes, Json, State};
 use skyzen::{HttpError as _, Response};
-use skyzen_services::Db;
+use skyzen_services::{Db, Kv, Storage};
 
 use crate::authenticator::FlycoAuthenticator;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
+use crate::extract::Headers;
 use crate::github::{GithubOauth, ZenwaveGithub};
-use crate::middleware::RequireAuth;
+use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
+use crate::relay::{RelayTicket, TicketQuery};
 use crate::respond::{WithStatus, created, no_content};
-use crate::{api_keys, approvals, database, oauth, problem, sessions, users};
+use crate::room::EventPage;
+use crate::rooms::Rooms;
+use crate::{
+    api_keys, approvals, daemon_tokens, database, oauth, problem, relay, sessions, transcripts,
+    users,
+};
 
 /// Health probe response.
 #[derive(Debug, Serialize, skyzen::ToSchema)]
@@ -252,21 +260,269 @@ async fn decide_approval(
     State(user): State<CurrentUser>,
     params: Params,
     Json(request): Json<DecideApproval>,
+    rooms: Rooms,
     db: Db,
 ) -> Outcome<Json<ApprovalView>> {
-    settle_approval(&user, &params, request, &db).await.into()
+    settle_approval(&user, &params, request, &rooms, &db)
+        .await
+        .into()
 }
 
 async fn settle_approval(
     user: &CurrentUser,
     params: &Params,
     request: DecideApproval,
+    rooms: &Rooms,
     db: &Db,
 ) -> Result<Json<ApprovalView>, ApiError> {
     let id = path_id::<ApprovalId>(params, "id")?;
+
+    // D1 first, and only then the room. The decision is durable before it is
+    // announced, so a daemon can never act on an approval the database would
+    // still call pending — and the conditional `UPDATE` in `approvals` is
+    // what makes "decided exactly once" true, so a second caller never gets
+    // this far to announce a second decision.
     let decided = approvals::decide(db, user.id, id, request.decision).await?;
+
+    let announced = rooms
+        .command(
+            decided.session,
+            &ControlToDaemon::ApprovalDecision {
+                id,
+                decision: request.decision,
+            },
+        )
+        .await;
+    if let Err(error) = announced {
+        // The decision stands whatever the relay did with it: the daemon
+        // re-reads pending approvals when it reconnects, so a room that is
+        // asleep or evicted costs a round trip, not the answer.
+        tracing::warn!(%error, session = %decided.session, "a decided approval did not reach its room");
+    }
+
     tracing::info!(decision = ?request.decision, "decided an approval");
     Ok(Json(decided))
+}
+
+// ── Pairing a session with its daemon ──
+
+/// Mints the daemon token that pairs a session with its `flycod`.
+///
+/// Returned once and stored only as a hash; minting again replaces the
+/// previous token, so re-pairing revokes the daemon that held it.
+#[skyzen::openapi]
+async fn create_daemon_token(
+    State(user): State<CurrentUser>,
+    params: Params,
+    db: Db,
+) -> Outcome<Json<DaemonToken>> {
+    pair_daemon(&user, &params, &db).await.into()
+}
+
+async fn pair_daemon(
+    user: &CurrentUser,
+    params: &Params,
+    db: &Db,
+) -> Result<Json<DaemonToken>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    let token = daemon_tokens::issue(db, user.id, id).await?;
+    tracing::info!(session = %id, "minted a daemon token");
+    Ok(Json(token))
+}
+
+// ── The live relay ──
+
+/// Mints a single-use ticket a browser exchanges for a relay socket.
+#[skyzen::openapi]
+async fn create_relay_ticket(
+    State(user): State<CurrentUser>,
+    params: Params,
+    kv: Kv,
+    db: Db,
+) -> Outcome<Json<RelayTicket>> {
+    mint_ticket(&user, &params, &kv, &db).await.into()
+}
+
+async fn mint_ticket(
+    user: &CurrentUser,
+    params: &Params,
+    kv: &Kv,
+    db: &Db,
+) -> Result<Json<RelayTicket>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    relay::issue_ticket(kv, db, user, id).await.map(Json)
+}
+
+/// Joins a session's room as its daemon.
+///
+/// Authenticated by the session's `fd_` token rather than by a user
+/// credential, so it sits outside [`RequireAuth`].
+async fn open_daemon_relay(
+    params: Params,
+    headers: Headers,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Response> {
+    join_as_daemon(&params, &headers, &rooms, &db).await.into()
+}
+
+async fn join_as_daemon(
+    params: &Params,
+    headers: &Headers,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<Response, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    relay::open_daemon(rooms, db, id, headers.bearer()).await
+}
+
+/// Joins a session's room as a browser, redeeming a relay ticket.
+async fn open_client_relay(
+    params: Params,
+    query: Query<TicketQuery>,
+    rooms: Rooms,
+    kv: Kv,
+) -> Outcome<Response> {
+    join_as_client(&params, &query, &rooms, &kv).await.into()
+}
+
+async fn join_as_client(
+    params: &Params,
+    query: &Query<TicketQuery>,
+    rooms: &Rooms,
+    kv: &Kv,
+) -> Result<Response, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    relay::open_client(rooms, kv, id, relay::presented_ticket(query)).await
+}
+
+/// Where in a session's event stream to resume reading.
+#[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
+struct EventCursor {
+    /// Return events strictly after this position.
+    after: Option<u64>,
+}
+
+/// Reads a session's recorded event tail.
+///
+/// The catch-up path a browser takes before — and alongside — its live
+/// socket: replay from the last position it saw, then follow the relay.
+#[skyzen::openapi]
+async fn get_session_events(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Query(cursor): Query<EventCursor>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Json<EventPage>> {
+    read_events(&user, &params, cursor.after.unwrap_or(0), &rooms, &db)
+        .await
+        .into()
+}
+
+async fn read_events(
+    user: &CurrentUser,
+    params: &Params,
+    after: u64,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<Json<EventPage>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    // A room cannot reach D1, so ownership is settled here, before the
+    // Worker will address the room at all.
+    if !sessions::is_owned_by(db, user.id, id).await? {
+        return Err(ApiError::SessionNotFound);
+    }
+    rooms.events(id, after).await.map(Json)
+}
+
+// ── Daemon-scoped routes ──
+
+/// Raises an approval against the daemon's own session.
+///
+/// The daemon records the durable approval here *before* it announces the
+/// request on the relay, so the id a browser sees is always one the API can
+/// decide.
+async fn raise_approval(
+    State(session): State<DaemonSession>,
+    Json(payload): Json<ApprovalPayload>,
+    db: Db,
+) -> Outcome<WithStatus<Json<ApprovalView>>> {
+    record_approval(session.0, &payload, &db).await.into()
+}
+
+async fn record_approval(
+    session: SessionId,
+    payload: &ApprovalPayload,
+    db: &Db,
+) -> Result<WithStatus<Json<ApprovalView>>, ApiError> {
+    let id = approvals::raise(db, session, payload).await?;
+    let view = approvals::find_for_session(db, session, id).await?;
+    tracing::info!(%session, "a daemon raised an approval");
+    Ok(created(Json(view)))
+}
+
+/// Stores one batch of a session's transcript.
+async fn put_transcript_batch(
+    State(session): State<DaemonSession>,
+    params: Params,
+    body: Bytes,
+    storage: Storage,
+) -> Outcome<Response> {
+    store_batch(session.0, &params, body, &storage).await.into()
+}
+
+async fn store_batch(
+    session: SessionId,
+    params: &Params,
+    body: Bytes,
+    storage: &Storage,
+) -> Result<Response, ApiError> {
+    let stream = path_segment(params, "stream")?;
+    let raw = path_segment(params, "seq")?;
+    let seq = raw.parse::<u64>().map_err(|_| ApiError::MalformedId(raw))?;
+
+    transcripts::put_batch(storage, session, &stream, seq, body.to_vec()).await?;
+    Ok(no_content())
+}
+
+/// Reads a session's transcript stream back, for a resume onto a new host.
+async fn get_transcript(
+    State(session): State<DaemonSession>,
+    params: Params,
+    storage: Storage,
+) -> Outcome<Response> {
+    read_transcript(session.0, &params, &storage).await.into()
+}
+
+async fn read_transcript(
+    session: SessionId,
+    params: &Params,
+    storage: &Storage,
+) -> Result<Response, ApiError> {
+    let stream = path_segment(params, "stream")?;
+    let read = transcripts::read_stream(storage, session, &stream).await?;
+
+    let mut response = Response::new(skyzen::Body::from(read.body));
+    response.headers_mut().insert(
+        skyzen::header::CONTENT_TYPE,
+        skyzen::header::HeaderValue::from_static(transcripts::CONTENT_TYPE),
+    );
+    response.headers_mut().insert(
+        transcripts::BATCH_COUNT_HEADER,
+        skyzen::header::HeaderValue::from_str(&read.batches.to_string()).map_err(|_| {
+            ApiError::CorruptRecord("a transcript batch count did not fit in a header")
+        })?,
+    );
+    Ok(response)
+}
+
+/// Reads a `{name}` path parameter as an owned string.
+fn path_segment(params: &Params, name: &'static str) -> Result<String, ApiError> {
+    params
+        .get(name)
+        .map(ToOwned::to_owned)
+        .map_err(|_| ApiError::CorruptRecord("the router did not bind a path parameter"))
 }
 
 /// Routes that anyone may call.
@@ -281,6 +537,33 @@ fn public_routes<G: GithubOauth>() -> Vec<RouteNode> {
     .into_route_nodes()
 }
 
+/// The two relay upgrades.
+///
+/// Neither carries a user credential — one presents a session's daemon
+/// token, the other a single-use ticket — so they authenticate themselves
+/// rather than sitting behind [`RequireAuth`]. They are also the only
+/// routes whose success is not a document, so they are left out of the
+/// `OpenAPI` export: a `101` with a socket attached is not something the
+/// spec's response model can describe.
+fn relay_routes() -> Vec<RouteNode> {
+    Route::new((
+        "/v1/sessions/{id}/relay/daemon".at(open_daemon_relay),
+        "/v1/sessions/{id}/relay/client".at(open_client_relay),
+    ))
+    .into_route_nodes()
+}
+
+/// Routes a session's own daemon calls, authenticated by its `fd_` token.
+fn daemon_routes() -> Vec<RouteNode> {
+    Route::new((
+        "/v1/sessions/{id}/approvals".post(raise_approval),
+        "/v1/sessions/{id}/transcript/{stream}".at(get_transcript),
+        "/v1/sessions/{id}/transcript/{stream}/batches/{seq}".put(put_transcript_batch),
+    ))
+    .middleware(RequireDaemon::new())
+    .into_route_nodes()
+}
+
 /// Routes that require a bearer credential.
 fn authenticated_routes() -> Vec<RouteNode> {
     Route::new((
@@ -291,6 +574,9 @@ fn authenticated_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}".at(get_session),
         "/v1/sessions/{id}/archive".post(archive_session),
         "/v1/sessions/{id}/budget".at(get_session_budget),
+        "/v1/sessions/{id}/daemon-token".post(create_daemon_token),
+        "/v1/sessions/{id}/relay-ticket".post(create_relay_ticket),
+        "/v1/sessions/{id}/events".at(get_session_events),
         "/v1/approvals".at(list_approvals),
         "/v1/approvals/{id}/decision".post(decide_approval),
     ))
@@ -304,8 +590,28 @@ fn authenticated_routes() -> Vec<RouteNode> {
 /// without opening a database or reading any configuration.
 fn routes<G: GithubOauth>() -> Route {
     let mut nodes = public_routes::<G>();
+    nodes.extend(relay_routes());
+    nodes.extend(daemon_routes());
     nodes.extend(authenticated_routes());
     Route::new(nodes)
+}
+
+/// Gives the route tree somewhere to find session rooms.
+///
+/// On the Worker a room is resolved from the `SESSION_ROOMS` binding the
+/// runtime already put in request extensions, so there is nothing to
+/// attach. Natively the simulator's namespace is process-local state and
+/// has to be carried: one namespace per router, so two routers in one test
+/// binary do not share rooms.
+#[cfg(not(target_arch = "wasm32"))]
+fn with_rooms(route: Route) -> Route {
+    route.with(State(crate::rooms::NativeRooms::new()))
+}
+
+/// See the native counterpart above.
+#[cfg(target_arch = "wasm32")]
+const fn with_rooms(route: Route) -> Route {
+    route
 }
 
 /// The `OpenAPI` document describing the control plane.
@@ -327,7 +633,7 @@ pub fn openapi_document() -> skyzen::OpenApi {
 /// `#[skyzen::main]` wraps the router with it.
 #[must_use]
 pub fn router<G: GithubOauth>(config: ApiConfig, github: G, db: Db) -> Router {
-    routes::<G>()
+    with_rooms(routes::<G>())
         .with(State(config))
         .with(State(github))
         .with(db)
