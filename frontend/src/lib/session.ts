@@ -9,9 +9,20 @@ const STORAGE_KEY = "flyco.session_token";
 
 let memoryToken: string | null = null;
 
+/** Whether a string looks like a session token this build would have issued. */
+function looksLikeSessionToken(token: string): boolean {
+  return token.startsWith("fs_");
+}
+
+/**
+ * Rejects a token this code should never have produced.
+ *
+ * The offending value is deliberately absent from the message: it is a live
+ * credential, and an error message ends up in consoles and log drains.
+ */
 function assertValidToken(token: string): void {
-  if (!token.startsWith("fs_")) {
-    throw new Error(`Session token has an unexpected shape: ${token}`);
+  if (!looksLikeSessionToken(token)) {
+    throw new Error("Session token has an unexpected shape");
   }
 }
 
@@ -31,7 +42,7 @@ export function setSessionToken(
  * caller is signed out — that is a normal state, not an error.
  */
 export function getSessionToken(
-  storage: Pick<Storage, "getItem"> = localStorage,
+  storage: Pick<Storage, "getItem" | "removeItem"> = localStorage,
 ): string | null {
   if (memoryToken !== null) {
     return memoryToken;
@@ -40,7 +51,15 @@ export function getSessionToken(
   if (stored === null) {
     return null;
   }
-  assertValidToken(stored);
+  // Storage is outside this application's control — another script, an
+  // older build, or the user's own devtools can put anything here. A value
+  // that is not a session token means "not signed in", not "crash": the
+  // alternative bricks the app on every read with no way back for someone
+  // who cannot clear site data.
+  if (!looksLikeSessionToken(stored)) {
+    storage.removeItem(STORAGE_KEY);
+    return null;
+  }
   memoryToken = stored;
   return stored;
 }
