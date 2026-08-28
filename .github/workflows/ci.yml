@@ -1,9 +1,12 @@
 name: CI
 
+# Automatic runs are disabled for now (Lexo, 2026-08-28): private-repo
+# Actions minutes are billing-gated on this account. Trigger manually with
+# `gh workflow run ci.yml` when needed; restore push/pull_request triggers
+# when CI is unblocked. Until then the local per-crate gates carry
+# verification.
 on:
-  push:
-    branches: [main, dev]
-  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
