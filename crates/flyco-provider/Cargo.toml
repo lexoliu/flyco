@@ -1,0 +1,19 @@
+[package]
+name = "flyco-provider"
+description = "Cloud provider abstraction for flyco: priced catalogs, provisioning, disk-preserving resize, and spot interruption handling over plain signed HTTP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+flyco-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zenwave.workspace = true
+
+[lints]
+workspace = true

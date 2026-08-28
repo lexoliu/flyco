@@ -1,0 +1,5 @@
+[workspace]
+# Flyco is an application, not a library: version and changelog are managed,
+# nothing is published to crates.io.
+publish = false
+git_release_enable = false
