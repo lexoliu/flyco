@@ -73,12 +73,22 @@ impl ToolApproval {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "output", rename_all = "snake_case")]
 pub enum SessionOutput {
-    /// The harness reported its session identity and capabilities.
+    /// The session is identified and its harness is warming.
+    ///
+    /// Arrives before any user message, so the control plane can record the
+    /// session and the UI can go live without waiting for a turn.
     Started {
         /// Harness-native session id; resume uses this.
         session_id: String,
-        /// Capability tokens advertised by this harness build. Feature
-        /// detection reads these and never a version string.
+    },
+    /// The capability tokens this harness build advertises.
+    ///
+    /// Feature detection reads these and never a version string. Separate
+    /// from [`Self::Started`] because Claude Code reports them only on a
+    /// turn's `system/init` frame, so they arrive late by construction —
+    /// see [`claude`] for what that means for gating. The newest set wins.
+    Capabilities {
+        /// The capability tokens, as the harness names them.
         capabilities: Vec<String>,
     },
     /// A normalized harness event.

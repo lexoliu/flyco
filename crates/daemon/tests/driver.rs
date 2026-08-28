@@ -104,16 +104,12 @@ async fn a_turn_runs_from_user_message_to_completion() {
     let scratch = Scratch::new("turn");
     let (session, mut outputs) = start(&scratch).await;
 
-    // The sidecar's `started` becomes the session identity flyco resumes by.
-    let SessionOutput::Started {
-        session_id,
-        capabilities,
-    } = next(&mut outputs, "started").await
-    else {
+    // The session announces itself before anyone types: this is the whole
+    // point of the warm-up, and it carries identity only.
+    let SessionOutput::Started { session_id } = next(&mut outputs, "started").await else {
         panic!("the first output must be `started`");
     };
     assert_eq!(session_id, "fake-session");
-    assert_eq!(capabilities, vec!["interrupt_receipt_v1".to_owned()]);
 
     session
         .send_user_message("hi".to_owned())
@@ -128,6 +124,15 @@ async fn a_turn_runs_from_user_message_to_completion() {
     else {
         panic!("a user message must open a turn");
     };
+
+    // Capabilities ride the first turn's `system/init`, so they cannot
+    // arrive before this point — feature gating has to tolerate that.
+    assert_eq!(
+        next(&mut outputs, "capabilities").await,
+        SessionOutput::Capabilities {
+            capabilities: vec!["interrupt_receipt_v1".to_owned()],
+        }
+    );
 
     assert_eq!(
         next(&mut outputs, "assistant_delta").await,
@@ -175,6 +180,27 @@ async fn a_turn_runs_from_user_message_to_completion() {
 }
 
 #[tokio::test]
+async fn a_session_announces_itself_without_anyone_typing() {
+    // The defect this guards: `started` used to be derived from the Agent
+    // SDK's `system/init`, which the CLI emits at the start of a turn — so
+    // a session that nobody had messaged yet never announced itself at all.
+    // Identity now comes from the sidecar, which knows it at construction.
+    let scratch = Scratch::new("announce");
+    let (session, mut outputs) = start(&scratch).await;
+
+    let announced = next(&mut outputs, "started").await;
+    assert_eq!(
+        announced,
+        SessionOutput::Started {
+            session_id: "fake-session".to_owned(),
+        },
+        "the session must announce itself before any user message"
+    );
+
+    session.shutdown().await.expect("shut the session down");
+}
+
+#[tokio::test]
 async fn the_transcript_store_answers_the_sdk_and_keeps_what_it_is_given() {
     let scratch = Scratch::new("store");
     let (session, mut outputs) = start(&scratch).await;
@@ -188,6 +214,7 @@ async fn the_transcript_store_answers_the_sdk_and_keeps_what_it_is_given() {
         .await
         .expect("send a user message");
     let _ = next(&mut outputs, "turn_started").await;
+    let _ = next(&mut outputs, "capabilities").await;
     let _ = next(&mut outputs, "assistant_delta").await;
     let SessionOutput::ApprovalRequest { id, .. } = next(&mut outputs, "approval_request").await
     else {
@@ -229,6 +256,7 @@ async fn an_interrupted_turn_fails_rather_than_completing() {
     else {
         panic!("a user message must open a turn");
     };
+    let _ = next(&mut outputs, "capabilities").await;
     let _ = next(&mut outputs, "assistant_delta").await;
     let _ = next(&mut outputs, "approval_request").await;
 
