@@ -1,0 +1,46 @@
+# flycod configuration — the developer-machine shape.
+#
+# `flycod example-config` prints this file. On a provisioned session VM the
+# paths point into /srv and /var/lib and `[claude.auth]` injects a
+# credential; the only mode that reads the host user's own ~/.claude is
+# `inherit`, below, which exists so flyco can be driven against a real login
+# on a developer's laptop.
+
+# The flyco session this daemon serves.
+session = "9d0f4b1a-3b7e-4a3e-9e1a-4c2f8b6d7a10"
+
+# Which harness to drive: "claude_code" or "codex".
+harness = "claude_code"
+
+# Where the agent works.
+workdir = "/tmp/flycod-dev/work"
+
+# Root of the local append-only transcript store. The Agent SDK's
+# SessionStore writes here through flycod; M3b mirrors it to R2.
+transcript_dir = "/tmp/flycod-dev/transcripts"
+
+# Harness-native session id to resume. Omit to start a fresh session.
+# resume_session_id = "1f6d2c50-8a4b-4a2b-9f6d-2c508a4b4a2b"
+
+[claude]
+# Model override. Omit to leave the CLI's own default in place.
+# model = "claude-sonnet-4-5-20250929"
+
+# Spelled the way the Agent SDK spells it: "default", "acceptEdits",
+# "bypassPermissions", or "plan". Anything but "default" narrows what
+# reaches flyco's approval UI, because auto-approved tools never call back.
+permission_mode = "default"
+
+[claude.auth]
+# "inherit"      — no CLAUDE_CONFIG_DIR, no credential injection. Developer
+#                  machines only: the CLI reads the host user's ~/.claude.
+# "oauth_token"  — token = "…", isolation = { config_dir, project_dir_name }
+# "api_key"      — key   = "…", isolation = { config_dir, project_dir_name }
+mode = "inherit"
+
+[sidecar]
+# Where the embedded Bun sidecar is written and `bun install` is run.
+dir = "/tmp/flycod-dev/sidecar"
+
+# The bun executable; a bare name is resolved through PATH.
+bun = "bun"

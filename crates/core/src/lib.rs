@@ -30,7 +30,7 @@ pub use auth::{
 pub use budget::{
     BudgetConfig, BudgetSignal, BudgetStage, BudgetState, BudgetView, SpendEvent, SpendKind,
 };
-pub use harness::{Availability, Feature, HarnessEvent, HarnessKind, UsageReport};
+pub use harness::{Availability, ContextWindow, Feature, HarnessEvent, HarnessKind, UsageReport};
 pub use id::{
     ApiKeyId, ApprovalId, BudgetId, Id, MachineId, MemoryNodeId, SessionId, SkillId, SpendEventId,
     UserId,

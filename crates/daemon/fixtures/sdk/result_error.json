@@ -1,0 +1,17 @@
+{
+  "type": "result",
+  "subtype": "error_during_execution",
+  "uuid": "0f0a3d8e-2f2b-4f77-9b2e-5c9ab4d2e009",
+  "session_id": "9d0f4b1a-3b7e-4a3e-9e1a-4c2f8b6d7a10",
+  "is_error": true,
+  "duration_ms": 512,
+  "duration_api_ms": 480,
+  "num_turns": 1,
+  "result": "Claude Code process exited with code 1",
+  "total_cost_usd": 0.0,
+  "usage": {
+    "input_tokens": 4,
+    "output_tokens": 0
+  },
+  "permission_denials": []
+}

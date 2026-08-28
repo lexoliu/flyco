@@ -59,6 +59,32 @@ pub enum Availability {
     Planned,
 }
 
+/// How full the model's context window is.
+///
+/// Reported as a pair or not at all: a fill gauge needs both numbers, and a
+/// harness that names only one of them tells us nothing displayable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ContextWindow {
+    /// Tokens currently occupying the context window.
+    pub used_tokens: u64,
+    /// Size of the context window in tokens.
+    pub size_tokens: u64,
+}
+
+impl ContextWindow {
+    /// The fill fraction in basis points (1/100 of a percent), rounded down.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::size_tokens`] is zero — a zero-width context window
+    /// is a harness bug, not a state the UI should render.
+    #[must_use]
+    pub const fn fill_basis_points(self) -> u64 {
+        assert!(self.size_tokens > 0, "context window size must be positive");
+        self.used_tokens * 10_000 / self.size_tokens
+    }
+}
+
 /// Token and context-window accounting reported by the harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct UsageReport {
@@ -66,10 +92,13 @@ pub struct UsageReport {
     pub input_tokens: u64,
     /// Output tokens produced so far in this session.
     pub output_tokens: u64,
-    /// Tokens currently occupying the context window.
-    pub context_used_tokens: u64,
-    /// Size of the context window in tokens.
-    pub context_size_tokens: u64,
+    /// Context-window fill, when the harness reports both halves of it.
+    ///
+    /// Codex reports `modelContextWindow` on every token-usage
+    /// notification; the Claude Agent SDK only names a window size when its
+    /// `result` message carries per-model usage, so this is `None` for
+    /// sessions where it does not.
+    pub context: Option<ContextWindow>,
     /// Cost estimate reported by the harness for this session, if any.
     pub estimated_cost: Option<Usd>,
 }
@@ -134,4 +163,47 @@ pub enum HarnessEvent {
         /// harness reports one.
         resets_at_unix: Option<u64>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ContextWindow, HarnessEvent, UsageReport};
+    use crate::money::Usd;
+
+    #[test]
+    fn context_fill_is_exact() {
+        let window = ContextWindow {
+            used_tokens: 50_000,
+            size_tokens: 200_000,
+        };
+        assert_eq!(window.fill_basis_points(), 2_500);
+    }
+
+    #[test]
+    #[should_panic(expected = "context window size must be positive")]
+    fn a_zero_width_context_window_is_a_bug() {
+        let _ = ContextWindow {
+            used_tokens: 1,
+            size_tokens: 0,
+        }
+        .fill_basis_points();
+    }
+
+    #[test]
+    fn a_harness_without_a_context_gauge_reports_none() {
+        let event = HarnessEvent::TurnCompleted {
+            turn_id: "t-1".to_owned(),
+            usage: UsageReport {
+                input_tokens: 12,
+                output_tokens: 34,
+                context: None,
+                estimated_cost: Some(Usd::from_cents(7)),
+            },
+        };
+        let json = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(json["type"], "turn_completed");
+        assert!(json["usage"]["context"].is_null());
+        let back: HarnessEvent = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, event);
+    }
 }
