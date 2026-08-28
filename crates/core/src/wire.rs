@@ -213,6 +213,19 @@ pub enum ClientEvent {
         /// The event.
         event: HarnessEvent,
     },
+    /// A message the user sent to the agent.
+    ///
+    /// The user's own half of the conversation, which the daemon never
+    /// reports back: it arrives at the room from a browser socket or from
+    /// `POST /v1/sessions/{id}/messages`, and the room records and echoes it
+    /// there. Without it a second browser would watch the agent answer
+    /// questions it could not see, and a replayed session would be one side
+    /// of a conversation — including the prompt every turn in the history
+    /// list is named by.
+    UserMessage {
+        /// What was said to the agent, verbatim.
+        text: String,
+    },
     /// The harness announced its native session id.
     Started {
         /// Harness-native session id.
@@ -417,6 +430,9 @@ mod tests {
         let events = [
             ClientEvent::Harness {
                 event: harness_event(),
+            },
+            ClientEvent::UserMessage {
+                text: "what does this crate do?".to_owned(),
             },
             ClientEvent::Started {
                 harness_session_id: "9d0f4b1a".to_owned(),

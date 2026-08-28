@@ -129,9 +129,10 @@ pub struct SendMessage {
 
 /// One turn of a session, as the history list renders it.
 ///
-/// Reconstructed from the R2 transcript rather than from a table: the
-/// transcript is what survives a machine, so a turn list built from
-/// anything else would disagree with the session a browser replays.
+/// Folded out of the event stream the session's room records rather than
+/// read from a table of its own: that stream is what survives a machine and
+/// what a browser replays, so a turn list built from anything else would
+/// disagree with the conversation shown beside it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TurnSummary {
     /// Harness-native turn identifier, which is what the transcript keys on.
@@ -148,8 +149,8 @@ pub struct TurnSummary {
 
 /// One page of `GET /v1/sessions/{id}/turns`.
 ///
-/// The cursor is opaque: it encodes a position in the transcript's batch
-/// sequence, and a client that stores it must hand it back unread.
+/// The cursor is opaque: it encodes a position in the session's recorded
+/// event stream, and a client that stores it must hand it back unread.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TurnPage {
     /// The turns, oldest first.

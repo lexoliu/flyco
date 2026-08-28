@@ -467,3 +467,184 @@ async fn the_event_tail_is_readable_and_scoped_to_its_owner(ctx: TestContext, kv
         .await
         .assert_status(401);
 }
+
+// ── Driving a session ──
+
+/// Puts a session in the state a daemon would have moved it to.
+///
+/// M4 provisions a machine and the daemon's arrival is what makes a session
+/// active; until then the transition is made here so the routes that require
+/// a running session can be driven at all.
+async fn activate(db: &Db, user: flyco_core::UserId, session: SessionId) {
+    crate::sessions::transition(db, user, session, flyco_core::SessionState::Active)
+        .await
+        .expect("activate the session");
+}
+
+fn message(text: &str) -> flyco_core::SendMessage {
+    flyco_core::SendMessage {
+        text: text.to_owned(),
+    }
+}
+
+#[skyzen::test]
+async fn an_active_session_accepts_a_message_and_an_interrupt(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let caller = sign_in(&kv, user.clone()).await;
+    let session = open_session(&client, &caller, REPO).await;
+    activate(&db, user.id, session).await;
+
+    // `202`, because the answer arrives on the relay rather than here.
+    client
+        .post(&format!("/v1/sessions/{session}/messages"))
+        .bearer(&caller.token)
+        .json(&message("what does this crate do?"))
+        .send()
+        .await
+        .assert_status(202);
+
+    client
+        .post(&format!("/v1/sessions/{session}/interrupt"))
+        .bearer(&caller.token)
+        .send()
+        .await
+        .assert_status(202);
+}
+
+#[skyzen::test]
+async fn a_session_that_is_not_running_refuses_to_be_driven(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+
+    // Still provisioning: there is no daemon to hear either command, and a
+    // `202` would promise work nobody is going to do.
+    for (path, body) in [
+        (
+            format!("/v1/sessions/{session}/messages"),
+            Some(message("hello")),
+        ),
+        (format!("/v1/sessions/{session}/interrupt"), None),
+    ] {
+        let request = client.post(&path).bearer(&caller.token);
+        let refused = match &body {
+            Some(body) => request.json(body).send().await,
+            None => request.send().await,
+        };
+        refused.assert_status(409);
+        let problem = refused.json::<Problem>();
+        assert_eq!(problem.kind, problem_kind("session-not-active"));
+        assert!(
+            problem.detail.contains("Provisioning"),
+            "the refusal names the state: {}",
+            problem.detail
+        );
+    }
+}
+
+#[skyzen::test]
+async fn a_message_with_nothing_in_it_is_unprocessable(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let caller = sign_in(&kv, user.clone()).await;
+    let session = open_session(&client, &caller, REPO).await;
+    activate(&db, user.id, session).await;
+
+    let refused = client
+        .post(&format!("/v1/sessions/{session}/messages"))
+        .bearer(&caller.token)
+        .json(&message("   \n"))
+        .send()
+        .await;
+    refused.assert_status(422);
+    assert_eq!(
+        refused.json::<Problem>().kind,
+        problem_kind("empty-message")
+    );
+}
+
+#[skyzen::test]
+async fn another_users_session_cannot_be_driven_or_read(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let owner = sign_in(&kv, user.clone()).await;
+    let stranger = sign_in(&kv, seed_other_user(&db).await).await;
+    let session = open_session(&client, &owner, REPO).await;
+    activate(&db, user.id, session).await;
+
+    for path in [
+        format!("/v1/sessions/{session}/messages"),
+        format!("/v1/sessions/{session}/interrupt"),
+    ] {
+        client
+            .post(&path)
+            .bearer(&stranger.token)
+            .json(&message("mine now"))
+            .send()
+            .await
+            .assert_status(404);
+    }
+    for path in [
+        format!("/v1/sessions/{session}/turns"),
+        format!("/v1/sessions/{session}/repo-status"),
+    ] {
+        let refused = client.get(&path).bearer(&stranger.token).send().await;
+        refused.assert_status(404);
+        assert_eq!(
+            refused.json::<Problem>().kind,
+            problem_kind("session-not-found")
+        );
+    }
+}
+
+#[skyzen::test]
+async fn a_session_with_no_turns_yet_has_an_empty_history(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+
+    let page = client
+        .get(&format!("/v1/sessions/{session}/turns"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    page.assert_status(200);
+    let page: flyco_core::TurnPage = page.json();
+    assert_eq!(page.turns, [] as [flyco_core::TurnSummary; 0]);
+    assert!(
+        page.next_cursor.is_none(),
+        "there is nothing recorded to come back for"
+    );
+
+    let refused = client
+        .get(&format!(
+            "/v1/sessions/{session}/turns?cursor=not-a-position"
+        ))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    refused.assert_status(400);
+    assert_eq!(
+        refused.json::<Problem>().kind,
+        problem_kind("invalid-cursor")
+    );
+}
+
+#[skyzen::test]
+async fn a_working_tree_nobody_has_reported_is_not_found(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+
+    let unknown = client
+        .get(&format!("/v1/sessions/{session}/repo-status"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    unknown.assert_status(404);
+    assert_eq!(
+        unknown.json::<Problem>().kind,
+        problem_kind("repo-status-unknown")
+    );
+}

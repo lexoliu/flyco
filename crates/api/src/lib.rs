@@ -43,6 +43,7 @@ pub mod sessions;
 pub mod skills;
 pub mod sql;
 pub mod transcripts;
+pub mod turns;
 pub mod users;
 pub mod webhooks;
 

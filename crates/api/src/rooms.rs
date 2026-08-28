@@ -10,7 +10,7 @@
 //! A room is addressed by its session id, so `session:{id}` and the room
 //! are the same identity and no mapping table exists to go stale.
 
-use flyco_core::{ControlToDaemon, SessionId};
+use flyco_core::{ControlToDaemon, RepoStatus, SessionId};
 use skyzen::extract::Extractor;
 use skyzen::{Request, StatusCode};
 
@@ -137,6 +137,29 @@ impl Rooms {
         }
         serde_json::from_slice(&body)
             .map_err(|error| ApiError::Room(format!("the room returned no event page: {error}")))
+    }
+
+    /// Reads the working tree the session's daemon last reported.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::RepoStatusUnknown`] if no daemon has reported one
+    /// yet, or [`ApiError::Room`] if the room could not be reached or its
+    /// answer was not a working tree.
+    pub async fn repo_status(&self, session: SessionId) -> Result<RepoStatus, ApiError> {
+        let (status, body) = self
+            .call(session, Verb::Get, "/internal/repo-status", None)
+            .await?;
+        if status == StatusCode::NOT_FOUND {
+            return Err(ApiError::RepoStatusUnknown);
+        }
+        if !status.is_success() {
+            return Err(ApiError::Room(format!(
+                "the room refused a working-tree read with HTTP {status}"
+            )));
+        }
+        serde_json::from_slice(&body)
+            .map_err(|error| ApiError::Room(format!("the room returned no working tree: {error}")))
     }
 }
 
