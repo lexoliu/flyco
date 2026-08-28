@@ -28,6 +28,7 @@ const COMMAND_TAGS = [
 const EVENT_TAGS = [
   "ready",
   "started",
+  "capabilities",
   "sdk_message",
   "approval_request",
   "store_request",
@@ -133,6 +134,27 @@ describe("decoding is strict", () => {
 
   test("a non-zod failure keeps its own message", () => {
     expect(describeError(new Error("bun is not installed"))).toBe("bun is not installed");
+  });
+
+  test("started carries identity only, never capabilities", () => {
+    // The two are separate events because the SDK reports them at
+    // different times; a `started` that also claimed capabilities could
+    // only ever be claiming an empty set.
+    expect(() =>
+      sidecarEventSchema.parse({ type: "started", session_id: "s-1", capabilities: [] }),
+    ).not.toThrow();
+    expect(
+      sidecarEventSchema.parse({ type: "started", session_id: "s-1", capabilities: [] }),
+    ).toEqual({ type: "started", session_id: "s-1" });
+  });
+
+  test("a capabilities event must carry a list of strings", () => {
+    expect(sidecarEventSchema.parse({ type: "capabilities", capabilities: [] })).toEqual({
+      type: "capabilities",
+      capabilities: [],
+    });
+    expect(() => sidecarEventSchema.parse({ type: "capabilities" })).toThrow();
+    expect(() => sidecarEventSchema.parse({ type: "capabilities", capabilities: [1] })).toThrow();
   });
 
   test("a permission mode outside the SDK's union is refused", () => {
