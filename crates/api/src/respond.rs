@@ -6,26 +6,40 @@
 
 use skyzen::{Body, Request, Responder, Response, StatusCode};
 
-/// Renders `T`, then overrides the status code.
+/// Renders `T`, then answers `201 Created`.
+///
+/// The status is the *type* rather than a field, so a handler returning
+/// `Created<Json<T>>` says `201` in its own signature and cannot be built
+/// holding any other code. That is what lets
+/// [`crate::responses`] declare an operation's status from its return type
+/// instead of guessing at it, and what makes the guard over that table an
+/// exact check rather than a convention.
 ///
 /// The inner responder writes the body and headers first, so a `Json`
 /// payload keeps its content type and only the status line changes.
 #[derive(Debug, Clone, Copy)]
-pub struct WithStatus<T>(pub StatusCode, pub T);
+pub struct Created<T>(pub T);
 
-impl<T: Responder> Responder for WithStatus<T> {
+impl<T: Responder> Responder for Created<T> {
     type Error = T::Error;
 
     fn respond_to(self, request: &Request, response: &mut Response) -> Result<(), Self::Error> {
-        self.1.respond_to(request, response)?;
-        *response.status_mut() = self.0;
+        self.0.respond_to(request, response)?;
+        *response.status_mut() = StatusCode::CREATED;
         Ok(())
     }
-}
 
-/// Wraps a freshly created resource so it answers `201 Created`.
-pub const fn created<T>(value: T) -> WithStatus<T> {
-    WithStatus(StatusCode::CREATED, value)
+    #[cfg(feature = "openapi")]
+    fn openapi() -> Option<Vec<skyzen::openapi::ResponseSchema>> {
+        T::openapi()
+    }
+
+    #[cfg(feature = "openapi")]
+    fn register_openapi_schemas(
+        defs: &mut std::collections::BTreeMap<String, skyzen::openapi::SchemaRef>,
+    ) {
+        T::register_openapi_schemas(defs);
+    }
 }
 
 /// An empty `204 No Content` response.

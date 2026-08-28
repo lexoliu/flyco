@@ -20,7 +20,7 @@ use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
 use crate::problem::Outcome;
-use crate::respond::WithStatus;
+use crate::respond::Created;
 
 /// Narrows the cloud usage panel to one provider.
 #[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
@@ -44,7 +44,7 @@ async fn link_provider(
     State(_user): State<CurrentUser>,
     Json(_request): Json<LinkProvider>,
     _db: Db,
-) -> Outcome<WithStatus<Json<ProviderAccountView>>> {
+) -> Outcome<Created<Json<ProviderAccountView>>> {
     todo!("M4: verify the credentials against the provider, then seal and store them")
 }
 

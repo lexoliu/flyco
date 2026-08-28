@@ -162,9 +162,9 @@ mod schema_forwarding {
     ///
     /// Note that skyzen 0.1.2 reports no payload schema through this path at
     /// all (`maybe_schema_of` is generic, so its specialization probe cannot
-    /// fire) — see the response-schema note in `bin/openapi.rs`. This test
-    /// pins the forwarding itself, so the operation documents improve the
-    /// moment that is fixed upstream.
+    /// fire) — see [`crate::responses`], which is what describes the
+    /// responses in the meantime. This test pins the forwarding itself, so
+    /// the operation documents improve the moment that is fixed upstream.
     #[test]
     fn outcome_reports_whatever_the_wrapped_responder_reports() {
         let direct = <Json<flyco_core::Problem> as skyzen::Responder>::openapi();
