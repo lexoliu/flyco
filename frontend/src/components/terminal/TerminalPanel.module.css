@@ -1,0 +1,13 @@
+.placeholder {
+  border: var(--border-width) dashed var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.hint {
+  color: var(--color-text-faint);
+  margin-top: var(--space-2);
+}

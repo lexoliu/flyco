@@ -1,0 +1,12 @@
+<!--
+Maskable icon: the platform crops this to a shape (circle, squircle, ...) and
+only the inner "safe zone" (a circle covering the middle 80% of the canvas)
+is guaranteed to stay visible, so the mark is drawn smaller and centered
+compared to icon.svg, with the background filling the full canvas edge to
+edge.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <rect width="192" height="192" fill="#1c2333"/>
+  <path d="M58 116 L134 66 L106 138 L94 112 L58 116 Z" fill="#5b8def"/>
+  <path d="M94 112 L134 66 L106 138 Z" fill="#8fb6ff"/>
+</svg>
