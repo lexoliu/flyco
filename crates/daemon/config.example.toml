@@ -15,12 +15,23 @@ harness = "claude_code"
 # Where the agent works.
 workdir = "/tmp/flycod-dev/work"
 
-# Root of the local append-only transcript store. The Agent SDK's
-# SessionStore writes here through flycod; M3b mirrors it to R2.
+# Root of the local append-only transcript store, used when there is no
+# [control_plane] below. A session that reports to a control plane keeps its
+# transcript in R2 instead — that is what lets it resume onto any machine.
 transcript_dir = "/tmp/flycod-dev/transcripts"
 
 # Harness-native session id to resume. Omit to start a fresh session.
 # resume_session_id = "1f6d2c50-8a4b-4a2b-9f6d-2c508a4b4a2b"
+
+# Where to report to. Present on a provisioned session VM; omitted here, so
+# `flycod run` drives the session from its stdin REPL instead. Which mode a
+# run chose is logged at startup.
+#
+# `daemon_token` is minted by `POST /v1/sessions/{id}/daemon-token` and is
+# the only credential that opens this session's daemon-scoped routes.
+# [control_plane]
+# url = "https://flyco.dev/"
+# daemon_token = "fd_a-token-from-the-control-plane"
 
 [claude]
 # Model override. Omit to leave the CLI's own default in place.
