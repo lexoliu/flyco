@@ -6,8 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use flyco_core::{HarnessKind, SessionId};
+use flyco_core::{DAEMON_TOKEN_PREFIX, HarnessKind, SessionId};
 use serde::Deserialize;
+use url::Url;
 
 use crate::harness::claude::protocol::{PermissionMode, SidecarAuth};
 use crate::harness::claude::sidecar::SidecarConfig;
@@ -33,6 +34,12 @@ pub enum ConfigError {
         #[source]
         source: toml::de::Error,
     },
+    /// `[control_plane].daemon_token` is not a daemon token.
+    #[error(
+        "`control_plane.daemon_token` must be a `{DAEMON_TOKEN_PREFIX}` token from \
+         `POST /v1/sessions/{{id}}/daemon-token`, not a session token or an API key"
+    )]
+    NotADaemonToken,
 }
 
 /// An isolated Claude Code configuration tree.
@@ -119,6 +126,45 @@ pub struct ClaudeConfig {
     pub auth: ClaudeAuth,
 }
 
+/// Where the control plane is, and what authenticates this daemon to it.
+///
+/// Present on a provisioned session VM; absent on a developer machine,
+/// where `flycod run` falls back to the [REPL](crate::repl). Which of the
+/// two a run chose is logged at startup, because "why is nothing reaching
+/// the browser" has exactly one cheap answer and this is it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlPlaneConfig {
+    /// Base URL of the control plane, e.g. `https://flyco.dev/`.
+    ///
+    /// The relay endpoint is derived from it, so the address is configured
+    /// once rather than twice in two schemes.
+    pub url: Url,
+    /// The session's `fd_` daemon token, minted by
+    /// `POST /v1/sessions/{id}/daemon-token`.
+    pub daemon_token: String,
+}
+
+impl ControlPlaneConfig {
+    /// Checks that the token is the kind of credential this field takes.
+    ///
+    /// A session token or an API key here would authenticate nothing and
+    /// fail at the first relay attempt; a provisioning bug should stop the
+    /// daemon at startup instead, where the message can name the mistake.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::NotADaemonToken`] if the token lacks the
+    /// [`fd_`](flyco_core::DAEMON_TOKEN_PREFIX) prefix.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.daemon_token.starts_with(DAEMON_TOKEN_PREFIX) {
+            Ok(())
+        } else {
+            Err(ConfigError::NotADaemonToken)
+        }
+    }
+}
+
 /// Everything `flycod run` needs.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -130,10 +176,18 @@ pub struct DaemonConfig {
     /// Directory the agent works in.
     pub workdir: PathBuf,
     /// Root of the local append-only transcript store.
+    ///
+    /// Used only when there is no [`control_plane`](Self::control_plane):
+    /// a session that reports to a control plane keeps its transcript there
+    /// instead, which is what lets it resume onto another machine.
     pub transcript_dir: PathBuf,
     /// Harness-native session id to resume, for cross-host History.
     #[serde(default)]
     pub resume_session_id: Option<String>,
+    /// The control plane to report to. Omitted drives the session from the
+    /// [REPL](crate::repl) instead.
+    #[serde(default)]
+    pub control_plane: Option<ControlPlaneConfig>,
     /// Claude Code settings.
     pub claude: ClaudeConfig,
     /// Where the Bun sidecar is materialized and how Bun is run.
@@ -152,10 +206,14 @@ impl DaemonConfig {
             path: path.to_owned(),
             source,
         })?;
-        toml::from_str(&text).map_err(|source| ConfigError::Parse {
+        let config: Self = toml::from_str(&text).map_err(|source| ConfigError::Parse {
             path: path.to_owned(),
             source,
-        })
+        })?;
+        if let Some(control_plane) = &config.control_plane {
+            control_plane.validate()?;
+        }
+        Ok(config)
     }
 }
 

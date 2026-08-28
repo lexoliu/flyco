@@ -29,17 +29,28 @@ futures-core = "0.3"
 
 # Execution plane only (native). Nothing here may reach the Worker graph.
 clap = { version = "4", features = ["derive"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+rand = "0.9"
 rust-embed = { version = "8", features = ["debug-embed", "include-exclude"] }
 tokio = { version = "1", features = [
     "fs",
     "io-std",
     "io-util",
     "macros",
+    "net",
     "process",
     "rt-multi-thread",
     "signal",
     "sync",
     "time",
+] }
+# `rustls-tls-native-roots` so the daemon trusts the host's CA bundle: a
+# session VM's image is the only place the control plane's certificate
+# chain can come from.
+tokio-tungstenite = { version = "0.30", default-features = false, features = [
+    "connect",
+    "handshake",
+    "rustls-tls-native-roots",
 ] }
 toml = "0.9"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -51,7 +62,7 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 hex = "0.4"
 js-sys = "0.3"
 sha2 = { version = "0.10", default-features = false }
-url = "2"
+url = { version = "2", features = ["serde"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"
