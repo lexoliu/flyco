@@ -10,19 +10,29 @@
 //! process-shaped therefore lives here, and the two halves agree only on
 //! [`flyco_core`].
 //!
-//! # What M3a contains
+//! # What is here
 //!
 //! - [`config`] — the daemon's TOML configuration.
 //! - [`harness`] — the harness abstraction and the Claude Code driver,
 //!   which speaks to a Bun sidecar running the Claude Agent SDK.
-//! - [`repl`] — a line-oriented stand-in for the control-plane client,
-//!   used to drive and verify a session from a terminal.
+//! - [`control`] — the control-plane connection: the relay WebSocket, the
+//!   REST client behind it, and the transcript store that makes a session
+//!   resumable onto any machine.
+//! - [`repl`] — a line-oriented stand-in for the control plane, used to
+//!   drive and verify a session from a terminal.
 //!
-//! The control-plane WebSocket client, the web terminal, the local MCP
-//! server, and the Codex driver land in later milestones.
+//! `flycod run` picks between [`control`] and [`repl`] on whether the
+//! configuration names a control plane, and logs which it chose.
+//!
+//! The web terminal, the local MCP server, and the Codex driver land in
+//! later milestones.
 //!
 //! [`flyco_api`]: https://github.com/lexoliu/flyco/tree/main/crates/api
 
 pub mod config;
+pub mod control;
 pub mod harness;
 pub mod repl;
+
+#[cfg(test)]
+mod testing;

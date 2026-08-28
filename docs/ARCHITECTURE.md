@@ -49,7 +49,17 @@ A session announces itself (`started`) as soon as its SDK query is constructed �
 
 Auth has two shapes, and they are one decision: `inherit` (no `CLAUDE_CONFIG_DIR`, no credential injection — the developer-machine mode, which reads the host's own `~/.claude`), or an injected credential that always carries its own isolated config tree and project key.
 
-Until the control-plane WebSocket client lands, `flycod run` drives a session from a line-oriented stdin REPL and prints `SessionOutput` values as JSON lines on stdout. It stays afterwards as the dev tool for reproducing a harness bug without provisioning a VM.
+`flycod run` picks its driver from the configuration and logs which it chose. With a `[control_plane]` section it opens the relay and keeps its transcript in R2; without one it drives the session from a line-oriented stdin REPL, printing `SessionOutput` values as JSON lines, and keeps the transcript in `transcript_dir`. The REPL stays as the dev tool for reproducing a harness bug without provisioning a VM.
+
+### The relay client
+
+Two tasks and one bounded queue. The collector owns the harness's output stream and turns each `SessionOutput` into a wire frame; the connection owns the socket and the harness's control handle, draining the queue outward and dispatching commands inward. They are separate because the socket is not always there, and the queue is what absorbs a reconnect — bounded at 1024 frames, because a queue that grows without limit trades a visible outage for an OOM kill. **Overflow is fatal**, never a silent drop: losing part of a session's transcript is worse than stopping. A frame that leaves the queue but fails to write is handed back and retried on the next connection, making delivery at-least-once; exactly-once needs an ack the protocol does not carry yet.
+
+Reconnection is capped exponential backoff with full jitter (1s→60s) and re-sends `Hello`, because a room that hibernated has forgotten the handshake. Nothing is pumped before `Welcome`.
+
+A budget threshold below 100% is *told* to the agent, as a `[flyco budget notice] …` message in the conversation — the agent decides how to spend its budget, so a threshold is information rather than a limit. `Pause` is the exception: it interrupts the turn immediately and the daemon stops accepting work.
+
+An approval is recorded over REST **before** its frame is announced, so the id a browser sees is one the API can settle, and a decision that arrives while the socket is down still finds a pending row.
 
 ### Takeover enforcement (strongest first)
 
