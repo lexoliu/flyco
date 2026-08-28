@@ -12,7 +12,14 @@
         "operationId": "flyco_api::agents_md::get_agents_md",
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentsDocument"
+                }
+              }
+            }
           }
         }
       },
@@ -43,7 +50,14 @@
         },
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentsDocument"
+                }
+              }
+            }
           }
         }
       }
@@ -55,7 +69,17 @@
         "operationId": "flyco_api::app::list_api_keys",
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ApiKeySummary"
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -86,7 +110,14 @@
         },
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedApiKey"
+                }
+              }
+            }
           }
         }
       }
@@ -107,8 +138,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Response"
+          "204": {
+            "description": "Done; there is nothing to return."
           }
         }
       }
@@ -154,7 +185,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ApprovalView"
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -197,7 +238,14 @@
         },
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalView"
+                }
+              }
+            }
           }
         }
       }
@@ -220,7 +268,14 @@
         "operationId": "flyco_api::oauth::start",
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizeUrl"
+                }
+              }
+            }
           }
         }
       }
@@ -246,7 +301,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RepoSummary"
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -258,7 +323,17 @@
         "operationId": "flyco_api::harness_accounts::list_harness_accounts",
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/HarnessAccountView"
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -279,8 +354,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Response"
+          "204": {
+            "description": "Done; there is nothing to return."
           }
         }
       }
@@ -319,8 +394,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Response"
+          "303": {
+            "description": "Redirected back to the application."
           }
         }
       }
@@ -342,7 +417,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizeUrl"
+                }
+              }
+            }
           }
         }
       }
@@ -354,23 +436,11 @@
         "operationId": "flyco_api::app::healthz",
         "responses": {
           "200": {
-            "description": "Response",
+            "description": "Success.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "Health probe response.",
-                  "required": [
-                    "wire_protocol_version"
-                  ],
-                  "properties": {
-                    "wire_protocol_version": {
-                      "type": "integer",
-                      "format": "int32",
-                      "description": "Wire protocol version this control plane speaks to daemons.",
-                      "minimum": 0
-                    }
-                  }
+                  "$ref": "#/components/schemas/Health"
                 }
               }
             }
@@ -431,7 +501,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MachineCatalogEntry"
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -443,7 +523,17 @@
         "operationId": "flyco_api::mcp::list_mcp_servers",
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/McpServerView"
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -483,8 +573,15 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "Successful response"
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerView"
+                }
+              }
+            }
           }
         }
       }
@@ -506,7 +603,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerView"
+                }
+              }
+            }
           }
         }
       },
@@ -525,8 +629,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Response"
+          "204": {
+            "description": "Done; there is nothing to return."
           }
         }
       },
@@ -577,7 +681,14 @@
         },
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerView"
+                }
+              }
+            }
           }
         }
       }
@@ -589,33 +700,11 @@
         "operationId": "flyco_api::app::me",
         "responses": {
           "200": {
-            "description": "Response",
+            "description": "Success.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The authenticated caller behind a request.\n\nProduced by the control plane's authenticator from either credential\nshape, and returned verbatim by `GET /v1/me`.",
-                  "required": [
-                    "id",
-                    "login",
-                    "session_cap"
-                  ],
-                  "properties": {
-                    "id": {
-                      "$ref": "#/components/schemas/Uuid",
-                      "description": "The flyco user this request acts as."
-                    },
-                    "login": {
-                      "type": "string",
-                      "description": "The caller's GitHub login, cached at sign-in."
-                    },
-                    "session_cap": {
-                      "type": "integer",
-                      "format": "int32",
-                      "description": "How many sessions this user may hold at once, counting everything\nthat is not archived.",
-                      "minimum": 0
-                    }
-                  }
+                  "$ref": "#/components/schemas/CurrentUser"
                 }
               }
             }
@@ -651,7 +740,14 @@
         },
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentUser"
+                }
+              }
+            }
           }
         }
       }
@@ -693,7 +789,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MemoryNode"
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -750,8 +856,15 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "Successful response"
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryNode"
+                }
+              }
+            }
           }
         }
       }
@@ -773,7 +886,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryNode"
+                }
+              }
+            }
           }
         }
       },
@@ -792,8 +912,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Response"
+          "204": {
+            "description": "Done; there is nothing to return."
           }
         }
       },
@@ -841,7 +961,14 @@
         },
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryNode"
+                }
+              }
+            }
           }
         }
       }
@@ -853,7 +980,17 @@
         "operationId": "flyco_api::provider_accounts::list_providers",
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderAccountView"
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -888,8 +1025,15 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "Successful response"
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderAccountView"
+                }
+              }
+            }
           }
         }
       }
@@ -927,7 +1071,17 @@
         },
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderBonusHint"
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -948,8 +1102,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Response"
+          "204": {
+            "description": "Done; there is nothing to return."
           }
         }
       }
@@ -995,8 +1149,15 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "Successful response"
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushSubscriptionView"
+                }
+              }
+            }
           }
         }
       }
@@ -1017,8 +1178,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Response"
+          "204": {
+            "description": "Done; there is nothing to return."
           }
         }
       }
@@ -1030,7 +1191,14 @@
         "operationId": "flyco_api::push::vapid_public_key",
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VapidPublicKey"
+                }
+              }
+            }
           }
         }
       }
@@ -1042,7 +1210,17 @@
         "operationId": "flyco_api::app::list_sessions",
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SessionSummary"
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -1086,8 +1264,15 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "Successful response"
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDetail"
+                }
+              }
+            }
           }
         }
       }
@@ -1109,7 +1294,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDetail"
+                }
+              }
+            }
           }
         }
       }
@@ -1152,7 +1344,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDetail"
+                }
+              }
+            }
           }
         }
       }
@@ -1174,7 +1373,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetView"
+                }
+              }
+            }
           }
         }
       }
@@ -1196,7 +1402,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DaemonToken"
+                }
+              }
+            }
           }
         }
       }
@@ -1218,7 +1431,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvDocument"
+                }
+              }
+            }
           }
         }
       },
@@ -1262,7 +1482,14 @@
         },
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvDocument"
+                }
+              }
+            }
           }
         }
       }
@@ -1298,7 +1525,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPage"
+                }
+              }
+            }
           }
         }
       }
@@ -1319,8 +1553,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Response"
+          "202": {
+            "description": "Accepted; the outcome arrives out of band."
           }
         }
       }
@@ -1342,7 +1576,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineView"
+                }
+              }
+            }
           }
         }
       }
@@ -1384,8 +1625,8 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "Response"
+          "202": {
+            "description": "Accepted; the outcome arrives out of band."
           }
         }
       }
@@ -1406,8 +1647,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Response"
+          "202": {
+            "description": "Accepted; the outcome arrives out of band."
           }
         }
       }
@@ -1428,8 +1669,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Response"
+          "202": {
+            "description": "Accepted; the outcome arrives out of band."
           }
         }
       }
@@ -1471,8 +1712,8 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "Response"
+          "202": {
+            "description": "Accepted; the outcome arrives out of band."
           }
         }
       }
@@ -1494,7 +1735,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelayTicket"
+                }
+              }
+            }
           }
         }
       }
@@ -1558,7 +1806,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoStatus"
+                }
+              }
+            }
           }
         }
       }
@@ -1580,7 +1835,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDetail"
+                }
+              }
+            }
           }
         }
       }
@@ -1694,7 +1956,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnPage"
+                }
+              }
+            }
           }
         }
       }
@@ -1706,7 +1975,17 @@
         "operationId": "flyco_api::skills::list_skills",
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SkillView"
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -1746,8 +2025,15 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "Successful response"
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillView"
+                }
+              }
+            }
           }
         }
       }
@@ -1769,7 +2055,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillView"
+                }
+              }
+            }
           }
         }
       },
@@ -1788,8 +2081,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Response"
+          "204": {
+            "description": "Done; there is nothing to return."
           }
         }
       }
@@ -1819,7 +2112,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CloudUsageView"
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1831,7 +2134,17 @@
         "operationId": "flyco_api::harness_accounts::llm_usage",
         "responses": {
           "200": {
-            "description": "Response"
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LlmUsageView"
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1853,8 +2166,8 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "Response"
+          "204": {
+            "description": "Done; there is nothing to return."
           }
         }
       }

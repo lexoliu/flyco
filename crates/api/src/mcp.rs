@@ -12,7 +12,7 @@ use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
 use crate::problem::Outcome;
-use crate::respond::WithStatus;
+use crate::respond::Created;
 
 /// Lists the caller's registered MCP servers.
 #[skyzen::openapi]
@@ -29,7 +29,7 @@ async fn register_mcp_server(
     State(_user): State<CurrentUser>,
     Json(_request): Json<UpsertMcpServer>,
     _db: Db,
-) -> Outcome<WithStatus<Json<McpServerView>>> {
+) -> Outcome<Created<Json<McpServerView>>> {
     todo!("M6: insert the server, refusing a name the caller already uses")
 }
 

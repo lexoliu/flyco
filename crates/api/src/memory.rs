@@ -16,7 +16,7 @@ use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
 use crate::problem::Outcome;
-use crate::respond::WithStatus;
+use crate::respond::Created;
 
 /// Which level of the tree to list.
 #[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
@@ -44,7 +44,7 @@ async fn create_memory_node(
     State(_user): State<CurrentUser>,
     Json(_request): Json<CreateMemoryNode>,
     _db: Db,
-) -> Outcome<WithStatus<Json<MemoryNode>>> {
+) -> Outcome<Created<Json<MemoryNode>>> {
     todo!("M3c: insert the node, refusing a parent that is not the caller's")
 }
 

@@ -34,6 +34,7 @@ pub mod push;
 pub mod relay;
 pub mod repos;
 pub mod respond;
+pub mod responses;
 pub mod room;
 pub mod rooms;
 pub mod session;
