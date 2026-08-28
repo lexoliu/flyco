@@ -85,6 +85,33 @@ impl<T: Responder> Responder for Outcome<T> {
             }
         }
     }
+
+    /// Describes the success response by forwarding to the wrapped responder.
+    ///
+    /// Without this, wrapping a handler's return type in [`Outcome`] erases
+    /// its response schema: every operation in the exported document would
+    /// name a path and a request body but nothing about what comes back, and
+    /// a client generated from it would be untyped at exactly the boundary
+    /// that matters.
+    ///
+    /// The failure side is deliberately not enumerated per operation. Every
+    /// error this API can produce is the same RFC 9457 document — the type
+    /// is registered into the components map by
+    /// [`register_openapi_schemas`](Responder::register_openapi_schemas) —
+    /// and listing a speculative set of statuses on each operation would
+    /// assert failures a given handler cannot actually return.
+    #[cfg(feature = "openapi")]
+    fn openapi() -> Option<Vec<skyzen::openapi::ResponseSchema>> {
+        T::openapi()
+    }
+
+    #[cfg(feature = "openapi")]
+    fn register_openapi_schemas(
+        defs: &mut std::collections::BTreeMap<String, skyzen::openapi::SchemaRef>,
+    ) {
+        T::register_openapi_schemas(defs);
+        skyzen::openapi::maybe_register_schema_for::<flyco_core::Problem>(defs);
+    }
 }
 
 #[cfg(test)]
@@ -122,5 +149,31 @@ mod tests {
     fn a_challengeless_problem_omits_the_authenticate_header() {
         let rendered = response(&Problem::about_blank(400, "Bad Request", "nope"), None);
         assert!(rendered.headers().get("www-authenticate").is_none());
+    }
+}
+
+#[cfg(all(test, feature = "openapi"))]
+mod schema_forwarding {
+    use skyzen::utils::Json;
+
+    use super::Outcome;
+
+    /// Wrapping a responder must not erase what it says about itself.
+    ///
+    /// Note that skyzen 0.1.2 reports no payload schema through this path at
+    /// all (`maybe_schema_of` is generic, so its specialization probe cannot
+    /// fire) — see the response-schema note in `bin/openapi.rs`. This test
+    /// pins the forwarding itself, so the operation documents improve the
+    /// moment that is fixed upstream.
+    #[test]
+    fn outcome_reports_whatever_the_wrapped_responder_reports() {
+        let direct = <Json<flyco_core::Problem> as skyzen::Responder>::openapi();
+        let wrapped = <Outcome<Json<flyco_core::Problem>> as skyzen::Responder>::openapi();
+        assert_eq!(direct.is_some(), wrapped.is_some());
+        assert_eq!(
+            direct.map(|s| s.len()),
+            wrapped.map(|s| s.len()),
+            "Outcome must pass the wrapped responder's descriptions through"
+        );
     }
 }
