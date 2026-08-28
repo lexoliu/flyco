@@ -15,17 +15,23 @@ pub mod budgets;
 pub mod clock;
 pub mod config;
 pub mod crypto;
+pub mod daemon_tokens;
 pub mod database;
 pub mod error;
 pub mod expiring;
+pub mod extract;
 pub mod github;
 pub mod middleware;
 pub mod oauth;
 pub mod problem;
+pub mod relay;
 pub mod respond;
+pub mod room;
+pub mod rooms;
 pub mod session;
 pub mod sessions;
 pub mod sql;
+pub mod transcripts;
 pub mod users;
 
 #[cfg(test)]

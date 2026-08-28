@@ -1,15 +1,31 @@
-//! The daemon⇄control-plane wire protocol.
+//! The daemon⇄control-plane wire protocol, and what browsers see of it.
 //!
 //! One outbound WebSocket per daemon, relayed through the session's
 //! Durable Object. Every frame is one JSON-encoded message from this
 //! module. [`crate::WIRE_PROTOCOL_VERSION`] guards compatibility: a
 //! mismatch closes the connection immediately.
+//!
+//! Three enums, one for each direction of the relay:
+//!
+//! | Enum | From | To |
+//! |---|---|---|
+//! | [`DaemonToControl`] | `flycod` | the session room |
+//! | [`ControlToDaemon`] | the session room | `flycod` |
+//! | [`ClientEvent`] | the session room | browsers |
+//!
+//! All three are internally tagged on `type`. **Every variant is a struct
+//! variant, including the ones that carry a single value.** A newtype
+//! variant holding another internally-tagged enum emits its tag twice —
+//! `{"type":"harness","type":"turn_started",…}` — which `serde_json`
+//! serializes happily and then refuses to read back. Naming the payload
+//! field nests it instead, so the two tags never collide.
 
 use serde::{Deserialize, Serialize};
 
 use crate::budget::BudgetSignal;
 use crate::harness::{HarnessEvent, UsageReport};
 use crate::id::{ApprovalId, SessionId};
+use crate::session::SessionState;
 
 /// What the daemon asks the user to approve, mirrored in the approval UI.
 ///
@@ -74,11 +90,39 @@ pub enum DaemonToControl {
         /// Session this daemon serves.
         session: SessionId,
     },
+    /// The harness is identified and warming.
+    ///
+    /// Arrives before any user message, so the room can record the
+    /// harness-native session id that a later resume needs.
+    Started {
+        /// Harness-native session id; resume uses this.
+        harness_session_id: String,
+    },
+    /// The capability tokens this harness build advertises.
+    ///
+    /// Turn-derived and therefore late: Claude Code names them only on a
+    /// turn's `system/init` frame. Newest set wins, and "unknown yet" is a
+    /// state every consumer must tolerate.
+    Capabilities {
+        /// The capability tokens, as the harness names them.
+        capabilities: Vec<String>,
+    },
     /// A normalized harness event.
-    Harness(HarnessEvent),
+    Harness {
+        /// The event.
+        event: HarnessEvent,
+    },
     /// Periodic usage snapshot for the UI meters.
-    Usage(UsageReport),
+    Usage {
+        /// The snapshot.
+        usage: UsageReport,
+    },
     /// The daemon needs a user decision before the harness can proceed.
+    ///
+    /// The durable approval row is created over REST *first*; the `id` here
+    /// is the one the control plane assigned, so a decision routed back
+    /// through [`ControlToDaemon::ApprovalDecision`] names the same
+    /// approval the user saw.
     ApprovalRequest {
         /// Identifier the decision must echo.
         id: ApprovalId,
@@ -123,9 +167,12 @@ pub enum ControlToDaemon {
         /// The decision.
         decision: ApprovalDecision,
     },
-    /// A budget threshold was crossed; `Pause` requires the daemon to
-    /// interrupt and stop the harness immediately.
-    Budget(BudgetSignal),
+    /// A budget threshold was crossed; [`BudgetSignal::Pause`] requires the
+    /// daemon to interrupt and stop the harness immediately.
+    Budget {
+        /// The threshold that was crossed.
+        signal: BudgetSignal,
+    },
     /// Raw input for the web terminal.
     TerminalInput {
         /// Bytes to write to the terminal, UTF-8.
@@ -135,25 +182,331 @@ pub enum ControlToDaemon {
     Archive,
 }
 
+impl ControlToDaemon {
+    /// Whether a browser may send this command.
+    ///
+    /// A session room accepts exactly three commands from a client socket;
+    /// everything else is control-plane authority (budget signals, approval
+    /// decisions, archival) and reaches the daemon only through an
+    /// authenticated REST handler. A client that sends anything else is
+    /// closed rather than ignored.
+    #[must_use]
+    pub const fn is_client_command(&self) -> bool {
+        matches!(
+            self,
+            Self::UserMessage { .. } | Self::Interrupt | Self::TerminalInput { .. }
+        )
+    }
+}
+
+/// What a browser attached to a session room receives.
+///
+/// A superset of the harness stream: everything a
+/// [`DaemonToControl`] frame carries that a user may see, plus the
+/// control-plane facts the daemon never knows about (an approval's
+/// decision, a lifecycle change).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClientEvent {
+    /// A normalized harness event.
+    Harness {
+        /// The event.
+        event: HarnessEvent,
+    },
+    /// The harness announced its native session id.
+    Started {
+        /// Harness-native session id.
+        harness_session_id: String,
+    },
+    /// The capability tokens the harness advertises. Newest set wins.
+    Capabilities {
+        /// The capability tokens, as the harness names them.
+        capabilities: Vec<String>,
+    },
+    /// An approval is waiting for the user.
+    ApprovalPending {
+        /// The approval.
+        id: ApprovalId,
+        /// What is being approved.
+        payload: ApprovalPayload,
+    },
+    /// An approval was decided — by this browser, another one, or the API.
+    ApprovalDecided {
+        /// The approval.
+        id: ApprovalId,
+        /// What was decided.
+        decision: ApprovalDecision,
+    },
+    /// The session moved through its lifecycle.
+    SessionStateChanged {
+        /// The state it moved to.
+        state: SessionState,
+    },
+    /// A usage snapshot for the UI meters.
+    Usage {
+        /// The snapshot.
+        usage: UsageReport,
+    },
+    /// Raw terminal output for the web terminal.
+    TerminalOutput {
+        /// UTF-8 lossy terminal bytes.
+        data: String,
+    },
+    /// The repo has uncommitted changes and the agent is kept awake.
+    RepoDirty {
+        /// `git status --porcelain` summary shown to the user.
+        summary: String,
+    },
+    /// The provider announced imminent spot reclamation.
+    SpotNotice {
+        /// Seconds until reclamation, as announced.
+        seconds_remaining: u32,
+    },
+}
+
+impl ClientEvent {
+    /// The client-facing form of a daemon frame, if browsers see it at all.
+    ///
+    /// [`DaemonToControl::Hello`] is handshake traffic and never reaches a
+    /// browser; an [`DaemonToControl::ApprovalRequest`] becomes
+    /// [`Self::ApprovalPending`], because "pending" is the state the UI
+    /// renders rather than the act of asking.
+    #[must_use]
+    pub fn from_daemon(frame: DaemonToControl) -> Option<Self> {
+        match frame {
+            DaemonToControl::Hello { .. } => None,
+            DaemonToControl::Started { harness_session_id } => {
+                Some(Self::Started { harness_session_id })
+            }
+            DaemonToControl::Capabilities { capabilities } => {
+                Some(Self::Capabilities { capabilities })
+            }
+            DaemonToControl::Harness { event } => Some(Self::Harness { event }),
+            DaemonToControl::Usage { usage } => Some(Self::Usage { usage }),
+            DaemonToControl::ApprovalRequest { id, payload } => {
+                Some(Self::ApprovalPending { id, payload })
+            }
+            DaemonToControl::TerminalOutput { data } => Some(Self::TerminalOutput { data }),
+            DaemonToControl::RepoDirty { summary } => Some(Self::RepoDirty { summary }),
+            DaemonToControl::SpotNotice { seconds_remaining } => {
+                Some(Self::SpotNotice { seconds_remaining })
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl};
+    use crate::budget::BudgetSignal;
+    use crate::harness::{ContextWindow, HarnessEvent, UsageReport};
+    use crate::id::{ApprovalId, SessionId};
+    use crate::money::Usd;
+    use crate::session::SessionState;
+
+    /// Round-trips through the JSON *text*, not through `serde_json::Value`.
+    ///
+    /// A `Value` is a map, so it silently keeps the last of two identical
+    /// keys — exactly the duplicate-`type` bug this protocol is shaped to
+    /// avoid. Only the text form proves a frame survives the wire.
+    fn round_trip<T>(value: &T)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + core::fmt::Debug,
+    {
+        let json = serde_json::to_string(value).expect("serialize");
+        let back: T = serde_json::from_str(&json)
+            .unwrap_or_else(|error| panic!("{json} did not deserialize: {error}"));
+        assert_eq!(&back, value);
+    }
+
+    fn usage() -> UsageReport {
+        UsageReport {
+            input_tokens: 12,
+            output_tokens: 34,
+            context: Some(ContextWindow {
+                used_tokens: 1_000,
+                size_tokens: 200_000,
+            }),
+            estimated_cost: Some(Usd::from_cents(7)),
+        }
+    }
+
+    fn harness_event() -> HarnessEvent {
+        HarnessEvent::AssistantDelta {
+            turn_id: "turn-1".to_owned(),
+            text: "hello".to_owned(),
+        }
+    }
+
+    fn payload() -> ApprovalPayload {
+        ApprovalPayload::ToolUse {
+            tool: "Bash".to_owned(),
+            input: serde_json::json!({ "command": "ls" }),
+        }
+    }
+
+    fn every_daemon_frame() -> Vec<DaemonToControl> {
+        vec![
+            DaemonToControl::Hello {
+                protocol_version: crate::WIRE_PROTOCOL_VERSION,
+                session: SessionId::generate(),
+            },
+            DaemonToControl::Started {
+                harness_session_id: "9d0f4b1a".to_owned(),
+            },
+            DaemonToControl::Capabilities {
+                capabilities: vec!["can_use_tool".to_owned()],
+            },
+            DaemonToControl::Harness {
+                event: harness_event(),
+            },
+            DaemonToControl::Usage { usage: usage() },
+            DaemonToControl::ApprovalRequest {
+                id: ApprovalId::generate(),
+                payload: payload(),
+            },
+            DaemonToControl::TerminalOutput {
+                data: "$ ls\n".to_owned(),
+            },
+            DaemonToControl::RepoDirty {
+                summary: " M src/lib.rs".to_owned(),
+            },
+            DaemonToControl::SpotNotice {
+                seconds_remaining: 30,
+            },
+        ]
+    }
+
+    fn every_control_frame() -> Vec<ControlToDaemon> {
+        vec![
+            ControlToDaemon::Welcome,
+            ControlToDaemon::UserMessage {
+                text: "what does this crate do?".to_owned(),
+            },
+            ControlToDaemon::Interrupt,
+            ControlToDaemon::ApprovalDecision {
+                id: ApprovalId::generate(),
+                decision: ApprovalDecision::Approved,
+            },
+            ControlToDaemon::Budget {
+                signal: BudgetSignal::Pause,
+            },
+            ControlToDaemon::TerminalInput {
+                data: "ls\n".to_owned(),
+            },
+            ControlToDaemon::Archive,
+        ]
+    }
 
     #[test]
-    fn wire_messages_round_trip() {
-        let msg = DaemonToControl::Hello {
-            protocol_version: crate::WIRE_PROTOCOL_VERSION,
-            session: SessionId::generate(),
-        };
-        let json = serde_json::to_string(&msg).expect("serialize");
-        let back: DaemonToControl = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(msg, back);
+    fn every_daemon_frame_survives_the_wire() {
+        for frame in every_daemon_frame() {
+            round_trip(&frame);
+        }
+    }
+
+    #[test]
+    fn every_control_frame_survives_the_wire() {
+        for frame in every_control_frame() {
+            round_trip(&frame);
+        }
+    }
+
+    #[test]
+    fn every_client_event_survives_the_wire() {
+        let events = [
+            ClientEvent::Harness {
+                event: harness_event(),
+            },
+            ClientEvent::Started {
+                harness_session_id: "9d0f4b1a".to_owned(),
+            },
+            ClientEvent::Capabilities {
+                capabilities: vec!["can_use_tool".to_owned()],
+            },
+            ClientEvent::ApprovalPending {
+                id: ApprovalId::generate(),
+                payload: payload(),
+            },
+            ClientEvent::ApprovalDecided {
+                id: ApprovalId::generate(),
+                decision: ApprovalDecision::Denied,
+            },
+            ClientEvent::SessionStateChanged {
+                state: SessionState::Archived,
+            },
+            ClientEvent::Usage { usage: usage() },
+            ClientEvent::TerminalOutput {
+                data: "$ ls\n".to_owned(),
+            },
+            ClientEvent::RepoDirty {
+                summary: " M src/lib.rs".to_owned(),
+            },
+            ClientEvent::SpotNotice {
+                seconds_remaining: 30,
+            },
+        ];
+        for event in events {
+            round_trip(&event);
+        }
+    }
+
+    #[test]
+    fn a_nested_enum_keeps_both_tags_apart() {
+        // The regression this protocol's shape exists to prevent: an
+        // internally-tagged newtype variant wrapping another
+        // internally-tagged enum writes `type` twice.
+        let json = serde_json::to_string(&DaemonToControl::Harness {
+            event: harness_event(),
+        })
+        .expect("serialize");
+        assert_eq!(json.matches("\"type\"").count(), 2);
+        assert!(json.contains(r#""type":"harness""#));
+        assert!(json.contains(r#""event":{"type":"assistant_delta""#));
     }
 
     #[test]
     fn tagged_encoding_is_stable() {
-        let msg = ControlToDaemon::Budget(BudgetSignal::Pause);
-        let json = serde_json::to_value(&msg).expect("serialize");
-        assert_eq!(json["type"], "budget");
+        let json = serde_json::to_string(&ControlToDaemon::Budget {
+            signal: BudgetSignal::Pause,
+        })
+        .expect("serialize");
+        assert_eq!(json, r#"{"type":"budget","signal":"pause"}"#);
+    }
+
+    #[test]
+    fn a_client_may_only_drive_the_turn() {
+        for frame in every_control_frame() {
+            let allowed = matches!(
+                frame,
+                ControlToDaemon::UserMessage { .. }
+                    | ControlToDaemon::Interrupt
+                    | ControlToDaemon::TerminalInput { .. }
+            );
+            assert_eq!(frame.is_client_command(), allowed, "{frame:?}");
+        }
+    }
+
+    #[test]
+    fn only_the_handshake_is_hidden_from_browsers() {
+        for frame in every_daemon_frame() {
+            let hidden = matches!(frame, DaemonToControl::Hello { .. });
+            assert_eq!(ClientEvent::from_daemon(frame.clone()).is_none(), hidden);
+        }
+    }
+
+    #[test]
+    fn an_approval_request_reaches_browsers_as_a_pending_approval() {
+        let id = ApprovalId::generate();
+        assert_eq!(
+            ClientEvent::from_daemon(DaemonToControl::ApprovalRequest {
+                id,
+                payload: payload(),
+            }),
+            Some(ClientEvent::ApprovalPending {
+                id,
+                payload: payload(),
+            })
+        );
     }
 }

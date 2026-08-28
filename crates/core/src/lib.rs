@@ -24,8 +24,8 @@ pub mod wire;
 
 pub use approval::{ApprovalState, ApprovalView, DecideApproval};
 pub use auth::{
-    ApiKeySummary, AuthorizeUrl, CreateApiKey, CreatedApiKey, CurrentUser, SESSION_CAP_DEFAULT,
-    SESSION_CAP_MAX, SESSION_CAP_MIN, UpdateMe,
+    ApiKeySummary, AuthorizeUrl, CreateApiKey, CreatedApiKey, CurrentUser, DAEMON_TOKEN_PREFIX,
+    DaemonToken, SESSION_CAP_DEFAULT, SESSION_CAP_MAX, SESSION_CAP_MIN, UpdateMe,
 };
 pub use budget::{
     BudgetConfig, BudgetSignal, BudgetStage, BudgetState, BudgetView, SpendEvent, SpendKind,
@@ -42,6 +42,7 @@ pub use repo::RepoSlug;
 pub use session::{
     CreateSession, SessionDetail, SessionState, SessionSummary, SessionTransitionError,
 };
+pub use wire::{ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl};
 
 /// Version of the daemon⇄control-plane wire protocol.
 ///

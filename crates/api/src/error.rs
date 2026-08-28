@@ -7,7 +7,7 @@
 
 use flyco_core::{ApprovalState, Problem, SessionState};
 use skyzen::{Response, StatusCode};
-use skyzen_services::{DbError, KvError};
+use skyzen_services::{DbError, KvError, StorageError};
 
 use crate::crypto::CryptoError;
 use crate::github::GithubError;
@@ -108,6 +108,55 @@ pub enum ApiError {
     #[error("`{0}` is not a valid identifier", status = StatusCode::BAD_REQUEST)]
     MalformedId(String),
 
+    /// A transcript stream key is not a single safe path segment.
+    #[error(
+        "`{0}` is not a transcript stream key: use letters, digits, `.`, `_`, and `-` only",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    InvalidStreamKey(String),
+
+    /// A transcript batch sequence number is wider than the key format.
+    #[error(
+        "batch sequence {seq} is beyond the largest a transcript key can address",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    BatchSeqOutOfRange {
+        /// The sequence number that was submitted.
+        seq: u64,
+    },
+
+    /// A transcript batch with this sequence number is already stored.
+    ///
+    /// Batches are immutable: overwriting one would silently reorder the
+    /// transcript, so a repeat is a conflict rather than an update.
+    #[error(
+        "transcript batch {seq} is already stored and batches are immutable",
+        status = StatusCode::CONFLICT
+    )]
+    BatchAlreadyStored {
+        /// The sequence number that was submitted again.
+        seq: u64,
+    },
+
+    /// The presented daemon token does not pair with this session.
+    #[error("the presented credential is not this session's daemon token", status = StatusCode::UNAUTHORIZED)]
+    InvalidDaemonCredential,
+
+    /// The live relay is not available on this build of the control plane.
+    #[error(
+        "this control plane does not host session relays: {0}",
+        status = StatusCode::NOT_IMPLEMENTED
+    )]
+    RelayUnavailable(&'static str),
+
+    /// The session's Durable Object could not be reached, or refused.
+    #[error("the session room failed: {0}", status = StatusCode::BAD_GATEWAY)]
+    Room(String),
+
+    /// Object storage failed.
+    #[error("object storage failed: {0}")]
+    Storage(#[from] StorageError),
+
     /// A stored row does not match the schema the control plane expects.
     #[error("stored record is inconsistent: {0}")]
     CorruptRecord(&'static str),
@@ -152,11 +201,18 @@ impl ApiError {
             Self::InvalidBudget => "invalid-budget",
             Self::InvalidSessionCap { .. } => "invalid-session-cap",
             Self::MalformedId(_) => "malformed-id",
+            Self::InvalidStreamKey(_) => "invalid-stream-key",
+            Self::BatchSeqOutOfRange { .. } => "batch-seq-out-of-range",
+            Self::BatchAlreadyStored { .. } => "batch-already-stored",
+            Self::InvalidDaemonCredential => "invalid-daemon-credential",
+            Self::RelayUnavailable(_) => "relay-unavailable",
+            Self::Room(_) => "session-room-unavailable",
             Self::Github(_) => "github-unavailable",
             Self::CorruptRecord(_)
             | Self::ServiceMissing(_)
             | Self::Kv(_)
             | Self::Db(_)
+            | Self::Storage(_)
             | Self::Crypto(_) => "internal",
         }
     }
@@ -165,9 +221,23 @@ impl ApiError {
     pub(crate) const fn challenge(&self) -> Option<Challenge> {
         match self {
             Self::MissingCredential => Some(Challenge::Bearer),
-            Self::InvalidCredential => Some(Challenge::InvalidToken),
+            Self::InvalidCredential | Self::InvalidDaemonCredential => {
+                Some(Challenge::InvalidToken)
+            }
             _ => None,
         }
+    }
+
+    /// Whether this failure's explanation must stay in the log.
+    ///
+    /// Anything that broke on flyco's side describes itself only to the
+    /// operator. The one exception is a deliberate, documented refusal —
+    /// [`RelayUnavailable`](Self::RelayUnavailable) — where the whole point
+    /// of the status code is to tell the caller which capability this build
+    /// does not have.
+    fn is_opaque(&self) -> bool {
+        !matches!(self, Self::RelayUnavailable(_))
+            && skyzen::HttpError::status(self).is_server_error()
     }
 
     /// The RFC 9457 document describing this failure.
@@ -184,7 +254,7 @@ impl ApiError {
             tracing::debug!(error = %self, "rejected a request");
         }
 
-        let detail = if status.is_server_error() {
+        let detail = if self.is_opaque() {
             SERVER_DETAIL.to_owned()
         } else {
             self.to_string()
