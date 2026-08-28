@@ -33,6 +33,16 @@ The wire protocol is `flyco_core::wire` (`DaemonToControl` / `ControlToDaemon`),
 
 Both are normalized to `flyco_core::harness::HarnessEvent`. Feature parity is tracked in [feature-matrix.md](feature-matrix.md) — "ALL features" is a matrix with per-release gaps, not an untracked promise.
 
+### The Claude Code sidecar
+
+`crates/daemon/sidecar/` is a Bun TypeScript project embedded in the `flycod` binary (`rust-embed`, excluding the in-tree `node_modules/`) and materialized to a working directory at startup, where `bun install --frozen-lockfile` runs once. flycod speaks a line protocol to it over stdio — `crates/daemon/src/harness/claude/protocol.rs` and `sidecar/protocol.ts` (zod), pinned against each other by `crates/daemon/fixtures/protocol/`, one canonical JSON document per message variant that both test suites decode, re-encode, and compare byte for byte.
+
+The sidecar owns the SDK session and nothing else: it forwards every SDK message out verbatim, parks `canUseTool` and `SessionStore` calls on flycod, and ends turns through `interrupt()`. Every interpretation happens in Rust. Normalization is documented-drop: message types flyco does not model are logged at `debug` and dropped, because the SDK adds them on Anthropic's release schedule. Assistant text comes only from partial-message deltas (`includePartialMessages`), and the turn id is flyco's own — the Agent SDK has no turn identity, only a session, messages, and a terminal `result`.
+
+Auth has two shapes, and they are one decision: `inherit` (no `CLAUDE_CONFIG_DIR`, no credential injection — the developer-machine mode, which reads the host's own `~/.claude`), or an injected credential that always carries its own isolated config tree and project key.
+
+Until the control-plane WebSocket client lands, `flycod run` drives a session from a line-oriented stdin REPL and prints `SessionOutput` values as JSON lines on stdout. It stays afterwards as the dev tool for reproducing a harness bug without provisioning a VM.
+
 ### Takeover enforcement (strongest first)
 
 Claude Code: `/etc/claude-code/managed-settings.json` + `managed-mcp.json` (root-owned, outrank everything) with `allowManagedPermissionRulesOnly`, `allowManagedMcpServersOnly`, `disableSideloadFlags`, `autoMemoryEnabled: false`, absolute-path deny rules (bind even in bypass mode); `PreToolUse` hook exit-2 backstop; managed policy CLAUDE.md carries the shared AGENTS.md. Codex: MCP allowlist (id + identity) + root-owned `config.toml` + hooks. Both: config dirs unwritable by the agent user. Sanctioned mutations go through flycod's local stdio MCP server: `memory_*` (tree), `skill_upload`, `agentsmd_change_request` (→ user approval), `machine_resize`, `budget_status`.

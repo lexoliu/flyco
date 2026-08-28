@@ -1,0 +1,30 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "uuid": "0f0a3d8e-2f2b-4f77-9b2e-5c9ab4d2e007",
+  "session_id": "9d0f4b1a-3b7e-4a3e-9e1a-4c2f8b6d7a10",
+  "is_error": false,
+  "duration_ms": 8421,
+  "duration_api_ms": 7930,
+  "num_turns": 3,
+  "result": "The crate is the flyco execution-plane daemon.",
+  "total_cost_usd": 0.0421355,
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 1200,
+    "cache_read_input_tokens": 33200,
+    "output_tokens": 210
+  },
+  "modelUsage": {
+    "claude-sonnet-4-5-20250929": {
+      "inputTokens": 4,
+      "outputTokens": 210,
+      "cacheReadInputTokens": 33200,
+      "cacheCreationInputTokens": 1200,
+      "webSearchRequests": 0,
+      "costUSD": 0.0421355,
+      "contextWindow": 200000
+    }
+  },
+  "permission_denials": []
+}

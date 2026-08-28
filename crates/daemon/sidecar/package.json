@@ -1,0 +1,19 @@
+{
+  "name": "flyco-claude-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "flycod's Claude Agent SDK sidecar: it owns the SDK session and speaks the flycod line protocol over stdio.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.250",
+    "zod": "4.1.13"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.4",
+    "typescript": "5.9.3"
+  }
+}
