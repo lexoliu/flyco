@@ -12,7 +12,7 @@
         "operationId": "flyco_api::agents_md::get_agents_md",
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -43,7 +43,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -55,7 +55,7 @@
         "operationId": "flyco_api::app::list_api_keys",
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -86,7 +86,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -108,7 +108,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -154,7 +154,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -197,7 +197,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -220,7 +220,7 @@
         "operationId": "flyco_api::oauth::start",
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -246,7 +246,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -258,7 +258,7 @@
         "operationId": "flyco_api::harness_accounts::list_harness_accounts",
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -280,7 +280,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -320,7 +320,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -342,7 +342,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -431,7 +431,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -443,7 +443,7 @@
         "operationId": "flyco_api::mcp::list_mcp_servers",
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -506,7 +506,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -526,7 +526,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -577,7 +577,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -651,7 +651,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -693,7 +693,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -773,7 +773,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -793,7 +793,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -841,7 +841,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -853,7 +853,7 @@
         "operationId": "flyco_api::provider_accounts::list_providers",
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -927,7 +927,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -949,7 +949,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1018,7 +1018,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1030,7 +1030,7 @@
         "operationId": "flyco_api::push::vapid_public_key",
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1042,7 +1042,7 @@
         "operationId": "flyco_api::app::list_sessions",
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -1109,7 +1109,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1152,7 +1152,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1174,7 +1174,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1196,7 +1196,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1218,7 +1218,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -1262,7 +1262,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1298,7 +1298,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1320,7 +1320,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1342,7 +1342,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1385,7 +1385,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1407,7 +1407,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1429,7 +1429,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1472,7 +1472,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1494,7 +1494,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1558,7 +1558,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1580,7 +1580,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1694,7 +1694,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1706,7 +1706,7 @@
         "operationId": "flyco_api::skills::list_skills",
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -1769,7 +1769,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       },
@@ -1789,7 +1789,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1819,7 +1819,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1831,7 +1831,7 @@
         "operationId": "flyco_api::harness_accounts::llm_usage",
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
@@ -1854,7 +1854,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
