@@ -17,7 +17,7 @@ use skyzen_services::Db;
 
 use crate::config::ApiConfig;
 use crate::problem::Outcome;
-use crate::respond::WithStatus;
+use crate::respond::Created;
 
 /// Reports the VAPID public key browsers subscribe against.
 #[skyzen::openapi]
@@ -31,7 +31,7 @@ async fn subscribe_push(
     State(_user): State<CurrentUser>,
     Json(_subscription): Json<PushSubscription>,
     _db: Db,
-) -> Outcome<WithStatus<Json<PushSubscriptionView>>> {
+) -> Outcome<Created<Json<PushSubscriptionView>>> {
     todo!("M5: upsert on the endpoint, so a re-subscribing browser is not notified twice")
 }
 

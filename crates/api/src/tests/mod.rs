@@ -5,5 +5,6 @@
 
 mod contract;
 mod relay;
+mod responses;
 mod room;
 mod sessions;

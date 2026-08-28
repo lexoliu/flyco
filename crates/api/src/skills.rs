@@ -19,7 +19,7 @@ use skyzen::utils::{Bytes, Json, State};
 use skyzen_services::{Db, Storage};
 
 use crate::problem::Outcome;
-use crate::respond::WithStatus;
+use crate::respond::Created;
 
 /// What an uploaded zip is stored as.
 #[derive(Debug, Deserialize, skyzen::ToSchema)]
@@ -45,7 +45,7 @@ async fn upload_skill(
     _storage: Storage,
     _db: Db,
     _body: Bytes,
-) -> Outcome<WithStatus<Json<SkillView>>> {
+) -> Outcome<Created<Json<SkillView>>> {
     todo!("M6: validate the zip, store it in R2, upsert the row, propagate to live sessions")
 }
 

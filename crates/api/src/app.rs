@@ -24,13 +24,13 @@ use crate::github::{GithubOauth, ZenwaveGithub};
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
 use crate::relay::{RelayTicket, TicketQuery};
-use crate::respond::{WithStatus, created, no_content};
+use crate::respond::{Created, no_content};
 use crate::room::EventPage;
 use crate::rooms::Rooms;
 use crate::{
     agents_md, api_keys, approvals, daemon_tokens, database, harness_accounts, machines, mcp,
-    memory, oauth, problem, provider_accounts, push, relay, repos, sessions, skills, transcripts,
-    users, webhooks,
+    memory, oauth, problem, provider_accounts, push, relay, repos, responses, sessions, skills,
+    transcripts, users, webhooks,
 };
 
 /// Health probe response.
@@ -136,7 +136,7 @@ async fn create_session(
     State(user): State<CurrentUser>,
     Json(request): Json<CreateSession>,
     db: Db,
-) -> Outcome<WithStatus<Json<SessionDetail>>> {
+) -> Outcome<Created<Json<SessionDetail>>> {
     start_session(&user, request, &db).await.into()
 }
 
@@ -144,7 +144,7 @@ async fn start_session(
     user: &CurrentUser,
     request: CreateSession,
     db: &Db,
-) -> Result<WithStatus<Json<SessionDetail>>, ApiError> {
+) -> Result<Created<Json<SessionDetail>>, ApiError> {
     let repo = request
         .repo
         .parse::<RepoSlug>()
@@ -162,7 +162,7 @@ async fn start_session(
     .await?;
 
     tracing::info!(repo = %repo, harness = ?request.harness, spot = request.spot, "opened a session");
-    Ok(created(Json(session)))
+    Ok(Created(Json(session)))
 }
 
 /// Lists the caller's sessions, newest first.
@@ -561,7 +561,7 @@ async fn raise_approval(
     State(session): State<DaemonSession>,
     Json(payload): Json<ApprovalPayload>,
     db: Db,
-) -> Outcome<WithStatus<Json<ApprovalView>>> {
+) -> Outcome<Created<Json<ApprovalView>>> {
     record_approval(session.0, &payload, &db).await.into()
 }
 
@@ -569,11 +569,11 @@ async fn record_approval(
     session: SessionId,
     payload: &ApprovalPayload,
     db: &Db,
-) -> Result<WithStatus<Json<ApprovalView>>, ApiError> {
+) -> Result<Created<Json<ApprovalView>>, ApiError> {
     let id = approvals::raise(db, session, payload).await?;
     let view = approvals::find_for_session(db, session, id).await?;
     tracing::info!(%session, "a daemon raised an approval");
-    Ok(created(Json(view)))
+    Ok(Created(Json(view)))
 }
 
 /// Stores one batch of a session's transcript.
@@ -665,10 +665,10 @@ fn public_routes<G: GithubOauth>() -> Vec<RouteNode> {
 ///
 /// Neither carries a user credential — one presents a session's daemon
 /// token, the other a single-use ticket — so they authenticate themselves
-/// rather than sitting behind [`RequireAuth`]. They are also the only
-/// routes whose success is not a document, so they are left out of the
-/// `OpenAPI` export: a `101` with a socket attached is not something the
-/// spec's response model can describe.
+/// rather than sitting behind [`RequireAuth`]. Their success is a `101`
+/// with a socket attached, which the `OpenAPI` response model cannot
+/// describe, so they export a path and nothing about what comes back —
+/// see [`responses::UNDECLARED`](crate::responses::UNDECLARED).
 fn relay_routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/sessions/{id}/relay/daemon".at(open_daemon_relay),
@@ -774,66 +774,6 @@ const fn with_rooms(route: Route) -> Route {
     route
 }
 
-/// Adds `T` — and everything `T` refers to — to a document's components.
-///
-/// `utoipa`'s derive walks a type's own references, so registering the
-/// outermost DTO of a response is enough to bring the whole tree with it.
-fn register<T: utoipa::ToSchema>(components: &mut utoipa::openapi::Components) {
-    let mut collected = vec![(T::name().into_owned(), T::schema())];
-    T::schemas(&mut collected);
-    components.schemas.extend(collected);
-}
-
-/// Registers every DTO the control plane *returns*.
-///
-/// Request bodies and query strings reach the document on their own, through
-/// the `#[skyzen::openapi]` annotation on each handler. Responses do not:
-/// almost every handler answers with [`Outcome`], and skyzen 0.1.2 gates
-/// `Responder::openapi` behind a provided method a downstream crate cannot
-/// implement, so the response half of the contract would otherwise be
-/// missing from the export and the generated TypeScript client would have
-/// nothing to name. Naming the types here puts them in `components.schemas`,
-/// which is what a client generator reads.
-///
-/// A type listed here that no route returns is dead weight in the client, so
-/// this list is maintained against the routes rather than against the domain
-/// model — `flyco_core` holds types (wire frames, the budget engine's
-/// internals) that deliberately never appear.
-fn register_response_schemas(spec: &mut utoipa::openapi::OpenApi) {
-    let components = spec
-        .components
-        .get_or_insert_with(utoipa::openapi::Components::new);
-
-    register::<flyco_core::AgentsDocument>(components);
-    register::<flyco_core::ApiKeySummary>(components);
-    register::<flyco_core::ApprovalView>(components);
-    register::<flyco_core::AuthorizeUrl>(components);
-    register::<flyco_core::BudgetView>(components);
-    register::<flyco_core::CloudUsageView>(components);
-    register::<flyco_core::CreatedApiKey>(components);
-    register::<flyco_core::DaemonToken>(components);
-    register::<flyco_core::EnvDocument>(components);
-    register::<flyco_core::HarnessAccountView>(components);
-    register::<flyco_core::LlmUsageView>(components);
-    register::<flyco_core::MachineCatalogEntry>(components);
-    register::<flyco_core::MachineView>(components);
-    register::<flyco_core::McpServerView>(components);
-    register::<flyco_core::MemoryNode>(components);
-    register::<flyco_core::Problem>(components);
-    register::<flyco_core::ProviderAccountView>(components);
-    register::<flyco_core::ProviderBonusHint>(components);
-    register::<flyco_core::PushSubscriptionView>(components);
-    register::<flyco_core::RepoStatus>(components);
-    register::<flyco_core::RepoSummary>(components);
-    register::<flyco_core::SessionDetail>(components);
-    register::<flyco_core::SessionSummary>(components);
-    register::<flyco_core::SkillView>(components);
-    register::<flyco_core::TurnPage>(components);
-    register::<flyco_core::VapidPublicKey>(components);
-    register::<crate::relay::RelayTicket>(components);
-    register::<crate::room::EventPage>(components);
-}
-
 /// The `OpenAPI` document describing the control plane.
 ///
 /// Only debug native builds collect handler metadata (skyzen gathers it
@@ -857,7 +797,7 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
     // describes flyco's API, whose version is the `/v1` prefix. Using the
     // crate version instead would churn the checked-in file on every release.
     spec.info = utoipa::openapi::Info::new("Flyco control plane", "v1");
-    register_response_schemas(&mut spec);
+    responses::describe(&mut spec);
     spec
 }
 
