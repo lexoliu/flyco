@@ -46,6 +46,22 @@ pub enum ApiError {
     #[error("approval not found", status = StatusCode::NOT_FOUND)]
     ApprovalNotFound,
 
+    /// The memory node does not exist, or belongs to somebody else.
+    #[error("memory node not found", status = StatusCode::NOT_FOUND)]
+    MemoryNodeNotFound,
+
+    /// No daemon has reported this session's working tree yet.
+    ///
+    /// Distinct from "the tree is clean": nothing has looked. Answering
+    /// `dirty: false` would be inventing a fact the control plane does not
+    /// have, and archiving on the strength of it is exactly the mistake the
+    /// route exists to prevent.
+    #[error(
+        "no daemon has reported this session's working tree yet",
+        status = StatusCode::NOT_FOUND
+    )]
+    RepoStatusUnknown,
+
     /// The caller already holds as many live sessions as they may.
     #[error(
         "you already hold {cap} sessions, which is your limit; archive one first",
@@ -78,12 +94,29 @@ pub enum ApiError {
         state: ApprovalState,
     },
 
+    /// The session is not running, so it cannot be driven.
+    #[error(
+        "this session is {state:?}, and only an active session can be driven",
+        status = StatusCode::CONFLICT
+    )]
+    SessionNotActive {
+        /// The state the session is actually in.
+        state: SessionState,
+    },
+
     /// The submitted repository is not `owner/name`.
     #[error(
         "`{0}` is not a GitHub repository in `owner/name` form",
         status = StatusCode::UNPROCESSABLE_ENTITY
     )]
     InvalidRepo(String),
+
+    /// An environment variable name is not one a shell can export.
+    #[error(
+        "`{0}` is not an environment variable name: use letters, digits and `_`, not starting with a digit",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    InvalidEnvKey(String),
 
     /// The submitted budget limit cannot fund anything.
     #[error(
@@ -194,10 +227,14 @@ impl ApiError {
             Self::ApiKeyNotFound => "api-key-not-found",
             Self::SessionNotFound => "session-not-found",
             Self::ApprovalNotFound => "approval-not-found",
+            Self::MemoryNodeNotFound => "memory-node-not-found",
+            Self::RepoStatusUnknown => "repo-status-unknown",
+            Self::SessionNotActive { .. } => "session-not-active",
             Self::SessionCapReached { .. } => "session-cap-reached",
             Self::InvalidTransition { .. } => "invalid-session-transition",
             Self::ApprovalAlreadyDecided { .. } => "approval-already-decided",
             Self::InvalidRepo(_) => "invalid-repo",
+            Self::InvalidEnvKey(_) => "invalid-env-key",
             Self::InvalidBudget => "invalid-budget",
             Self::InvalidSessionCap { .. } => "invalid-session-cap",
             Self::MalformedId(_) => "malformed-id",

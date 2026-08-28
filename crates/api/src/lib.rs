@@ -18,6 +18,7 @@ pub mod config;
 pub mod crypto;
 pub mod daemon_tokens;
 pub mod database;
+pub mod env;
 pub mod error;
 pub mod expiring;
 pub mod extract;

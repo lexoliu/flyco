@@ -6,20 +6,32 @@
 //! rather than a grep over a directory of Markdown. The agent reaches the
 //! same store through flycod's `memory_*` MCP tools; these routes are what
 //! the user's own UI reads and writes.
+//!
+//! Every statement below carries `user_id` in its `WHERE` clause, including
+//! the ones that already have a primary key to go on: a node belonging to
+//! somebody else is indistinguishable from one that does not exist, and the
+//! scope is the query rather than a check beside it that a later edit could
+//! forget.
 
-use flyco_core::{CreateMemoryNode, CurrentUser, MemoryNode, MemoryNodeId, UpdateMemoryNode};
-use serde::Deserialize;
+use flyco_core::{
+    CreateMemoryNode, CurrentUser, MemoryNode, MemoryNodeId, RepoSlug, UpdateMemoryNode, UserId,
+};
+use serde::{Deserialize, Serialize};
 use skyzen::Response;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
+use crate::clock::now_unix;
+use crate::error::ApiError;
+use crate::extract::path_id;
 use crate::problem::Outcome;
-use crate::respond::Created;
+use crate::respond::{Created, no_content};
+use crate::sql::{from_column, to_column};
 
 /// Which level of the tree to list.
-#[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
+#[derive(Debug, Default, Deserialize, Serialize, skyzen::ToSchema)]
 pub struct MemoryFilter {
     /// Only nodes about this repository, `owner/name`. Omitted lists the
     /// memory that applies wherever the caller's agents run.
@@ -28,55 +40,238 @@ pub struct MemoryFilter {
     pub parent: Option<MemoryNodeId>,
 }
 
+/// The columns every read on this path projects.
+#[derive(Debug, Deserialize)]
+struct MemoryRow {
+    id: String,
+    parent_id: Option<String>,
+    repo: Option<String>,
+    title: String,
+    content: String,
+    updated_at_unix: i64,
+}
+
+impl TryFrom<MemoryRow> for MemoryNode {
+    type Error = ApiError;
+
+    fn try_from(row: MemoryRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row
+                .id
+                .parse()
+                .map_err(|_| ApiError::CorruptRecord("memory_nodes.id is not a UUID"))?,
+            parent: row
+                .parent_id
+                .map(|parent| parent.parse())
+                .transpose()
+                .map_err(|_| ApiError::CorruptRecord("memory_nodes.parent_id is not a UUID"))?,
+            repo: row
+                .repo
+                .map(|repo| repo.parse::<RepoSlug>())
+                .transpose()
+                .map_err(|_| ApiError::CorruptRecord("memory_nodes.repo is not `owner/name`"))?,
+            title: row.title,
+            content: row.content,
+            updated_at_unix: from_column(row.updated_at_unix, "memory_nodes.updated_at_unix")?,
+        })
+    }
+}
+
 /// Lists one level of the caller's memory tree.
 #[skyzen::openapi]
 async fn list_memory(
-    State(_user): State<CurrentUser>,
-    Query(_filter): Query<MemoryFilter>,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    Query(filter): Query<MemoryFilter>,
+    db: Db,
 ) -> Outcome<Json<Vec<MemoryNode>>> {
-    todo!("M3c: list memory_nodes at one level, scoped to the caller and the filter")
+    list(&db, user.id, &filter).await.map(Json).into()
 }
 
 /// Remembers something new.
 #[skyzen::openapi]
 async fn create_memory_node(
-    State(_user): State<CurrentUser>,
-    Json(_request): Json<CreateMemoryNode>,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    Json(request): Json<CreateMemoryNode>,
+    db: Db,
 ) -> Outcome<Created<Json<MemoryNode>>> {
-    todo!("M3c: insert the node, refusing a parent that is not the caller's")
+    create(&db, user.id, request)
+        .await
+        .map(|node| Created(Json(node)))
+        .into()
 }
 
 /// Reads one node of the caller's memory tree.
 #[skyzen::openapi]
 async fn get_memory_node(
-    State(_user): State<CurrentUser>,
-    _params: Params,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    params: Params,
+    db: Db,
 ) -> Outcome<Json<MemoryNode>> {
-    todo!("M3c: read one memory_nodes row scoped to the caller")
+    read(&db, user.id, &params).await.map(Json).into()
 }
 
 /// Edits one node of the caller's memory tree.
 #[skyzen::openapi]
 async fn update_memory_node(
-    State(_user): State<CurrentUser>,
-    _params: Params,
-    Json(_request): Json<UpdateMemoryNode>,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(request): Json<UpdateMemoryNode>,
+    db: Db,
 ) -> Outcome<Json<MemoryNode>> {
-    todo!("M3c: apply the present fields and restamp updated_at_unix")
+    update(&db, user.id, &params, request)
+        .await
+        .map(Json)
+        .into()
 }
 
 /// Forgets one node, and everything under it.
 #[skyzen::openapi]
 async fn delete_memory_node(
-    State(_user): State<CurrentUser>,
-    _params: Params,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    params: Params,
+    db: Db,
 ) -> Outcome<Response> {
-    todo!("M3c: delete the subtree, so no node is left pointing at a parent that is gone")
+    forget(&db, user.id, &params).await.into()
+}
+
+/// Lists the nodes at one level of the tree.
+///
+/// Both halves of the filter are exact rather than "contains": an omitted
+/// `parent` means the roots, and an omitted `repo` means the memory that is
+/// not about any one repository. A listing that folded the two together
+/// would answer a question — "everything, flat" — that the tree exists to
+/// avoid asking.
+async fn list(db: &Db, user: UserId, filter: &MemoryFilter) -> Result<Vec<MemoryNode>, ApiError> {
+    let repo = filter
+        .repo
+        .as_deref()
+        .map(str::parse::<RepoSlug>)
+        .transpose()
+        .map_err(|_| ApiError::InvalidRepo(filter.repo.clone().unwrap_or_default()))?
+        .map(|repo| repo.as_str().to_owned());
+
+    let rows: Vec<MemoryRow> = db
+        .query(
+            "SELECT id, parent_id, repo, title, content, updated_at_unix \
+             FROM memory_nodes WHERE user_id = ? \
+             AND ((? IS NULL AND repo IS NULL) OR repo = ?) \
+             AND ((? IS NULL AND parent_id IS NULL) OR parent_id = ?) \
+             ORDER BY title, id",
+        )
+        .bind(user.to_string())
+        .bind(repo.clone())
+        .bind(repo)
+        .bind(filter.parent.map(|parent| parent.to_string()))
+        .bind(filter.parent.map(|parent| parent.to_string()))
+        .fetch_all()
+        .await?;
+
+    rows.into_iter().map(TryInto::try_into).collect()
+}
+
+/// Inserts a node, refusing a parent the caller does not own.
+///
+/// The parent is checked first because D1 has no foreign-key enforcement to
+/// lean on and a node hanging off a stranger's parent would be reachable
+/// from their tree.
+async fn create(db: &Db, user: UserId, request: CreateMemoryNode) -> Result<MemoryNode, ApiError> {
+    if let Some(parent) = request.parent {
+        load(db, user, parent).await?;
+    }
+
+    let id = MemoryNodeId::generate();
+    db.query(
+        "INSERT INTO memory_nodes \
+         (id, user_id, parent_id, repo, title, content, updated_at_unix) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id.to_string())
+    .bind(user.to_string())
+    .bind(request.parent.map(|parent| parent.to_string()))
+    .bind(request.repo.map(|repo| repo.as_str().to_owned()))
+    .bind(request.title)
+    .bind(request.content)
+    .bind(to_column(now_unix()))
+    .execute()
+    .await?;
+
+    tracing::info!(node = %id, "remembered a memory node");
+    load(db, user, id).await
+}
+
+async fn read(db: &Db, user: UserId, params: &Params) -> Result<MemoryNode, ApiError> {
+    load(db, user, path_id::<MemoryNodeId>(params, "id")?).await
+}
+
+/// Applies the fields a patch carries and restamps the node.
+///
+/// A patch that names nothing is still a write: it restamps
+/// `updated_at_unix`, because "the user looked at this and left it as it is"
+/// is a fact the recall order should reflect.
+async fn update(
+    db: &Db,
+    user: UserId,
+    params: &Params,
+    request: UpdateMemoryNode,
+) -> Result<MemoryNode, ApiError> {
+    let id = path_id::<MemoryNodeId>(params, "id")?;
+    let current = load(db, user, id).await?;
+
+    db.query(
+        "UPDATE memory_nodes SET title = ?, content = ?, updated_at_unix = ? \
+         WHERE id = ? AND user_id = ?",
+    )
+    .bind(request.title.unwrap_or(current.title))
+    .bind(request.content.unwrap_or(current.content))
+    .bind(to_column(now_unix()))
+    .bind(id.to_string())
+    .bind(user.to_string())
+    .execute()
+    .await?;
+
+    load(db, user, id).await
+}
+
+/// Deletes a node and everything under it.
+///
+/// One recursive statement rather than a walk in the handler: D1 has no
+/// transactions, so a walk that failed halfway would leave orphans pointing
+/// at a parent that is gone — and `parent_id` is how the tree is read.
+async fn forget(db: &Db, user: UserId, params: &Params) -> Result<Response, ApiError> {
+    let id = path_id::<MemoryNodeId>(params, "id")?;
+    load(db, user, id).await?;
+
+    db.query(
+        "WITH RECURSIVE subtree(id) AS ( \
+             SELECT id FROM memory_nodes WHERE id = ? AND user_id = ? \
+             UNION ALL \
+             SELECT node.id FROM memory_nodes node \
+             JOIN subtree ON node.parent_id = subtree.id \
+         ) \
+         DELETE FROM memory_nodes WHERE id IN (SELECT id FROM subtree)",
+    )
+    .bind(id.to_string())
+    .bind(user.to_string())
+    .execute()
+    .await?;
+
+    tracing::info!(node = %id, "forgot a memory subtree");
+    Ok(no_content())
+}
+
+/// Loads one of the caller's nodes.
+async fn load(db: &Db, user: UserId, id: MemoryNodeId) -> Result<MemoryNode, ApiError> {
+    let row: Option<MemoryRow> = db
+        .query(
+            "SELECT id, parent_id, repo, title, content, updated_at_unix \
+             FROM memory_nodes WHERE id = ? AND user_id = ?",
+        )
+        .bind(id.to_string())
+        .bind(user.to_string())
+        .fetch_optional()
+        .await?;
+
+    row.ok_or(ApiError::MemoryNodeNotFound)?.try_into()
 }
 
 /// The user-scoped tree-memory routes.

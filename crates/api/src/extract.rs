@@ -1,11 +1,51 @@
-//! Extractors flyco supplies for itself.
+//! Extractors flyco supplies for itself, and the two ways a handler reads a
+//! path parameter.
 
 use core::convert::Infallible;
 use core::future::{Future, ready};
+use core::str::FromStr;
 
 use skyzen::Request;
 use skyzen::extract::Extractor;
 use skyzen::header::{AUTHORIZATION, HeaderMap};
+use skyzen::routing::Params;
+
+use crate::error::ApiError;
+
+/// Reads a path parameter as a typed identifier.
+///
+/// A parameter the router never bound is a routing bug rather than
+/// something a caller can provoke, which is why the two failures are told
+/// apart: one is a 500 the operator sees in the log, the other a 400 that
+/// names the value.
+///
+/// # Errors
+///
+/// Returns [`ApiError::MalformedId`] if the value does not parse, or
+/// [`ApiError::CorruptRecord`] if the router bound no such parameter.
+pub fn path_id<T: FromStr>(params: &Params, name: &'static str) -> Result<T, ApiError> {
+    let value = raw(params, name)?;
+    value
+        .parse()
+        .map_or_else(|_| Err(ApiError::MalformedId(value)), Ok)
+}
+
+/// Reads a path parameter as an owned string.
+///
+/// # Errors
+///
+/// Returns [`ApiError::CorruptRecord`] if the router bound no such
+/// parameter.
+pub fn path_segment(params: &Params, name: &'static str) -> Result<String, ApiError> {
+    raw(params, name)
+}
+
+fn raw(params: &Params, name: &'static str) -> Result<String, ApiError> {
+    params
+        .get(name)
+        .map(ToOwned::to_owned)
+        .map_err(|_| ApiError::CorruptRecord("the router did not bind a path parameter"))
+}
 
 /// The request's headers, verbatim.
 ///
