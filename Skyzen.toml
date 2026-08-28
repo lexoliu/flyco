@@ -1,0 +1,7 @@
+# Deployment manifest for the flyco control plane (crates/flyco-api).
+# Services (KV, D1, R2, Queues, Durable Objects) are added as milestones land;
+# resource IDs are provisioned with wrangler and pasted here (skyzen 0.1.2).
+
+[cloudflare]
+name = "flyco"
+compatibility_date = "2026-08-01"
