@@ -1,0 +1,29 @@
+.status {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+}
+
+.errorPage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  text-align: center;
+}
+
+.errorPage h1 {
+  margin: 0;
+  color: var(--color-danger);
+}
+
+.errorPage p {
+  margin: 0;
+  color: var(--color-text-muted);
+  max-width: 480px;
+}

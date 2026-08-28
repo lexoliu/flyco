@@ -1,0 +1,48 @@
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.labelRow {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.muted {
+  color: var(--color-text-faint);
+  font-style: italic;
+}
+
+.track {
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-border);
+  overflow: hidden;
+}
+
+.fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  transition: width 0.2s ease;
+}
+
+.fill[data-tier="notice"] {
+  background: var(--color-accent);
+}
+
+.fill[data-tier="warn"] {
+  background: var(--color-warning);
+}
+
+.fill[data-tier="final-warn"],
+.fill[data-tier="paused"] {
+  background: var(--color-danger);
+}
+
+.fill[data-tier="unknown"] {
+  background: var(--color-border);
+}
