@@ -1,0 +1,25 @@
+[package]
+name = "flyco-api"
+description = "Flyco control plane: the REST API, session relay, and budget accounting running on Cloudflare Workers via skyzen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+flyco-core.workspace = true
+skyzen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+skyzen-test.workspace = true
+skyzen-services.workspace = true
+
+[lints]
+workspace = true
