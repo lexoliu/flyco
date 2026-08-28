@@ -5,8 +5,8 @@ use core::str::FromStr;
 use flyco_core::{
     ApiKeyId, ApiKeySummary, ApprovalId, ApprovalState, ApprovalView, BudgetConfig, BudgetView,
     ControlToDaemon, CreateApiKey, CreateSession, CreatedApiKey, CurrentUser, DaemonToken,
-    DecideApproval, RepoSlug, SessionDetail, SessionId, SessionState, SessionSummary, UpdateMe,
-    wire::ApprovalPayload,
+    DecideApproval, EnvDocument, RepoSlug, RepoStatus, SendMessage, SessionDetail, SessionId,
+    SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe, wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -28,8 +28,9 @@ use crate::respond::{WithStatus, created, no_content};
 use crate::room::EventPage;
 use crate::rooms::Rooms;
 use crate::{
-    api_keys, approvals, daemon_tokens, database, oauth, problem, relay, sessions, transcripts,
-    users,
+    agents_md, api_keys, approvals, daemon_tokens, database, harness_accounts, machines, mcp,
+    memory, oauth, problem, provider_accounts, push, relay, repos, sessions, skills, transcripts,
+    users, webhooks,
 };
 
 /// Health probe response.
@@ -436,6 +437,119 @@ async fn read_events(
     rooms.events(id, after).await.map(Json)
 }
 
+// ── Driving a session ──
+
+/// Sends a message to a session's agent.
+///
+/// Answers `202`: the message is handed to the session's room and the reply
+/// arrives on the relay, not in this response.
+#[skyzen::openapi]
+async fn send_message(
+    State(_user): State<CurrentUser>,
+    _params: Params,
+    Json(_message): Json<SendMessage>,
+    _rooms: Rooms,
+    _db: Db,
+) -> Outcome<Response> {
+    todo!("M3c: check ownership, then forward the message into the session room")
+}
+
+/// Ends a session's current turn.
+///
+/// The daemon interrupts the harness — SIGINT for Claude Code,
+/// `turn/interrupt` for Codex — which stops the turn without ending the
+/// session.
+#[skyzen::openapi]
+async fn interrupt_session(
+    State(_user): State<CurrentUser>,
+    _params: Params,
+    _rooms: Rooms,
+    _db: Db,
+) -> Outcome<Response> {
+    todo!("M3c: check ownership, then send ControlToDaemon::Interrupt to the session room")
+}
+
+/// Puts an interrupted or archived session back on a machine.
+///
+/// The transcript lives in the control plane, so a session resumes onto
+/// whatever machine is provisioned for it rather than the one it left.
+#[skyzen::openapi]
+async fn resume_session(
+    State(_user): State<CurrentUser>,
+    _params: Params,
+    _db: Db,
+) -> Outcome<Json<SessionDetail>> {
+    todo!("M4: reprovision a machine, re-pair the daemon, and replay the transcript onto it")
+}
+
+/// Where in a session's turn history to read from.
+#[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
+pub struct TurnCursor {
+    /// Opaque cursor from the previous page. Omitted starts at the oldest
+    /// turn.
+    pub cursor: Option<String>,
+    /// How many turns to return; the control plane caps it.
+    pub limit: Option<u32>,
+}
+
+/// Lists a session's turns, oldest first.
+///
+/// Read from the R2 transcript rather than from a table, because the
+/// transcript is what survives a machine: a turn list built from anything
+/// else would disagree with the session a browser replays.
+#[skyzen::openapi]
+async fn list_turns(
+    State(_user): State<CurrentUser>,
+    _params: Params,
+    Query(_cursor): Query<TurnCursor>,
+    _storage: Storage,
+    _db: Db,
+) -> Outcome<Json<TurnPage>> {
+    todo!("M3c: fold the session's transcript batches into turn summaries, one page at a time")
+}
+
+/// Reads a session's `.env`.
+///
+/// The response repeats the standing warning that flyco does not restrict a
+/// session's network access yet, so a client renders the caveat beside the
+/// values instead of hard-coding it.
+#[skyzen::openapi]
+async fn get_session_env(
+    State(_user): State<CurrentUser>,
+    _params: Params,
+    _db: Db,
+) -> Outcome<Json<EnvDocument>> {
+    todo!("M3c: read the session's stored environment and wrap it in EnvDocument::new")
+}
+
+/// Replaces a session's `.env`.
+///
+/// The user's route, and the only one that writes: the agent is given the
+/// environment read-only.
+#[skyzen::openapi]
+async fn put_session_env(
+    State(_user): State<CurrentUser>,
+    _params: Params,
+    Json(_update): Json<UpdateEnv>,
+    _rooms: Rooms,
+    _db: Db,
+) -> Outcome<Json<EnvDocument>> {
+    todo!("M3c: store the entries and push the new environment to the session's daemon")
+}
+
+/// Reports whether a session's working tree has uncommitted changes.
+///
+/// Load-bearing rather than informational: an agent may not stop while the
+/// tree is dirty, and archiving a dirty session warns before the disk goes.
+#[skyzen::openapi]
+async fn get_repo_status(
+    State(_user): State<CurrentUser>,
+    _params: Params,
+    _db: Db,
+) -> Outcome<Json<RepoStatus>> {
+    todo!("M3c: read the working-tree status the daemon last reported for this session")
+}
+
 // ── Daemon-scoped routes ──
 
 /// Raises an approval against the daemon's own session.
@@ -526,15 +640,25 @@ fn path_segment(params: &Params, name: &'static str) -> Result<String, ApiError>
 }
 
 /// Routes that anyone may call.
+///
+/// Three of them are public because they cannot be anything else: a browser
+/// returning from a harness vendor carries no flyco credential, a browser
+/// needs the VAPID public key *before* it can subscribe, and GitHub signs
+/// its webhook deliveries rather than presenting a bearer token. Each says
+/// in its own module how it establishes who is calling.
 fn public_routes<G: GithubOauth>() -> Vec<RouteNode> {
-    Route::new((
+    let mut nodes = Route::new((
         "/v1/healthz".at(healthz),
         "/v1/auth/github".route((
             "/start".post(oauth::start),
             "/callback".at(oauth::callback::<G>),
         )),
     ))
-    .into_route_nodes()
+    .into_route_nodes();
+    nodes.extend(harness_accounts::public_routes());
+    nodes.extend(push::public_routes());
+    nodes.extend(webhooks::routes());
+    nodes
 }
 
 /// The two relay upgrades.
@@ -564,12 +688,21 @@ fn daemon_routes() -> Vec<RouteNode> {
     .into_route_nodes()
 }
 
-/// Routes that require a bearer credential.
-fn authenticated_routes() -> Vec<RouteNode> {
+/// The caller's own account, keys, and approvals.
+fn account_routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/me".at(me).patch(update_me),
         "/v1/api-keys".post(create_api_key).get(list_api_keys),
         "/v1/api-keys/{id}".delete(revoke_api_key),
+        "/v1/approvals".at(list_approvals),
+        "/v1/approvals/{id}/decision".post(decide_approval),
+    ))
+    .into_route_nodes()
+}
+
+/// A session's lifecycle, and driving the agent inside it.
+fn session_routes() -> Vec<RouteNode> {
+    Route::new((
         "/v1/sessions".post(create_session).get(list_sessions),
         "/v1/sessions/{id}".at(get_session),
         "/v1/sessions/{id}/archive".post(archive_session),
@@ -577,11 +710,38 @@ fn authenticated_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/daemon-token".post(create_daemon_token),
         "/v1/sessions/{id}/relay-ticket".post(create_relay_ticket),
         "/v1/sessions/{id}/events".at(get_session_events),
-        "/v1/approvals".at(list_approvals),
-        "/v1/approvals/{id}/decision".post(decide_approval),
+        "/v1/sessions/{id}/messages".post(send_message),
+        "/v1/sessions/{id}/interrupt".post(interrupt_session),
+        "/v1/sessions/{id}/resume".post(resume_session),
+        "/v1/sessions/{id}/turns".at(list_turns),
+        "/v1/sessions/{id}/env"
+            .at(get_session_env)
+            .put(put_session_env),
+        "/v1/sessions/{id}/repo-status".at(get_repo_status),
     ))
-    .middleware(RequireAuth::new(FlycoAuthenticator::new()))
     .into_route_nodes()
+}
+
+/// Routes that require a bearer credential.
+///
+/// One middleware for the whole set: every route below answers to a
+/// `CurrentUser` and to nothing else, so authentication is applied once
+/// here rather than per domain, where a module could forget it.
+fn authenticated_routes() -> Vec<RouteNode> {
+    let mut nodes = account_routes();
+    nodes.extend(session_routes());
+    nodes.extend(agents_md::routes());
+    nodes.extend(harness_accounts::routes());
+    nodes.extend(machines::routes());
+    nodes.extend(mcp::routes());
+    nodes.extend(memory::routes());
+    nodes.extend(provider_accounts::routes());
+    nodes.extend(push::routes());
+    nodes.extend(repos::routes());
+    nodes.extend(skills::routes());
+    Route::new(nodes)
+        .middleware(RequireAuth::new(FlycoAuthenticator::new()))
+        .into_route_nodes()
 }
 
 /// The complete route tree, before state or middleware is attached.
@@ -614,14 +774,91 @@ const fn with_rooms(route: Route) -> Route {
     route
 }
 
+/// Adds `T` — and everything `T` refers to — to a document's components.
+///
+/// `utoipa`'s derive walks a type's own references, so registering the
+/// outermost DTO of a response is enough to bring the whole tree with it.
+fn register<T: utoipa::ToSchema>(components: &mut utoipa::openapi::Components) {
+    let mut collected = vec![(T::name().into_owned(), T::schema())];
+    T::schemas(&mut collected);
+    components.schemas.extend(collected);
+}
+
+/// Registers every DTO the control plane *returns*.
+///
+/// Request bodies and query strings reach the document on their own, through
+/// the `#[skyzen::openapi]` annotation on each handler. Responses do not:
+/// almost every handler answers with [`Outcome`], and skyzen 0.1.2 gates
+/// `Responder::openapi` behind a provided method a downstream crate cannot
+/// implement, so the response half of the contract would otherwise be
+/// missing from the export and the generated TypeScript client would have
+/// nothing to name. Naming the types here puts them in `components.schemas`,
+/// which is what a client generator reads.
+///
+/// A type listed here that no route returns is dead weight in the client, so
+/// this list is maintained against the routes rather than against the domain
+/// model — `flyco_core` holds types (wire frames, the budget engine's
+/// internals) that deliberately never appear.
+fn register_response_schemas(spec: &mut utoipa::openapi::OpenApi) {
+    let components = spec
+        .components
+        .get_or_insert_with(utoipa::openapi::Components::new);
+
+    register::<flyco_core::AgentsDocument>(components);
+    register::<flyco_core::ApiKeySummary>(components);
+    register::<flyco_core::ApprovalView>(components);
+    register::<flyco_core::AuthorizeUrl>(components);
+    register::<flyco_core::BudgetView>(components);
+    register::<flyco_core::CloudUsageView>(components);
+    register::<flyco_core::CreatedApiKey>(components);
+    register::<flyco_core::DaemonToken>(components);
+    register::<flyco_core::EnvDocument>(components);
+    register::<flyco_core::HarnessAccountView>(components);
+    register::<flyco_core::LlmUsageView>(components);
+    register::<flyco_core::MachineCatalogEntry>(components);
+    register::<flyco_core::MachineView>(components);
+    register::<flyco_core::McpServerView>(components);
+    register::<flyco_core::MemoryNode>(components);
+    register::<flyco_core::Problem>(components);
+    register::<flyco_core::ProviderAccountView>(components);
+    register::<flyco_core::ProviderBonusHint>(components);
+    register::<flyco_core::PushSubscriptionView>(components);
+    register::<flyco_core::RepoStatus>(components);
+    register::<flyco_core::RepoSummary>(components);
+    register::<flyco_core::SessionDetail>(components);
+    register::<flyco_core::SessionSummary>(components);
+    register::<flyco_core::SkillView>(components);
+    register::<flyco_core::TurnPage>(components);
+    register::<flyco_core::VapidPublicKey>(components);
+    register::<crate::relay::RelayTicket>(components);
+    register::<crate::room::EventPage>(components);
+}
+
 /// The `OpenAPI` document describing the control plane.
 ///
 /// Only debug native builds collect handler metadata (skyzen gathers it
 /// through a `linkme` slice that is compiled out otherwise), so the export
 /// binary must be built in debug.
+///
+/// # Panics
+///
+/// Panics when that metadata was compiled out, because a document with no
+/// paths in it would be checked in as if it described the API.
 #[must_use]
-pub fn openapi_document() -> skyzen::OpenApi {
-    routes::<ZenwaveGithub>().openapi()
+pub fn openapi_document() -> utoipa::openapi::OpenApi {
+    let collected = routes::<ZenwaveGithub>().openapi();
+    assert!(
+        collected.is_enabled(),
+        "OpenAPI collection is compiled out; build this in debug on a native target"
+    );
+
+    let mut spec = collected.to_utoipa_spec();
+    // Skyzen stamps its own crate name and version into `info`; the document
+    // describes flyco's API, whose version is the `/v1` prefix. Using the
+    // crate version instead would churn the checked-in file on every release.
+    spec.info = utoipa::openapi::Info::new("Flyco control plane", "v1");
+    register_response_schemas(&mut spec);
+    spec
 }
 
 /// Builds the control-plane router around an explicit configuration, GitHub

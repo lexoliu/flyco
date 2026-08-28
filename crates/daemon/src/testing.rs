@@ -556,7 +556,9 @@ async fn write_reply(stream: &mut TcpStream, reply: &Reply) -> std::io::Result<(
         head.push_str(value);
         head.push_str("\r\n");
     }
-    head.push_str(&format!("content-length: {}\r\n", reply.body.len()));
+    head.push_str("content-length: ");
+    head.push_str(&reply.body.len().to_string());
+    head.push_str("\r\n");
     head.push_str("connection: close\r\n\r\n");
 
     stream.write_all(head.as_bytes()).await?;

@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::id::{MachineId, SessionId};
 use crate::money::Usd;
 
 /// A supported compute provider.
@@ -82,4 +83,36 @@ pub enum MachineState {
     Deallocated,
     /// Compute and disk released.
     Destroyed,
+}
+
+/// The machine a session is running on, as `GET
+/// /v1/sessions/{id}/machine` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct MachineView {
+    /// Identifier of the provisioned machine.
+    pub id: MachineId,
+    /// Session it belongs to. A machine serves exactly one.
+    pub session: SessionId,
+    /// What was asked for.
+    pub spec: MachineSpec,
+    /// Where it is in its lifecycle.
+    pub state: MachineState,
+    /// Price actually being billed per hour — the spot price when the
+    /// machine holds spot capacity, the on-demand one otherwise.
+    pub hourly: Usd,
+    /// Provider-native region it landed in.
+    pub region: String,
+    /// When it was created, seconds since the Unix epoch.
+    pub created_at_unix: u64,
+}
+
+/// Request body of `POST /v1/sessions/{id}/machine/resize`.
+///
+/// The disk survives a resize; only compute is replaced. The provider and
+/// region are not part of this, because moving a machine between them would
+/// mean a new disk, which is a new session's problem rather than a resize.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ResizeMachine {
+    /// Provider-native machine type to move to, from the catalog.
+    pub machine_type: String,
 }

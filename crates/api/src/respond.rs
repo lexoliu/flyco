@@ -31,7 +31,21 @@ pub const fn created<T>(value: T) -> WithStatus<T> {
 /// An empty `204 No Content` response.
 #[must_use]
 pub fn no_content() -> Response {
+    status_only(StatusCode::NO_CONTENT)
+}
+
+/// An empty `202 Accepted` response.
+///
+/// What every route answers that hands work to a session's daemon or to the
+/// provisioner: the control plane has recorded the request and the caller
+/// watches the relay for what happens next.
+#[must_use]
+pub fn accepted() -> Response {
+    status_only(StatusCode::ACCEPTED)
+}
+
+fn status_only(status: StatusCode) -> Response {
     let mut response = Response::new(Body::empty());
-    *response.status_mut() = StatusCode::NO_CONTENT;
+    *response.status_mut() = status;
     response
 }

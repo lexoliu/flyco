@@ -7,6 +7,7 @@
 //! tokens in KV, hashed API keys in D1, and the authenticator that turns
 //! either credential into a [`flyco_core::CurrentUser`].
 
+pub mod agents_md;
 pub mod api_keys;
 pub mod app;
 pub mod approvals;
@@ -21,18 +22,27 @@ pub mod error;
 pub mod expiring;
 pub mod extract;
 pub mod github;
+pub mod harness_accounts;
+pub mod machines;
+pub mod mcp;
+pub mod memory;
 pub mod middleware;
 pub mod oauth;
 pub mod problem;
+pub mod provider_accounts;
+pub mod push;
 pub mod relay;
+pub mod repos;
 pub mod respond;
 pub mod room;
 pub mod rooms;
 pub mod session;
 pub mod sessions;
+pub mod skills;
 pub mod sql;
 pub mod transcripts;
 pub mod users;
+pub mod webhooks;
 
 #[cfg(test)]
 mod testing;
