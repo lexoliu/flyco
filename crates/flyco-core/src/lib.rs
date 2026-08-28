@@ -16,6 +16,7 @@ pub mod id;
 pub mod machine;
 pub mod memory;
 pub mod money;
+pub mod problem;
 pub mod session;
 pub mod wire;
 
@@ -27,6 +28,7 @@ pub use id::{
 };
 pub use machine::{CloudProviderKind, MachineCatalogEntry, MachineSpec, MachineState, OsFamily};
 pub use money::Usd;
+pub use problem::Problem;
 pub use session::{SessionState, SessionTransitionError};
 
 /// Version of the daemon⇄control-plane wire protocol.

@@ -57,10 +57,14 @@ Designed against the published `v0.1.2` tag (the skyzen repo's dev branch is far
 - `skyzen-cloudflare` pulls the official `worker` crate, which pulls `tokio` into the wasm dependency graph. Nothing in flyco uses it.
 - `Kv` has no TTL parameter at 0.1.2, so `flyco_api::expiring` stores an explicit deadline alongside every value and treats an expired read as a miss. Cloudflare KV's native TTL is not relied on.
 - `WebSocketUpgrade::on_upgrade` on wasm (no `.ws()` shorthand); DO relay uses `HibernationWebSocketUpgrade` + tags.
-- No built-in sessions/OAuth/JWT on wasm: GitHub OAuth code flow via zenwave, opaque tokens in KV behind a custom `Authenticator`. `AuthMiddleware` injects the user as `State<CurrentUser>` (there is no `AuthUser<T>` extractor at 0.1.2).
+- No built-in sessions/OAuth/JWT on wasm: GitHub OAuth code flow via zenwave, opaque tokens in KV behind a custom `Authenticator` (there is no `AuthUser<T>` extractor at 0.1.2 — the user arrives as `State<CurrentUser>`).
+- `flyco_api::middleware::RequireAuth` replaces skyzen's `AuthMiddleware`: the stock one propagates the error to the runtime, which renders `{"error": …}` and cannot set `WWW-Authenticate`. Flyco's own errors likewise never propagate — handlers return `problem::Outcome`, which renders the RFC 9457 document itself — and an `ErrorHandlingMiddleware` at the router root converts framework errors to the same media type.
 
 ## Auth
 
-- Users: GitHub OAuth only; opaque session tokens in KV; API keys (hashed) for the REST API.
+- **`Authorization: Bearer` only — no cookies.** Two token kinds share one credential channel: `fs_` browser session tokens (opaque, KV, 30 days) and `fk_` API keys (D1, SHA-256 hashed). The prefix tells the authenticator which store owns the token, so a lookup never probes both. No cookie means no ambient authority and nothing for a cross-site request to ride on.
+- The OAuth callback hands the token to the SPA through the redirect's **URL fragment** (`/auth/complete#token=fs_…`, resolved against the configured redirect URI's origin) — a fragment never reaches the server, so it stays out of access logs and `Referer` headers.
+- Users: GitHub OAuth only.
+- Standards: 401s carry `WWW-Authenticate: Bearer` (RFC 6750), with `error="invalid_token"` when a credential was presented and rejected. Every error response is an RFC 9457 problem document (`application/problem+json`); flyco's own failures name a type under `https://flyco.dev/problems/`, framework-level failures use `about:blank`. Server-side detail is logged, never returned.
 - Harness accounts: flyco redirects to the provider's own auth page (the flow the official CLIs wrap); tokens stored encrypted, provisioned per-session to VMs. Anthropic's third-party-login policy approval is a hosted-launch prerequisite.
 - Usage panels are reactive: no remaining-quota API exists for either harness; flyco observes rate-limit events and OTLP cost telemetry.
