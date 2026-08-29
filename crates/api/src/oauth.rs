@@ -19,7 +19,7 @@ use url::Url;
 use crate::config::ApiConfig;
 use crate::crypto::random_token;
 use crate::error::ApiError;
-use crate::github::{GithubOauth, SCOPE};
+use crate::github::{GithubClient, GithubOauth, SCOPE};
 use crate::problem::Outcome;
 use crate::respond::SeeOther;
 use crate::{expiring, session, users};
@@ -92,20 +92,21 @@ async fn begin(config: &ApiConfig, kv: &Kv) -> Result<Json<AuthorizeUrl>, ApiErr
 /// generic over [`GithubOauth`], whose parameter does not exist at module
 /// scope. The route still appears in the exported document, without its
 /// parameter schemas.
-pub async fn callback<G: GithubOauth>(
+#[skyzen::openapi]
+pub async fn callback(
     Query(callback): Query<Callback>,
     State(config): State<ApiConfig>,
-    State(github): State<G>,
+    State(github): State<GithubClient>,
     kv: Kv,
     db: Db,
 ) -> Outcome<SeeOther> {
     complete(callback, &config, &github, &kv, &db).await.into()
 }
 
-async fn complete<G: GithubOauth>(
+async fn complete(
     callback: Callback,
     config: &ApiConfig,
-    github: &G,
+    github: &GithubClient,
     kv: &Kv,
     db: &Db,
 ) -> Result<SeeOther, ApiError> {

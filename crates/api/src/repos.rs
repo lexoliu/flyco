@@ -16,7 +16,7 @@ use skyzen_services::Db;
 
 use crate::config::ApiConfig;
 use crate::error::ApiError;
-use crate::github::{GithubOauth, GithubToken};
+use crate::github::{GithubClient, GithubOauth, GithubToken};
 use crate::problem::Outcome;
 use crate::users;
 
@@ -30,15 +30,15 @@ pub struct RepoQuery {
 
 /// Lists the caller's GitHub repositories, for the session-creation picker.
 ///
-/// Generic over the GitHub client so tests can drive it without reaching
-/// `api.github.com`, which is also why it carries no `#[skyzen::openapi]`:
-/// the macro emits module-level items naming every argument type, and a type
-/// parameter does not exist at module scope. The route still appears in the
-/// document; only its schemas are missing.
-async fn list_repos<G: GithubOauth>(
+/// The client is the concrete [`GithubClient`] rather than a type
+/// parameter: an annotated handler cannot be generic, and a generic one
+/// would carry the substituted type into its operation id, which is not a
+/// name a generated client can be written against.
+#[skyzen::openapi]
+async fn list_repos(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
-    State(github): State<G>,
+    State(github): State<GithubClient>,
     Query(query): Query<RepoQuery>,
     db: Db,
 ) -> Outcome<Json<Vec<RepoSummary>>> {
@@ -54,8 +54,8 @@ async fn list_repos<G: GithubOauth>(
 /// of the caller's own repositories, and searching server-side would need
 /// GitHub's search API, whose relevance ordering is wrong for a picker that
 /// wants "what I was last working on".
-async fn read<G: GithubOauth>(
-    github: &G,
+async fn read(
+    github: &GithubClient,
     config: &ApiConfig,
     db: &Db,
     user: &CurrentUser,
@@ -80,6 +80,6 @@ async fn read<G: GithubOauth>(
 }
 
 /// The user-scoped GitHub routes.
-pub fn routes<G: GithubOauth>() -> Vec<RouteNode> {
-    Route::new(("/v1/github/repos".at(list_repos::<G>),)).into_route_nodes()
+pub fn routes() -> Vec<RouteNode> {
+    Route::new(("/v1/github/repos".at(list_repos),)).into_route_nodes()
 }

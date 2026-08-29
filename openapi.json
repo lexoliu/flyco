@@ -408,11 +408,32 @@
     },
     "/v1/auth/github/callback": {
       "get": {
-        "summary": "oauth::callback<flyco_api::github::ZenwaveGithub>",
-        "operationId": "oauth::callback<flyco_api::github::ZenwaveGithub>",
+        "summary": "`GET /v1/auth/github/callback` — completes a GitHub sign-in.",
+        "description": "`GET /v1/auth/github/callback` — completes a GitHub sign-in.\n\nConsumes the `state`, exchanges the code, upserts the account, and sends\nthe browser to the SPA with the session token in the URL fragment.\n\nDeliberately not annotated with `#[skyzen::openapi]`: the macro emits\nmodule-level items that mention every argument type, and this handler is\ngeneric over [`GithubOauth`], whose parameter does not exist at module\nscope. The route still appears in the exported document, without its\nparameter schemas.",
+        "operationId": "flyco_api::oauth::callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The single-use authorization code."
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The `state` this control plane minted in [`start`]."
+            }
+          }
+        ],
         "responses": {
-          "200": {
-            "description": "Successful response"
+          "303": {
+            "description": "The browser is sent on to the flyco web app."
           }
         }
       }
@@ -448,11 +469,72 @@
     },
     "/v1/github/repos": {
       "get": {
-        "summary": "repos::list_repos<flyco_api::github::ZenwaveGithub>",
-        "operationId": "repos::list_repos<flyco_api::github::ZenwaveGithub>",
+        "summary": "Lists the caller's GitHub repositories, for the session-creation picker.",
+        "description": "Lists the caller's GitHub repositories, for the session-creation picker.\n\nThe client is the concrete [`GithubClient`] rather than a type\nparameter: an annotated handler cannot be generic, and a generic one\nwould carry the substituted type into its operation id, which is not a\nname a generated client can be written against.",
+        "operationId": "flyco_api::repos::list_repos",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Substring to match against `owner/name`. Omitted lists the caller's\nrepositories by most recent push."
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "One row of `GET /v1/github/repos`.",
+                    "required": [
+                      "slug",
+                      "private",
+                      "default_branch"
+                    ],
+                    "properties": {
+                      "default_branch": {
+                        "type": "string",
+                        "description": "Branch a session starts from unless the user names another."
+                      },
+                      "description": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "GitHub's description, when the repository has one."
+                      },
+                      "private": {
+                        "type": "boolean",
+                        "description": "Whether the repository is private."
+                      },
+                      "pushed_at_unix": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int64",
+                        "description": "Last push, seconds since the Unix epoch, so the picker can order by\nwhat the user is actually working on.",
+                        "minimum": 0
+                      },
+                      "slug": {
+                        "$ref": "#/components/schemas/RepoSlug",
+                        "description": "`owner/name`, which is what `POST /v1/sessions` takes."
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -3880,6 +3962,24 @@
           }
         }
       },
+      "Callback": {
+        "type": "object",
+        "description": "Query string GitHub appends when it redirects back.",
+        "required": [
+          "code",
+          "state"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The single-use authorization code."
+          },
+          "state": {
+            "type": "string",
+            "description": "The `state` this control plane minted in [`start`]."
+          }
+        }
+      },
       "CatalogFilter": {
         "type": "object",
         "description": "Narrows the machine catalog.\n\nEvery field is optional: an unfiltered catalog is the honest default,\nbecause a user with one linked provider should not have to name it.",
@@ -5185,6 +5285,19 @@
           "ticket": {
             "type": "string",
             "description": "The single-use ticket, to be passed as the `ticket` query parameter\nof the client relay route."
+          }
+        }
+      },
+      "RepoQuery": {
+        "type": "object",
+        "description": "Narrows the repository picker.",
+        "properties": {
+          "q": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Substring to match against `owner/name`. Omitted lists the caller's\nrepositories by most recent push."
           }
         }
       },

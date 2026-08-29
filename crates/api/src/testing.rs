@@ -8,7 +8,7 @@ use skyzen_services::Db;
 
 use crate::app::router;
 use crate::config::ApiConfig;
-use crate::github::{GithubError, GithubOauth, GithubToken, GithubUser};
+use crate::github::{GithubClient, GithubError, GithubOauth, GithubToken, GithubUser};
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
@@ -118,7 +118,7 @@ impl GithubOauth for TestGithub {
 
 /// The full control-plane router, wired to [`TestGithub`] and `db`.
 pub fn test_router(db: Db) -> Router {
-    router(test_config(), TestGithub, db)
+    router(test_config(), GithubClient::Fake(TestGithub), db)
 }
 
 /// A migrated database plus the router that talks to it.

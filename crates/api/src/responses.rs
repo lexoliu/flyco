@@ -65,12 +65,11 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::machines::stop_session_machine",
     "flyco_api::mcp::delete_mcp_server",
     "flyco_api::memory::delete_memory_node",
+    "flyco_api::oauth::callback",
     "flyco_api::provider_accounts::unlink_provider",
     "flyco_api::push::unsubscribe_push",
     "flyco_api::skills::delete_skill",
     "flyco_api::webhooks::receive_github_webhook",
-    "oauth::callback<flyco_api::github::ZenwaveGithub>",
-    "repos::list_repos<flyco_api::github::ZenwaveGithub>",
 ];
 
 /// Names every returned DTO in a generated document, and drops the
