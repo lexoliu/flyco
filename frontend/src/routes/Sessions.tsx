@@ -7,7 +7,6 @@ import {
   getMe,
   listSessions,
   listRepos,
-  resizeSessionMachine,
   type HarnessKind,
   type MachineCatalogEntry,
   type RepoSummary,
@@ -76,23 +75,26 @@ function NewSessionForm(props: { onCreated: (id: string) => void; onCancel: () =
     setSubmitting(true);
     setError(null);
     try {
+      const machineKey = selectedMachineKey();
+      const entry = (catalog() ?? []).find(
+        (candidate) => catalogEntryKey(candidate) === machineKey,
+      );
+      if (entry === undefined || entry.account === null || entry.account === undefined) {
+        setError(new Error("Pick a machine before starting a session."));
+        return;
+      }
+
       const created = await requestNewSession({
         repo: repo.slug,
         harness: harness(),
         budgetLimitDollars: budgetDollars(),
-        spot: spot(),
+        machine: {
+          providerAccount: entry.account,
+          machineType: entry.machine_type,
+          region: entry.region,
+          spot: spot(),
+        },
       });
-      const machineKey = selectedMachineKey();
-      if (machineKey !== null) {
-        const entry = (catalog() ?? []).find((candidate) => catalogEntryKey(candidate) === machineKey);
-        if (entry !== undefined) {
-          // Best-effort: `POST /v1/sessions` has no field to pick a machine
-          // up front, so the request lands on flyco's own default and this
-          // resizes it afterward. A failure here doesn't block navigation —
-          // the session's own machine panel lets the user retry.
-          await resizeSessionMachine(created.id, entry.machine_type).catch(() => undefined);
-        }
-      }
       props.onCreated(created.id);
     } catch (err) {
       setError(err);

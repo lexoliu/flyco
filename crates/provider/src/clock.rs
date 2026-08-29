@@ -1,4 +1,5 @@
-//! Time: a clock that only ever moves forward, and a way to wait.
+//! Time: a clock that only ever moves forward, a clock that says what time
+//! it is, and a way to wait.
 //!
 //! An OAuth token is cached against elapsed time, never against wall-clock
 //! time: the Worker's `Date.now()` can jump backwards when the host's clock
@@ -6,9 +7,18 @@
 //! keeps presenting a dead credential. Elapsed seconds since the driver was
 //! built is all the cache needs, and it cannot go backwards.
 //!
-//! Tests drive [`ManualClock`] and `crate::testing::RecordingTimer`, which
-//! make token expiry and a `Retry-After` into assertions rather than into
-//! sleeps.
+//! [`WallClock`] is the separate, narrower thing: what time it is *now*, in
+//! seconds since the Unix epoch. Two signatures genuinely need it and no
+//! amount of monotonic time will do — an AWS `SigV4` signature is computed over
+//! an `X-Amz-Date` the service checks against its own clock, and a Google
+//! service-account assertion carries `iat`/`exp` claims. It is a trait rather
+//! than a call to the host because the alternative is a driver whose
+//! signature cannot be asserted: with the instant supplied, a recorded test
+//! pins the exact canonical request and the exact signature.
+//!
+//! Tests drive [`ManualClock`], [`ManualWallClock`] and
+//! `crate::testing::RecordingTimer`, which make token expiry, a signing time
+//! and a `Retry-After` into assertions rather than into sleeps.
 
 /// Something that can pause an async task.
 ///
@@ -125,6 +135,87 @@ impl MonotonicClock for SystemClock {
     }
 }
 
+/// A source of wall-clock seconds since the Unix epoch.
+///
+/// Deliberately separate from [`MonotonicClock`]: the two answer different
+/// questions and only one of them is allowed to move backwards. A driver
+/// takes this only when a *signature* depends on the current time, which is
+/// the one thing elapsed seconds cannot stand in for.
+pub trait WallClock {
+    /// Seconds since 1970-01-01T00:00:00Z.
+    fn unix_seconds(&self) -> u64;
+}
+
+/// The host's wall clock: `SystemTime` natively, `Date.now()` on the Worker.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemWallClock;
+
+impl SystemWallClock {
+    /// Creates the clock.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl WallClock for SystemWallClock {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn unix_seconds(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs())
+    }
+
+    /// `Date.now()`, which is the Worker's only source of civil time.
+    ///
+    /// Its backwards jumps are exactly why a token cache reads
+    /// [`MonotonicClock`] instead; a signature has no such option, because
+    /// the service checks the stated time against its own.
+    #[cfg(target_arch = "wasm32")]
+    fn unix_seconds(&self) -> u64 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a Unix timestamp in seconds is non-negative and far inside u64"
+        )]
+        let seconds = (js_sys::Date::now() / 1000.0) as u64;
+        seconds
+    }
+}
+
+/// A wall clock stopped at an instant a test chose.
+#[derive(Debug)]
+pub struct ManualWallClock {
+    at: core::cell::Cell<u64>,
+}
+
+impl ManualWallClock {
+    /// A clock reading `unix_seconds` until it is told otherwise.
+    #[must_use]
+    pub const fn at(unix_seconds: u64) -> Self {
+        Self {
+            at: core::cell::Cell::new(unix_seconds),
+        }
+    }
+
+    /// Moves the clock forward.
+    pub fn advance(&self, seconds: u64) {
+        self.at.set(self.at.get() + seconds);
+    }
+}
+
+impl WallClock for ManualWallClock {
+    fn unix_seconds(&self) -> u64 {
+        self.at.get()
+    }
+}
+
+impl<T: WallClock> WallClock for &T {
+    fn unix_seconds(&self) -> u64 {
+        (*self).unix_seconds()
+    }
+}
+
 /// A clock a test advances by hand.
 #[derive(Debug, Default)]
 pub struct ManualClock {
@@ -160,7 +251,15 @@ impl<T: MonotonicClock> MonotonicClock for &T {
 
 #[cfg(test)]
 mod tests {
-    use super::{ManualClock, MonotonicClock, SystemClock};
+    use super::{ManualClock, ManualWallClock, MonotonicClock, SystemClock, WallClock};
+
+    #[test]
+    fn a_manual_wall_clock_reads_the_instant_it_was_given() {
+        let clock = ManualWallClock::at(1_788_004_800);
+        assert_eq!(clock.unix_seconds(), 1_788_004_800);
+        clock.advance(60);
+        assert_eq!(clock.unix_seconds(), 1_788_004_860);
+    }
 
     #[test]
     fn a_manual_clock_only_moves_when_told_to() {

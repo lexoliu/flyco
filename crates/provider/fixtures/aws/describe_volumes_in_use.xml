@@ -1,0 +1,10 @@
+<DescribeVolumesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+  <requestId>8f7d3e11-4a2b-4c3d-9e8f-1a2b3c4d5e6f</requestId>
+  <volumeSet>
+    <item>
+      <volumeId>vol-04ac6f9e1d2b3c4d5</volumeId>
+      <size>30</size>
+      <status>in-use</status>
+    </item>
+  </volumeSet>
+</DescribeVolumesResponse>

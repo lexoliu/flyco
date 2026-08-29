@@ -1,0 +1,43 @@
+{
+  "skus": [
+    {
+      "name": "services/6F81-5844-456A/skus/097B-1B66-17E5",
+      "skuId": "097B",
+      "description": "E2 Instance Core running in Netherlands",
+      "category": {
+        "serviceDisplayName": "Compute Engine",
+        "resourceFamily": "Compute",
+        "resourceGroup": "CPU",
+        "usageType": "OnDemand"
+      },
+      "serviceRegions": [
+        "europe-west4"
+      ],
+      "pricingInfo": [
+        {
+          "effectiveTime": "2026-08-01T00:00:00Z",
+          "summary": "",
+          "pricingExpression": {
+            "usageUnit": "h",
+            "usageUnitDescription": "h",
+            "baseUnit": "s",
+            "baseUnitConversionFactor": 3600,
+            "displayQuantity": 1,
+            "tieredRates": [
+              {
+                "startUsageAmount": 0,
+                "unitPrice": {
+                  "currencyCode": "EUR",
+                  "units": "0",
+                  "nanos": 24040000
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "serviceProviderName": "Google"
+    }
+  ],
+  "nextPageToken": ""
+}

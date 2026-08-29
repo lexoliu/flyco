@@ -1,0 +1,12 @@
+<DescribeImagesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+  <requestId>8f7d3e11-4a2b-4c3d-9e8f-1a2b3c4d5e6f</requestId>
+  <imagesSet>
+    <item>
+      <imageId>ami-0c2b8ca1dad447f8a</imageId>
+      <name>ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-20260812</name>
+      <architecture>arm64</architecture>
+      <rootDeviceName>/dev/sda1</rootDeviceName>
+      <rootDeviceType>ebs</rootDeviceType>
+    </item>
+  </imagesSet>
+</DescribeImagesResponse>
