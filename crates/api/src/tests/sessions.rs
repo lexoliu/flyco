@@ -3,8 +3,8 @@
 use flyco_core::wire::{ApprovalDecision, ApprovalPayload};
 use flyco_core::{
     ApprovalState, ApprovalView, BudgetStage, CreateSession, CurrentUser, DecideApproval,
-    EnvDocument, EnvEntry, HarnessKind, Problem, SessionDetail, SessionId, SessionState,
-    SessionSummary, SpendKind, UpdateEnv, UpdateMe, Usd,
+    EnvDocument, EnvEntry, HarnessKind, Problem, ProviderAccountId, SessionDetail, SessionId,
+    SessionState, SessionSummary, SpendKind, UpdateEnv, UpdateMe, Usd,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -12,7 +12,9 @@ use skyzen_services::sql::Row;
 use skyzen_services::{Db, Kv};
 use skyzen_test::{TestClient, TestContext};
 
-use crate::testing::{migrated_router, seed_other_user, seed_user};
+use crate::testing::{
+    machine_choice, migrated_router, seed_other_user, seed_provider_account, seed_user,
+};
 use crate::{approvals, budgets, session, sessions};
 
 const REPO: &str = "lexoliu/flyco";
@@ -23,23 +25,30 @@ fn problem_kind(slug: &str) -> String {
     kind
 }
 
-/// A signed-in caller: their identity plus a live session token.
+/// A signed-in caller: their identity, a live session token, and the
+/// provider account their sessions are provisioned onto.
 struct Caller {
     user: CurrentUser,
     token: String,
+    account: ProviderAccountId,
 }
 
-async fn sign_in(kv: &Kv, user: CurrentUser) -> Caller {
+async fn sign_in(kv: &Kv, db: &Db, user: CurrentUser) -> Caller {
     let token = session::issue(kv, user.id).await.expect("issue a session");
-    Caller { user, token }
+    let account = seed_provider_account(db, user.id).await;
+    Caller {
+        user,
+        token,
+        account,
+    }
 }
 
-fn open(repo: &str, dollars: u64) -> CreateSession {
+fn open(caller: &Caller, repo: &str, dollars: u64) -> CreateSession {
     CreateSession {
         harness: HarnessKind::ClaudeCode,
         repo: repo.to_owned(),
         budget_limit: Usd::from_dollars(dollars),
-        spot: true,
+        machine: machine_choice(caller.account),
     }
 }
 
@@ -67,9 +76,9 @@ async fn creating_a_session_returns_it_provisioning_with_its_budget(
     db: Db,
 ) {
     let router = migrated_router(&db).await;
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
 
-    let session = create(&ctx.client(router), &caller, &open(REPO, 10)).await;
+    let session = create(&ctx.client(router), &caller, &open(&caller, REPO, 10)).await;
 
     assert_eq!(session.summary.repo.to_string(), REPO);
     assert_eq!(session.summary.harness, HarnessKind::ClaudeCode);
@@ -83,13 +92,13 @@ async fn creating_a_session_returns_it_provisioning_with_its_budget(
 #[skyzen::test]
 async fn a_repo_that_is_not_owner_slash_name_is_unprocessable(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
 
     let response = ctx
         .client(router)
         .post("/v1/sessions")
         .bearer(&caller.token)
-        .json(&open("not-a-repo", 10))
+        .json(&open(&caller, "not-a-repo", 10))
         .send()
         .await;
 
@@ -103,13 +112,13 @@ async fn a_repo_that_is_not_owner_slash_name_is_unprocessable(ctx: TestContext, 
 #[skyzen::test]
 async fn a_zero_budget_is_unprocessable(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
 
     let response = ctx
         .client(router)
         .post("/v1/sessions")
         .bearer(&caller.token)
-        .json(&open(REPO, 0))
+        .json(&open(&caller, REPO, 0))
         .send()
         .await;
 
@@ -123,18 +132,18 @@ async fn a_zero_budget_is_unprocessable(ctx: TestContext, kv: Kv, db: Db) {
 #[skyzen::test]
 async fn the_session_cap_is_enforced_and_can_be_raised_or_freed(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let client = ctx.client(router);
     assert_eq!(caller.user.session_cap, 5, "the default cap is five");
 
     for _ in 0..caller.user.session_cap {
-        create(&client, &caller, &open(REPO, 10)).await;
+        create(&client, &caller, &open(&caller, REPO, 10)).await;
     }
 
     let refused = client
         .post("/v1/sessions")
         .bearer(&caller.token)
-        .json(&open(REPO, 10))
+        .json(&open(&caller, REPO, 10))
         .send()
         .await;
     refused.assert_status(409);
@@ -157,13 +166,13 @@ async fn the_session_cap_is_enforced_and_can_be_raised_or_freed(ctx: TestContext
         .await;
     updated.assert_status(200);
     assert_eq!(updated.json::<CurrentUser>().session_cap, 6);
-    let sixth = create(&client, &caller, &open(REPO, 10)).await;
+    let sixth = create(&client, &caller, &open(&caller, REPO, 10)).await;
 
     // Back at the cap, archiving frees a slot.
     client
         .post("/v1/sessions")
         .bearer(&caller.token)
-        .json(&open(REPO, 10))
+        .json(&open(&caller, REPO, 10))
         .send()
         .await
         .assert_status(409);
@@ -179,7 +188,7 @@ async fn the_session_cap_is_enforced_and_can_be_raised_or_freed(ctx: TestContext
     };
     assert_eq!(archived.summary.state, SessionState::Archived);
 
-    create(&client, &caller, &open(REPO, 10)).await;
+    create(&client, &caller, &open(&caller, REPO, 10)).await;
 }
 
 #[skyzen::test]
@@ -189,7 +198,7 @@ async fn a_session_cap_outside_the_allowed_range_is_unprocessable(
     db: Db,
 ) {
     let router = migrated_router(&db).await;
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let client = ctx.client(router);
 
     for cap in [0, 101] {
@@ -214,9 +223,9 @@ async fn a_session_cap_outside_the_allowed_range_is_unprocessable(
 #[skyzen::test]
 async fn a_session_can_be_archived_once(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let client = ctx.client(router);
-    let session = create(&client, &caller, &open(REPO, 10)).await;
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
     let path = format!("/v1/sessions/{}/archive", session.summary.id);
 
     let archived = client.post(&path).bearer(&caller.token).send().await;
@@ -240,11 +249,11 @@ async fn a_session_can_be_archived_once(ctx: TestContext, kv: Kv, db: Db) {
 #[skyzen::test]
 async fn sessions_are_listed_newest_first(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let client = ctx.client(router);
 
-    let older = create(&client, &caller, &open(REPO, 10)).await;
-    let newer = create(&client, &caller, &open("lexoliu/skyzen", 10)).await;
+    let older = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    let newer = create(&client, &caller, &open(&caller, "lexoliu/skyzen", 10)).await;
 
     // Both were created inside the same second, so backdate one: the
     // assertion is about the ordering contract, not about how fast the test
@@ -277,9 +286,9 @@ async fn sessions_are_listed_newest_first(ctx: TestContext, kv: Kv, db: Db) {
 #[skyzen::test]
 async fn the_budget_view_replays_the_spend_ledger(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let client = ctx.client(router);
-    let session = create(&client, &caller, &open(REPO, 10)).await;
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
     let budget = budget_id(&db, session.summary.id).await;
     let path = format!("/v1/sessions/{}/budget", session.summary.id);
 
@@ -323,10 +332,10 @@ async fn the_budget_view_replays_the_spend_ledger(ctx: TestContext, kv: Kv, db: 
 #[skyzen::test]
 async fn a_small_budget_advances_through_the_same_stages(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let client = ctx.client(router);
     // Under $5, so the engine stays silent below 90% — the stage still moves.
-    let session = create(&client, &caller, &open(REPO, 4)).await;
+    let session = create(&client, &caller, &open(&caller, REPO, 4)).await;
     let budget = budget_id(&db, session.summary.id).await;
     let path = format!("/v1/sessions/{}/budget", session.summary.id);
 
@@ -354,9 +363,9 @@ async fn a_small_budget_advances_through_the_same_stages(ctx: TestContext, kv: K
 #[skyzen::test]
 async fn the_replay_refreshes_the_cached_budget_row(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let client = ctx.client(router);
-    let session = create(&client, &caller, &open(REPO, 10)).await;
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
     let budget = budget_id(&db, session.summary.id).await;
 
     budgets::record(
@@ -396,10 +405,10 @@ async fn the_replay_refreshes_the_cached_budget_row(ctx: TestContext, kv: Kv, db
 #[skyzen::test]
 async fn approvals_are_listed_filtered_and_decided_once(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let client = ctx.client(router);
-    let session = create(&client, &caller, &open(REPO, 10)).await;
-    let other_session = create(&client, &caller, &open("lexoliu/skyzen", 10)).await;
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    let other_session = create(&client, &caller, &open(&caller, "lexoliu/skyzen", 10)).await;
 
     let pending = approvals::raise(
         &db,
@@ -488,11 +497,11 @@ async fn approvals_are_listed_filtered_and_decided_once(ctx: TestContext, kv: Kv
 #[skyzen::test]
 async fn one_user_cannot_reach_anothers_session_or_approval(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
-    let owner = sign_in(&kv, seed_user(&db).await).await;
-    let stranger = sign_in(&kv, seed_other_user(&db).await).await;
+    let owner = sign_in(&kv, &db, seed_user(&db).await).await;
+    let stranger = sign_in(&kv, &db, seed_other_user(&db).await).await;
     let client = ctx.client(router);
 
-    let session = create(&client, &owner, &open(REPO, 10)).await;
+    let session = create(&client, &owner, &open(&owner, REPO, 10)).await;
     let approval = approvals::raise(
         &db,
         session.summary.id,
@@ -567,7 +576,7 @@ async fn one_user_cannot_reach_anothers_session_or_approval(ctx: TestContext, kv
 #[skyzen::test]
 async fn an_unknown_session_is_not_found(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
 
     let response = ctx
         .client(router)
@@ -638,8 +647,11 @@ fn env(entries: &[(&str, &str)]) -> UpdateEnv {
 async fn an_unconfigured_session_has_an_empty_environment(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
     let client = ctx.client(router);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
-    let session = create(&client, &caller, &open(REPO, 10)).await.summary.id;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let session = create(&client, &caller, &open(&caller, REPO, 10))
+        .await
+        .summary
+        .id;
 
     let response = client
         .get(&format!("/v1/sessions/{session}/env"))
@@ -660,8 +672,11 @@ async fn a_replaced_environment_reads_back_in_the_order_it_was_given(
 ) {
     let router = migrated_router(&db).await;
     let client = ctx.client(router);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
-    let session = create(&client, &caller, &open(REPO, 10)).await.summary.id;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let session = create(&client, &caller, &open(&caller, REPO, 10))
+        .await
+        .summary
+        .id;
 
     let written = client
         .put(&format!("/v1/sessions/{session}/env"))
@@ -716,8 +731,11 @@ async fn a_replaced_environment_reads_back_in_the_order_it_was_given(
 async fn a_stored_environment_is_sealed_at_rest(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
     let client = ctx.client(router);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
-    let session = create(&client, &caller, &open(REPO, 10)).await.summary.id;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let session = create(&client, &caller, &open(&caller, REPO, 10))
+        .await
+        .summary
+        .id;
 
     client
         .put(&format!("/v1/sessions/{session}/env"))
@@ -746,8 +764,11 @@ async fn a_stored_environment_is_sealed_at_rest(ctx: TestContext, kv: Kv, db: Db
 async fn a_name_no_shell_can_export_is_unprocessable(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
     let client = ctx.client(router);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
-    let session = create(&client, &caller, &open(REPO, 10)).await.summary.id;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let session = create(&client, &caller, &open(&caller, REPO, 10))
+        .await
+        .summary
+        .id;
 
     let refused = client
         .put(&format!("/v1/sessions/{session}/env"))
@@ -778,9 +799,12 @@ async fn a_name_no_shell_can_export_is_unprocessable(ctx: TestContext, kv: Kv, d
 async fn another_users_environment_is_not_found(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
     let client = ctx.client(router);
-    let owner = sign_in(&kv, seed_user(&db).await).await;
-    let stranger = sign_in(&kv, seed_other_user(&db).await).await;
-    let session = create(&client, &owner, &open(REPO, 10)).await.summary.id;
+    let owner = sign_in(&kv, &db, seed_user(&db).await).await;
+    let stranger = sign_in(&kv, &db, seed_other_user(&db).await).await;
+    let session = create(&client, &owner, &open(&owner, REPO, 10))
+        .await
+        .summary
+        .id;
 
     client
         .put(&format!("/v1/sessions/{session}/env"))

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::budget::BudgetView;
 use crate::harness::{HarnessKind, UsageReport};
-use crate::id::SessionId;
+use crate::id::{ProviderAccountId, SessionId};
 use crate::money::Usd;
 use crate::repo::RepoSlug;
 
@@ -25,8 +25,16 @@ pub enum SessionState {
     Paused,
     /// Compute was reclaimed (spot eviction); disk kept, resumable.
     Interrupted,
-    /// Archived: turns kept, execution environment released. Terminal.
+    /// Archived: turns kept, execution environment released.
     Archived,
+    /// Provisioning gave up, and the session has no machine.
+    ///
+    /// Its own state rather than a flag on `Provisioning`, because the two
+    /// say opposite things to everyone who reads them: a provisioning
+    /// session is one to wait for, and a failed one is one to act on. A
+    /// session that ran out of provisioning attempts must never be
+    /// indistinguishable from one whose machine is thirty seconds away.
+    Failed,
 }
 
 /// An invalid session state transition.
@@ -42,6 +50,19 @@ pub struct SessionTransitionError {
 impl SessionState {
     /// Validates and performs a transition.
     ///
+    /// **Archived is not terminal**, and that is the History feature rather
+    /// than a loophole: archiving releases the *execution environment* and
+    /// keeps everything else — the turns, the transcript in R2, the room's
+    /// event stream — precisely so the session can be put back on a machine
+    /// later. `Archived -> Provisioning` is what `POST
+    /// /v1/sessions/{id}/resume` performs; a session with no way back would
+    /// make archiving a deletion, which is not what the product offers.
+    ///
+    /// [`Failed`](Self::Failed) is the same shape for the opposite reason: a
+    /// session whose provisioning gave up can be retried (`Failed ->
+    /// Provisioning`) or given up on (`Failed -> Archived`), and nothing
+    /// else.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionTransitionError`] when the move is not part of the
@@ -50,12 +71,18 @@ impl SessionState {
         let allowed = matches!(
             (self, to),
             (
-                Self::Provisioning | Self::Paused,
-                Self::Active | Self::Archived
-            ) | (
-                Self::Active,
-                Self::Paused | Self::Interrupted | Self::Archived
-            ) | (Self::Interrupted, Self::Provisioning | Self::Archived)
+                Self::Provisioning,
+                Self::Active | Self::Archived | Self::Failed
+            ) | (Self::Paused, Self::Active | Self::Archived)
+                | (
+                    Self::Active,
+                    Self::Paused | Self::Interrupted | Self::Archived
+                )
+                | (
+                    Self::Interrupted | Self::Failed,
+                    Self::Provisioning | Self::Archived
+                )
+                | (Self::Archived, Self::Provisioning)
         );
         if allowed {
             Ok(to)
@@ -67,8 +94,59 @@ impl SessionState {
     /// Whether the session still holds an execution environment.
     #[must_use]
     pub const fn holds_environment(self) -> bool {
-        !matches!(self, Self::Archived)
+        !matches!(self, Self::Archived | Self::Failed)
     }
+
+    /// Whether the session can be put back on a machine.
+    #[must_use]
+    pub const fn is_resumable(self) -> bool {
+        matches!(self, Self::Interrupted | Self::Archived | Self::Failed)
+    }
+}
+
+/// Which machine a session asks for.
+///
+/// Part of [`CreateSession`] rather than a follow-up call, because a session
+/// created without one would have to be started on a guess and moved
+/// afterwards — and the window between the two is a session running on the
+/// wrong machine, billed at the wrong price. The choice is validated against
+/// the named account's own catalog before anything is written, so a machine
+/// the account cannot deploy is refused where the user made the choice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct MachineChoice {
+    /// Which linked provider account to provision on.
+    pub provider_account: ProviderAccountId,
+    /// Provider-native machine type, as `GET /v1/machines/catalog` names it.
+    pub machine_type: String,
+    /// Provider-native region, as the catalog entry names it.
+    pub region: String,
+    /// Whether to ask for interruptible spot capacity. Spot is the default
+    /// because it is the cheaper option and flyco handles eviction.
+    ///
+    /// A request, not a promise: a provider that cannot honour it is
+    /// answered with on-demand capacity, and
+    /// [`MachineView::spot`](crate::machine::MachineView::spot) is what was
+    /// actually obtained.
+    #[serde(default = "default_spot")]
+    pub spot: bool,
+    /// Disk size in GiB.
+    #[serde(default = "default_disk_gib")]
+    pub disk_gib: u32,
+}
+
+const fn default_spot() -> bool {
+    true
+}
+
+/// Disk a session gets when the request names no size.
+///
+/// Big enough for a repository, a toolchain and a build cache, which is what
+/// a coding agent fills a disk with; small enough that the default is not an
+/// expensive one.
+pub const DEFAULT_DISK_GIB: u32 = 64;
+
+const fn default_disk_gib() -> u32 {
+    DEFAULT_DISK_GIB
 }
 
 /// Request body of `POST /v1/sessions`.
@@ -82,14 +160,8 @@ pub struct CreateSession {
     pub repo: String,
     /// Spending limit for the whole session.
     pub budget_limit: Usd,
-    /// Whether to use interruptible spot capacity. Spot is the default
-    /// because it is the cheaper option and flyco handles eviction.
-    #[serde(default = "default_spot")]
-    pub spot: bool,
-}
-
-const fn default_spot() -> bool {
-    true
+    /// The machine to provision for it.
+    pub machine: MachineChoice,
 }
 
 /// A session in a list.
@@ -117,6 +189,13 @@ pub struct SessionDetail {
     pub summary: SessionSummary,
     /// Budget accounting as of this request.
     pub budget: BudgetView,
+    /// Why the session is [`SessionState::Failed`], in the provider's own
+    /// words where it has any.
+    ///
+    /// `None` for every other state. A failed session that could not say
+    /// why would leave the user with a dead session and no idea whether to
+    /// retry it, pick another region, or ask for a quota increase.
+    pub failure: Option<String>,
 }
 
 /// Request body of `POST /v1/sessions/{id}/messages`.
@@ -163,14 +242,19 @@ pub struct TurnPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::id::ProviderAccountId;
 
     #[test]
     fn spot_defaults_to_on_when_the_client_omits_it() {
-        let request: CreateSession = serde_json::from_str(
-            r#"{"harness":"claude_code","repo":"lexoliu/flyco","budget_limit":10000000}"#,
-        )
+        let account = ProviderAccountId::generate();
+        let request: CreateSession = serde_json::from_str(&format!(
+            r#"{{"harness":"claude_code","repo":"lexoliu/flyco","budget_limit":10000000,
+                "machine":{{"provider_account":"{account}","machine_type":"Standard_B2ats_v2",
+                            "region":"northcentralus"}}}}"#
+        ))
         .expect("deserialize");
-        assert!(request.spot);
+        assert!(request.machine.spot);
+        assert_eq!(request.machine.disk_gib, DEFAULT_DISK_GIB);
     }
 
     #[test]
@@ -181,6 +265,7 @@ mod tests {
             (SessionState::Paused, "paused"),
             (SessionState::Interrupted, "interrupted"),
             (SessionState::Archived, "archived"),
+            (SessionState::Failed, "failed"),
         ] {
             assert_eq!(
                 serde_json::to_value(state).expect("serialize"),
@@ -202,14 +287,69 @@ mod tests {
     }
 
     #[test]
-    fn archived_is_terminal() {
+    fn an_archived_session_comes_back_through_provisioning() {
+        // History keeps an archived session's turns so it can be resumed;
+        // the only way back is the same queue every other machine comes
+        // from, which is why this is the one move archived allows.
+        let s = SessionState::Archived
+            .transition(SessionState::Provisioning)
+            .expect("resume an archived session");
+        assert!(s.transition(SessionState::Active).is_ok());
+
         for to in [
-            SessionState::Provisioning,
             SessionState::Active,
             SessionState::Paused,
             SessionState::Interrupted,
+            SessionState::Failed,
         ] {
-            assert!(SessionState::Archived.transition(to).is_err());
+            assert!(
+                SessionState::Archived.transition(to).is_err(),
+                "an archived session may only be resumed, not moved to {to:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_provision_can_be_retried_or_given_up_on() {
+        assert!(
+            SessionState::Provisioning
+                .transition(SessionState::Failed)
+                .is_ok()
+        );
+        assert!(
+            SessionState::Failed
+                .transition(SessionState::Provisioning)
+                .is_ok()
+        );
+        assert!(
+            SessionState::Failed
+                .transition(SessionState::Archived)
+                .is_ok()
+        );
+        assert!(
+            SessionState::Failed
+                .transition(SessionState::Active)
+                .is_err(),
+            "a failed session has no machine, so it cannot become active"
+        );
+        assert!(!SessionState::Failed.holds_environment());
+    }
+
+    #[test]
+    fn only_a_session_off_its_machine_is_resumable() {
+        for state in [
+            SessionState::Interrupted,
+            SessionState::Archived,
+            SessionState::Failed,
+        ] {
+            assert!(state.is_resumable());
+        }
+        for state in [
+            SessionState::Provisioning,
+            SessionState::Active,
+            SessionState::Paused,
+        ] {
+            assert!(!state.is_resumable());
         }
     }
 

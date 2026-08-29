@@ -11,7 +11,9 @@ use skyzen_test::{TestClient, TestContext};
 
 use crate::relay::RelayTicket;
 use crate::session;
-use crate::testing::{migrated_router, seed_other_user, seed_user};
+use crate::testing::{
+    machine_choice, migrated_router, seed_other_user, seed_provider_account, seed_user,
+};
 use crate::transcripts::BATCH_COUNT_HEADER;
 
 const REPO: &str = "lexoliu/flyco";
@@ -22,14 +24,17 @@ fn problem_kind(slug: &str) -> String {
     kind
 }
 
-/// A signed-in caller: the bearer token their browser would hold.
+/// A signed-in caller: the bearer token their browser would hold, and the
+/// provider account their sessions are provisioned onto.
 struct Caller {
     token: String,
+    account: flyco_core::ProviderAccountId,
 }
 
-async fn sign_in(kv: &Kv, user: CurrentUser) -> Caller {
+async fn sign_in(kv: &Kv, db: &Db, user: CurrentUser) -> Caller {
     let token = session::issue(kv, user.id).await.expect("issue a session");
-    Caller { token }
+    let account = seed_provider_account(db, user.id).await;
+    Caller { token, account }
 }
 
 async fn open_session(client: &TestClient<Router>, caller: &Caller, repo: &str) -> SessionId {
@@ -40,7 +45,7 @@ async fn open_session(client: &TestClient<Router>, caller: &Caller, repo: &str) 
             harness: HarnessKind::ClaudeCode,
             repo: repo.to_owned(),
             budget_limit: Usd::from_dollars(10),
-            spot: true,
+            machine: machine_choice(caller.account),
         })
         .send()
         .await;
@@ -65,7 +70,7 @@ async fn pair(client: &TestClient<Router>, caller: &Caller, session: SessionId) 
 #[skyzen::test]
 async fn a_daemon_token_is_minted_once_and_scoped_to_its_session(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let first = open_session(&client, &caller, REPO).await;
     let second = open_session(&client, &caller, "lexoliu/skyzen").await;
 
@@ -99,7 +104,7 @@ async fn a_daemon_token_is_minted_once_and_scoped_to_its_session(ctx: TestContex
 #[skyzen::test]
 async fn a_user_credential_does_not_open_a_daemon_route(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
 
     let refused = client
@@ -114,8 +119,8 @@ async fn a_user_credential_does_not_open_a_daemon_route(ctx: TestContext, kv: Kv
 #[skyzen::test]
 async fn only_the_owner_may_pair_a_daemon(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
-    let owner = sign_in(&kv, seed_user(&db).await).await;
-    let stranger = sign_in(&kv, seed_other_user(&db).await).await;
+    let owner = sign_in(&kv, &db, seed_user(&db).await).await;
+    let stranger = sign_in(&kv, &db, seed_other_user(&db).await).await;
     let session = open_session(&client, &owner, REPO).await;
 
     let refused = client
@@ -140,7 +145,7 @@ async fn transcript_batches_round_trip_through_storage(
     _storage: Storage,
 ) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
     let token = pair(&client, &caller, session).await;
 
@@ -178,7 +183,7 @@ async fn a_transcript_stream_that_was_never_written_reads_empty(
     _storage: Storage,
 ) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
     let token = pair(&client, &caller, session).await;
 
@@ -200,7 +205,7 @@ async fn rewriting_a_transcript_batch_is_a_conflict(
     _storage: Storage,
 ) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
     let token = pair(&client, &caller, session).await;
     let path = format!("/v1/sessions/{session}/transcript/main/batches/0");
@@ -228,7 +233,7 @@ async fn a_stream_key_that_is_not_one_path_segment_is_unprocessable(
     _storage: Storage,
 ) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
     let token = pair(&client, &caller, session).await;
 
@@ -250,7 +255,7 @@ async fn a_stream_key_that_is_not_one_path_segment_is_unprocessable(
 #[skyzen::test]
 async fn a_daemon_raises_an_approval_against_its_own_session(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
     let token = pair(&client, &caller, session).await;
 
@@ -306,7 +311,7 @@ async fn a_daemon_relay_upgrade_is_authenticated_before_it_reaches_a_room(
     db: Db,
 ) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
     let token = pair(&client, &caller, session).await;
     let path = format!("/v1/sessions/{session}/relay/daemon");
@@ -341,7 +346,7 @@ async fn a_daemon_relay_upgrade_is_authenticated_before_it_reaches_a_room(
 #[skyzen::test]
 async fn a_relay_ticket_is_minted_redeemed_once_and_scoped(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
     let other = open_session(&client, &caller, "lexoliu/skyzen").await;
 
@@ -402,7 +407,7 @@ async fn a_relay_ticket_is_minted_redeemed_once_and_scoped(ctx: TestContext, kv:
 #[skyzen::test]
 async fn a_client_relay_upgrade_without_a_ticket_is_challenged(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
 
     let anonymous = client
@@ -416,8 +421,8 @@ async fn a_client_relay_upgrade_without_a_ticket_is_challenged(ctx: TestContext,
 #[skyzen::test]
 async fn only_the_owner_may_mint_a_relay_ticket(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
-    let owner = sign_in(&kv, seed_user(&db).await).await;
-    let stranger = sign_in(&kv, seed_other_user(&db).await).await;
+    let owner = sign_in(&kv, &db, seed_user(&db).await).await;
+    let stranger = sign_in(&kv, &db, seed_other_user(&db).await).await;
     let session = open_session(&client, &owner, REPO).await;
 
     client
@@ -433,8 +438,8 @@ async fn only_the_owner_may_mint_a_relay_ticket(ctx: TestContext, kv: Kv, db: Db
 #[skyzen::test]
 async fn the_event_tail_is_readable_and_scoped_to_its_owner(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
-    let owner = sign_in(&kv, seed_user(&db).await).await;
-    let stranger = sign_in(&kv, seed_other_user(&db).await).await;
+    let owner = sign_in(&kv, &db, seed_user(&db).await).await;
+    let stranger = sign_in(&kv, &db, seed_other_user(&db).await).await;
     let session = open_session(&client, &owner, REPO).await;
 
     // A room nobody has spoken to yet has an empty tail rather than a 404:
@@ -491,7 +496,7 @@ fn message(text: &str) -> flyco_core::SendMessage {
 async fn an_active_session_accepts_a_message_and_an_interrupt(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
     let user = seed_user(&db).await;
-    let caller = sign_in(&kv, user.clone()).await;
+    let caller = sign_in(&kv, &db, user.clone()).await;
     let session = open_session(&client, &caller, REPO).await;
     activate(&db, user.id, session).await;
 
@@ -515,7 +520,7 @@ async fn an_active_session_accepts_a_message_and_an_interrupt(ctx: TestContext, 
 #[skyzen::test]
 async fn a_session_that_is_not_running_refuses_to_be_driven(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
 
     // Still provisioning: there is no daemon to hear either command, and a
@@ -547,7 +552,7 @@ async fn a_session_that_is_not_running_refuses_to_be_driven(ctx: TestContext, kv
 async fn a_message_with_nothing_in_it_is_unprocessable(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
     let user = seed_user(&db).await;
-    let caller = sign_in(&kv, user.clone()).await;
+    let caller = sign_in(&kv, &db, user.clone()).await;
     let session = open_session(&client, &caller, REPO).await;
     activate(&db, user.id, session).await;
 
@@ -568,8 +573,8 @@ async fn a_message_with_nothing_in_it_is_unprocessable(ctx: TestContext, kv: Kv,
 async fn another_users_session_cannot_be_driven_or_read(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
     let user = seed_user(&db).await;
-    let owner = sign_in(&kv, user.clone()).await;
-    let stranger = sign_in(&kv, seed_other_user(&db).await).await;
+    let owner = sign_in(&kv, &db, user.clone()).await;
+    let stranger = sign_in(&kv, &db, seed_other_user(&db).await).await;
     let session = open_session(&client, &owner, REPO).await;
     activate(&db, user.id, session).await;
 
@@ -601,7 +606,7 @@ async fn another_users_session_cannot_be_driven_or_read(ctx: TestContext, kv: Kv
 #[skyzen::test]
 async fn a_session_with_no_turns_yet_has_an_empty_history(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
 
     let page = client
@@ -634,7 +639,7 @@ async fn a_session_with_no_turns_yet_has_an_empty_history(ctx: TestContext, kv: 
 #[skyzen::test]
 async fn a_working_tree_nobody_has_reported_is_not_found(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
-    let caller = sign_in(&kv, seed_user(&db).await).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
 
     let unknown = client
