@@ -54,6 +54,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::control::rest::{ControlApi, ControlApiError};
 use crate::harness::{HarnessSession, SessionOutput, ToolApproval};
+use crate::terminal::{TerminalError, TerminalSession};
 
 /// How many frames may wait for a socket that is not there.
 ///
@@ -107,6 +108,9 @@ pub enum WireError {
     /// A REST call the relay depends on failed.
     #[error(transparent)]
     ControlApi(#[from] ControlApiError),
+    /// The web terminal failed.
+    #[error(transparent)]
+    Terminal(#[from] TerminalError),
 }
 
 /// The socket type a connected daemon holds.
@@ -377,8 +381,10 @@ async fn collect<A: ControlApi>(
 }
 
 /// The socket half of the relay.
-struct Connection<S> {
+struct Connection<S, T> {
     session: S,
+    terminal: T,
+    terminal_out: mpsc::Receiver<String>,
     endpoint: Endpoint,
     /// Whether a budget pause has stopped this session accepting work.
     ///
@@ -400,7 +406,7 @@ enum Ended {
     HarnessStopped,
 }
 
-impl<S: HarnessSession> Connection<S> {
+impl<S: HarnessSession, T: TerminalSession> Connection<S, T> {
     /// Pumps one connection until it ends.
     ///
     /// `in_flight` holds the one frame that has left the queue but has not
@@ -455,6 +461,17 @@ impl<S: HarnessSession> Connection<S> {
                         return Ok(Ended::Archived);
                     }
                 }
+                output = self.terminal_out.recv() => {
+                    let Some(data) = output else {
+                        return Ok(Ended::Disconnected);
+                    };
+                    let frame = DaemonToControl::TerminalOutput { data };
+                    if let Err(error) = send(socket, &frame).await {
+                        tracing::warn!(%error, "a terminal frame did not reach the room; retrying it on the next connection");
+                        *in_flight = Some(frame);
+                        return Ok(Ended::Disconnected);
+                    }
+                }
             }
         }
     }
@@ -479,12 +496,7 @@ impl<S: HarnessSession> Connection<S> {
                 if self.refuse_while_paused("terminal input") {
                     return Ok(Ended::Disconnected);
                 }
-                // The web terminal is a later milestone; refusing to pretend
-                // beats swallowing the user's keystrokes.
-                tracing::warn!(
-                    bytes = data.len(),
-                    "dropped terminal input: this build has no web terminal"
-                );
+                self.terminal.write(&data)?;
             }
             ControlToDaemon::ApprovalDecision { id, decision } => {
                 let harness_id = self
@@ -509,6 +521,7 @@ impl<S: HarnessSession> Connection<S> {
             ControlToDaemon::Budget { signal } => self.budget(signal).await?,
             ControlToDaemon::Archive => {
                 tracing::info!(session = %self.endpoint.session, "the control plane archived this session");
+                self.terminal.shutdown()?;
                 return Ok(Ended::Archived);
             }
         }
@@ -565,21 +578,26 @@ fn harness(error: impl core::fmt::Display) -> WireError {
 /// Returns [`WireError`] if the relay queue overflows, the control plane
 /// speaks a protocol this daemon cannot read, or the harness stops
 /// accepting commands. A dropped socket is not an error: it is reconnected.
-pub async fn run<S, A>(
+pub async fn run<S, A, T>(
     endpoint: Endpoint,
     session: S,
     outputs: mpsc::Receiver<SessionOutput>,
     api: A,
+    terminal: T,
+    terminal_out: mpsc::Receiver<String>,
 ) -> Result<(), WireError>
 where
     S: HarnessSession + 'static,
     A: ControlApi,
+    T: TerminalSession + 'static,
 {
     let (sender, mut queue) = mpsc::channel(QUEUE_DEPTH);
     let collector = tokio::spawn(collect(outputs, sender, api));
 
     let mut connection = Connection {
         session,
+        terminal,
+        terminal_out,
         endpoint,
         paused: false,
         approvals: BTreeMap::new(),
