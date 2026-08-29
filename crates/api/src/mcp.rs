@@ -9,6 +9,7 @@ use flyco_core::{
     CurrentUser, McpServerConfig, McpServerId, McpServerView, UpsertMcpServer, UserId,
 };
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
+use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
@@ -42,9 +43,6 @@ impl From<McpRow> for McpServerView {
     }
 }
 
-/// Every column the projection needs, so the readers cannot drift apart.
-const MCP_COLUMNS: &str = "id, name, config, enabled, updated_at_unix";
-
 /// Rejects a name no harness could announce the server under.
 fn checked_name(name: &str) -> Result<String, ApiError> {
     let trimmed = name.trim();
@@ -75,8 +73,13 @@ async fn list_mcp_servers(
 }
 
 async fn list(db: &Db, user: UserId) -> Result<Vec<McpServerView>, ApiError> {
-    let sql = format!("SELECT {MCP_COLUMNS} FROM mcp_servers WHERE user_id = ? ORDER BY name");
-    let rows: Vec<McpRow> = db.query(&sql).bind(user).fetch_all().await?;
+    let rows: Vec<McpRow> = sql!(
+        db,
+        "SELECT id, name, config, enabled, updated_at_unix \
+         FROM mcp_servers WHERE user_id = {user} ORDER BY name"
+    )
+    .fetch_all()
+    .await?;
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
@@ -107,22 +110,16 @@ async fn register(
     let name = checked_name(&request.name)?;
     let config = serde_json::to_string(&request.config)
         .map_err(|_| ApiError::CorruptRecord("the server config could not be encoded"))?;
-    let sql = format!(
+    let row: Option<McpRow> = sql!(
+        db,
         "INSERT INTO mcp_servers (id, user_id, name, config, enabled, updated_at_unix) \
-         VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (user_id, name) DO NOTHING \
-         RETURNING {MCP_COLUMNS}"
-    );
-
-    let row: Option<McpRow> = db
-        .query(&sql)
-        .bind(McpServerId::generate())
-        .bind(user)
-        .bind(name.clone())
-        .bind(config)
-        .bind(request.enabled)
-        .bind(now_unix())
-        .fetch_optional()
-        .await?;
+         VALUES ({McpServerId::generate()}, {user}, {name.clone()}, {config}, \
+                 {request.enabled}, {now_unix()}) \
+         ON CONFLICT (user_id, name) DO NOTHING \
+         RETURNING id, name, config, enabled, updated_at_unix"
+    )
+    .fetch_optional()
+    .await?;
 
     Ok(row.ok_or(ApiError::McpServerNameTaken { name })?.into())
 }
@@ -139,8 +136,13 @@ async fn get_mcp_server(
 
 async fn read(db: &Db, user: UserId, params: &Params) -> Result<McpServerView, ApiError> {
     let id: McpServerId = path_id(params, "id")?;
-    let sql = format!("SELECT {MCP_COLUMNS} FROM mcp_servers WHERE id = ? AND user_id = ?");
-    let row: Option<McpRow> = db.query(&sql).bind(id).bind(user).fetch_optional().await?;
+    let row: Option<McpRow> = sql!(
+        db,
+        "SELECT id, name, config, enabled, updated_at_unix \
+         FROM mcp_servers WHERE id = {id} AND user_id = {user}"
+    )
+    .fetch_optional()
+    .await?;
 
     Ok(row.ok_or(ApiError::McpServerNotFound)?.into())
 }
@@ -179,20 +181,15 @@ async fn update(
     let config = serde_json::to_string(&request.config)
         .map_err(|_| ApiError::CorruptRecord("the server config could not be encoded"))?;
 
-    let sql = format!(
-        "UPDATE mcp_servers SET name = ?, config = ?, enabled = ?, updated_at_unix = ? \
-         WHERE id = ? AND user_id = ? RETURNING {MCP_COLUMNS}"
-    );
-    let row: Option<McpRow> = db
-        .query(&sql)
-        .bind(name)
-        .bind(config)
-        .bind(request.enabled)
-        .bind(now_unix())
-        .bind(id)
-        .bind(user)
-        .fetch_optional()
-        .await?;
+    let row: Option<McpRow> = sql!(
+        db,
+        "UPDATE mcp_servers SET name = {name}, config = {config}, \
+         enabled = {request.enabled}, updated_at_unix = {now_unix()} \
+         WHERE id = {id} AND user_id = {user} \
+         RETURNING id, name, config, enabled, updated_at_unix"
+    )
+    .fetch_optional()
+    .await?;
 
     Ok(row.ok_or(ApiError::McpServerNotFound)?.into())
 }
@@ -209,12 +206,12 @@ async fn delete_mcp_server(
 
 async fn remove(db: &Db, user: UserId, params: &Params) -> Result<NoContent, ApiError> {
     let id: McpServerId = path_id(params, "id")?;
-    let removed = db
-        .query("DELETE FROM mcp_servers WHERE id = ? AND user_id = ?")
-        .bind(id)
-        .bind(user)
-        .execute()
-        .await?;
+    let removed = sql!(
+        db,
+        "DELETE FROM mcp_servers WHERE id = {id} AND user_id = {user}"
+    )
+    .execute()
+    .await?;
 
     if removed.rows_written == 0 {
         return Err(ApiError::McpServerNotFound);

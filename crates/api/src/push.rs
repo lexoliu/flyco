@@ -13,6 +13,7 @@ use flyco_core::{
     CurrentUser, PushSubscription, PushSubscriptionId, PushSubscriptionView, UserId, VapidPublicKey,
 };
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
+use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
@@ -88,25 +89,20 @@ async fn subscribe(
         ));
     }
 
-    let row: SubscriptionRow = db
-        .query(
-            "INSERT INTO push_subscriptions \
-             (id, user_id, endpoint, p256dh, auth, expiration_time_ms, created_at_unix) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT (endpoint) DO UPDATE SET \
-             user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, \
-             expiration_time_ms = excluded.expiration_time_ms \
-             RETURNING id, endpoint, created_at_unix",
-        )
-        .bind(PushSubscriptionId::generate())
-        .bind(user)
-        .bind(subscription.endpoint)
-        .bind(subscription.keys.p256dh)
-        .bind(subscription.keys.auth)
-        .bind(subscription.expiration_time)
-        .bind(now_unix())
-        .fetch_one()
-        .await?;
+    let row: SubscriptionRow = sql!(
+        db,
+        "INSERT INTO push_subscriptions \
+         (id, user_id, endpoint, p256dh, auth, expiration_time_ms, created_at_unix) \
+         VALUES ({PushSubscriptionId::generate()}, {user}, {subscription.endpoint}, \
+                 {subscription.keys.p256dh}, {subscription.keys.auth}, \
+                 {subscription.expiration_time}, {now_unix()}) \
+         ON CONFLICT (endpoint) DO UPDATE SET \
+         user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, \
+         expiration_time_ms = excluded.expiration_time_ms \
+         RETURNING id, endpoint, created_at_unix"
+    )
+    .fetch_one()
+    .await?;
 
     Ok(row.into())
 }
@@ -124,12 +120,12 @@ async fn unsubscribe_push(
 async fn unsubscribe(db: &Db, user: UserId, params: &Params) -> Result<NoContent, ApiError> {
     let id: PushSubscriptionId = path_id(params, "id")?;
 
-    let removed = db
-        .query("DELETE FROM push_subscriptions WHERE id = ? AND user_id = ?")
-        .bind(id)
-        .bind(user)
-        .execute()
-        .await?;
+    let removed = sql!(
+        db,
+        "DELETE FROM push_subscriptions WHERE id = {id} AND user_id = {user}"
+    )
+    .execute()
+    .await?;
 
     if removed.rows_written == 0 {
         return Err(ApiError::PushSubscriptionNotFound);

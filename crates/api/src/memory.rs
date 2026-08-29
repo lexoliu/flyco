@@ -19,6 +19,7 @@ use flyco_core::{
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
+use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
@@ -134,21 +135,17 @@ async fn list(db: &Db, user: UserId, filter: &MemoryFilter) -> Result<Vec<Memory
         .transpose()
         .map_err(|_| ApiError::InvalidRepo(filter.repo.clone().unwrap_or_default()))?;
 
-    let rows: Vec<MemoryRow> = db
-        .query(
-            "SELECT id, parent_id, repo, title, content, updated_at_unix \
-             FROM memory_nodes WHERE user_id = ? \
-             AND ((? IS NULL AND repo IS NULL) OR repo = ?) \
-             AND ((? IS NULL AND parent_id IS NULL) OR parent_id = ?) \
-             ORDER BY title, id",
-        )
-        .bind(user)
-        .bind(repo.clone())
-        .bind(repo)
-        .bind(filter.parent)
-        .bind(filter.parent)
-        .fetch_all()
-        .await?;
+    let parent = filter.parent;
+    let rows: Vec<MemoryRow> = sql!(
+        db,
+        "SELECT id, parent_id, repo, title, content, updated_at_unix \
+         FROM memory_nodes WHERE user_id = {user} \
+         AND (({repo.clone()} IS NULL AND repo IS NULL) OR repo = {repo}) \
+         AND (({parent} IS NULL AND parent_id IS NULL) OR parent_id = {parent}) \
+         ORDER BY title, id"
+    )
+    .fetch_all()
+    .await?;
 
     Ok(rows.into_iter().map(Into::into).collect())
 }
@@ -164,18 +161,13 @@ async fn create(db: &Db, user: UserId, request: CreateMemoryNode) -> Result<Memo
     }
 
     let id = MemoryNodeId::generate();
-    db.query(
+    sql!(
+        db,
         "INSERT INTO memory_nodes \
          (id, user_id, parent_id, repo, title, content, updated_at_unix) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES ({id}, {user}, {request.parent}, {request.repo}, \
+                 {request.title}, {request.content}, {now_unix()})"
     )
-    .bind(id)
-    .bind(user)
-    .bind(request.parent)
-    .bind(request.repo)
-    .bind(request.title)
-    .bind(request.content)
-    .bind(now_unix())
     .execute()
     .await?;
 
@@ -201,15 +193,14 @@ async fn update(
     let id = path_id::<MemoryNodeId>(params, "id")?;
     let current = load(db, user, id).await?;
 
-    db.query(
-        "UPDATE memory_nodes SET title = ?, content = ?, updated_at_unix = ? \
-         WHERE id = ? AND user_id = ?",
+    let title = request.title.unwrap_or(current.title);
+    let content = request.content.unwrap_or(current.content);
+    sql!(
+        db,
+        "UPDATE memory_nodes SET title = {title}, content = {content}, \
+         updated_at_unix = {now_unix()} \
+         WHERE id = {id} AND user_id = {user}"
     )
-    .bind(request.title.unwrap_or(current.title))
-    .bind(request.content.unwrap_or(current.content))
-    .bind(now_unix())
-    .bind(id)
-    .bind(user)
     .execute()
     .await?;
 
@@ -225,17 +216,16 @@ async fn forget(db: &Db, user: UserId, params: &Params) -> Result<NoContent, Api
     let id = path_id::<MemoryNodeId>(params, "id")?;
     load(db, user, id).await?;
 
-    db.query(
+    sql!(
+        db,
         "WITH RECURSIVE subtree(id) AS ( \
-             SELECT id FROM memory_nodes WHERE id = ? AND user_id = ? \
+             SELECT id FROM memory_nodes WHERE id = {id} AND user_id = {user} \
              UNION ALL \
              SELECT node.id FROM memory_nodes node \
              JOIN subtree ON node.parent_id = subtree.id \
          ) \
-         DELETE FROM memory_nodes WHERE id IN (SELECT id FROM subtree)",
+         DELETE FROM memory_nodes WHERE id IN (SELECT id FROM subtree)"
     )
-    .bind(id)
-    .bind(user)
     .execute()
     .await?;
 
@@ -245,15 +235,13 @@ async fn forget(db: &Db, user: UserId, params: &Params) -> Result<NoContent, Api
 
 /// Loads one of the caller's nodes.
 async fn load(db: &Db, user: UserId, id: MemoryNodeId) -> Result<MemoryNode, ApiError> {
-    let row: Option<MemoryRow> = db
-        .query(
-            "SELECT id, parent_id, repo, title, content, updated_at_unix \
-             FROM memory_nodes WHERE id = ? AND user_id = ?",
-        )
-        .bind(id)
-        .bind(user)
-        .fetch_optional()
-        .await?;
+    let row: Option<MemoryRow> = sql!(
+        db,
+        "SELECT id, parent_id, repo, title, content, updated_at_unix \
+         FROM memory_nodes WHERE id = {id} AND user_id = {user}"
+    )
+    .fetch_optional()
+    .await?;
 
     Ok(row.ok_or(ApiError::MemoryNodeNotFound)?.into())
 }

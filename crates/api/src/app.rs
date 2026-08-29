@@ -1086,12 +1086,13 @@ mod tests {
 
         // D1 keeps the hash and nothing else, so the plaintext key cannot be
         // recovered from the table.
-        let stored: String = db
-            .query("SELECT token_hash FROM api_keys WHERE id = ?")
-            .bind(created.id.to_string())
-            .fetch_scalar()
-            .await
-            .expect("read the stored key");
+        let stored: String = skyzen::sql!(
+            db,
+            "SELECT token_hash FROM api_keys WHERE id = {created.id}"
+        )
+        .fetch_scalar()
+        .await
+        .expect("read the stored key");
         assert_eq!(stored, crate::crypto::token_hash(&created.token));
         assert!(!stored.contains(&created.token));
 

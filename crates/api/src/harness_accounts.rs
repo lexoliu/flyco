@@ -17,6 +17,7 @@ use flyco_core::{
 use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
+use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::sql::ColumnEnum as _;
 use skyzen_services::{Db, Kv};
@@ -80,14 +81,13 @@ async fn list_harness_accounts(
 }
 
 async fn list(db: &Db, user: UserId) -> Result<Vec<HarnessAccountView>, ApiError> {
-    let rows: Vec<HarnessAccountRow> = db
-        .query(
-            "SELECT id, harness, label, linked_at_unix, expires_at_unix \
-             FROM harness_accounts WHERE user_id = ? ORDER BY harness",
-        )
-        .bind(user)
-        .fetch_all()
-        .await?;
+    let rows: Vec<HarnessAccountRow> = sql!(
+        db,
+        "SELECT id, harness, label, linked_at_unix, expires_at_unix \
+         FROM harness_accounts WHERE user_id = {user} ORDER BY harness"
+    )
+    .fetch_all()
+    .await?;
 
     Ok(rows.into_iter().map(Into::into).collect())
 }
@@ -137,12 +137,12 @@ async fn unlink_harness_account(
 async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, ApiError> {
     let harness = harness_of(params)?;
 
-    let removed = db
-        .query("DELETE FROM harness_accounts WHERE user_id = ? AND harness = ?")
-        .bind(user)
-        .bind(harness)
-        .execute()
-        .await?;
+    let removed = sql!(
+        db,
+        "DELETE FROM harness_accounts WHERE user_id = {user} AND harness = {harness}"
+    )
+    .execute()
+    .await?;
 
     if removed.rows_written == 0 {
         return Err(ApiError::HarnessAccountNotFound);

@@ -14,6 +14,7 @@
 //! the previous daemon holds.
 
 use flyco_core::{DAEMON_TOKEN_PREFIX, DaemonToken, SessionId, UserId};
+use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::crypto::{prefixed_token, token_hash};
@@ -32,13 +33,13 @@ use crate::error::ApiError;
 pub async fn issue(db: &Db, user: UserId, session: SessionId) -> Result<DaemonToken, ApiError> {
     let token = prefixed_token(DAEMON_TOKEN_PREFIX)?;
 
-    let result = db
-        .query("UPDATE sessions SET daemon_token_hash = ? WHERE id = ? AND user_id = ?")
-        .bind(token_hash(&token))
-        .bind(session)
-        .bind(user)
-        .execute()
-        .await?;
+    let result = sql!(
+        db,
+        "UPDATE sessions SET daemon_token_hash = {token_hash(&token)} \
+         WHERE id = {session} AND user_id = {user}"
+    )
+    .execute()
+    .await?;
 
     if result.rows_written == 0 {
         return Err(ApiError::SessionNotFound);
@@ -63,11 +64,12 @@ pub async fn authenticates(db: &Db, session: SessionId, presented: &str) -> Resu
     // The column is nullable, so the scalar is `Option<String>` and the row
     // itself is optional: an unknown session and an unpaired one both arrive
     // here as `None`.
-    let stored: Option<Option<String>> = db
-        .query("SELECT daemon_token_hash FROM sessions WHERE id = ?")
-        .bind(session)
-        .fetch_scalar_optional()
-        .await?;
+    let stored: Option<Option<String>> = sql!(
+        db,
+        "SELECT daemon_token_hash FROM sessions WHERE id = {session}"
+    )
+    .fetch_scalar_optional()
+    .await?;
 
     Ok(stored
         .flatten()
