@@ -45,7 +45,7 @@ quick-xml = { version = "0.38", default-features = false, features = ["serialize
 # The RS256 half of a Google service-account assertion. `rsa` + `sha2` are
 # pure Rust and sign without an RNG (PKCS#1 v1.5 is deterministic), which is
 # what makes a minted assertion assertable in a test.
-rsa = { version = "0.9", default-features = false, features = ["sha2"] }
+rsa = { version = "0.9", features = ["sha2"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -88,6 +88,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 base64 = "0.22"
 getrandom = { version = "0.4", features = ["wasm_js"] }
+# `rsa` reaches `getrandom` through the 0.2 line, which refuses to compile for
+# wasm32 at all unless its `js` feature is on — a `compile_error!`, not a
+# runtime failure. Nothing calls it (PKCS#1 v1.5 signing is deterministic and
+# takes no RNG); this entry exists solely to turn that feature on, and it is
+# scoped to the wasm32 target so a native build never sees it.
+getrandom-0-2 = { package = "getrandom", version = "0.2", features = ["js"] }
 hex = "0.4"
 # GitHub signs every webhook delivery with HMAC-SHA256 over the raw body;
 # `Mac::verify_slice` is the constant-time comparison that check needs.

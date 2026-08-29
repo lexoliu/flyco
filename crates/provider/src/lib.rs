@@ -3,7 +3,7 @@
 //! Every implementation is an HTTP client over the provider's public API
 //! ([`http`], backed by [`zenwave`]), never a native SDK — the same code runs
 //! in the Cloudflare Worker (wasm32) and in tests: [`byo_ssh`], [`azure`],
-//! [`aws`] and GCP.
+//! [`aws`] and [`gcp`].
 //!
 //! Where two drivers need the same decision they share it rather than each
 //! having one: [`cloud_init`] is the document every provisioned machine
@@ -12,14 +12,16 @@
 //!
 //! # Where a driver runs
 //!
-//! Azure and AWS are reachable from the Worker because every step of them is
-//! an HTTPS call — an AWS request is signed in-process rather than by an SDK,
-//! which is what keeps it so. byo-ssh is not: SSH is a TCP transport and a
-//! Worker has no sockets. The two shapes are told apart in the type system
-//! rather than by a runtime check —
+//! All three cloud drivers are reachable from the Worker because every step
+//! of them is an HTTPS call — an AWS signature and a Google assertion are
+//! both computed in-process rather than by an SDK, which is what keeps it so.
+//! byo-ssh is not: SSH is a TCP transport and a Worker has no sockets. The
+//! two shapes are told apart in the type system rather than by a runtime
+//! check —
 //!
-//! * [`azure::AzureProvider`] and [`aws::AwsProvider`] speak only HTTPS, so
-//!   they implement [`CloudProvider`] on every target — the Worker included.
+//! * [`azure::AzureProvider`], [`aws::AwsProvider`] and [`gcp::GcpProvider`]
+//!   speak only HTTPS, so they implement [`CloudProvider`] on every target —
+//!   the Worker included.
 //! * [`byo_ssh::ByoSsh`] compiles everywhere but implements **no** provider
 //!   trait. It *plans*: it turns a machine operation into a
 //!   [`byo_ssh::ContainerJob`], a serializable description of the container
@@ -46,6 +48,7 @@ pub mod clock;
 pub mod cloud_init;
 pub mod datetime;
 pub mod flycod;
+pub mod gcp;
 pub mod http;
 pub mod polling;
 
