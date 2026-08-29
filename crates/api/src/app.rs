@@ -766,6 +766,26 @@ async fn read_repo_status(
 
 // ── Daemon-scoped routes ──
 
+/// The harness-native session id the daemon announced at start.
+#[derive(Debug, Deserialize, skyzen::ToSchema)]
+struct HarnessSessionIdentity {
+    /// Identity the harness minted; resume reopens this conversation.
+    harness_session_id: String,
+}
+
+/// Records the harness-native session id so a later resume continues it.
+#[skyzen::openapi]
+async fn put_harness_session(
+    State(session): State<DaemonSession>,
+    Json(identity): Json<HarnessSessionIdentity>,
+    db: Db,
+) -> Outcome<NoContent> {
+    sessions::record_harness_session(&db, session.0, &identity.harness_session_id)
+        .await
+        .map(|()| NoContent)
+        .into()
+}
+
 /// Raises an approval against the daemon's own session.
 ///
 /// The daemon records the durable approval here *before* it announces the
@@ -919,6 +939,7 @@ fn relay_routes() -> Vec<RouteNode> {
 fn daemon_routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/sessions/{id}/approvals".post(raise_approval),
+        "/v1/sessions/{id}/harness-session".put(put_harness_session),
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),
         "/v1/sessions/{id}/transcript/{stream}".at(get_transcript),
         "/v1/sessions/{id}/transcript/{stream}/batches/{seq}".put(put_transcript_batch),

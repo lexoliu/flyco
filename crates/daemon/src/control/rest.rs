@@ -151,6 +151,17 @@ pub trait ControlApi: Send + Sync + 'static {
         &self,
         observation: HarnessObservation,
     ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
+
+    /// Records the harness-native session id so a later resume continues it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or refused the write.
+    fn record_harness_session(
+        &self,
+        harness_session_id: &str,
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 }
 
 /// A transcript stream as the control plane serves it.
@@ -263,6 +274,30 @@ impl ControlApi for HttpControlApi {
             .map_err(transport)?
             .await
             .map_err(|error| refused("POST", &url, &error))?;
+
+        debug_assert!(response.status().is_success());
+        Ok(())
+    }
+
+    async fn record_harness_session(
+        &self,
+        harness_session_id: &str,
+    ) -> Result<(), ControlApiError> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            harness_session_id: &'a str,
+        }
+
+        let url = self.url("harness-session")?;
+        let mut client = zenwave::client();
+        let response = client
+            .put(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(&Body { harness_session_id })
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("PUT", &url, &error))?;
 
         debug_assert!(response.status().is_success());
         Ok(())

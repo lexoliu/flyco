@@ -365,12 +365,9 @@ async fn bootstrap(
         // approval UI.
         permission_mode: PermissionMode::Default,
         claude_auth,
-        // Nothing yet: the harness-native session id a resume would replay
-        // arrives on the relay as `Started`, which is the room's record and
-        // not the control plane's. Reading it back is what turns a resumed
-        // session's transcript into a continued conversation, and it is the
-        // next thing this path owes.
-        resume_session_id: None,
+        resume_session_id: sessions::harness_session_id(db, claim.session)
+            .await
+            .map_err(Provisioned::from)?,
     })
 }
 
