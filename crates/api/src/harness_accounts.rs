@@ -14,16 +14,16 @@ use flyco_core::{
     AuthorizeUrl, CurrentUser, HarnessAccountId, HarnessAccountView, HarnessKind, LlmUsageView,
     UserId,
 };
+use flyco_provider::ClaudeCredential;
 use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::sql;
 use skyzen::utils::{Json, State};
-use skyzen_services::sql::ColumnEnum as _;
 use skyzen_services::{Db, Kv};
 
 use crate::error::ApiError;
-use crate::extract::path_segment;
+use crate::extract::path_id;
 use crate::observations;
 use crate::problem::Outcome;
 use crate::respond::{NoContent, SeeOther};
@@ -51,16 +51,6 @@ impl From<HarnessAccountRow> for HarnessAccountView {
             expires_at_unix: row.expires_at_unix,
         }
     }
-}
-
-/// Reads the `{harness}` path segment as the harness it names.
-///
-/// The segment and the `harness` column speak the same tokens, because both
-/// are [`ColumnEnum::from_token`] — a path a caller can type cannot name a
-/// harness the table could not hold.
-fn harness_of(params: &Params) -> Result<HarnessKind, ApiError> {
-    let segment = path_segment(params, "harness")?;
-    HarnessKind::from_token(&segment).ok_or(ApiError::MalformedId(segment))
 }
 
 /// Query string the vendor appends when it redirects back.
@@ -120,6 +110,47 @@ async fn complete_harness_link(
     )
 }
 
+/// The credential a session's machine authenticates its harness with.
+///
+/// `None` linked account is not a failure: the machine comes up with
+/// [`ClaudeCredential::Inherit`] and the harness reports itself
+/// unauthenticated, which is a far better outcome than a machine that never
+/// provisions because the user has not linked Anthropic yet.
+///
+/// Only Claude Code has a credential shape in the daemon's bootstrap, so a
+/// Codex session inherits whatever its image carries. `token_enc` seals the
+/// OAuth token the vendor's own authorization page returned, which is the
+/// only kind of credential [`crate::harness_accounts`] ever stores.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails or the sealed token was
+/// written under a different key.
+pub async fn credential(
+    db: &Db,
+    cipher: &crate::crypto::TokenCipher,
+    user: UserId,
+    harness: HarnessKind,
+) -> Result<ClaudeCredential, ApiError> {
+    if harness != HarnessKind::ClaudeCode {
+        return Ok(ClaudeCredential::Inherit);
+    }
+
+    let sealed: Option<String> = sql!(
+        db,
+        "SELECT token_enc FROM harness_accounts \
+         WHERE user_id = {user} AND harness = {harness} ORDER BY linked_at_unix LIMIT 1"
+    )
+    .fetch_scalar_optional()
+    .await?;
+
+    sealed.map_or(Ok(ClaudeCredential::Inherit), |sealed| {
+        Ok(ClaudeCredential::OauthToken {
+            token: cipher.open(&sealed)?,
+        })
+    })
+}
+
 /// Unlinks the caller's account for one harness.
 #[skyzen::openapi]
 async fn unlink_harness_account(
@@ -135,12 +166,18 @@ async fn unlink_harness_account(
 /// It does not reach into machines already running: their environment was
 /// fixed when the process started, and a session mid-turn keeps the
 /// credential it was given until it is archived.
+///
+/// Keyed by account id like every other resource flyco owns. The harness
+/// kind was the key once, which quietly made "one account per harness" a
+/// property of the *API* rather than of the table — the list response has
+/// always carried a per-account id, and there was no way to name the second
+/// account with it.
 async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, ApiError> {
-    let harness = harness_of(params)?;
+    let id: HarnessAccountId = path_id(params, "id")?;
 
     let removed = sql!(
         db,
-        "DELETE FROM harness_accounts WHERE user_id = {user} AND harness = {harness}"
+        "DELETE FROM harness_accounts WHERE id = {id} AND user_id = {user}"
     )
     .execute()
     .await?;
@@ -149,7 +186,7 @@ async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, Api
         return Err(ApiError::HarnessAccountNotFound);
     }
 
-    tracing::info!(?harness, "unlinked a harness account");
+    tracing::info!(account = %id, "unlinked a harness account");
     Ok(NoContent)
 }
 
@@ -174,7 +211,7 @@ async fn llm_usage(State(user): State<CurrentUser>, db: Db) -> Outcome<Json<Vec<
 pub fn routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/harness-accounts".at(list_harness_accounts),
-        "/v1/harness-accounts/{harness}".delete(unlink_harness_account),
+        "/v1/harness-accounts/{id}".delete(unlink_harness_account),
         "/v1/harness-accounts/{harness}/link/start".post(start_harness_link),
         "/v1/usage/llm".at(llm_usage),
     ))
