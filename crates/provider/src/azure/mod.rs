@@ -61,6 +61,7 @@
 pub mod arm;
 pub mod auth;
 pub mod bodies;
+pub mod costs;
 pub mod policy;
 pub mod pricing;
 pub mod skus;
@@ -70,11 +71,11 @@ mod tests;
 
 use askama::Template;
 use base64::Engine as _;
-use flyco_core::MachineId;
 use flyco_core::machine::{
     CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
     MachineState, OsFamily,
 };
+use flyco_core::{CloudSpend, MachineId};
 
 use crate::clock::{MonotonicClock, SystemClock, SystemTimer, Timer};
 use crate::http::{HttpRequest, HttpResponse, HttpTransport, Method};
@@ -84,6 +85,7 @@ use crate::{
 
 use arm::{ErrorBody, Follow, OperationBody, OperationStatus, api_version};
 use auth::{ServicePrincipal, TokenCache};
+use costs::{CostQuery, CostResult};
 use policy::{AssignmentPage, RegionPolicy};
 use pricing::PriceCatalog;
 use skus::{Availability, CpuArchitecture, Quotas, Sku, SkuPage, UsagePage};
@@ -1088,6 +1090,51 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
                 minimum_billing_hours: None,
             },
         })
+    }
+
+    /// What Azure's own meter says this subscription has been billed this
+    /// billing month.
+    ///
+    /// Cost Management is the authority: a total flyco assembled from its
+    /// own machine records would miss the storage, egress and support
+    /// charges on the same invoice, and would be a second opinion about a
+    /// number the provider already publishes. The window reported back is
+    /// the one the query covered, so the amount and the period beside it
+    /// cannot disagree — see [`costs`].
+    ///
+    /// `now_unix` is supplied rather than read: the provider crate has a
+    /// monotonic clock for token expiry and deliberately no wall clock, and
+    /// a billing month is a wall-clock fact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if Azure refuses the query, if the result
+    /// is not one this driver can read, or if the subscription is metered
+    /// in a currency flyco does not account in.
+    pub async fn billing_period_cost(
+        &mut self,
+        now_unix: u64,
+    ) -> Result<CloudSpend, ProviderError> {
+        let url = arm::subscription_url(
+            self.subscription(),
+            "providers/Microsoft.CostManagement/query",
+            api_version::COST_MANAGEMENT,
+        );
+        let request = HttpRequest::new(Method::Post, url).json_body(&CostQuery::month_to_date())?;
+
+        let response = self.send(request).await?;
+        if !response.is_success() {
+            return Err(refusal(&response));
+        }
+
+        // A `204` is Cost Management saying there is nothing in the period,
+        // which is a metered zero rather than an unreadable answer.
+        let properties = if response.status == 204 {
+            costs::CostProperties::default()
+        } else {
+            response.json::<CostResult>()?.properties
+        };
+        costs::spend_of(&properties, now_unix)
     }
 
     /// The region a provisioned machine lives in, read back off its

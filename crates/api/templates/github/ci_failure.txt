@@ -1,0 +1,8 @@
+[flyco CI notice] GitHub reports that {{ kind }} `{{ name }}` on {{ repo }} concluded `{{ conclusion }}`
+{%- if let Some(branch) = branch %} on branch `{{ branch }}`{% endif %}.
+{%- if let Some(url) = url %}
+
+GitHub's own report: {{ url }}
+{%- endif %}
+
+Work out why it failed, fix it in this working tree, and push the fix to the branch that run tested. If the cause is not in this session's work, say so rather than changing anything.

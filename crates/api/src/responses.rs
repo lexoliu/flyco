@@ -56,6 +56,7 @@ pub const BODILESS: &[&str] = &[
     "app::open_daemon_relay",
     "app::put_transcript_batch",
     "flyco_api::app::interrupt_session",
+    "flyco_api::app::record_harness_observation",
     "flyco_api::app::revoke_api_key",
     "flyco_api::app::send_message",
     "flyco_api::harness_accounts::complete_harness_link",

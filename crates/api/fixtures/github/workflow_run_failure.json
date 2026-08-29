@@ -1,0 +1,33 @@
+{
+  "action": "completed",
+  "workflow": {
+    "id": 176543210,
+    "name": "CI",
+    "path": ".github/workflows/ci.yml"
+  },
+  "workflow_run": {
+    "id": 17654321098,
+    "name": "CI",
+    "node_id": "WFR_kwLOABCDEF8AAAAEDLnKag",
+    "head_branch": "feat/m6-webhook-usage",
+    "head_sha": "9f1c0f0d2f6f5f0a1b2c3d4e5f60718293a4b5c6",
+    "event": "push",
+    "status": "completed",
+    "conclusion": "failure",
+    "run_number": 214,
+    "run_attempt": 1,
+    "html_url": "https://github.com/lexoliu/flyco/actions/runs/17654321098"
+  },
+  "repository": {
+    "id": 902135467,
+    "name": "flyco",
+    "full_name": "lexoliu/flyco",
+    "private": true,
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "lexoliu",
+    "id": 4242,
+    "type": "User"
+  }
+}

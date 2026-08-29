@@ -40,8 +40,8 @@
 use core::time::Duration;
 
 use flyco_core::{
-    ApprovalDecision, BudgetSignal, ControlToDaemon, DaemonToControl, SessionId,
-    WIRE_PROTOCOL_VERSION,
+    ApprovalDecision, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
+    HarnessObservation, RateLimitObservation, SessionId, WIRE_PROTOCOL_VERSION,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
 use rand::Rng as _;
@@ -266,11 +266,41 @@ fn backoff(attempt: u32) -> Duration {
     Duration::from_millis(u64::try_from(jittered).unwrap_or(u64::MAX)).max(Duration::from_millis(1))
 }
 
+/// What a harness event tells the LLM usage panel, if anything.
+///
+/// Two of them carry a fact nothing else in flyco can obtain: a finished
+/// turn knows what the harness said it cost, and a usage limit is only ever
+/// announced, never queryable. Everything else observes nothing.
+fn observation_in(event: &HarnessEvent) -> Option<HarnessObservation> {
+    match event {
+        HarnessEvent::TurnCompleted { usage, .. } => {
+            usage.estimated_cost.map(|cost| HarnessObservation {
+                observed_cost: Some(cost),
+                rate_limit: None,
+            })
+        }
+        HarnessEvent::UsageLimited { resets_at_unix } => Some(HarnessObservation {
+            observed_cost: None,
+            rate_limit: Some(RateLimitObservation {
+                resets_at_unix: *resets_at_unix,
+            }),
+        }),
+        _ => None,
+    }
+}
+
 /// Turns the harness's output stream into wire frames.
 ///
 /// Runs until the harness stops. An approval is recorded over REST before
 /// its frame is queued, so the id the room announces is one the control
 /// plane can settle.
+///
+/// A usage observation is recorded the same way but is *not* allowed to
+/// fail the session: it is telemetry for a panel, and a turn that ran must
+/// not be lost because a number about it could not be filed. The refusal it
+/// meets most often is the honest one — a session running on inherited
+/// developer credentials has no linked account to attribute anything to —
+/// which is why this is `debug` rather than a warning.
 async fn collect<A: ControlApi>(
     mut outputs: mpsc::Receiver<SessionOutput>,
     queue: mpsc::Sender<DaemonToControl>,
@@ -284,7 +314,14 @@ async fn collect<A: ControlApi>(
             SessionOutput::Capabilities { capabilities } => {
                 DaemonToControl::Capabilities { capabilities }
             }
-            SessionOutput::Event { event } => DaemonToControl::Harness { event },
+            SessionOutput::Event { event } => {
+                if let Some(observation) = observation_in(&event)
+                    && let Err(error) = api.record_observation(observation).await
+                {
+                    tracing::debug!(%error, "a usage observation was not recorded");
+                }
+                DaemonToControl::Harness { event }
+            }
             SessionOutput::ApprovalRequest { tool, input, .. } => {
                 let payload = flyco_core::wire::ApprovalPayload::ToolUse { tool, input };
                 let id = api.raise_approval(payload.clone()).await?;

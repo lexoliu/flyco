@@ -24,6 +24,7 @@ use skyzen_services::{Db, Kv};
 
 use crate::error::ApiError;
 use crate::extract::path_segment;
+use crate::observations;
 use crate::problem::Outcome;
 use crate::respond::{NoContent, SeeOther};
 
@@ -158,9 +159,15 @@ async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, Api
 /// remaining-quota API, so this reports the cost telemetry the harness
 /// emitted and the rate limits it actually hit. A panel built on it says
 /// what has happened, never what is left.
+///
+/// The rows come out of [`crate::observations`], which is filled in by the
+/// sessions' own daemons as they run — the only place either number exists.
+/// An account with nothing observed about it still appears, reporting
+/// nothing, because "nothing has happened" is an answer and a missing row
+/// would read as an account that is not linked.
 #[skyzen::openapi]
-async fn llm_usage(State(_user): State<CurrentUser>, _db: Db) -> Outcome<Json<Vec<LlmUsageView>>> {
-    todo!("M6: aggregate observed rate-limit events and OTLP cost telemetry per account")
+async fn llm_usage(State(user): State<CurrentUser>, db: Db) -> Outcome<Json<Vec<LlmUsageView>>> {
+    observations::usage(&db, user.id).await.map(Json).into()
 }
 
 /// The user-scoped harness-account routes.
