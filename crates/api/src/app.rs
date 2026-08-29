@@ -250,18 +250,34 @@ async fn read_session(
 #[skyzen::openapi]
 async fn archive_session(
     State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
     params: Params,
+    rooms: Rooms,
     db: Db,
 ) -> Outcome<Json<SessionDetail>> {
-    end_session(&user, &params, &db).await.into()
+    end_session(&user, &config, &params, &rooms, &db)
+        .await
+        .into()
 }
 
 async fn end_session(
     user: &CurrentUser,
+    config: &ApiConfig,
     params: &Params,
+    rooms: &Rooms,
     db: &Db,
 ) -> Result<Json<SessionDetail>, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
+    sessions::state_of(db, user.id, id)
+        .await?
+        .transition(SessionState::Archived)
+        .map_err(|error| ApiError::InvalidTransition {
+            from: error.from,
+            to: error.to,
+        })?;
+
+    rooms.command(id, &ControlToDaemon::Archive).await?;
+    machines::destroy_for_archive(db, config, user.id, id).await?;
     sessions::transition(db, user.id, id, SessionState::Archived)
         .await
         .map(Json)
