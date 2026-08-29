@@ -122,8 +122,20 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** oauth::callback<flyco_api::github::ZenwaveGithub> */
-        get: operations["oauth::callback<flyco_api::github::ZenwaveGithub>"];
+        /**
+         * `GET /v1/auth/github/callback` — completes a GitHub sign-in.
+         * @description `GET /v1/auth/github/callback` — completes a GitHub sign-in.
+         *
+         *     Consumes the `state`, exchanges the code, upserts the account, and sends
+         *     the browser to the SPA with the session token in the URL fragment.
+         *
+         *     Deliberately not annotated with `#[skyzen::openapi]`: the macro emits
+         *     module-level items that mention every argument type, and this handler is
+         *     generic over [`GithubOauth`], whose parameter does not exist at module
+         *     scope. The route still appears in the exported document, without its
+         *     parameter schemas.
+         */
+        get: operations["flyco_api::oauth::callback"];
         put?: never;
         post?: never;
         delete?: never;
@@ -162,6 +174,11 @@ export interface paths {
         /**
          * Lists the caller's GitHub repositories, for the session-creation picker.
          * @description Lists the caller's GitHub repositories, for the session-creation picker.
+         *
+         *     The client is the concrete [`GithubClient`] rather than a type
+         *     parameter: an annotated handler cannot be generic, and a generic one
+         *     would carry the substituted type into its operation id, which is not a
+         *     name a generated client can be written against.
          */
         get: operations["flyco_api::repos::list_repos"];
         put?: never;
@@ -1286,6 +1303,13 @@ export interface components {
             /** @description How far through the budget the session is. */
             stage: components["schemas"]["BudgetStage"];
         };
+        /** @description Query string GitHub appends when it redirects back. */
+        Callback: {
+            /** @description The single-use authorization code. */
+            code: string;
+            /** @description The `state` this control plane minted in [`start`]. */
+            state: string;
+        };
         /**
          * @description Narrows the machine catalog.
          *
@@ -1606,6 +1630,15 @@ export interface components {
             pricing: components["schemas"]["MachinePricing"];
             /** @description Which provider offers it. */
             provider: components["schemas"]["CloudProviderKind"];
+            /**
+             * @description Provider-native region this entry is offered in.
+             *
+             *     A catalog spans every region an account may deploy into, so an entry
+             *     without one would not say where the machine it describes can be
+             *     created. A registered SSH host names itself here: it is its own
+             *     region, and there is nowhere else to put it.
+             */
+            region: string;
         };
         /**
          * @description What an hour on a machine costs.
@@ -1811,12 +1844,34 @@ export interface components {
          *     an AWS key pair.
          */
         ProviderCredentials: {
+            /**
+             * @description The `OpenSSH` public key a machine's break-glass login is created
+             *     with.
+             *
+             *     Azure refuses to create a Linux machine with neither a password
+             *     nor a key and flyco sets no passwords, so one is required. It is
+             *     the *user's* key: flyco never holds a private key for a machine
+             *     it provisions.
+             */
+            admin_ssh_public_key: string;
             /** @description Application (client) id of the service principal. */
             client_id: string;
             /** @description Client secret issued for that application. */
             client_secret: string;
             /** @enum {string} */
             kind: "azure";
+            /**
+             * @description The resource group flyco creates everything inside, which must
+             *     already exist.
+             *
+             *     Creating a resource group is a subscription-scope write and no
+             *     resource-group-scoped role can create the group it is scoped to,
+             *     so the group is made out of band and named here. Scope the
+             *     principal `Contributor` on it — `Virtual Machine Contributor`
+             *     alone cannot create a virtual network, a public IP or a security
+             *     group.
+             */
+            resource_group: string;
             /** @description Subscription machines are provisioned into. */
             subscription_id: string;
             /** @description Directory (tenant) the service principal belongs to. */
@@ -2243,13 +2298,21 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentsDocument"];
+                    "application/json": {
+                        /** @description The whole document, as Markdown. */
+                        content: string;
+                        /**
+                         * Format: int64
+                         * @description Last change, seconds since the Unix epoch.
+                         */
+                        updated_at_unix: number;
+                    };
                 };
             };
         };
@@ -2271,13 +2334,21 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentsDocument"];
+                    "application/json": {
+                        /** @description The whole document, as Markdown. */
+                        content: string;
+                        /**
+                         * Format: int64
+                         * @description Last change, seconds since the Unix epoch.
+                         */
+                        updated_at_unix: number;
+                    };
                 };
             };
         };
@@ -2291,13 +2362,28 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiKeySummary"][];
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description Creation time, seconds since the Unix epoch.
+                         */
+                        created_at_unix: number;
+                        /** @description Identifier used to revoke the key. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Label supplied at creation. */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description Last time the key authenticated a request, if it ever has.
+                         */
+                        last_used_unix?: number | null;
+                    }[];
                 };
             };
         };
@@ -2322,13 +2408,25 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CreatedApiKey"];
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description Creation time, seconds since the Unix epoch.
+                         */
+                        created_at_unix: number;
+                        /** @description Identifier used to revoke the key later. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Label supplied at creation. */
+                        label: string;
+                        /** @description The plaintext key, returned exactly once. */
+                        token: string;
+                    };
                 };
             };
         };
@@ -2344,7 +2442,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Done; there is nothing to return. */
+            /** @description Done. There is nothing to return. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -2365,13 +2463,27 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApprovalView"][];
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When it was raised, seconds since the Unix epoch.
+                         */
+                        created_at_unix: number;
+                        /** @description Identifier used to decide it. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description What is being approved. */
+                        payload: components["schemas"]["ApprovalPayload"];
+                        /** @description Session that raised it. */
+                        session: components["schemas"]["Uuid"];
+                        /** @description Whether it is still waiting, and what the user decided if not. */
+                        state: components["schemas"]["ApprovalState"];
+                    }[];
                 };
             };
         };
@@ -2395,28 +2507,45 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApprovalView"];
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When it was raised, seconds since the Unix epoch.
+                         */
+                        created_at_unix: number;
+                        /** @description Identifier used to decide it. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description What is being approved. */
+                        payload: components["schemas"]["ApprovalPayload"];
+                        /** @description Session that raised it. */
+                        session: components["schemas"]["Uuid"];
+                        /** @description Whether it is still waiting, and what the user decided if not. */
+                        state: components["schemas"]["ApprovalState"];
+                    };
                 };
             };
         };
     };
-    "oauth::callback<flyco_api::github::ZenwaveGithub>": {
+    "flyco_api::oauth::callback": {
         parameters: {
-            query?: never;
+            query: {
+                code: string;
+                state: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful response */
-            200: {
+            /** @description The browser is sent on to the flyco web app. */
+            303: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2433,13 +2562,19 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AuthorizeUrl"];
+                    "application/json": {
+                        /**
+                         * @description Fully-formed `https://github.com/login/oauth/authorize` URL, including
+                         *     the single-use `state` this control plane will accept back.
+                         */
+                        authorize_url: string;
+                    };
                 };
             };
         };
@@ -2455,13 +2590,28 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RepoSummary"][];
+                    "application/json": {
+                        /** @description Branch a session starts from unless the user names another. */
+                        default_branch: string;
+                        /** @description GitHub's description, when the repository has one. */
+                        description?: string | null;
+                        /** @description Whether the repository is private. */
+                        private: boolean;
+                        /**
+                         * Format: int64
+                         * @description Last push, seconds since the Unix epoch, so the picker can order by
+                         *     what the user is actually working on.
+                         */
+                        pushed_at_unix?: number | null;
+                        /** @description `owner/name`, which is what `POST /v1/sessions` takes. */
+                        slug: components["schemas"]["RepoSlug"];
+                    }[];
                 };
             };
         };
@@ -2475,13 +2625,34 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HarnessAccountView"][];
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When the stored credential expires, when the vendor states a
+                         *     lifetime.
+                         */
+                        expires_at_unix?: number | null;
+                        /** @description Which harness this account drives. */
+                        harness: components["schemas"]["HarnessKind"];
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /**
+                         * @description Account name as the vendor reports it, so the user can tell two
+                         *     linked accounts apart.
+                         */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When it was linked, seconds since the Unix epoch.
+                         */
+                        linked_at_unix: number;
+                    }[];
                 };
             };
         };
@@ -2497,7 +2668,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Done; there is nothing to return. */
+            /** @description Done. There is nothing to return. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -2520,7 +2691,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Redirected back to the application. */
+            /** @description The browser is sent on to the flyco web app. */
             303: {
                 headers: {
                     [name: string]: unknown;
@@ -2540,13 +2711,19 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AuthorizeUrl"];
+                    "application/json": {
+                        /**
+                         * @description Fully-formed `https://github.com/login/oauth/authorize` URL, including
+                         *     the single-use `state` this control plane will accept back.
+                         */
+                        authorize_url: string;
+                    };
                 };
             };
         };
@@ -2560,13 +2737,19 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Health"];
+                    "application/json": {
+                        /**
+                         * Format: int32
+                         * @description Wire protocol version this control plane speaks to daemons.
+                         */
+                        wire_protocol_version: number;
+                    };
                 };
             };
         };
@@ -2584,13 +2767,32 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MachineCatalogEntry"][];
+                    "application/json": {
+                        capacity?: null | components["schemas"]["MachineCapacity"];
+                        /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
+                        machine_type: string;
+                        /** @description Operating system family. */
+                        os: components["schemas"]["OsFamily"];
+                        /** @description What it costs to run for an hour. */
+                        pricing: components["schemas"]["MachinePricing"];
+                        /** @description Which provider offers it. */
+                        provider: components["schemas"]["CloudProviderKind"];
+                        /**
+                         * @description Provider-native region this entry is offered in.
+                         *
+                         *     A catalog spans every region an account may deploy into, so an entry
+                         *     without one would not say where the machine it describes can be
+                         *     created. A registered SSH host names itself here: it is its own
+                         *     region, and there is nowhere else to put it.
+                         */
+                        region: string;
+                    }[];
                 };
             };
         };
@@ -2604,13 +2806,27 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["McpServerView"][];
+                    "application/json": {
+                        /** @description How to reach it. */
+                        config: components["schemas"]["McpServerConfig"];
+                        /** @description Whether sessions are given it. */
+                        enabled: boolean;
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Name the harness announces it under. */
+                        name: string;
+                        /**
+                         * Format: int64
+                         * @description Last change, seconds since the Unix epoch.
+                         */
+                        updated_at_unix: number;
+                    }[];
                 };
             };
         };
@@ -2636,13 +2852,27 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created. */
+            /** @description The resource that was created. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["McpServerView"];
+                    "application/json": {
+                        /** @description How to reach it. */
+                        config: components["schemas"]["McpServerConfig"];
+                        /** @description Whether sessions are given it. */
+                        enabled: boolean;
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Name the harness announces it under. */
+                        name: string;
+                        /**
+                         * Format: int64
+                         * @description Last change, seconds since the Unix epoch.
+                         */
+                        updated_at_unix: number;
+                    };
                 };
             };
         };
@@ -2658,13 +2888,27 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["McpServerView"];
+                    "application/json": {
+                        /** @description How to reach it. */
+                        config: components["schemas"]["McpServerConfig"];
+                        /** @description Whether sessions are given it. */
+                        enabled: boolean;
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Name the harness announces it under. */
+                        name: string;
+                        /**
+                         * Format: int64
+                         * @description Last change, seconds since the Unix epoch.
+                         */
+                        updated_at_unix: number;
+                    };
                 };
             };
         };
@@ -2680,7 +2924,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Done; there is nothing to return. */
+            /** @description Done. There is nothing to return. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -2712,13 +2956,27 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["McpServerView"];
+                    "application/json": {
+                        /** @description How to reach it. */
+                        config: components["schemas"]["McpServerConfig"];
+                        /** @description Whether sessions are given it. */
+                        enabled: boolean;
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Name the harness announces it under. */
+                        name: string;
+                        /**
+                         * Format: int64
+                         * @description Last change, seconds since the Unix epoch.
+                         */
+                        updated_at_unix: number;
+                    };
                 };
             };
         };
@@ -2732,13 +2990,24 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CurrentUser"];
+                    "application/json": {
+                        /** @description The flyco user this request acts as. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description The caller's GitHub login, cached at sign-in. */
+                        login: string;
+                        /**
+                         * Format: int32
+                         * @description How many sessions this user may hold at once, counting everything
+                         *     that is not archived.
+                         */
+                        session_cap: number;
+                    };
                 };
             };
         };
@@ -2764,13 +3033,24 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CurrentUser"];
+                    "application/json": {
+                        /** @description The flyco user this request acts as. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description The caller's GitHub login, cached at sign-in. */
+                        login: string;
+                        /**
+                         * Format: int32
+                         * @description How many sessions this user may hold at once, counting everything
+                         *     that is not archived.
+                         */
+                        session_cap: number;
+                    };
                 };
             };
         };
@@ -2787,13 +3067,27 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MemoryNode"][];
+                    "application/json": {
+                        /** @description The remembered content. */
+                        content: string;
+                        /** @description This node's identifier. */
+                        id: components["schemas"]["Uuid"];
+                        parent?: null | components["schemas"]["Uuid"];
+                        repo?: null | components["schemas"]["RepoSlug"];
+                        /** @description Short title shown when listing children. */
+                        title: string;
+                        /**
+                         * Format: int64
+                         * @description Last update as a unix timestamp in seconds.
+                         */
+                        updated_at_unix: number;
+                    }[];
                 };
             };
         };
@@ -2819,13 +3113,27 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created. */
+            /** @description The resource that was created. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MemoryNode"];
+                    "application/json": {
+                        /** @description The remembered content. */
+                        content: string;
+                        /** @description This node's identifier. */
+                        id: components["schemas"]["Uuid"];
+                        parent?: null | components["schemas"]["Uuid"];
+                        repo?: null | components["schemas"]["RepoSlug"];
+                        /** @description Short title shown when listing children. */
+                        title: string;
+                        /**
+                         * Format: int64
+                         * @description Last update as a unix timestamp in seconds.
+                         */
+                        updated_at_unix: number;
+                    };
                 };
             };
         };
@@ -2841,13 +3149,27 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MemoryNode"];
+                    "application/json": {
+                        /** @description The remembered content. */
+                        content: string;
+                        /** @description This node's identifier. */
+                        id: components["schemas"]["Uuid"];
+                        parent?: null | components["schemas"]["Uuid"];
+                        repo?: null | components["schemas"]["RepoSlug"];
+                        /** @description Short title shown when listing children. */
+                        title: string;
+                        /**
+                         * Format: int64
+                         * @description Last update as a unix timestamp in seconds.
+                         */
+                        updated_at_unix: number;
+                    };
                 };
             };
         };
@@ -2863,7 +3185,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Done; there is nothing to return. */
+            /** @description Done. There is nothing to return. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -2893,13 +3215,27 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MemoryNode"];
+                    "application/json": {
+                        /** @description The remembered content. */
+                        content: string;
+                        /** @description This node's identifier. */
+                        id: components["schemas"]["Uuid"];
+                        parent?: null | components["schemas"]["Uuid"];
+                        repo?: null | components["schemas"]["RepoSlug"];
+                        /** @description Short title shown when listing children. */
+                        title: string;
+                        /**
+                         * Format: int64
+                         * @description Last update as a unix timestamp in seconds.
+                         */
+                        updated_at_unix: number;
+                    };
                 };
             };
         };
@@ -2913,13 +3249,25 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProviderAccountView"][];
+                    "application/json": {
+                        /** @description Identifier used to unlink the account. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Which provider it is. */
+                        kind: components["schemas"]["CloudProviderKind"];
+                        /** @description Label supplied when it was linked. */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When it was linked, seconds since the Unix epoch.
+                         */
+                        linked_at_unix: number;
+                    }[];
                 };
             };
         };
@@ -2946,13 +3294,25 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created. */
+            /** @description The resource that was created. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProviderAccountView"];
+                    "application/json": {
+                        /** @description Identifier used to unlink the account. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Which provider it is. */
+                        kind: components["schemas"]["CloudProviderKind"];
+                        /** @description Label supplied when it was linked. */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When it was linked, seconds since the Unix epoch.
+                         */
+                        linked_at_unix: number;
+                    };
                 };
             };
         };
@@ -2979,13 +3339,23 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProviderBonusHint"][];
+                    "application/json": {
+                        credit?: null | components["schemas"]["Usd"];
+                        /** @description What the user has to do to claim it. */
+                        detail: string;
+                        /** @description Provider offering the credit. */
+                        provider: components["schemas"]["CloudProviderKind"];
+                        /** @description Name of the programme, as the provider calls it. */
+                        title: string;
+                        /** @description Where to sign up. */
+                        url: string;
+                    }[];
                 };
             };
         };
@@ -3001,7 +3371,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Done; there is nothing to return. */
+            /** @description Done. There is nothing to return. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -3036,13 +3406,23 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created. */
+            /** @description The resource that was created. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PushSubscriptionView"];
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When it was registered, seconds since the Unix epoch.
+                         */
+                        created_at_unix: number;
+                        /** @description The push service endpoint it posts to. */
+                        endpoint: string;
+                        /** @description Identifier used to remove the subscription. */
+                        id: components["schemas"]["Uuid"];
+                    };
                 };
             };
         };
@@ -3058,7 +3438,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Done; there is nothing to return. */
+            /** @description Done. There is nothing to return. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -3076,13 +3456,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VapidPublicKey"];
+                    "application/json": {
+                        /** @description The uncompressed P-256 public point, base64url without padding. */
+                        key: string;
+                    };
                 };
             };
         };
@@ -3096,13 +3479,32 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SessionSummary"][];
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When it was created, seconds since the Unix epoch.
+                         */
+                        created_at_unix: number;
+                        /** @description Which coding harness drives it. */
+                        harness: components["schemas"]["HarnessKind"];
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /**
+                         * Format: int64
+                         * @description Last time anything happened on it, seconds since the Unix epoch.
+                         */
+                        last_active_unix: number;
+                        /** @description Repository it works in. */
+                        repo: components["schemas"]["RepoSlug"];
+                        /** @description Where it is in its lifecycle. */
+                        state: components["schemas"]["SessionState"];
+                    }[];
                 };
             };
         };
@@ -3137,13 +3539,16 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created. */
+            /** @description The resource that was created. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SessionDetail"];
+                    "application/json": components["schemas"]["SessionSummary"] & {
+                        /** @description Budget accounting as of this request. */
+                        budget: components["schemas"]["BudgetView"];
+                    };
                 };
             };
         };
@@ -3159,13 +3564,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SessionDetail"];
+                    "application/json": components["schemas"]["SessionSummary"] & {
+                        /** @description Budget accounting as of this request. */
+                        budget: components["schemas"]["BudgetView"];
+                    };
                 };
             };
         };
@@ -3218,13 +3626,27 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created. */
+            /** @description The resource that was created. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApprovalView"];
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When it was raised, seconds since the Unix epoch.
+                         */
+                        created_at_unix: number;
+                        /** @description Identifier used to decide it. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description What is being approved. */
+                        payload: components["schemas"]["ApprovalPayload"];
+                        /** @description Session that raised it. */
+                        session: components["schemas"]["Uuid"];
+                        /** @description Whether it is still waiting, and what the user decided if not. */
+                        state: components["schemas"]["ApprovalState"];
+                    };
                 };
             };
         };
@@ -3240,13 +3662,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SessionDetail"];
+                    "application/json": components["schemas"]["SessionSummary"] & {
+                        /** @description Budget accounting as of this request. */
+                        budget: components["schemas"]["BudgetView"];
+                    };
                 };
             };
         };
@@ -3262,13 +3687,22 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["BudgetView"];
+                    "application/json": {
+                        /** @description The spending limit. */
+                        limit: components["schemas"]["Usd"];
+                        /** @description Left to spend; zero once exhausted. */
+                        remaining: components["schemas"]["Usd"];
+                        /** @description Spent so far. */
+                        spent: components["schemas"]["Usd"];
+                        /** @description How far through the budget the session is. */
+                        stage: components["schemas"]["BudgetStage"];
+                    };
                 };
             };
         };
@@ -3284,13 +3718,18 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DaemonToken"];
+                    "application/json": {
+                        /** @description The session this token authenticates a daemon for. */
+                        session: components["schemas"]["Uuid"];
+                        /** @description The plaintext token, returned exactly once. */
+                        token: string;
+                    };
                 };
             };
         };
@@ -3306,13 +3745,21 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EnvDocument"];
+                    "application/json": {
+                        /** @description Every variable the session runs with, in the order it is stored. */
+                        entries: components["schemas"]["EnvEntry"][];
+                        /**
+                         * @description [`NETWORK_CONTROL_WARNING`], repeated on every response so a client
+                         *     renders the caveat beside the values rather than hard-coding it.
+                         */
+                        warning: string;
+                    };
                 };
             };
         };
@@ -3336,13 +3783,21 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EnvDocument"];
+                    "application/json": {
+                        /** @description Every variable the session runs with, in the order it is stored. */
+                        entries: components["schemas"]["EnvEntry"][];
+                        /**
+                         * @description [`NETWORK_CONTROL_WARNING`], repeated on every response so a client
+                         *     renders the caveat beside the values rather than hard-coding it.
+                         */
+                        warning: string;
+                    };
                 };
             };
         };
@@ -3360,13 +3815,18 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EventPage"];
+                    "application/json": {
+                        /** @description The events, oldest first. */
+                        events: components["schemas"]["StoredEvent"][];
+                        /** @description Whether more events exist past the last one returned. */
+                        more: boolean;
+                    };
                 };
             };
         };
@@ -3382,7 +3842,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Accepted; the outcome arrives out of band. */
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -3402,13 +3862,40 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MachineView"];
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When it was created, seconds since the Unix epoch.
+                         */
+                        created_at_unix: number;
+                        hourly?: null | components["schemas"]["Usd"];
+                        /** @description Identifier of the provisioned machine. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Provider-native region it landed in. */
+                        region: string;
+                        /** @description Session it belongs to. A machine serves exactly one. */
+                        session: components["schemas"]["Uuid"];
+                        /** @description What was asked for. */
+                        spec: components["schemas"]["MachineSpec"];
+                        /**
+                         * @description Whether the machine actually holds interruptible capacity.
+                         *
+                         *     [`spec.spot`](MachineSpec::spot) is what was asked for; this is what
+                         *     the provider gave. Azure refuses spot on subscriptions and SKUs that
+                         *     do not support it, and flyco falls back to on-demand rather than
+                         *     failing the session, so the two can disagree — and the price being
+                         *     billed follows this field, not the request.
+                         */
+                        spot: boolean;
+                        /** @description Where it is in its lifecycle. */
+                        state: components["schemas"]["MachineState"];
+                    };
                 };
             };
         };
@@ -3432,7 +3919,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Accepted; the outcome arrives out of band. */
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -3452,7 +3939,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Accepted; the outcome arrives out of band. */
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -3472,7 +3959,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Accepted; the outcome arrives out of band. */
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -3504,7 +3991,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Accepted; the outcome arrives out of band. */
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -3524,13 +4011,24 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RelayTicket"];
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When it stops being accepted, seconds since the Unix epoch.
+                         */
+                        expires_at_unix: number;
+                        /**
+                         * @description The single-use ticket, to be passed as the `ticket` query parameter
+                         *     of the client relay route.
+                         */
+                        ticket: string;
+                    };
                 };
             };
         };
@@ -3586,13 +4084,18 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RepoStatus"];
+                    "application/json": {
+                        /** @description Whether the working tree has changes that are not committed. */
+                        dirty: boolean;
+                        /** @description `git status --short`, as the daemon last read it. Empty when clean. */
+                        summary: string;
+                    };
                 };
             };
         };
@@ -3608,13 +4111,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SessionDetail"];
+                    "application/json": components["schemas"]["SessionSummary"] & {
+                        /** @description Budget accounting as of this request. */
+                        budget: components["schemas"]["BudgetView"];
+                    };
                 };
             };
         };
@@ -3676,13 +4182,18 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TurnPage"];
+                    "application/json": {
+                        /** @description Cursor to pass as `cursor` for the next page, or `None` at the end. */
+                        next_cursor?: string | null;
+                        /** @description The turns, oldest first. */
+                        turns: components["schemas"]["TurnSummary"][];
+                    };
                 };
             };
         };
@@ -3696,13 +4207,30 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SkillView"][];
+                    "application/json": {
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Directory name the bundle is installed under. */
+                        name: string;
+                        /** @description Which harness gets it. */
+                        scope: components["schemas"]["SkillScope"];
+                        /**
+                         * Format: int64
+                         * @description Size of the stored zip in bytes.
+                         */
+                        size_bytes: number;
+                        /**
+                         * Format: int64
+                         * @description When it was last uploaded, seconds since the Unix epoch.
+                         */
+                        uploaded_at_unix: number;
+                    }[];
                 };
             };
         };
@@ -3724,13 +4252,30 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created. */
+            /** @description The resource that was created. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SkillView"];
+                    "application/json": {
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Directory name the bundle is installed under. */
+                        name: string;
+                        /** @description Which harness gets it. */
+                        scope: components["schemas"]["SkillScope"];
+                        /**
+                         * Format: int64
+                         * @description Size of the stored zip in bytes.
+                         */
+                        size_bytes: number;
+                        /**
+                         * Format: int64
+                         * @description When it was last uploaded, seconds since the Unix epoch.
+                         */
+                        uploaded_at_unix: number;
+                    };
                 };
             };
         };
@@ -3746,13 +4291,30 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SkillView"];
+                    "application/json": {
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Directory name the bundle is installed under. */
+                        name: string;
+                        /** @description Which harness gets it. */
+                        scope: components["schemas"]["SkillScope"];
+                        /**
+                         * Format: int64
+                         * @description Size of the stored zip in bytes.
+                         */
+                        size_bytes: number;
+                        /**
+                         * Format: int64
+                         * @description When it was last uploaded, seconds since the Unix epoch.
+                         */
+                        uploaded_at_unix: number;
+                    };
                 };
             };
         };
@@ -3768,7 +4330,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Done; there is nothing to return. */
+            /** @description Done. There is nothing to return. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -3788,13 +4350,31 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CloudUsageView"][];
+                    "application/json": {
+                        /** @description Account the spend is billed to. */
+                        account: components["schemas"]["Uuid"];
+                        /**
+                         * Format: int64
+                         * @description End of the billing period, seconds since the Unix epoch.
+                         */
+                        period_end_unix: number;
+                        /**
+                         * Format: int64
+                         * @description Start of the billing period, seconds since the Unix epoch.
+                         */
+                        period_start_unix: number;
+                        /** @description Provider that account belongs to. */
+                        provider: components["schemas"]["CloudProviderKind"];
+                        remaining_credit?: null | components["schemas"]["Usd"];
+                        /** @description Spend the provider has metered so far this period. */
+                        spent: components["schemas"]["Usd"];
+                    }[];
                 };
             };
         };
@@ -3808,13 +4388,37 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success. */
+            /** @description Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LlmUsageView"][];
+                    "application/json": {
+                        /** @description Account the observations belong to. */
+                        account: components["schemas"]["Uuid"];
+                        /** @description Which harness that account drives. */
+                        harness: components["schemas"]["HarnessKind"];
+                        /** @description Label the account was linked under. */
+                        label: string;
+                        observed_cost?: null | components["schemas"]["Usd"];
+                        /**
+                         * Format: int64
+                         * @description Start of the window these observations cover, seconds since the Unix
+                         *     epoch.
+                         */
+                        period_start_unix: number;
+                        /**
+                         * Format: int64
+                         * @description When this account last hit its usage limit, if it has.
+                         */
+                        rate_limited_at_unix?: number | null;
+                        /**
+                         * Format: int64
+                         * @description When that limit resets, when the harness named a time.
+                         */
+                        resets_at_unix?: number | null;
+                    }[];
                 };
             };
         };
@@ -3833,7 +4437,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Done; there is nothing to return. */
+            /** @description Done. There is nothing to return. */
             204: {
                 headers: {
                     [name: string]: unknown;

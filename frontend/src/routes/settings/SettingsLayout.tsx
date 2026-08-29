@@ -11,8 +11,11 @@ const TABS: readonly SettingsTab[] = [
   { href: "/settings/mcp", label: "MCP servers" },
   { href: "/settings/skills", label: "Skills" },
   { href: "/settings/providers", label: "Cloud providers" },
+  { href: "/settings/harness-accounts", label: "Harness accounts" },
+  { href: "/settings/memory", label: "Memory" },
+  { href: "/settings/agents-md", label: "AGENTS.md" },
+  { href: "/settings/notifications", label: "Notifications" },
   { href: "/settings/api-keys", label: "API keys" },
-  { href: "/settings/env", label: ".env" },
 ];
 
 export default function SettingsLayout(props: { children?: JSX.Element }) {

@@ -1,7 +1,7 @@
 import { For, Show, createResource, createSignal } from "solid-js";
 import ProblemNotice from "../../components/ProblemNotice";
 import { createApiKey, listApiKeys, revokeApiKey, type CreatedApiKey } from "../../api/client";
-import styles from "./Tab.module.css";
+import styles from "../../components/Panel.module.css";
 
 function formatUnix(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined) return "Never";
