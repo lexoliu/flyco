@@ -20,11 +20,12 @@
 //!   resumable onto any machine.
 //! - [`repl`] — a line-oriented stand-in for the control plane, used to
 //!   drive and verify a session from a terminal.
+//! - [`terminal`] — a PTY-backed `fish` shell relayed to the browser.
 //!
 //! `flycod run` picks between [`control`] and [`repl`] on whether the
 //! configuration names a control plane, and logs which it chose.
 //!
-//! The web terminal and the local MCP server land in later milestones.
+//! The local MCP server lands in a later milestone.
 //!
 //! [`flyco_api`]: https://github.com/lexoliu/flyco/tree/main/crates/api
 
@@ -32,6 +33,7 @@ pub mod config;
 pub mod control;
 pub mod harness;
 pub mod repl;
+pub mod terminal;
 
 #[cfg(test)]
 mod testing;
