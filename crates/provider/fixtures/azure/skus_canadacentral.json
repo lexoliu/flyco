@@ -1,0 +1,79 @@
+{
+  "value": [
+    {
+      "resourceType": "virtualMachines",
+      "name": "Standard_D2pls_v5",
+      "tier": "Standard",
+      "size": "D2pls_v5",
+      "family": "StandardDPLSv5Family",
+      "locations": [
+        "canadacentral"
+      ],
+      "capabilities": [
+        {
+          "name": "vCPUs",
+          "value": "2"
+        },
+        {
+          "name": "MemoryGB",
+          "value": "4"
+        },
+        {
+          "name": "CpuArchitectureType",
+          "value": "Arm64"
+        },
+        {
+          "name": "PremiumIO",
+          "value": "True"
+        },
+        {
+          "name": "HyperVGenerations",
+          "value": "V2"
+        },
+        {
+          "name": "LowPriorityCapable",
+          "value": "True"
+        }
+      ],
+      "restrictions": []
+    },
+    {
+      "resourceType": "virtualMachines",
+      "name": "Standard_D2ps_v5",
+      "tier": "Standard",
+      "size": "D2ps_v5",
+      "family": "StandardDPSv5Family",
+      "locations": [
+        "canadacentral"
+      ],
+      "capabilities": [
+        {
+          "name": "vCPUs",
+          "value": "2"
+        },
+        {
+          "name": "MemoryGB",
+          "value": "8"
+        },
+        {
+          "name": "CpuArchitectureType",
+          "value": "Arm64"
+        },
+        {
+          "name": "PremiumIO",
+          "value": "True"
+        },
+        {
+          "name": "HyperVGenerations",
+          "value": "V2"
+        },
+        {
+          "name": "LowPriorityCapable",
+          "value": "True"
+        }
+      ],
+      "restrictions": []
+    }
+  ],
+  "nextLink": null
+}

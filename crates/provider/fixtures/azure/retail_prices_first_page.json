@@ -1,0 +1,40 @@
+{
+  "BillingCurrency": "USD",
+  "CustomerEntityId": "Default",
+  "Items": [
+    {
+      "currencyCode": "USD",
+      "retailPrice": 0.049,
+      "unitPrice": 0.049,
+      "armRegionName": "northcentralus",
+      "location": "US North Central",
+      "meterName": "D2pls v5",
+      "productName": "Virtual Machines DPLSv5 Series",
+      "skuName": "D2pls v5",
+      "serviceName": "Virtual Machines",
+      "serviceFamily": "Compute",
+      "unitOfMeasure": "1 Hour",
+      "type": "Consumption",
+      "isPrimaryMeterRegion": true,
+      "armSkuName": "Standard_D2pls_v5"
+    },
+    {
+      "currencyCode": "USD",
+      "retailPrice": 0.009063,
+      "unitPrice": 0.009063,
+      "armRegionName": "northcentralus",
+      "location": "US North Central",
+      "meterName": "D2pls v5 Spot",
+      "productName": "Virtual Machines DPLSv5 Series",
+      "skuName": "D2pls v5 Spot",
+      "serviceName": "Virtual Machines",
+      "serviceFamily": "Compute",
+      "unitOfMeasure": "1 Hour",
+      "type": "Consumption",
+      "isPrimaryMeterRegion": true,
+      "armSkuName": "Standard_D2pls_v5"
+    }
+  ],
+  "NextPageLink": "https://prices.azure.com/api/retail/prices?page=2",
+  "Count": 2
+}
