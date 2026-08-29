@@ -3,7 +3,7 @@
 //! Every implementation is an HTTP client over the provider's public API
 //! ([`http`], backed by [`zenwave`]), never a native SDK — the same code runs
 //! in the Cloudflare Worker (wasm32) and in tests. Implementations land per
-//! milestone: [`byo_ssh`], then Azure, then AWS and GCP.
+//! milestone: [`byo_ssh`], then [`azure`], then AWS and GCP.
 //!
 //! # Where a driver runs
 //!
@@ -12,8 +12,8 @@
 //! The two shapes are told apart in the type system rather than by a runtime
 //! check —
 //!
-//! * A driver whose provider speaks only HTTPS — Azure, and AWS and GCP
-//!   after it — implements [`CloudProvider`] on every target.
+//! * [`azure::AzureProvider`] speaks only HTTPS, so it implements
+//!   [`CloudProvider`] on every target — the Worker included.
 //! * [`byo_ssh::ByoSsh`] compiles everywhere but implements **no** provider
 //!   trait. It *plans*: it turns a machine operation into a
 //!   [`byo_ssh::ContainerJob`], a serializable description of the container
@@ -33,6 +33,7 @@
 //! only ever touched by its owner. `&mut self` says the same thing with the
 //! borrow checker and costs nothing.
 
+pub mod azure;
 pub mod byo_ssh;
 pub mod clock;
 pub mod flycod;
@@ -203,9 +204,22 @@ impl MachineOperation {
 /// An error from a provider operation.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
-    /// The provider's API rejected the request.
+    /// The provider's API rejected the request, without a code to act on.
     #[error("provider rejected the request: {0}")]
     Rejected(String),
+    /// The provider refused, naming a machine-readable error code.
+    ///
+    /// Separate from [`Rejected`](Self::Rejected) because some codes are
+    /// instructions: Azure's `AzureSpotIsNotSupportedForThisVMSize` means
+    /// "ask again without the spot fields", and a driver can only act on
+    /// that if the code survives as a field rather than as prose.
+    #[error("{code}: {message}")]
+    Refused {
+        /// Provider-native error code.
+        code: String,
+        /// Provider-native message.
+        message: String,
+    },
     /// The provider has no capacity for the requested spec.
     #[error("no capacity for the requested machine type: {0}")]
     NoCapacity(String),
@@ -271,6 +285,20 @@ pub enum ProviderError {
     Transport(#[from] HttpError),
 }
 
+impl ProviderError {
+    /// The provider-native error code, when the failure carries one.
+    ///
+    /// A driver reads this to decide whether a refusal is an instruction —
+    /// "retry without spot" — rather than a dead end.
+    #[must_use]
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            Self::Refused { code, .. } | Self::OperationFailed { code, .. } => Some(code),
+            _ => None,
+        }
+    }
+}
+
 /// A compute provider flyco can provision session machines on.
 ///
 /// Object-unsafe by design: the control plane matches on
@@ -306,6 +334,9 @@ pub trait CloudProvider {
     /// Releases compute and disk. Irreversible.
     fn destroy(&mut self, machine: &Machine) -> impl Future<Output = Result<(), ProviderError>>;
 }
+
+#[cfg(test)]
+mod testing;
 
 #[cfg(test)]
 mod tests {

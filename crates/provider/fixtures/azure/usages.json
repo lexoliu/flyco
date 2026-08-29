@@ -1,0 +1,86 @@
+{
+  "value": [
+    {
+      "name": {
+        "value": "cores",
+        "localizedValue": "cores"
+      },
+      "currentValue": 0,
+      "limit": 6,
+      "unit": "Count"
+    },
+    {
+      "name": {
+        "value": "lowPriorityCores",
+        "localizedValue": "lowPriorityCores"
+      },
+      "currentValue": 0,
+      "limit": 3,
+      "unit": "Count"
+    },
+    {
+      "name": {
+        "value": "virtualMachines",
+        "localizedValue": "virtualMachines"
+      },
+      "currentValue": 0,
+      "limit": 25000,
+      "unit": "Count"
+    },
+    {
+      "name": {
+        "value": "StandardDalsv6Family",
+        "localizedValue": "StandardDalsv6Family"
+      },
+      "currentValue": 0,
+      "limit": 10,
+      "unit": "Count"
+    },
+    {
+      "name": {
+        "value": "standardDADSv5Family",
+        "localizedValue": "standardDADSv5Family"
+      },
+      "currentValue": 0,
+      "limit": 0,
+      "unit": "Count"
+    },
+    {
+      "name": {
+        "value": "standardBasv2Family",
+        "localizedValue": "standardBasv2Family"
+      },
+      "currentValue": 0,
+      "limit": 10,
+      "unit": "Count"
+    },
+    {
+      "name": {
+        "value": "standardBsv2Family",
+        "localizedValue": "standardBsv2Family"
+      },
+      "currentValue": 0,
+      "limit": 10,
+      "unit": "Count"
+    },
+    {
+      "name": {
+        "value": "StandardDPLSv5Family",
+        "localizedValue": "StandardDPLSv5Family"
+      },
+      "currentValue": 0,
+      "limit": 10,
+      "unit": "Count"
+    },
+    {
+      "name": {
+        "value": "StandardDPSv5Family",
+        "localizedValue": "StandardDPSv5Family"
+      },
+      "currentValue": 0,
+      "limit": 10,
+      "unit": "Count"
+    }
+  ],
+  "nextLink": null
+}

@@ -50,6 +50,68 @@ pub enum ApiError {
     #[error("memory node not found", status = StatusCode::NOT_FOUND)]
     MemoryNodeNotFound,
 
+    /// The provider account does not exist, or belongs to somebody else.
+    #[error("provider account not found", status = StatusCode::NOT_FOUND)]
+    ProviderAccountNotFound,
+
+    /// The harness account does not exist, or belongs to somebody else.
+    #[error("harness account not found", status = StatusCode::NOT_FOUND)]
+    HarnessAccountNotFound,
+
+    /// The machine exists but the provider has not named it yet.
+    ///
+    /// It is still being created, so there is nothing to act on. Distinct
+    /// from a missing machine: retrying later succeeds.
+    #[error(
+        "this session's machine is still being created",
+        status = StatusCode::CONFLICT
+    )]
+    MachineNotReady,
+
+    /// The provider refused or could not complete the operation.
+    #[error("the provider could not complete this: {0}", status = StatusCode::BAD_GATEWAY)]
+    Provisioning(String),
+
+    /// The session has not been given a machine yet.
+    ///
+    /// Distinct from a destroyed one: nothing was ever provisioned.
+    #[error("this session has no machine", status = StatusCode::NOT_FOUND)]
+    MachineNotFound,
+
+    /// Unlinking would strand machines still running on the account.
+    #[error(
+        "{sessions} session(s) still run on this account; archive them before unlinking",
+        status = StatusCode::CONFLICT
+    )]
+    ProviderInUse {
+        /// How many sessions still hold a machine there.
+        sessions: u64,
+    },
+
+    /// Flyco has no driver for this provider yet.
+    ///
+    /// Linking credentials flyco cannot act on would leave a user holding an
+    /// account that silently fails at the first provision, so the refusal
+    /// happens where the mistake is made.
+    #[error(
+        "flyco cannot provision on {provider} yet",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    ProviderUnsupported {
+        /// The provider named by the submitted credentials.
+        provider: &'static str,
+    },
+
+    /// The provider itself rejected the credentials.
+    #[error(
+        "the provider rejected these credentials: {reason}",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    ProviderRejectedCredentials {
+        /// What the provider said, so the user can fix it.
+        reason: String,
+    },
+
     /// No daemon has reported this session's working tree yet.
     ///
     /// Distinct from "the tree is clean": nothing has looked. Answering
@@ -239,6 +301,14 @@ impl ApiError {
             Self::SessionNotFound => "session-not-found",
             Self::ApprovalNotFound => "approval-not-found",
             Self::MemoryNodeNotFound => "memory-node-not-found",
+            Self::ProviderAccountNotFound => "provider-account-not-found",
+            Self::HarnessAccountNotFound => "harness-account-not-found",
+            Self::MachineNotFound => "machine-not-found",
+            Self::MachineNotReady => "machine-not-ready",
+            Self::Provisioning(_) => "provisioning-failed",
+            Self::ProviderInUse { .. } => "provider-in-use",
+            Self::ProviderUnsupported { .. } => "provider-unsupported",
+            Self::ProviderRejectedCredentials { .. } => "provider-rejected-credentials",
             Self::RepoStatusUnknown => "repo-status-unknown",
             Self::SessionNotActive { .. } => "session-not-active",
             Self::SessionCapReached { .. } => "session-cap-reached",
