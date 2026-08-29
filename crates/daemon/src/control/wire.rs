@@ -320,12 +320,15 @@ async fn collect<A: ControlApi>(
 ) -> Result<(), WireError> {
     while let Some(output) = outputs.recv().await {
         let (frame, harness_approval) = match output {
-            SessionOutput::Started { session_id } => (
-                DaemonToControl::Started {
-                    harness_session_id: session_id,
-                },
-                None,
-            ),
+            SessionOutput::Started { session_id } => {
+                api.record_harness_session(&session_id).await?;
+                (
+                    DaemonToControl::Started {
+                        harness_session_id: session_id,
+                    },
+                    None,
+                )
+            }
             SessionOutput::Capabilities { capabilities } => {
                 (DaemonToControl::Capabilities { capabilities }, None)
             }
