@@ -9,40 +9,144 @@
 //! [RFC 8030]: https://www.rfc-editor.org/rfc/rfc8030
 //! [RFC 8292]: https://www.rfc-editor.org/rfc/rfc8292
 
-use flyco_core::{CurrentUser, PushSubscription, PushSubscriptionView, VapidPublicKey};
+use flyco_core::{
+    CurrentUser, PushSubscription, PushSubscriptionId, PushSubscriptionView, UserId, VapidPublicKey,
+};
+use serde::Deserialize;
 use skyzen::Response;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
+use crate::clock::now_unix;
 use crate::config::ApiConfig;
+use crate::error::ApiError;
+use crate::extract::path_id;
 use crate::problem::Outcome;
-use crate::respond::Created;
+use crate::respond::{Created, no_content};
+use crate::sql::{from_column, to_column};
+
+/// The columns a subscription is read back through.
+///
+/// `p256dh` and `auth` are never selected: they are write-only material for
+/// encrypting a message body, and nothing that answers a browser needs them.
+#[derive(Debug, Deserialize)]
+struct SubscriptionRow {
+    id: String,
+    endpoint: String,
+    created_at_unix: i64,
+}
+
+impl TryFrom<SubscriptionRow> for PushSubscriptionView {
+    type Error = ApiError;
+
+    fn try_from(row: SubscriptionRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row
+                .id
+                .parse()
+                .map_err(|_| ApiError::CorruptRecord("push_subscriptions.id is not a UUID"))?,
+            endpoint: row.endpoint,
+            created_at_unix: from_column(
+                row.created_at_unix,
+                "push_subscriptions.created_at_unix",
+            )?,
+        })
+    }
+}
 
 /// Reports the VAPID public key browsers subscribe against.
 #[skyzen::openapi]
-async fn vapid_public_key(State(_config): State<ApiConfig>) -> Outcome<Json<VapidPublicKey>> {
-    todo!("M5: return the configured VAPID public key, base64url without padding")
+async fn vapid_public_key(State(config): State<ApiConfig>) -> Outcome<Json<VapidPublicKey>> {
+    config
+        .vapid_public_key()
+        .map(|key| {
+            Json(VapidPublicKey {
+                key: key.to_owned(),
+            })
+        })
+        .ok_or(ApiError::PushUnconfigured)
+        .into()
 }
 
 /// Registers this browser for push notifications.
 #[skyzen::openapi]
 async fn subscribe_push(
-    State(_user): State<CurrentUser>,
-    Json(_subscription): Json<PushSubscription>,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    Json(subscription): Json<PushSubscription>,
+    db: Db,
 ) -> Outcome<Created<Json<PushSubscriptionView>>> {
-    todo!("M5: upsert on the endpoint, so a re-subscribing browser is not notified twice")
+    subscribe(&db, user.id, subscription)
+        .await
+        .map(|view| Created(Json(view)))
+        .into()
+}
+
+/// Registers a browser, or re-registers one that already exists.
+///
+/// The endpoint is the identity a push service knows a browser by, so a
+/// browser that re-subscribes — after a service worker update, or a key
+/// rotation — must land on the same row. Inserting a second one would send
+/// every notification twice.
+async fn subscribe(
+    db: &Db,
+    user: UserId,
+    subscription: PushSubscription,
+) -> Result<PushSubscriptionView, ApiError> {
+    if subscription.endpoint.trim().is_empty() {
+        return Err(ApiError::InvalidPushSubscription(
+            "the endpoint is required",
+        ));
+    }
+
+    let row: SubscriptionRow = db
+        .query(
+            "INSERT INTO push_subscriptions \
+             (id, user_id, endpoint, p256dh, auth, expiration_time_ms, created_at_unix) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT (endpoint) DO UPDATE SET \
+             user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, \
+             expiration_time_ms = excluded.expiration_time_ms \
+             RETURNING id, endpoint, created_at_unix",
+        )
+        .bind(PushSubscriptionId::generate().to_string())
+        .bind(user.to_string())
+        .bind(subscription.endpoint)
+        .bind(subscription.keys.p256dh)
+        .bind(subscription.keys.auth)
+        .bind(subscription.expiration_time.map(to_column))
+        .bind(to_column(now_unix()))
+        .fetch_one()
+        .await?;
+
+    row.try_into()
 }
 
 /// Removes one of the caller's push subscriptions.
 #[skyzen::openapi]
 async fn unsubscribe_push(
-    State(_user): State<CurrentUser>,
-    _params: Params,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    params: Params,
+    db: Db,
 ) -> Outcome<Response> {
-    todo!("M5: delete the subscription scoped to the caller")
+    unsubscribe(&db, user.id, &params).await.into()
+}
+
+async fn unsubscribe(db: &Db, user: UserId, params: &Params) -> Result<Response, ApiError> {
+    let id: PushSubscriptionId = path_id(params, "id")?;
+
+    let removed = db
+        .query("DELETE FROM push_subscriptions WHERE id = ? AND user_id = ?")
+        .bind(id.to_string())
+        .bind(user.to_string())
+        .execute()
+        .await?;
+
+    if removed.rows_written == 0 {
+        return Err(ApiError::PushSubscriptionNotFound);
+    }
+
+    Ok(no_content())
 }
 
 /// The user-scoped push routes.
