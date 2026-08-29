@@ -117,17 +117,40 @@ impl HttpRequest {
         self
     }
 
+    /// Attaches an `Authorization: Bearer` header.
+    ///
+    /// Two of the three drivers authenticate exactly this way, and the
+    /// header's name is lowercased here so a fixture matches it by equality
+    /// rather than by a case-insensitive search.
+    #[must_use]
+    pub fn bearer(self, token: &str) -> Self {
+        let mut value = String::with_capacity(7 + token.len());
+        value.push_str("Bearer ");
+        value.push_str(token);
+        self.header("authorization", value)
+    }
+
+    /// Attaches a body and the `Content-Type` that describes it.
+    ///
+    /// The media type is a parameter rather than a constant per body kind
+    /// because for some services it *is* the protocol selector: AWS's
+    /// JSON-RPC services refuse `application/json` and want
+    /// `application/x-amz-json-1.1`, whose version chooses how the request
+    /// is read.
+    #[must_use]
+    pub fn body(self, media_type: &str, body: Vec<u8>) -> Self {
+        let mut request = self.header("content-type", media_type);
+        request.body = body;
+        request
+    }
+
     /// Attaches a JSON body and the `Content-Type` that describes it.
     ///
     /// # Errors
     ///
     /// Returns [`HttpError::Encoding`] if the value does not serialize.
     pub fn json_body<T: serde::Serialize>(self, value: &T) -> Result<Self, HttpError> {
-        let body =
-            serde_json::to_vec(value).map_err(|error| HttpError::Encoding(error.to_string()))?;
-        Ok(self
-            .header("content-type", "application/json")
-            .with_body(body))
+        Ok(self.body("application/json", encode_json(value)?))
     }
 
     /// Attaches a `application/x-www-form-urlencoded` body.
@@ -137,13 +160,10 @@ impl HttpRequest {
         for (name, value) in fields {
             encoder.append_pair(name, value);
         }
-        self.header("content-type", "application/x-www-form-urlencoded")
-            .with_body(encoder.finish().into_bytes())
-    }
-
-    fn with_body(mut self, body: Vec<u8>) -> Self {
-        self.body = body;
-        self
+        self.body(
+            "application/x-www-form-urlencoded",
+            encoder.finish().into_bytes(),
+        )
     }
 
     /// The body as UTF-8 text, for a fixture assertion or a decode.
@@ -155,6 +175,15 @@ impl HttpRequest {
         core::str::from_utf8(&self.body)
             .map_err(|_| HttpError::Decoding("request body is not UTF-8"))
     }
+}
+
+/// A value as JSON bytes.
+///
+/// # Errors
+///
+/// Returns [`HttpError::Encoding`] if the value does not serialize.
+pub fn encode_json<T: serde::Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, HttpError> {
+    serde_json::to_vec(value).map_err(|error| HttpError::Encoding(error.to_string()))
 }
 
 /// What a provider answered.

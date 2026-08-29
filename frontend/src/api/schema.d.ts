@@ -765,6 +765,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/harness-observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Records one thing this session's daemon observed about the harness account driving it.
+         * @description Records one thing this session's daemon observed about the harness
+         *     account driving it.
+         *
+         *     The LLM usage panel is reactive by necessity — no vendor publishes a
+         *     remaining-quota API — so this is where its numbers come from: the daemon
+         *     holds the turn's `UsageReport` and is what receives `UsageLimited`, and
+         *     neither can be asked for after the fact.
+         *
+         *     Which account the observation lands on is derived from the session
+         *     itself, so a daemon never names one. Answers `204`: the row's identity
+         *     is of no use to the daemon that posted it.
+         */
+        post: operations["flyco_api::app::record_harness_observation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/interrupt": {
         parameters: {
             query?: never;
@@ -1115,6 +1145,16 @@ export interface paths {
         /**
          * Reports metered cloud spend per linked account.
          * @description Reports metered cloud spend per linked account.
+         *
+         *     The provider's own meter is the authority — a total flyco assembled from
+         *     its machine records would miss the storage, egress and support charges
+         *     on the same invoice — so every row here was read from the account it
+         *     describes, over the window it names.
+         *
+         *     Not every linked account produces a row. A registered SSH host is
+         *     hardware the user already owns and already pays for: flyco meters
+         *     nothing there and says nothing, rather than reporting a `$0.00` that
+         *     would read as "this costs nothing".
          */
         get: operations["flyco_api::provider_accounts::cloud_usage"];
         put?: never;
@@ -1140,6 +1180,12 @@ export interface paths {
          *     remaining-quota API, so this reports the cost telemetry the harness
          *     emitted and the rate limits it actually hit. A panel built on it says
          *     what has happened, never what is left.
+         *
+         *     The rows come out of [`crate::observations`], which is filled in by the
+         *     sessions' own daemons as they run — the only place either number exists.
+         *     An account with nothing observed about it still appears, reporting
+         *     nothing, because "nothing has happened" is an answer and a missing row
+         *     would read as an account that is not linked.
          */
         get: operations["flyco_api::harness_accounts::llm_usage"];
         put?: never;
@@ -1164,7 +1210,8 @@ export interface paths {
          * @description Accepts a signed GitHub webhook delivery.
          *
          *     Answers `204`: GitHub only needs to know the delivery was accepted, and
-         *     the work it triggers is queued rather than done inline.
+         *     what it triggers happens on the session relay rather than in this
+         *     response.
          */
         post: operations["flyco_api::webhooks::receive_github_webhook"];
         delete?: never;
@@ -1533,6 +1580,23 @@ export interface components {
          * @enum {string}
          */
         HarnessKind: "claude_code" | "codex";
+        /**
+         * @description One thing a session's daemon saw happen to the harness account driving
+         *     it, as `POST /v1/sessions/{id}/harness-observations` records it.
+         *
+         *     The daemon is the only place both facts exist: it holds the turn's
+         *     [`UsageReport`](crate::harness::UsageReport) and it is what receives
+         *     [`HarnessEvent::UsageLimited`](crate::harness::HarnessEvent::UsageLimited).
+         *     Neither can be asked for after the fact, which is why they are posted as
+         *     they happen rather than polled.
+         *
+         *     An observation that reports neither is nothing to record, and the
+         *     control plane refuses it rather than storing a row that says nothing.
+         */
+        HarnessObservation: {
+            observed_cost?: null | components["schemas"]["Usd"];
+            rate_limit?: null | components["schemas"]["RateLimitObservation"];
+        };
         /** @description One HTTP header sent with every request to a remote MCP server. */
         HeaderEntry: {
             /** @description Header name. */
@@ -1879,10 +1943,29 @@ export interface components {
         } | {
             /** @description Access key id. */
             access_key_id: string;
+            /**
+             * @description Name of an EC2 key pair in the user's own account, for a
+             *     break-glass login.
+             *
+             *     Optional, unlike Azure's public key: EC2 creates an instance
+             *     perfectly well without one. It is the *user's* key pair either
+             *     way — flyco never holds a private key for a machine it
+             *     provisions, and a key pair lives in their account, not in
+             *     flyco's.
+             */
+            key_name?: string | null;
             /** @enum {string} */
             kind: "aws";
             /** @description Secret access key. */
             secret_access_key: string;
+            /**
+             * @description Session token, for a temporary credential.
+             *
+             *     Absent for the long-lived IAM key most users will paste in.
+             *     Present, and required, for anything minted by `sts:AssumeRole` —
+             *     a signature made without it is refused however correct it is.
+             */
+            session_token?: string | null;
         } | {
             /** @enum {string} */
             kind: "gcp";
@@ -1973,6 +2056,20 @@ export interface components {
              *     so still qualifies for new-customer credit.
              */
             new_to_provider: boolean;
+        };
+        /**
+         * @description The account hit its usage limit.
+         *
+         *     A struct rather than a bare timestamp field beside the cost, so "when it
+         *     resets" cannot be set on an observation that is not a rate limit: the
+         *     reset time only exists inside the event that has one.
+         */
+        RateLimitObservation: {
+            /**
+             * Format: int64
+             * @description When the harness said the limit resets, when it named a time.
+             */
+            resets_at_unix?: number | null;
         };
         /** @description A minted relay ticket. */
         RelayTicket: {
@@ -3828,6 +3925,34 @@ export interface operations {
                         more: boolean;
                     };
                 };
+            };
+        };
+    };
+    "flyco_api::app::record_harness_observation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    observed_cost?: null | components["schemas"]["Usd"];
+                    rate_limit?: null | components["schemas"]["RateLimitObservation"];
+                };
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

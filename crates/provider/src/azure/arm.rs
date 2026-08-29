@@ -226,28 +226,9 @@ pub fn follow(response: &HttpResponse) -> Result<Follow, ProviderError> {
     Ok(Follow::Finished)
 }
 
-/// Backoff between polls when the service states no `Retry-After`.
-///
-/// Short at first because most ARM network operations finish in single-digit
-/// seconds, capped low because a VM creation is minutes and polling it every
-/// ten seconds costs nothing.
-pub const DEFAULT_BACKOFF_SECONDS: [u32; 4] = [1, 2, 5, 10];
-
-/// The delay before the `attempt`-th poll, honouring `Retry-After` first.
-#[must_use]
-pub fn poll_delay(retry_after: Option<u32>, attempt: usize) -> u32 {
-    retry_after.unwrap_or_else(|| {
-        let last = DEFAULT_BACKOFF_SECONDS.len() - 1;
-        DEFAULT_BACKOFF_SECONDS[attempt.min(last)]
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        DEFAULT_BACKOFF_SECONDS, ErrorBody, Follow, OperationStatus, api_version, follow,
-        poll_delay, resource_url,
-    };
+    use super::{ErrorBody, Follow, OperationStatus, api_version, follow, resource_url};
     use crate::http::HttpResponse;
 
     const SUB: &str = "e47d07d8-2715-4909-aa56-1bfde801bdf0";
@@ -331,15 +312,6 @@ mod tests {
                 "`{running}` must not be read as terminal"
             );
         }
-    }
-
-    #[test]
-    fn a_retry_after_beats_the_default_backoff() {
-        assert_eq!(poll_delay(Some(30), 0), 30);
-        assert_eq!(poll_delay(None, 0), DEFAULT_BACKOFF_SECONDS[0]);
-        assert_eq!(poll_delay(None, 2), DEFAULT_BACKOFF_SECONDS[2]);
-        // The backoff is capped rather than unbounded.
-        assert_eq!(poll_delay(None, 99), 10);
     }
 
     #[test]
