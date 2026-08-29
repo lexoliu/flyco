@@ -5189,6 +5189,13 @@
                 "type": "string",
                 "description": "Access key id."
               },
+              "key_name": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Name of an EC2 key pair in the user's own account, for a\nbreak-glass login.\n\nOptional, unlike Azure's public key: EC2 creates an instance\nperfectly well without one. It is the *user's* key pair either\nway — flyco never holds a private key for a machine it\nprovisions, and a key pair lives in their account, not in\nflyco's."
+              },
               "kind": {
                 "type": "string",
                 "enum": [
@@ -5198,6 +5205,13 @@
               "secret_access_key": {
                 "type": "string",
                 "description": "Secret access key."
+              },
+              "session_token": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Session token, for a temporary credential.\n\nAbsent for the long-lived IAM key most users will paste in.\nPresent, and required, for anything minted by `sts:AssumeRole` —\na signature made without it is refused however correct it is."
               }
             }
           },

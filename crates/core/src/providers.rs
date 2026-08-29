@@ -57,6 +57,23 @@ pub enum ProviderCredentials {
         access_key_id: String,
         /// Secret access key.
         secret_access_key: String,
+        /// Session token, for a temporary credential.
+        ///
+        /// Absent for the long-lived IAM key most users will paste in.
+        /// Present, and required, for anything minted by `sts:AssumeRole` —
+        /// a signature made without it is refused however correct it is.
+        #[serde(default)]
+        session_token: Option<String>,
+        /// Name of an EC2 key pair in the user's own account, for a
+        /// break-glass login.
+        ///
+        /// Optional, unlike Azure's public key: EC2 creates an instance
+        /// perfectly well without one. It is the *user's* key pair either
+        /// way — flyco never holds a private key for a machine it
+        /// provisions, and a key pair lives in their account, not in
+        /// flyco's.
+        #[serde(default)]
+        key_name: Option<String>,
     },
     /// A GCP service account key, as the JSON document Google issues.
     Gcp {
@@ -162,6 +179,8 @@ mod tests {
                 ProviderCredentials::Aws {
                     access_key_id: "AKIA".to_owned(),
                     secret_access_key: "secret".to_owned(),
+                    session_token: None,
+                    key_name: None,
                 },
                 CloudProviderKind::Aws,
             ),
