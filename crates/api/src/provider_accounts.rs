@@ -105,6 +105,9 @@ async fn link_provider(
 ///   triple is for.
 /// * **AWS** — `sts:GetCallerIdentity`, which no IAM policy can deny, costs
 ///   nothing, and answers with the account the key opens.
+/// * **GCP** — a token mint, which is the whole credential: a service
+///   account proves itself by signing an assertion with its private key and
+///   having Google check it.
 ///
 /// None of them proves the credential may *provision*: what a policy grants
 /// is only knowable by trying, and a link-time simulation would be a second,
@@ -176,7 +179,21 @@ async fn verify(credentials: &ProviderCredentials) -> Result<(), ApiError> {
         .map_err(|error| ApiError::ProviderRejectedCredentials {
             reason: error.to_string(),
         }),
-        ProviderCredentials::Gcp { .. } => Err(ApiError::ProviderUnsupported { provider: "GCP" }),
+        ProviderCredentials::Gcp {
+            service_account_json,
+        } => {
+            let mut provider =
+                crate::provisioning::gcp_driver(service_account_json).map_err(|error| {
+                    ApiError::ProviderRejectedCredentials {
+                        reason: error.to_string(),
+                    }
+                })?;
+            provider.mint_token().await.map(|_| ()).map_err(|error| {
+                ApiError::ProviderRejectedCredentials {
+                    reason: error.to_string(),
+                }
+            })
+        }
     }
 }
 

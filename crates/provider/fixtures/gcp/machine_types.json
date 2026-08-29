@@ -1,0 +1,73 @@
+{
+  "kind": "compute#machineTypeList",
+  "id": "projects/flyco-sessions/zones/us-central1-a/machineTypes",
+  "items": [
+    {
+      "kind": "compute#machineType",
+      "id": "626159666055",
+      "name": "e2-standard-2",
+      "description": "2 vCPUs, 8 GB RAM",
+      "guestCpus": 2,
+      "memoryMb": 8192,
+      "zone": "us-central1-a",
+      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/e2-standard-2"
+    },
+    {
+      "kind": "compute#machineType",
+      "id": "609109350326",
+      "name": "e2-medium",
+      "description": "2 vCPUs, 4 GB RAM",
+      "guestCpus": 2,
+      "memoryMb": 4096,
+      "zone": "us-central1-a",
+      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/e2-medium"
+    },
+    {
+      "kind": "compute#machineType",
+      "id": "728362519233",
+      "name": "e2-standard-32",
+      "description": "32 vCPUs, 128 GB RAM",
+      "guestCpus": 32,
+      "memoryMb": 131072,
+      "zone": "us-central1-a",
+      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/e2-standard-32"
+    },
+    {
+      "kind": "compute#machineType",
+      "id": "745736948622",
+      "name": "n1-standard-1",
+      "description": "1 vCPUs, 3.75 GB RAM",
+      "guestCpus": 1,
+      "memoryMb": 3840,
+      "zone": "us-central1-a",
+      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/n1-standard-1",
+      "deprecated": {
+        "state": "DEPRECATED"
+      }
+    },
+    {
+      "kind": "compute#machineType",
+      "id": "700139521083",
+      "name": "f1-micro",
+      "description": "1 vCPUs, 0.599609 GB RAM",
+      "guestCpus": 1,
+      "memoryMb": 614,
+      "zone": "us-central1-a",
+      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/f1-micro",
+      "deprecated": {
+        "state": "OBSOLETE"
+      }
+    },
+    {
+      "kind": "compute#machineType",
+      "id": "345405329699",
+      "name": "n2-standard-2",
+      "description": "2 vCPUs, 8 GB RAM",
+      "guestCpus": 2,
+      "memoryMb": 8192,
+      "zone": "us-central1-a",
+      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/n2-standard-2"
+    }
+  ],
+  "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes"
+}
