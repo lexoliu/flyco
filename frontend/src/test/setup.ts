@@ -122,6 +122,41 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
   if (method === "GET" && path === "/v1/github/repos") {
     return Promise.resolve(jsonResponse([]));
   }
+  if (method === "GET" && path === "/v1/machines/catalog") {
+    return Promise.resolve(jsonResponse([]));
+  }
+  if (method === "GET" && /^\/v1\/sessions\/[^/]+\/machine$/.test(path)) {
+    const id = path.split("/")[3] ?? "";
+    return Promise.resolve(
+      jsonResponse({
+        id: "machine-1",
+        session: id,
+        spec: { provider: "aws", machine_type: "t3.large", region: "us-east-1", spot: true, disk_gib: 40 },
+        state: "running",
+        spot: true,
+        region: "us-east-1",
+        hourly: 45_000,
+        created_at_unix: 0,
+      }),
+    );
+  }
+  if (method === "GET" && /^\/v1\/sessions\/[^/]+\/repo-status$/.test(path)) {
+    return Promise.resolve(jsonResponse({ dirty: false, summary: "" }));
+  }
+  if (method === "GET" && /^\/v1\/sessions\/[^/]+\/env$/.test(path)) {
+    return Promise.resolve(
+      jsonResponse({ entries: [], warning: "Agents can read this file but not edit it." }),
+    );
+  }
+  if (method === "GET" && path === "/v1/harness-accounts") {
+    return Promise.resolve(jsonResponse([]));
+  }
+  if (method === "GET" && path === "/v1/memory") {
+    return Promise.resolve(jsonResponse([]));
+  }
+  if (method === "GET" && path === "/v1/agents-md") {
+    return Promise.resolve(jsonResponse({ content: "", updated_at_unix: 0 }));
+  }
 
   return Promise.resolve(NOT_IMPLEMENTED());
 }
