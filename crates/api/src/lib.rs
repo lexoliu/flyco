@@ -27,6 +27,7 @@ pub mod harness_accounts;
 pub mod machines;
 pub mod mcp;
 pub mod memory;
+pub mod metering;
 pub mod middleware;
 pub mod oauth;
 pub mod observations;

@@ -2884,6 +2884,17 @@
                     "state": {
                       "$ref": "#/components/schemas/MachineState",
                       "description": "Where it is in its lifecycle."
+                    },
+                    "storage_hourly": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/Usd",
+                          "description": "Persistent-disk price actually being billed per hour."
+                        }
+                      ]
                     }
                   }
                 }
@@ -4772,6 +4783,7 @@
             "description": "The provider meters this machine and bills for it by the hour.",
             "required": [
               "on_demand_hourly",
+              "storage",
               "kind"
             ],
             "properties": {
@@ -4804,6 +4816,10 @@
                     "description": "Spot price per hour, when the type is available as spot."
                   }
                 ]
+              },
+              "storage": {
+                "$ref": "#/components/schemas/StoragePricing",
+                "description": "Persistent-disk pricing published by the provider."
               }
             }
           },
@@ -4923,6 +4939,17 @@
           "state": {
             "$ref": "#/components/schemas/MachineState",
             "description": "Where it is in its lifecycle."
+          },
+          "storage_hourly": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Usd",
+                "description": "Persistent-disk price actually being billed per hour."
+              }
+            ]
           }
         }
       },
@@ -5714,6 +5741,74 @@
             "minimum": 0
           }
         }
+      },
+      "StoragePriceTier": {
+        "type": "object",
+        "description": "One fixed-price disk tier.",
+        "required": [
+          "capacity_gib",
+          "hourly"
+        ],
+        "properties": {
+          "capacity_gib": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Maximum provisioned size covered by the tier.",
+            "minimum": 0
+          },
+          "hourly": {
+            "$ref": "#/components/schemas/Usd",
+            "description": "Price of the tier for one hour."
+          }
+        }
+      },
+      "StoragePricing": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A linear price for every provisioned GiB.",
+            "required": [
+              "rate",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "per_gib_hourly"
+                ]
+              },
+              "rate": {
+                "$ref": "#/components/schemas/Usd",
+                "description": "Price of one GiB for one hour."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Fixed-price capacity tiers. The first tier whose capacity contains\nthe requested disk is the one the provider bills.",
+            "required": [
+              "tiers",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "capacity_tiers"
+                ]
+              },
+              "tiers": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/StoragePriceTier"
+                },
+                "description": "Tiers in ascending capacity order."
+              }
+            }
+          }
+        ],
+        "description": "How a provider prices the persistent disk attached to a machine."
       },
       "StoredEvent": {
         "type": "object",

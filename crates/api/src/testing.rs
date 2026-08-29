@@ -17,7 +17,7 @@ use crate::github::{GithubClient, GithubError, GithubOauth, GithubToken, GithubU
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 8] = [
+pub const MIGRATIONS: [&str; 9] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -26,6 +26,7 @@ pub const MIGRATIONS: [&str; 8] = [
     include_str!("../../../migrations/0006_machines.sql"),
     include_str!("../../../migrations/0007_observations.sql"),
     include_str!("../../../migrations/0008_provisioning.sql"),
+    include_str!("../../../migrations/0009_budget_metering.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.

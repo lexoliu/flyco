@@ -147,6 +147,9 @@ pub struct ApiKeyEntity(());
 /// Marker for spend-ledger entry identifiers.
 #[derive(Debug)]
 pub struct SpendEventEntity(());
+/// Marker for queued budget-signal identifiers.
+#[derive(Debug)]
+pub struct BudgetSignalEntity(());
 /// Marker for linked cloud-provider account identifiers.
 #[derive(Debug)]
 pub struct ProviderAccountEntity(());
@@ -181,6 +184,8 @@ pub type MemoryNodeId = Id<MemoryNodeEntity>;
 pub type ApiKeyId = Id<ApiKeyEntity>;
 /// Identifies one entry in a budget's append-only spend ledger.
 pub type SpendEventId = Id<SpendEventEntity>;
+/// Identifies one durable budget-signal delivery.
+pub type BudgetSignalId = Id<BudgetSignalEntity>;
 /// Identifies a linked cloud-provider account.
 pub type ProviderAccountId = Id<ProviderAccountEntity>;
 /// Identifies a linked Claude or Codex account.

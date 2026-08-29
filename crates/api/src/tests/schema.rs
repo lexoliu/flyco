@@ -13,7 +13,8 @@
 //! than drifting quietly.
 
 use flyco_core::{
-    ApprovalState, CloudProviderKind, HarnessKind, MachineState, SkillScope, SpendKind,
+    ApprovalState, BudgetSignal, CloudProviderKind, HarnessKind, MachineState, SkillScope,
+    SpendKind,
 };
 use skyzen_services::sql::ColumnEnum;
 
@@ -29,6 +30,7 @@ const CONSTRAINED: &[(&str, &str, &[&str])] = &[
     ("skills", "scope", SkillScope::TOKENS),
     ("machines", "provider", CloudProviderKind::TOKENS),
     ("machines", "state", MachineState::TOKENS),
+    ("budget_signals", "signal", BudgetSignal::TOKENS),
 ];
 
 /// One `CHECK (<column> IN ('a', 'b'))` found in a migration.

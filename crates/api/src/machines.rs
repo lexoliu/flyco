@@ -49,6 +49,7 @@ pub struct MachineRow {
     /// Where it is in its lifecycle.
     pub state: MachineState,
     hourly_micros: Option<Usd>,
+    storage_hourly_micros: Option<Usd>,
     /// The provider's own name for it, once there is one to name.
     pub native_id: Option<String>,
     address: Option<String>,
@@ -70,6 +71,7 @@ impl From<MachineRow> for MachineView {
             state: row.state,
             spot: row.spot,
             hourly: row.hourly_micros,
+            storage_hourly: row.storage_hourly_micros,
             region: row.region,
             created_at_unix: row.created_at_unix,
         }
@@ -153,7 +155,7 @@ async fn run(
         db,
         "UPDATE machines SET state = {updated.state}, machine_type = {machine_type}, \
          spot = {updated.capacity_mode.is_spot()}, native_id = {updated.native_id.clone()}, \
-         address = {updated.address.clone()} \
+         address = {updated.address.clone()}, compute_metered_at_unix = {now_unix()} \
          WHERE id = {row.id}"
     )
     .execute()
@@ -196,7 +198,8 @@ pub async fn destroy_for_archive(
     let destroyed = MachineState::Destroyed;
     sql!(
         db,
-        "UPDATE machines SET state = {destroyed}, hourly_micros = NULL, native_id = NULL, \
+        "UPDATE machines SET state = {destroyed}, hourly_micros = NULL, \
+         storage_hourly_micros = NULL, native_id = NULL, \
          address = NULL WHERE id = {row.id}"
     )
     .execute()
@@ -213,7 +216,7 @@ async fn load(db: &Db, user: UserId, session: SessionId) -> Result<MachineRow, A
     sql!(
         db,
         "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
-         disk_gib, requested_spot, spot, state, hourly_micros, native_id, address, \
+         disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, native_id, address, \
          created_at_unix \
          FROM machines \
          WHERE session_id = (SELECT id FROM sessions WHERE id = {session} AND user_id = {user})"
@@ -434,7 +437,7 @@ pub async fn for_session(db: &Db, session: SessionId) -> Result<Option<MachineRo
     Ok(sql!(
         db,
         "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
-         disk_gib, requested_spot, spot, state, hourly_micros, native_id, address, \
+         disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, native_id, address, \
          created_at_unix \
          FROM machines WHERE session_id = {session}"
     )
@@ -456,13 +459,17 @@ pub async fn record(
     db: &Db,
     machine: &flyco_provider::Machine,
     hourly: Option<Usd>,
+    storage_hourly: Option<Usd>,
 ) -> Result<(), ApiError> {
     let spot = machine.capacity_mode.is_spot();
+    let now = now_unix();
     sql!(
         db,
         "UPDATE machines SET state = {machine.state}, spot = {spot}, \
-         hourly_micros = {hourly}, native_id = {machine.native_id.clone()}, \
-         address = {machine.address.clone()} \
+         hourly_micros = {hourly}, storage_hourly_micros = {storage_hourly}, \
+         compute_meter_started_at_unix = {now}, compute_metered_at_unix = {now}, \
+         storage_meter_started_at_unix = {now}, storage_metered_at_unix = {now}, \
+         native_id = {machine.native_id.clone()}, address = {machine.address.clone()} \
          WHERE id = {machine.id}"
     )
     .execute()

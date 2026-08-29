@@ -92,6 +92,22 @@ impl Extractor for Rooms {
 }
 
 impl Rooms {
+    /// Builds room access from an in-process namespace.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn from_native(namespace: NativeRooms) -> Self {
+        Self { namespace }
+    }
+
+    /// Builds room access for a non-HTTP Worker event.
+    #[cfg(target_arch = "wasm32")]
+    #[must_use]
+    pub fn from_worker_env(env: skyzen::runtime::wasm::Env) -> Self {
+        Self {
+            env: skyzen::runtime::wasm::WasmEnv::new(env),
+        }
+    }
+
     /// Runs a control-plane command against a session's room.
     ///
     /// Called only after the durable half of the same change has been

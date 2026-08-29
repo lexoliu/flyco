@@ -908,6 +908,9 @@ async fn the_catalog_offers_only_what_passes_both_gates_and_has_a_price() {
             on_demand_hourly: flyco_core::Usd::from_micros(2 * 21_811 + 8 * 2_923),
             spot_hourly: Some(flyco_core::Usd::from_micros(2 * 6_543 + 8 * 877)),
             minimum_billing_hours: None,
+            storage: flyco_core::StoragePricing::PerGibHourly {
+                rate: flyco_core::Usd::from_micros(137),
+            },
         }
     );
 }
