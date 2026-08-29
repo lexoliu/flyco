@@ -1,0 +1,14 @@
+<RunInstancesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+  <requestId>8f7d3e11-4a2b-4c3d-9e8f-1a2b3c4d5e6f</requestId>
+  <reservationId>r-0a1b2c3d4e5f60719</reservationId>
+  <instancesSet>
+    <item>
+      <instanceId>i-0d3f9a1c2b4e5f607</instanceId>
+      <instanceType>t4g.small</instanceType>
+      <instanceState>
+        <code>16</code>
+        <name>pending</name>
+      </instanceState>
+    </item>
+  </instancesSet>
+</RunInstancesResponse>

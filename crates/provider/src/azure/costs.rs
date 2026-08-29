@@ -33,9 +33,9 @@
 use flyco_core::CloudSpend;
 use flyco_core::money::Usd;
 use serde::{Deserialize, Serialize};
-use time::{OffsetDateTime, Time};
 
 use crate::ProviderError;
+use crate::datetime::month_to_date;
 
 /// The only currency flyco accounts in.
 ///
@@ -212,34 +212,6 @@ fn micros(amount: f64) -> Result<Usd, ProviderError> {
     )]
     let micros = (amount * 1_000_000.0).round() as u64;
     Ok(Usd::from_micros(micros))
-}
-
-/// The window `MonthToDate` covers, given the instant the query was made.
-///
-/// Azure's month-to-date runs from midnight UTC on the first of the current
-/// calendar month up to now, so the period flyco reports beside the amount
-/// is the period Azure summed rather than an approximation of it.
-///
-/// # Errors
-///
-/// Returns [`ProviderError::Malformed`] if `now_unix` is not a time.
-pub fn month_to_date(now_unix: u64) -> Result<(u64, u64), ProviderError> {
-    let now = i64::try_from(now_unix)
-        .ok()
-        .and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok())
-        .ok_or(ProviderError::Malformed(
-            "a cost query was made at an instant outside the representable range",
-        ))?;
-
-    let start = now
-        .replace_day(1)
-        .map_err(|_| ProviderError::Malformed("every month has a first day"))?
-        .replace_time(Time::MIDNIGHT)
-        .unix_timestamp();
-
-    let start = u64::try_from(start)
-        .map_err(|_| ProviderError::Malformed("a billing month began before the Unix epoch"))?;
-    Ok((start, now_unix))
 }
 
 /// The spend a query result reports over the window it covered.

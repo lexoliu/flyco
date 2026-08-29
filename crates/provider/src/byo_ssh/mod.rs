@@ -263,6 +263,7 @@ mod tests {
         Machine {
             id,
             native_id: container_name(id),
+            region: HOST.to_owned(),
             state: MachineState::Running,
             capacity_mode: CapacityMode::OnDemand,
             address: Some(HOST.to_owned()),

@@ -12,6 +12,8 @@ use flyco_core::{
     CloudProviderKind, CloudSpend, MachineCatalogEntry, ProviderAccountId, ProviderCredentials,
     UserId,
 };
+use flyco_provider::aws::sigv4::AccessKey;
+use flyco_provider::aws::{AwsProvider, AwsWorkspace};
 use flyco_provider::azure::auth::ServicePrincipal;
 use flyco_provider::azure::{AzureProvider, Workspace};
 use flyco_provider::byo_ssh::ByoSsh;
@@ -49,6 +51,49 @@ impl LinkedAccount {
     pub const fn kind(&self) -> CloudProviderKind {
         self.credentials.kind()
     }
+}
+
+/// The Azure driver one set of Azure credentials opens.
+///
+/// Every dispatch below needs the same construction, so it is written once:
+/// a credential field added or renamed is one edit rather than three that
+/// can drift apart.
+pub(crate) fn azure_driver(
+    tenant_id: &str,
+    client_id: &str,
+    client_secret: &str,
+    subscription_id: &str,
+    resource_group: &str,
+    admin_ssh_public_key: &str,
+) -> AzureProvider {
+    AzureProvider::new(
+        ServicePrincipal {
+            tenant_id: tenant_id.to_owned(),
+            client_id: client_id.to_owned(),
+            client_secret: client_secret.to_owned(),
+            subscription_id: subscription_id.to_owned(),
+        },
+        Workspace::new(resource_group, admin_ssh_public_key),
+    )
+}
+
+/// The AWS driver one access key opens.
+pub(crate) fn aws_driver(
+    access_key_id: &str,
+    secret_access_key: &str,
+    session_token: Option<&str>,
+    key_name: Option<&str>,
+) -> AwsProvider {
+    let mut key = AccessKey::new(access_key_id, secret_access_key);
+    if let Some(token) = session_token {
+        key = key.with_session_token(token);
+    }
+
+    let mut workspace = AwsWorkspace::new();
+    if let Some(key_name) = key_name {
+        workspace = workspace.with_key_pair(key_name);
+    }
+    AwsProvider::new(key, workspace)
 }
 
 #[derive(Debug, skyzen::FromRow)]
@@ -147,23 +192,33 @@ pub async fn catalog(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>
             resource_group,
             admin_ssh_public_key,
         } => {
-            let mut provider = AzureProvider::new(
-                ServicePrincipal {
-                    tenant_id: tenant_id.clone(),
-                    client_id: client_id.clone(),
-                    client_secret: client_secret.clone(),
-                    subscription_id: subscription_id.clone(),
-                },
-                Workspace::new(resource_group.clone(), admin_ssh_public_key.clone()),
-            );
-            provider.catalog().await
+            azure_driver(
+                tenant_id,
+                client_id,
+                client_secret,
+                subscription_id,
+                resource_group,
+                admin_ssh_public_key,
+            )
+            .catalog()
+            .await
         }
         ProviderCredentials::ByoSsh { host, .. } => Ok(ByoSsh::new(host.clone()).catalog()),
-        ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
-            provider: "AWS",
-            operation: "catalog",
-            reason: "flyco has no AWS driver yet",
-        }),
+        ProviderCredentials::Aws {
+            access_key_id,
+            secret_access_key,
+            session_token,
+            key_name,
+        } => {
+            aws_driver(
+                access_key_id,
+                secret_access_key,
+                session_token.as_deref(),
+                key_name.as_deref(),
+            )
+            .catalog()
+            .await
+        }
         ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
             provider: "GCP",
             operation: "catalog",
@@ -201,24 +256,32 @@ pub async fn cloud_usage(
             subscription_id,
             resource_group,
             admin_ssh_public_key,
-        } => {
-            let mut provider = AzureProvider::new(
-                ServicePrincipal {
-                    tenant_id: tenant_id.clone(),
-                    client_id: client_id.clone(),
-                    client_secret: client_secret.clone(),
-                    subscription_id: subscription_id.clone(),
-                },
-                Workspace::new(resource_group.clone(), admin_ssh_public_key.clone()),
-            );
-            provider.billing_period_cost(now_unix).await.map(Some)
-        }
+        } => azure_driver(
+            tenant_id,
+            client_id,
+            client_secret,
+            subscription_id,
+            resource_group,
+            admin_ssh_public_key,
+        )
+        .billing_period_cost(now_unix)
+        .await
+        .map(Some),
         ProviderCredentials::ByoSsh { .. } => Ok(None),
-        ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
-            provider: "AWS",
-            operation: "usage",
-            reason: "flyco has no AWS driver yet",
-        }),
+        ProviderCredentials::Aws {
+            access_key_id,
+            secret_access_key,
+            session_token,
+            key_name,
+        } => aws_driver(
+            access_key_id,
+            secret_access_key,
+            session_token.as_deref(),
+            key_name.as_deref(),
+        )
+        .billing_period_cost(now_unix)
+        .await
+        .map(Some),
         ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
             provider: "GCP",
             operation: "usage",
@@ -253,35 +316,43 @@ pub async fn operate(
             resource_group,
             admin_ssh_public_key,
         } => {
-            let mut provider = AzureProvider::new(
-                ServicePrincipal {
-                    tenant_id: tenant_id.clone(),
-                    client_id: client_id.clone(),
-                    client_secret: client_secret.clone(),
-                    subscription_id: subscription_id.clone(),
-                },
-                Workspace::new(resource_group.clone(), admin_ssh_public_key.clone()),
-            );
-            match operation {
-                Operation::Resize { machine_type } => provider.resize(machine, machine_type).await,
-                Operation::Stop => provider.deallocate(machine).await.map(|()| {
-                    let mut stopped = machine.clone();
-                    stopped.state = flyco_core::MachineState::Deallocated;
-                    stopped
-                }),
-                Operation::Start => provider.start(machine).await,
-            }
+            operation
+                .run(
+                    &mut azure_driver(
+                        tenant_id,
+                        client_id,
+                        client_secret,
+                        subscription_id,
+                        resource_group,
+                        admin_ssh_public_key,
+                    ),
+                    machine,
+                )
+                .await
         }
         ProviderCredentials::ByoSsh { .. } => Err(ProviderError::Unsupported {
             provider: "byo-ssh",
             operation: operation.name(),
             reason: "a host you own is started and stopped by you, not by flyco",
         }),
-        ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
-            provider: "AWS",
-            operation: operation.name(),
-            reason: "flyco has no AWS driver yet",
-        }),
+        ProviderCredentials::Aws {
+            access_key_id,
+            secret_access_key,
+            session_token,
+            key_name,
+        } => {
+            operation
+                .run(
+                    &mut aws_driver(
+                        access_key_id,
+                        secret_access_key,
+                        session_token.as_deref(),
+                        key_name.as_deref(),
+                    ),
+                    machine,
+                )
+                .await
+        }
         ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
             provider: "GCP",
             operation: operation.name(),
@@ -311,6 +382,30 @@ impl Operation<'_> {
             Self::Resize { .. } => "resize",
             Self::Stop => "stop",
             Self::Start => "start",
+        }
+    }
+
+    /// Performs this operation against one driver.
+    ///
+    /// Generic over the driver rather than repeated per credential variant:
+    /// the trait is not object-safe on purpose, and a generic function is
+    /// what keeps every future unboxed while still writing "what a stop
+    /// means" exactly once. A stop is the one that has something to say —
+    /// the driver answers with nothing, and the machine a caller gets back
+    /// has to say it is deallocated.
+    async fn run<P: CloudProvider>(
+        self,
+        provider: &mut P,
+        machine: &flyco_provider::Machine,
+    ) -> Result<flyco_provider::Machine, ProviderError> {
+        match self {
+            Self::Resize { machine_type } => provider.resize(machine, machine_type).await,
+            Self::Stop => provider.deallocate(machine).await.map(|()| {
+                let mut stopped = machine.clone();
+                stopped.state = flyco_core::MachineState::Deallocated;
+                stopped
+            }),
+            Self::Start => provider.start(machine).await,
         }
     }
 }

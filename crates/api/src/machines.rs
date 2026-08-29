@@ -80,6 +80,7 @@ impl MachineRow {
         Ok(flyco_provider::Machine {
             id: self.id,
             native_id: self.native_id.clone().ok_or(ApiError::MachineNotReady)?,
+            region: self.region.clone(),
             state: self.state,
             capacity_mode: if self.spot {
                 flyco_provider::CapacityMode::Spot

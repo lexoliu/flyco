@@ -97,12 +97,23 @@ async fn link_provider(
 /// Proves the credentials work before storing them.
 ///
 /// A credential that only fails at the first provision strands a session
-/// half-created, so the check happens where the mistake was made. Azure is
-/// asked for an access token — the cheapest call that exercises the whole
-/// service-principal triple. A registered SSH host cannot be reached from
-/// the Worker at all (it has no sockets, and the executor is native-only),
-/// so its credentials are checked structurally here and verified in full,
-/// host key included, by the first job that dials it.
+/// half-created, so the check happens where the mistake was made. Each
+/// provider is asked for the cheapest call that exercises the whole
+/// credential and creates nothing:
+///
+/// * **Azure** — an access token, which is what the whole service-principal
+///   triple is for.
+/// * **AWS** — `sts:GetCallerIdentity`, which no IAM policy can deny, costs
+///   nothing, and answers with the account the key opens.
+///
+/// None of them proves the credential may *provision*: what a policy grants
+/// is only knowable by trying, and a link-time simulation would be a second,
+/// weaker opinion about a question the first provision answers exactly.
+///
+/// A registered SSH host cannot be reached from the Worker at all (it has no
+/// sockets, and the executor is native-only), so its credentials are checked
+/// structurally here and verified in full, host key included, by the first
+/// job that dials it.
 async fn verify(credentials: &ProviderCredentials) -> Result<(), ApiError> {
     match credentials {
         ProviderCredentials::Azure {
@@ -146,7 +157,25 @@ async fn verify(credentials: &ProviderCredentials) -> Result<(), ApiError> {
             }
             Ok(())
         }
-        ProviderCredentials::Aws { .. } => Err(ApiError::ProviderUnsupported { provider: "AWS" }),
+        ProviderCredentials::Aws {
+            access_key_id,
+            secret_access_key,
+            session_token,
+            key_name,
+        } => crate::provisioning::aws_driver(
+            access_key_id,
+            secret_access_key,
+            session_token.as_deref(),
+            key_name.as_deref(),
+        )
+        .caller_identity()
+        .await
+        .map(|identity| {
+            tracing::debug!(account = %identity.account, "an AWS access key checked out");
+        })
+        .map_err(|error| ApiError::ProviderRejectedCredentials {
+            reason: error.to_string(),
+        }),
         ProviderCredentials::Gcp { .. } => Err(ApiError::ProviderUnsupported { provider: "GCP" }),
     }
 }

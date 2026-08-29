@@ -30,7 +30,22 @@ shell-escape = "0.1"
 # Calendar arithmetic, for the one place flyco needs it: the start of the
 # billing month a cloud provider meters against. No clock is read from it —
 # the caller supplies the instant — so it compiles on wasm32 untouched.
-time = { version = "0.3", default-features = false }
+time = { version = "0.3", default-features = false, features = ["formatting"] }
+
+# AWS request signing. Hand-rolling SigV4 is a canonical-request specification
+# with a dozen ways to be subtly wrong; these are the vendor's own crates and
+# both compile on wasm32, so the driver builds an `HttpRequest`, has it
+# signed, and sends it through the same transport as everything else.
+aws-sigv4 = { version = "1.5", default-features = false, features = ["http1", "sign-http"] }
+aws-credential-types = "1.2"
+# EC2 speaks the AWS Query protocol and answers in XML — there is no JSON
+# dialect of it — so one XML reader earns its place. Deserialization only:
+# requests are form-encoded, never XML.
+quick-xml = { version = "0.38", default-features = false, features = ["serialize"] }
+# The RS256 half of a Google service-account assertion. `rsa` + `sha2` are
+# pure Rust and sign without an RNG (PKCS#1 v1.5 is deterministic), which is
+# what makes a minted assertion assertable in a test.
+rsa = { version = "0.9", default-features = false, features = ["sha2"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
