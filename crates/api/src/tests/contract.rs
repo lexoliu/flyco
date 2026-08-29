@@ -35,19 +35,14 @@ struct Pending {
 const EXPECTED: &[(&str, &str)] = &[
     ("cloud_usage", "M6"),
     ("complete_harness_link", "M4"),
-    ("delete_mcp_server", "M6"),
     ("delete_skill", "M6"),
-    ("get_mcp_server", "M6"),
     ("get_skill", "M6"),
-    ("list_mcp_servers", "M6"),
     ("list_repos", "M6"),
     ("list_skills", "M6"),
     ("llm_usage", "M6"),
     ("receive_github_webhook", "M6"),
-    ("register_mcp_server", "M6"),
     ("resume_session", "M4"),
     ("start_harness_link", "M4"),
-    ("update_mcp_server", "M6"),
     ("upload_skill", "M6"),
 ];
 
