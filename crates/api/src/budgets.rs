@@ -10,22 +10,26 @@ use flyco_core::{
     BudgetConfig, BudgetId, BudgetState, BudgetView, SessionId, SpendEvent, SpendEventId,
     SpendKind, Usd,
 };
-use serde::Deserialize;
+use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
 use crate::error::ApiError;
-use crate::sql::{decode_enum, encode_enum, from_column, to_column};
 
-#[derive(Debug, Deserialize)]
-struct BudgetRow {
-    limit_micros: i64,
+/// One accrual, as the ledger stores it.
+#[derive(Debug, skyzen::FromRow)]
+struct SpendRow {
+    kind: SpendKind,
+    amount_micros: Usd,
 }
 
-#[derive(Debug, Deserialize)]
-struct SpendRow {
-    kind: String,
-    amount_micros: i64,
+impl From<SpendRow> for SpendEvent {
+    fn from(row: SpendRow) -> Self {
+        Self {
+            kind: row.kind,
+            amount: row.amount_micros,
+        }
+    }
 }
 
 /// Creates the budget a session accounts against.
@@ -41,14 +45,11 @@ pub async fn create(
     let id = BudgetId::generate();
     let state = BudgetState::new(config);
 
-    db.query(
+    sql!(
+        db,
         "INSERT INTO budgets (id, session_id, limit_micros, spent_micros, stage) \
-         VALUES (?, ?, ?, 0, ?)",
+         VALUES ({id}, {session}, {config.limit()}, 0, {state.stage()})"
     )
-    .bind(id.to_string())
-    .bind(session.to_string())
-    .bind(to_column(config.limit().micros()))
-    .bind(encode_enum(&state.stage())?)
     .execute()
     .await?;
 
@@ -62,47 +63,37 @@ pub async fn create(
 /// Returns [`ApiError::CorruptRecord`] if the budget row is missing or
 /// holds a limit the engine rejects, or a database error otherwise.
 pub async fn view(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
-    let row: Option<BudgetRow> = db
-        .query("SELECT limit_micros FROM budgets WHERE id = ?")
-        .bind(budget.to_string())
-        .fetch_optional()
+    let limit: Option<Usd> = sql!(db, "SELECT limit_micros FROM budgets WHERE id = {budget}")
+        .fetch_scalar_optional()
         .await?;
-    let row = row.ok_or(ApiError::CorruptRecord(
+    let limit = limit.ok_or(ApiError::CorruptRecord(
         "a session points at a budget that does not exist",
     ))?;
-
-    let limit = Usd::from_micros(from_column(row.limit_micros, "budgets.limit_micros")?);
     let config = BudgetConfig::new(limit)
         .map_err(|_| ApiError::CorruptRecord("budgets.limit_micros is zero"))?;
 
-    let events: Vec<SpendRow> = db
-        .query(
-            "SELECT kind, amount_micros FROM spend_events \
-             WHERE budget_id = ? ORDER BY at_unix, id",
-        )
-        .bind(budget.to_string())
-        .fetch_all()
-        .await?;
+    let events: Vec<SpendRow> = sql!(
+        db,
+        "SELECT kind, amount_micros FROM spend_events \
+         WHERE budget_id = {budget} ORDER BY at_unix, id"
+    )
+    .fetch_all()
+    .await?;
 
     let mut state = BudgetState::new(config);
     for event in events {
         // Signals were delivered when the spend was first recorded; a replay
         // reconstructs the totals, it does not re-announce them.
-        let _ = state.apply(SpendEvent {
-            kind: decode_enum(&event.kind, "spend_events.kind")?,
-            amount: Usd::from_micros(from_column(
-                event.amount_micros,
-                "spend_events.amount_micros",
-            )?),
-        });
+        let _ = state.apply(event.into());
     }
 
-    db.query("UPDATE budgets SET spent_micros = ?, stage = ? WHERE id = ?")
-        .bind(to_column(state.spent().micros()))
-        .bind(encode_enum(&state.stage())?)
-        .bind(budget.to_string())
-        .execute()
-        .await?;
+    sql!(
+        db,
+        "UPDATE budgets SET spent_micros = {state.spent()}, stage = {state.stage()} \
+         WHERE id = {budget}"
+    )
+    .execute()
+    .await?;
 
     Ok(state.into())
 }
@@ -123,16 +114,11 @@ pub async fn record(
     amount: Usd,
     detail: &str,
 ) -> Result<(), ApiError> {
-    db.query(
+    sql!(
+        db,
         "INSERT INTO spend_events (id, budget_id, kind, amount_micros, at_unix, detail) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES ({SpendEventId::generate()}, {budget}, {kind}, {amount}, {now_unix()}, {detail})"
     )
-    .bind(SpendEventId::generate().to_string())
-    .bind(budget.to_string())
-    .bind(encode_enum(&kind)?)
-    .bind(to_column(amount.micros()))
-    .bind(to_column(now_unix()))
-    .bind(detail.to_owned())
     .execute()
     .await?;
 

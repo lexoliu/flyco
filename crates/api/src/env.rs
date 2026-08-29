@@ -24,19 +24,12 @@
 //! a change that could not take effect until the next start anyway.
 
 use flyco_core::{EnvDocument, EnvEntry, SessionId, UserId};
-use serde::Deserialize;
+use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
 use crate::crypto::TokenCipher;
 use crate::error::ApiError;
-use crate::sql::to_column;
-
-/// The sealed document, as the column holds it.
-#[derive(Debug, Deserialize)]
-struct EnvRow {
-    entries_enc: String,
-}
 
 /// Reads a session's environment.
 ///
@@ -59,14 +52,15 @@ pub async fn read(
         return Err(ApiError::SessionNotFound);
     }
 
-    let row: Option<EnvRow> = db
-        .query("SELECT entries_enc FROM session_env WHERE session_id = ?")
-        .bind(session.to_string())
-        .fetch_optional()
-        .await?;
+    let sealed: Option<String> = sql!(
+        db,
+        "SELECT entries_enc FROM session_env WHERE session_id = {session}"
+    )
+    .fetch_scalar_optional()
+    .await?;
 
-    let entries = match row {
-        Some(row) => unseal(cipher, &row.entries_enc)?,
+    let entries = match sealed {
+        Some(sealed) => unseal(cipher, &sealed)?,
         None => Vec::new(),
     };
     Ok(EnvDocument::new(entries))
@@ -95,14 +89,14 @@ pub async fn replace(
         }
     }
 
-    db.query(
-        "INSERT INTO session_env (session_id, entries_enc, updated_at_unix) VALUES (?, ?, ?) \
+    let sealed = seal(cipher, &entries)?;
+    sql!(
+        db,
+        "INSERT INTO session_env (session_id, entries_enc, updated_at_unix) \
+         VALUES ({session}, {sealed}, {now_unix()}) \
          ON CONFLICT (session_id) DO UPDATE SET \
-         entries_enc = excluded.entries_enc, updated_at_unix = excluded.updated_at_unix",
+         entries_enc = excluded.entries_enc, updated_at_unix = excluded.updated_at_unix"
     )
-    .bind(session.to_string())
-    .bind(seal(cipher, &entries)?)
-    .bind(to_column(now_unix()))
     .execute()
     .await?;
 

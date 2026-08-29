@@ -1,8 +1,8 @@
 # Deployment manifest for the flyco control plane (crates/api).
 # Services (KV, D1, R2, Queues, Durable Objects) are added as milestones land.
 #
-# Deploying requires the Cloudflare resources to exist first — skyzen 0.1.2 has
-# no provisioning of its own, so the ids below are pasted in by hand:
+# Deploying requires the Cloudflare resources to exist first — skyzen has no
+# provisioning of its own, so the ids below are pasted in by hand:
 #
 #   wrangler kv namespace create flyco-auth   -> cloudflare.kv_namespaces.id
 #   wrangler d1 create flyco-main             -> cloudflare.d1_databases.database_id
@@ -16,15 +16,20 @@
 # Only the two non-secret values are declared under [cloudflare.vars].
 
 # The KV namespace is a portable service, so `#[skyzen::main]` wires it.
-#
-# The D1 database deliberately is NOT declared as a `[[database]]`: skyzen
-# 0.1.2's generated database wiring expands to `if <bool> { WithMiddleware<E,
-# Db> } else { E }`, whose arms have different types, so a declared database
-# never compiles. `flyco_api::database` wires D1 by hand instead. Restore the
-# declaration once that codegen is fixed upstream.
 [[service]]
 name = "auth_kv"
 type = "kv"
+
+# The control plane's one SQL database: D1 on the Worker, a SQLite file
+# natively. `default = true` is what makes a handler's bare `Db` argument
+# resolve to it, so nothing names the binding outside this file.
+#
+# `migrations/` at the repo root is the default directory, and the same one
+# `wrangler d1 migrations apply` reads.
+[[database]]
+name = "main"
+type = "sql"
+default = true
 
 # R2 holds session transcripts: `transcripts/{session}/{stream}/{seq:08}.jsonl`,
 # written batch by batch by flycod. Bulk transcript data must never ride the
@@ -37,18 +42,22 @@ type = "kv"
 name = "transcripts"
 type = "storage"
 
-# Native wiring exists for `skyzen dev` and the openapi.json export; skyzen
-# 0.1.2 fails to compile the native binary when a declared service has no
-# native backend. `memory` resolves to skyzen-test's in-memory KV, which is
-# why skyzen-test is a dependency of the native target only.
+# Native wiring exists for `skyzen dev` and the openapi.json export. `memory`
+# resolves to skyzen-test's in-memory KV, which is why skyzen-test is a
+# dependency of the native target only.
 [native.service.auth_kv]
 backend = "memory"
 
-# Same story for R2: skyzen 0.1.2's only other storage backend is S3, which
-# would drag `skyzen-s3` into the native build for no benefit — `skyzen dev`
-# wants a scratch bucket, not a real one.
+# Same story for R2: the only other storage backend is S3, which would drag
+# `skyzen-s3` into the native build for no benefit — `skyzen dev` wants a
+# scratch bucket, not a real one.
 [native.service.transcripts]
 backend = "memory"
+
+# Natively the same schema runs on a local SQLite file.
+[native.database.main]
+backend = "sqlite"
+url_env = "FLYCO_DATABASE_URL"
 
 [cloudflare]
 name = "flyco"
@@ -63,6 +72,9 @@ binding = "AUTH_KV"
 
 [cloudflare.service.transcripts]
 binding = "TRANSCRIPTS"
+
+[cloudflare.database.main]
+binding = "DB"
 
 [[cloudflare.kv_namespaces]]
 binding = "AUTH_KV"

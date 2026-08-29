@@ -10,6 +10,7 @@ use crate::money::Usd;
 /// and never builds its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum HarnessKind {
     /// Anthropic's Claude Code, driven through the Agent SDK sidecar.
     ClaudeCode,

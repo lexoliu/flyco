@@ -14,6 +14,7 @@ use crate::id::SkillId;
 /// Which harness's global skills directory a bundle belongs in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum SkillScope {
     /// Claude Code's skills directory.
     Claude,

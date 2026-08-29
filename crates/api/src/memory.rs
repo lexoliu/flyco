@@ -17,9 +17,9 @@ use flyco_core::{
     CreateMemoryNode, CurrentUser, MemoryNode, MemoryNodeId, RepoSlug, UpdateMemoryNode, UserId,
 };
 use serde::{Deserialize, Serialize};
-use skyzen::Response;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
+use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
@@ -27,8 +27,7 @@ use crate::clock::now_unix;
 use crate::error::ApiError;
 use crate::extract::path_id;
 use crate::problem::Outcome;
-use crate::respond::{Created, no_content};
-use crate::sql::{from_column, to_column};
+use crate::respond::{Created, NoContent};
 
 /// Which level of the tree to list.
 #[derive(Debug, Default, Deserialize, Serialize, skyzen::ToSchema)]
@@ -41,39 +40,26 @@ pub struct MemoryFilter {
 }
 
 /// The columns every read on this path projects.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct MemoryRow {
-    id: String,
-    parent_id: Option<String>,
-    repo: Option<String>,
+    id: MemoryNodeId,
+    parent_id: Option<MemoryNodeId>,
+    repo: Option<RepoSlug>,
     title: String,
     content: String,
-    updated_at_unix: i64,
+    updated_at_unix: u64,
 }
 
-impl TryFrom<MemoryRow> for MemoryNode {
-    type Error = ApiError;
-
-    fn try_from(row: MemoryRow) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: row
-                .id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("memory_nodes.id is not a UUID"))?,
-            parent: row
-                .parent_id
-                .map(|parent| parent.parse())
-                .transpose()
-                .map_err(|_| ApiError::CorruptRecord("memory_nodes.parent_id is not a UUID"))?,
-            repo: row
-                .repo
-                .map(|repo| repo.parse::<RepoSlug>())
-                .transpose()
-                .map_err(|_| ApiError::CorruptRecord("memory_nodes.repo is not `owner/name`"))?,
+impl From<MemoryRow> for MemoryNode {
+    fn from(row: MemoryRow) -> Self {
+        Self {
+            id: row.id,
+            parent: row.parent_id,
+            repo: row.repo,
             title: row.title,
             content: row.content,
-            updated_at_unix: from_column(row.updated_at_unix, "memory_nodes.updated_at_unix")?,
-        })
+            updated_at_unix: row.updated_at_unix,
+        }
     }
 }
 
@@ -130,7 +116,7 @@ async fn delete_memory_node(
     State(user): State<CurrentUser>,
     params: Params,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<NoContent> {
     forget(&db, user.id, &params).await.into()
 }
 
@@ -147,26 +133,21 @@ async fn list(db: &Db, user: UserId, filter: &MemoryFilter) -> Result<Vec<Memory
         .as_deref()
         .map(str::parse::<RepoSlug>)
         .transpose()
-        .map_err(|_| ApiError::InvalidRepo(filter.repo.clone().unwrap_or_default()))?
-        .map(|repo| repo.as_str().to_owned());
+        .map_err(|_| ApiError::InvalidRepo(filter.repo.clone().unwrap_or_default()))?;
 
-    let rows: Vec<MemoryRow> = db
-        .query(
-            "SELECT id, parent_id, repo, title, content, updated_at_unix \
-             FROM memory_nodes WHERE user_id = ? \
-             AND ((? IS NULL AND repo IS NULL) OR repo = ?) \
-             AND ((? IS NULL AND parent_id IS NULL) OR parent_id = ?) \
-             ORDER BY title, id",
-        )
-        .bind(user.to_string())
-        .bind(repo.clone())
-        .bind(repo)
-        .bind(filter.parent.map(|parent| parent.to_string()))
-        .bind(filter.parent.map(|parent| parent.to_string()))
-        .fetch_all()
-        .await?;
+    let parent = filter.parent;
+    let rows: Vec<MemoryRow> = sql!(
+        db,
+        "SELECT id, parent_id, repo, title, content, updated_at_unix \
+         FROM memory_nodes WHERE user_id = {user} \
+         AND (({repo.clone()} IS NULL AND repo IS NULL) OR repo = {repo}) \
+         AND (({parent} IS NULL AND parent_id IS NULL) OR parent_id = {parent}) \
+         ORDER BY title, id"
+    )
+    .fetch_all()
+    .await?;
 
-    rows.into_iter().map(TryInto::try_into).collect()
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// Inserts a node, refusing a parent the caller does not own.
@@ -180,18 +161,13 @@ async fn create(db: &Db, user: UserId, request: CreateMemoryNode) -> Result<Memo
     }
 
     let id = MemoryNodeId::generate();
-    db.query(
+    sql!(
+        db,
         "INSERT INTO memory_nodes \
          (id, user_id, parent_id, repo, title, content, updated_at_unix) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES ({id}, {user}, {request.parent}, {request.repo}, \
+                 {request.title}, {request.content}, {now_unix()})"
     )
-    .bind(id.to_string())
-    .bind(user.to_string())
-    .bind(request.parent.map(|parent| parent.to_string()))
-    .bind(request.repo.map(|repo| repo.as_str().to_owned()))
-    .bind(request.title)
-    .bind(request.content)
-    .bind(to_column(now_unix()))
     .execute()
     .await?;
 
@@ -217,15 +193,14 @@ async fn update(
     let id = path_id::<MemoryNodeId>(params, "id")?;
     let current = load(db, user, id).await?;
 
-    db.query(
-        "UPDATE memory_nodes SET title = ?, content = ?, updated_at_unix = ? \
-         WHERE id = ? AND user_id = ?",
+    let title = request.title.unwrap_or(current.title);
+    let content = request.content.unwrap_or(current.content);
+    sql!(
+        db,
+        "UPDATE memory_nodes SET title = {title}, content = {content}, \
+         updated_at_unix = {now_unix()} \
+         WHERE id = {id} AND user_id = {user}"
     )
-    .bind(request.title.unwrap_or(current.title))
-    .bind(request.content.unwrap_or(current.content))
-    .bind(to_column(now_unix()))
-    .bind(id.to_string())
-    .bind(user.to_string())
     .execute()
     .await?;
 
@@ -237,41 +212,38 @@ async fn update(
 /// One recursive statement rather than a walk in the handler: D1 has no
 /// transactions, so a walk that failed halfway would leave orphans pointing
 /// at a parent that is gone — and `parent_id` is how the tree is read.
-async fn forget(db: &Db, user: UserId, params: &Params) -> Result<Response, ApiError> {
+async fn forget(db: &Db, user: UserId, params: &Params) -> Result<NoContent, ApiError> {
     let id = path_id::<MemoryNodeId>(params, "id")?;
     load(db, user, id).await?;
 
-    db.query(
+    sql!(
+        db,
         "WITH RECURSIVE subtree(id) AS ( \
-             SELECT id FROM memory_nodes WHERE id = ? AND user_id = ? \
+             SELECT id FROM memory_nodes WHERE id = {id} AND user_id = {user} \
              UNION ALL \
              SELECT node.id FROM memory_nodes node \
              JOIN subtree ON node.parent_id = subtree.id \
          ) \
-         DELETE FROM memory_nodes WHERE id IN (SELECT id FROM subtree)",
+         DELETE FROM memory_nodes WHERE id IN (SELECT id FROM subtree)"
     )
-    .bind(id.to_string())
-    .bind(user.to_string())
     .execute()
     .await?;
 
     tracing::info!(node = %id, "forgot a memory subtree");
-    Ok(no_content())
+    Ok(NoContent)
 }
 
 /// Loads one of the caller's nodes.
 async fn load(db: &Db, user: UserId, id: MemoryNodeId) -> Result<MemoryNode, ApiError> {
-    let row: Option<MemoryRow> = db
-        .query(
-            "SELECT id, parent_id, repo, title, content, updated_at_unix \
-             FROM memory_nodes WHERE id = ? AND user_id = ?",
-        )
-        .bind(id.to_string())
-        .bind(user.to_string())
-        .fetch_optional()
-        .await?;
+    let row: Option<MemoryRow> = sql!(
+        db,
+        "SELECT id, parent_id, repo, title, content, updated_at_unix \
+         FROM memory_nodes WHERE id = {id} AND user_id = {user}"
+    )
+    .fetch_optional()
+    .await?;
 
-    row.ok_or(ApiError::MemoryNodeNotFound)?.try_into()
+    Ok(row.ok_or(ApiError::MemoryNodeNotFound)?.into())
 }
 
 /// The user-scoped tree-memory routes.

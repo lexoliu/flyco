@@ -63,6 +63,7 @@ impl BudgetConfig {
 /// What a spend event paid for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum SpendKind {
     /// Machine time (on-demand or spot).
     Compute,
@@ -84,6 +85,7 @@ pub struct SpendEvent {
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, utoipa::ToSchema,
 )]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum BudgetStage {
     /// Below every threshold.
     Ok,

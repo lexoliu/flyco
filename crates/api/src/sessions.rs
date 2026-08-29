@@ -6,63 +6,45 @@
 //! no business knowing.
 
 use flyco_core::{
-    BudgetConfig, HarnessKind, RepoSlug, SessionDetail, SessionId, SessionState, SessionSummary,
-    UserId,
+    BudgetConfig, BudgetId, HarnessKind, RepoSlug, SessionDetail, SessionId, SessionState,
+    SessionSummary, UserId,
 };
-use serde::Deserialize;
+use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::budgets;
 use crate::clock::now_unix;
 use crate::error::ApiError;
-use crate::sql::{decode_enum, encode_enum, from_column, to_column};
 
 /// The session a caller may still archive, and its budget.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct SessionRow {
-    id: String,
-    harness: String,
-    repo: String,
-    state: String,
-    budget_id: String,
-    created_at_unix: i64,
-    last_active_unix: i64,
+    id: SessionId,
+    harness: HarnessKind,
+    repo: RepoSlug,
+    state: SessionState,
+    budget_id: BudgetId,
+    created_at_unix: u64,
+    last_active_unix: u64,
 }
 
-#[derive(Debug, Deserialize)]
-struct CountRow {
-    live: i64,
-}
-
-impl SessionRow {
-    fn into_summary(self) -> Result<SessionSummary, ApiError> {
-        Ok(SessionSummary {
-            id: self
-                .id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("sessions.id is not a UUID"))?,
-            harness: decode_enum::<HarnessKind>(&self.harness, "sessions.harness")?,
-            repo: self
-                .repo
-                .parse::<RepoSlug>()
-                .map_err(|_| ApiError::CorruptRecord("sessions.repo is not `owner/name`"))?,
-            state: decode_enum::<SessionState>(&self.state, "sessions.state")?,
-            created_at_unix: from_column(self.created_at_unix, "sessions.created_at_unix")?,
-            last_active_unix: from_column(self.last_active_unix, "sessions.last_active_unix")?,
-        })
-    }
-
-    fn budget(&self) -> Result<flyco_core::BudgetId, ApiError> {
-        self.budget_id
-            .parse()
-            .map_err(|_| ApiError::CorruptRecord("sessions.budget_id is not a UUID"))
+impl From<SessionRow> for SessionSummary {
+    fn from(row: SessionRow) -> Self {
+        Self {
+            id: row.id,
+            harness: row.harness,
+            repo: row.repo,
+            state: row.state,
+            created_at_unix: row.created_at_unix,
+            last_active_unix: row.last_active_unix,
+        }
     }
 }
 
 async fn detail_from(db: &Db, row: SessionRow) -> Result<SessionDetail, ApiError> {
-    let budget = budgets::view(db, row.budget()?).await?;
+    let budget = budgets::view(db, row.budget_id).await?;
     Ok(SessionDetail {
-        summary: row.into_summary()?,
+        summary: row.into(),
         budget,
     })
 }
@@ -73,15 +55,13 @@ async fn detail_from(db: &Db, row: SessionRow) -> Result<SessionDetail, ApiError
 ///
 /// Returns [`ApiError`] if the database fails.
 pub async fn live_count(db: &Db, user: UserId) -> Result<u32, ApiError> {
-    let row: CountRow = db
-        .query("SELECT COUNT(*) AS live FROM sessions WHERE user_id = ? AND state != ?")
-        .bind(user.to_string())
-        .bind(encode_enum(&SessionState::Archived)?)
-        .fetch_one()
-        .await?;
-
-    u32::try_from(row.live)
-        .map_err(|_| ApiError::CorruptRecord("a user holds an implausible number of sessions"))
+    let archived = SessionState::Archived;
+    Ok(sql!(
+        db,
+        "SELECT COUNT(*) AS live FROM sessions WHERE user_id = {user} AND state != {archived}"
+    )
+    .fetch_scalar()
+    .await?)
 }
 
 /// Creates a session and the budget it accounts against.
@@ -115,19 +95,13 @@ pub async fn create(
     let budget_id = budgets::create(db, id, budget).await?;
     let now = now_unix();
 
-    db.query(
+    sql!(
+        db,
         "INSERT INTO sessions \
          (id, user_id, harness, repo, state, budget_id, created_at_unix, last_active_unix) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ({id}, {user}, {harness}, {repo}, \
+                 {SessionState::Provisioning}, {budget_id}, {now}, {now})"
     )
-    .bind(id.to_string())
-    .bind(user.to_string())
-    .bind(encode_enum(&harness)?)
-    .bind(repo.as_str().to_owned())
-    .bind(encode_enum(&SessionState::Provisioning)?)
-    .bind(budget_id.to_string())
-    .bind(to_column(now))
-    .bind(to_column(now))
     .execute()
     .await?;
 
@@ -140,16 +114,15 @@ pub async fn create(
 ///
 /// Returns [`ApiError`] if the database fails or a stored row is malformed.
 pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError> {
-    let rows: Vec<SessionRow> = db
-        .query(
-            "SELECT id, harness, repo, state, budget_id, created_at_unix, last_active_unix \
-             FROM sessions WHERE user_id = ? ORDER BY created_at_unix DESC, id DESC",
-        )
-        .bind(user.to_string())
-        .fetch_all()
-        .await?;
+    let rows: Vec<SessionRow> = sql!(
+        db,
+        "SELECT id, harness, repo, state, budget_id, created_at_unix, last_active_unix \
+         FROM sessions WHERE user_id = {user} ORDER BY created_at_unix DESC, id DESC"
+    )
+    .fetch_all()
+    .await?;
 
-    rows.into_iter().map(SessionRow::into_summary).collect()
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// Loads one of the caller's sessions.
@@ -179,21 +152,21 @@ pub async fn transition(
     to: SessionState,
 ) -> Result<SessionDetail, ApiError> {
     let row = load(db, user, id).await?;
-    let from = decode_enum::<SessionState>(&row.state, "sessions.state")?;
-    let next = from
+    let next = row
+        .state
         .transition(to)
         .map_err(|error| ApiError::InvalidTransition {
             from: error.from,
             to: error.to,
         })?;
 
-    db.query("UPDATE sessions SET state = ?, last_active_unix = ? WHERE id = ? AND user_id = ?")
-        .bind(encode_enum(&next)?)
-        .bind(to_column(now_unix()))
-        .bind(id.to_string())
-        .bind(user.to_string())
-        .execute()
-        .await?;
+    sql!(
+        db,
+        "UPDATE sessions SET state = {next}, last_active_unix = {now_unix()} \
+         WHERE id = {id} AND user_id = {user}"
+    )
+    .execute()
+    .await?;
 
     find(db, user, id).await
 }
@@ -204,13 +177,13 @@ pub async fn transition(
 ///
 /// Returns [`ApiError`] if the database fails.
 pub async fn is_owned_by(db: &Db, user: UserId, session: SessionId) -> Result<bool, ApiError> {
-    let row: CountRow = db
-        .query("SELECT COUNT(*) AS live FROM sessions WHERE id = ? AND user_id = ?")
-        .bind(session.to_string())
-        .bind(user.to_string())
-        .fetch_one()
-        .await?;
-    Ok(row.live > 0)
+    let owned: u32 = sql!(
+        db,
+        "SELECT COUNT(*) AS live FROM sessions WHERE id = {session} AND user_id = {user}"
+    )
+    .fetch_scalar()
+    .await?;
+    Ok(owned > 0)
 }
 
 /// The lifecycle state of one of the caller's sessions.
@@ -220,8 +193,7 @@ pub async fn is_owned_by(db: &Db, user: UserId, session: SessionId) -> Result<bo
 /// Returns [`ApiError::SessionNotFound`] if the session does not exist or
 /// belongs to somebody else.
 pub async fn state_of(db: &Db, user: UserId, id: SessionId) -> Result<SessionState, ApiError> {
-    let row = load(db, user, id).await?;
-    decode_enum::<SessionState>(&row.state, "sessions.state")
+    Ok(load(db, user, id).await?.state)
 }
 
 /// Refuses unless the session is running.
@@ -246,12 +218,11 @@ pub async fn require_active(db: &Db, user: UserId, id: SessionId) -> Result<(), 
 }
 
 async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiError> {
-    db.query(
+    sql!(
+        db,
         "SELECT id, harness, repo, state, budget_id, created_at_unix, last_active_unix \
-         FROM sessions WHERE id = ? AND user_id = ?",
+         FROM sessions WHERE id = {id} AND user_id = {user}"
     )
-    .bind(id.to_string())
-    .bind(user.to_string())
     .fetch_optional()
     .await?
     .ok_or(ApiError::SessionNotFound)

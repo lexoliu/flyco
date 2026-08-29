@@ -14,6 +14,21 @@ thiserror.workspace = true
 uuid.workspace = true
 utoipa.workspace = true
 
+# Only the control plane stores the domain model, and only it may pay for a
+# web framework. `FromColumn` is skyzen's and these types are flyco's, so the
+# orphan rule puts the mapping here and nowhere else; the feature is what
+# keeps `flycod`, which shares this crate and touches no database, from
+# linking skyzen.
+skyzen = { workspace = true, optional = true }
+# The traits the mapping is written against. `#[derive(skyzen::Column)]`
+# reaches them through `skyzen`; the two hand-written impls that no derive can
+# express — a phantom-typed id, a slug with a parser — name the crate itself.
+skyzen-services = { workspace = true, optional = true, default-features = false }
+
+[features]
+# The SQL column mapping of the stored domain types. Enabled by flyco-api.
+sql = ["dep:skyzen", "dep:skyzen-services"]
+
 [dev-dependencies]
 
 [lints]

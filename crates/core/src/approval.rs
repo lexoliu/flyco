@@ -12,6 +12,7 @@ use crate::wire::{ApprovalDecision, ApprovalPayload};
 /// Where an approval is in its short life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum ApprovalState {
     /// Raised, waiting for the user.
     Pending,

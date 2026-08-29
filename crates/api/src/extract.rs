@@ -49,11 +49,12 @@ fn raw(params: &Params, name: &'static str) -> Result<String, ApiError> {
 
 /// The request's headers, verbatim.
 ///
-/// Skyzen 0.1.2 has no header extractor, and three flyco routes are about
-/// headers rather than about a body: the relay hops carry their credential
-/// in `Authorization` or in `Sec-WebSocket-Protocol`, and the Worker→room
-/// hop carries the caller's role in an internal header. Cloning the map is
-/// the honest cost of reading it in a handler rather than in middleware.
+/// Skyzen's `TypedHeader<T>` reads one RFC-defined header into its typed
+/// form, which is not what these routes need: the relay hops read a
+/// credential out of `Authorization` or `Sec-WebSocket-Protocol`, and the
+/// Worker→room hop reads a role out of an internal header with a name of
+/// flyco's own. Cloning the map is the honest cost of reading arbitrary
+/// headers in a handler rather than in middleware.
 #[derive(Debug, Clone)]
 pub struct Headers(HeaderMap);
 
