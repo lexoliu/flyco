@@ -1,0 +1,17 @@
+.error {
+  color: var(--color-danger);
+  background: var(--color-danger-muted);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  margin: 0;
+}
+
+.notImplemented {
+  color: var(--color-text-muted);
+  background: var(--color-accent-muted);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  margin: 0;
+}

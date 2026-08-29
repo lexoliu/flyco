@@ -36,6 +36,37 @@
   font-size: var(--text-sm);
 }
 
+.itemRight {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.decideButtons {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.decideButtons button {
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: 2px var(--space-2);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.approve {
+  color: var(--color-success);
+  border-color: var(--color-success) !important;
+}
+
+.deny {
+  color: var(--color-danger);
+  border-color: var(--color-danger) !important;
+}
+
 .state {
   text-transform: capitalize;
   font-size: var(--text-xs);

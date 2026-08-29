@@ -34,14 +34,24 @@
   white-space: nowrap;
 }
 
-.archivedBadge {
+.stateBadge {
+  display: inline-block;
+  margin-top: var(--space-3);
   font-size: var(--text-xs);
   color: var(--color-text-faint);
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-full);
   padding: 2px var(--space-2);
+  text-transform: capitalize;
 }
 
-.budget {
-  margin-top: var(--space-3);
+.stateBadge[data-state="active"] {
+  color: var(--color-success);
+  border-color: var(--color-success);
+}
+
+.stateBadge[data-state="paused"],
+.stateBadge[data-state="interrupted"] {
+  color: var(--color-warning);
+  border-color: var(--color-warning);
 }
