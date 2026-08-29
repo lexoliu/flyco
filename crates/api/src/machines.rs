@@ -144,7 +144,9 @@ async fn run(
 
     let machine_type = match operation {
         provisioning::Operation::Resize { machine_type } => machine_type.to_owned(),
-        provisioning::Operation::Stop | provisioning::Operation::Start => row.machine_type.clone(),
+        provisioning::Operation::Stop
+        | provisioning::Operation::Start
+        | provisioning::Operation::Destroy => row.machine_type.clone(),
     };
 
     sql!(
@@ -159,6 +161,47 @@ async fn run(
 
     tracing::info!(machine = %row.id, state = ?updated.state, "ran a machine lifecycle operation");
     Ok(Accepted)
+}
+
+/// Permanently releases the machine and disk belonging to `session`.
+///
+/// A reserved row without a provider-native id names no external resource,
+/// so it can be marked destroyed directly. A provisioned row is destroyed
+/// through the exact linked account that created it before the database is
+/// allowed to claim the resource is gone.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the session owns no machine, the provider refuses
+/// destruction, or the destroyed state cannot be persisted.
+pub async fn destroy_for_archive(
+    db: &Db,
+    config: &ApiConfig,
+    user: UserId,
+    session: SessionId,
+) -> Result<(), ApiError> {
+    let row = load(db, user, session).await?;
+    if row.state == MachineState::Destroyed {
+        return Ok(());
+    }
+
+    if row.native_id.is_some() {
+        let machine = row.as_provider_machine()?;
+        let account = provisioning::account(db, config, user, row.provider_account_id).await?;
+        provisioning::operate(&account, &machine, provisioning::Operation::Destroy)
+            .await
+            .map_err(|error| ApiError::Provisioning(error.to_string()))?;
+    }
+
+    let destroyed = MachineState::Destroyed;
+    sql!(
+        db,
+        "UPDATE machines SET state = {destroyed}, hourly_micros = NULL, native_id = NULL, \
+         address = NULL WHERE id = {row.id}"
+    )
+    .execute()
+    .await?;
+    Ok(())
 }
 
 /// Loads the machine a session runs on, scoped to its owner.
