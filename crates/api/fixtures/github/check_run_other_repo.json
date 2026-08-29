@@ -1,0 +1,32 @@
+{
+  "action": "completed",
+  "check_run": {
+    "id": 41234567892,
+    "name": "cargo test",
+    "node_id": "CR_kwDOABCDEF8AAAAJmfNSaw",
+    "head_sha": "abcdef0123456789abcdef0123456789abcdef01",
+    "status": "completed",
+    "conclusion": "failure",
+    "started_at": "2026-08-29T11:00:00Z",
+    "completed_at": "2026-08-29T11:04:12Z",
+    "html_url": "https://github.com/zen-rs/skyzen/runs/41234567892",
+    "check_suite": {
+      "id": 987654323,
+      "head_branch": "main",
+      "status": "completed",
+      "conclusion": "failure"
+    }
+  },
+  "repository": {
+    "id": 812345678,
+    "name": "skyzen",
+    "full_name": "zen-rs/skyzen",
+    "private": false,
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "lexoliu",
+    "id": 4242,
+    "type": "User"
+  }
+}
