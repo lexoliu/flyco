@@ -44,6 +44,9 @@ pub const CLAUDE_CONFIG_DIR: &str = "/var/lib/flyco/claude";
 /// history on every move, which is why it is a constant.
 pub const CLAUDE_PROJECT_DIR_NAME: &str = "flyco-session";
 
+/// The isolated `CODEX_HOME` an injected Codex credential runs under.
+pub const CODEX_HOME: &str = "/var/lib/flyco/codex";
+
 /// How the supervised `claude` CLI authenticates on a provisioned machine.
 ///
 /// [`Inherit`](Self::Inherit) is the developer-machine mode and is what a
@@ -142,6 +145,36 @@ struct Sidecar {
     bun: &'static str,
 }
 
+/// An isolated Codex home, as the daemon's config spells it.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct CodexIsolation {
+    home: &'static str,
+}
+
+/// The `[codex.auth]` table.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+enum CodexAuth<'a> {
+    Inherit,
+    OauthToken {
+        token: &'a str,
+        isolation: CodexIsolation,
+    },
+    ApiKey {
+        key: &'a str,
+        isolation: CodexIsolation,
+    },
+}
+
+/// The `[codex]` table.
+#[derive(Debug, Clone, Serialize)]
+struct Codex<'a> {
+    bin: &'static str,
+    approval_policy: &'static str,
+    sandbox: &'static str,
+    auth: CodexAuth<'a>,
+}
+
 /// The whole document.
 ///
 /// Field order is the serialization order and TOML puts every scalar before
@@ -156,8 +189,12 @@ struct Document<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     resume_session_id: Option<&'a str>,
     control_plane: ControlPlane<'a>,
-    claude: Claude<'a>,
-    sidecar: Sidecar,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    claude: Option<Claude<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sidecar: Option<Sidecar>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    codex: Option<Codex<'a>>,
 }
 
 /// Why a configuration could not be rendered.
@@ -174,7 +211,7 @@ pub struct RenderError(#[from] toml::ser::Error);
 /// caller did.
 pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
     let isolation = bootstrap.claude_auth.isolation();
-    let auth = match (&bootstrap.claude_auth, isolation) {
+    let claude_auth = match (&bootstrap.claude_auth, isolation) {
         (ClaudeCredential::OauthToken { token }, Some(isolation)) => Auth::OauthToken {
             token: token.as_str(),
             isolation,
@@ -184,6 +221,43 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
             isolation,
         },
         _ => Auth::Inherit,
+    };
+    let codex_isolation = CodexIsolation { home: CODEX_HOME };
+    let codex_auth = match &bootstrap.claude_auth {
+        ClaudeCredential::OauthToken { token } => CodexAuth::OauthToken {
+            token: token.as_str(),
+            isolation: codex_isolation,
+        },
+        ClaudeCredential::ApiKey { key } => CodexAuth::ApiKey {
+            key: key.as_str(),
+            isolation: codex_isolation,
+        },
+        ClaudeCredential::Inherit => CodexAuth::Inherit,
+    };
+
+    let (claude, sidecar, codex) = match bootstrap.harness {
+        HarnessKind::ClaudeCode => (
+            Some(Claude {
+                model: None,
+                permission_mode: bootstrap.permission_mode,
+                auth: claude_auth,
+            }),
+            Some(Sidecar {
+                dir: SIDECAR_DIR,
+                bun: "bun",
+            }),
+            None,
+        ),
+        HarnessKind::Codex => (
+            None,
+            None,
+            Some(Codex {
+                bin: "codex",
+                approval_policy: "on-request",
+                sandbox: "workspace-write",
+                auth: codex_auth,
+            }),
+        ),
     };
 
     let document = Document {
@@ -196,15 +270,9 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
             url: &bootstrap.control_plane_url,
             daemon_token: &bootstrap.daemon_token,
         },
-        claude: Claude {
-            model: None,
-            permission_mode: bootstrap.permission_mode,
-            auth,
-        },
-        sidecar: Sidecar {
-            dir: SIDECAR_DIR,
-            bun: "bun",
-        },
+        claude,
+        sidecar,
+        codex,
     };
 
     Ok(toml::to_string_pretty(&document)?)
@@ -214,7 +282,7 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
 mod tests {
     use flyco_core::{HarnessKind, PermissionMode, SessionId};
 
-    use super::{CLAUDE_CONFIG_DIR, ClaudeCredential, render};
+    use super::{CLAUDE_CONFIG_DIR, CODEX_HOME, ClaudeCredential, render};
     use crate::DaemonBootstrap;
 
     fn bootstrap(claude_auth: ClaudeCredential) -> DaemonBootstrap {
@@ -256,6 +324,21 @@ mod tests {
             key: "sk-ant-secret".to_owned(),
         };
         assert!(!format!("{credential:?}").contains("sk-ant-secret"));
+    }
+
+    #[test]
+    fn a_codex_session_writes_the_codex_table_and_not_claude() {
+        let mut bootstrap = bootstrap(ClaudeCredential::OauthToken {
+            token: "chatgpt-access".to_owned(),
+        });
+        bootstrap.harness = HarnessKind::Codex;
+        let rendered = render(&bootstrap).expect("render");
+
+        assert!(rendered.contains("[codex]"));
+        assert!(rendered.contains("approval_policy = \"on-request\""));
+        assert!(rendered.contains(CODEX_HOME));
+        assert!(!rendered.contains("[claude]"));
+        assert!(!rendered.contains("[sidecar]"));
     }
 
     #[test]
