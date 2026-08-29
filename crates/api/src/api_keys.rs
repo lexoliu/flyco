@@ -25,40 +25,36 @@ pub struct KeyOwner {
 
 #[derive(Debug, skyzen::FromRow)]
 struct OwnerRow {
-    id: String,
-    user_id: String,
+    id: ApiKeyId,
+    user_id: UserId,
+}
+
+impl From<OwnerRow> for KeyOwner {
+    fn from(row: OwnerRow) -> Self {
+        Self {
+            key_id: row.id,
+            user_id: row.user_id,
+        }
+    }
 }
 
 #[derive(Debug, skyzen::FromRow)]
 struct SummaryRow {
-    id: String,
+    id: ApiKeyId,
     label: String,
-    created_at_unix: i64,
-    last_used_unix: Option<i64>,
+    created_at_unix: u64,
+    last_used_unix: Option<u64>,
 }
 
-impl TryFrom<SummaryRow> for ApiKeySummary {
-    type Error = ApiError;
-
-    fn try_from(row: SummaryRow) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: row
-                .id
-                .parse::<ApiKeyId>()
-                .map_err(|_| ApiError::CorruptRecord("api_keys.id is not a UUID"))?,
+impl From<SummaryRow> for ApiKeySummary {
+    fn from(row: SummaryRow) -> Self {
+        Self {
+            id: row.id,
             label: row.label,
-            created_at_unix: unsigned(row.created_at_unix)?,
-            last_used_unix: row.last_used_unix.map(unsigned).transpose()?,
-        })
+            created_at_unix: row.created_at_unix,
+            last_used_unix: row.last_used_unix,
+        }
     }
-}
-
-fn unsigned(value: i64) -> Result<u64, ApiError> {
-    u64::try_from(value).map_err(|_| ApiError::CorruptRecord("timestamp column is negative"))
-}
-
-fn signed(value: u64) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 /// Mints a key for `user_id` and stores its hash.
@@ -78,11 +74,11 @@ pub async fn create(db: &Db, user_id: UserId, label: String) -> Result<CreatedAp
         "INSERT INTO api_keys (id, user_id, token_hash, label, created_at_unix, last_used_unix) \
          VALUES (?, ?, ?, ?, ?, NULL)",
     )
-    .bind(id.to_string())
-    .bind(user_id.to_string())
+    .bind(id)
+    .bind(user_id)
     .bind(token_hash(&token))
     .bind(label.clone())
-    .bind(signed(created_at_unix))
+    .bind(created_at_unix)
     .execute()
     .await?;
 
@@ -105,11 +101,11 @@ pub async fn list(db: &Db, user_id: UserId) -> Result<Vec<ApiKeySummary>, ApiErr
             "SELECT id, label, created_at_unix, last_used_unix FROM api_keys \
              WHERE user_id = ? ORDER BY created_at_unix, id",
         )
-        .bind(user_id.to_string())
+        .bind(user_id)
         .fetch_all()
         .await?;
 
-    rows.into_iter().map(TryInto::try_into).collect()
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// Revokes one of `user_id`'s keys.
@@ -121,8 +117,8 @@ pub async fn list(db: &Db, user_id: UserId) -> Result<Vec<ApiKeySummary>, ApiErr
 pub async fn revoke(db: &Db, user_id: UserId, key_id: ApiKeyId) -> Result<(), ApiError> {
     let result = db
         .query("DELETE FROM api_keys WHERE id = ? AND user_id = ?")
-        .bind(key_id.to_string())
-        .bind(user_id.to_string())
+        .bind(key_id)
+        .bind(user_id)
         .execute()
         .await?;
 
@@ -144,19 +140,7 @@ pub async fn find_by_token(db: &Db, presented: &str) -> Result<Option<KeyOwner>,
         .fetch_optional()
         .await?;
 
-    row.map(|row| {
-        Ok(KeyOwner {
-            key_id: row
-                .id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("api_keys.id is not a UUID"))?,
-            user_id: row
-                .user_id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("api_keys.user_id is not a UUID"))?,
-        })
-    })
-    .transpose()
+    Ok(row.map(Into::into))
 }
 
 /// Stamps a key as used, so a stale credential is visible in the key list.
@@ -166,8 +150,8 @@ pub async fn find_by_token(db: &Db, presented: &str) -> Result<Option<KeyOwner>,
 /// Returns [`ApiError`] if the database fails.
 pub async fn mark_used(db: &Db, key_id: ApiKeyId) -> Result<(), ApiError> {
     db.query("UPDATE api_keys SET last_used_unix = ? WHERE id = ?")
-        .bind(signed(now_unix()))
-        .bind(key_id.to_string())
+        .bind(now_unix())
+        .bind(key_id)
         .execute()
         .await?;
     Ok(())

@@ -11,7 +11,9 @@ authors.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-flyco-core.workspace = true
+# `sql` carries the column mapping of the stored domain types; see that
+# crate's manifest for why it is a feature rather than always on.
+flyco-core = { workspace = true, features = ["sql"] }
 # Default features only: the `ssh` executor must never reach the Worker build.
 flyco-provider.workspace = true
 skyzen.workspace = true

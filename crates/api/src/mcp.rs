@@ -8,7 +8,6 @@
 use flyco_core::{
     CurrentUser, McpServerConfig, McpServerId, McpServerView, UpsertMcpServer, UserId,
 };
-use skyzen::Response;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
@@ -17,34 +16,29 @@ use crate::clock::now_unix;
 use crate::error::ApiError;
 use crate::extract::path_id;
 use crate::problem::Outcome;
-use crate::respond::{Created, no_content};
-use crate::sql::{from_column, to_column};
+use crate::respond::{Created, NoContent};
 
 /// The columns every read on this path projects.
 #[derive(Debug, skyzen::FromRow)]
 struct McpRow {
-    id: String,
+    id: McpServerId,
     name: String,
-    config: String,
-    enabled: i64,
-    updated_at_unix: i64,
+    /// The transport definition, kept as a JSON document in a text column.
+    #[row(json)]
+    config: McpServerConfig,
+    enabled: bool,
+    updated_at_unix: u64,
 }
 
-impl TryFrom<McpRow> for McpServerView {
-    type Error = ApiError;
-
-    fn try_from(row: McpRow) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: row
-                .id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("mcp_servers.id is not a UUID"))?,
+impl From<McpRow> for McpServerView {
+    fn from(row: McpRow) -> Self {
+        Self {
+            id: row.id,
             name: row.name,
-            config: serde_json::from_str::<McpServerConfig>(&row.config)
-                .map_err(|_| ApiError::CorruptRecord("mcp_servers.config is not a config"))?,
-            enabled: row.enabled != 0,
-            updated_at_unix: from_column(row.updated_at_unix, "mcp_servers.updated_at_unix")?,
-        })
+            config: row.config,
+            enabled: row.enabled,
+            updated_at_unix: row.updated_at_unix,
+        }
     }
 }
 
@@ -82,8 +76,8 @@ async fn list_mcp_servers(
 
 async fn list(db: &Db, user: UserId) -> Result<Vec<McpServerView>, ApiError> {
     let sql = format!("SELECT {MCP_COLUMNS} FROM mcp_servers WHERE user_id = ? ORDER BY name");
-    let rows: Vec<McpRow> = db.query(&sql).bind(user.to_string()).fetch_all().await?;
-    rows.into_iter().map(TryInto::try_into).collect()
+    let rows: Vec<McpRow> = db.query(&sql).bind(user).fetch_all().await?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// Registers an MCP server.
@@ -121,16 +115,16 @@ async fn register(
 
     let row: Option<McpRow> = db
         .query(&sql)
-        .bind(McpServerId::generate().to_string())
-        .bind(user.to_string())
+        .bind(McpServerId::generate())
+        .bind(user)
         .bind(name.clone())
         .bind(config)
-        .bind(to_column(u64::from(request.enabled)))
-        .bind(to_column(now_unix()))
+        .bind(request.enabled)
+        .bind(now_unix())
         .fetch_optional()
         .await?;
 
-    row.ok_or(ApiError::McpServerNameTaken { name })?.try_into()
+    Ok(row.ok_or(ApiError::McpServerNameTaken { name })?.into())
 }
 
 /// Describes one of the caller's MCP servers.
@@ -146,14 +140,9 @@ async fn get_mcp_server(
 async fn read(db: &Db, user: UserId, params: &Params) -> Result<McpServerView, ApiError> {
     let id: McpServerId = path_id(params, "id")?;
     let sql = format!("SELECT {MCP_COLUMNS} FROM mcp_servers WHERE id = ? AND user_id = ?");
-    let row: Option<McpRow> = db
-        .query(&sql)
-        .bind(id.to_string())
-        .bind(user.to_string())
-        .fetch_optional()
-        .await?;
+    let row: Option<McpRow> = db.query(&sql).bind(id).bind(user).fetch_optional().await?;
 
-    row.ok_or(ApiError::McpServerNotFound)?.try_into()
+    Ok(row.ok_or(ApiError::McpServerNotFound)?.into())
 }
 
 /// Replaces one of the caller's MCP servers.
@@ -198,14 +187,14 @@ async fn update(
         .query(&sql)
         .bind(name)
         .bind(config)
-        .bind(to_column(u64::from(request.enabled)))
-        .bind(to_column(now_unix()))
-        .bind(id.to_string())
-        .bind(user.to_string())
+        .bind(request.enabled)
+        .bind(now_unix())
+        .bind(id)
+        .bind(user)
         .fetch_optional()
         .await?;
 
-    row.ok_or(ApiError::McpServerNotFound)?.try_into()
+    Ok(row.ok_or(ApiError::McpServerNotFound)?.into())
 }
 
 /// Removes one of the caller's MCP servers.
@@ -214,16 +203,16 @@ async fn delete_mcp_server(
     State(user): State<CurrentUser>,
     params: Params,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<NoContent> {
     remove(&db, user.id, &params).await.into()
 }
 
-async fn remove(db: &Db, user: UserId, params: &Params) -> Result<Response, ApiError> {
+async fn remove(db: &Db, user: UserId, params: &Params) -> Result<NoContent, ApiError> {
     let id: McpServerId = path_id(params, "id")?;
     let removed = db
         .query("DELETE FROM mcp_servers WHERE id = ? AND user_id = ?")
-        .bind(id.to_string())
-        .bind(user.to_string())
+        .bind(id)
+        .bind(user)
         .execute()
         .await?;
 
@@ -231,7 +220,7 @@ async fn remove(db: &Db, user: UserId, params: &Params) -> Result<Response, ApiE
         return Err(ApiError::McpServerNotFound);
     }
 
-    Ok(no_content())
+    Ok(NoContent)
 }
 
 /// The user-scoped MCP registry routes.

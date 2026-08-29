@@ -14,17 +14,21 @@ use skyzen_services::Db;
 
 use crate::clock::now_unix;
 use crate::error::ApiError;
-use crate::sql::{decode_enum, encode_enum, from_column, to_column};
 
-#[derive(Debug, skyzen::FromRow)]
-struct BudgetRow {
-    limit_micros: i64,
-}
-
+/// One accrual, as the ledger stores it.
 #[derive(Debug, skyzen::FromRow)]
 struct SpendRow {
-    kind: String,
-    amount_micros: i64,
+    kind: SpendKind,
+    amount_micros: Usd,
+}
+
+impl From<SpendRow> for SpendEvent {
+    fn from(row: SpendRow) -> Self {
+        Self {
+            kind: row.kind,
+            amount: row.amount_micros,
+        }
+    }
 }
 
 /// Creates the budget a session accounts against.
@@ -44,10 +48,10 @@ pub async fn create(
         "INSERT INTO budgets (id, session_id, limit_micros, spent_micros, stage) \
          VALUES (?, ?, ?, 0, ?)",
     )
-    .bind(id.to_string())
-    .bind(session.to_string())
-    .bind(to_column(config.limit().micros()))
-    .bind(encode_enum(&state.stage())?)
+    .bind(id)
+    .bind(session)
+    .bind(config.limit())
+    .bind(state.stage())
     .execute()
     .await?;
 
@@ -61,16 +65,14 @@ pub async fn create(
 /// Returns [`ApiError::CorruptRecord`] if the budget row is missing or
 /// holds a limit the engine rejects, or a database error otherwise.
 pub async fn view(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
-    let row: Option<BudgetRow> = db
+    let limit: Option<Usd> = db
         .query("SELECT limit_micros FROM budgets WHERE id = ?")
-        .bind(budget.to_string())
-        .fetch_optional()
+        .bind(budget)
+        .fetch_scalar_optional()
         .await?;
-    let row = row.ok_or(ApiError::CorruptRecord(
+    let limit = limit.ok_or(ApiError::CorruptRecord(
         "a session points at a budget that does not exist",
     ))?;
-
-    let limit = Usd::from_micros(from_column(row.limit_micros, "budgets.limit_micros")?);
     let config = BudgetConfig::new(limit)
         .map_err(|_| ApiError::CorruptRecord("budgets.limit_micros is zero"))?;
 
@@ -79,7 +81,7 @@ pub async fn view(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
             "SELECT kind, amount_micros FROM spend_events \
              WHERE budget_id = ? ORDER BY at_unix, id",
         )
-        .bind(budget.to_string())
+        .bind(budget)
         .fetch_all()
         .await?;
 
@@ -87,19 +89,13 @@ pub async fn view(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
     for event in events {
         // Signals were delivered when the spend was first recorded; a replay
         // reconstructs the totals, it does not re-announce them.
-        let _ = state.apply(SpendEvent {
-            kind: decode_enum(&event.kind, "spend_events.kind")?,
-            amount: Usd::from_micros(from_column(
-                event.amount_micros,
-                "spend_events.amount_micros",
-            )?),
-        });
+        let _ = state.apply(event.into());
     }
 
     db.query("UPDATE budgets SET spent_micros = ?, stage = ? WHERE id = ?")
-        .bind(to_column(state.spent().micros()))
-        .bind(encode_enum(&state.stage())?)
-        .bind(budget.to_string())
+        .bind(state.spent())
+        .bind(state.stage())
+        .bind(budget)
         .execute()
         .await?;
 
@@ -126,12 +122,12 @@ pub async fn record(
         "INSERT INTO spend_events (id, budget_id, kind, amount_micros, at_unix, detail) \
          VALUES (?, ?, ?, ?, ?, ?)",
     )
-    .bind(SpendEventId::generate().to_string())
-    .bind(budget.to_string())
-    .bind(encode_enum(&kind)?)
-    .bind(to_column(amount.micros()))
-    .bind(to_column(now_unix()))
-    .bind(detail.to_owned())
+    .bind(SpendEventId::generate())
+    .bind(budget)
+    .bind(kind)
+    .bind(amount)
+    .bind(now_unix())
+    .bind(detail)
     .execute()
     .await?;
 
