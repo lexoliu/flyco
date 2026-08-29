@@ -15,6 +15,7 @@ use crate::control::wire::{self, Endpoint, QUEUE_DEPTH, WireError};
 use crate::harness::SessionOutput;
 use crate::harness::claude::protocol::SessionKey;
 use crate::harness::claude::store::{StoreError, TranscriptStore};
+use crate::terminal::FakeTerminal;
 use crate::testing::{Call, ControlPlane, Directive, FakeSession, Greeting, Reply, Room, Seen};
 
 /// A daemon token shaped the way the control plane mints them.
@@ -91,6 +92,8 @@ struct Harness {
     approvals: mpsc::UnboundedReceiver<ApprovalPayload>,
     observations: mpsc::UnboundedReceiver<HarnessObservation>,
     approval_id: ApprovalId,
+    terminal_writes: mpsc::UnboundedReceiver<String>,
+    terminal_inject: mpsc::Sender<String>,
     run: tokio::task::JoinHandle<Result<(), WireError>>,
 }
 
@@ -116,7 +119,15 @@ impl Harness {
             id: approval_id,
         };
 
-        let run = tokio::spawn(wire::run(endpoint, fake, receiver, api));
+        let (terminal, terminal_writes, terminal_inject, terminal_out) = FakeTerminal::pair();
+        let run = tokio::spawn(wire::run(
+            endpoint,
+            fake,
+            receiver,
+            api,
+            terminal,
+            terminal_out,
+        ));
 
         Self {
             room,
@@ -126,6 +137,8 @@ impl Harness {
             approvals,
             observations,
             approval_id,
+            terminal_writes,
+            terminal_inject,
             run,
         }
     }
@@ -347,6 +360,34 @@ async fn an_approval_decision_reaches_the_harness() {
 }
 
 #[tokio::test]
+async fn terminal_input_reaches_the_shell_and_output_reaches_the_room() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::TerminalInput {
+        data: "ls\n".to_owned(),
+    });
+    assert_eq!(
+        harness.terminal_writes.recv().await.as_deref(),
+        Some("ls\n")
+    );
+
+    harness
+        .terminal_inject
+        .send("file.txt\n".to_owned())
+        .await
+        .expect("inject shell output");
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::TerminalOutput {
+            data: "file.txt\n".to_owned()
+        }
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
 async fn a_user_message_and_an_interrupt_reach_the_harness() {
     let mut harness = Harness::start(Greeting::Welcome).await;
     harness.handshake().await;
@@ -449,7 +490,15 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         observations,
         id: ApprovalId::generate(),
     };
-    let run = tokio::spawn(wire::run(endpoint, fake, receiver, api));
+    let (terminal, _, _, terminal_out) = FakeTerminal::pair();
+    let run = tokio::spawn(wire::run(
+        endpoint,
+        fake,
+        receiver,
+        api,
+        terminal,
+        terminal_out,
+    ));
 
     // One more than the queue holds, plus the one the collector is carrying.
     for index in 0..=QUEUE_DEPTH + 1 {
