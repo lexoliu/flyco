@@ -29,6 +29,7 @@ pub mod mcp;
 pub mod memory;
 pub mod middleware;
 pub mod oauth;
+pub mod observations;
 pub mod problem;
 pub mod provider_accounts;
 pub mod provisioning;

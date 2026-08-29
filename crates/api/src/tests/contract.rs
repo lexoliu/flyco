@@ -35,7 +35,6 @@ struct Pending {
 const EXPECTED: &[(&str, &str)] = &[
     ("cloud_usage", "M6"),
     ("complete_harness_link", "M4"),
-    ("llm_usage", "M6"),
     ("resume_session", "M4"),
     ("start_harness_link", "M4"),
 ];

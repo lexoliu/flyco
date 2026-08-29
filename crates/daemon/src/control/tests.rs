@@ -5,7 +5,7 @@ use core::time::Duration;
 use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
-    SessionId, UsageReport, WIRE_PROTOCOL_VERSION,
+    HarnessObservation, SessionId, UsageReport, Usd, WIRE_PROTOCOL_VERSION,
 };
 use tokio::sync::mpsc;
 
@@ -28,6 +28,7 @@ const TOKEN: &str = "fd_a-daemon-token";
 #[derive(Debug, Clone)]
 struct RecordingApi {
     approvals: mpsc::UnboundedSender<ApprovalPayload>,
+    observations: mpsc::UnboundedSender<HarnessObservation>,
     id: ApprovalId,
 }
 
@@ -61,6 +62,17 @@ impl ControlApi for RecordingApi {
             batches: 0,
         }))
     }
+
+    fn record_observation(
+        &self,
+        observation: HarnessObservation,
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        core::future::ready(
+            self.observations
+                .send(observation)
+                .map_err(|error| ControlApiError::Transport(error.to_string())),
+        )
+    }
 }
 
 /// Everything a relay test drives.
@@ -70,6 +82,7 @@ struct Harness {
     outputs: mpsc::Sender<SessionOutput>,
     calls: mpsc::UnboundedReceiver<Call>,
     approvals: mpsc::UnboundedReceiver<ApprovalPayload>,
+    observations: mpsc::UnboundedReceiver<HarnessObservation>,
     approval_id: ApprovalId,
     run: tokio::task::JoinHandle<Result<(), WireError>>,
 }
@@ -88,9 +101,11 @@ impl Harness {
         let (fake, calls) = FakeSession::new();
         let (sender, receiver) = mpsc::channel(outputs);
         let (approval_sender, approvals) = mpsc::unbounded_channel();
+        let (observation_sender, observations) = mpsc::unbounded_channel();
         let approval_id = ApprovalId::generate();
         let api = RecordingApi {
             approvals: approval_sender,
+            observations: observation_sender,
             id: approval_id,
         };
 
@@ -102,6 +117,7 @@ impl Harness {
             outputs: sender,
             calls,
             approvals,
+            observations,
             approval_id,
             run,
         }
@@ -131,6 +147,20 @@ impl Harness {
             .directives
             .send(Directive::Send(command))
             .expect("the room is live");
+    }
+
+    /// The next observation the daemon filed.
+    async fn next_observation(&mut self) -> HarnessObservation {
+        tokio::time::timeout(Duration::from_secs(5), self.observations.recv())
+            .await
+            .expect("the daemon filed an observation")
+            .expect("the collector is live")
+    }
+
+    /// Makes every further observation fail, the way a session with no
+    /// linked harness account meets a `404` on each one.
+    fn refuse_observations(&mut self) {
+        self.observations.close();
     }
 
     /// The next thing the harness was told to do.
@@ -404,8 +434,10 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
     let (fake, _calls) = FakeSession::new();
     let (outputs, receiver) = mpsc::channel(1);
     let (approvals, _) = mpsc::unbounded_channel();
+    let (observations, _) = mpsc::unbounded_channel();
     let api = RecordingApi {
         approvals,
+        observations,
         id: ApprovalId::generate(),
     };
     let run = tokio::spawn(wire::run(endpoint, fake, receiver, api));
@@ -509,6 +541,98 @@ async fn archiving_shuts_the_harness_down_and_ends_the_run() {
         harness.room.next_frame().await,
         DaemonToControl::Harness {
             event: HarnessEvent::TurnCompleted { .. }
+        }
+    ));
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+// ── Usage observations ──
+
+#[tokio::test]
+async fn a_turn_that_reported_a_cost_files_an_observation() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness
+        .emit(SessionOutput::Event {
+            event: HarnessEvent::TurnCompleted {
+                turn_id: "turn-1".to_owned(),
+                usage: UsageReport {
+                    input_tokens: 12,
+                    output_tokens: 34,
+                    context: None,
+                    estimated_cost: Some(Usd::from_micros(4_200)),
+                },
+            },
+        })
+        .await;
+
+    let observation = harness.next_observation().await;
+    assert_eq!(observation.observed_cost, Some(Usd::from_micros(4_200)));
+    assert!(observation.rate_limit.is_none());
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_turn_whose_harness_priced_nothing_files_nothing() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    // Codex reports tokens and no cost. An observation of "no cost" would
+    // be a claim the harness never made.
+    harness
+        .emit(SessionOutput::Event {
+            event: HarnessEvent::TurnCompleted {
+                turn_id: "turn-1".to_owned(),
+                usage: UsageReport {
+                    input_tokens: 12,
+                    output_tokens: 34,
+                    context: None,
+                    estimated_cost: None,
+                },
+            },
+        })
+        .await;
+    harness
+        .emit(SessionOutput::Event {
+            event: HarnessEvent::UsageLimited {
+                resets_at_unix: Some(1_800_007_200),
+            },
+        })
+        .await;
+
+    // The limit is the first thing filed, so the priced-nothing turn filed
+    // nothing before it.
+    let observation = harness.next_observation().await;
+    assert_eq!(observation.observed_cost, None);
+    assert_eq!(
+        observation.rate_limit.map(|limit| limit.resets_at_unix),
+        Some(Some(1_800_007_200))
+    );
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_refused_observation_does_not_stop_the_session() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+    // A session on inherited developer credentials has no linked account,
+    // so the control plane refuses every observation it posts. The turn
+    // still has to reach the room.
+    harness.refuse_observations();
+
+    harness
+        .emit(SessionOutput::Event {
+            event: HarnessEvent::UsageLimited {
+                resets_at_unix: None,
+            },
+        })
+        .await;
+
+    assert!(matches!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness {
+            event: HarnessEvent::UsageLimited { .. }
         }
     ));
     harness.archive().await.expect("the run ended cleanly");
@@ -628,8 +752,8 @@ mod rest_client {
 mod remote_store {
     use super::{RemoteTranscriptStore, SessionKey, StoreError, TranscriptStore, stream_key};
     use crate::control::rest::{ControlApi, ControlApiError, TranscriptRead};
-    use flyco_core::ApprovalId;
     use flyco_core::wire::ApprovalPayload;
+    use flyco_core::{ApprovalId, HarnessObservation};
     use serde_json::{Value, json};
     use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -660,6 +784,15 @@ mod remote_store {
         {
             core::future::ready(Err(ControlApiError::Transport(
                 "the transcript store never raises approvals".to_owned(),
+            )))
+        }
+
+        fn record_observation(
+            &self,
+            _observation: HarnessObservation,
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Err(ControlApiError::Transport(
+                "the transcript store records no observations".to_owned(),
             )))
         }
 

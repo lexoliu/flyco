@@ -159,6 +159,9 @@ pub struct McpServerEntity(());
 /// Marker for web push subscription identifiers.
 #[derive(Debug)]
 pub struct PushSubscriptionEntity(());
+/// Marker for harness usage observation identifiers.
+#[derive(Debug)]
+pub struct HarnessObservationEntity(());
 
 /// Identifies a flyco user.
 pub type UserId = Id<UserEntity>;
@@ -186,6 +189,8 @@ pub type HarnessAccountId = Id<HarnessAccountEntity>;
 pub type McpServerId = Id<McpServerEntity>;
 /// Identifies one browser's web push subscription.
 pub type PushSubscriptionId = Id<PushSubscriptionEntity>;
+/// Identifies one thing flyco observed about a harness account's usage.
+pub type HarnessObservationId = Id<HarnessObservationEntity>;
 
 #[cfg(test)]
 mod tests {
