@@ -490,13 +490,12 @@ async fn an_archived_session_comes_back_through_the_same_queue(
     let client = ctx.client(router);
 
     let session = open(&client, &caller).await.summary.id;
-    let mut host = RecordedHost::healthy();
-    run_queue(&db, &queue, &mut host).await;
     let machine = machines::for_session(&db, session)
         .await
         .expect("read the machine row")
         .expect("a machine row")
         .id;
+    let original = drain(&queue).await;
 
     client
         .post(&format!("/v1/sessions/{session}/archive"))
@@ -504,6 +503,15 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         .send()
         .await
         .assert_status(200);
+
+    let mut host = RecordedHost::healthy();
+    let disposition =
+        provisioning_queue::consume(&db, &test_config(), &queue, &mut host, original).await;
+    assert!(matches!(disposition, QueueBatchDisposition::PerMessage(_)));
+    assert_eq!(
+        host.provisions, 0,
+        "an archived session drops its stale job"
+    );
 
     let resumed = client
         .post(&format!("/v1/sessions/{session}/resume"))
@@ -531,7 +539,7 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         QueueBatchDisposition::PerMessage(ref decisions)
             if decisions == &[QueueMessageDisposition::Ack]
     ));
-    assert_eq!(host.provisions, 2);
+    assert_eq!(host.provisions, 1);
     assert_eq!(
         machines::for_session(&db, session)
             .await

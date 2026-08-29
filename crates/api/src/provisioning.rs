@@ -418,6 +418,8 @@ pub enum Operation<'a> {
     Stop,
     /// Put a deallocated machine back on compute.
     Start,
+    /// Release compute and disk permanently.
+    Destroy,
 }
 
 impl Operation<'_> {
@@ -427,6 +429,7 @@ impl Operation<'_> {
             Self::Resize { .. } => "resize",
             Self::Stop => "stop",
             Self::Start => "start",
+            Self::Destroy => "destroy",
         }
     }
 
@@ -451,6 +454,12 @@ impl Operation<'_> {
                 stopped
             }),
             Self::Start => provider.start(machine).await,
+            Self::Destroy => provider.destroy(machine).await.map(|()| {
+                let mut destroyed = machine.clone();
+                destroyed.state = flyco_core::MachineState::Destroyed;
+                destroyed.address = None;
+                destroyed
+            }),
         }
     }
 }
