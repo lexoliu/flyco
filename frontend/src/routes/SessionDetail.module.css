@@ -9,10 +9,45 @@
   margin: 0 auto;
 }
 
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
 .header h1 {
   margin: 0;
   font-size: var(--text-lg);
   font-family: var(--font-mono);
+}
+
+.connection {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.connectionDot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-text-faint);
+}
+
+.connection[data-state="live"] .connectionDot {
+  background: var(--color-success);
+}
+
+.connection[data-state="connecting"] .connectionDot,
+.connection[data-state="reconnecting"] .connectionDot {
+  background: var(--color-warning);
+}
+
+.connection[data-state="closed"] .connectionDot {
+  background: var(--color-danger);
 }
 
 .meters {
@@ -25,6 +60,19 @@
   background: var(--color-surface);
 }
 
+.tokenReadout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.muted {
+  color: var(--color-text-faint);
+  font-style: italic;
+}
+
 .body {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr);
@@ -32,21 +80,157 @@
   align-items: start;
 }
 
+.transcriptColumn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
 .transcript {
+  list-style: none;
+  margin: 0;
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-lg);
   background: var(--color-surface);
   min-height: 320px;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-6);
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  overflow-y: auto;
+  max-height: 60vh;
 }
 
 .empty {
   color: var(--color-text-faint);
   text-align: center;
+  margin: auto 0;
+}
+
+.userMessage {
+  align-self: flex-end;
+  max-width: 80%;
   margin: 0;
+  background: var(--color-accent-muted);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.notice {
+  margin: 0;
+  color: var(--color-warning);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.assistantText {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: var(--text-sm);
+  line-height: var(--line-normal);
+}
+
+.turnError {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+}
+
+.toolRow {
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.toolRow summary {
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.toolStatus {
+  font-size: var(--text-xs);
+  border-radius: var(--radius-full);
+  padding: 1px var(--space-2);
+  background: var(--color-accent-muted);
+}
+
+.toolStatus[data-ok="true"] {
+  background: var(--color-success);
+  color: var(--color-accent-contrast);
+}
+
+.toolStatus[data-ok="false"] {
+  background: var(--color-danger);
+  color: var(--color-accent-contrast);
+}
+
+.toolInput {
+  margin: var(--space-2) 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.composerInput {
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  resize: vertical;
+  min-height: 64px;
+}
+
+.composerActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.interruptButton {
+  border: var(--border-width) solid var(--color-danger);
+  background: var(--color-surface);
+  color: var(--color-danger);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.sendButton {
+  border: none;
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sendButton:disabled,
+.interruptButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .side {
