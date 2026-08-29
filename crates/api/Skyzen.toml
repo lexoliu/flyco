@@ -8,13 +8,17 @@
 #   wrangler d1 create flyco-main             -> cloudflare.d1_databases.database_id
 #   wrangler d1 migrations apply flyco-main   -> applies migrations/0001_init.sql
 #
-# Until that happens every unprovisioned value reads "TO-BE-PROVISIONED".
+# Deploy-time values are `${NAME}` placeholders. `skyzen deploy` expands them
+# from the process environment, then `.env` / `.env.local`. GitHub Actions
+# can write one repository secret as that `.env` file. `#[skyzen::main]` does
+# not expand placeholders, so `cargo build` never needs them.
 #
-# Secrets never live in this file. Before the first deploy:
-#   wrangler secret put FLYCO_GITHUB_CLIENT_SECRET
-#   wrangler secret put FLYCO_ENCRYPTION_KEY          # 32 bytes, hex-encoded
-#   wrangler secret put FLYCO_GITHUB_WEBHOOK_SECRET   # optional; see below
-# Only the two non-secret values are declared under [cloudflare.vars].
+# Worker secrets never live in this file:
+#   skyzen secret set FLYCO_GITHUB_CLIENT_SECRET
+#   skyzen secret set FLYCO_ENCRYPTION_KEY          # 32 bytes, hex-encoded
+#   skyzen secret set FLYCO_GITHUB_WEBHOOK_SECRET   # optional; see below
+# FLYCO_GITHUB_CLIENT_ID is shared across dev/nightly/production: one GitHub
+# OAuth app with a callback URI per hostname.
 #
 # FLYCO_GITHUB_WEBHOOK_SECRET is the secret GitHub signs webhook deliveries
 # with, and it is optional in one direction only: without it this deployment
@@ -88,14 +92,23 @@ url_env = "FLYCO_DATABASE_URL"
 
 [cloudflare]
 name = "flyco"
-compatibility_date = "2026-08-01"
+compatibility_date = "2026-07-15"
+account_id = "${CLOUDFLARE_ACCOUNT_ID}"
+workers_dev = true
 
 [cloudflare.triggers]
 crons = ["* * * * *"]
 
 [cloudflare.vars]
-FLYCO_GITHUB_CLIENT_ID = "TO-BE-PROVISIONED"
-FLYCO_REDIRECT_URI = "TO-BE-PROVISIONED"
+FLYCO_GITHUB_CLIENT_ID = "${FLYCO_GITHUB_CLIENT_ID}"
+FLYCO_REDIRECT_URI = "${FLYCO_REDIRECT_URI}"
+
+# wrangler 4 custom hostname. `route` is the older workers-route form and
+# does not create DNS; this does. skyzen-cli 0.2.1 does not model
+# `custom_domain`, so it goes through the untyped wrangler overlay.
+[[cloudflare.raw.routes]]
+pattern = "${FLYCO_CUSTOM_DOMAIN}"
+custom_domain = true
 
 [cloudflare.service.auth_kv]
 binding = "AUTH_KV"
@@ -111,7 +124,7 @@ binding = "DB"
 
 [[cloudflare.kv_namespaces]]
 binding = "AUTH_KV"
-id = "TO-BE-PROVISIONED"
+id = "${FLYCO_AUTH_KV_ID}"
 
 [[cloudflare.r2_buckets]]
 binding = "TRANSCRIPTS"
@@ -120,7 +133,7 @@ bucket_name = "flyco-transcripts"
 [[cloudflare.d1_databases]]
 binding = "DB"
 database_name = "flyco-main"
-database_id = "TO-BE-PROVISIONED"
+database_id = "${FLYCO_D1_DATABASE_ID}"
 
 # The Worker is both ends of the provisioning queue: `POST /v1/sessions`
 # produces through the `PROVISIONING` binding, and the exported `queue` handler
@@ -146,13 +159,13 @@ max_retries = 3
 # and the room forwards between them. It is addressed by the session id
 # (`get_by_name`), so a session and its room are the same identity.
 #
-# The class name is `SessionRoomObject`, not `SessionRoom`:
-# `#[skyzen::durable_object]` on a struct `T` exports the JS class as
-# `TObject`, and the binding must name what is exported.
+# The binding names the Rust type. `#[skyzen::durable_object]` on `T`
+# exports the JS class as `TObject`; skyzen-cli re-exports that as `T`
+# for wrangler, so `class_name` is `SessionRoom`.
 [[cloudflare.durable_objects.bindings]]
 name = "SESSION_ROOMS"
-class_name = "SessionRoomObject"
+class_name = "SessionRoom"
 
 [[cloudflare.durable_objects.migrations]]
 tag = "v1"
-new_sqlite_classes = ["SessionRoomObject"]
+new_sqlite_classes = ["SessionRoom"]

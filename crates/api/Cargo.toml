@@ -41,6 +41,9 @@ serde_urlencoded = "0.7"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
 skyzen-cloudflare.workspace = true
+# Must equal the generator `skyzen` embeds — `skyzen doctor` reports the
+# version to use, and a mismatch fails as an opaque wasm-bindgen schema error.
+wasm-bindgen = "=0.2.120"
 
 # The native binary exists for `skyzen dev` and the `openapi.json` export. Its
 # portable-service wiring in `Skyzen.toml` resolves to skyzen's in-memory KV
