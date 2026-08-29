@@ -182,6 +182,8 @@ impl ByoSsh {
     #[must_use]
     pub fn catalog(&self) -> Vec<MachineCatalogEntry> {
         vec![MachineCatalogEntry {
+            // Stamped by the control plane, which knows the row.
+            account: None,
             provider: CloudProviderKind::ByoSsh,
             region: self.address.clone(),
             machine_type: self.address.clone(),

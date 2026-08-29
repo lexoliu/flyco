@@ -213,6 +213,17 @@ pub async fn account(
 /// Returns [`ProviderError`] if the provider rejects the credentials or
 /// cannot be reached, and for providers flyco has no driver for yet.
 pub async fn catalog(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>, ProviderError> {
+    let mut entries = catalog_of(account).await?;
+    // A driver holds credentials, not the row they came from, so the
+    // account is stamped here — otherwise a choice from the merged list
+    // could not name the account it must be provisioned through.
+    for entry in &mut entries {
+        entry.account = Some(account.id);
+    }
+    Ok(entries)
+}
+
+async fn catalog_of(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>, ProviderError> {
     match &account.credentials {
         ProviderCredentials::Azure {
             tenant_id,

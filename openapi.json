@@ -798,6 +798,17 @@
                       "pricing"
                     ],
                     "properties": {
+                      "account": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/Uuid",
+                            "description": "Which linked account offers it.\n\nA driver cannot know this — it holds credentials, not the row they\nwere unsealed from — so it is stamped by the control plane as it\nmerges each account's catalog. Without it a caller could not turn a\nchoice from the merged list back into a request, which names the\naccount it provisions through."
+                          }
+                        ]
+                      },
                       "capacity": {
                         "oneOf": [
                           {
@@ -4677,6 +4688,17 @@
           "pricing"
         ],
         "properties": {
+          "account": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Uuid",
+                "description": "Which linked account offers it.\n\nA driver cannot know this — it holds credentials, not the row they\nwere unsealed from — so it is stamped by the control plane as it\nmerges each account's catalog. Without it a caller could not turn a\nchoice from the merged list back into a request, which names the\naccount it provisions through."
+              }
+            ]
+          },
           "capacity": {
             "oneOf": [
               {
