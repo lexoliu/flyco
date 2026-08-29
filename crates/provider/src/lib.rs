@@ -1,15 +1,77 @@
 //! Cloud provider abstraction for flyco.
 //!
 //! Every implementation is an HTTP client over the provider's public API
-//! (signed requests via [`zenwave`]), never a native SDK — the same code
-//! runs in the Cloudflare Worker (wasm32) and in tests. Implementations
-//! land per milestone: `byo-ssh`, then Azure, then AWS and GCP.
+//! ([`http`], backed by [`zenwave`]), never a native SDK — the same code runs
+//! in the Cloudflare Worker (wasm32) and in tests. Implementations land per
+//! milestone: [`byo_ssh`], then Azure, then AWS and GCP.
+//!
+//! # Where a driver runs
+//!
+//! Azure is reachable from the Worker because every step of it is an HTTPS
+//! call. byo-ssh is not: SSH is a TCP transport and a Worker has no sockets.
+//! The two shapes are told apart in the type system rather than by a runtime
+//! check —
+//!
+//! * A driver whose provider speaks only HTTPS — Azure, and AWS and GCP
+//!   after it — implements [`CloudProvider`] on every target.
+//! * [`byo_ssh::ByoSsh`] compiles everywhere but implements **no** provider
+//!   trait. It *plans*: it turns a machine operation into a
+//!   [`byo_ssh::ContainerJob`], a serializable description of the container
+//!   lifecycle work, which the control plane enqueues.
+//! * `byo_ssh::SshExecutor` exists only behind the native `ssh` feature and
+//!   is what implements [`CloudProvider`] for byo-ssh, by performing a
+//!   `ContainerJob` over a real SSH connection.
+//!
+//! So a Worker build cannot accidentally call SSH code: there is none in it.
+//!
+//! # Why the trait takes `&mut self`
+//!
+//! A driver is stateful. Azure caches an access token and must be able to
+//! replace it — at 80% of its lifetime, and on any 401. Expressing that with
+//! `&self` would need interior mutability, which on a `Send` future means a
+//! lock, and flyco does not put a lock on a hot path to model a field that is
+//! only ever touched by its owner. `&mut self` says the same thing with the
+//! borrow checker and costs nothing.
 
-use flyco_core::MachineId;
+pub mod byo_ssh;
+pub mod clock;
+pub mod flycod;
+pub mod http;
+
+use core::fmt;
+
 use flyco_core::machine::{MachineCatalogEntry, MachineSpec, MachineState};
+use flyco_core::{HarnessKind, MachineId, PermissionMode, SessionId};
+use serde::{Deserialize, Serialize};
+
+pub use clock::{MonotonicClock, SystemClock};
+pub use flycod::ClaudeCredential;
+pub use http::{HttpError, HttpRequest, HttpResponse, HttpTransport, ZenwaveTransport};
+
+/// Which capacity market a running machine actually holds.
+///
+/// Recorded rather than assumed: a spot request that a provider cannot
+/// honour is retried as on-demand, and the price flyco bills follows what
+/// was obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapacityMode {
+    /// Interruptible capacity, at the spot price.
+    Spot,
+    /// Ordinary capacity, at the on-demand price.
+    OnDemand,
+}
+
+impl CapacityMode {
+    /// Whether this is spot capacity.
+    #[must_use]
+    pub const fn is_spot(self) -> bool {
+        matches!(self, Self::Spot)
+    }
+}
 
 /// A provisioned machine as the provider reports it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Machine {
     /// Flyco's identifier for the machine.
     pub id: MachineId,
@@ -18,8 +80,124 @@ pub struct Machine {
     pub native_id: String,
     /// Current lifecycle state.
     pub state: MachineState,
+    /// Which capacity market it actually holds.
+    pub capacity_mode: CapacityMode,
     /// Address the daemon bootstrap reaches it on, once known.
     pub address: Option<String>,
+}
+
+/// Everything a provisioned machine's `flycod` needs to come up already
+/// paired with its session.
+///
+/// Two of these fields are live credentials — the daemon token, and the
+/// harness credential inside [`claude_auth`](Self::claude_auth) — and both
+/// travel inside cloud-init documents and container environments, which are
+/// exactly the values a driver is tempted to trace. The hand-written
+/// [`fmt::Debug`] is what keeps them out of a log line.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonBootstrap {
+    /// The session this machine serves.
+    pub session: SessionId,
+    /// Base URL of the control plane, e.g. `https://flyco.dev/`.
+    pub control_plane_url: String,
+    /// The session's `fd_` daemon token.
+    pub daemon_token: String,
+    /// Which harness the daemon drives.
+    pub harness: HarnessKind,
+    /// Permission mode the harness runs under.
+    pub permission_mode: PermissionMode,
+    /// How the supervised Claude CLI authenticates.
+    pub claude_auth: ClaudeCredential,
+    /// Harness-native session id to resume, for a session moving onto a new
+    /// machine.
+    pub resume_session_id: Option<String>,
+}
+
+impl fmt::Debug for DaemonBootstrap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DaemonBootstrap")
+            .field("session", &self.session)
+            .field("control_plane_url", &self.control_plane_url)
+            .field("harness", &self.harness)
+            .field("permission_mode", &self.permission_mode)
+            .field("claude_auth", &self.claude_auth)
+            .field("resume_session_id", &self.resume_session_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Everything one provisioning call needs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProvisionRequest {
+    /// Flyco's identifier for the machine about to exist, which is also how
+    /// its provider-native resources are named.
+    pub machine: MachineId,
+    /// What to provision.
+    pub spec: MachineSpec,
+    /// How its daemon phones home.
+    pub bootstrap: DaemonBootstrap,
+}
+
+/// One thing a caller wants done to one machine.
+///
+/// Named as data rather than as a method call because it is what the control
+/// plane puts on a queue: a Worker decides *what* should happen, and the
+/// executor that can actually reach the provider decides *when*. It is also
+/// what [`byo_ssh::ByoSsh::plan`] turns into container work without
+/// performing any of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum MachineOperation {
+    /// Bring a new machine into existence.
+    Provision(ProvisionRequest),
+    /// Move an existing machine to another type, keeping its disk.
+    Resize {
+        /// The machine to change.
+        machine: Machine,
+        /// Provider-native machine type to move to.
+        machine_type: String,
+    },
+    /// Release compute, keep the disk.
+    Deallocate {
+        /// The machine to stop.
+        machine: Machine,
+    },
+    /// Put a deallocated machine back on compute.
+    Start {
+        /// The machine to start.
+        machine: Machine,
+    },
+    /// Release compute and disk.
+    Destroy {
+        /// The machine to remove.
+        machine: Machine,
+    },
+}
+
+impl MachineOperation {
+    /// The operation's name, for a log line or an error message.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Provision(_) => "provision",
+            Self::Resize { .. } => "resize",
+            Self::Deallocate { .. } => "deallocate",
+            Self::Start { .. } => "start",
+            Self::Destroy { .. } => "destroy",
+        }
+    }
+
+    /// Which machine it acts on.
+    #[must_use]
+    pub const fn machine(&self) -> MachineId {
+        match self {
+            Self::Provision(request) => request.machine,
+            Self::Resize { machine, .. }
+            | Self::Deallocate { machine }
+            | Self::Start { machine }
+            | Self::Destroy { machine } => machine.id,
+        }
+    }
 }
 
 /// An error from a provider operation.
@@ -31,9 +209,66 @@ pub enum ProviderError {
     /// The provider has no capacity for the requested spec.
     #[error("no capacity for the requested machine type: {0}")]
     NoCapacity(String),
+    /// The account's quota does not cover the request, so it was refused
+    /// before it was attempted.
+    #[error(
+        "{quota} in {region} allows {limit} and {used} are in use, \
+         which does not cover {requested} more"
+    )]
+    QuotaExceeded {
+        /// Provider-native name of the quota that binds.
+        quota: String,
+        /// Region the quota applies to.
+        region: String,
+        /// The limit.
+        limit: u32,
+        /// How much of it is already used.
+        used: u32,
+        /// How much this request needs on top.
+        requested: u32,
+    },
+    /// The requested machine type cannot be deployed into that region on
+    /// this account at all.
+    #[error("{machine_type} is not available to this account in {region}: {reason}")]
+    Unavailable {
+        /// Machine type that was asked for.
+        machine_type: String,
+        /// Region it was asked for in.
+        region: String,
+        /// What the provider said about it.
+        reason: String,
+    },
+    /// The provider does not implement this operation, and no amount of
+    /// retrying will change that.
+    ///
+    /// Distinct from a rejection: a caller can offer the user another route
+    /// (recreate the machine, say) instead of surfacing a transient-looking
+    /// failure.
+    #[error("{provider} does not support {operation}: {reason}")]
+    Unsupported {
+        /// Which driver refused.
+        provider: &'static str,
+        /// The operation it does not implement.
+        operation: &'static str,
+        /// Why, in terms the user can act on.
+        reason: &'static str,
+    },
+    /// An asynchronous operation finished in a terminal failure state.
+    #[error("the provider's operation ended as {status}: {code} — {message}")]
+    OperationFailed {
+        /// Terminal status the provider reported.
+        status: String,
+        /// Provider-native error code, or an empty string when it gave none.
+        code: String,
+        /// Provider-native message.
+        message: String,
+    },
+    /// The provider answered something this driver cannot make sense of.
+    #[error("the provider's response was not usable: {0}")]
+    Malformed(&'static str),
     /// Transport-level failure talking to the provider.
     #[error("transport error: {0}")]
-    Transport(#[from] zenwave::Error),
+    Transport(#[from] HttpError),
 }
 
 /// A compute provider flyco can provision session machines on.
@@ -41,25 +276,68 @@ pub enum ProviderError {
 /// Object-unsafe by design: the control plane matches on
 /// [`flyco_core::machine::CloudProviderKind`] and calls the concrete
 /// implementation, keeping every future free of boxing on wasm32.
+///
+/// Every method takes `&mut self` — see the crate documentation for why.
 pub trait CloudProvider {
     /// The machine types this provider currently offers, with live pricing.
-    fn catalog(&self) -> impl Future<Output = Result<Vec<MachineCatalogEntry>, ProviderError>>;
+    fn catalog(&mut self) -> impl Future<Output = Result<Vec<MachineCatalogEntry>, ProviderError>>;
 
-    /// Provisions a machine for a session.
-    fn provision(&self, spec: &MachineSpec)
-    -> impl Future<Output = Result<Machine, ProviderError>>;
+    /// Provisions a machine for a session, already carrying its daemon's
+    /// credentials.
+    fn provision(
+        &mut self,
+        request: &ProvisionRequest,
+    ) -> impl Future<Output = Result<Machine, ProviderError>>;
 
     /// Changes the machine type in place, preserving the disk
     /// (stop → modify → start).
     fn resize(
-        &self,
+        &mut self,
         machine: &Machine,
         new_machine_type: &str,
     ) -> impl Future<Output = Result<Machine, ProviderError>>;
 
     /// Releases compute but keeps the disk (archive-pending, spot pause).
-    fn deallocate(&self, machine: &Machine) -> impl Future<Output = Result<(), ProviderError>>;
+    fn deallocate(&mut self, machine: &Machine) -> impl Future<Output = Result<(), ProviderError>>;
+
+    /// Puts a deallocated machine back on compute, on the same disk.
+    fn start(&mut self, machine: &Machine) -> impl Future<Output = Result<Machine, ProviderError>>;
 
     /// Releases compute and disk. Irreversible.
-    fn destroy(&self, machine: &Machine) -> impl Future<Output = Result<(), ProviderError>>;
+    fn destroy(&mut self, machine: &Machine) -> impl Future<Output = Result<(), ProviderError>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CapacityMode, DaemonBootstrap};
+    use flyco_core::SessionId;
+
+    #[test]
+    fn a_bootstrap_never_debug_prints_the_credentials_it_carries() {
+        let bootstrap = DaemonBootstrap {
+            session: SessionId::generate(),
+            control_plane_url: "https://flyco.dev/".to_owned(),
+            daemon_token: "fd_a-live-credential".to_owned(),
+            harness: flyco_core::HarnessKind::ClaudeCode,
+            permission_mode: flyco_core::PermissionMode::Default,
+            claude_auth: crate::ClaudeCredential::OauthToken {
+                token: "sk-ant-oat01-live".to_owned(),
+            },
+            resume_session_id: None,
+        };
+
+        let rendered = format!("{bootstrap:?}");
+        assert!(!rendered.contains("fd_a-live-credential"));
+        assert!(!rendered.contains("sk-ant-oat01-live"));
+        assert!(rendered.contains("https://flyco.dev/"));
+    }
+
+    #[test]
+    fn capacity_mode_round_trips_as_its_wire_token() {
+        assert_eq!(
+            serde_json::to_string(&CapacityMode::OnDemand).expect("serialize"),
+            "\"on_demand\""
+        );
+        assert!(CapacityMode::Spot.is_spot());
+    }
 }

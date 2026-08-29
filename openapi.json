@@ -3153,59 +3153,19 @@
           }
         }
       },
-      "MachineCatalogEntry": {
+      "MachineCapacity": {
         "type": "object",
-        "description": "One entry in the machine catalog the agent sees when deciding whether\nto keep, upgrade, or downgrade its machine.",
+        "description": "How much compute a catalog entry offers.\n\nAbsent from an entry the provider does not publish a size for — see\n[`MachineCatalogEntry::capacity`].",
         "required": [
-          "provider",
-          "machine_type",
-          "os",
           "vcpus",
-          "memory_mib",
-          "on_demand_hourly"
+          "memory_mib"
         ],
         "properties": {
-          "machine_type": {
-            "type": "string",
-            "description": "Provider-native machine type name (e.g. `Standard_B2ats_v2`)."
-          },
           "memory_mib": {
             "type": "integer",
             "format": "int64",
             "description": "Memory in MiB.",
             "minimum": 0
-          },
-          "minimum_billing_hours": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int32",
-            "description": "Minimum billing commitment in hours, when the provider imposes one\n(e.g. EC2 Mac dedicated hosts bill a 24-hour minimum under the\nApple license). The agent sees this before choosing.",
-            "minimum": 0
-          },
-          "on_demand_hourly": {
-            "$ref": "#/components/schemas/Usd",
-            "description": "On-demand price per hour."
-          },
-          "os": {
-            "$ref": "#/components/schemas/OsFamily",
-            "description": "Operating system family."
-          },
-          "provider": {
-            "$ref": "#/components/schemas/CloudProviderKind",
-            "description": "Which provider offers it."
-          },
-          "spot_hourly": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/Usd",
-                "description": "Spot price per hour, when the type is available as spot."
-              }
-            ]
           },
           "vcpus": {
             "type": "integer",
@@ -3214,6 +3174,105 @@
             "minimum": 0
           }
         }
+      },
+      "MachineCatalogEntry": {
+        "type": "object",
+        "description": "One entry in the machine catalog the agent sees when deciding whether\nto keep, upgrade, or downgrade its machine.",
+        "required": [
+          "provider",
+          "machine_type",
+          "os",
+          "pricing"
+        ],
+        "properties": {
+          "capacity": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MachineCapacity",
+                "description": "How big it is, when the provider publishes a size.\n\nA cloud SKU always does. A host the user registered over SSH has\nwhatever hardware it has, and flyco does not learn that until a\ndaemon runs on it and says so — inventing a size here would be a\nnumber the agent could plan against and be wrong about."
+              }
+            ]
+          },
+          "machine_type": {
+            "type": "string",
+            "description": "Provider-native machine type name (e.g. `Standard_B2ats_v2`)."
+          },
+          "os": {
+            "$ref": "#/components/schemas/OsFamily",
+            "description": "Operating system family."
+          },
+          "pricing": {
+            "$ref": "#/components/schemas/MachinePricing",
+            "description": "What it costs to run for an hour."
+          },
+          "provider": {
+            "$ref": "#/components/schemas/CloudProviderKind",
+            "description": "Which provider offers it."
+          }
+        }
+      },
+      "MachinePricing": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The provider meters this machine and bills for it by the hour.",
+            "required": [
+              "on_demand_hourly",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "metered"
+                ]
+              },
+              "minimum_billing_hours": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "description": "Minimum billing commitment in hours, when the provider imposes\none (e.g. EC2 Mac dedicated hosts bill a 24-hour minimum under\nthe Apple license). The agent sees this before choosing.",
+                "minimum": 0
+              },
+              "on_demand_hourly": {
+                "$ref": "#/components/schemas/Usd",
+                "description": "On-demand price per hour."
+              },
+              "spot_hourly": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/Usd",
+                    "description": "Spot price per hour, when the type is available as spot."
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Hardware the user already owns and already pays for. Flyco meters\nnothing on it and a session running here spends no budget.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "user_owned"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "What an hour on a machine costs.\n\nA sum rather than an amount with a nullable field, because \"the provider\nbills nothing for this\" and \"the price is zero\" are different claims and\nonly one of them is ever true. A machine the user already owns has no\nrate flyco could quote, and quoting `$0.00` would tell a budget it can\nrun forever."
       },
       "MachineSpec": {
         "type": "object",
@@ -3268,7 +3327,7 @@
           "session",
           "spec",
           "state",
-          "hourly",
+          "spot",
           "region",
           "created_at_unix"
         ],
@@ -3280,8 +3339,15 @@
             "minimum": 0
           },
           "hourly": {
-            "$ref": "#/components/schemas/Usd",
-            "description": "Price actually being billed per hour — the spot price when the\nmachine holds spot capacity, the on-demand one otherwise."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Usd",
+                "description": "Price actually being billed per hour — the spot price when the\nmachine holds spot capacity, the on-demand one otherwise, and\nnothing at all on hardware the user owns."
+              }
+            ]
           },
           "id": {
             "$ref": "#/components/schemas/Uuid",
@@ -3298,6 +3364,10 @@
           "spec": {
             "$ref": "#/components/schemas/MachineSpec",
             "description": "What was asked for."
+          },
+          "spot": {
+            "type": "boolean",
+            "description": "Whether the machine actually holds interruptible capacity.\n\n[`spec.spot`](MachineSpec::spot) is what was asked for; this is what\nthe provider gave. Azure refuses spot on subscriptions and SKUs that\ndo not support it, and flyco falls back to on-demand rather than\nfailing the session, so the two can disagree — and the price being\nbilled follows this field, not the request."
           },
           "state": {
             "$ref": "#/components/schemas/MachineState",
@@ -3683,12 +3753,17 @@
               "port",
               "user",
               "private_key",
+              "host_fingerprint",
               "kind"
             ],
             "properties": {
               "host": {
                 "type": "string",
                 "description": "Hostname or address to dial."
+              },
+              "host_fingerprint": {
+                "type": "string",
+                "description": "The host key flyco must see, as `ssh-keygen -lf` prints it:\n`SHA256:` followed by unpadded base64.\n\nRequired rather than optional, and there is no trust-on-first-use\npath: linking this account is the moment flyco starts handing the\nhost live session credentials, and an unverified host key means\nhanding them to whoever answers on that address."
               },
               "kind": {
                 "type": "string",

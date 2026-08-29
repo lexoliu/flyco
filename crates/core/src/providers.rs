@@ -56,6 +56,14 @@ pub enum ProviderCredentials {
         user: String,
         /// PEM-encoded private key flyco authenticates with.
         private_key: String,
+        /// The host key flyco must see, as `ssh-keygen -lf` prints it:
+        /// `SHA256:` followed by unpadded base64.
+        ///
+        /// Required rather than optional, and there is no trust-on-first-use
+        /// path: linking this account is the moment flyco starts handing the
+        /// host live session credentials, and an unverified host key means
+        /// handing them to whoever answers on that address.
+        host_fingerprint: String,
     },
 }
 
@@ -145,6 +153,8 @@ mod tests {
                     port: 22,
                     user: "flyco".to_owned(),
                     private_key: "-----BEGIN OPENSSH PRIVATE KEY-----".to_owned(),
+                    host_fingerprint: "SHA256:qWyVLPxNBRr7Nnkm1xTQKMDcXwHFsSFRnLW6iNfPmcQ"
+                        .to_owned(),
                 },
                 CloudProviderKind::ByoSsh,
             ),
