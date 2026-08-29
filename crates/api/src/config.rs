@@ -23,6 +23,12 @@ pub mod var {
     pub const REDIRECT_URI: &str = "FLYCO_REDIRECT_URI";
     /// AES-256 key for sealing third-party tokens, hex-encoded. Secret.
     pub const ENCRYPTION_KEY: &str = "FLYCO_ENCRYPTION_KEY";
+    /// VAPID public key browsers subscribe against, base64url unpadded.
+    ///
+    /// Optional: a deployment that never sends a push notification needs no
+    /// key pair, and refusing to start without one would make web push a
+    /// requirement rather than a feature.
+    pub const VAPID_PUBLIC_KEY: &str = "FLYCO_VAPID_PUBLIC_KEY";
 }
 
 /// Why the control plane refused to start.
@@ -57,6 +63,7 @@ pub struct ApiConfig {
     github_client_secret: String,
     redirect_uri: Url,
     encryption_key: [u8; KEY_LEN],
+    vapid_public_key: Option<String>,
 }
 
 impl core::fmt::Debug for ApiConfig {
@@ -91,6 +98,7 @@ impl ApiConfig {
             .map_err(|_| ConfigError::NotAKey(var::ENCRYPTION_KEY))?;
 
         Ok(Self {
+            vapid_public_key: None,
             github_client_id,
             github_client_secret,
             redirect_uri,
@@ -105,12 +113,29 @@ impl ApiConfig {
     /// Returns [`ConfigError`] on the first binding that is absent or
     /// unusable — the control plane never falls back to a default.
     pub fn from_environment() -> Result<Self, ConfigError> {
-        Self::new(
+        let mut config = Self::new(
             read_var(var::GITHUB_CLIENT_ID)?,
             read_var(var::GITHUB_CLIENT_SECRET)?,
             &read_var(var::REDIRECT_URI)?,
             &read_var(var::ENCRYPTION_KEY)?,
-        )
+        )?;
+        config.vapid_public_key = read_var(var::VAPID_PUBLIC_KEY).ok();
+        Ok(config)
+    }
+
+    /// The VAPID public key browsers subscribe against, when this
+    /// deployment has one.
+    #[must_use]
+    pub fn vapid_public_key(&self) -> Option<&str> {
+        self.vapid_public_key.as_deref()
+    }
+
+    /// Replaces the VAPID public key, for tests and for callers that resolve
+    /// configuration themselves.
+    #[must_use]
+    pub fn with_vapid_public_key(mut self, key: impl Into<String>) -> Self {
+        self.vapid_public_key = Some(key.into());
+        self
     }
 
     /// GitHub OAuth app client id.
