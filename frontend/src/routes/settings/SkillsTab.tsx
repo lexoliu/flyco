@@ -1,7 +1,7 @@
 import { For, Show, createResource, createSignal } from "solid-js";
 import ProblemNotice from "../../components/ProblemNotice";
 import { deleteSkill, listSkills, uploadSkill, type SkillScope } from "../../api/client";
-import styles from "./Tab.module.css";
+import styles from "../../components/Panel.module.css";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) {

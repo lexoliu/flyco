@@ -9,13 +9,14 @@
  * is read straight off the generated `operations`/`components` types in
  * `schema.d.ts` — nothing here is a hand-retyped DTO.
  *
- * `send_message` and `interrupt_session` are deliberately absent: their
- * OpenAPI contracts exist, but the handlers are `todo!()` in this build
- * (tracked by `crates/api/src/tests/contract.rs`'s `EXPECTED` list) and
- * panic rather than answer. Both are also valid client-sendable frames on
- * the live relay socket (`ControlToDaemon::is_client_command`), which *is*
- * wired up today, so `src/api/relay.ts` sends them directly over the
- * WebSocket instead of through REST.
+ * `sendMessage` and `interruptSession` below hit the REST handlers
+ * directly. The live session view (`src/routes/SessionDetail.tsx`) prefers
+ * the relay socket instead (`src/api/relay.ts`, `ControlToDaemon::is_client_command`)
+ * whenever it is connected — lower latency, and the echo comes back as a
+ * `ClientEvent` on the same connection — and falls back to these REST calls
+ * only while the socket isn't live (session paused, machine stopped, still
+ * reconnecting), so a message or interrupt can still be recorded rather
+ * than silently dropped.
  */
 import type { components, operations } from "./schema";
 import { getSessionToken } from "../lib/session";
@@ -47,6 +48,21 @@ export type AuthorizeUrl = Schemas["AuthorizeUrl"];
 export type RepoSummary = Schemas["RepoSummary"];
 export type HarnessKind = Schemas["HarnessKind"];
 export type SessionState = Schemas["SessionState"];
+export type MachineCatalogEntry = Schemas["MachineCatalogEntry"];
+export type MachineView = Schemas["MachineView"];
+export type MachineSpec = Schemas["MachineSpec"];
+export type MachineState = Schemas["MachineState"];
+export type MachinePricing = Schemas["MachinePricing"];
+export type MachineCapacity = Schemas["MachineCapacity"];
+export type OsFamily = Schemas["OsFamily"];
+export type HarnessAccountView = Schemas["HarnessAccountView"];
+export type MemoryNode = Schemas["MemoryNode"];
+export type AgentsDocument = Schemas["AgentsDocument"];
+export type PushSubscriptionView = Schemas["PushSubscriptionView"];
+export type VapidPublicKey = Schemas["VapidPublicKey"];
+export type TurnSummary = Schemas["TurnSummary"];
+export type TurnPage = Schemas["TurnPage"];
+export type RepoStatus = Schemas["RepoStatus"];
 
 /** Extracts an operation's JSON request body type, or `never` if it has none. */
 type JsonBody<Op extends keyof operations> = operations[Op] extends {
@@ -214,6 +230,62 @@ export function getRepoStatus(id: string): Promise<JsonResponse<"flyco_api::app:
   return requestJson("GET", `/v1/sessions/${id}/repo-status`);
 }
 
+/** REST fallback for sending a message; see the module doc comment above. */
+export function sendMessage(id: string, text: string): Promise<void> {
+  const body: JsonBody<"flyco_api::app::send_message"> = { text };
+  return requestVoid("POST", `/v1/sessions/${id}/messages`, { json: body });
+}
+
+/** REST fallback for interrupting a turn; see the module doc comment above. */
+export function interruptSession(id: string): Promise<void> {
+  return requestVoid("POST", `/v1/sessions/${id}/interrupt`);
+}
+
+export function listTurns(
+  id: string,
+  page?: { cursor?: string; limit?: number },
+): Promise<JsonResponse<"flyco_api::app::list_turns", 200>> {
+  return requestJson("GET", `/v1/sessions/${id}/turns`, {
+    query: { cursor: page?.cursor, limit: page?.limit },
+  });
+}
+
+// --- /v1/sessions/{id}/machine -----------------------------------------------
+
+export function getSessionMachine(
+  id: string,
+): Promise<JsonResponse<"flyco_api::machines::get_session_machine", 200>> {
+  return requestJson("GET", `/v1/sessions/${id}/machine`);
+}
+
+/** Starts a stopped machine. The outcome arrives on the session relay, not in this response. */
+export function startSessionMachine(id: string): Promise<void> {
+  return requestVoid("POST", `/v1/sessions/${id}/machine/start`);
+}
+
+/** Stops (deallocates) a running machine. The outcome arrives on the session relay. */
+export function stopSessionMachine(id: string): Promise<void> {
+  return requestVoid("POST", `/v1/sessions/${id}/machine/stop`);
+}
+
+/** Moves compute to a different catalog machine type; the disk survives. */
+export function resizeSessionMachine(id: string, machineType: string): Promise<void> {
+  const body: JsonBody<"flyco_api::machines::resize_session_machine"> = { machine_type: machineType };
+  return requestVoid("POST", `/v1/sessions/${id}/machine/resize`, { json: body });
+}
+
+// --- /v1/machines/catalog -----------------------------------------------------
+
+export function getMachineCatalog(filter?: {
+  provider?: CloudProviderKind;
+  os?: OsFamily;
+  region?: string;
+}): Promise<JsonResponse<"flyco_api::machines::get_catalog", 200>> {
+  return requestJson("GET", "/v1/machines/catalog", {
+    query: { provider: filter?.provider, os: filter?.os, region: filter?.region },
+  });
+}
+
 // --- /v1/approvals ----------------------------------------------------------
 
 export function listApprovals(filter?: {
@@ -309,6 +381,76 @@ export function createApiKey(label: string): Promise<JsonResponse<"flyco_api::ap
 
 export function revokeApiKey(id: string): Promise<void> {
   return requestVoid("DELETE", `/v1/api-keys/${id}`);
+}
+
+// --- /v1/harness-accounts -----------------------------------------------------
+//
+// Linking a new account (`link/start`, `link/callback`) needs a vendor
+// OAuth app this deployment does not hold credentials for yet, so it stays
+// unwired here on purpose — the settings UI explains that rather than
+// offering a button that would 501.
+
+export function listHarnessAccounts(): Promise<
+  JsonResponse<"flyco_api::harness_accounts::list_harness_accounts", 200>
+> {
+  return requestJson("GET", "/v1/harness-accounts");
+}
+
+export function unlinkHarnessAccount(harness: HarnessKind): Promise<void> {
+  return requestVoid("DELETE", `/v1/harness-accounts/${harness}`);
+}
+
+// --- /v1/memory ----------------------------------------------------------------
+
+export function listMemory(filter?: {
+  parent?: string;
+  repo?: string;
+}): Promise<JsonResponse<"flyco_api::memory::list_memory", 200>> {
+  return requestJson("GET", "/v1/memory", { query: { parent: filter?.parent, repo: filter?.repo } });
+}
+
+export function createMemoryNode(
+  input: JsonBody<"flyco_api::memory::create_memory_node">,
+): Promise<JsonResponse<"flyco_api::memory::create_memory_node", 201>> {
+  return requestJson("POST", "/v1/memory", { json: input });
+}
+
+export function updateMemoryNode(
+  id: string,
+  patch: JsonBody<"flyco_api::memory::update_memory_node">,
+): Promise<JsonResponse<"flyco_api::memory::update_memory_node", 200>> {
+  return requestJson("PATCH", `/v1/memory/${id}`, { json: patch });
+}
+
+export function deleteMemoryNode(id: string): Promise<void> {
+  return requestVoid("DELETE", `/v1/memory/${id}`);
+}
+
+// --- /v1/agents-md ---------------------------------------------------------------
+
+export function getAgentsMd(): Promise<JsonResponse<"flyco_api::agents_md::get_agents_md", 200>> {
+  return requestJson("GET", "/v1/agents-md");
+}
+
+export function putAgentsMd(content: string): Promise<JsonResponse<"flyco_api::agents_md::put_agents_md", 200>> {
+  const body: JsonBody<"flyco_api::agents_md::put_agents_md"> = { content };
+  return requestJson("PUT", "/v1/agents-md", { json: body });
+}
+
+// --- /v1/push --------------------------------------------------------------------
+
+export function getVapidPublicKey(): Promise<JsonResponse<"flyco_api::push::vapid_public_key", 200>> {
+  return requestJson("GET", "/v1/push/vapid-public-key");
+}
+
+export function subscribePush(
+  subscription: JsonBody<"flyco_api::push::subscribe_push">,
+): Promise<JsonResponse<"flyco_api::push::subscribe_push", 201>> {
+  return requestJson("POST", "/v1/push/subscriptions", { json: subscription });
+}
+
+export function unsubscribePush(id: string): Promise<void> {
+  return requestVoid("DELETE", `/v1/push/subscriptions/${id}`);
 }
 
 // --- Auth and repo picker ---------------------------------------------------------
