@@ -38,9 +38,10 @@
 //! a pending row waiting when the daemon comes back.
 
 use core::time::Duration;
+use std::collections::BTreeMap;
 
 use flyco_core::{
-    ApprovalDecision, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
+    ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
     HarnessObservation, RateLimitObservation, SessionId, WIRE_PROTOCOL_VERSION,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -301,18 +302,32 @@ fn observation_in(event: &HarnessEvent) -> Option<HarnessObservation> {
 /// meets most often is the honest one — a session running on inherited
 /// developer credentials has no linked account to attribute anything to —
 /// which is why this is `debug` rather than a warning.
+/// One outbound frame, plus the harness-native approval id when the frame
+/// is an approval request.
+///
+/// The room announces the REST-assigned id. The harness still keys its
+/// pending call on the id it minted, so the connection has to remember the
+/// pairing until the user decides.
+struct Outbound {
+    frame: DaemonToControl,
+    harness_approval: Option<ApprovalId>,
+}
+
 async fn collect<A: ControlApi>(
     mut outputs: mpsc::Receiver<SessionOutput>,
-    queue: mpsc::Sender<DaemonToControl>,
+    queue: mpsc::Sender<Outbound>,
     api: A,
 ) -> Result<(), WireError> {
     while let Some(output) = outputs.recv().await {
-        let frame = match output {
-            SessionOutput::Started { session_id } => DaemonToControl::Started {
-                harness_session_id: session_id,
-            },
+        let (frame, harness_approval) = match output {
+            SessionOutput::Started { session_id } => (
+                DaemonToControl::Started {
+                    harness_session_id: session_id,
+                },
+                None,
+            ),
             SessionOutput::Capabilities { capabilities } => {
-                DaemonToControl::Capabilities { capabilities }
+                (DaemonToControl::Capabilities { capabilities }, None)
             }
             SessionOutput::Event { event } => {
                 if let Some(observation) = observation_in(&event)
@@ -320,12 +335,20 @@ async fn collect<A: ControlApi>(
                 {
                     tracing::debug!(%error, "a usage observation was not recorded");
                 }
-                DaemonToControl::Harness { event }
+                (DaemonToControl::Harness { event }, None)
             }
-            SessionOutput::ApprovalRequest { tool, input, .. } => {
+            SessionOutput::ApprovalRequest {
+                id: harness_id,
+                tool,
+                input,
+                ..
+            } => {
                 let payload = flyco_core::wire::ApprovalPayload::ToolUse { tool, input };
                 let id = api.raise_approval(payload.clone()).await?;
-                DaemonToControl::ApprovalRequest { id, payload }
+                (
+                    DaemonToControl::ApprovalRequest { id, payload },
+                    Some(harness_id),
+                )
             }
             SessionOutput::Fatal { error } => {
                 // The harness is done; the room learns why through the
@@ -335,12 +358,17 @@ async fn collect<A: ControlApi>(
             }
         };
 
-        queue.try_send(frame).map_err(|error| match error {
-            mpsc::error::TrySendError::Full(_) => WireError::QueueOverflow,
-            mpsc::error::TrySendError::Closed(_) => {
-                WireError::Harness("the relay connection stopped".to_owned())
-            }
-        })?;
+        queue
+            .try_send(Outbound {
+                frame,
+                harness_approval,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => WireError::QueueOverflow,
+                mpsc::error::TrySendError::Closed(_) => {
+                    WireError::Harness("the relay connection stopped".to_owned())
+                }
+            })?;
     }
     Ok(())
 }
@@ -355,6 +383,8 @@ struct Connection<S> {
     /// control plane provisioning a new one, not by the daemon deciding the
     /// pause is over.
     paused: bool,
+    /// REST-assigned approval id → harness-native id.
+    approvals: BTreeMap<ApprovalId, ApprovalId>,
 }
 
 /// Why one connection ended.
@@ -379,7 +409,7 @@ impl<S: HarnessSession> Connection<S> {
     async fn pump(
         &mut self,
         socket: &mut Socket,
-        queue: &mut mpsc::Receiver<DaemonToControl>,
+        queue: &mut mpsc::Receiver<Outbound>,
         in_flight: &mut Option<DaemonToControl>,
     ) -> Result<Ended, WireError> {
         if let Some(frame) = in_flight.take()
@@ -393,12 +423,24 @@ impl<S: HarnessSession> Connection<S> {
         loop {
             tokio::select! {
                 outbound = queue.recv() => {
-                    let Some(frame) = outbound else {
+                    let Some(outbound) = outbound else {
                         return Ok(Ended::HarnessStopped);
                     };
-                    if let Err(error) = send(socket, &frame).await {
+                    if let Some(harness_id) = outbound.harness_approval {
+                        let rest_id = match &outbound.frame {
+                            DaemonToControl::ApprovalRequest { id, .. } => *id,
+                            _ => {
+                                return Err(WireError::Harness(
+                                    "an approval pairing was attached to a non-approval frame"
+                                        .to_owned(),
+                                ));
+                            }
+                        };
+                        self.approvals.insert(rest_id, harness_id);
+                    }
+                    if let Err(error) = send(socket, &outbound.frame).await {
                         tracing::warn!(%error, "a frame did not reach the room; retrying it on the next connection");
-                        *in_flight = Some(frame);
+                        *in_flight = Some(outbound.frame);
                         return Ok(Ended::Disconnected);
                     }
                 }
@@ -442,13 +484,17 @@ impl<S: HarnessSession> Connection<S> {
                 );
             }
             ControlToDaemon::ApprovalDecision { id, decision } => {
+                let harness_id = self
+                    .approvals
+                    .remove(&id)
+                    .ok_or_else(|| WireError::Harness(format!("no pending approval {id}")))?;
                 let answer = match decision {
                     ApprovalDecision::Approved => ToolApproval::Allow {
-                        id,
+                        id: harness_id,
                         updated_input: None,
                     },
                     ApprovalDecision::Denied => ToolApproval::Deny {
-                        id,
+                        id: harness_id,
                         message: "Denied by the flyco user.".to_owned(),
                     },
                 };
@@ -533,6 +579,7 @@ where
         session,
         endpoint,
         paused: false,
+        approvals: BTreeMap::new(),
     };
     let mut attempt = 0_u32;
     let mut in_flight = None;
