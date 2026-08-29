@@ -24,6 +24,7 @@ struct SessionRow {
     repo: RepoSlug,
     state: SessionState,
     budget_id: BudgetId,
+    failure_reason: Option<String>,
     created_at_unix: u64,
     last_active_unix: u64,
 }
@@ -43,9 +44,16 @@ impl From<SessionRow> for SessionSummary {
 
 async fn detail_from(db: &Db, row: SessionRow) -> Result<SessionDetail, ApiError> {
     let budget = budgets::view(db, row.budget_id).await?;
+    // The column outlives the state it explains — a retried session keeps the
+    // sentence from the attempt before it until the next attempt clears it —
+    // so the reason is reported only while the session is actually failed.
+    let failure = (row.state == SessionState::Failed)
+        .then(|| row.failure_reason.clone())
+        .flatten();
     Ok(SessionDetail {
         summary: row.into(),
         budget,
+        failure,
     })
 }
 
@@ -55,10 +63,16 @@ async fn detail_from(db: &Db, row: SessionRow) -> Result<SessionDetail, ApiError
 ///
 /// Returns [`ApiError`] if the database fails.
 pub async fn live_count(db: &Db, user: UserId) -> Result<u32, ApiError> {
+    // A session that holds no execution environment occupies no slot: an
+    // archived one released it, and a failed one never got one. Counting
+    // either would let a run of failed provisions lock a user out of their
+    // own account.
     let archived = SessionState::Archived;
+    let failed = SessionState::Failed;
     Ok(sql!(
         db,
-        "SELECT COUNT(*) AS live FROM sessions WHERE user_id = {user} AND state != {archived}"
+        "SELECT COUNT(*) AS live FROM sessions \
+         WHERE user_id = {user} AND state != {archived} AND state != {failed}"
     )
     .fetch_scalar()
     .await?)
@@ -66,8 +80,10 @@ pub async fn live_count(db: &Db, user: UserId) -> Result<u32, ApiError> {
 
 /// Creates a session and the budget it accounts against.
 ///
-/// The session starts in [`SessionState::Provisioning`]; nothing is
-/// provisioned yet — that is a later milestone — so it simply waits there.
+/// The session starts in [`SessionState::Provisioning`] and stays there
+/// until its daemon reaches the control plane. The machine it will run on is
+/// reserved by [`crate::machines::reserve`] and built by the provisioning
+/// queue; this function writes neither.
 ///
 /// D1 has no transactions, so the caller's cap is checked in a separate
 /// query first. Two simultaneous creates can therefore both pass a check at
@@ -116,7 +132,8 @@ pub async fn create(
 pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError> {
     let rows: Vec<SessionRow> = sql!(
         db,
-        "SELECT id, harness, repo, state, budget_id, created_at_unix, last_active_unix \
+        "SELECT id, harness, repo, state, budget_id, failure_reason, created_at_unix, \
+         last_active_unix \
          FROM sessions WHERE user_id = {user} ORDER BY created_at_unix DESC, id DESC"
     )
     .fetch_all()
@@ -220,10 +237,152 @@ pub async fn require_active(db: &Db, user: UserId, id: SessionId) -> Result<(), 
 async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiError> {
     sql!(
         db,
-        "SELECT id, harness, repo, state, budget_id, created_at_unix, last_active_unix \
+        "SELECT id, harness, repo, state, budget_id, failure_reason, created_at_unix, \
+         last_active_unix \
          FROM sessions WHERE id = {id} AND user_id = {user}"
     )
     .fetch_optional()
     .await?
     .ok_or(ApiError::SessionNotFound)
+}
+
+// ── The provisioning queue's own reads and writes ──
+//
+// A queue job carries no user, and it does not need one: the job was
+// enqueued by a handler that had already proved the caller owns the session,
+// so re-scoping these statements by `user_id` would only be a second copy of
+// a check that already happened. They are therefore the one path in this
+// module that reads and writes a session by id alone, and they say so.
+
+/// What the provisioning queue needs to know about the session it is
+/// building a machine for.
+#[derive(Debug, Clone, skyzen::FromRow)]
+pub struct ProvisioningTarget {
+    /// Whose session it is, which is whose harness account funds it.
+    pub user_id: UserId,
+    /// Which harness the machine's daemon will drive.
+    pub harness: HarnessKind,
+    /// Where the session is in its lifecycle right now.
+    pub state: SessionState,
+}
+
+/// Reads the session a provisioning job names.
+///
+/// `None` means the row is gone, which is a job to drop rather than a job to
+/// retry.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn provisioning_target(
+    db: &Db,
+    id: SessionId,
+) -> Result<Option<ProvisioningTarget>, ApiError> {
+    Ok(sql!(
+        db,
+        "SELECT user_id, harness, state FROM sessions WHERE id = {id}"
+    )
+    .fetch_optional()
+    .await?)
+}
+
+/// Records that provisioning gave up, and why.
+///
+/// The reason is stored rather than only logged: the user is the one who has
+/// to act on it — change region, ask for a quota increase, pick another
+/// machine type — and a session that fails silently is the state this whole
+/// path exists to prevent.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is gone, or
+/// [`ApiError::InvalidTransition`] if it is not in a state that can fail.
+pub async fn fail(db: &Db, id: SessionId, reason: &str) -> Result<(), ApiError> {
+    let state = provisioning_target(db, id)
+        .await?
+        .ok_or(ApiError::SessionNotFound)?
+        .state;
+    let next =
+        state
+            .transition(SessionState::Failed)
+            .map_err(|error| ApiError::InvalidTransition {
+                from: error.from,
+                to: error.to,
+            })?;
+
+    sql!(
+        db,
+        "UPDATE sessions SET state = {next}, failure_reason = {reason.to_owned()}, \
+         last_active_unix = {now_unix()} WHERE id = {id}"
+    )
+    .execute()
+    .await?;
+
+    tracing::warn!(session = %id, %reason, "a session's machine could not be provisioned");
+    Ok(())
+}
+
+/// Puts a session back into [`SessionState::Provisioning`] and clears the
+/// reason the previous attempt left behind.
+///
+/// The one move `POST /v1/sessions/{id}/resume` makes durable before the job
+/// is enqueued, so a browser that reloads immediately sees a session on its
+/// way back rather than the state it was resumed out of.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is not the caller's,
+/// or [`ApiError::InvalidTransition`] if it is not resumable.
+pub async fn resume(db: &Db, user: UserId, id: SessionId) -> Result<SessionDetail, ApiError> {
+    let row = load(db, user, id).await?;
+    let next = row
+        .state
+        .transition(SessionState::Provisioning)
+        .map_err(|error| ApiError::InvalidTransition {
+            from: error.from,
+            to: error.to,
+        })?;
+
+    sql!(
+        db,
+        "UPDATE sessions SET state = {next}, failure_reason = NULL, \
+         last_active_unix = {now_unix()} WHERE id = {id} AND user_id = {user}"
+    )
+    .execute()
+    .await?;
+
+    find(db, user, id).await
+}
+
+/// Marks a provisioning session active because its daemon has arrived.
+///
+/// A session goes live when its daemon greets the control plane, not when a
+/// provider's API call returns: a machine that exists is not an agent that
+/// is ready. The greeting itself is a `Hello` frame validated inside the
+/// session's room — and a Durable Object cannot reach D1, so the durable
+/// half of it happens here, in the Worker, on the very upgrade the daemon
+/// sends that frame down.
+///
+/// Silently a no-op for a session that is already past provisioning: a
+/// daemon reconnects after every eviction, every redeploy and every dropped
+/// socket, and none of those is a lifecycle event.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn daemon_arrived(db: &Db, id: SessionId) -> Result<(), ApiError> {
+    let provisioning = SessionState::Provisioning;
+    let active = SessionState::Active;
+    let written = sql!(
+        db,
+        "UPDATE sessions SET state = {active}, last_active_unix = {now_unix()} \
+         WHERE id = {id} AND state = {provisioning}"
+    )
+    .execute()
+    .await?;
+
+    if written.rows_written > 0 {
+        tracing::info!(session = %id, "a session went live: its daemon reached the control plane");
+    }
+    Ok(())
 }

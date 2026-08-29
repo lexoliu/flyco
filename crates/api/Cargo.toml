@@ -36,6 +36,7 @@ hmac.workspace = true
 sha2.workspace = true
 url.workspace = true
 utoipa.workspace = true
+serde_urlencoded = "0.7"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
@@ -46,6 +47,10 @@ skyzen-cloudflare.workspace = true
 # (which lives in `skyzen-test`) and a local SQLite file, so both crates are
 # real dependencies of the native build — and of the native build only.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# `ssh` only off the Worker. A registered host is reached over TCP, which the
+# Worker has none of, so `SshExecutor` exists exactly where a connection can be
+# opened — and the Worker's dependency graph still contains no SSH client.
+flyco-provider = { workspace = true, features = ["ssh"] }
 skyzen-services = { workspace = true, features = [
     "sqlite",
     "runtime-async-std-rustls",
