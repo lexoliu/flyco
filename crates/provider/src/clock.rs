@@ -1,4 +1,4 @@
-//! A clock that only ever moves forward.
+//! Time: a clock that only ever moves forward, and a way to wait.
 //!
 //! An OAuth token is cached against elapsed time, never against wall-clock
 //! time: the Worker's `Date.now()` can jump backwards when the host's clock
@@ -6,8 +6,39 @@
 //! keeps presenting a dead credential. Elapsed seconds since the driver was
 //! built is all the cache needs, and it cannot go backwards.
 //!
-//! Tests drive [`ManualClock`], which makes token expiry an assertion rather
-//! than a sleep.
+//! Tests drive [`ManualClock`] and `crate::testing::RecordingTimer`, which
+//! make token expiry and a `Retry-After` into assertions rather than into
+//! sleeps.
+
+/// Something that can pause an async task.
+///
+/// Separate from [`MonotonicClock`] because the two are needed in different
+/// places — a token cache reads time, a polling loop waits — and because a
+/// test wants a clock it advances by hand *and* a timer that returns
+/// immediately while recording what it was asked to wait for.
+pub trait Timer {
+    /// Waits approximately `seconds`.
+    fn sleep(&self, seconds: u32) -> impl Future<Output = ()>;
+}
+
+/// The host's timer: `futures-timer`, which is a real timer natively and
+/// `setTimeout` on the Worker.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemTimer;
+
+impl SystemTimer {
+    /// Creates the timer.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl Timer for SystemTimer {
+    fn sleep(&self, seconds: u32) -> impl Future<Output = ()> {
+        futures_timer::Delay::new(core::time::Duration::from_secs(u64::from(seconds)))
+    }
+}
 
 /// A source of monotonically non-decreasing elapsed seconds.
 pub trait MonotonicClock {
