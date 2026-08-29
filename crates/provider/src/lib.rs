@@ -297,6 +297,24 @@ impl ProviderError {
             _ => None,
         }
     }
+
+    /// Whether making the identical request again could succeed.
+    ///
+    /// Exactly the failures that are about the *conversation* rather than
+    /// about the request: a connection that did not open, a response that
+    /// never arrived. Everything else is the provider answering — no quota,
+    /// no such machine type here, this operation is not implemented — and
+    /// repeating the request would produce the same answer, more slowly, and
+    /// leave the caller waiting for a machine that is never coming.
+    ///
+    /// A [`Transport`](Self::Transport) failure carrying an
+    /// [`HttpError::Encoding`] or [`HttpError::Decoding`] is not transient
+    /// either: those are flyco's own bug or the provider's, and neither
+    /// changes on a second attempt.
+    #[must_use]
+    pub const fn is_transient(&self) -> bool {
+        matches!(self, Self::Transport(HttpError::Transport(_)))
+    }
 }
 
 /// A compute provider flyco can provision session machines on.
