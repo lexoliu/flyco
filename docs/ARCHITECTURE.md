@@ -4,7 +4,7 @@ The product-level spec is [proposal.md](proposal.md). This document records the 
 
 ## Two planes
 
-- **Control plane** — `crates/api`, a [skyzen](https://crates.io/crates/skyzen) app on Cloudflare Workers (wasm32). REST API + auth, session store, budget accounting, approvals, skills/MCP registry, provisioning orchestration. Services: D1 (relational metadata), KV (caches, auth tokens), R2 (transcripts, repo snapshots, skill zips), Queues (provisioning jobs, GitHub webhooks), Durable Objects (live session rooms).
+- **Control plane** — `crates/api`, a [skyzen](https://crates.io/crates/skyzen) app on Cloudflare Workers (wasm32). REST API + auth, session store, budget accounting, approvals, skills/MCP registry, provisioning orchestration. Services: D1 (relational metadata), KV (caches, auth tokens), R2 (transcripts, repo snapshots, skill zips), Queues (provisioning jobs), Durable Objects (live session rooms).
 - **Execution plane** — `flycod` (`crates/daemon`), a native Rust daemon installed on every session VM. It supervises the harness process, enforces takeovers, serves the terminal, streams events to the control plane, and handles spot-eviction notices and budget pauses.
 
 The Worker is wasm32: no processes, no listening sockets, no tokio. Anything long-running or process-shaped lives in the daemon.
@@ -31,6 +31,16 @@ A Durable Object cannot reach D1 or the Worker's KV, so every check that needs t
 **How each side authenticates.** The daemon presents `Authorization: Bearer fd_…`, a per-session token minted by `POST /v1/sessions/{id}/daemon-token` and stored as a SHA-256 in `sessions.daemon_token_hash`. It resolves to a *session*, never to a user, and is checked against the session id in the path — so the scope check is the lookup itself. A browser cannot set headers on a WebSocket handshake, so it exchanges its session token for a single-use 60-second relay ticket (`POST /v1/sessions/{id}/relay-ticket`) and opens `wss://…/relay/client?ticket=frt_…`; the ticket is consumed by being *presented*, not by being accepted.
 
 **Transcripts never ride the relay.** Cloudflare caps a WebSocket frame at 1 MiB and a transcript is unbounded, so `flycod` writes batches over ordinary authenticated REST to R2 at `transcripts/{session}/{stream}/{seq:08}.jsonl`. The zero-padded sequence makes lexicographic order equal numeric order, so a read is a prefix list with no index to keep consistent, and batches are immutable — rewriting one would silently reorder the transcript, so it is a 409.
+
+## GitHub webhooks
+
+`POST /v1/webhooks/github` carries no flyco credential and is reachable by anyone who knows the URL, so the `X-Hub-Signature-256` HMAC over the **raw body** is the entire boundary — which makes the order of operations part of it. The handler resolves the shared secret, verifies the signature with `Mac::verify_slice` (constant-time; a byte-by-byte `==` on a tag leaks through timing how much of a guess was right), and only then reads the event header and parses the payload. Nothing else in the module touches the body, so there is no path in which an unverified one is looked at.
+
+The secret is `FLYCO_GITHUB_WEBHOOK_SECRET`, optional in the same sense `FLYCO_VAPID_PUBLIC_KEY` is: **no secret means this deployment accepts no webhooks** and says so with a `501`, because there is nothing to check a delivery against. Reading a missing environment variable as "verification is off" would put the whole boundary behind a typo.
+
+A `check_run` or `workflow_run` that concluded `failure`, `timed_out` or `action_required` is the CI-autofix trigger: every *active* session on that repository is woken with a goal-shaped notice — rendered from `crates/api/templates/github/ci_failure.txt` — sent as a `ControlToDaemon::UserMessage` through `Rooms::command`, which is the one command path to a session's daemon. Every one of them, not the first: two sessions may legitimately be open on one repository. `cancelled`, `neutral` and `skipped` are not failures and wake nobody.
+
+Everything that is not a failure flyco can act on answers `204`: a `ping`, an event flyco does not model, a green run, a repository nobody is working on. GitHub retries anything that is not a success, so an error is reserved for the two cases where a retry would help — an unverifiable delivery, and one whose sessions all failed to reach their rooms.
 
 ## Harness drivers
 

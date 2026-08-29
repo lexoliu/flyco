@@ -3639,7 +3639,7 @@
     "/v1/webhooks/github": {
       "post": {
         "summary": "Accepts a signed GitHub webhook delivery.",
-        "description": "Accepts a signed GitHub webhook delivery.\n\nAnswers `204`: GitHub only needs to know the delivery was accepted, and\nthe work it triggers is queued rather than done inline.",
+        "description": "Accepts a signed GitHub webhook delivery.\n\nAnswers `204`: GitHub only needs to know the delivery was accepted, and\nwhat it triggers happens on the session relay rather than in this\nresponse.",
         "operationId": "flyco_api::webhooks::receive_github_webhook",
         "requestBody": {
           "description": "Extractor arguments",

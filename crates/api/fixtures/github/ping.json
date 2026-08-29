@@ -1,0 +1,27 @@
+{
+  "zen": "Non-blocking is better than blocking.",
+  "hook_id": 553311998,
+  "hook": {
+    "type": "Repository",
+    "id": 553311998,
+    "active": true,
+    "events": ["check_run", "workflow_run"],
+    "config": {
+      "content_type": "json",
+      "insecure_ssl": "0",
+      "url": "https://flyco.dev/v1/webhooks/github"
+    }
+  },
+  "repository": {
+    "id": 902135467,
+    "name": "flyco",
+    "full_name": "lexoliu/flyco",
+    "private": true,
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "lexoliu",
+    "id": 4242,
+    "type": "User"
+  }
+}

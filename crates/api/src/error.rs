@@ -79,6 +79,40 @@ pub enum ApiError {
     #[error("this skill bundle is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     InvalidSkill(&'static str),
 
+    /// This deployment holds no webhook secret, so it can verify nothing.
+    ///
+    /// The refusal is the point: with no secret there is no way to tell a
+    /// GitHub delivery from a forgery, and the alternative — reading the
+    /// body anyway — is the bug the whole route is arranged to prevent.
+    #[error(
+        "this flyco deployment accepts no GitHub webhooks",
+        status = StatusCode::NOT_IMPLEMENTED
+    )]
+    WebhooksUnconfigured,
+
+    /// The delivery carried no `X-Hub-Signature-256`, or one that does not
+    /// match the body.
+    ///
+    /// Deliberately one variant for both: telling a forger which half they
+    /// got wrong is a free oracle, and neither answer is actionable by
+    /// GitHub, which retries a delivery flyco could not verify.
+    #[error(
+        "this delivery is not signed by the secret this deployment holds",
+        status = StatusCode::FORBIDDEN
+    )]
+    WebhookUnverified,
+
+    /// The delivery was signed but its body is not the document its event
+    /// header claims.
+    #[error(
+        "this `{event}` delivery is not the payload that event carries",
+        status = StatusCode::BAD_REQUEST
+    )]
+    WebhookMalformed {
+        /// The event the delivery announced itself as.
+        event: String,
+    },
+
     /// This deployment has no VAPID key pair, so it cannot send push.
     #[error(
         "this flyco deployment is not configured for web push",
@@ -350,6 +384,9 @@ impl ApiError {
             Self::InvalidMcpServer(_) => "invalid-mcp-server",
             Self::SkillNotFound => "skill-not-found",
             Self::InvalidSkill(_) => "invalid-skill",
+            Self::WebhooksUnconfigured => "webhooks-unconfigured",
+            Self::WebhookUnverified => "webhook-unverified",
+            Self::WebhookMalformed { .. } => "webhook-malformed",
             Self::PushUnconfigured => "push-unconfigured",
             Self::PushSubscriptionNotFound => "push-subscription-not-found",
             Self::InvalidPushSubscription(_) => "invalid-push-subscription",
