@@ -4,8 +4,10 @@
 //! `testing` fixtures without exposing them in the public API.
 
 mod contract;
+mod harness_accounts;
 mod mcp;
 mod memory;
+mod provisioning;
 mod push;
 mod relay;
 mod responses;

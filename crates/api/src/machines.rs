@@ -19,6 +19,7 @@ use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
+use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::path_id;
@@ -32,19 +33,24 @@ use crate::respond::Accepted;
 /// boolean type — and `bool`'s [`FromColumn`](skyzen_services::sql::FromColumn)
 /// reads exactly that.
 #[derive(Debug, skyzen::FromRow)]
-struct MachineRow {
-    id: MachineId,
+pub struct MachineRow {
+    /// Flyco's identifier for the machine, and the stem of every
+    /// provider-native resource name it owns.
+    pub id: MachineId,
     session_id: SessionId,
-    provider_account_id: ProviderAccountId,
+    /// Which linked account created it, and must be used to act on it.
+    pub provider_account_id: ProviderAccountId,
     provider: CloudProviderKind,
     machine_type: String,
     region: String,
     disk_gib: u32,
     requested_spot: bool,
     spot: bool,
-    state: MachineState,
+    /// Where it is in its lifecycle.
+    pub state: MachineState,
     hourly_micros: Option<Usd>,
-    native_id: Option<String>,
+    /// The provider's own name for it, once there is one to name.
+    pub native_id: Option<String>,
     address: Option<String>,
     created_at_unix: u64,
 }
@@ -71,6 +77,29 @@ impl From<MachineRow> for MachineView {
 }
 
 impl MachineRow {
+    /// What was asked for, as a driver takes it.
+    #[must_use]
+    pub fn spec(&self) -> MachineSpec {
+        MachineSpec {
+            provider: self.provider,
+            machine_type: self.machine_type.clone(),
+            region: self.region.clone(),
+            spot: self.requested_spot,
+            disk_gib: self.disk_gib,
+        }
+    }
+
+    /// Whether this row already describes a machine the provider created.
+    ///
+    /// What makes a redelivered provisioning job a no-op: a machine that is
+    /// running and has a provider-native name has been built, and building a
+    /// second one for the same session would be a cloud resource nobody is
+    /// billing anybody for.
+    #[must_use]
+    pub const fn is_provisioned(&self) -> bool {
+        matches!(self.state, MachineState::Running) && self.native_id.is_some()
+    }
+
     /// Rebuilds what a driver needs to act on this machine.
     ///
     /// A row with no `native_id` names nothing the provider can be asked
@@ -298,6 +327,134 @@ async fn start_session_machine(
     )
     .await
     .into()
+}
+
+// ── The machine row, as the provisioning queue writes it ──
+//
+// A session has exactly one machine row for its whole life — `session_id` is
+// UNIQUE — and that row is what makes provisioning safe to run twice. It is
+// written empty when the session is created, filled in when the provider
+// answers, and reset rather than replaced when the session is resumed, so
+// the machine id (and therefore every provider-native resource name derived
+// from it) is stable across attempts. A retry that reaches the provider
+// again is then an update of the same virtual machine or container, not a
+// second one.
+
+/// Reserves the row a session's machine will occupy.
+///
+/// No price is recorded yet, and the absence is the point: nothing exists to
+/// meter, and a rate written before the capacity is known would be the rate
+/// of the machine that was *asked* for. The queue consumer records the real
+/// one alongside the capacity it actually obtained.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails — including the UNIQUE
+/// violation that a second machine for one session would be.
+pub async fn reserve(
+    db: &Db,
+    session: SessionId,
+    account: ProviderAccountId,
+    spec: &MachineSpec,
+) -> Result<MachineId, ApiError> {
+    let id = MachineId::generate();
+    let provisioning = MachineState::Provisioning;
+    let now = now_unix();
+
+    sql!(
+        db,
+        "INSERT INTO machines \
+         (id, session_id, provider_account_id, provider, machine_type, region, disk_gib, \
+          requested_spot, spot, state, created_at_unix) \
+         VALUES ({id}, {session}, {account}, {spec.provider}, {spec.machine_type.clone()}, \
+                 {spec.region.clone()}, {spec.disk_gib}, {spec.spot}, {spec.spot}, \
+                 {provisioning}, {now})"
+    )
+    .execute()
+    .await?;
+
+    Ok(id)
+}
+
+/// Reads a session's machine row without scoping it to an owner.
+///
+/// The queue's read: a job was enqueued by a handler that had already proved
+/// the caller owns the session, so re-deriving that here would be a second
+/// copy of a check that already happened. Every user-facing read goes
+/// through [`load`], which joins through `sessions` for exactly that reason.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn for_session(db: &Db, session: SessionId) -> Result<Option<MachineRow>, ApiError> {
+    Ok(sql!(
+        db,
+        "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
+         disk_gib, requested_spot, spot, state, hourly_micros, native_id, address, \
+         created_at_unix \
+         FROM machines WHERE session_id = {session}"
+    )
+    .fetch_optional()
+    .await?)
+}
+
+/// Records what the provider actually built.
+///
+/// `spot` and `hourly_micros` come from the machine that exists rather than
+/// from the request that asked for it: a spot request a provider cannot
+/// honour is answered with on-demand capacity, and the price billed follows
+/// what was obtained.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn record(
+    db: &Db,
+    machine: &flyco_provider::Machine,
+    hourly: Option<Usd>,
+) -> Result<(), ApiError> {
+    let spot = machine.capacity_mode.is_spot();
+    sql!(
+        db,
+        "UPDATE machines SET state = {machine.state}, spot = {spot}, \
+         hourly_micros = {hourly}, native_id = {machine.native_id.clone()}, \
+         address = {machine.address.clone()} \
+         WHERE id = {machine.id}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
+/// Puts a session's existing machine row back into `provisioning` so the
+/// queue will build it again.
+///
+/// The row keeps its identity, which is what lets a resume reuse the
+/// provider-native resource names the session already had: an Azure `PUT`
+/// against the same names updates the machine it finds, and the podman
+/// script byo-ssh renders removes the container before recreating it. A new
+/// row would mean a new set of names and, on a provider that had not
+/// released the old ones, two machines for one session.
+///
+/// # Errors
+///
+/// Returns [`ApiError::MachineNotFound`] if the session never had a machine
+/// row reserved, which would mean it was not created through
+/// `POST /v1/sessions`.
+pub async fn reset_for_resume(db: &Db, session: SessionId) -> Result<MachineId, ApiError> {
+    let row = for_session(db, session)
+        .await?
+        .ok_or(ApiError::MachineNotFound)?;
+    let provisioning = MachineState::Provisioning;
+
+    sql!(
+        db,
+        "UPDATE machines SET state = {provisioning} WHERE id = {row.id}"
+    )
+    .execute()
+    .await?;
+
+    Ok(row.id)
 }
 
 /// The user-scoped machine routes.

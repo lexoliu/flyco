@@ -3,9 +3,9 @@
 use flyco_core::{
     ApiKeyId, ApiKeySummary, ApprovalId, ApprovalState, ApprovalView, BudgetConfig, BudgetView,
     ControlToDaemon, CreateApiKey, CreateSession, CreatedApiKey, CurrentUser, DaemonToken,
-    DecideApproval, EnvDocument, HarnessObservation, RepoSlug, RepoStatus, SendMessage,
-    SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe,
-    wire::ApprovalPayload,
+    DecideApproval, EnvDocument, HarnessObservation, MachineSpec, RepoSlug, RepoStatus,
+    SendMessage, SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv,
+    UpdateMe, wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -13,7 +13,7 @@ use skyzen::middleware::ErrorHandlingMiddleware;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Router, Routes as _};
 use skyzen::utils::{Bytes, Json, State};
 use skyzen::{HttpError as _, Response};
-use skyzen_services::{Db, Kv, Storage};
+use skyzen_services::{Db, Kv, Queue, Storage};
 
 use crate::authenticator::FlycoAuthenticator;
 use crate::config::ApiConfig;
@@ -22,14 +22,15 @@ use crate::extract::{Headers, path_id, path_segment};
 use crate::github::GithubClient;
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
+use crate::provisioning_queue::{self, ProvisioningJob};
 use crate::relay::{RelayTicket, TicketQuery};
 use crate::respond::{Accepted, Created, NoContent};
 use crate::room::EventPage;
 use crate::rooms::Rooms;
 use crate::{
     agents_md, api_keys, approvals, daemon_tokens, env, harness_accounts, machines, mcp, memory,
-    oauth, observations, problem, provider_accounts, push, relay, repos, responses, sessions,
-    skills, transcripts, turns, users, webhooks,
+    oauth, observations, problem, provider_accounts, provisioning, push, relay, repos, responses,
+    sessions, skills, transcripts, turns, users, webhooks,
 };
 
 /// Health probe response.
@@ -119,20 +120,31 @@ async fn revoke(user: &CurrentUser, params: &Params, db: &Db) -> Result<NoConten
     Ok(NoContent)
 }
 
-/// Starts a session: reserves the budget and puts the session in the
-/// provisioning queue. No machine exists yet.
+/// Starts a session: reserves its budget and its machine, and queues the
+/// machine to be built. No machine exists yet.
+///
+/// The choice of machine is validated against the named account's own
+/// catalog *before* anything is written, so a machine the account cannot
+/// deploy is refused here rather than accepted and then failed minutes later
+/// by a queue consumer the caller is no longer watching.
 #[skyzen::openapi]
 async fn create_session(
     State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
     Json(request): Json<CreateSession>,
+    queue: Queue,
     db: Db,
 ) -> Outcome<Created<Json<SessionDetail>>> {
-    start_session(&user, request, &db).await.into()
+    start_session(&user, request, &config, &queue, &db)
+        .await
+        .into()
 }
 
 async fn start_session(
     user: &CurrentUser,
     request: CreateSession,
+    config: &ApiConfig,
+    queue: &Queue,
     db: &Db,
 ) -> Result<Created<Json<SessionDetail>>, ApiError> {
     let repo = request
@@ -140,6 +152,19 @@ async fn start_session(
         .parse::<RepoSlug>()
         .map_err(|_| ApiError::InvalidRepo(request.repo.clone()))?;
     let budget = BudgetConfig::new(request.budget_limit).map_err(|_| ApiError::InvalidBudget)?;
+
+    let account =
+        provisioning::account(db, config, user.id, request.machine.provider_account).await?;
+    let spec = MachineSpec {
+        provider: account.kind(),
+        machine_type: request.machine.machine_type,
+        region: request.machine.region,
+        spot: request.machine.spot,
+        disk_gib: request.machine.disk_gib,
+    };
+    provisioning::deployable(&account, &spec)
+        .await
+        .map_err(undeployable)?;
 
     let session = sessions::create(
         db,
@@ -150,9 +175,47 @@ async fn start_session(
         budget,
     )
     .await?;
+    let id = session.summary.id;
+    let machine = machines::reserve(db, id, account.id, &spec).await?;
 
-    tracing::info!(repo = %repo, harness = ?request.harness, spot = request.spot, "opened a session");
+    // A session whose job never reached the queue would wait for a consumer
+    // that is never going to run, so a refused enqueue fails it here rather
+    // than leaving it provisioning for ever.
+    if let Err(error) =
+        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await
+    {
+        sessions::fail(
+            db,
+            id,
+            "the provisioning queue would not accept this session's job",
+        )
+        .await?;
+        return Err(error);
+    }
+
+    tracing::info!(
+        repo = %repo,
+        harness = ?request.harness,
+        machine_type = %spec.machine_type,
+        region = %spec.region,
+        spot = spec.spot,
+        "opened a session and queued its machine"
+    );
     Ok(Created(Json(session)))
+}
+
+/// Turns a provider's refusal into the answer the caller can act on.
+///
+/// A machine the account cannot deploy is the caller's mistake and names
+/// which of the three gates it hit; anything else is the provider being
+/// unreachable, which is not.
+fn undeployable(error: flyco_provider::ProviderError) -> ApiError {
+    match error {
+        unavailable @ flyco_provider::ProviderError::Unavailable { .. } => {
+            ApiError::MachineUnavailable(unavailable.to_string())
+        }
+        other => ApiError::Provisioning(other.to_string()),
+    }
 }
 
 /// Lists the caller's sessions, newest first.
@@ -506,17 +569,51 @@ async fn drive(
     Ok(Accepted)
 }
 
-/// Puts an interrupted or archived session back on a machine.
+/// Puts an interrupted, failed, or archived session back on a machine.
 ///
-/// The transcript lives in the control plane, so a session resumes onto
-/// whatever machine is provisioned for it rather than the one it left.
+/// The same queue every other machine comes from — there is one
+/// implementation of provisioning and this is not a second one. The session
+/// moves back to `provisioning` durably before the job is enqueued, so a
+/// browser that reloads immediately sees a session on its way back rather
+/// than the state it was resumed out of.
+///
+/// The machine row keeps its identity, which is what lets the provider
+/// recognise the machine it already made: what a resume rebuilds is the
+/// session's own machine, not another one beside it.
 #[skyzen::openapi]
 async fn resume_session(
-    State(_user): State<CurrentUser>,
-    _params: Params,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    params: Params,
+    queue: Queue,
+    db: Db,
 ) -> Outcome<Json<SessionDetail>> {
-    todo!("M4: reprovision a machine, re-pair the daemon, and replay the transcript onto it")
+    restart_session(&user, &params, &queue, &db).await.into()
+}
+
+async fn restart_session(
+    user: &CurrentUser,
+    params: &Params,
+    queue: &Queue,
+    db: &Db,
+) -> Result<Json<SessionDetail>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    let session = sessions::resume(db, user.id, id).await?;
+    let machine = machines::reset_for_resume(db, id).await?;
+
+    if let Err(error) =
+        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await
+    {
+        sessions::fail(
+            db,
+            id,
+            "the provisioning queue would not accept this session's job",
+        )
+        .await?;
+        return Err(error);
+    }
+
+    tracing::info!(session = %id, machine = %machine, "resumed a session onto its machine");
+    Ok(Json(session))
 }
 
 /// Where in a session's turn history to read from.
@@ -927,21 +1024,22 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
 }
 
 /// Builds the control-plane router around an explicit configuration, GitHub
-/// client, and database.
+/// client, database, and provisioning queue.
 ///
-/// All three are injected rather than discovered, so tests can drive the
-/// OAuth callback without reaching `github.com` or a real D1. In the
-/// deployed control plane the database arrives the way the KV namespace and
-/// the R2 bucket do — it is declared in `Skyzen.toml`, and `#[skyzen::main]`
-/// wraps the router with it — which is what
-/// [`router_from_environment`] builds instead.
+/// All four are injected rather than discovered, so tests can drive the
+/// OAuth callback without reaching `github.com` or a real D1, and can read
+/// back the jobs a session creation enqueued. In the deployed control plane
+/// the database and the queue arrive the way the KV namespace and the R2
+/// bucket do — they are declared in `Skyzen.toml`, and `#[skyzen::main]`
+/// wraps the router with them — which is what [`router_from_environment`]
+/// builds instead.
 #[must_use]
-pub fn router(config: ApiConfig, github: GithubClient, db: Db) -> Router {
-    configured(config, github).with(db).build()
+pub fn router(config: ApiConfig, github: GithubClient, db: Db, queue: Queue) -> Router {
+    configured(config, github).with(db).with(queue).build()
 }
 
-/// The router without its database, which the declared `[[database]]`
-/// supplies.
+/// The router without the database and queue the declared `[[database]]`
+/// and `[[service]]` entries supply.
 fn configured(config: ApiConfig, github: GithubClient) -> Route {
     with_rooms(routes())
         .with(State(config))
@@ -984,15 +1082,15 @@ pub fn router_from_environment() -> Router {
 #[cfg(test)]
 mod tests {
     use flyco_core::{ApiKeySummary, CreateApiKey, CreatedApiKey, CurrentUser, Problem};
-    use skyzen_services::{Db, Kv};
+    use skyzen_services::{Db, Kv, Queue};
     use skyzen_test::TestContext;
 
     use crate::testing::{GITHUB_LOGIN, migrated_router, seed_user, test_router};
     use crate::{api_keys, session};
 
     #[skyzen::test]
-    async fn healthz_reports_protocol_version(ctx: TestContext, db: Db) {
-        let client = ctx.client(test_router(db));
+    async fn healthz_reports_protocol_version(ctx: TestContext, db: Db, queue: Queue) {
+        let client = ctx.client(test_router(db, queue));
         let response = client.get("/v1/healthz").send().await;
         response.assert_status(200);
         let body: serde_json::Value = response.json();
