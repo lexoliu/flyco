@@ -82,7 +82,7 @@ mod tests;
 
 use flyco_core::machine::{
     CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
-    MachineState, OsFamily,
+    MachineState, OsFamily, StoragePricing,
 };
 use flyco_core::{CloudSpend, MachineId};
 use serde::Serialize;
@@ -1126,11 +1126,11 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
         let offerings = self.list_offerings(region).await?;
         let quotas = self.read_quotas(region, &types).await?;
         let now = self.now();
-        let priced = self
+        let (priced, storage_rate) = self
             .prices
             .region_prices(&self.transport, &self.clock, &self.key, region, now)
-            .await?
-            .to_vec();
+            .await?;
+        let priced = priced.to_vec();
 
         let mut report = RegionReport {
             region: region.to_owned(),
@@ -1139,7 +1139,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
         };
 
         for info in types {
-            match Self::entry_for(&info, region, &offerings, &quotas, &priced) {
+            match Self::entry_for(&info, region, &offerings, &quotas, &priced, storage_rate) {
                 Ok(entry) => report.offered.push(entry),
                 Err(reason) => report.excluded.push((info.instance_type, reason)),
             }
@@ -1154,6 +1154,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
         offerings: &[String],
         quotas: &Quotas,
         priced: &[(String, MachinePrices)],
+        storage_rate: flyco_core::Usd,
     ) -> Result<MachineCatalogEntry, ExclusionReason> {
         let name = info.instance_type.as_str();
         if !offerings.iter().any(|offered| offered == name) {
@@ -1200,6 +1201,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
                 minimum_billing_hours: quotas
                     .needs_dedicated_host(name)
                     .then_some(MAC_MINIMUM_BILLING_HOURS),
+                storage: StoragePricing::PerGibHourly { rate: storage_rate },
             },
         })
     }

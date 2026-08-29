@@ -7,8 +7,8 @@
 //! can have it in one query, and the cache is refreshed on every replay.
 
 use flyco_core::{
-    BudgetConfig, BudgetId, BudgetState, BudgetView, SessionId, SpendEvent, SpendEventId,
-    SpendKind, Usd,
+    BudgetConfig, BudgetId, BudgetSignal, BudgetSignalId, BudgetStage, BudgetState, BudgetView,
+    SessionId, SpendEvent, SpendEventId, SpendKind, Usd,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -21,6 +21,24 @@ use crate::error::ApiError;
 struct SpendRow {
     kind: SpendKind,
     amount_micros: Usd,
+}
+
+#[derive(Debug, skyzen::FromRow)]
+struct BudgetRow {
+    session_id: SessionId,
+    limit_micros: Usd,
+    stage: BudgetStage,
+}
+
+/// One threshold delivery waiting for the session room.
+#[derive(Debug, Clone, Copy, skyzen::FromRow)]
+pub struct PendingSignal {
+    /// Durable outbox identifier.
+    pub id: BudgetSignalId,
+    /// Session that crossed the threshold.
+    pub session_id: SessionId,
+    /// Signal the daemon and browser must receive.
+    pub signal: BudgetSignal,
 }
 
 impl From<SpendRow> for SpendEvent {
@@ -63,13 +81,22 @@ pub async fn create(
 /// Returns [`ApiError::CorruptRecord`] if the budget row is missing or
 /// holds a limit the engine rejects, or a database error otherwise.
 pub async fn view(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
-    let limit: Option<Usd> = sql!(db, "SELECT limit_micros FROM budgets WHERE id = {budget}")
-        .fetch_scalar_optional()
-        .await?;
-    let limit = limit.ok_or(ApiError::CorruptRecord(
+    reconcile(db, budget).await
+}
+
+/// Replays one budget, persists newly crossed thresholds in the delivery
+/// outbox, and refreshes its cache.
+async fn reconcile(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
+    let row: BudgetRow = sql!(
+        db,
+        "SELECT session_id, limit_micros, stage FROM budgets WHERE id = {budget}"
+    )
+    .fetch_optional()
+    .await?
+    .ok_or(ApiError::CorruptRecord(
         "a session points at a budget that does not exist",
     ))?;
-    let config = BudgetConfig::new(limit)
+    let config = BudgetConfig::new(row.limit_micros)
         .map_err(|_| ApiError::CorruptRecord("budgets.limit_micros is zero"))?;
 
     let events: Vec<SpendRow> = sql!(
@@ -82,9 +109,21 @@ pub async fn view(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
 
     let mut state = BudgetState::new(config);
     for event in events {
-        // Signals were delivered when the spend was first recorded; a replay
-        // reconstructs the totals, it does not re-announce them.
-        let _ = state.apply(event.into());
+        let signal = state.apply(event.into());
+        if state.stage() > row.stage
+            && let Some(signal) = signal
+        {
+            let id = BudgetSignalId::generate();
+            let ordinal = signal.ordinal();
+            sql!(
+                db,
+                "INSERT OR IGNORE INTO budget_signals \
+                 (id, budget_id, session_id, signal, ordinal, delivered, created_at_unix) \
+                 VALUES ({id}, {budget}, {row.session_id}, {signal}, {ordinal}, 0, {now_unix()})"
+            )
+            .execute()
+            .await?;
+        }
     }
 
     sql!(
@@ -114,13 +153,79 @@ pub async fn record(
     amount: Usd,
     detail: &str,
 ) -> Result<(), ApiError> {
+    record_at(db, budget, kind, amount, detail, now_unix(), None).await
+}
+
+/// Appends one uniquely keyed metering window.
+///
+/// A repeated key is an at-least-once scheduled delivery of the same window
+/// and is ignored. Reconciliation still runs, so a failure after the ledger
+/// insert but before its threshold outbox write repairs itself on retry.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the ledger, outbox, or budget cache cannot be
+/// read or written.
+pub async fn record_metered(
+    db: &Db,
+    budget: BudgetId,
+    kind: SpendKind,
+    amount: Usd,
+    detail: &str,
+    at_unix: u64,
+    meter_key: &str,
+) -> Result<(), ApiError> {
+    record_at(db, budget, kind, amount, detail, at_unix, Some(meter_key)).await
+}
+
+async fn record_at(
+    db: &Db,
+    budget: BudgetId,
+    kind: SpendKind,
+    amount: Usd,
+    detail: &str,
+    at_unix: u64,
+    meter_key: Option<&str>,
+) -> Result<(), ApiError> {
     sql!(
         db,
-        "INSERT INTO spend_events (id, budget_id, kind, amount_micros, at_unix, detail) \
-         VALUES ({SpendEventId::generate()}, {budget}, {kind}, {amount}, {now_unix()}, {detail})"
+        "INSERT OR IGNORE INTO spend_events \
+         (id, budget_id, kind, amount_micros, at_unix, detail, meter_key) \
+         VALUES ({SpendEventId::generate()}, {budget}, {kind}, {amount}, {at_unix}, \
+                 {detail}, {meter_key.map(str::to_owned)})"
     )
     .execute()
     .await?;
+    let _ = reconcile(db, budget).await?;
+    Ok(())
+}
 
+/// Reads every undelivered threshold in durable creation order.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the outbox cannot be read.
+pub async fn pending_signals(db: &Db) -> Result<Vec<PendingSignal>, ApiError> {
+    Ok(sql!(
+        db,
+        "SELECT id, session_id, signal FROM budget_signals \
+         WHERE delivered = 0 ORDER BY created_at_unix, ordinal, id"
+    )
+    .fetch_all()
+    .await?)
+}
+
+/// Marks an outbox signal delivered after its room accepted the command.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the outbox cannot be updated.
+pub async fn mark_delivered(db: &Db, id: BudgetSignalId) -> Result<(), ApiError> {
+    sql!(
+        db,
+        "UPDATE budget_signals SET delivered = 1 WHERE id = {id}"
+    )
+    .execute()
+    .await?;
     Ok(())
 }

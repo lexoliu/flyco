@@ -322,6 +322,40 @@ pub async fn fail(db: &Db, id: SessionId, reason: &str) -> Result<(), ApiError> 
     Ok(())
 }
 
+/// Pauses an active session because its compute budget is exhausted.
+///
+/// Repeating the call is intentional: the budget-signal outbox is delivered
+/// at least once, so a cron retry may see the durable pause already written.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session disappeared, or
+/// [`ApiError::InvalidTransition`] when a non-active session is asked to
+/// enter the budget-paused state.
+pub async fn pause_for_budget(db: &Db, id: SessionId) -> Result<(), ApiError> {
+    let state: SessionState = sql!(db, "SELECT state FROM sessions WHERE id = {id}")
+        .fetch_scalar_optional()
+        .await?
+        .ok_or(ApiError::SessionNotFound)?;
+    if state == SessionState::Paused {
+        return Ok(());
+    }
+    let next =
+        state
+            .transition(SessionState::Paused)
+            .map_err(|error| ApiError::InvalidTransition {
+                from: error.from,
+                to: error.to,
+            })?;
+    sql!(
+        db,
+        "UPDATE sessions SET state = {next}, last_active_unix = {now_unix()} WHERE id = {id}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
 /// Puts a session back into [`SessionState::Provisioning`] and clears the
 /// reason the previous attempt left behind.
 ///

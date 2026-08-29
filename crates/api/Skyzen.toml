@@ -90,6 +90,9 @@ url_env = "FLYCO_DATABASE_URL"
 name = "flyco"
 compatibility_date = "2026-08-01"
 
+[cloudflare.triggers]
+crons = ["* * * * *"]
+
 [cloudflare.vars]
 FLYCO_GITHUB_CLIENT_ID = "TO-BE-PROVISIONED"
 FLYCO_REDIRECT_URI = "TO-BE-PROVISIONED"
