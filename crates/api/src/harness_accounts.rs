@@ -20,9 +20,15 @@ use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::sql;
 use skyzen::utils::{Json, State};
+use skyzen_services::sql::ColumnEnum as _;
 use skyzen_services::{Db, Kv};
+use url::Url;
 
+use crate::clock::now_unix;
+use crate::config::{ApiConfig, HarnessOauthClient};
+use crate::crypto::random_token;
 use crate::error::ApiError;
+use crate::expiring;
 use crate::extract::path_id;
 use crate::observations;
 use crate::problem::Outcome;
@@ -86,11 +92,110 @@ async fn list(db: &Db, user: UserId) -> Result<Vec<HarnessAccountView>, ApiError
 /// Begins linking a harness account, returning the vendor's authorize URL.
 #[skyzen::openapi]
 async fn start_harness_link(
-    State(_user): State<CurrentUser>,
-    _params: Params,
-    _kv: Kv,
+    State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
+    params: Params,
+    kv: Kv,
 ) -> Outcome<Json<AuthorizeUrl>> {
-    todo!("M4: mint a single-use state in KV and build the vendor's own authorize URL")
+    begin_link(&config, &kv, &user, &params)
+        .await
+        .map(Json)
+        .into()
+}
+
+/// How long a browser has to finish the round trip.
+const LINK_STATE_TTL_SECONDS: u64 = 10 * 60;
+
+/// What the `state` stands for while the browser is away.
+///
+/// The callback arrives with no flyco credential, so everything the exchange
+/// needs is parked here: whose account this is, which vendor, and the PKCE
+/// verifier whose challenge went out with the authorize URL.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PendingLink {
+    user: UserId,
+    harness: HarnessKind,
+    verifier: String,
+}
+
+fn link_state_key(state: &str) -> String {
+    let mut key = String::with_capacity(18 + state.len());
+    key.push_str("auth:harness-link:");
+    key.push_str(state);
+    key
+}
+
+/// The PKCE challenge for a verifier: base64url of its SHA-256, unpadded.
+fn pkce_challenge(verifier: &str) -> String {
+    use base64::Engine as _;
+    use sha2::{Digest as _, Sha256};
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+/// Where the vendor sends the browser back to, for one harness.
+fn link_redirect_uri(config: &ApiConfig, harness: HarnessKind) -> Result<Url, ApiError> {
+    let mut path = String::from("/v1/harness-accounts/");
+    path.push_str(harness.token());
+    path.push_str("/link/callback");
+    config
+        .redirect_uri()
+        .join(&path)
+        .map_err(|_| ApiError::CorruptRecord("the configured redirect URI has no base"))
+}
+
+/// Reads the `{harness}` path segment as the harness it names.
+fn harness_from_path(params: &Params) -> Result<HarnessKind, ApiError> {
+    let segment = crate::extract::path_segment(params, "harness")?;
+    HarnessKind::from_token(&segment).ok_or(ApiError::MalformedId(segment))
+}
+
+/// The client for this harness, or a refusal naming what is missing.
+fn oauth_client(config: &ApiConfig, harness: HarnessKind) -> Result<&HarnessOauthClient, ApiError> {
+    config
+        .harness_oauth(harness)
+        .ok_or(ApiError::HarnessLinkUnconfigured {
+            harness: harness.token(),
+        })
+}
+
+async fn begin_link(
+    config: &ApiConfig,
+    kv: &Kv,
+    user: &CurrentUser,
+    params: &Params,
+) -> Result<AuthorizeUrl, ApiError> {
+    let harness = harness_from_path(params)?;
+    let client = oauth_client(config, harness)?;
+
+    let state = random_token()?;
+    let verifier = random_token()?;
+    expiring::put(
+        kv,
+        &link_state_key(&state),
+        &PendingLink {
+            user: user.id,
+            harness,
+            verifier: verifier.clone(),
+        },
+        LINK_STATE_TTL_SECONDS,
+    )
+    .await?;
+
+    let mut authorize_url = client.authorize_url.clone();
+    authorize_url
+        .query_pairs_mut()
+        .append_pair("response_type", "code")
+        .append_pair("client_id", &client.client_id)
+        .append_pair("redirect_uri", link_redirect_uri(config, harness)?.as_str())
+        .append_pair("scope", &client.scope)
+        .append_pair("state", &state)
+        .append_pair("code_challenge", &pkce_challenge(&verifier))
+        .append_pair("code_challenge_method", "S256");
+
+    tracing::debug!(?harness, "issued a harness authorize URL");
+    Ok(AuthorizeUrl {
+        authorize_url: authorize_url.into(),
+    })
 }
 
 /// Completes a harness link and returns the browser to the SPA.
@@ -100,14 +205,138 @@ async fn start_harness_link(
 /// whose account this is.
 #[skyzen::openapi]
 async fn complete_harness_link(
-    _params: Params,
-    Query(_callback): Query<LinkCallback>,
-    _kv: Kv,
-    _db: Db,
+    params: Params,
+    Query(callback): Query<LinkCallback>,
+    State(config): State<ApiConfig>,
+    kv: Kv,
+    db: Db,
 ) -> Outcome<SeeOther> {
-    todo!(
-        "M4: consume the state, exchange the code with the vendor, seal the token, 303 to the SPA"
+    complete_link(&config, &kv, &db, &params, callback)
+        .await
+        .into()
+}
+
+/// Where the browser lands once an account is linked.
+const POST_LINK_PATH: &str = "/settings/harness-accounts";
+
+/// What a vendor returns for an authorization code, per RFC 6749 §5.1.
+///
+/// Only the fields flyco stores are named; a vendor sends more and serde
+/// discards them.
+#[derive(Debug, Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    /// Seconds until the credential expires, when the vendor states one.
+    expires_in: Option<u64>,
+    /// Some vendors name the account the token belongs to. Used as the
+    /// label, so two linked accounts can be told apart.
+    account: Option<String>,
+}
+
+/// Exchanges an authorization code for a credential.
+///
+/// PKCE (RFC 7636) carries the verifier whose challenge went out with the
+/// authorize URL, so an intercepted code is useless on its own.
+async fn exchange_code(
+    client: &HarnessOauthClient,
+    code: &str,
+    verifier: &str,
+    redirect_uri: &Url,
+) -> Result<TokenResponse, ApiError> {
+    use zenwave::{Client as _, ResponseExt as _};
+
+    /// The exchange request, form-encoded as RFC 6749 §4.1.3 requires.
+    #[derive(serde::Serialize)]
+    struct ExchangeRequest<'a> {
+        grant_type: &'a str,
+        code: &'a str,
+        redirect_uri: &'a str,
+        client_id: &'a str,
+        client_secret: &'a str,
+        code_verifier: &'a str,
+    }
+
+    let form = serde_urlencoded::to_string(ExchangeRequest {
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirect_uri.as_str(),
+        client_id: &client.client_id,
+        client_secret: &client.client_secret,
+        code_verifier: verifier,
+    })
+    .map_err(|error| ApiError::HarnessLinkRejected(error.to_string()))?;
+
+    let mut http = zenwave::client();
+    let response = http
+        .post(client.token_url.as_str())
+        .map_err(|error| ApiError::HarnessLinkRejected(error.to_string()))?
+        .header("Accept", "application/json")
+        .map_err(|error| ApiError::HarnessLinkRejected(error.to_string()))?
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .map_err(|error| ApiError::HarnessLinkRejected(error.to_string()))?
+        .bytes_body(form.into_bytes())
+        .await
+        .map_err(|error| ApiError::HarnessLinkRejected(error.to_string()))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(ApiError::HarnessLinkRejected(format!(
+            "the token endpoint answered {}",
+            status.as_u16()
+        )));
+    }
+
+    response
+        .into_json::<TokenResponse>()
+        .await
+        .map_err(|error| ApiError::HarnessLinkRejected(error.to_string()))
+}
+
+async fn complete_link(
+    config: &ApiConfig,
+    kv: &Kv,
+    db: &Db,
+    params: &Params,
+    callback: LinkCallback,
+) -> Result<SeeOther, ApiError> {
+    let harness = harness_from_path(params)?;
+
+    // The state is consumed by being presented, so a replayed callback finds
+    // nothing — and it carries whose link this is, since the browser arrives
+    // from the vendor with no flyco credential of its own.
+    let pending: PendingLink = expiring::take(kv, &link_state_key(&callback.state))
+        .await?
+        .ok_or(ApiError::UnknownOauthState)?;
+    if pending.harness != harness {
+        return Err(ApiError::UnknownOauthState);
+    }
+
+    let client = oauth_client(config, harness)?;
+    let redirect_uri = link_redirect_uri(config, harness)?;
+    let token = exchange_code(client, &callback.code, &pending.verifier, &redirect_uri).await?;
+
+    let sealed = config.token_cipher().seal(&token.access_token)?;
+    let now = now_unix();
+    let expires_at = token.expires_in.map(|lifetime| now + lifetime);
+    let label = token.account.unwrap_or_else(|| harness.token().to_owned());
+
+    sql!(
+        db,
+        "INSERT INTO harness_accounts \
+         (id, user_id, harness, label, token_enc, linked_at_unix, expires_at_unix) \
+         VALUES ({HarnessAccountId::generate()}, {pending.user}, {harness}, {label}, \
+                 {sealed}, {now}, {expires_at})"
     )
+    .execute()
+    .await?;
+
+    tracing::info!(?harness, "linked a harness account");
+    Ok(SeeOther(
+        config
+            .redirect_uri()
+            .join(POST_LINK_PATH)
+            .map_err(|_| ApiError::CorruptRecord("the configured redirect URI has no base"))?,
+    ))
 }
 
 /// The credential a session's machine authenticates its harness with.

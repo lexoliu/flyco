@@ -32,10 +32,7 @@ struct Pending {
 ///
 /// Sorted by handler name, which is how [`unimplemented_handlers`] returns
 /// them, so a diff on this list reads as one line per handler.
-const EXPECTED: &[(&str, &str)] = &[
-    ("complete_harness_link", "M4"),
-    ("start_harness_link", "M4"),
-];
+const EXPECTED: &[(&str, &str)] = &[];
 
 /// Marks the start of a handler.
 const FN_MARKER: &str = "async fn ";
