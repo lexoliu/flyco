@@ -1,10 +1,21 @@
-import { For, Show, createResource, createSignal } from "solid-js";
+import { For, Show, createMemo, createResource, createSignal } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import SessionCard from "../components/SessionCard";
 import ProblemNotice from "../components/ProblemNotice";
-import { getMe, listSessions, listRepos, type HarnessKind, type RepoSummary } from "../api/client";
+import {
+  getMachineCatalog,
+  getMe,
+  listSessions,
+  listRepos,
+  resizeSessionMachine,
+  type HarnessKind,
+  type MachineCatalogEntry,
+  type RepoSummary,
+} from "../api/client";
 import { requestNewSession } from "../api/sessions";
 import { cx } from "../lib/cx";
+import { formatUsd } from "../lib/money";
+import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./Sessions.module.css";
 
 const HARNESSES: readonly { value: HarnessKind; label: string }[] = [
@@ -14,19 +25,51 @@ const HARNESSES: readonly { value: HarnessKind; label: string }[] = [
 
 const DEFAULT_BUDGET_DOLLARS = 10;
 
+/** One line describing what a catalog entry costs, given whether the form wants spot capacity. */
+function pricingLabel(entry: MachineCatalogEntry, wantsSpot: boolean): string {
+  if (entry.pricing.kind === "user_owned") {
+    return "your hardware — no metered price";
+  }
+  const useSpot = wantsSpot && entry.pricing.spot_hourly !== null && entry.pricing.spot_hourly !== undefined;
+  const hourly = useSpot ? (entry.pricing.spot_hourly as number) : entry.pricing.on_demand_hourly;
+  return `${formatUsd(hourly)}/hr ${useSpot ? "(spot)" : "(on-demand)"}`;
+}
+
+function catalogEntryKey(entry: MachineCatalogEntry): string {
+  return `${entry.provider}/${entry.region}/${entry.machine_type}`;
+}
+
 function NewSessionForm(props: { onCreated: (id: string) => void; onCancel: () => void }) {
   const [repoQuery, setRepoQuery] = createSignal("");
   const [repos] = createResource(repoQuery, listRepos);
-  const [repo, setRepo] = createSignal("");
+  const [selectedRepo, setSelectedRepo] = createSignal<RepoSummary | null>(null);
   const [harness, setHarness] = createSignal<HarnessKind>("claude_code");
   const [budgetDollars, setBudgetDollars] = createSignal(DEFAULT_BUDGET_DOLLARS);
   const [spot, setSpot] = createSignal(true);
+  const [selectedMachineKey, setSelectedMachineKey] = createSignal<string | null>(null);
   const [submitting, setSubmitting] = createSignal(false);
   const [error, setError] = createSignal<unknown>(null);
 
+  const [catalog] = createResource(() => getMachineCatalog());
+  const catalogByProvider = createMemo(() => {
+    const groups = new Map<string, MachineCatalogEntry[]>();
+    for (const entry of catalog() ?? []) {
+      const list = groups.get(entry.provider) ?? [];
+      list.push(entry);
+      groups.set(entry.provider, list);
+    }
+    return groups;
+  });
+
+  function onSelectRepo(candidate: RepoSummary): void {
+    setSelectedRepo(candidate);
+    setRepoQuery("");
+  }
+
   async function onSubmit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    if (repo().trim() === "") {
+    const repo = selectedRepo();
+    if (repo === null) {
       setError(new Error("Pick a repository before starting a session."));
       return;
     }
@@ -34,11 +77,22 @@ function NewSessionForm(props: { onCreated: (id: string) => void; onCancel: () =
     setError(null);
     try {
       const created = await requestNewSession({
-        repo: repo(),
+        repo: repo.slug,
         harness: harness(),
         budgetLimitDollars: budgetDollars(),
         spot: spot(),
       });
+      const machineKey = selectedMachineKey();
+      if (machineKey !== null) {
+        const entry = (catalog() ?? []).find((candidate) => catalogEntryKey(candidate) === machineKey);
+        if (entry !== undefined) {
+          // Best-effort: `POST /v1/sessions` has no field to pick a machine
+          // up front, so the request lands on flyco's own default and this
+          // resizes it afterward. A failure here doesn't block navigation —
+          // the session's own machine panel lets the user retry.
+          await resizeSessionMachine(created.id, entry.machine_type).catch(() => undefined);
+        }
+      }
       props.onCreated(created.id);
     } catch (err) {
       setError(err);
@@ -51,23 +105,35 @@ function NewSessionForm(props: { onCreated: (id: string) => void; onCancel: () =
     <form class={styles.form} onSubmit={(event) => void onSubmit(event)}>
       <div class={styles.field}>
         <label for="new-session-repo">Repository</label>
-        <input
-          id="new-session-repo"
-          type="text"
-          placeholder="owner/name"
-          value={repo()}
-          onInput={(event) => {
-            setRepo(event.currentTarget.value);
-            setRepoQuery(event.currentTarget.value);
-          }}
-        />
-        <Show when={(repos() ?? []).length > 0}>
+        <Show
+          when={selectedRepo()}
+          fallback={
+            <input
+              id="new-session-repo"
+              type="text"
+              placeholder="Search your repositories…"
+              value={repoQuery()}
+              onInput={(event) => setRepoQuery(event.currentTarget.value)}
+            />
+          }
+        >
+          {(repo) => (
+            <div class={styles.checkboxField}>
+              <strong>{repo().slug}</strong>
+              <button type="button" onClick={() => setSelectedRepo(null)}>
+                Change
+              </button>
+            </div>
+          )}
+        </Show>
+        <Show when={selectedRepo() === null && (repos() ?? []).length > 0}>
           <ul class={styles.repoSuggestions}>
             <For each={repos()}>
               {(candidate: RepoSummary) => (
                 <li>
-                  <button type="button" onClick={() => setRepo(candidate.slug)}>
+                  <button type="button" onClick={() => onSelectRepo(candidate)}>
                     {candidate.slug}
+                    {candidate.private ? " (private)" : ""}
                   </button>
                 </li>
               )}
@@ -103,6 +169,34 @@ function NewSessionForm(props: { onCreated: (id: string) => void; onCancel: () =
         <input type="checkbox" checked={spot()} onChange={(event) => setSpot(event.currentTarget.checked)} />
         Use spot capacity (cheaper; flyco handles eviction)
       </label>
+
+      <div class={styles.field}>
+        <label for="new-session-machine">Machine</label>
+        <select
+          id="new-session-machine"
+          value={selectedMachineKey() ?? ""}
+          onChange={(event) => setSelectedMachineKey(event.currentTarget.value === "" ? null : event.currentTarget.value)}
+        >
+          <option value="">Let flyco choose</option>
+          <For each={[...catalogByProvider().entries()]}>
+            {([provider, entries]) => (
+              <optgroup label={PROVIDER_LABEL[provider as MachineCatalogEntry["provider"]]}>
+                <For each={entries}>
+                  {(entry) => (
+                    <option value={catalogEntryKey(entry)}>
+                      {entry.region} · {entry.machine_type}
+                      {entry.capacity ? ` · ${entry.capacity.vcpus} vCPU / ${Math.round(entry.capacity.memory_mib / 1024)} GiB` : ""}
+                      {" · "}
+                      {pricingLabel(entry, spot())}
+                    </option>
+                  )}
+                </For>
+              </optgroup>
+            )}
+          </For>
+        </select>
+        <ProblemNotice error={catalog.error} />
+      </div>
 
       <ProblemNotice error={error()} />
 

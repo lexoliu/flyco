@@ -8,7 +8,7 @@ import {
   type McpServerConfig,
   type McpServerView,
 } from "../../api/client";
-import styles from "./Tab.module.css";
+import styles from "../../components/Panel.module.css";
 
 type Transport = McpServerConfig["transport"];
 

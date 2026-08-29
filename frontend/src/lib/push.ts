@@ -1,26 +1,19 @@
 /**
- * Web push scaffolding.
+ * Web push: subscribes the browser via `PushManager`, then registers the
+ * subscription with the control plane (`POST /v1/push/subscriptions`) so a
+ * server-side event can actually reach it. The VAPID public key comes from
+ * `GET /v1/push/vapid-public-key` rather than a build-time env var, since
+ * the matching private key — and therefore whether push is configured at
+ * all — is a property of the deployment, not the frontend build.
  *
- * This wires the standard `PushManager` subscribe/unsubscribe flow so the
- * pieces exist, but it is **not yet wired to a backend endpoint**: flyco's
- * control plane has no `/v1/push/*` route today (see openapi.json at the
- * repo root). `subscribeToPush` will successfully register a subscription
- * with the browser's push service and return it, but nothing sends that
- * subscription to flyco, so no notification will ever be delivered until a
- * caller also POSTs the result somewhere the backend defines. Do the same
- * for `unsubscribeFromPush` when a "tell the backend to forget this
- * subscription" endpoint exists.
+ * The subscription id the control plane assigns is what `DELETE
+ * /v1/push/subscriptions/{id}` needs to unregister it later, so it is kept
+ * in `localStorage` next to the browser's own subscription state — the
+ * same pattern `src/lib/session.ts` uses for the session token.
  */
+import { getVapidPublicKey, subscribePush, unsubscribePush } from "../api/client";
 
-function vapidPublicKey(): string {
-  const key = import.meta.env.VITE_VAPID_PUBLIC_KEY;
-  if (key === undefined || key.length === 0) {
-    throw new Error(
-      "VITE_VAPID_PUBLIC_KEY is not set; push notifications need a VAPID public key to subscribe.",
-    );
-  }
-  return key;
-}
+const SUBSCRIPTION_ID_KEY = "flyco.push_subscription_id";
 
 /** Converts the URL-safe base64 VAPID key into the raw bytes `PushManager.subscribe` expects. */
 function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
@@ -47,8 +40,10 @@ export async function getPushSubscription(): Promise<PushSubscription | null> {
 }
 
 /**
- * Requests notification permission and subscribes to push. Throws if push
- * isn't supported or permission is denied, rather than returning a
+ * Requests notification permission, subscribes to push, and registers the
+ * result with the control plane. Throws if push isn't supported, permission
+ * is denied, or this deployment has no VAPID key configured (surfaced as a
+ * `NotImplementedError` from `getVapidPublicKey`) — never returns a
  * half-subscribed state.
  */
 export async function subscribeToPush(): Promise<PushSubscription> {
@@ -59,23 +54,39 @@ export async function subscribeToPush(): Promise<PushSubscription> {
   if (permission !== "granted") {
     throw new Error(`Notification permission was "${permission}", not granted.`);
   }
+  const vapid = await getVapidPublicKey();
   const registration = await navigator.serviceWorker.ready;
   const subscription = await registration.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(vapidPublicKey()),
+    applicationServerKey: urlBase64ToUint8Array(vapid.key),
   });
-  // NOT YET WIRED — see module doc comment: nothing sends `subscription`
-  // to the control plane yet.
+
+  const json = subscription.toJSON();
+  if (json.endpoint === undefined || json.keys?.p256dh === undefined || json.keys.auth === undefined) {
+    throw new Error("Browser push subscription is missing its endpoint or keys.");
+  }
+  const registered = await subscribePush({
+    endpoint: json.endpoint,
+    keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+    expirationTime: subscription.expirationTime,
+  });
+  localStorage.setItem(SUBSCRIPTION_ID_KEY, registered.id);
   return subscription;
 }
 
-/** Unsubscribes the current push subscription, if any. Returns whether one existed. */
+/**
+ * Unsubscribes the current push subscription, if any, from both the browser
+ * and the control plane. Returns whether one existed.
+ */
 export async function unsubscribeFromPush(): Promise<boolean> {
   const subscription = await getPushSubscription();
   if (subscription === null) {
     return false;
   }
-  // NOT YET WIRED — see module doc comment: nothing tells the control
-  // plane this subscription is gone.
+  const id = localStorage.getItem(SUBSCRIPTION_ID_KEY);
+  if (id !== null) {
+    await unsubscribePush(id);
+    localStorage.removeItem(SUBSCRIPTION_ID_KEY);
+  }
   return subscription.unsubscribe();
 }
