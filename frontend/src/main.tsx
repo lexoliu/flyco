@@ -12,7 +12,10 @@ import McpServersTab from "./routes/settings/McpServersTab";
 import SkillsTab from "./routes/settings/SkillsTab";
 import CloudProvidersTab from "./routes/settings/CloudProvidersTab";
 import ApiKeysTab from "./routes/settings/ApiKeysTab";
-import EnvTab from "./routes/settings/EnvTab";
+import HarnessAccountsTab from "./routes/settings/HarnessAccountsTab";
+import MemoryTab from "./routes/settings/MemoryTab";
+import AgentsMdTab from "./routes/settings/AgentsMdTab";
+import NotificationsTab from "./routes/settings/NotificationsTab";
 import NotFound from "./routes/NotFound";
 
 initTheme();
@@ -34,8 +37,11 @@ render(
         <Route path="/mcp" component={McpServersTab} />
         <Route path="/skills" component={SkillsTab} />
         <Route path="/providers" component={CloudProvidersTab} />
+        <Route path="/harness-accounts" component={HarnessAccountsTab} />
+        <Route path="/memory" component={MemoryTab} />
+        <Route path="/agents-md" component={AgentsMdTab} />
+        <Route path="/notifications" component={NotificationsTab} />
         <Route path="/api-keys" component={ApiKeysTab} />
-        <Route path="/env" component={EnvTab} />
       </Route>
       <Route path="*404" component={NotFound} />
     </Router>

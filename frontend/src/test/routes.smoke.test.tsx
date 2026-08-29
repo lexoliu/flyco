@@ -11,7 +11,10 @@ import McpServersTab from "../routes/settings/McpServersTab";
 import SkillsTab from "../routes/settings/SkillsTab";
 import CloudProvidersTab from "../routes/settings/CloudProvidersTab";
 import ApiKeysTab from "../routes/settings/ApiKeysTab";
-import EnvTab from "../routes/settings/EnvTab";
+import HarnessAccountsTab from "../routes/settings/HarnessAccountsTab";
+import MemoryTab from "../routes/settings/MemoryTab";
+import AgentsMdTab from "../routes/settings/AgentsMdTab";
+import NotificationsTab from "../routes/settings/NotificationsTab";
 import NotFound from "../routes/NotFound";
 
 /**
@@ -37,8 +40,11 @@ function renderAt(url: string) {
         <Route path="/mcp" component={McpServersTab} />
         <Route path="/skills" component={SkillsTab} />
         <Route path="/providers" component={CloudProvidersTab} />
+        <Route path="/harness-accounts" component={HarnessAccountsTab} />
+        <Route path="/memory" component={MemoryTab} />
+        <Route path="/agents-md" component={AgentsMdTab} />
+        <Route path="/notifications" component={NotificationsTab} />
         <Route path="/api-keys" component={ApiKeysTab} />
-        <Route path="/env" component={EnvTab} />
       </Route>
       <Route path="*404" component={NotFound} />
     </MemoryRouter>
@@ -76,9 +82,25 @@ describe("route smoke tests", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders /settings/env", () => {
-    const { getByRole } = renderAt("/settings/env");
-    expect(getByRole("heading", { level: 2, name: ".env" })).toBeInTheDocument();
+  it("renders /settings/harness-accounts", async () => {
+    const { findByRole } = renderAt("/settings/harness-accounts");
+    expect(await findByRole("heading", { level: 2, name: "Harness accounts" })).toBeInTheDocument();
+  });
+
+  it("renders /settings/memory", () => {
+    const { getByRole } = renderAt("/settings/memory");
+    expect(getByRole("heading", { level: 2, name: "Memory" })).toBeInTheDocument();
+  });
+
+  it("renders /settings/agents-md", () => {
+    const { getByRole } = renderAt("/settings/agents-md");
+    expect(getByRole("heading", { level: 2, name: "AGENTS.md" })).toBeInTheDocument();
+  });
+
+  it("renders /settings/notifications, handling an unconfigured VAPID key calmly", async () => {
+    const { getByRole, findByRole } = renderAt("/settings/notifications");
+    expect(getByRole("heading", { level: 2, name: "Notifications" })).toBeInTheDocument();
+    expect(await findByRole("status")).toHaveTextContent("Not built yet");
   });
 
   it("renders an unknown path as the 404 page", () => {

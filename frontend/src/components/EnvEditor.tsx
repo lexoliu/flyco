@@ -1,9 +1,15 @@
 import { For, Show, createResource, createSignal } from "solid-js";
-import ProblemNotice from "../../components/ProblemNotice";
-import { getSessionEnv, listSessions, putSessionEnv, type EnvEntry } from "../../api/client";
-import styles from "./Tab.module.css";
+import ProblemNotice from "./ProblemNotice";
+import { getSessionEnv, putSessionEnv, type EnvEntry } from "../api/client";
+import styles from "./Panel.module.css";
 
-function EnvEditor(props: { sessionId: string }) {
+/**
+ * The `.env` editor for one session. Lives on the session detail page
+ * rather than settings, since a `.env` file belongs to a session, not the
+ * account — see `EnvDocument.warning`, which this always renders verbatim
+ * rather than hard-coding the network-control caveat on the frontend.
+ */
+export default function EnvEditor(props: { sessionId: string }) {
   const [doc, { refetch }] = createResource(() => props.sessionId, getSessionEnv);
   const [entries, setEntries] = createSignal<EnvEntry[]>([]);
   const [saving, setSaving] = createSignal(false);
@@ -87,47 +93,6 @@ function EnvEditor(props: { sessionId: string }) {
           )}
         </Show>
       </Show>
-    </div>
-  );
-}
-
-export default function EnvTab() {
-  const [sessions] = createResource(listSessions);
-  const [sessionId, setSessionId] = createSignal<string | null>(null);
-
-  return (
-    <div class={styles.tab}>
-      <div class={styles.tabHeader}>
-        <h2>.env</h2>
-        <p class={styles.tabDescription}>
-          Agents can read this file but not edit it; you can. Flyco doesn't yet control which
-          hosts a session can reach, so secrets placed here may still leak over the network —
-          keep that in mind until network control ships. The .env file is per session, so pick
-          one below.
-        </p>
-      </div>
-
-      <ProblemNotice error={sessions.error} />
-      <Show when={!sessions.loading}>
-        <Show
-          when={sessions.error !== undefined || (sessions() ?? []).length > 0}
-          fallback={<p class={styles.empty}>No sessions yet — create one to edit its .env.</p>}
-        >
-          <div class={styles.field}>
-            <label for="env-session">Session</label>
-            <select
-              id="env-session"
-              value={sessionId() ?? ""}
-              onChange={(event) => setSessionId(event.currentTarget.value === "" ? null : event.currentTarget.value)}
-            >
-              <option value="">Choose a session…</option>
-              <For each={sessions()}>{(session) => <option value={session.id}>{session.repo} ({session.id})</option>}</For>
-            </select>
-          </div>
-        </Show>
-      </Show>
-
-      <Show when={sessionId()}>{(id) => <EnvEditor sessionId={id()} />}</Show>
     </div>
   );
 }
