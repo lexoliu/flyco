@@ -14,13 +14,13 @@
 //! parsed the payload "for now" would be exactly the shape of the bug this
 //! comment exists to prevent.
 
-use skyzen::Response;
 use skyzen::routing::{CreateRouteNode, Route, RouteNode, Routes as _};
 use skyzen::utils::Bytes;
 use skyzen_services::Db;
 
 use crate::extract::Headers;
 use crate::problem::Outcome;
+use crate::respond::NoContent;
 
 /// Header GitHub signs each delivery with, per its webhook documentation.
 pub const SIGNATURE_HEADER: &str = "x-hub-signature-256";
@@ -33,7 +33,7 @@ pub const EVENT_HEADER: &str = "x-github-event";
 /// Answers `204`: GitHub only needs to know the delivery was accepted, and
 /// the work it triggers is queued rather than done inline.
 #[skyzen::openapi]
-async fn receive_github_webhook(_headers: Headers, _body: Bytes, _db: Db) -> Outcome<Response> {
+async fn receive_github_webhook(_headers: Headers, _body: Bytes, _db: Db) -> Outcome<NoContent> {
     todo!(
         "M6: verify the X-Hub-Signature-256 HMAC over the raw body in constant time, and only then parse and queue it"
     )

@@ -14,22 +14,22 @@
 //!
 //! A browser cannot set headers on a WebSocket handshake. The usual answer
 //! is to smuggle the credential through `Sec-WebSocket-Protocol` and echo
-//! the selected subprotocol back, and that is what flyco was designed to do
-//! — but it cannot be built on skyzen 0.1.2. Its wasm runtime renders a
-//! `101` by constructing a fresh `ResponseInit` carrying only `status` and
-//! `webSocket` (`src/runtime/wasm.rs`, `src/websocket/ffi.rs`), so response
-//! headers are dropped. RFC 6455 §4.1 requires a client that offered a
-//! subprotocol to *fail the connection* when the server echoes none, so
-//! that route would refuse to open in every browser.
+//! the selected subprotocol back; flyco does not, and now does not by
+//! choice. A ticket is a credential minted for one room, spent once, and
+//! dead a minute later, which is a smaller thing to leak than a session
+//! token in a subprotocol header — and the exchange is one authenticated
+//! REST call the browser already has a client for.
 //!
 //! So the browser exchanges its session token for a relay ticket over
 //! ordinary authenticated REST, then opens
 //! `wss://…/relay/client?ticket=frt_…`. The ticket lives [one
 //! minute](TICKET_TTL_SECONDS), is single-use, and is bound to the session
-//! it was minted for — which is strictly better than a long-lived
-//! credential in a URL, and no worse than the subprotocol trick for
-//! anything but log tidiness. Restore the subprotocol handshake when skyzen
-//! can set headers on a `101`.
+//! it was minted for.
+//!
+//! Skyzen can carry headers on a `101` again, so the subprotocol handshake
+//! is buildable — it is simply not what flyco does. Changing it would move
+//! the browser's authentication mechanism, which is a product decision and
+//! not something a version bump should make on its own.
 
 use flyco_core::{CurrentUser, SessionId};
 use serde::{Deserialize, Serialize};
@@ -203,7 +203,7 @@ fn join(
     _role: Role,
 ) -> impl core::future::Future<Output = Result<skyzen::Response, ApiError>> + Send {
     core::future::ready(Err(ApiError::RelayUnavailable(
-        "hibernating WebSockets are a Cloudflare-only capability of skyzen 0.1.2",
+        "a native control plane does not forward relay upgrades into a session room",
     )))
 }
 

@@ -12,14 +12,13 @@
 
 use flyco_core::{CurrentUser, SkillScope, SkillView};
 use serde::Deserialize;
-use skyzen::Response;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::utils::{Bytes, Json, State};
 use skyzen_services::{Db, Storage};
 
 use crate::problem::Outcome;
-use crate::respond::Created;
+use crate::respond::{Created, NoContent};
 
 /// What an uploaded zip is stored as.
 #[derive(Debug, Deserialize, skyzen::ToSchema)]
@@ -66,7 +65,7 @@ async fn delete_skill(
     _params: Params,
     _storage: Storage,
     _db: Db,
-) -> Outcome<Response> {
+) -> Outcome<NoContent> {
     todo!("M6: delete the row and its R2 object, then withdraw it from live sessions")
 }
 

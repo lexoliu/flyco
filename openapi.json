@@ -12,11 +12,28 @@
         "operationId": "flyco_api::agents_md::get_agents_md",
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentsDocument"
+                  "type": "object",
+                  "description": "Response of `GET`/`PUT /v1/agents-md`.",
+                  "required": [
+                    "content",
+                    "updated_at_unix"
+                  ],
+                  "properties": {
+                    "content": {
+                      "type": "string",
+                      "description": "The whole document, as Markdown."
+                    },
+                    "updated_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Last change, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -50,11 +67,28 @@
         },
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentsDocument"
+                  "type": "object",
+                  "description": "Response of `GET`/`PUT /v1/agents-md`.",
+                  "required": [
+                    "content",
+                    "updated_at_unix"
+                  ],
+                  "properties": {
+                    "content": {
+                      "type": "string",
+                      "description": "The whole document, as Markdown."
+                    },
+                    "updated_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Last change, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -69,13 +103,44 @@
         "operationId": "flyco_api::app::list_api_keys",
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ApiKeySummary"
+                    "type": "object",
+                    "description": "One row of `GET /v1/api-keys`.",
+                    "required": [
+                      "id",
+                      "label",
+                      "created_at_unix"
+                    ],
+                    "properties": {
+                      "created_at_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Creation time, seconds since the Unix epoch.",
+                        "minimum": 0
+                      },
+                      "id": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Identifier used to revoke the key."
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "Label supplied at creation."
+                      },
+                      "last_used_unix": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int64",
+                        "description": "Last time the key authenticated a request, if it ever has.",
+                        "minimum": 0
+                      }
+                    }
                   }
                 }
               }
@@ -110,11 +175,38 @@
         },
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CreatedApiKey"
+                  "type": "object",
+                  "description": "A freshly minted API key.\n\nThis is the only representation that ever carries the plaintext\n[`token`](Self::token): the control plane stores nothing but its hash, so\na key that is not saved here is gone.",
+                  "required": [
+                    "id",
+                    "label",
+                    "token",
+                    "created_at_unix"
+                  ],
+                  "properties": {
+                    "created_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Creation time, seconds since the Unix epoch.",
+                      "minimum": 0
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier used to revoke the key later."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "Label supplied at creation."
+                    },
+                    "token": {
+                      "type": "string",
+                      "description": "The plaintext key, returned exactly once."
+                    }
+                  }
                 }
               }
             }
@@ -139,7 +231,7 @@
         ],
         "responses": {
           "204": {
-            "description": "Done; there is nothing to return."
+            "description": "Done. There is nothing to return."
           }
         }
       }
@@ -185,13 +277,45 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ApprovalView"
+                    "type": "object",
+                    "description": "An approval as the API serves it.",
+                    "required": [
+                      "id",
+                      "session",
+                      "payload",
+                      "state",
+                      "created_at_unix"
+                    ],
+                    "properties": {
+                      "created_at_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "When it was raised, seconds since the Unix epoch.",
+                        "minimum": 0
+                      },
+                      "id": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Identifier used to decide it."
+                      },
+                      "payload": {
+                        "$ref": "#/components/schemas/ApprovalPayload",
+                        "description": "What is being approved."
+                      },
+                      "session": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Session that raised it."
+                      },
+                      "state": {
+                        "$ref": "#/components/schemas/ApprovalState",
+                        "description": "Whether it is still waiting, and what the user decided if not."
+                      }
+                    }
                   }
                 }
               }
@@ -238,11 +362,43 @@
         },
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApprovalView"
+                  "type": "object",
+                  "description": "An approval as the API serves it.",
+                  "required": [
+                    "id",
+                    "session",
+                    "payload",
+                    "state",
+                    "created_at_unix"
+                  ],
+                  "properties": {
+                    "created_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was raised, seconds since the Unix epoch.",
+                      "minimum": 0
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier used to decide it."
+                    },
+                    "payload": {
+                      "$ref": "#/components/schemas/ApprovalPayload",
+                      "description": "What is being approved."
+                    },
+                    "session": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Session that raised it."
+                    },
+                    "state": {
+                      "$ref": "#/components/schemas/ApprovalState",
+                      "description": "Whether it is still waiting, and what the user decided if not."
+                    }
+                  }
                 }
               }
             }
@@ -268,11 +424,21 @@
         "operationId": "flyco_api::oauth::start",
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AuthorizeUrl"
+                  "type": "object",
+                  "description": "Where the browser must be sent to begin a GitHub OAuth code flow.",
+                  "required": [
+                    "authorize_url"
+                  ],
+                  "properties": {
+                    "authorize_url": {
+                      "type": "string",
+                      "description": "Fully-formed `https://github.com/login/oauth/authorize` URL, including\nthe single-use `state` this control plane will accept back."
+                    }
+                  }
                 }
               }
             }
@@ -298,13 +464,49 @@
         "operationId": "flyco_api::harness_accounts::list_harness_accounts",
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/HarnessAccountView"
+                    "type": "object",
+                    "description": "A Claude or Codex account the user has linked, as `GET\n/v1/harness-accounts` lists it.\n\nLinking runs against the *vendor's own* authorization page — the flow the\nofficial CLIs wrap — so flyco never sees a password, and what it stores\nis the resulting token, sealed. No representation of an account carries\nthat token; it leaves the control plane only when it is provisioned onto\na session machine.",
+                    "required": [
+                      "id",
+                      "harness",
+                      "label",
+                      "linked_at_unix"
+                    ],
+                    "properties": {
+                      "expires_at_unix": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int64",
+                        "description": "When the stored credential expires, when the vendor states a\nlifetime.",
+                        "minimum": 0
+                      },
+                      "harness": {
+                        "$ref": "#/components/schemas/HarnessKind",
+                        "description": "Which harness this account drives."
+                      },
+                      "id": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Identifier."
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "Account name as the vendor reports it, so the user can tell two\nlinked accounts apart."
+                      },
+                      "linked_at_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "When it was linked, seconds since the Unix epoch.",
+                        "minimum": 0
+                      }
+                    }
                   }
                 }
               }
@@ -330,7 +532,7 @@
         ],
         "responses": {
           "204": {
-            "description": "Done; there is nothing to return."
+            "description": "Done. There is nothing to return."
           }
         }
       }
@@ -370,7 +572,7 @@
         ],
         "responses": {
           "303": {
-            "description": "Redirected back to the application."
+            "description": "The browser is sent on to the flyco web app."
           }
         }
       }
@@ -392,11 +594,21 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AuthorizeUrl"
+                  "type": "object",
+                  "description": "Where the browser must be sent to begin a GitHub OAuth code flow.",
+                  "required": [
+                    "authorize_url"
+                  ],
+                  "properties": {
+                    "authorize_url": {
+                      "type": "string",
+                      "description": "Fully-formed `https://github.com/login/oauth/authorize` URL, including\nthe single-use `state` this control plane will accept back."
+                    }
+                  }
                 }
               }
             }
@@ -411,11 +623,23 @@
         "operationId": "flyco_api::app::healthz",
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Health"
+                  "type": "object",
+                  "description": "Health probe response.",
+                  "required": [
+                    "wire_protocol_version"
+                  ],
+                  "properties": {
+                    "wire_protocol_version": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "Wire protocol version this control plane speaks to daemons.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -476,13 +700,54 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/MachineCatalogEntry"
+                    "type": "object",
+                    "description": "One entry in the machine catalog the agent sees when deciding whether\nto keep, upgrade, or downgrade its machine.",
+                    "required": [
+                      "provider",
+                      "region",
+                      "machine_type",
+                      "os",
+                      "pricing"
+                    ],
+                    "properties": {
+                      "capacity": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/MachineCapacity",
+                            "description": "How big it is, when the provider publishes a size.\n\nA cloud SKU always does. A host the user registered over SSH has\nwhatever hardware it has, and flyco does not learn that until a\ndaemon runs on it and says so — inventing a size here would be a\nnumber the agent could plan against and be wrong about."
+                          }
+                        ]
+                      },
+                      "machine_type": {
+                        "type": "string",
+                        "description": "Provider-native machine type name (e.g. `Standard_B2ats_v2`)."
+                      },
+                      "os": {
+                        "$ref": "#/components/schemas/OsFamily",
+                        "description": "Operating system family."
+                      },
+                      "pricing": {
+                        "$ref": "#/components/schemas/MachinePricing",
+                        "description": "What it costs to run for an hour."
+                      },
+                      "provider": {
+                        "$ref": "#/components/schemas/CloudProviderKind",
+                        "description": "Which provider offers it."
+                      },
+                      "region": {
+                        "type": "string",
+                        "description": "Provider-native region this entry is offered in.\n\nA catalog spans every region an account may deploy into, so an entry\nwithout one would not say where the machine it describes can be\ncreated. A registered SSH host names itself here: it is its own\nregion, and there is nowhere else to put it."
+                      }
+                    }
                   }
                 }
               }
@@ -498,13 +763,45 @@
         "operationId": "flyco_api::mcp::list_mcp_servers",
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/McpServerView"
+                    "type": "object",
+                    "description": "One row of `GET /v1/mcp-servers`.",
+                    "required": [
+                      "id",
+                      "name",
+                      "config",
+                      "enabled",
+                      "updated_at_unix"
+                    ],
+                    "properties": {
+                      "config": {
+                        "$ref": "#/components/schemas/McpServerConfig",
+                        "description": "How to reach it."
+                      },
+                      "enabled": {
+                        "type": "boolean",
+                        "description": "Whether sessions are given it."
+                      },
+                      "id": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Identifier."
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "Name the harness announces it under."
+                      },
+                      "updated_at_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Last change, seconds since the Unix epoch.",
+                        "minimum": 0
+                      }
+                    }
                   }
                 }
               }
@@ -549,11 +846,43 @@
         },
         "responses": {
           "201": {
-            "description": "Created.",
+            "description": "The resource that was created.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/McpServerView"
+                  "type": "object",
+                  "description": "One row of `GET /v1/mcp-servers`.",
+                  "required": [
+                    "id",
+                    "name",
+                    "config",
+                    "enabled",
+                    "updated_at_unix"
+                  ],
+                  "properties": {
+                    "config": {
+                      "$ref": "#/components/schemas/McpServerConfig",
+                      "description": "How to reach it."
+                    },
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Whether sessions are given it."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Name the harness announces it under."
+                    },
+                    "updated_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Last change, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -578,11 +907,43 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/McpServerView"
+                  "type": "object",
+                  "description": "One row of `GET /v1/mcp-servers`.",
+                  "required": [
+                    "id",
+                    "name",
+                    "config",
+                    "enabled",
+                    "updated_at_unix"
+                  ],
+                  "properties": {
+                    "config": {
+                      "$ref": "#/components/schemas/McpServerConfig",
+                      "description": "How to reach it."
+                    },
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Whether sessions are given it."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Name the harness announces it under."
+                    },
+                    "updated_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Last change, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -605,7 +966,7 @@
         ],
         "responses": {
           "204": {
-            "description": "Done; there is nothing to return."
+            "description": "Done. There is nothing to return."
           }
         }
       },
@@ -656,11 +1017,43 @@
         },
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/McpServerView"
+                  "type": "object",
+                  "description": "One row of `GET /v1/mcp-servers`.",
+                  "required": [
+                    "id",
+                    "name",
+                    "config",
+                    "enabled",
+                    "updated_at_unix"
+                  ],
+                  "properties": {
+                    "config": {
+                      "$ref": "#/components/schemas/McpServerConfig",
+                      "description": "How to reach it."
+                    },
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Whether sessions are given it."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Name the harness announces it under."
+                    },
+                    "updated_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Last change, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -675,11 +1068,33 @@
         "operationId": "flyco_api::app::me",
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CurrentUser"
+                  "type": "object",
+                  "description": "The authenticated caller behind a request.\n\nProduced by the control plane's authenticator from either credential\nshape, and returned verbatim by `GET /v1/me`.",
+                  "required": [
+                    "id",
+                    "login",
+                    "session_cap"
+                  ],
+                  "properties": {
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "The flyco user this request acts as."
+                    },
+                    "login": {
+                      "type": "string",
+                      "description": "The caller's GitHub login, cached at sign-in."
+                    },
+                    "session_cap": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "How many sessions this user may hold at once, counting everything\nthat is not archived.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -715,11 +1130,33 @@
         },
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CurrentUser"
+                  "type": "object",
+                  "description": "The authenticated caller behind a request.\n\nProduced by the control plane's authenticator from either credential\nshape, and returned verbatim by `GET /v1/me`.",
+                  "required": [
+                    "id",
+                    "login",
+                    "session_cap"
+                  ],
+                  "properties": {
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "The flyco user this request acts as."
+                    },
+                    "login": {
+                      "type": "string",
+                      "description": "The caller's GitHub login, cached at sign-in."
+                    },
+                    "session_cap": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "How many sessions this user may hold at once, counting everything\nthat is not archived.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -764,13 +1201,62 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/MemoryNode"
+                    "type": "object",
+                    "description": "One node in the memory tree.",
+                    "required": [
+                      "id",
+                      "title",
+                      "content",
+                      "updated_at_unix"
+                    ],
+                    "properties": {
+                      "content": {
+                        "type": "string",
+                        "description": "The remembered content."
+                      },
+                      "id": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "This node's identifier."
+                      },
+                      "parent": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/Uuid",
+                            "description": "Parent node; `None` for a root."
+                          }
+                        ]
+                      },
+                      "repo": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/RepoSlug",
+                            "description": "Repository this subtree is about; `None` for memory that applies\nwherever the user's agents run."
+                          }
+                        ]
+                      },
+                      "title": {
+                        "type": "string",
+                        "description": "Short title shown when listing children."
+                      },
+                      "updated_at_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Last update as a unix timestamp in seconds.",
+                        "minimum": 0
+                      }
+                    }
                   }
                 }
               }
@@ -832,11 +1318,60 @@
         },
         "responses": {
           "201": {
-            "description": "Created.",
+            "description": "The resource that was created.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MemoryNode"
+                  "type": "object",
+                  "description": "One node in the memory tree.",
+                  "required": [
+                    "id",
+                    "title",
+                    "content",
+                    "updated_at_unix"
+                  ],
+                  "properties": {
+                    "content": {
+                      "type": "string",
+                      "description": "The remembered content."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "This node's identifier."
+                    },
+                    "parent": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/Uuid",
+                          "description": "Parent node; `None` for a root."
+                        }
+                      ]
+                    },
+                    "repo": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/RepoSlug",
+                          "description": "Repository this subtree is about; `None` for memory that applies\nwherever the user's agents run."
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string",
+                      "description": "Short title shown when listing children."
+                    },
+                    "updated_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Last update as a unix timestamp in seconds.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -861,11 +1396,60 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MemoryNode"
+                  "type": "object",
+                  "description": "One node in the memory tree.",
+                  "required": [
+                    "id",
+                    "title",
+                    "content",
+                    "updated_at_unix"
+                  ],
+                  "properties": {
+                    "content": {
+                      "type": "string",
+                      "description": "The remembered content."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "This node's identifier."
+                    },
+                    "parent": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/Uuid",
+                          "description": "Parent node; `None` for a root."
+                        }
+                      ]
+                    },
+                    "repo": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/RepoSlug",
+                          "description": "Repository this subtree is about; `None` for memory that applies\nwherever the user's agents run."
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string",
+                      "description": "Short title shown when listing children."
+                    },
+                    "updated_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Last update as a unix timestamp in seconds.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -888,7 +1472,7 @@
         ],
         "responses": {
           "204": {
-            "description": "Done; there is nothing to return."
+            "description": "Done. There is nothing to return."
           }
         }
       },
@@ -936,11 +1520,60 @@
         },
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MemoryNode"
+                  "type": "object",
+                  "description": "One node in the memory tree.",
+                  "required": [
+                    "id",
+                    "title",
+                    "content",
+                    "updated_at_unix"
+                  ],
+                  "properties": {
+                    "content": {
+                      "type": "string",
+                      "description": "The remembered content."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "This node's identifier."
+                    },
+                    "parent": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/Uuid",
+                          "description": "Parent node; `None` for a root."
+                        }
+                      ]
+                    },
+                    "repo": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/RepoSlug",
+                          "description": "Repository this subtree is about; `None` for memory that applies\nwherever the user's agents run."
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string",
+                      "description": "Short title shown when listing children."
+                    },
+                    "updated_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Last update as a unix timestamp in seconds.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -955,13 +1588,40 @@
         "operationId": "flyco_api::provider_accounts::list_providers",
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ProviderAccountView"
+                    "type": "object",
+                    "description": "One row of `GET /v1/providers`.",
+                    "required": [
+                      "id",
+                      "kind",
+                      "label",
+                      "linked_at_unix"
+                    ],
+                    "properties": {
+                      "id": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Identifier used to unlink the account."
+                      },
+                      "kind": {
+                        "$ref": "#/components/schemas/CloudProviderKind",
+                        "description": "Which provider it is."
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "Label supplied when it was linked."
+                      },
+                      "linked_at_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "When it was linked, seconds since the Unix epoch.",
+                        "minimum": 0
+                      }
+                    }
                   }
                 }
               }
@@ -1001,11 +1661,38 @@
         },
         "responses": {
           "201": {
-            "description": "Created.",
+            "description": "The resource that was created.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProviderAccountView"
+                  "type": "object",
+                  "description": "One row of `GET /v1/providers`.",
+                  "required": [
+                    "id",
+                    "kind",
+                    "label",
+                    "linked_at_unix"
+                  ],
+                  "properties": {
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier used to unlink the account."
+                    },
+                    "kind": {
+                      "$ref": "#/components/schemas/CloudProviderKind",
+                      "description": "Which provider it is."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "Label supplied when it was linked."
+                    },
+                    "linked_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was linked, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -1046,13 +1733,49 @@
         },
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ProviderBonusHint"
+                    "type": "object",
+                    "description": "One suggestion returned by the quickstart questionnaire.",
+                    "required": [
+                      "provider",
+                      "title",
+                      "detail",
+                      "url"
+                    ],
+                    "properties": {
+                      "credit": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/Usd",
+                            "description": "Headline credit, when the programme states a fixed amount."
+                          }
+                        ]
+                      },
+                      "detail": {
+                        "type": "string",
+                        "description": "What the user has to do to claim it."
+                      },
+                      "provider": {
+                        "$ref": "#/components/schemas/CloudProviderKind",
+                        "description": "Provider offering the credit."
+                      },
+                      "title": {
+                        "type": "string",
+                        "description": "Name of the programme, as the provider calls it."
+                      },
+                      "url": {
+                        "type": "string",
+                        "description": "Where to sign up."
+                      }
+                    }
                   }
                 }
               }
@@ -1078,7 +1801,7 @@
         ],
         "responses": {
           "204": {
-            "description": "Done; there is nothing to return."
+            "description": "Done. There is nothing to return."
           }
         }
       }
@@ -1125,11 +1848,33 @@
         },
         "responses": {
           "201": {
-            "description": "Created.",
+            "description": "The resource that was created.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PushSubscriptionView"
+                  "type": "object",
+                  "description": "Response of `POST /v1/push/subscriptions`.\n\nCarries the endpoint back but never the keys: they are write-only, and a\nsubscription is identified from here on by [`id`](Self::id).",
+                  "required": [
+                    "id",
+                    "endpoint",
+                    "created_at_unix"
+                  ],
+                  "properties": {
+                    "created_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was registered, seconds since the Unix epoch.",
+                      "minimum": 0
+                    },
+                    "endpoint": {
+                      "type": "string",
+                      "description": "The push service endpoint it posts to."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier used to remove the subscription."
+                    }
+                  }
                 }
               }
             }
@@ -1154,7 +1899,7 @@
         ],
         "responses": {
           "204": {
-            "description": "Done; there is nothing to return."
+            "description": "Done. There is nothing to return."
           }
         }
       }
@@ -1166,11 +1911,21 @@
         "operationId": "flyco_api::push::vapid_public_key",
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VapidPublicKey"
+                  "type": "object",
+                  "description": "Response of `GET /v1/push/vapid-public-key`.\n\nThe SPA passes this to `PushManager.subscribe` as\n`applicationServerKey`; the matching private key never leaves the\ncontrol plane.",
+                  "required": [
+                    "key"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "description": "The uncompressed P-256 public point, base64url without padding."
+                    }
+                  }
                 }
               }
             }
@@ -1185,13 +1940,52 @@
         "operationId": "flyco_api::app::list_sessions",
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/SessionSummary"
+                    "type": "object",
+                    "description": "A session in a list.",
+                    "required": [
+                      "id",
+                      "harness",
+                      "repo",
+                      "state",
+                      "created_at_unix",
+                      "last_active_unix"
+                    ],
+                    "properties": {
+                      "created_at_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "When it was created, seconds since the Unix epoch.",
+                        "minimum": 0
+                      },
+                      "harness": {
+                        "$ref": "#/components/schemas/HarnessKind",
+                        "description": "Which coding harness drives it."
+                      },
+                      "id": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Identifier."
+                      },
+                      "last_active_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Last time anything happened on it, seconds since the Unix epoch.",
+                        "minimum": 0
+                      },
+                      "repo": {
+                        "$ref": "#/components/schemas/RepoSlug",
+                        "description": "Repository it works in."
+                      },
+                      "state": {
+                        "$ref": "#/components/schemas/SessionState",
+                        "description": "Where it is in its lifecycle."
+                      }
+                    }
                   }
                 }
               }
@@ -1240,11 +2034,29 @@
         },
         "responses": {
           "201": {
-            "description": "Created.",
+            "description": "The resource that was created.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionDetail"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionSummary",
+                      "description": "Everything a list entry carries."
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "budget"
+                      ],
+                      "properties": {
+                        "budget": {
+                          "$ref": "#/components/schemas/BudgetView",
+                          "description": "Budget accounting as of this request."
+                        }
+                      }
+                    }
+                  ],
+                  "description": "A single session, with its budget."
                 }
               }
             }
@@ -1269,11 +2081,29 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionDetail"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionSummary",
+                      "description": "Everything a list entry carries."
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "budget"
+                      ],
+                      "properties": {
+                        "budget": {
+                          "$ref": "#/components/schemas/BudgetView",
+                          "description": "Budget accounting as of this request."
+                        }
+                      }
+                    }
+                  ],
+                  "description": "A single session, with its budget."
                 }
               }
             }
@@ -1420,11 +2250,43 @@
         },
         "responses": {
           "201": {
-            "description": "Created.",
+            "description": "The resource that was created.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApprovalView"
+                  "type": "object",
+                  "description": "An approval as the API serves it.",
+                  "required": [
+                    "id",
+                    "session",
+                    "payload",
+                    "state",
+                    "created_at_unix"
+                  ],
+                  "properties": {
+                    "created_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was raised, seconds since the Unix epoch.",
+                      "minimum": 0
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier used to decide it."
+                    },
+                    "payload": {
+                      "$ref": "#/components/schemas/ApprovalPayload",
+                      "description": "What is being approved."
+                    },
+                    "session": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Session that raised it."
+                    },
+                    "state": {
+                      "$ref": "#/components/schemas/ApprovalState",
+                      "description": "Whether it is still waiting, and what the user decided if not."
+                    }
+                  }
                 }
               }
             }
@@ -1449,11 +2311,29 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionDetail"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionSummary",
+                      "description": "Everything a list entry carries."
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "budget"
+                      ],
+                      "properties": {
+                        "budget": {
+                          "$ref": "#/components/schemas/BudgetView",
+                          "description": "Budget accounting as of this request."
+                        }
+                      }
+                    }
+                  ],
+                  "description": "A single session, with its budget."
                 }
               }
             }
@@ -1478,11 +2358,36 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BudgetView"
+                  "type": "object",
+                  "description": "Budget accounting as the API serves it.\n\nEvery field is derived from replaying the spend ledger through\n[`BudgetState`], so the API can never disagree with the engine.",
+                  "required": [
+                    "limit",
+                    "spent",
+                    "remaining",
+                    "stage"
+                  ],
+                  "properties": {
+                    "limit": {
+                      "$ref": "#/components/schemas/Usd",
+                      "description": "The spending limit."
+                    },
+                    "remaining": {
+                      "$ref": "#/components/schemas/Usd",
+                      "description": "Left to spend; zero once exhausted."
+                    },
+                    "spent": {
+                      "$ref": "#/components/schemas/Usd",
+                      "description": "Spent so far."
+                    },
+                    "stage": {
+                      "$ref": "#/components/schemas/BudgetStage",
+                      "description": "How far through the budget the session is."
+                    }
+                  }
                 }
               }
             }
@@ -1507,11 +2412,26 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DaemonToken"
+                  "type": "object",
+                  "description": "A freshly minted daemon token.\n\nResponse of `POST /v1/sessions/{id}/daemon-token`. Minting again\nreplaces the previous token, so a session has at most one live daemon\ncredential and re-pairing revokes the old one.",
+                  "required": [
+                    "session",
+                    "token"
+                  ],
+                  "properties": {
+                    "session": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "The session this token authenticates a daemon for."
+                    },
+                    "token": {
+                      "type": "string",
+                      "description": "The plaintext token, returned exactly once."
+                    }
+                  }
                 }
               }
             }
@@ -1536,11 +2456,29 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EnvDocument"
+                  "type": "object",
+                  "description": "Response of `GET`/`PUT /v1/sessions/{id}/env`.",
+                  "required": [
+                    "entries",
+                    "warning"
+                  ],
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/EnvEntry"
+                      },
+                      "description": "Every variable the session runs with, in the order it is stored."
+                    },
+                    "warning": {
+                      "type": "string",
+                      "description": "[`NETWORK_CONTROL_WARNING`], repeated on every response so a client\nrenders the caveat beside the values rather than hard-coding it."
+                    }
+                  }
                 }
               }
             }
@@ -1587,11 +2525,29 @@
         },
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EnvDocument"
+                  "type": "object",
+                  "description": "Response of `GET`/`PUT /v1/sessions/{id}/env`.",
+                  "required": [
+                    "entries",
+                    "warning"
+                  ],
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/EnvEntry"
+                      },
+                      "description": "Every variable the session runs with, in the order it is stored."
+                    },
+                    "warning": {
+                      "type": "string",
+                      "description": "[`NETWORK_CONTROL_WARNING`], repeated on every response so a client\nrenders the caveat beside the values rather than hard-coding it."
+                    }
+                  }
                 }
               }
             }
@@ -1630,11 +2586,29 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EventPage"
+                  "type": "object",
+                  "description": "A page of the room's event tail.",
+                  "required": [
+                    "events",
+                    "more"
+                  ],
+                  "properties": {
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/StoredEvent"
+                      },
+                      "description": "The events, oldest first."
+                    },
+                    "more": {
+                      "type": "boolean",
+                      "description": "Whether more events exist past the last one returned."
+                    }
+                  }
                 }
               }
             }
@@ -1659,7 +2633,7 @@
         ],
         "responses": {
           "202": {
-            "description": "Accepted; the outcome arrives out of band."
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
           }
         }
       }
@@ -1681,11 +2655,64 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MachineView"
+                  "type": "object",
+                  "description": "The machine a session is running on, as `GET\n/v1/sessions/{id}/machine` reports it.",
+                  "required": [
+                    "id",
+                    "session",
+                    "spec",
+                    "state",
+                    "spot",
+                    "region",
+                    "created_at_unix"
+                  ],
+                  "properties": {
+                    "created_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was created, seconds since the Unix epoch.",
+                      "minimum": 0
+                    },
+                    "hourly": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/Usd",
+                          "description": "Price actually being billed per hour — the spot price when the\nmachine holds spot capacity, the on-demand one otherwise, and\nnothing at all on hardware the user owns."
+                        }
+                      ]
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier of the provisioned machine."
+                    },
+                    "region": {
+                      "type": "string",
+                      "description": "Provider-native region it landed in."
+                    },
+                    "session": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Session it belongs to. A machine serves exactly one."
+                    },
+                    "spec": {
+                      "$ref": "#/components/schemas/MachineSpec",
+                      "description": "What was asked for."
+                    },
+                    "spot": {
+                      "type": "boolean",
+                      "description": "Whether the machine actually holds interruptible capacity.\n\n[`spec.spot`](MachineSpec::spot) is what was asked for; this is what\nthe provider gave. Azure refuses spot on subscriptions and SKUs that\ndo not support it, and flyco falls back to on-demand rather than\nfailing the session, so the two can disagree — and the price being\nbilled follows this field, not the request."
+                    },
+                    "state": {
+                      "$ref": "#/components/schemas/MachineState",
+                      "description": "Where it is in its lifecycle."
+                    }
+                  }
                 }
               }
             }
@@ -1731,7 +2758,7 @@
         },
         "responses": {
           "202": {
-            "description": "Accepted; the outcome arrives out of band."
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
           }
         }
       }
@@ -1753,7 +2780,7 @@
         ],
         "responses": {
           "202": {
-            "description": "Accepted; the outcome arrives out of band."
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
           }
         }
       }
@@ -1775,7 +2802,7 @@
         ],
         "responses": {
           "202": {
-            "description": "Accepted; the outcome arrives out of band."
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
           }
         }
       }
@@ -1818,7 +2845,7 @@
         },
         "responses": {
           "202": {
-            "description": "Accepted; the outcome arrives out of band."
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
           }
         }
       }
@@ -1840,11 +2867,28 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RelayTicket"
+                  "type": "object",
+                  "description": "A minted relay ticket.",
+                  "required": [
+                    "ticket",
+                    "expires_at_unix"
+                  ],
+                  "properties": {
+                    "expires_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it stops being accepted, seconds since the Unix epoch.",
+                      "minimum": 0
+                    },
+                    "ticket": {
+                      "type": "string",
+                      "description": "The single-use ticket, to be passed as the `ticket` query parameter\nof the client relay route."
+                    }
+                  }
                 }
               }
             }
@@ -1911,11 +2955,26 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RepoStatus"
+                  "type": "object",
+                  "description": "The working tree of a session's checkout, as `GET\n/v1/sessions/{id}/repo-status` reports it.\n\nDirtiness is load-bearing rather than informational: an agent may not\nstop while the tree is dirty, and archiving a dirty session warns the\nuser before the disk is released. The UI needs the same fact.",
+                  "required": [
+                    "dirty",
+                    "summary"
+                  ],
+                  "properties": {
+                    "dirty": {
+                      "type": "boolean",
+                      "description": "Whether the working tree has changes that are not committed."
+                    },
+                    "summary": {
+                      "type": "string",
+                      "description": "`git status --short`, as the daemon last read it. Empty when clean."
+                    }
+                  }
                 }
               }
             }
@@ -1940,11 +2999,29 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionDetail"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionSummary",
+                      "description": "Everything a list entry carries."
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "budget"
+                      ],
+                      "properties": {
+                        "budget": {
+                          "$ref": "#/components/schemas/BudgetView",
+                          "description": "Budget accounting as of this request."
+                        }
+                      }
+                    }
+                  ],
+                  "description": "A single session, with its budget."
                 }
               }
             }
@@ -2061,11 +3138,31 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TurnPage"
+                  "type": "object",
+                  "description": "One page of `GET /v1/sessions/{id}/turns`.\n\nThe cursor is opaque: it encodes a position in the session's recorded\nevent stream, and a client that stores it must hand it back unread.",
+                  "required": [
+                    "turns"
+                  ],
+                  "properties": {
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Cursor to pass as `cursor` for the next page, or `None` at the end."
+                    },
+                    "turns": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TurnSummary"
+                      },
+                      "description": "The turns, oldest first."
+                    }
+                  }
                 }
               }
             }
@@ -2080,13 +3177,47 @@
         "operationId": "flyco_api::skills::list_skills",
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/SkillView"
+                    "type": "object",
+                    "description": "One row of `GET /v1/skills`, and the response of `GET /v1/skills/{id}`.\n\nThe bundle itself is not part of this: a skill zip is object-storage\ncontent, not a JSON field.",
+                    "required": [
+                      "id",
+                      "name",
+                      "scope",
+                      "size_bytes",
+                      "uploaded_at_unix"
+                    ],
+                    "properties": {
+                      "id": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Identifier."
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "Directory name the bundle is installed under."
+                      },
+                      "scope": {
+                        "$ref": "#/components/schemas/SkillScope",
+                        "description": "Which harness gets it."
+                      },
+                      "size_bytes": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Size of the stored zip in bytes.",
+                        "minimum": 0
+                      },
+                      "uploaded_at_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "When it was last uploaded, seconds since the Unix epoch.",
+                        "minimum": 0
+                      }
+                    }
                   }
                 }
               }
@@ -2131,11 +3262,45 @@
         },
         "responses": {
           "201": {
-            "description": "Created.",
+            "description": "The resource that was created.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SkillView"
+                  "type": "object",
+                  "description": "One row of `GET /v1/skills`, and the response of `GET /v1/skills/{id}`.\n\nThe bundle itself is not part of this: a skill zip is object-storage\ncontent, not a JSON field.",
+                  "required": [
+                    "id",
+                    "name",
+                    "scope",
+                    "size_bytes",
+                    "uploaded_at_unix"
+                  ],
+                  "properties": {
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Directory name the bundle is installed under."
+                    },
+                    "scope": {
+                      "$ref": "#/components/schemas/SkillScope",
+                      "description": "Which harness gets it."
+                    },
+                    "size_bytes": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Size of the stored zip in bytes.",
+                      "minimum": 0
+                    },
+                    "uploaded_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was last uploaded, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -2160,11 +3325,45 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SkillView"
+                  "type": "object",
+                  "description": "One row of `GET /v1/skills`, and the response of `GET /v1/skills/{id}`.\n\nThe bundle itself is not part of this: a skill zip is object-storage\ncontent, not a JSON field.",
+                  "required": [
+                    "id",
+                    "name",
+                    "scope",
+                    "size_bytes",
+                    "uploaded_at_unix"
+                  ],
+                  "properties": {
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Directory name the bundle is installed under."
+                    },
+                    "scope": {
+                      "$ref": "#/components/schemas/SkillScope",
+                      "description": "Which harness gets it."
+                    },
+                    "size_bytes": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Size of the stored zip in bytes.",
+                      "minimum": 0
+                    },
+                    "uploaded_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was last uploaded, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -2187,7 +3386,7 @@
         ],
         "responses": {
           "204": {
-            "description": "Done; there is nothing to return."
+            "description": "Done. There is nothing to return."
           }
         }
       }
@@ -2217,13 +3416,58 @@
         ],
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/CloudUsageView"
+                    "type": "object",
+                    "description": "One row of `GET /v1/usage/cloud`, covering one linked account over one\nbilling period.",
+                    "required": [
+                      "account",
+                      "provider",
+                      "period_start_unix",
+                      "period_end_unix",
+                      "spent"
+                    ],
+                    "properties": {
+                      "account": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Account the spend is billed to."
+                      },
+                      "period_end_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "End of the billing period, seconds since the Unix epoch.",
+                        "minimum": 0
+                      },
+                      "period_start_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Start of the billing period, seconds since the Unix epoch.",
+                        "minimum": 0
+                      },
+                      "provider": {
+                        "$ref": "#/components/schemas/CloudProviderKind",
+                        "description": "Provider that account belongs to."
+                      },
+                      "remaining_credit": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/Usd",
+                            "description": "Promotional credit left, when the provider exposes a balance."
+                          }
+                        ]
+                      },
+                      "spent": {
+                        "$ref": "#/components/schemas/Usd",
+                        "description": "Spend the provider has metered so far this period."
+                      }
+                    }
                   }
                 }
               }
@@ -2239,13 +3483,69 @@
         "operationId": "flyco_api::harness_accounts::llm_usage",
         "responses": {
           "200": {
-            "description": "Success.",
+            "description": "Response",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/LlmUsageView"
+                    "type": "object",
+                    "description": "One row of `GET /v1/usage/llm`, covering one linked harness account.\n\nEvery field is an observation rather than a quota. A panel built from\nthis says \"you have spent this much and were limited at this time\",\nwhich is the honest claim; \"you have N requests left\" is not one flyco\ncan make.",
+                    "required": [
+                      "account",
+                      "harness",
+                      "label",
+                      "period_start_unix"
+                    ],
+                    "properties": {
+                      "account": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Account the observations belong to."
+                      },
+                      "harness": {
+                        "$ref": "#/components/schemas/HarnessKind",
+                        "description": "Which harness that account drives."
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "Label the account was linked under."
+                      },
+                      "observed_cost": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/Usd",
+                            "description": "Cost the harness itself reported over that window, summed from its\ntelemetry. Absent when the harness reported none."
+                          }
+                        ]
+                      },
+                      "period_start_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Start of the window these observations cover, seconds since the Unix\nepoch.",
+                        "minimum": 0
+                      },
+                      "rate_limited_at_unix": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int64",
+                        "description": "When this account last hit its usage limit, if it has.",
+                        "minimum": 0
+                      },
+                      "resets_at_unix": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int64",
+                        "description": "When that limit resets, when the harness named a time.",
+                        "minimum": 0
+                      }
+                    }
                   }
                 }
               }
@@ -2272,7 +3572,7 @@
         },
         "responses": {
           "204": {
-            "description": "Done; there is nothing to return."
+            "description": "Done. There is nothing to return."
           }
         }
       }
@@ -4379,43 +5679,6 @@
           "key": {
             "type": "string",
             "description": "The uncompressed P-256 public point, base64url without padding."
-          }
-        }
-      },
-      "Vec": {
-        "type": "array",
-        "items": {
-          "type": "object",
-          "description": "One row of `GET /v1/api-keys`.",
-          "required": [
-            "id",
-            "label",
-            "created_at_unix"
-          ],
-          "properties": {
-            "created_at_unix": {
-              "type": "integer",
-              "format": "int64",
-              "description": "Creation time, seconds since the Unix epoch.",
-              "minimum": 0
-            },
-            "id": {
-              "$ref": "#/components/schemas/Uuid",
-              "description": "Identifier used to revoke the key."
-            },
-            "label": {
-              "type": "string",
-              "description": "Label supplied at creation."
-            },
-            "last_used_unix": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "int64",
-              "description": "Last time the key authenticated a request, if it ever has.",
-              "minimum": 0
-            }
           }
         }
       }

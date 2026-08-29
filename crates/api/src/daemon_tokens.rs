@@ -19,11 +19,6 @@ use skyzen_services::Db;
 use crate::crypto::{prefixed_token, token_hash};
 use crate::error::ApiError;
 
-#[derive(Debug, skyzen::FromRow)]
-struct TokenHashRow {
-    daemon_token_hash: Option<String>,
-}
-
 /// Mints a daemon token for one of `user`'s sessions, replacing any token
 /// the session already had.
 ///
@@ -40,8 +35,8 @@ pub async fn issue(db: &Db, user: UserId, session: SessionId) -> Result<DaemonTo
     let result = db
         .query("UPDATE sessions SET daemon_token_hash = ? WHERE id = ? AND user_id = ?")
         .bind(token_hash(&token))
-        .bind(session.to_string())
-        .bind(user.to_string())
+        .bind(session)
+        .bind(user)
         .execute()
         .await?;
 
@@ -65,14 +60,17 @@ pub async fn authenticates(db: &Db, session: SessionId, presented: &str) -> Resu
         return Ok(false);
     }
 
-    let row: Option<TokenHashRow> = db
+    // The column is nullable, so the scalar is `Option<String>` and the row
+    // itself is optional: an unknown session and an unpaired one both arrive
+    // here as `None`.
+    let stored: Option<Option<String>> = db
         .query("SELECT daemon_token_hash FROM sessions WHERE id = ?")
-        .bind(session.to_string())
-        .fetch_optional()
+        .bind(session)
+        .fetch_scalar_optional()
         .await?;
 
-    Ok(row
-        .and_then(|row| row.daemon_token_hash)
+    Ok(stored
+        .flatten()
         .is_some_and(|stored| stored == token_hash(presented)))
 }
 

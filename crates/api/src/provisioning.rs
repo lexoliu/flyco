@@ -19,7 +19,6 @@ use skyzen_services::Db;
 
 use crate::config::ApiConfig;
 use crate::error::ApiError;
-use crate::sql::encode_enum;
 
 /// One linked account, with its credentials unsealed for immediate use.
 ///
@@ -52,7 +51,7 @@ impl LinkedAccount {
 
 #[derive(Debug, skyzen::FromRow)]
 struct SealedRow {
-    id: String,
+    id: ProviderAccountId,
     credentials_enc: String,
 }
 
@@ -75,8 +74,8 @@ pub async fn accounts_for(
                 "SELECT id, credentials_enc FROM provider_accounts \
                  WHERE user_id = ? AND kind = ? ORDER BY linked_at_unix",
             )
-            .bind(user.to_string())
-            .bind(encode_enum(&kind)?)
+            .bind(user)
+            .bind(kind)
             .fetch_all()
             .await?
         }
@@ -85,7 +84,7 @@ pub async fn accounts_for(
                 "SELECT id, credentials_enc FROM provider_accounts \
                  WHERE user_id = ? ORDER BY linked_at_unix",
             )
-            .bind(user.to_string())
+            .bind(user)
             .fetch_all()
             .await?
         }
@@ -99,10 +98,7 @@ pub async fn accounts_for(
                     ApiError::CorruptRecord("provider_accounts.credentials_enc is not credentials")
                 })?;
             Ok(LinkedAccount {
-                id: row
-                    .id
-                    .parse()
-                    .map_err(|_| ApiError::CorruptRecord("provider_accounts.id is not a UUID"))?,
+                id: row.id,
                 credentials,
             })
         })
@@ -123,8 +119,8 @@ pub async fn account(
 ) -> Result<LinkedAccount, ApiError> {
     let row: SealedRow = db
         .query("SELECT id, credentials_enc FROM provider_accounts WHERE id = ? AND user_id = ?")
-        .bind(id.to_string())
-        .bind(user.to_string())
+        .bind(id)
+        .bind(user)
         .fetch_optional()
         .await?
         .ok_or(ApiError::ProviderAccountNotFound)?;

@@ -13,7 +13,6 @@ use flyco_core::AuthorizeUrl;
 use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::utils::{Json, State};
-use skyzen::{Body, Response, StatusCode, header};
 use skyzen_services::{Db, Kv};
 use url::Url;
 
@@ -22,6 +21,7 @@ use crate::crypto::random_token;
 use crate::error::ApiError;
 use crate::github::{GithubOauth, SCOPE};
 use crate::problem::Outcome;
+use crate::respond::SeeOther;
 use crate::{expiring, session, users};
 
 /// Where the browser is sent to approve the OAuth app.
@@ -98,7 +98,7 @@ pub async fn callback<G: GithubOauth>(
     State(github): State<G>,
     kv: Kv,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<SeeOther> {
     complete(callback, &config, &github, &kv, &db).await.into()
 }
 
@@ -108,7 +108,7 @@ async fn complete<G: GithubOauth>(
     github: &G,
     kv: &Kv,
     db: &Db,
-) -> Result<Response, ApiError> {
+) -> Result<SeeOther, ApiError> {
     if expiring::take::<()>(kv, &state_key(&callback.state))
         .await?
         .is_none()
@@ -131,7 +131,7 @@ async fn complete<G: GithubOauth>(
     let session_token = session::issue(kv, user.id).await?;
 
     tracing::info!(login = %user.login, "completed a GitHub sign-in");
-    Ok(see_other(&completion_url(config, &session_token)))
+    Ok(SeeOther(completion_url(config, &session_token)))
 }
 
 /// Where the browser is sent once it has a token: the SPA's completion route
@@ -147,19 +147,6 @@ fn completion_url(config: &ApiConfig, session_token: &str) -> Url {
             .finish(),
     ));
     url
-}
-
-/// A 303 redirect, which is what turns GitHub's GET into a plain navigation.
-fn see_other(location: &Url) -> Response {
-    // A parsed `Url` percent-encodes everything a header value forbids, so
-    // this conversion cannot fail.
-    let value = header::HeaderValue::from_str(location.as_str())
-        .expect("a parsed URL is always a valid header value");
-
-    let mut response = Response::new(Body::empty());
-    *response.status_mut() = StatusCode::SEE_OTHER;
-    response.headers_mut().insert(header::LOCATION, value);
-    response
 }
 
 #[cfg(test)]
