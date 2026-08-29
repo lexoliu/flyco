@@ -43,15 +43,15 @@ pub use env::{EnvDocument, EnvEntry, NETWORK_CONTROL_WARNING, UpdateEnv};
 pub use github::RepoSummary;
 pub use harness::{
     Availability, ContextWindow, Feature, HarnessAccountView, HarnessEvent, HarnessKind,
-    UsageReport,
+    PermissionMode, UsageReport,
 };
 pub use id::{
     ApiKeyId, ApprovalId, BudgetId, HarnessAccountId, Id, MachineId, McpServerId, MemoryNodeId,
     ProviderAccountId, PushSubscriptionId, SessionId, SkillId, SpendEventId, UserId,
 };
 pub use machine::{
-    CloudProviderKind, MachineCatalogEntry, MachineSpec, MachineState, MachineView, OsFamily,
-    ResizeMachine,
+    CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
+    MachineState, MachineView, OsFamily, ResizeMachine,
 };
 pub use mcp::{HeaderEntry, McpServerConfig, McpServerView, UpsertMcpServer};
 pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};

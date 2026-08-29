@@ -71,7 +71,22 @@ Claude Code: `/etc/claude-code/managed-settings.json` + `managed-mcp.json` (root
 
 ## Providers
 
-`flyco_provider::CloudProvider`: `catalog` (typed pricing, including minimum-billing flags like EC2 Mac's 24-hour Apple-license minimum), `provision`, `resize` (disk-preserving), `deallocate`, `destroy`. All implementations are plain signed HTTP (zenwave) so they run in the Worker; `aws-sigv4` is verified to compile on wasm32. Spot by default; eviction notices are watched by flycod on the VM metadata endpoint (Azure Scheduled Events `Preempt`, EC2 IMDSv2).
+`flyco_provider::CloudProvider`: `catalog` (typed pricing, including minimum-billing flags like EC2 Mac's 24-hour Apple-license minimum), `provision`, `resize` (disk-preserving), `deallocate`, `start`, `destroy`. Every method takes `&mut self`, because a driver caches state it must be able to replace — an Azure access token, refreshed at 80% of its lifetime and on any 401 — and modelling that with `&self` would mean interior mutability, which on a `Send` future means a lock.
+
+No driver touches `zenwave` directly. They build a `flyco_provider::http::HttpRequest` and hand it to an `HttpTransport`, which is `ZenwaveTransport` in production (Fetch on the Worker, hyper natively) and a table of recorded exchanges under test. That indirection is what makes the wire assertable: `crates/provider/fixtures/` holds the recorded provider responses, and the tests pin the exact URL, `api-version`, headers and JSON body each operation produces. Spot by default; eviction notices are watched by flycod on the VM metadata endpoint (Azure Scheduled Events `Preempt`, EC2 IMDSv2).
+
+**Every provisioned machine boots the same `flycod` configuration**, rendered once by `flyco_provider::flycod` as a serde document — not a template, because the daemon's loader is `deny_unknown_fields` and escaping and layout have to be the serializer's problem. `crates/daemon/tests/provisioned_config.rs` renders it and parses it back with the daemon's own loader, so a field renamed on either side fails a test rather than producing a machine that boots and never phones home.
+
+### byo-ssh, and the plan/execute split
+
+byo-ssh is the provider that needs no cloud account, so it exists first: everything downstream of provisioning is exercisable against a laptop. A "machine" is a **Podman container** on the registered host — created from the flyco image, handed the session's `flycod` config through an env-file on the remote shell's stdin (never a command-line argument, which a `ps` would show), stopped to deallocate, removed to destroy. `resize` is `ProviderError::Unsupported`, never a silent no-op: the host has the hardware it has, and a caller that believed a resize happened would bill and schedule against a machine that did not change. `catalog()` reports one entry — the host itself — with `MachinePricing::UserOwned` and no capacity, because flyco does not know either number and inventing a `$0.00` would tell a budget the session can run forever.
+
+SSH is a TCP transport and the Worker has no sockets, so the driver is in two halves, and the split is enforced by the crate graph rather than by convention:
+
+- `byo_ssh::ByoSsh` compiles on wasm32, performs no I/O, and *plans*: it turns a `MachineOperation` into a serializable `ContainerJob` that the control plane enqueues.
+- `byo_ssh::SshExecutor` exists only behind the native `ssh` feature (russh) and is the only thing that implements `CloudProvider` for byo-ssh. A Worker build contains no SSH client because the feature that provides one is not enabled for it.
+
+The feature is off by default and CI enables it explicitly (`--features flyco-provider/ssh`) so the executor is still linted and tested. Host keys are pinned: `ProviderCredentials::ByoSsh` carries a required `host_fingerprint` and there is no trust-on-first-use path, because linking the account is the moment flyco starts handing that address live session credentials.
 
 ## Version pins and workarounds (skyzen 0.1.2)
 

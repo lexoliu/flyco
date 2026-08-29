@@ -19,6 +19,12 @@ skyzen-test = "0.1.0"
 skyzen-cloudflare = "0.1.1"
 zenwave = "0.5"
 
+# Provider drivers render structured documents — cloud-init YAML, podman
+# scripts — from compiled templates rather than string concatenation, so a
+# dropped field fails the build instead of emitting a broken document.
+askama = "0.14"
+shell-escape = "0.1"
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -32,6 +38,7 @@ clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 rand = "0.9"
 rust-embed = { version = "8", features = ["debug-embed", "include-exclude"] }
+russh = "0.63"
 tokio = { version = "1", features = [
     "fs",
     "io-std",
