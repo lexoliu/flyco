@@ -1023,6 +1023,8 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         let on_demand_hourly = published.on_demand.ok_or(ExclusionReason::Unpriced)?;
 
         Ok(MachineCatalogEntry {
+            // Stamped by the control plane, which knows the row.
+            account: None,
             provider: CloudProviderKind::Azure,
             region: region.to_owned(),
             machine_type: sku.name.clone(),
