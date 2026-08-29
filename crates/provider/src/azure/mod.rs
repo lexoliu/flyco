@@ -1075,6 +1075,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
 
         Ok(MachineCatalogEntry {
             provider: CloudProviderKind::Azure,
+            region: region.to_owned(),
             machine_type: sku.name.clone(),
             os: OsFamily::Linux,
             capacity: Some(MachineCapacity { vcpus, memory_mib }),
