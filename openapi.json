@@ -2698,6 +2698,64 @@
         }
       }
     },
+    "/v1/sessions/{id}/harness-observations": {
+      "post": {
+        "summary": "Records one thing this session's daemon observed about the harness account driving it.",
+        "description": "Records one thing this session's daemon observed about the harness\naccount driving it.\n\nThe LLM usage panel is reactive by necessity — no vendor publishes a\nremaining-quota API — so this is where its numbers come from: the daemon\nholds the turn's `UsageReport` and is what receives `UsageLimited`, and\nneither can be asked for after the fact.\n\nWhich account the observation lands on is derived from the session\nitself, so a daemon never names one. Answers `204`: the row's identity\nis of no use to the daemon that posted it.",
+        "operationId": "flyco_api::app::record_harness_observation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "One thing a session's daemon saw happen to the harness account driving\nit, as `POST /v1/sessions/{id}/harness-observations` records it.\n\nThe daemon is the only place both facts exist: it holds the turn's\n[`UsageReport`](crate::harness::UsageReport) and it is what receives\n[`HarnessEvent::UsageLimited`](crate::harness::HarnessEvent::UsageLimited).\nNeither can be asked for after the fact, which is why they are posted as\nthey happen rather than polled.\n\nAn observation that reports neither is nothing to record, and the\ncontrol plane refuses it rather than storing a row that says nothing.",
+                "properties": {
+                  "observed_cost": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/Usd",
+                        "description": "Cost the harness reported for the turn that just finished, when it\nreported one."
+                      }
+                    ]
+                  },
+                  "rate_limit": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/RateLimitObservation",
+                        "description": "Present when this observation is the account hitting its limit."
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/interrupt": {
       "post": {
         "summary": "Ends a session's current turn.",
@@ -3476,7 +3534,7 @@
     "/v1/usage/cloud": {
       "get": {
         "summary": "Reports metered cloud spend per linked account.",
-        "description": "Reports metered cloud spend per linked account.",
+        "description": "Reports metered cloud spend per linked account.\n\nThe provider's own meter is the authority — a total flyco assembled from\nits machine records would miss the storage, egress and support charges\non the same invoice — so every row here was read from the account it\ndescribes, over the window it names.\n\nNot every linked account produces a row. A registered SSH host is\nhardware the user already owns and already pays for: flyco meters\nnothing there and says nothing, rather than reporting a `$0.00` that\nwould read as \"this costs nothing\".",
         "operationId": "flyco_api::provider_accounts::cloud_usage",
         "parameters": [
           {
@@ -3561,7 +3619,7 @@
     "/v1/usage/llm": {
       "get": {
         "summary": "Reports what flyco has observed of each harness account's usage.",
-        "description": "Reports what flyco has observed of each harness account's usage.\n\nReactive by necessity: neither Anthropic nor `OpenAI` publishes a\nremaining-quota API, so this reports the cost telemetry the harness\nemitted and the rate limits it actually hit. A panel built on it says\nwhat has happened, never what is left.",
+        "description": "Reports what flyco has observed of each harness account's usage.\n\nReactive by necessity: neither Anthropic nor `OpenAI` publishes a\nremaining-quota API, so this reports the cost telemetry the harness\nemitted and the rate limits it actually hit. A panel built on it says\nwhat has happened, never what is left.\n\nThe rows come out of [`crate::observations`], which is filled in by the\nsessions' own daemons as they run — the only place either number exists.\nAn account with nothing observed about it still appears, reporting\nnothing, because \"nothing has happened\" is an answer and a missing row\nwould read as an account that is not linked.",
         "operationId": "flyco_api::harness_accounts::llm_usage",
         "responses": {
           "200": {
@@ -3639,7 +3697,7 @@
     "/v1/webhooks/github": {
       "post": {
         "summary": "Accepts a signed GitHub webhook delivery.",
-        "description": "Accepts a signed GitHub webhook delivery.\n\nAnswers `204`: GitHub only needs to know the delivery was accepted, and\nthe work it triggers is queued rather than done inline.",
+        "description": "Accepts a signed GitHub webhook delivery.\n\nAnswers `204`: GitHub only needs to know the delivery was accepted, and\nwhat it triggers happens on the session relay rather than in this\nresponse.",
         "operationId": "flyco_api::webhooks::receive_github_webhook",
         "requestBody": {
           "description": "Extractor arguments",
@@ -4399,6 +4457,34 @@
           "claude_code",
           "codex"
         ]
+      },
+      "HarnessObservation": {
+        "type": "object",
+        "description": "One thing a session's daemon saw happen to the harness account driving\nit, as `POST /v1/sessions/{id}/harness-observations` records it.\n\nThe daemon is the only place both facts exist: it holds the turn's\n[`UsageReport`](crate::harness::UsageReport) and it is what receives\n[`HarnessEvent::UsageLimited`](crate::harness::HarnessEvent::UsageLimited).\nNeither can be asked for after the fact, which is why they are posted as\nthey happen rather than polled.\n\nAn observation that reports neither is nothing to record, and the\ncontrol plane refuses it rather than storing a row that says nothing.",
+        "properties": {
+          "observed_cost": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Usd",
+                "description": "Cost the harness reported for the turn that just finished, when it\nreported one."
+              }
+            ]
+          },
+          "rate_limit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RateLimitObservation",
+                "description": "Present when this observation is the account hitting its limit."
+              }
+            ]
+          }
+        }
       },
       "HeaderEntry": {
         "type": "object",
@@ -5265,6 +5351,21 @@
           "new_to_provider": {
             "type": "boolean",
             "description": "Whether the user has never held an account with these providers, and\nso still qualifies for new-customer credit."
+          }
+        }
+      },
+      "RateLimitObservation": {
+        "type": "object",
+        "description": "The account hit its usage limit.\n\nA struct rather than a bare timestamp field beside the cost, so \"when it\nresets\" cannot be set on an observation that is not a rate limit: the\nreset time only exists inside the event that has one.",
+        "properties": {
+          "resets_at_unix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the harness said the limit resets, when it named a time.",
+            "minimum": 0
           }
         }
       },

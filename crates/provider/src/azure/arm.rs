@@ -32,6 +32,12 @@ pub mod api_version {
     pub const USAGES: &str = "2024-11-01";
     /// `Microsoft.Authorization/policyAssignments`, the allowed-regions read.
     pub const POLICY_ASSIGNMENTS: &str = "2024-04-01";
+    /// `Microsoft.CostManagement/query`, the metered-spend read.
+    ///
+    /// Cost Management versions independently of the resource providers
+    /// above — it is not in a subscription's provider manifest — so this
+    /// one is pinned from its own REST reference.
+    pub const COST_MANAGEMENT: &str = "2025-03-01";
 }
 
 /// The resource-group scope every per-session resource hangs off.

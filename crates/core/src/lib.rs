@@ -48,8 +48,9 @@ pub use harness::{
     PermissionMode, UsageReport,
 };
 pub use id::{
-    ApiKeyId, ApprovalId, BudgetId, HarnessAccountId, Id, MachineId, McpServerId, MemoryNodeId,
-    ProviderAccountId, PushSubscriptionId, SessionId, SkillId, SpendEventId, UserId,
+    ApiKeyId, ApprovalId, BudgetId, HarnessAccountId, HarnessObservationId, Id, MachineId,
+    McpServerId, MemoryNodeId, ProviderAccountId, PushSubscriptionId, SessionId, SkillId,
+    SpendEventId, UserId,
 };
 pub use machine::{
     CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
@@ -69,7 +70,10 @@ pub use session::{
     SessionTransitionError, TurnPage, TurnSummary,
 };
 pub use skills::{SkillScope, SkillView};
-pub use usage::{CloudUsageView, LlmUsageView};
+pub use usage::{
+    CloudSpend, CloudUsageView, HarnessObservation, LlmUsageView, OBSERVATION_WINDOW_SECONDS,
+    RateLimitObservation,
+};
 pub use wire::{ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl};
 
 /// Version of the daemon⇄control-plane wire protocol.

@@ -1,6 +1,6 @@
 //! The daemon's REST client for its own session.
 //!
-//! Three things a daemon does over ordinary HTTP rather than over the relay
+//! Four things a daemon does over ordinary HTTP rather than over the relay
 //! socket, each for its own reason:
 //!
 //! * **Approvals** must be *durable* before they are announced. The control
@@ -11,6 +11,10 @@
 //!   caps at 1 MiB, so bulk data never rides the relay.
 //! * **Reading a transcript back** happens at resume, which is *before*
 //!   there is a session to relay through.
+//! * **Usage observations** are what the LLM usage panel is made of, and no
+//!   vendor publishes the numbers to read instead. They belong in D1 rather
+//!   than in a room's event log, which is per-session and lives as long as
+//!   the session does.
 //!
 //! Every call carries the session's `fd_` daemon token, which authorizes
 //! exactly this session's daemon-scoped routes.
@@ -18,7 +22,7 @@
 use core::future::Future;
 
 use flyco_core::wire::ApprovalPayload;
-use flyco_core::{ApprovalId, ApprovalView, Problem, SessionId};
+use flyco_core::{ApprovalId, ApprovalView, HarnessObservation, Problem, SessionId};
 use url::Url;
 use zenwave::{Client as _, ResponseExt as _};
 
@@ -130,6 +134,23 @@ pub trait ControlApi: Send + Sync + 'static {
         &self,
         stream: &str,
     ) -> impl Future<Output = Result<TranscriptRead, ControlApiError>> + Send;
+
+    /// Records one thing this session saw about the harness account driving
+    /// it — a turn's reported cost, or the account hitting its limit.
+    ///
+    /// The control plane derives *which* account from the session, so there
+    /// is no account identifier here for a daemon to get wrong.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or refused the observation — which it does when the session's
+    /// user has linked no account for this harness, and there is therefore
+    /// nothing to attribute it to.
+    fn record_observation(
+        &self,
+        observation: HarnessObservation,
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 }
 
 /// A transcript stream as the control plane serves it.
@@ -223,6 +244,25 @@ impl ControlApi for HttpControlApi {
             .bytes_body(body)
             .await
             .map_err(|error| refused("PUT", &url, &error))?;
+
+        debug_assert!(response.status().is_success());
+        Ok(())
+    }
+
+    async fn record_observation(
+        &self,
+        observation: HarnessObservation,
+    ) -> Result<(), ControlApiError> {
+        let url = self.url("harness-observations")?;
+        let mut client = zenwave::client();
+        let response = client
+            .post(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(&observation)
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("POST", &url, &error))?;
 
         debug_assert!(response.status().is_success());
         Ok(())
