@@ -71,7 +71,7 @@ mod tests;
 
 use flyco_core::machine::{
     CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
-    MachineState, OsFamily,
+    MachineState, OsFamily, StoragePricing,
 };
 use flyco_core::{CloudSpend, MachineId};
 
@@ -976,6 +976,11 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             .region_prices(&self.transport, &self.clock, region)
             .await?
             .to_vec();
+        let storage = self
+            .prices
+            .storage_pricing(&self.transport, &self.clock, region)
+            .await?
+            .clone();
 
         let mut report = RegionReport {
             region: region.to_owned(),
@@ -984,7 +989,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         };
 
         for sku in skus {
-            match Self::entry_for(&sku, region, &quotas, &priced) {
+            match Self::entry_for(&sku, region, &quotas, &priced, &storage) {
                 Ok(entry) => report.offered.push(entry),
                 Err(reason) => report.excluded.push((sku.name, reason)),
             }
@@ -998,6 +1003,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         region: &str,
         quotas: &Quotas,
         priced: &[(String, pricing::MachinePrices)],
+        storage: &StoragePricing,
     ) -> Result<MachineCatalogEntry, ExclusionReason> {
         if let Availability::Unavailable { reason } = sku.availability(region) {
             return Err(ExclusionReason::NotOffered(reason));
@@ -1037,6 +1043,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
                 // for providers that impose one, such as EC2 Mac's 24-hour
                 // Apple-license minimum.
                 minimum_billing_hours: None,
+                storage: storage.clone(),
             },
         })
     }

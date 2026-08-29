@@ -115,6 +115,7 @@ impl BudgetStage {
 /// A signal the control plane must deliver when a threshold is crossed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum BudgetSignal {
     /// Half the budget is spent.
     Notice50,
@@ -127,6 +128,17 @@ pub enum BudgetSignal {
 }
 
 impl BudgetSignal {
+    /// Monotonic threshold order for durable delivery.
+    #[must_use]
+    pub const fn ordinal(self) -> u8 {
+        match self {
+            Self::Notice50 => 1,
+            Self::Warn80 => 2,
+            Self::FinalWarn90 => 3,
+            Self::Pause => 4,
+        }
+    }
+
     /// The signal announcing entry into `stage`, if the scheme emits one.
     ///
     /// Small budgets (< $5) suppress the notice and the 80% warning.
