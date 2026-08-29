@@ -81,6 +81,29 @@ impl GithubOauth for TestGithub {
         }))
     }
 
+    /// Two repositories, so a filter has something to exclude.
+    fn list_repos(
+        &self,
+        _token: &GithubToken,
+    ) -> impl Future<Output = Result<Vec<flyco_core::RepoSummary>, GithubError>> + Send {
+        ready(Ok(vec![
+            flyco_core::RepoSummary {
+                slug: "lexoliu/flyco".parse().expect("a valid slug"),
+                private: true,
+                default_branch: "dev".to_owned(),
+                description: Some("agentic coding on the web".to_owned()),
+                pushed_at_unix: Some(1_787_000_000),
+            },
+            flyco_core::RepoSummary {
+                slug: "zen-rs/skyzen".parse().expect("a valid slug"),
+                private: false,
+                default_branch: "main".to_owned(),
+                description: None,
+                pushed_at_unix: None,
+            },
+        ]))
+    }
+
     fn current_user(
         &self,
         token: &GithubToken,

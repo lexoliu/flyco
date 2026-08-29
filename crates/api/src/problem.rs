@@ -110,7 +110,7 @@ impl<T: Responder> Responder for Outcome<T> {
         defs: &mut std::collections::BTreeMap<String, skyzen::openapi::SchemaRef>,
     ) {
         T::register_openapi_schemas(defs);
-        skyzen::openapi::maybe_register_schema_for::<flyco_core::Problem>(defs);
+        skyzen::openapi::register_schema_for::<flyco_core::Problem>(defs);
     }
 }
 

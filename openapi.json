@@ -282,36 +282,11 @@
     },
     "/v1/github/repos": {
       "get": {
-        "summary": "Lists the caller's GitHub repositories, for the session-creation picker.",
-        "description": "Lists the caller's GitHub repositories, for the session-creation picker.",
-        "operationId": "flyco_api::repos::list_repos",
-        "parameters": [
-          {
-            "name": "q",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "description": "Substring to match against `owner/name`. Omitted lists the caller's\nrepositories by most recent push."
-            }
-          }
-        ],
+        "summary": "repos::list_repos<flyco_api::github::ZenwaveGithub>",
+        "operationId": "repos::list_repos<flyco_api::github::ZenwaveGithub>",
         "responses": {
           "200": {
-            "description": "Success.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/RepoSummary"
-                  }
-                }
-              }
-            }
+            "description": "Successful response"
           }
         }
       }
@@ -3913,19 +3888,6 @@
           }
         }
       },
-      "RepoQuery": {
-        "type": "object",
-        "description": "Narrows the repository picker.",
-        "properties": {
-          "q": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Substring to match against `owner/name`. Omitted lists the caller's\nrepositories by most recent push."
-          }
-        }
-      },
       "RepoSlug": {
         "type": "string",
         "description": "GitHub repository in `owner/name` form"
@@ -4417,6 +4379,43 @@
           "key": {
             "type": "string",
             "description": "The uncompressed P-256 public point, base64url without padding."
+          }
+        }
+      },
+      "Vec": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "description": "One row of `GET /v1/api-keys`.",
+          "required": [
+            "id",
+            "label",
+            "created_at_unix"
+          ],
+          "properties": {
+            "created_at_unix": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Creation time, seconds since the Unix epoch.",
+              "minimum": 0
+            },
+            "id": {
+              "$ref": "#/components/schemas/Uuid",
+              "description": "Identifier used to revoke the key."
+            },
+            "label": {
+              "type": "string",
+              "description": "Label supplied at creation."
+            },
+            "last_used_unix": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "description": "Last time the key authenticated a request, if it ever has.",
+              "minimum": 0
+            }
           }
         }
       }

@@ -115,7 +115,7 @@ pub struct EventCursor {
 }
 
 /// The columns the `events` table stores.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct EventRow {
     seq: i64,
     json: String,

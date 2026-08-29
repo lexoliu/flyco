@@ -10,19 +10,18 @@ use flyco_core::{
     BudgetConfig, BudgetId, BudgetState, BudgetView, SessionId, SpendEvent, SpendEventId,
     SpendKind, Usd,
 };
-use serde::Deserialize;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
 use crate::error::ApiError;
 use crate::sql::{decode_enum, encode_enum, from_column, to_column};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct BudgetRow {
     limit_micros: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct SpendRow {
     kind: String,
     amount_micros: i64,

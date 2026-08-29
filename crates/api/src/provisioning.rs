@@ -15,7 +15,6 @@ use flyco_provider::azure::auth::ServicePrincipal;
 use flyco_provider::azure::{AzureProvider, Workspace};
 use flyco_provider::byo_ssh::ByoSsh;
 use flyco_provider::{CloudProvider, ProviderError};
-use serde::Deserialize;
 use skyzen_services::Db;
 
 use crate::config::ApiConfig;
@@ -51,7 +50,7 @@ impl LinkedAccount {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct SealedRow {
     id: String,
     credentials_enc: String,

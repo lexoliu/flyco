@@ -8,7 +8,6 @@
 use flyco_core::{
     CurrentUser, McpServerConfig, McpServerId, McpServerView, UpsertMcpServer, UserId,
 };
-use serde::Deserialize;
 use skyzen::Response;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::utils::{Json, State};
@@ -22,7 +21,7 @@ use crate::respond::{Created, no_content};
 use crate::sql::{from_column, to_column};
 
 /// The columns every read on this path projects.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct McpRow {
     id: String,
     name: String,

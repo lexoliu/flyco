@@ -586,6 +586,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bigdecimal"
+version = "0.4.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d6867f1565b3aad85681f1015055b087fcfd840d6aeee6eee7f2da317603695"
+dependencies = [
+ "autocfg",
+ "libm",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1506,6 +1519,7 @@ dependencies = [
  "aes-gcm 0.10.3",
  "base64",
  "flyco-core",
+ "flyco-provider",
  "getrandom 0.4.3",
  "hex",
  "js-sys",
@@ -1947,6 +1961,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "headers"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3314d5adb5d94bcdf56771f2e50dbbc80bb4bdf88967526706205ac9eff24eb"
+dependencies = [
+ "base64",
+ "bytes",
+ "headers-core",
+ "http",
+ "httpdate",
+ "mime",
+ "sha1 0.10.7",
+]
+
+[[package]]
+name = "headers-core"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
+dependencies = [
+ "http",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2086,6 +2124,22 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
+name = "humantime"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15cdd26707701c53297e2fa6afb323d55fbc1d0810c3aec078ae3ef0424c3c15"
+
+[[package]]
+name = "humantime-serde"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57a3db5ea5923d99402c94e9feb261dc5ee9b4efa158b0315f788cf549cc200c"
+dependencies = [
+ "humantime",
+ "serde",
+]
 
 [[package]]
 name = "hybrid-array"
@@ -3860,6 +3914,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_html_form"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f0346d7a342ab90f405cfc08f25d15075f944f42fcabbc5eac923829fa6d228"
+dependencies = [
+ "form_urlencoded",
+ "indexmap",
+ "itoa",
+ "serde_core",
+ "zmij",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4033,9 +4100,9 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "skyzen"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7939ebcce6d86963965156d96a6b374899a6f4658d516dd50529338c8b4b7bf4"
+checksum = "d9cb7f1ce3de66684bf220fb932dcd30e9cbc22d9ae235361ee2511fac430400"
 dependencies = [
  "async-channel 2.5.0",
  "async-fs",
@@ -4052,6 +4119,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
+ "headers",
  "http",
  "http-body-util",
  "http-kit",
@@ -4065,10 +4133,12 @@ dependencies = [
  "multer",
  "pin-project-lite",
  "serde",
+ "serde-wasm-bindgen",
+ "serde_html_form",
  "serde_json",
- "serde_urlencoded",
  "sha1 0.10.7",
  "skyzen-core",
+ "skyzen-hyper",
  "skyzen-macros",
  "skyzen-services",
  "smallvec",
@@ -4086,10 +4156,12 @@ dependencies = [
 
 [[package]]
 name = "skyzen-cloudflare"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "177b9fda83ba591981be0200e2f5f2de7cbb49780f1b2434cc5412755e4e65f1"
+checksum = "5a2d04310f79014c1201f068c89c38a832ca4257fc428504bc07314918728f48"
 dependencies = [
+ "bytes",
+ "futures-core",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
@@ -4100,6 +4172,7 @@ dependencies = [
  "tracing",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams 0.5.0",
  "web-sys",
  "worker",
  "worker-sys",
@@ -4107,37 +4180,73 @@ dependencies = [
 
 [[package]]
 name = "skyzen-core"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cd3c04427b83b0f942511b8849d12a700640519679f7eeeae8c5a8e6a43e994"
+checksum = "28cf72725dd575712980c9370b77d545f999add9dc0924c17cca1f35b296159e"
 dependencies = [
  "executor-core",
- "eyre",
  "http-kit",
  "serde",
  "serde_json",
+ "tracing",
  "utoipa",
 ]
 
 [[package]]
-name = "skyzen-macros"
-version = "0.1.2"
+name = "skyzen-hyper"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c71985c62890f00da4a47118e42c72587fd0a3b552de86bd15de2890c8c3908b"
+checksum = "d4eb5ca43c33ae5f8ed2654799ce24825924ab8b1efbb50d622c2558ba2d8da4"
+dependencies = [
+ "async-io 2.6.0",
+ "executor-core",
+ "futures-util",
+ "http-body",
+ "http-body-util",
+ "http-kit",
+ "hyper",
+ "skyzen-core",
+ "tracing",
+]
+
+[[package]]
+name = "skyzen-macros"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ad0fdb707c0f3546003e7ec20912dea5856bf797509983782b85ec7cc037e32"
 dependencies = [
  "proc-macro2",
  "quote",
+ "skyzen-manifest",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "skyzen-manifest"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6241ec7aaadc6751be3ddd7645627e88f10c81e446be48cc2599e9cbdfa7b133"
+dependencies = [
+ "hex",
+ "humantime-serde",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
  "toml 1.1.4+spec-1.1.0",
 ]
 
 [[package]]
 name = "skyzen-services"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01b79a43493f4074910e79c8f5783a4294d9ae1f61702741b1a3940dfceeee36"
+checksum = "584c90b6e8ade6f9c1aaa31f71fe4d7e66d83169ca10ded2b59134dc1b9e0802"
 dependencies = [
+ "base64",
+ "bigdecimal",
+ "bytes",
+ "chrono",
  "futures-core",
+ "hex",
  "http-kit",
  "serde",
  "serde_json",
@@ -4145,18 +4254,22 @@ dependencies = [
  "sqlparser",
  "sqlx",
  "thiserror 2.0.20",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "skyzen-test"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28d2c8ea701ccc5e8d710b384300a47375e3b9f86f620b3e8b163f895616d45a"
+checksum = "03a6d39ed1b60a0d2f8ece7ef109755421621882a9860f526dac69a8e06b12ec"
 dependencies = [
  "http-kit",
  "insta",
  "serde",
+ "serde_html_form",
  "serde_json",
+ "skyzen-core",
  "skyzen-services",
 ]
 
@@ -4279,7 +4392,9 @@ dependencies = [
  "async-io 1.13.0",
  "async-std",
  "base64",
+ "bigdecimal",
  "bytes",
+ "chrono",
  "crc",
  "crossbeam-queue",
  "either",
@@ -4306,6 +4421,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "url",
+ "uuid",
  "webpki-roots 0.26.11",
 ]
 
@@ -4356,9 +4472,11 @@ checksum = "aa003f0038df784eb8fecbbac13affe3da23b45194bd57dba231c8f48199c526"
 dependencies = [
  "atoi",
  "base64",
+ "bigdecimal",
  "bitflags 2.13.1",
  "byteorder",
  "bytes",
+ "chrono",
  "crc",
  "digest 0.10.7",
  "dotenvy",
@@ -4387,6 +4505,7 @@ dependencies = [
  "stringprep",
  "thiserror 2.0.20",
  "tracing",
+ "uuid",
  "whoami",
 ]
 
@@ -4398,8 +4517,10 @@ checksum = "db58fcd5a53cf07c184b154801ff91347e4c30d17a3562a635ff028ad5deda46"
 dependencies = [
  "atoi",
  "base64",
+ "bigdecimal",
  "bitflags 2.13.1",
  "byteorder",
+ "chrono",
  "crc",
  "dotenvy",
  "etcetera",
@@ -4414,6 +4535,7 @@ dependencies = [
  "log",
  "md-5",
  "memchr",
+ "num-bigint",
  "once_cell",
  "rand 0.8.8",
  "serde",
@@ -4424,6 +4546,7 @@ dependencies = [
  "stringprep",
  "thiserror 2.0.20",
  "tracing",
+ "uuid",
  "whoami",
 ]
 
@@ -4434,6 +4557,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2d12fe70b2c1b4401038055f90f151b78208de1f9f89a7dbfd41587a10c3eea"
 dependencies = [
  "atoi",
+ "chrono",
  "flume",
  "futures-channel",
  "futures-core",
@@ -4449,6 +4573,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
