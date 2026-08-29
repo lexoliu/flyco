@@ -196,6 +196,77 @@ fn parse_rfc3339_seconds(value: &str) -> Option<u64> {
     Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
+/// The GitHub client the router actually carries.
+///
+/// Handlers name this concrete type rather than a `G: GithubOauth`
+/// parameter, and that is a deliberate constraint rather than a missing
+/// abstraction: `#[skyzen::openapi]` emits module-level items naming every
+/// argument type, so a generic handler cannot be annotated, and its
+/// operation id would carry the substituted type — `list_repos<ZenwaveGithub>`
+/// — which is not a name a generated client can be written against. One
+/// concrete type keeps every operation id stable.
+///
+/// Dispatch is an enum rather than a trait object because [`GithubOauth`]
+/// returns `impl Future`, which is not object-safe.
+#[derive(Debug, Clone)]
+pub enum GithubClient {
+    /// Talks to `api.github.com`.
+    Live(ZenwaveGithub),
+    /// Answers from fixtures, for tests.
+    #[cfg(test)]
+    Fake(crate::testing::TestGithub),
+}
+
+impl Default for GithubClient {
+    fn default() -> Self {
+        Self::Live(ZenwaveGithub::new())
+    }
+}
+
+/// Forwards to whichever client this is.
+///
+/// Written out rather than macro-generated: three methods is less code than
+/// the macro that would write them.
+impl GithubOauth for GithubClient {
+    async fn exchange_code(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+        code: &str,
+        redirect_uri: &str,
+    ) -> Result<GithubToken, GithubError> {
+        match self {
+            Self::Live(client) => {
+                client
+                    .exchange_code(client_id, client_secret, code, redirect_uri)
+                    .await
+            }
+            #[cfg(test)]
+            Self::Fake(client) => {
+                client
+                    .exchange_code(client_id, client_secret, code, redirect_uri)
+                    .await
+            }
+        }
+    }
+
+    async fn current_user(&self, token: &GithubToken) -> Result<GithubUser, GithubError> {
+        match self {
+            Self::Live(client) => client.current_user(token).await,
+            #[cfg(test)]
+            Self::Fake(client) => client.current_user(token).await,
+        }
+    }
+
+    async fn list_repos(&self, token: &GithubToken) -> Result<Vec<RepoSummary>, GithubError> {
+        match self {
+            Self::Live(client) => client.list_repos(token).await,
+            #[cfg(test)]
+            Self::Fake(client) => client.list_repos(token).await,
+        }
+    }
+}
+
 /// The production [`GithubOauth`], speaking HTTP through zenwave — which is
 /// Fetch-backed on the Worker and hyper-backed natively.
 #[derive(Debug, Clone, Copy, Default)]

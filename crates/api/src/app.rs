@@ -18,7 +18,7 @@ use crate::authenticator::FlycoAuthenticator;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::{Headers, path_id, path_segment};
-use crate::github::{GithubOauth, ZenwaveGithub};
+use crate::github::GithubClient;
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
 use crate::relay::{RelayTicket, TicketQuery};
@@ -743,13 +743,10 @@ async fn read_transcript(
 /// needs the VAPID public key *before* it can subscribe, and GitHub signs
 /// its webhook deliveries rather than presenting a bearer token. Each says
 /// in its own module how it establishes who is calling.
-fn public_routes<G: GithubOauth>() -> Vec<RouteNode> {
+fn public_routes() -> Vec<RouteNode> {
     let mut nodes = Route::new((
         "/v1/healthz".at(healthz),
-        "/v1/auth/github".route((
-            "/start".post(oauth::start),
-            "/callback".at(oauth::callback::<G>),
-        )),
+        "/v1/auth/github".route(("/start".post(oauth::start), "/callback".at(oauth::callback))),
     ))
     .into_route_nodes();
     nodes.extend(harness_accounts::public_routes());
@@ -824,7 +821,7 @@ fn session_routes() -> Vec<RouteNode> {
 /// One middleware for the whole set: every route below answers to a
 /// `CurrentUser` and to nothing else, so authentication is applied once
 /// here rather than per domain, where a module could forget it.
-fn authenticated_routes<G: GithubOauth>() -> Vec<RouteNode> {
+fn authenticated_routes() -> Vec<RouteNode> {
     let mut nodes = account_routes();
     nodes.extend(session_routes());
     nodes.extend(agents_md::routes());
@@ -834,7 +831,7 @@ fn authenticated_routes<G: GithubOauth>() -> Vec<RouteNode> {
     nodes.extend(memory::routes());
     nodes.extend(provider_accounts::routes());
     nodes.extend(push::routes());
-    nodes.extend(repos::routes::<G>());
+    nodes.extend(repos::routes());
     nodes.extend(skills::routes());
     Route::new(nodes)
         .middleware(RequireAuth::new(FlycoAuthenticator::new()))
@@ -845,11 +842,11 @@ fn authenticated_routes<G: GithubOauth>() -> Vec<RouteNode> {
 ///
 /// Separated from [`router`] so the `OpenAPI` export can describe the API
 /// without opening a database or reading any configuration.
-fn routes<G: GithubOauth>() -> Route {
-    let mut nodes = public_routes::<G>();
+fn routes() -> Route {
+    let mut nodes = public_routes();
     nodes.extend(relay_routes());
     nodes.extend(daemon_routes());
-    nodes.extend(authenticated_routes::<G>());
+    nodes.extend(authenticated_routes());
     Route::new(nodes)
 }
 
@@ -883,7 +880,7 @@ const fn with_rooms(route: Route) -> Route {
 /// paths in it would be checked in as if it described the API.
 #[must_use]
 pub fn openapi_document() -> utoipa::openapi::OpenApi {
-    let collected = routes::<ZenwaveGithub>().openapi();
+    let collected = routes().openapi();
     assert!(
         collected.is_enabled(),
         "OpenAPI collection is compiled out; build this in debug on a native target"
@@ -908,14 +905,14 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
 /// wraps the router with it — which is what
 /// [`router_from_environment`] builds instead.
 #[must_use]
-pub fn router<G: GithubOauth>(config: ApiConfig, github: G, db: Db) -> Router {
-    configured::<G>(config, github).with(db).build()
+pub fn router(config: ApiConfig, github: GithubClient, db: Db) -> Router {
+    configured(config, github).with(db).build()
 }
 
 /// The router without its database, which the declared `[[database]]`
 /// supplies.
-fn configured<G: GithubOauth>(config: ApiConfig, github: G) -> Route {
-    with_rooms(routes::<G>())
+fn configured(config: ApiConfig, github: GithubClient) -> Route {
+    with_rooms(routes())
         .with(State(config))
         .with(State(github))
         // Outermost, so extractor and routing failures answer in the same
@@ -950,7 +947,7 @@ fn configured<G: GithubOauth>(config: ApiConfig, github: G) -> Route {
 pub fn router_from_environment() -> Router {
     let config = ApiConfig::from_environment()
         .unwrap_or_else(|error| panic!("flyco control plane is misconfigured: {error}"));
-    configured(config, ZenwaveGithub::new()).build()
+    configured(config, GithubClient::default()).build()
 }
 
 #[cfg(test)]
