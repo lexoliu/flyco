@@ -12,7 +12,8 @@ use flyco_core::{ClientEvent, CurrentUser, Problem, SessionId, SessionState, Use
 use hmac::{Hmac, Mac as _};
 use sha2::Sha256;
 use skyzen::routing::Router;
-use skyzen_services::Db;
+use skyzen_services::{Db, Queue};
+use skyzen_test::mock::InMemoryQueue;
 use skyzen_test::{TestClient, TestContext};
 
 use crate::app::router;
@@ -44,6 +45,7 @@ async fn configured_router(db: &Db) -> Router {
         test_config().with_github_webhook_secret(SECRET),
         GithubClient::Fake(TestGithub),
         db.clone(),
+        Queue::new(InMemoryQueue::new()),
     )
 }
 
@@ -128,7 +130,10 @@ async fn a_deployment_without_a_secret_accepts_no_webhook(ctx: TestContext, db: 
     migrate(&db).await;
     // `test_config` carries no webhook secret, which is the state of any
     // deployment that has not been given one.
-    let client = ctx.client(crate::testing::test_router(db.clone()));
+    let client = ctx.client(crate::testing::test_router(
+        db.clone(),
+        Queue::new(InMemoryQueue::new()),
+    ));
 
     // Correctly signed by *a* secret — there is simply no secret here to
     // check it against, so it is refused rather than trusted.

@@ -162,6 +162,15 @@ pub async fn open_daemon(
     if !daemon_tokens::authenticates(db, session, presented).await? {
         return Err(ApiError::InvalidDaemonCredential);
     }
+
+    // A session goes live when its daemon greets the control plane, not when
+    // a provider's API returned a machine: a machine that exists is not an
+    // agent that is ready. The greeting is the `Hello` frame the room
+    // validates on the socket this upgrade becomes — and a Durable Object
+    // cannot reach D1, so the durable half of it happens here, on the
+    // authenticated hop that carries the daemon into the room.
+    sessions::daemon_arrived(db, session).await?;
+
     tracing::info!(%session, "a daemon joined its session room");
     join(rooms, session, Role::Daemon).await
 }

@@ -45,6 +45,22 @@ pub mod var {
     pub const GITHUB_WEBHOOK_SECRET: &str = "FLYCO_GITHUB_WEBHOOK_SECRET";
 }
 
+/// Cloudflare binding names the queue consumer resolves for itself.
+///
+/// `#[skyzen::main]` wires the manifest's services into the router, but a
+/// `#[skyzen::queue]` handler is not a request and receives no wiring at all
+/// — the platform hands it the raw environment and it opens what it needs.
+/// These names therefore mirror `[cloudflare.database.main]` and
+/// `[cloudflare.service.provisioning]` in `Skyzen.toml`, and a deployment
+/// where they disagree fails loudly on its first job rather than quietly.
+pub mod binding {
+    /// D1 binding holding the control plane's one database.
+    pub const DATABASE: &str = "DB";
+    /// Queue binding the provisioning jobs are produced to and consumed
+    /// from.
+    pub const PROVISIONING: &str = "PROVISIONING";
+}
+
 /// Why the control plane refused to start.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -129,14 +145,44 @@ impl ApiConfig {
     /// Returns [`ConfigError`] on the first binding that is absent or
     /// unusable — the control plane never falls back to a default.
     pub fn from_environment() -> Result<Self, ConfigError> {
+        Self::read_with(read_var)
+    }
+
+    /// Reads the configuration out of a Cloudflare environment handed in
+    /// explicitly.
+    ///
+    /// [`from_environment`](Self::from_environment) reads the ambient one,
+    /// which the runtime only publishes while the router is being built. A
+    /// queue consumer is not a request and runs outside that window, so it
+    /// passes the environment the platform gave it.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`from_environment`](Self::from_environment).
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_worker_env(env: &skyzen::runtime::wasm::Env) -> Result<Self, ConfigError> {
+        Self::read_with(|name| {
+            let value = skyzen_cloudflare::required_secret(env, name)
+                .map_err(|_| ConfigError::Missing(name))?;
+            reject_empty(name, value)
+        })
+    }
+
+    /// Assembles the configuration from a source of named values.
+    ///
+    /// One reading order for every environment, so a binding that is
+    /// required in one place cannot become optional in another.
+    fn read_with(
+        read: impl Fn(&'static str) -> Result<String, ConfigError>,
+    ) -> Result<Self, ConfigError> {
         let mut config = Self::new(
-            read_var(var::GITHUB_CLIENT_ID)?,
-            read_var(var::GITHUB_CLIENT_SECRET)?,
-            &read_var(var::REDIRECT_URI)?,
-            &read_var(var::ENCRYPTION_KEY)?,
+            read(var::GITHUB_CLIENT_ID)?,
+            read(var::GITHUB_CLIENT_SECRET)?,
+            &read(var::REDIRECT_URI)?,
+            &read(var::ENCRYPTION_KEY)?,
         )?;
-        config.vapid_public_key = read_var(var::VAPID_PUBLIC_KEY).ok();
-        config.github_webhook_secret = read_var(var::GITHUB_WEBHOOK_SECRET).ok();
+        config.vapid_public_key = read(var::VAPID_PUBLIC_KEY).ok();
+        config.github_webhook_secret = read(var::GITHUB_WEBHOOK_SECRET).ok();
         Ok(config)
     }
 
@@ -194,6 +240,22 @@ impl ApiConfig {
     #[must_use]
     pub const fn token_cipher(&self) -> TokenCipher {
         TokenCipher::new(self.encryption_key)
+    }
+
+    /// The base URL a session's daemon phones home to.
+    ///
+    /// Derived from the OAuth redirect URI's origin rather than configured
+    /// separately: the two are the same deployment by construction, and a
+    /// second variable would be one more thing that can be set to the wrong
+    /// host — which for this one means every machine flyco provisions boots
+    /// pointing at somewhere else.
+    #[must_use]
+    pub fn control_plane_url(&self) -> String {
+        let mut base = self.redirect_uri.clone();
+        base.set_path("/");
+        base.set_query(None);
+        base.set_fragment(None);
+        base.to_string()
     }
 }
 
