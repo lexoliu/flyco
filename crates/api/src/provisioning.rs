@@ -17,6 +17,8 @@ use flyco_provider::aws::{AwsProvider, AwsWorkspace};
 use flyco_provider::azure::auth::ServicePrincipal;
 use flyco_provider::azure::{AzureProvider, Workspace};
 use flyco_provider::byo_ssh::ByoSsh;
+use flyco_provider::gcp::auth::ServiceAccountKey;
+use flyco_provider::gcp::{GcpProvider, GcpWorkspace};
 use flyco_provider::{CloudProvider, ProviderError};
 use skyzen::sql;
 use skyzen_services::Db;
@@ -96,6 +98,23 @@ pub(crate) fn aws_driver(
     AwsProvider::new(key, workspace)
 }
 
+/// The GCP driver one service-account key opens.
+///
+/// Fallible where the other two are not: a Google credential is a *document*
+/// rather than a set of fields, and one that is not a service-account key is
+/// a credential to fix rather than a failure to retry.
+///
+/// # Errors
+///
+/// Returns [`ProviderError::Malformed`] if the document is not a
+/// service-account key.
+pub(crate) fn gcp_driver(service_account_json: &str) -> Result<GcpProvider, ProviderError> {
+    Ok(GcpProvider::new(
+        ServiceAccountKey::parse(service_account_json)?,
+        GcpWorkspace::new(),
+    ))
+}
+
 #[derive(Debug, skyzen::FromRow)]
 struct SealedRow {
     id: ProviderAccountId,
@@ -172,11 +191,11 @@ pub async fn account(
 
 /// Reads what an account can actually deploy today.
 ///
-/// For Azure that is the intersection of three independent gates — the
-/// SKU's own restrictions, the subscription's quota, and the region policy
-/// assigned to the subscription — so an entry that comes back is one a
-/// provision request will be allowed to create. A registered SSH host
-/// reports the single machine it is, unpriced: the user already owns it.
+/// For every cloud provider that is the intersection of the independent
+/// gates its API exposes — availability, quota, and whatever the account
+/// itself forbids — so an entry that comes back is one a provision request
+/// will be allowed to create. A registered SSH host reports the single
+/// machine it is, unpriced: the user already owns it.
 ///
 /// # Errors
 ///
@@ -219,22 +238,23 @@ pub async fn catalog(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>
             .catalog()
             .await
         }
-        ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
-            provider: "GCP",
-            operation: "catalog",
-            reason: "flyco has no GCP driver yet",
-        }),
+        ProviderCredentials::Gcp {
+            service_account_json,
+        } => gcp_driver(service_account_json)?.catalog().await,
     }
 }
 
 /// Reads what the provider's own meter says this account has been billed
 /// over its current billing period.
 ///
-/// `None` is not a failure and not a zero: it means this provider meters
-/// nothing on flyco's behalf. A registered SSH host is hardware the user
-/// already owns and already pays for, so it contributes no row at all —
-/// reporting `$0.00` against it would be flyco asserting the machine is
-/// free.
+/// `None` is not a failure and not a zero: it means flyco has no metered
+/// number to report, for one of two reasons. A registered SSH host is
+/// hardware the user already owns and already pays for, so there is nothing
+/// to meter; a GCP project has plenty to meter and no API that will say so,
+/// because Google delivers billing data through a `BigQuery` export the user
+/// configures rather than through a running total a service account can
+/// read. Either way the answer is silence rather than a `$0.00` that would
+/// read as "this costs nothing".
 ///
 /// Exposed here for the same reason [`catalog`] is: the driver trait is not
 /// object-safe, so the dispatch on the credential variant lives in the
@@ -267,7 +287,6 @@ pub async fn cloud_usage(
         .billing_period_cost(now_unix)
         .await
         .map(Some),
-        ProviderCredentials::ByoSsh { .. } => Ok(None),
         ProviderCredentials::Aws {
             access_key_id,
             secret_access_key,
@@ -282,21 +301,23 @@ pub async fn cloud_usage(
         .billing_period_cost(now_unix)
         .await
         .map(Some),
-        ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
-            provider: "GCP",
-            operation: "usage",
-            reason: "flyco has no GCP driver yet",
-        }),
+        // Two providers contribute no row, for the two different reasons
+        // this function's documentation gives: a registered SSH host has
+        // nothing flyco meters, and a GCP project has plenty and no API that
+        // will say so. The answer is the same because the honest answer to
+        // "how much has this cost" is silence in both cases.
+        ProviderCredentials::ByoSsh { .. } | ProviderCredentials::Gcp { .. } => Ok(None),
     }
 }
 
 /// One lifecycle operation against an already-provisioned machine.
 ///
 /// Each arm dispatches on the credential variant for the same reason
-/// [`catalog`] does: the driver trait is not object-safe, deliberately.
-/// Only Azure implements these today — a registered SSH host cannot be
-/// resized, and its container lifecycle is executed natively rather than
-/// from the Worker.
+/// [`catalog`] does: the driver trait is not object-safe, deliberately, and
+/// what an operation *means* is written once in [`Operation::run`] rather
+/// than once per provider. Every cloud driver implements these; a registered
+/// SSH host does not, because it cannot be resized and its container
+/// lifecycle is executed natively rather than from the Worker.
 ///
 /// # Errors
 ///
@@ -353,11 +374,13 @@ pub async fn operate(
                 )
                 .await
         }
-        ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
-            provider: "GCP",
-            operation: operation.name(),
-            reason: "flyco has no GCP driver yet",
-        }),
+        ProviderCredentials::Gcp {
+            service_account_json,
+        } => {
+            operation
+                .run(&mut gcp_driver(service_account_json)?, machine)
+                .await
+        }
     }
 }
 

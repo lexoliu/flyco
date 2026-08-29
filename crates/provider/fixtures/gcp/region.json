@@ -1,0 +1,34 @@
+{
+  "kind": "compute#region",
+  "id": "1000",
+  "name": "us-central1",
+  "status": "UP",
+  "zones": [
+    "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a",
+    "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-b",
+    "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-c"
+  ],
+  "quotas": [
+    {
+      "metric": "CPUS",
+      "usage": 2.0,
+      "limit": 8.0
+    },
+    {
+      "metric": "PREEMPTIBLE_CPUS",
+      "usage": 0.0,
+      "limit": 4.0
+    },
+    {
+      "metric": "DISKS_TOTAL_GB",
+      "usage": 30.0,
+      "limit": 4096.0
+    },
+    {
+      "metric": "IN_USE_ADDRESSES",
+      "usage": 1.0,
+      "limit": 8.0
+    }
+  ],
+  "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/regions/us-central1"
+}

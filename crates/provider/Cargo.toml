@@ -35,6 +35,10 @@ shell-escape = { workspace = true, optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
 wasm-bindgen = "0.2"
+# Turns on the feature `rsa`'s transitive `getrandom` needs to compile for
+# wasm32 at all. See the workspace manifest for why it is a dependency rather
+# than a feature of one.
+getrandom-0-2.workspace = true
 
 [features]
 default = []
@@ -47,6 +51,9 @@ azure-live = []
 # The same, against a real AWS account: an instance, an EBS volume and an
 # elastic IP, all billable. See `aws::tests` for what it needs.
 aws-live = []
+# The same, against a real GCP project: an instance and a persistent disk.
+# See `gcp::tests` for what it needs.
+gcp-live = []
 
 [dev-dependencies]
 tokio = { workspace = true }
