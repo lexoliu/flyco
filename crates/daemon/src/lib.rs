@@ -13,8 +13,8 @@
 //! # What is here
 //!
 //! - [`config`] — the daemon's TOML configuration.
-//! - [`harness`] — the harness abstraction and the Claude Code driver,
-//!   which speaks to a Bun sidecar running the Claude Agent SDK.
+//! - [`harness`] — the harness abstraction, the Claude Code driver
+//!   (Bun sidecar / Agent SDK), and the Codex driver (`codex app-server`).
 //! - [`control`] — the control-plane connection: the relay WebSocket, the
 //!   REST client behind it, and the transcript store that makes a session
 //!   resumable onto any machine.
@@ -24,8 +24,7 @@
 //! `flycod run` picks between [`control`] and [`repl`] on whether the
 //! configuration names a control plane, and logs which it chose.
 //!
-//! The web terminal, the local MCP server, and the Codex driver land in
-//! later milestones.
+//! The web terminal and the local MCP server land in later milestones.
 //!
 //! [`flyco_api`]: https://github.com/lexoliu/flyco/tree/main/crates/api
 

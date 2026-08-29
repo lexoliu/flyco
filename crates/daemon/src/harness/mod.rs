@@ -15,6 +15,7 @@
 //! [`flyco_core::wire::DaemonToControl`].
 
 pub mod claude;
+pub mod codex;
 
 use std::future::Future;
 use std::path::PathBuf;
