@@ -48,6 +48,8 @@ enum Failure {
     Repl(#[from] repl::ReplError),
     #[error(transparent)]
     Wire(#[from] flyco_daemon::control::WireError),
+    #[error(transparent)]
+    Terminal(#[from] flyco_daemon::terminal::TerminalError),
     #[error("could not write to stdout")]
     Stdout(#[source] std::io::Error),
 }
@@ -131,7 +133,17 @@ async fn drive_claude_code(config: DaemonConfig) -> Result<(), Failure> {
     let endpoint = Endpoint::from_base(&url, config.session, daemon_token)?;
 
     let started = start(&config, RemoteTranscriptStore::new(api.clone())).await?;
-    wire::run(endpoint, started.session, started.outputs, api).await?;
+    let (terminal, terminal_out) =
+        flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
+    wire::run(
+        endpoint,
+        started.session,
+        started.outputs,
+        api,
+        terminal,
+        terminal_out,
+    )
+    .await?;
     Ok(())
 }
 
@@ -169,7 +181,17 @@ async fn report<S: HarnessSession + 'static>(
     let ControlPlaneConfig { url, daemon_token } = control_plane;
     let api = HttpControlApi::new(url.clone(), config.session, daemon_token.clone());
     let endpoint = Endpoint::from_base(&url, config.session, daemon_token)?;
-    wire::run(endpoint, started.session, started.outputs, api).await?;
+    let (terminal, terminal_out) =
+        flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
+    wire::run(
+        endpoint,
+        started.session,
+        started.outputs,
+        api,
+        terminal,
+        terminal_out,
+    )
+    .await?;
     Ok(())
 }
 

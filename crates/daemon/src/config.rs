@@ -246,6 +246,28 @@ pub struct CodexConfig {
     pub auth: CodexAuth,
 }
 
+fn default_shell() -> PathBuf {
+    PathBuf::from("fish")
+}
+
+/// The interactive web terminal flycod attaches to a session.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalConfig {
+    /// Shell to spawn in the session workdir. A bare name is resolved
+    /// through `PATH`.
+    #[serde(default = "default_shell")]
+    pub shell: PathBuf,
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            shell: default_shell(),
+        }
+    }
+}
+
 /// Where the control plane is, and what authenticates this daemon to it.
 ///
 /// Present on a provisioned session VM; absent on a developer machine,
@@ -320,6 +342,10 @@ pub struct DaemonConfig {
     /// [`HarnessKind::Codex`].
     #[serde(default)]
     pub codex: Option<CodexConfig>,
+    /// The interactive web terminal. Omitted uses `fish` in the session
+    /// workdir.
+    #[serde(default)]
+    pub terminal: TerminalConfig,
 }
 
 impl DaemonConfig {

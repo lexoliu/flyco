@@ -61,6 +61,7 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 rand = "0.9"
 rust-embed = { version = "8", features = ["debug-embed", "include-exclude"] }
 russh = "0.63"
+portable-pty = "0.9"
 tokio = { version = "1", features = [
     "fs",
     "io-std",
