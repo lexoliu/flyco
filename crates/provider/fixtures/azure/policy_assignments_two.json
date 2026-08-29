@@ -1,0 +1,46 @@
+{
+  "value": [
+    {
+      "id": "/subscriptions/e47d07d8-2715-4909-aa56-1bfde801bdf0/providers/Microsoft.Authorization/policyAssignments/allowed-locations",
+      "type": "Microsoft.Authorization/policyAssignments",
+      "name": "allowed-locations",
+      "properties": {
+        "displayName": "Allowed resource deployment regions",
+        "policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/e56962a6-4747-49cd-b67b-bf8b01975c4c",
+        "scope": "/subscriptions/e47d07d8-2715-4909-aa56-1bfde801bdf0",
+        "parameters": {
+          "listOfAllowedLocations": {
+            "value": [
+              "norwayeast",
+              "mexicocentral",
+              "northcentralus",
+              "westus3",
+              "canadacentral"
+            ]
+          }
+        },
+        "enforcementMode": "Default"
+      }
+    },
+    {
+      "id": "/subscriptions/e47d07d8-2715-4909-aa56-1bfde801bdf0/providers/Microsoft.Authorization/policyAssignments/data-residency",
+      "type": "Microsoft.Authorization/policyAssignments",
+      "name": "data-residency",
+      "properties": {
+        "displayName": "Data residency",
+        "policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/e56962a6-4747-49cd-b67b-bf8b01975c4c",
+        "scope": "/subscriptions/e47d07d8-2715-4909-aa56-1bfde801bdf0",
+        "parameters": {
+          "listOfAllowedLocations": {
+            "value": [
+              "canadacentral",
+              "canadaeast"
+            ]
+          }
+        },
+        "enforcementMode": "Default"
+      }
+    }
+  ],
+  "nextLink": null
+}

@@ -183,6 +183,7 @@ impl ByoSsh {
     pub fn catalog(&self) -> Vec<MachineCatalogEntry> {
         vec![MachineCatalogEntry {
             provider: CloudProviderKind::ByoSsh,
+            region: self.address.clone(),
             machine_type: self.address.clone(),
             os: OsFamily::Linux,
             capacity: None,

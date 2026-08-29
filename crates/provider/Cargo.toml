@@ -11,6 +11,7 @@ authors.workspace = true
 flyco-core.workspace = true
 askama.workspace = true
 base64.workspace = true
+futures-timer.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -33,6 +34,10 @@ wasm-bindgen = "0.2"
 default = []
 # Native execution of byo-ssh container jobs. See `byo_ssh::execute`.
 ssh = ["dep:russh", "dep:shell-escape"]
+# Enables the one test that talks to a real Azure subscription and creates
+# billable resources. Off by default, never enabled in CI, and the test is
+# `#[ignore]`d on top — see `azure::tests` for what it needs.
+azure-live = []
 
 [dev-dependencies]
 tokio = { workspace = true }

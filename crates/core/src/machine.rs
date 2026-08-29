@@ -95,6 +95,13 @@ impl MachinePricing {
 pub struct MachineCatalogEntry {
     /// Which provider offers it.
     pub provider: CloudProviderKind,
+    /// Provider-native region this entry is offered in.
+    ///
+    /// A catalog spans every region an account may deploy into, so an entry
+    /// without one would not say where the machine it describes can be
+    /// created. A registered SSH host names itself here: it is its own
+    /// region, and there is nowhere else to put it.
+    pub region: String,
     /// Provider-native machine type name (e.g. `Standard_B2ats_v2`).
     pub machine_type: String,
     /// Operating system family.
@@ -221,6 +228,7 @@ mod tests {
     #[test]
     fn a_catalog_entry_round_trips_with_its_pricing_tag() {
         let entry = MachineCatalogEntry {
+            region: "northcentralus".to_owned(),
             provider: CloudProviderKind::Azure,
             machine_type: "Standard_B2pts_v2".to_owned(),
             os: OsFamily::Linux,

@@ -22,7 +22,7 @@ use crate::money::Usd;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderCredentials {
-    /// An Azure service principal with rights over one subscription.
+    /// An Azure service principal with rights over one resource group.
     Azure {
         /// Directory (tenant) the service principal belongs to.
         tenant_id: String,
@@ -32,6 +32,24 @@ pub enum ProviderCredentials {
         client_secret: String,
         /// Subscription machines are provisioned into.
         subscription_id: String,
+        /// The resource group flyco creates everything inside, which must
+        /// already exist.
+        ///
+        /// Creating a resource group is a subscription-scope write and no
+        /// resource-group-scoped role can create the group it is scoped to,
+        /// so the group is made out of band and named here. Scope the
+        /// principal `Contributor` on it — `Virtual Machine Contributor`
+        /// alone cannot create a virtual network, a public IP or a security
+        /// group.
+        resource_group: String,
+        /// The `OpenSSH` public key a machine's break-glass login is created
+        /// with.
+        ///
+        /// Azure refuses to create a Linux machine with neither a password
+        /// nor a key and flyco sets no passwords, so one is required. It is
+        /// the *user's* key: flyco never holds a private key for a machine
+        /// it provisions.
+        admin_ssh_public_key: String,
     },
     /// An AWS IAM access key.
     Aws {
@@ -172,6 +190,8 @@ mod tests {
                 client_id: "client".to_owned(),
                 client_secret: "secret".to_owned(),
                 subscription_id: "subscription".to_owned(),
+                resource_group: "flyco-rg".to_owned(),
+                admin_ssh_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA lexo@flyco".to_owned(),
             },
         };
 

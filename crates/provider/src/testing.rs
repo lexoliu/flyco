@@ -1,0 +1,125 @@
+//! Recorded exchanges, so a driver can be tested without a cloud account.
+//!
+//! No credentials exist in flyco's development or CI environments and no
+//! test may create a cloud resource, so the drivers are pinned against
+//! fixtures instead: [`RecordedTransport`] answers each request in turn from
+//! a scripted list and keeps every request it was given, which is what makes
+//! "the exact URL, the exact `api-version`, the exact JSON body" an
+//! assertion rather than a hope.
+//!
+//! The responses themselves live in `crates/provider/fixtures/` as JSON
+//! documents, copied from what the provider's API actually returns, rather
+//! than inline in the tests: a fixture that is a file can be diffed against
+//! the vendor's documentation, and the no-multi-line-string-literal rule
+//! points the same way.
+
+use core::cell::RefCell;
+
+use crate::clock::Timer;
+use crate::http::{HttpError, HttpRequest, HttpResponse, HttpTransport};
+
+/// A transport that answers from a script and records what it was asked.
+///
+/// `RefCell` rather than a lock: a test is single-threaded, the borrows
+/// never cross an await, and a lock here would be ceremony around a `Vec`.
+#[derive(Debug)]
+pub struct RecordedTransport {
+    responses: RefCell<Vec<HttpResponse>>,
+    requests: RefCell<Vec<HttpRequest>>,
+}
+
+impl RecordedTransport {
+    /// Scripts the responses, in the order the driver will receive them.
+    #[must_use]
+    pub fn new(responses: Vec<HttpResponse>) -> Self {
+        // Reversed once so each answer is a `pop`, which keeps `send`
+        // free of an index the two `RefCell`s would have to agree on.
+        let mut responses = responses;
+        responses.reverse();
+        Self {
+            responses: RefCell::new(responses),
+            requests: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// The `index`th request, which must exist.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the driver made fewer requests than the test expected —
+    /// which is the assertion, phrased as an index.
+    #[must_use]
+    pub fn request(&self, index: usize) -> HttpRequest {
+        self.requests
+            .borrow()
+            .get(index)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the driver made {} requests, not {}",
+                    self.requests.borrow().len(),
+                    index + 1
+                )
+            })
+            .clone()
+    }
+
+    /// How many requests were made.
+    #[must_use]
+    pub fn request_count(&self) -> usize {
+        self.requests.borrow().len()
+    }
+}
+
+impl HttpTransport for RecordedTransport {
+    /// Answers from the script without suspending, and without being
+    /// `Send`: a scripted answer is already in memory, and the `RefCell`
+    /// that records the request is what makes the double single-threaded on
+    /// purpose.
+    fn send(&self, request: HttpRequest) -> impl Future<Output = Result<HttpResponse, HttpError>> {
+        let response = self.responses.borrow_mut().pop();
+        self.requests.borrow_mut().push(request.clone());
+        core::future::ready(response.ok_or_else(|| {
+            HttpError::Transport(format!(
+                "the driver made an unscripted {} request to {}",
+                request.method, request.url
+            ))
+        }))
+    }
+}
+
+/// A timer that never waits and remembers what it was asked to wait for.
+///
+/// A polling loop's obedience to `Retry-After` is exactly the kind of thing
+/// that is easy to write and easy to quietly drop, so it is asserted rather
+/// than observed as elapsed wall time.
+#[derive(Debug, Default)]
+pub struct RecordingTimer {
+    slept: RefCell<Vec<u32>>,
+}
+
+impl RecordingTimer {
+    /// A timer that has waited for nothing yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Every delay the caller asked for, in order.
+    #[must_use]
+    pub fn delays(&self) -> Vec<u32> {
+        self.slept.borrow().clone()
+    }
+}
+
+impl Timer for RecordingTimer {
+    fn sleep(&self, seconds: u32) -> impl Future<Output = ()> {
+        self.slept.borrow_mut().push(seconds);
+        core::future::ready(())
+    }
+}
+
+impl<T: Timer> Timer for &T {
+    fn sleep(&self, seconds: u32) -> impl Future<Output = ()> {
+        (*self).sleep(seconds)
+    }
+}
