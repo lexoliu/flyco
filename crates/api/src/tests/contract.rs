@@ -47,11 +47,8 @@ const EXPECTED: &[(&str, &str)] = &[
     ("register_mcp_server", "M6"),
     ("resume_session", "M4"),
     ("start_harness_link", "M4"),
-    ("subscribe_push", "M5"),
-    ("unsubscribe_push", "M5"),
     ("update_mcp_server", "M6"),
     ("upload_skill", "M6"),
-    ("vapid_public_key", "M5"),
 ];
 
 /// Marks the start of a handler.
