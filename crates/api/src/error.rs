@@ -133,6 +133,24 @@ pub enum ApiError {
     #[error("provider account not found", status = StatusCode::NOT_FOUND)]
     ProviderAccountNotFound,
 
+    /// This deployment holds no OAuth client for that vendor.
+    ///
+    /// Both vendors require a registered client, and flyco ships none of its
+    /// own — endpoints and client ids invented on a vendor's behalf would be
+    /// a guess about somebody else's service.
+    #[error(
+        "this flyco deployment cannot link {harness} accounts: no OAuth client is configured",
+        status = StatusCode::NOT_IMPLEMENTED
+    )]
+    HarnessLinkUnconfigured {
+        /// Which vendor was asked for.
+        harness: &'static str,
+    },
+
+    /// The vendor refused the authorization code exchange.
+    #[error("the vendor refused this authorization: {0}", status = StatusCode::BAD_GATEWAY)]
+    HarnessLinkRejected(String),
+
     /// The harness account does not exist, or belongs to somebody else.
     #[error("harness account not found", status = StatusCode::NOT_FOUND)]
     HarnessAccountNotFound,
@@ -419,6 +437,8 @@ impl ApiError {
             Self::PushSubscriptionNotFound => "push-subscription-not-found",
             Self::InvalidPushSubscription(_) => "invalid-push-subscription",
             Self::ProviderAccountNotFound => "provider-account-not-found",
+            Self::HarnessLinkUnconfigured { .. } => "harness-link-unconfigured",
+            Self::HarnessLinkRejected(_) => "harness-link-rejected",
             Self::HarnessAccountNotFound => "harness-account-not-found",
             Self::MachineNotFound => "machine-not-found",
             Self::MachineNotReady => "machine-not-ready",
