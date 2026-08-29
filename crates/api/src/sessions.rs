@@ -388,6 +388,50 @@ pub async fn resume(db: &Db, user: UserId, id: SessionId) -> Result<SessionDetai
     find(db, user, id).await
 }
 
+/// Records the harness-native session id a later resume must reopen.
+///
+/// Written when the daemon announces `Started`, and kept across archive so
+/// a rebuilt machine continues the same conversation rather than opening a
+/// fresh one.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the write fails.
+pub async fn record_harness_session(
+    db: &Db,
+    id: SessionId,
+    harness_session_id: &str,
+) -> Result<(), ApiError> {
+    sql!(
+        db,
+        "UPDATE sessions SET harness_session_id = {harness_session_id}, \
+         last_active_unix = {now_unix()} WHERE id = {id}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
+/// The harness-native session id recorded for this session, if any.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the read fails.
+pub async fn harness_session_id(db: &Db, id: SessionId) -> Result<Option<String>, ApiError> {
+    #[derive(Debug, skyzen::FromRow)]
+    struct Row {
+        harness_session_id: Option<String>,
+    }
+
+    let row: Option<Row> = sql!(
+        db,
+        "SELECT harness_session_id FROM sessions WHERE id = {id}"
+    )
+    .fetch_optional()
+    .await?;
+    Ok(row.and_then(|row| row.harness_session_id))
+}
+
 /// Marks a provisioning session active because its daemon has arrived.
 ///
 /// A session goes live when its daemon greets the control plane, not when a
