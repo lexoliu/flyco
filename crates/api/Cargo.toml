@@ -12,6 +12,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 flyco-core.workspace = true
+# Default features only: the `ssh` executor must never reach the Worker build.
+flyco-provider.workspace = true
 skyzen.workspace = true
 skyzen-services.workspace = true
 zenwave.workspace = true
