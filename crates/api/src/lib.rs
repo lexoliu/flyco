@@ -33,6 +33,7 @@ pub mod observations;
 pub mod problem;
 pub mod provider_accounts;
 pub mod provisioning;
+pub mod provisioning_queue;
 pub mod push;
 pub mod relay;
 pub mod repos;
