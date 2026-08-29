@@ -3534,7 +3534,7 @@
     "/v1/usage/cloud": {
       "get": {
         "summary": "Reports metered cloud spend per linked account.",
-        "description": "Reports metered cloud spend per linked account.",
+        "description": "Reports metered cloud spend per linked account.\n\nThe provider's own meter is the authority — a total flyco assembled from\nits machine records would miss the storage, egress and support charges\non the same invoice — so every row here was read from the account it\ndescribes, over the window it names.\n\nNot every linked account produces a row. A registered SSH host is\nhardware the user already owns and already pays for: flyco meters\nnothing there and says nothing, rather than reporting a `$0.00` that\nwould read as \"this costs nothing\".",
         "operationId": "flyco_api::provider_accounts::cloud_usage",
         "parameters": [
           {

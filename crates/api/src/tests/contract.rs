@@ -33,7 +33,6 @@ struct Pending {
 /// Sorted by handler name, which is how [`unimplemented_handlers`] returns
 /// them, so a diff on this list reads as one line per handler.
 const EXPECTED: &[(&str, &str)] = &[
-    ("cloud_usage", "M6"),
     ("complete_harness_link", "M4"),
     ("resume_session", "M4"),
     ("start_harness_link", "M4"),
