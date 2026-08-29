@@ -824,7 +824,7 @@ fn session_routes() -> Vec<RouteNode> {
 /// One middleware for the whole set: every route below answers to a
 /// `CurrentUser` and to nothing else, so authentication is applied once
 /// here rather than per domain, where a module could forget it.
-fn authenticated_routes() -> Vec<RouteNode> {
+fn authenticated_routes<G: GithubOauth>() -> Vec<RouteNode> {
     let mut nodes = account_routes();
     nodes.extend(session_routes());
     nodes.extend(agents_md::routes());
@@ -834,7 +834,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
     nodes.extend(memory::routes());
     nodes.extend(provider_accounts::routes());
     nodes.extend(push::routes());
-    nodes.extend(repos::routes());
+    nodes.extend(repos::routes::<G>());
     nodes.extend(skills::routes());
     Route::new(nodes)
         .middleware(RequireAuth::new(FlycoAuthenticator::new()))
@@ -849,7 +849,7 @@ fn routes<G: GithubOauth>() -> Route {
     let mut nodes = public_routes::<G>();
     nodes.extend(relay_routes());
     nodes.extend(daemon_routes());
-    nodes.extend(authenticated_routes());
+    nodes.extend(authenticated_routes::<G>());
     Route::new(nodes)
 }
 
@@ -1078,14 +1078,13 @@ mod tests {
 
         // D1 keeps the hash and nothing else, so the plaintext key cannot be
         // recovered from the table.
-        let stored: std::collections::BTreeMap<String, String> = db
+        let stored: String = db
             .query("SELECT token_hash FROM api_keys WHERE id = ?")
             .bind(created.id.to_string())
-            .fetch_one()
+            .fetch_scalar()
             .await
             .expect("read the stored key");
-        let stored = stored.get("token_hash").expect("token_hash column");
-        assert_eq!(stored, &crate::crypto::token_hash(&created.token));
+        assert_eq!(stored, crate::crypto::token_hash(&created.token));
         assert!(!stored.contains(&created.token));
 
         let listed = client.get("/v1/api-keys").bearer(&token).send().await;

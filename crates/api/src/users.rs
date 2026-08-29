@@ -5,7 +5,6 @@
 //! sealed before it gets here and is never read back out on this path.
 
 use flyco_core::{CurrentUser, SESSION_CAP_MAX, SESSION_CAP_MIN, UserId};
-use serde::Deserialize;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
@@ -14,7 +13,7 @@ use crate::github::GithubUser;
 use crate::sql::{from_column, to_column};
 
 /// The columns every read on this path projects.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct IdentityRow {
     id: String,
     login: String,
@@ -116,7 +115,7 @@ pub async fn set_session_cap(db: &Db, id: UserId, cap: u32) -> Result<(), ApiErr
 ///
 /// Returns [`ApiError`] if the database fails.
 pub async fn sealed_github_token(db: &Db, id: UserId) -> Result<Option<String>, ApiError> {
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, skyzen::FromRow)]
     struct TokenRow {
         github_token_enc: String,
     }

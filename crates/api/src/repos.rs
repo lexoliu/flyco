@@ -14,7 +14,11 @@ use skyzen::routing::{CreateRouteNode, Route, RouteNode, Routes as _};
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
+use crate::config::ApiConfig;
+use crate::error::ApiError;
+use crate::github::{GithubOauth, GithubToken};
 use crate::problem::Outcome;
+use crate::users;
 
 /// Narrows the repository picker.
 #[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
@@ -25,16 +29,57 @@ pub struct RepoQuery {
 }
 
 /// Lists the caller's GitHub repositories, for the session-creation picker.
-#[skyzen::openapi]
-async fn list_repos(
-    State(_user): State<CurrentUser>,
-    Query(_query): Query<RepoQuery>,
-    _db: Db,
+///
+/// Generic over the GitHub client so tests can drive it without reaching
+/// `api.github.com`, which is also why it carries no `#[skyzen::openapi]`:
+/// the macro emits module-level items naming every argument type, and a type
+/// parameter does not exist at module scope. The route still appears in the
+/// document; only its schemas are missing.
+async fn list_repos<G: GithubOauth>(
+    State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
+    State(github): State<G>,
+    Query(query): Query<RepoQuery>,
+    db: Db,
 ) -> Outcome<Json<Vec<RepoSummary>>> {
-    todo!("M6: unseal the caller's GitHub token and search their repositories through zenwave")
+    read(&github, &config, &db, &user, &query)
+        .await
+        .map(Json)
+        .into()
+}
+
+/// Reads the picker's listing with the caller's own stored token.
+///
+/// The filter is applied here rather than by GitHub: the listing is one page
+/// of the caller's own repositories, and searching server-side would need
+/// GitHub's search API, whose relevance ordering is wrong for a picker that
+/// wants "what I was last working on".
+async fn read<G: GithubOauth>(
+    github: &G,
+    config: &ApiConfig,
+    db: &Db,
+    user: &CurrentUser,
+    query: &RepoQuery,
+) -> Result<Vec<RepoSummary>, ApiError> {
+    let sealed = users::sealed_github_token(db, user.id)
+        .await?
+        .ok_or(ApiError::CorruptRecord(
+            "the user has no stored GitHub token",
+        ))?;
+    let token = GithubToken {
+        access_token: config.token_cipher().open(&sealed)?,
+    };
+
+    let mut repos = github.list_repos(&token).await?;
+    if let Some(needle) = query.q.as_ref().map(|q| q.trim().to_lowercase())
+        && !needle.is_empty()
+    {
+        repos.retain(|repo| repo.slug.to_string().to_lowercase().contains(&needle));
+    }
+    Ok(repos)
 }
 
 /// The user-scoped GitHub routes.
-pub fn routes() -> Vec<RouteNode> {
-    Route::new(("/v1/github/repos".at(list_repos),)).into_route_nodes()
+pub fn routes<G: GithubOauth>() -> Vec<RouteNode> {
+    Route::new(("/v1/github/repos".at(list_repos::<G>),)).into_route_nodes()
 }

@@ -37,7 +37,6 @@ const EXPECTED: &[(&str, &str)] = &[
     ("complete_harness_link", "M4"),
     ("delete_skill", "M6"),
     ("get_skill", "M6"),
-    ("list_repos", "M6"),
     ("list_skills", "M6"),
     ("llm_usage", "M6"),
     ("receive_github_webhook", "M6"),

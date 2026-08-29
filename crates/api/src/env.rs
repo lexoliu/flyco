@@ -24,7 +24,6 @@
 //! a change that could not take effect until the next start anyway.
 
 use flyco_core::{EnvDocument, EnvEntry, SessionId, UserId};
-use serde::Deserialize;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
@@ -33,7 +32,7 @@ use crate::error::ApiError;
 use crate::sql::to_column;
 
 /// The sealed document, as the column holds it.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct EnvRow {
     entries_enc: String,
 }

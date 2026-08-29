@@ -14,13 +14,12 @@
 //! the previous daemon holds.
 
 use flyco_core::{DAEMON_TOKEN_PREFIX, DaemonToken, SessionId, UserId};
-use serde::Deserialize;
 use skyzen_services::Db;
 
 use crate::crypto::{prefixed_token, token_hash};
 use crate::error::ApiError;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct TokenHashRow {
     daemon_token_hash: Option<String>,
 }

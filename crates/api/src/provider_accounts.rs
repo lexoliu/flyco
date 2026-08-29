@@ -34,7 +34,7 @@ use crate::sql::{encode_enum, from_column, to_column};
 ///
 /// `credentials_enc` is deliberately absent: a credential that is never
 /// selected cannot be leaked by a later edit to a response type.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct AccountRow {
     id: String,
     kind: String,
@@ -208,7 +208,7 @@ async fn unlink_provider(
     unlink(&db, user.id, &params).await.into()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct LiveCount {
     live: i64,
 }

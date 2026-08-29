@@ -15,7 +15,6 @@
 //! in this build.
 
 use flyco_core::{AgentsDocument, CurrentUser, UpdateAgentsDocument, UserId};
-use serde::Deserialize;
 use skyzen::routing::{CreateRouteNode, Route, RouteNode, Routes as _};
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
@@ -26,7 +25,7 @@ use crate::problem::Outcome;
 use crate::sql::{from_column, to_column};
 
 /// The columns the document is stored in.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct DocumentRow {
     content: String,
     updated_at_unix: i64,

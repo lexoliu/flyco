@@ -336,10 +336,6 @@ pub const DECLARED: &[(&str, Success)] = &[
         "flyco_api::push::vapid_public_key",
         Success::Ok(Payload::One("VapidPublicKey")),
     ),
-    (
-        "flyco_api::repos::list_repos",
-        Success::Ok(Payload::Many("RepoSummary")),
-    ),
     ("flyco_api::skills::delete_skill", Success::NoContent),
     (
         "flyco_api::skills::get_skill",
@@ -374,18 +370,19 @@ pub const DECLARED: &[(&str, Success)] = &[
 ///   newline-delimited JSON, not a document the response model can name.
 ///   (`app::raise_approval` is daemon-scoped too but answers an ordinary
 ///   `ApprovalView`, so it is annotated and declared like the rest.)
-/// * `oauth::callback` — generic over the GitHub client, and
-///   `#[skyzen::openapi]` cannot be applied to a generic handler: the macro
-///   emits module-level items naming every argument type.
+/// * `oauth::callback`, `repos::list_repos` — generic over the GitHub
+///   client, and `#[skyzen::openapi]` cannot be applied to a generic
+///   handler: the macro emits module-level items naming every argument type.
 ///
-/// The id of the OAuth callback carries the type argument it was
-/// monomorphized with, which is why it does not read like the others.
+/// The ids of the two generic handlers carry the type argument they were
+/// monomorphized with, which is why they do not read like the others.
 pub const UNDECLARED: &[&str] = &[
     "app::get_transcript",
     "app::open_client_relay",
     "app::open_daemon_relay",
     "app::put_transcript_batch",
     "oauth::callback<flyco_api::github::ZenwaveGithub>",
+    "repos::list_repos<flyco_api::github::ZenwaveGithub>",
 ];
 
 /// Writes flyco's response contract into a generated document.

@@ -7,6 +7,7 @@ use flyco_core::{
     SessionSummary, SpendKind, UpdateEnv, UpdateMe, Usd,
 };
 use skyzen::routing::Router;
+use skyzen_services::sql::Row;
 use skyzen_services::{Db, Kv};
 use skyzen_test::{TestClient, TestContext};
 
@@ -371,15 +372,18 @@ async fn the_replay_refreshes_the_cached_budget_row(ctx: TestContext, kv: Kv, db
         .await
         .assert_status(200);
 
-    let row: std::collections::BTreeMap<String, serde_json::Value> = db
+    let row: Row = db
         .query("SELECT spent_micros, stage FROM budgets WHERE id = ?")
         .bind(budget.to_string())
         .fetch_one()
         .await
         .expect("read the budget row");
 
-    assert_eq!(row["spent_micros"], 9_000_000_i64);
-    assert_eq!(row["stage"], "final90");
+    assert_eq!(
+        row.get::<i64>("spent_micros").expect("spent_micros"),
+        9_000_000
+    );
+    assert_eq!(row.get::<String>("stage").expect("stage"), "final90");
 }
 
 // ── Approvals ──
@@ -571,13 +575,13 @@ async fn an_unknown_session_is_not_found(ctx: TestContext, kv: Kv, db: Db) {
 }
 
 async fn budget_id(db: &Db, session: SessionId) -> flyco_core::BudgetId {
-    let row: std::collections::BTreeMap<String, String> = db
+    let budget_id: String = db
         .query("SELECT budget_id FROM sessions WHERE id = ?")
         .bind(session.to_string())
-        .fetch_one()
+        .fetch_scalar()
         .await
         .expect("read the session row");
-    row["budget_id"].parse().expect("budget_id is a UUID")
+    budget_id.parse().expect("budget_id is a UUID")
 }
 
 /// Guards the invariant the ownership tests rely on: `sessions::is_owned_by`
@@ -720,13 +724,13 @@ async fn a_stored_environment_is_sealed_at_rest(ctx: TestContext, kv: Kv, db: Db
         .await
         .assert_status(200);
 
-    let row: std::collections::BTreeMap<String, String> = db
+    let stored: String = db
         .query("SELECT entries_enc FROM session_env WHERE session_id = ?")
         .bind(session.to_string())
-        .fetch_one()
+        .fetch_scalar()
         .await
         .expect("read the stored environment");
-    let stored = &row["entries_enc"];
+    let stored = &stored;
     assert!(!stored.contains(SECRET), "the value is stored in the clear");
     assert!(
         !stored.contains("GITHUB_TOKEN"),

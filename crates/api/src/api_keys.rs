@@ -5,7 +5,6 @@
 //! only its SHA-256, so the table is worthless to whoever steals it.
 
 use flyco_core::{ApiKeyId, ApiKeySummary, CreatedApiKey, UserId};
-use serde::Deserialize;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
@@ -24,13 +23,13 @@ pub struct KeyOwner {
     pub user_id: UserId,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct OwnerRow {
     id: String,
     user_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct SummaryRow {
     id: String,
     label: String,
