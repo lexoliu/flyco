@@ -3,8 +3,9 @@
 use flyco_core::{
     ApiKeyId, ApiKeySummary, ApprovalId, ApprovalState, ApprovalView, BudgetConfig, BudgetView,
     ControlToDaemon, CreateApiKey, CreateSession, CreatedApiKey, CurrentUser, DaemonToken,
-    DecideApproval, EnvDocument, RepoSlug, RepoStatus, SendMessage, SessionDetail, SessionId,
-    SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe, wire::ApprovalPayload,
+    DecideApproval, EnvDocument, HarnessObservation, RepoSlug, RepoStatus, SendMessage,
+    SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe,
+    wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -27,8 +28,8 @@ use crate::room::EventPage;
 use crate::rooms::Rooms;
 use crate::{
     agents_md, api_keys, approvals, daemon_tokens, env, harness_accounts, machines, mcp, memory,
-    oauth, problem, provider_accounts, push, relay, repos, responses, sessions, skills,
-    transcripts, turns, users, webhooks,
+    oauth, observations, problem, provider_accounts, push, relay, repos, responses, sessions,
+    skills, transcripts, turns, users, webhooks,
 };
 
 /// Health probe response.
@@ -681,6 +682,35 @@ async fn record_approval(
     Ok(Created(Json(view)))
 }
 
+/// Records one thing this session's daemon observed about the harness
+/// account driving it.
+///
+/// The LLM usage panel is reactive by necessity — no vendor publishes a
+/// remaining-quota API — so this is where its numbers come from: the daemon
+/// holds the turn's `UsageReport` and is what receives `UsageLimited`, and
+/// neither can be asked for after the fact.
+///
+/// Which account the observation lands on is derived from the session
+/// itself, so a daemon never names one. Answers `204`: the row's identity
+/// is of no use to the daemon that posted it.
+#[skyzen::openapi]
+async fn record_harness_observation(
+    State(session): State<DaemonSession>,
+    Json(observation): Json<HarnessObservation>,
+    db: Db,
+) -> Outcome<NoContent> {
+    observe(session.0, observation, &db).await.into()
+}
+
+async fn observe(
+    session: SessionId,
+    observation: HarnessObservation,
+    db: &Db,
+) -> Result<NoContent, ApiError> {
+    observations::record(db, session, observation).await?;
+    Ok(NoContent)
+}
+
 /// Stores one batch of a session's transcript.
 async fn put_transcript_batch(
     State(session): State<DaemonSession>,
@@ -775,6 +805,7 @@ fn relay_routes() -> Vec<RouteNode> {
 fn daemon_routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/sessions/{id}/approvals".post(raise_approval),
+        "/v1/sessions/{id}/harness-observations".post(record_harness_observation),
         "/v1/sessions/{id}/transcript/{stream}".at(get_transcript),
         "/v1/sessions/{id}/transcript/{stream}/batches/{seq}".put(put_transcript_batch),
     ))

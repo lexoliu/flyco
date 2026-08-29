@@ -12,8 +12,14 @@
 #
 # Secrets never live in this file. Before the first deploy:
 #   wrangler secret put FLYCO_GITHUB_CLIENT_SECRET
-#   wrangler secret put FLYCO_ENCRYPTION_KEY      # 32 bytes, hex-encoded
+#   wrangler secret put FLYCO_ENCRYPTION_KEY          # 32 bytes, hex-encoded
+#   wrangler secret put FLYCO_GITHUB_WEBHOOK_SECRET   # optional; see below
 # Only the two non-secret values are declared under [cloudflare.vars].
+#
+# FLYCO_GITHUB_WEBHOOK_SECRET is the secret GitHub signs webhook deliveries
+# with, and it is optional in one direction only: without it this deployment
+# has nothing to verify a delivery against, so it accepts no webhooks at all
+# rather than reading an unsigned body.
 
 # The KV namespace is a portable service, so `#[skyzen::main]` wires it.
 [[service]]

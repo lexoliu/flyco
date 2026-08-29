@@ -79,6 +79,40 @@ pub enum ApiError {
     #[error("this skill bundle is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     InvalidSkill(&'static str),
 
+    /// This deployment holds no webhook secret, so it can verify nothing.
+    ///
+    /// The refusal is the point: with no secret there is no way to tell a
+    /// GitHub delivery from a forgery, and the alternative — reading the
+    /// body anyway — is the bug the whole route is arranged to prevent.
+    #[error(
+        "this flyco deployment accepts no GitHub webhooks",
+        status = StatusCode::NOT_IMPLEMENTED
+    )]
+    WebhooksUnconfigured,
+
+    /// The delivery carried no `X-Hub-Signature-256`, or one that does not
+    /// match the body.
+    ///
+    /// Deliberately one variant for both: telling a forger which half they
+    /// got wrong is a free oracle, and neither answer is actionable by
+    /// GitHub, which retries a delivery flyco could not verify.
+    #[error(
+        "this delivery is not signed by the secret this deployment holds",
+        status = StatusCode::FORBIDDEN
+    )]
+    WebhookUnverified,
+
+    /// The delivery was signed but its body is not the document its event
+    /// header claims.
+    #[error(
+        "this `{event}` delivery is not the payload that event carries",
+        status = StatusCode::BAD_REQUEST
+    )]
+    WebhookMalformed {
+        /// The event the delivery announced itself as.
+        event: String,
+    },
+
     /// This deployment has no VAPID key pair, so it cannot send push.
     #[error(
         "this flyco deployment is not configured for web push",
@@ -243,6 +277,18 @@ pub enum ApiError {
         max: u32,
     },
 
+    /// A daemon posted an observation that observes nothing.
+    ///
+    /// The LLM usage panel is the sum of what actually happened, so a row
+    /// reporting neither a cost nor a rate limit would add nothing to it
+    /// and would make "no observations yet" indistinguishable from "several
+    /// observations of nothing".
+    #[error(
+        "an observation must report a cost, a rate limit, or both",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    EmptyObservation,
+
     /// A message with nothing in it was sent to an agent.
     #[error(
         "a message to an agent cannot be empty",
@@ -350,6 +396,9 @@ impl ApiError {
             Self::InvalidMcpServer(_) => "invalid-mcp-server",
             Self::SkillNotFound => "skill-not-found",
             Self::InvalidSkill(_) => "invalid-skill",
+            Self::WebhooksUnconfigured => "webhooks-unconfigured",
+            Self::WebhookUnverified => "webhook-unverified",
+            Self::WebhookMalformed { .. } => "webhook-malformed",
             Self::PushUnconfigured => "push-unconfigured",
             Self::PushSubscriptionNotFound => "push-subscription-not-found",
             Self::InvalidPushSubscription(_) => "invalid-push-subscription",
@@ -371,6 +420,7 @@ impl ApiError {
             Self::InvalidBudget => "invalid-budget",
             Self::InvalidSessionCap { .. } => "invalid-session-cap",
             Self::EmptyMessage => "empty-message",
+            Self::EmptyObservation => "empty-observation",
             Self::InvalidCursor(_) => "invalid-cursor",
             Self::MalformedId(_) => "malformed-id",
             Self::InvalidStreamKey(_) => "invalid-stream-key",

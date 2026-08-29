@@ -9,7 +9,8 @@
 //! supports.
 
 use flyco_core::{
-    CloudProviderKind, MachineCatalogEntry, ProviderAccountId, ProviderCredentials, UserId,
+    CloudProviderKind, CloudSpend, MachineCatalogEntry, ProviderAccountId, ProviderCredentials,
+    UserId,
 };
 use flyco_provider::azure::auth::ServicePrincipal;
 use flyco_provider::azure::{AzureProvider, Workspace};
@@ -166,6 +167,61 @@ pub async fn catalog(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>
         ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
             provider: "GCP",
             operation: "catalog",
+            reason: "flyco has no GCP driver yet",
+        }),
+    }
+}
+
+/// Reads what the provider's own meter says this account has been billed
+/// over its current billing period.
+///
+/// `None` is not a failure and not a zero: it means this provider meters
+/// nothing on flyco's behalf. A registered SSH host is hardware the user
+/// already owns and already pays for, so it contributes no row at all —
+/// reporting `$0.00` against it would be flyco asserting the machine is
+/// free.
+///
+/// Exposed here for the same reason [`catalog`] is: the driver trait is not
+/// object-safe, so the dispatch on the credential variant lives in the
+/// control plane and each arm names what it supports.
+///
+/// # Errors
+///
+/// Returns [`ProviderError`] if the provider refuses the read or cannot be
+/// reached, and for providers flyco has no driver for yet.
+pub async fn cloud_usage(
+    account: &LinkedAccount,
+    now_unix: u64,
+) -> Result<Option<CloudSpend>, ProviderError> {
+    match &account.credentials {
+        ProviderCredentials::Azure {
+            tenant_id,
+            client_id,
+            client_secret,
+            subscription_id,
+            resource_group,
+            admin_ssh_public_key,
+        } => {
+            let mut provider = AzureProvider::new(
+                ServicePrincipal {
+                    tenant_id: tenant_id.clone(),
+                    client_id: client_id.clone(),
+                    client_secret: client_secret.clone(),
+                    subscription_id: subscription_id.clone(),
+                },
+                Workspace::new(resource_group.clone(), admin_ssh_public_key.clone()),
+            );
+            provider.billing_period_cost(now_unix).await.map(Some)
+        }
+        ProviderCredentials::ByoSsh { .. } => Ok(None),
+        ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
+            provider: "AWS",
+            operation: "usage",
+            reason: "flyco has no AWS driver yet",
+        }),
+        ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
+            provider: "GCP",
+            operation: "usage",
             reason: "flyco has no GCP driver yet",
         }),
     }
