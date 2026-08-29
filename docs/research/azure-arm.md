@@ -1,5 +1,48 @@
 # Azure Spot VM Driver — Implementation Reference
 
+> ## CORRECTION (2026-08-28, verified by live deployment)
+>
+> Two conclusions below were **wrong**, found by actually deploying against the
+> subscription rather than inferring. They are struck here rather than edited in
+> place so the reasoning error stays visible.
+>
+> **1. Spot IS available.** Section 0's "this subscription probably cannot run
+> Spot at all" is false. A `Standard_D2als_v6` with `priority: Spot`,
+> `evictionPolicy: Deallocate`, `maxPrice: -1` was accepted and provisioned in
+> `northcentralus`, then torn down. A subscription lacking spot entitlement is
+> rejected at request time with `AzureSpotFeatureNotEnabledForSubscription`;
+> that did not occur. The Azure-for-Students-offer argument was documentation
+> inference, and the `lowPriorityCores: 3` quota — treated below as a possible
+> phantom — is real. Keep the spot-then-fall-back path as defensive design;
+> B-series really is spot-ineligible.
+>
+> **2. A subscription-level Azure Policy restricts regions, and this document
+> misses it entirely — which invalidates every regional recommendation below,
+> including "westus2 (best)".** Policy *Allowed resource deployment regions*
+> (`b86dabb9-b578-4d7b-b842-3b45e95769a1`) sets
+> `listOfAllowedLocations = [norwayeast, mexicocentral, northcentralus,
+> westus3, canadacentral]`. Deploying to westus2 fails validation with
+> `RequestDisallowedByAzure` for *every* resource, the vnet included.
+>
+> **`az vm list-skus` does not reflect this policy** — it reports westus2 SKUs
+> as unrestricted. SKU restrictions and deployment policy are independent
+> gates, and §5's availability tables measure only the former. A catalog must
+> intersect three things: SKU restrictions, quota, and policy-allowed regions.
+> Read the policy from the subscription's assignments rather than hardcoding a
+> list; absence of such an assignment means all regions, not none.
+>
+> Verified unrestricted small D-series in allowed regions: `northcentralus` —
+> `D2ads_v5`, `D2ads_v6`, `D2alds_v6`, `D2als_v6`; `canadacentral` — ARM64
+> `D2pds_v5`, `D2plds_v5`, `D2pls_v5`, `D2ps_v5`.
+>
+> Observation, not a conclusion: that spot VM sat in `Creating` for over five
+> minutes, well beyond the 45–90s §7 estimates. Do not assume a 60s provision.
+>
+> Everything else — auth, call sequence, request bodies, async polling,
+> Scheduled Events, retail prices — was not contradicted by the test.
+
+
+
 Legend: **[E]** = verified empirically on this Mac against subscription
 `e47d07d8-2715-4909-aa56-1bfde801bdf0` ("Azure for Students", tenant rit.edu) via read-only
 `az` / `az rest` GET. **[D]** = asserted from Microsoft Learn docs. **[I]** = inference.
