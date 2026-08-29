@@ -688,6 +688,8 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
         let on_demand_hourly = hourly(Market::OnDemand).ok_or(ExclusionReason::Unpriced)?;
 
         Ok(MachineCatalogEntry {
+            // Stamped by the control plane, which knows the row.
+            account: None,
             provider: CloudProviderKind::Gcp,
             // The *zone*, not the region: a machine type offered in one zone
             // of a region is routinely absent from another, so a catalog

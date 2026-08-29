@@ -1694,6 +1694,7 @@ export interface components {
          *     to keep, upgrade, or downgrade its machine.
          */
         MachineCatalogEntry: {
+            account?: null | components["schemas"]["Uuid"];
             capacity?: null | components["schemas"]["MachineCapacity"];
             /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
             machine_type: string;
@@ -2922,6 +2923,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        account?: null | components["schemas"]["Uuid"];
                         capacity?: null | components["schemas"]["MachineCapacity"];
                         /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
                         machine_type: string;

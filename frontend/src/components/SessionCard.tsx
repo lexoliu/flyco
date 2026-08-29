@@ -13,6 +13,7 @@ const STATE_LABEL: Record<SessionState, string> = {
   paused: "Paused",
   interrupted: "Interrupted",
   archived: "Archived",
+  failed: "Failed",
 };
 
 export interface SessionCardProps {
