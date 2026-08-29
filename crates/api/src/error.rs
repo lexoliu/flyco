@@ -50,6 +50,21 @@ pub enum ApiError {
     #[error("memory node not found", status = StatusCode::NOT_FOUND)]
     MemoryNodeNotFound,
 
+    /// This deployment has no VAPID key pair, so it cannot send push.
+    #[error(
+        "this flyco deployment is not configured for web push",
+        status = StatusCode::NOT_IMPLEMENTED
+    )]
+    PushUnconfigured,
+
+    /// The push subscription does not exist, or belongs to somebody else.
+    #[error("push subscription not found", status = StatusCode::NOT_FOUND)]
+    PushSubscriptionNotFound,
+
+    /// The browser sent a subscription flyco cannot use.
+    #[error("this push subscription is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    InvalidPushSubscription(&'static str),
+
     /// The provider account does not exist, or belongs to somebody else.
     #[error("provider account not found", status = StatusCode::NOT_FOUND)]
     ProviderAccountNotFound,
@@ -301,6 +316,9 @@ impl ApiError {
             Self::SessionNotFound => "session-not-found",
             Self::ApprovalNotFound => "approval-not-found",
             Self::MemoryNodeNotFound => "memory-node-not-found",
+            Self::PushUnconfigured => "push-unconfigured",
+            Self::PushSubscriptionNotFound => "push-subscription-not-found",
+            Self::InvalidPushSubscription(_) => "invalid-push-subscription",
             Self::ProviderAccountNotFound => "provider-account-not-found",
             Self::HarnessAccountNotFound => "harness-account-not-found",
             Self::MachineNotFound => "machine-not-found",
