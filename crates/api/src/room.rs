@@ -31,6 +31,7 @@ use skyzen::durable::{
 };
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Route, Router};
+use skyzen::sql;
 use skyzen::utils::Json;
 use skyzen_services::durable::{DurableDb, DurableKv};
 
@@ -401,12 +402,13 @@ async fn append(db: &DurableDb, event: &ClientEvent) -> Result<(), DurableObject
         .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
 
     ensure_schema(db).await?;
-    db.query("INSERT INTO events (json, at_unix) VALUES (?, ?)")
-        .bind(json)
-        .bind(now_unix())
-        .execute()
-        .await
-        .map_err(|error| stored(&error))?;
+    sql!(
+        db,
+        "INSERT INTO events (json, at_unix) VALUES ({json}, {now_unix()})"
+    )
+    .execute()
+    .await
+    .map_err(|error| stored(&error))?;
     Ok(())
 }
 
@@ -595,13 +597,13 @@ async fn page(headers: &Headers, after: u64, db: &DurableDb) -> Result<Json<Even
     // One row past the page tells the caller whether to come back, without
     // a second `COUNT(*)` over a table that only grows.
     let limit = EVENT_PAGE_LIMIT + 1;
-    let rows: Vec<EventRow> = db
-        .query("SELECT seq, json, at_unix FROM events WHERE seq > ? ORDER BY seq LIMIT ?")
-        .bind(after)
-        .bind(limit)
-        .fetch_all()
-        .await
-        .map_err(|error| ApiError::Room(error.to_string()))?;
+    let rows: Vec<EventRow> = sql!(
+        db,
+        "SELECT seq, json, at_unix FROM events WHERE seq > {after} ORDER BY seq LIMIT {limit}"
+    )
+    .fetch_all()
+    .await
+    .map_err(|error| ApiError::Room(error.to_string()))?;
 
     let more = rows.len() > EVENT_PAGE_LIMIT as usize;
     let events = rows

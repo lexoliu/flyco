@@ -24,6 +24,7 @@
 //! a change that could not take effect until the next start anyway.
 
 use flyco_core::{EnvDocument, EnvEntry, SessionId, UserId};
+use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
@@ -51,11 +52,12 @@ pub async fn read(
         return Err(ApiError::SessionNotFound);
     }
 
-    let sealed: Option<String> = db
-        .query("SELECT entries_enc FROM session_env WHERE session_id = ?")
-        .bind(session)
-        .fetch_scalar_optional()
-        .await?;
+    let sealed: Option<String> = sql!(
+        db,
+        "SELECT entries_enc FROM session_env WHERE session_id = {session}"
+    )
+    .fetch_scalar_optional()
+    .await?;
 
     let entries = match sealed {
         Some(sealed) => unseal(cipher, &sealed)?,
@@ -87,14 +89,14 @@ pub async fn replace(
         }
     }
 
-    db.query(
-        "INSERT INTO session_env (session_id, entries_enc, updated_at_unix) VALUES (?, ?, ?) \
+    let sealed = seal(cipher, &entries)?;
+    sql!(
+        db,
+        "INSERT INTO session_env (session_id, entries_enc, updated_at_unix) \
+         VALUES ({session}, {sealed}, {now_unix()}) \
          ON CONFLICT (session_id) DO UPDATE SET \
-         entries_enc = excluded.entries_enc, updated_at_unix = excluded.updated_at_unix",
+         entries_enc = excluded.entries_enc, updated_at_unix = excluded.updated_at_unix"
     )
-    .bind(session)
-    .bind(seal(cipher, &entries)?)
-    .bind(now_unix())
     .execute()
     .await?;
 

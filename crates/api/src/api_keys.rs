@@ -5,6 +5,7 @@
 //! only its SHA-256, so the table is worthless to whoever steals it.
 
 use flyco_core::{ApiKeyId, ApiKeySummary, CreatedApiKey, UserId};
+use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
@@ -70,15 +71,11 @@ pub async fn create(db: &Db, user_id: UserId, label: String) -> Result<CreatedAp
     let id = ApiKeyId::generate();
     let created_at_unix = now_unix();
 
-    db.query(
+    sql!(
+        db,
         "INSERT INTO api_keys (id, user_id, token_hash, label, created_at_unix, last_used_unix) \
-         VALUES (?, ?, ?, ?, ?, NULL)",
+         VALUES ({id}, {user_id}, {token_hash(&token)}, {label.clone()}, {created_at_unix}, NULL)"
     )
-    .bind(id)
-    .bind(user_id)
-    .bind(token_hash(&token))
-    .bind(label.clone())
-    .bind(created_at_unix)
     .execute()
     .await?;
 
@@ -96,14 +93,13 @@ pub async fn create(db: &Db, user_id: UserId, label: String) -> Result<CreatedAp
 ///
 /// Returns [`ApiError`] if the database fails or a stored row is malformed.
 pub async fn list(db: &Db, user_id: UserId) -> Result<Vec<ApiKeySummary>, ApiError> {
-    let rows: Vec<SummaryRow> = db
-        .query(
-            "SELECT id, label, created_at_unix, last_used_unix FROM api_keys \
-             WHERE user_id = ? ORDER BY created_at_unix, id",
-        )
-        .bind(user_id)
-        .fetch_all()
-        .await?;
+    let rows: Vec<SummaryRow> = sql!(
+        db,
+        "SELECT id, label, created_at_unix, last_used_unix FROM api_keys \
+         WHERE user_id = {user_id} ORDER BY created_at_unix, id"
+    )
+    .fetch_all()
+    .await?;
 
     Ok(rows.into_iter().map(Into::into).collect())
 }
@@ -115,12 +111,12 @@ pub async fn list(db: &Db, user_id: UserId) -> Result<Vec<ApiKeySummary>, ApiErr
 /// Returns [`ApiError::ApiKeyNotFound`] if the key does not exist or belongs
 /// to somebody else — the two cases are deliberately indistinguishable.
 pub async fn revoke(db: &Db, user_id: UserId, key_id: ApiKeyId) -> Result<(), ApiError> {
-    let result = db
-        .query("DELETE FROM api_keys WHERE id = ? AND user_id = ?")
-        .bind(key_id)
-        .bind(user_id)
-        .execute()
-        .await?;
+    let result = sql!(
+        db,
+        "DELETE FROM api_keys WHERE id = {key_id} AND user_id = {user_id}"
+    )
+    .execute()
+    .await?;
 
     if result.rows_written == 0 {
         return Err(ApiError::ApiKeyNotFound);
@@ -134,11 +130,12 @@ pub async fn revoke(db: &Db, user_id: UserId, key_id: ApiKeyId) -> Result<(), Ap
 ///
 /// Returns [`ApiError`] if the database fails or the stored row is malformed.
 pub async fn find_by_token(db: &Db, presented: &str) -> Result<Option<KeyOwner>, ApiError> {
-    let row: Option<OwnerRow> = db
-        .query("SELECT id, user_id FROM api_keys WHERE token_hash = ?")
-        .bind(token_hash(presented))
-        .fetch_optional()
-        .await?;
+    let row: Option<OwnerRow> = sql!(
+        db,
+        "SELECT id, user_id FROM api_keys WHERE token_hash = {token_hash(presented)}"
+    )
+    .fetch_optional()
+    .await?;
 
     Ok(row.map(Into::into))
 }
@@ -149,10 +146,11 @@ pub async fn find_by_token(db: &Db, presented: &str) -> Result<Option<KeyOwner>,
 ///
 /// Returns [`ApiError`] if the database fails.
 pub async fn mark_used(db: &Db, key_id: ApiKeyId) -> Result<(), ApiError> {
-    db.query("UPDATE api_keys SET last_used_unix = ? WHERE id = ?")
-        .bind(now_unix())
-        .bind(key_id)
-        .execute()
-        .await?;
+    sql!(
+        db,
+        "UPDATE api_keys SET last_used_unix = {now_unix()} WHERE id = {key_id}"
+    )
+    .execute()
+    .await?;
     Ok(())
 }

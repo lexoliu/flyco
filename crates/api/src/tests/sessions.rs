@@ -7,6 +7,7 @@ use flyco_core::{
     SessionSummary, SpendKind, UpdateEnv, UpdateMe, Usd,
 };
 use skyzen::routing::Router;
+use skyzen::sql;
 use skyzen_services::sql::Row;
 use skyzen_services::{Db, Kv};
 use skyzen_test::{TestClient, TestContext};
@@ -248,11 +249,14 @@ async fn sessions_are_listed_newest_first(ctx: TestContext, kv: Kv, db: Db) {
     // Both were created inside the same second, so backdate one: the
     // assertion is about the ordering contract, not about how fast the test
     // machine is.
-    db.query("UPDATE sessions SET created_at_unix = created_at_unix - 60 WHERE id = ?")
-        .bind(older.summary.id.to_string())
-        .execute()
-        .await
-        .expect("backdate the older session");
+    let older_id = older.summary.id;
+    sql!(
+        db,
+        "UPDATE sessions SET created_at_unix = created_at_unix - 60 WHERE id = {older_id}"
+    )
+    .execute()
+    .await
+    .expect("backdate the older session");
 
     let listed = client
         .get("/v1/sessions")
@@ -372,12 +376,13 @@ async fn the_replay_refreshes_the_cached_budget_row(ctx: TestContext, kv: Kv, db
         .await
         .assert_status(200);
 
-    let row: Row = db
-        .query("SELECT spent_micros, stage FROM budgets WHERE id = ?")
-        .bind(budget.to_string())
-        .fetch_one()
-        .await
-        .expect("read the budget row");
+    let row: Row = sql!(
+        db,
+        "SELECT spent_micros, stage FROM budgets WHERE id = {budget}"
+    )
+    .fetch_one()
+    .await
+    .expect("read the budget row");
 
     assert_eq!(
         row.get::<i64>("spent_micros").expect("spent_micros"),
@@ -575,9 +580,7 @@ async fn an_unknown_session_is_not_found(ctx: TestContext, kv: Kv, db: Db) {
 }
 
 async fn budget_id(db: &Db, session: SessionId) -> flyco_core::BudgetId {
-    let budget_id: String = db
-        .query("SELECT budget_id FROM sessions WHERE id = ?")
-        .bind(session.to_string())
+    let budget_id: String = sql!(db, "SELECT budget_id FROM sessions WHERE id = {session}")
         .fetch_scalar()
         .await
         .expect("read the session row");
@@ -724,12 +727,13 @@ async fn a_stored_environment_is_sealed_at_rest(ctx: TestContext, kv: Kv, db: Db
         .await
         .assert_status(200);
 
-    let stored: String = db
-        .query("SELECT entries_enc FROM session_env WHERE session_id = ?")
-        .bind(session.to_string())
-        .fetch_scalar()
-        .await
-        .expect("read the stored environment");
+    let stored: String = sql!(
+        db,
+        "SELECT entries_enc FROM session_env WHERE session_id = {session}"
+    )
+    .fetch_scalar()
+    .await
+    .expect("read the stored environment");
     let stored = &stored;
     assert!(!stored.contains(SECRET), "the value is stored in the clear");
     assert!(

@@ -15,6 +15,7 @@ use flyco_core::{
 use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
+use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
@@ -69,12 +70,6 @@ impl From<MachineRow> for MachineView {
     }
 }
 
-/// Every column the machine projection needs, in one place so the three
-/// readers below cannot drift apart.
-const MACHINE_COLUMNS: &str = "id, session_id, provider_account_id, provider, machine_type, \
-                               region, disk_gib, requested_spot, spot, state, hourly_micros, \
-                               native_id, address, created_at_unix";
-
 impl MachineRow {
     /// Rebuilds what a driver needs to act on this machine.
     ///
@@ -122,16 +117,13 @@ async fn run(
         provisioning::Operation::Stop | provisioning::Operation::Start => row.machine_type.clone(),
     };
 
-    db.query(
-        "UPDATE machines SET state = ?, machine_type = ?, spot = ?, native_id = ?, address = ? \
-         WHERE id = ?",
+    sql!(
+        db,
+        "UPDATE machines SET state = {updated.state}, machine_type = {machine_type}, \
+         spot = {updated.capacity_mode.is_spot()}, native_id = {updated.native_id.clone()}, \
+         address = {updated.address.clone()} \
+         WHERE id = {row.id}"
     )
-    .bind(updated.state)
-    .bind(machine_type)
-    .bind(updated.capacity_mode.is_spot())
-    .bind(updated.native_id.clone())
-    .bind(updated.address.clone())
-    .bind(row.id)
     .execute()
     .await?;
 
@@ -145,16 +137,17 @@ async fn run(
 /// reachable only via the session it serves, and that session carries the
 /// `user_id`.
 async fn load(db: &Db, user: UserId, session: SessionId) -> Result<MachineRow, ApiError> {
-    let sql = format!(
-        "SELECT {MACHINE_COLUMNS} FROM machines \
-         WHERE session_id = (SELECT id FROM sessions WHERE id = ? AND user_id = ?)"
-    );
-    db.query(&sql)
-        .bind(session)
-        .bind(user)
-        .fetch_optional()
-        .await?
-        .ok_or(ApiError::MachineNotFound)
+    sql!(
+        db,
+        "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
+         disk_gib, requested_spot, spot, state, hourly_micros, native_id, address, \
+         created_at_unix \
+         FROM machines \
+         WHERE session_id = (SELECT id FROM sessions WHERE id = {session} AND user_id = {user})"
+    )
+    .fetch_optional()
+    .await?
+    .ok_or(ApiError::MachineNotFound)
 }
 
 /// Narrows the machine catalog.

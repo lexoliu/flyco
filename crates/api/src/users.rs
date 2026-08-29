@@ -5,6 +5,7 @@
 //! sealed before it gets here and is never read back out on this path.
 
 use flyco_core::{CurrentUser, SESSION_CAP_MAX, SESSION_CAP_MIN, UserId};
+use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
@@ -44,21 +45,17 @@ pub async fn upsert_from_github(
     account: &GithubUser,
     sealed_token: &str,
 ) -> Result<CurrentUser, ApiError> {
-    let row: IdentityRow = db
-        .query(
-            "INSERT INTO users (id, github_id, login, github_token_enc, created_at_unix) \
-             VALUES (?, ?, ?, ?, ?) \
-             ON CONFLICT (github_id) DO UPDATE SET \
-             login = excluded.login, github_token_enc = excluded.github_token_enc \
-             RETURNING id, login, session_cap",
-        )
-        .bind(UserId::generate())
-        .bind(account.id)
-        .bind(account.login.clone())
-        .bind(sealed_token)
-        .bind(now_unix())
-        .fetch_one()
-        .await?;
+    let row: IdentityRow = sql!(
+        db,
+        "INSERT INTO users (id, github_id, login, github_token_enc, created_at_unix) \
+         VALUES ({UserId::generate()}, {account.id}, {account.login.clone()}, \
+                 {sealed_token}, {now_unix()}) \
+         ON CONFLICT (github_id) DO UPDATE SET \
+         login = excluded.login, github_token_enc = excluded.github_token_enc \
+         RETURNING id, login, session_cap"
+    )
+    .fetch_one()
+    .await?;
 
     Ok(row.into())
 }
@@ -70,11 +67,12 @@ pub async fn upsert_from_github(
 /// Returns [`ApiError`] if the database fails or the stored row is not a
 /// valid identity.
 pub async fn find(db: &Db, id: UserId) -> Result<Option<CurrentUser>, ApiError> {
-    let row: Option<IdentityRow> = db
-        .query("SELECT id, login, session_cap FROM users WHERE id = ?")
-        .bind(id)
-        .fetch_optional()
-        .await?;
+    let row: Option<IdentityRow> = sql!(
+        db,
+        "SELECT id, login, session_cap FROM users WHERE id = {id}"
+    )
+    .fetch_optional()
+    .await?;
 
     Ok(row.map(Into::into))
 }
@@ -93,9 +91,7 @@ pub async fn set_session_cap(db: &Db, id: UserId, cap: u32) -> Result<(), ApiErr
         });
     }
 
-    db.query("UPDATE users SET session_cap = ? WHERE id = ?")
-        .bind(cap)
-        .bind(id)
+    sql!(db, "UPDATE users SET session_cap = {cap} WHERE id = {id}")
         .execute()
         .await?;
 
@@ -108,9 +104,9 @@ pub async fn set_session_cap(db: &Db, id: UserId, cap: u32) -> Result<(), ApiErr
 ///
 /// Returns [`ApiError`] if the database fails.
 pub async fn sealed_github_token(db: &Db, id: UserId) -> Result<Option<String>, ApiError> {
-    Ok(db
-        .query("SELECT github_token_enc FROM users WHERE id = ?")
-        .bind(id)
-        .fetch_scalar_optional()
-        .await?)
+    Ok(
+        sql!(db, "SELECT github_token_enc FROM users WHERE id = {id}")
+            .fetch_scalar_optional()
+            .await?,
+    )
 }

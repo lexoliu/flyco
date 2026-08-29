@@ -17,6 +17,7 @@ use flyco_provider::{SystemClock, ZenwaveTransport};
 use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
+use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
@@ -68,14 +69,13 @@ async fn list_providers(
 }
 
 async fn list(db: &Db, user: UserId) -> Result<Vec<ProviderAccountView>, ApiError> {
-    let rows: Vec<AccountRow> = db
-        .query(
-            "SELECT id, kind, label, linked_at_unix FROM provider_accounts \
-             WHERE user_id = ? ORDER BY linked_at_unix DESC, id",
-        )
-        .bind(user)
-        .fetch_all()
-        .await?;
+    let rows: Vec<AccountRow> = sql!(
+        db,
+        "SELECT id, kind, label, linked_at_unix FROM provider_accounts \
+         WHERE user_id = {user} ORDER BY linked_at_unix DESC, id"
+    )
+    .fetch_all()
+    .await?;
 
     Ok(rows.into_iter().map(Into::into).collect())
 }
@@ -167,17 +167,12 @@ async fn link(
 
     let id = ProviderAccountId::generate();
     let linked_at = now_unix();
-    db.query(
+    sql!(
+        db,
         "INSERT INTO provider_accounts \
          (id, user_id, kind, label, credentials_enc, linked_at_unix) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES ({id}, {user}, {kind}, {request.label.clone()}, {sealed}, {linked_at})"
     )
-    .bind(id)
-    .bind(user)
-    .bind(kind)
-    .bind(request.label.clone())
-    .bind(sealed)
-    .bind(linked_at)
     .execute()
     .await?;
 
@@ -206,15 +201,13 @@ async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, Api
 
     // Scoped by user so somebody else's account is indistinguishable from
     // one that does not exist.
-    let owned: Option<AccountRow> = db
-        .query(
-            "SELECT id, kind, label, linked_at_unix FROM provider_accounts \
-             WHERE id = ? AND user_id = ?",
-        )
-        .bind(id)
-        .bind(user)
-        .fetch_optional()
-        .await?;
+    let owned: Option<AccountRow> = sql!(
+        db,
+        "SELECT id, kind, label, linked_at_unix FROM provider_accounts \
+         WHERE id = {id} AND user_id = {user}"
+    )
+    .fetch_optional()
+    .await?;
     if owned.is_none() {
         return Err(ApiError::ProviderAccountNotFound);
     }
@@ -222,24 +215,24 @@ async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, Api
     // Unlinking discards the only credentials that can destroy what is
     // running there, so a live machine makes this a 409 rather than a leak
     // nobody can clean up afterwards.
-    let live: u64 = db
-        .query(
-            "SELECT COUNT(*) AS live FROM machines \
-             WHERE provider_account_id = ? AND state != ?",
-        )
-        .bind(id)
-        .bind(flyco_core::MachineState::Destroyed)
-        .fetch_scalar()
-        .await?;
+    let destroyed = flyco_core::MachineState::Destroyed;
+    let live: u64 = sql!(
+        db,
+        "SELECT COUNT(*) AS live FROM machines \
+         WHERE provider_account_id = {id} AND state != {destroyed}"
+    )
+    .fetch_scalar()
+    .await?;
     if live > 0 {
         return Err(ApiError::ProviderInUse { sessions: live });
     }
 
-    db.query("DELETE FROM provider_accounts WHERE id = ? AND user_id = ?")
-        .bind(id)
-        .bind(user)
-        .execute()
-        .await?;
+    sql!(
+        db,
+        "DELETE FROM provider_accounts WHERE id = {id} AND user_id = {user}"
+    )
+    .execute()
+    .await?;
 
     Ok(NoContent)
 }

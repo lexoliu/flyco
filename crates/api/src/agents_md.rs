@@ -16,6 +16,7 @@
 
 use flyco_core::{AgentsDocument, CurrentUser, UpdateAgentsDocument, UserId};
 use skyzen::routing::{CreateRouteNode, Route, RouteNode, Routes as _};
+use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
@@ -60,11 +61,12 @@ async fn put_agents_md(
 
 /// The caller's document, or an empty one if they have never written it.
 async fn read(db: &Db, user: UserId) -> Result<AgentsDocument, ApiError> {
-    let row: Option<DocumentRow> = db
-        .query("SELECT content, updated_at_unix FROM agents_md WHERE user_id = ?")
-        .bind(user)
-        .fetch_optional()
-        .await?;
+    let row: Option<DocumentRow> = sql!(
+        db,
+        "SELECT content, updated_at_unix FROM agents_md WHERE user_id = {user}"
+    )
+    .fetch_optional()
+    .await?;
 
     Ok(row.map_or_else(
         || AgentsDocument {
@@ -77,18 +79,16 @@ async fn read(db: &Db, user: UserId) -> Result<AgentsDocument, ApiError> {
 
 /// Replaces the document, stamping the time the control plane recorded it.
 async fn write(db: &Db, user: UserId, content: String) -> Result<AgentsDocument, ApiError> {
-    let row: DocumentRow = db
-        .query(
-            "INSERT INTO agents_md (user_id, content, updated_at_unix) VALUES (?, ?, ?) \
-             ON CONFLICT (user_id) DO UPDATE SET \
-             content = excluded.content, updated_at_unix = excluded.updated_at_unix \
-             RETURNING content, updated_at_unix",
-        )
-        .bind(user)
-        .bind(content)
-        .bind(now_unix())
-        .fetch_one()
-        .await?;
+    let row: DocumentRow = sql!(
+        db,
+        "INSERT INTO agents_md (user_id, content, updated_at_unix) \
+         VALUES ({user}, {content}, {now_unix()}) \
+         ON CONFLICT (user_id) DO UPDATE SET \
+         content = excluded.content, updated_at_unix = excluded.updated_at_unix \
+         RETURNING content, updated_at_unix"
+    )
+    .fetch_one()
+    .await?;
 
     tracing::info!(bytes = row.content.len(), "replaced the shared AGENTS.md");
     Ok(row.into())
