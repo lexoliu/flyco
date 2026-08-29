@@ -68,6 +68,10 @@ const CORE_MARKER: &str = "Instance Core";
 
 /// What a RAM SKU's description says.
 const RAM_MARKER: &str = "Instance Ram";
+/// Description marker for the persistent-disk tier flyco provisions.
+const BALANCED_DISK_MARKER: &str = "Balanced PD Capacity";
+const STORAGE_FAMILY: &str = "Storage";
+const HOURS_PER_MONTH: u64 = 730;
 
 /// Nanos in one unit of currency, which is how the catalog states a price.
 const NANOS_PER_UNIT: u64 = 1_000_000_000;
@@ -355,9 +359,16 @@ impl FamilyRates {
 #[derive(Debug, Clone, Default)]
 pub struct RegionRates {
     entries: Vec<(String, Market, FamilyRates)>,
+    storage_gib_hourly: Option<Usd>,
 }
 
 impl RegionRates {
+    /// Published price of one GiB-hour of balanced persistent disk.
+    #[must_use]
+    pub const fn storage_gib_hourly(&self) -> Option<Usd> {
+        self.storage_gib_hourly
+    }
+
     /// The rates of one machine family in one market.
     #[must_use]
     pub fn family(&self, family: &str, market: Market) -> Option<FamilyRates> {
@@ -398,6 +409,17 @@ impl RegionRates {
         let mut rates = Self::default();
         for sku in skus {
             if !sku.covers(region) {
+                continue;
+            }
+            if sku.category.resource_family == STORAGE_FAMILY
+                && sku.description.contains(BALANCED_DISK_MARKER)
+                && sku.category.usage_type == ON_DEMAND_USAGE
+            {
+                if let Some(monthly) = sku.rate_micros()? {
+                    rates.storage_gib_hourly = Some(Usd::from_micros(
+                        monthly.saturating_add(HOURS_PER_MONTH - 1) / HOURS_PER_MONTH,
+                    ));
+                }
                 continue;
             }
             let (Some(market), Some((family, component))) = (sku.market(), sku.component()) else {

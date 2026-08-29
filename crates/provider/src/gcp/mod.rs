@@ -68,7 +68,7 @@ mod tests;
 use flyco_core::MachineId;
 use flyco_core::machine::{
     CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
-    MachineState, OsFamily,
+    MachineState, OsFamily, StoragePricing,
 };
 
 use crate::clock::{MonotonicClock, SystemClock, SystemTimer, SystemWallClock, Timer, WallClock};
@@ -686,6 +686,9 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
                 .and_then(|rates| rates.hourly(machine_type.guest_cpus, machine_type.memory_mb))
         };
         let on_demand_hourly = hourly(Market::OnDemand).ok_or(ExclusionReason::Unpriced)?;
+        let storage_rate = rates
+            .storage_gib_hourly()
+            .ok_or(ExclusionReason::Unpriced)?;
 
         Ok(MachineCatalogEntry {
             // Stamped by the control plane, which knows the row.
@@ -708,6 +711,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
                 // Compute Engine bills by the second past a one-minute
                 // floor, with no per-type minimum of any kind.
                 minimum_billing_hours: None,
+                storage: StoragePricing::PerGibHourly { rate: storage_rate },
             },
         })
     }

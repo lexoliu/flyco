@@ -104,6 +104,7 @@ const VOLUME_IN_USE: &str = include_str!("../../fixtures/aws/describe_volumes_in
 const RELEASED: &str = include_str!("../../fixtures/aws/release_address.xml");
 const DELETED_VOLUME: &str = include_str!("../../fixtures/aws/delete_volume.xml");
 const PRODUCTS: &str = include_str!("../../fixtures/aws/get_products.json");
+const STORAGE_PRODUCTS: &str = include_str!("../../fixtures/aws/get_storage_products.json");
 const SPOT_PRICES: &str = include_str!("../../fixtures/aws/describe_spot_price_history.xml");
 const COST: &str = include_str!("../../fixtures/aws/get_cost_and_usage.json");
 const IDENTITY: &str = include_str!("../../fixtures/aws/get_caller_identity.xml");
@@ -1208,6 +1209,7 @@ fn catalog_script() -> Vec<HttpResponse> {
         json(QUOTAS),
         xml(NO_INSTANCES),
         json(PRODUCTS),
+        json(STORAGE_PRODUCTS),
         xml(SPOT_PRICES),
     ]
 }
@@ -1251,6 +1253,9 @@ async fn the_catalog_offers_only_what_passes_all_three_gates() {
             // wherever there is capacity and is billed at that zone's rate.
             spot_hourly: Some(flyco_core::Usd::from_micros(4_860)),
             minimum_billing_hours: None,
+            storage: flyco_core::StoragePricing::PerGibHourly {
+                rate: flyco_core::Usd::from_micros(110),
+            },
         }
     );
 }
@@ -1276,6 +1281,9 @@ async fn an_ec2_mac_says_it_bills_a_day_at_a_time() {
             // budget told the hourly rate alone would be wrong by about
             // sixteen dollars.
             minimum_billing_hours: Some(24),
+            storage: flyco_core::StoragePricing::PerGibHourly {
+                rate: flyco_core::Usd::from_micros(110),
+            },
         }
     );
 }
@@ -1349,8 +1357,14 @@ async fn the_price_query_is_signed_against_the_price_lists_own_region() {
         "the Price List has three endpoints world-wide and is signed against its own region"
     );
 
+    let storage = aws.transport().request(6);
+    assert_eq!(
+        header(&storage, "x-amz-target"),
+        "AWSPriceListService.GetProducts"
+    );
+
     // Spot is a different service entirely: EC2, in the region being priced.
-    let spot = aws.transport().request(6);
+    let spot = aws.transport().request(7);
     assert_eq!(action(&spot), "DescribeSpotPriceHistory");
     assert_eq!(field(&spot, "ProductDescription.1"), "Linux/UNIX");
     assert_eq!(field(&spot, "StartTime"), "2026-08-29T12:00:00Z");

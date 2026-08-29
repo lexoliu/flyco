@@ -37,12 +37,54 @@ pub enum OsFamily {
 ///
 /// Absent from an entry the provider does not publish a size for — see
 /// [`MachineCatalogEntry::capacity`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MachineCapacity {
     /// Virtual CPU count.
     pub vcpus: u32,
     /// Memory in MiB.
     pub memory_mib: u64,
+}
+
+/// How a provider prices the persistent disk attached to a machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StoragePricing {
+    /// A linear price for every provisioned GiB.
+    PerGibHourly {
+        /// Price of one GiB for one hour.
+        rate: Usd,
+    },
+    /// Fixed-price capacity tiers. The first tier whose capacity contains
+    /// the requested disk is the one the provider bills.
+    CapacityTiers {
+        /// Tiers in ascending capacity order.
+        tiers: Vec<StoragePriceTier>,
+    },
+}
+
+/// One fixed-price disk tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct StoragePriceTier {
+    /// Maximum provisioned size covered by the tier.
+    pub capacity_gib: u32,
+    /// Price of the tier for one hour.
+    pub hourly: Usd,
+}
+
+impl StoragePricing {
+    /// Prices a requested persistent disk.
+    #[must_use]
+    pub fn hourly(&self, disk_gib: u32) -> Option<Usd> {
+        match self {
+            Self::PerGibHourly { rate } => Some(Usd::from_micros(
+                rate.micros().saturating_mul(u64::from(disk_gib)),
+            )),
+            Self::CapacityTiers { tiers } => tiers
+                .iter()
+                .find(|tier| disk_gib <= tier.capacity_gib)
+                .map(|tier| tier.hourly),
+        }
+    }
 }
 
 /// What an hour on a machine costs.
@@ -52,7 +94,7 @@ pub struct MachineCapacity {
 /// only one of them is ever true. A machine the user already owns has no
 /// rate flyco could quote, and quoting `$0.00` would tell a budget it can
 /// run forever.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MachinePricing {
     /// The provider meters this machine and bills for it by the hour.
@@ -65,6 +107,8 @@ pub enum MachinePricing {
         /// one (e.g. EC2 Mac dedicated hosts bill a 24-hour minimum under
         /// the Apple license). The agent sees this before choosing.
         minimum_billing_hours: Option<u32>,
+        /// Persistent-disk pricing published by the provider.
+        storage: StoragePricing,
     },
     /// Hardware the user already owns and already pays for. Flyco meters
     /// nothing on it and a session running here spends no budget.
@@ -86,6 +130,15 @@ impl MachinePricing {
                 (true, Some(price)) => Some(*price),
                 _ => Some(*on_demand_hourly),
             },
+        }
+    }
+
+    /// What one hour of the requested persistent disk costs.
+    #[must_use]
+    pub fn storage_hourly(&self, disk_gib: u32) -> Option<Usd> {
+        match self {
+            Self::UserOwned => None,
+            Self::Metered { storage, .. } => storage.hourly(disk_gib),
         }
     }
 }
@@ -180,6 +233,8 @@ pub struct MachineView {
     /// machine holds spot capacity, the on-demand one otherwise, and
     /// nothing at all on hardware the user owns.
     pub hourly: Option<Usd>,
+    /// Persistent-disk price actually being billed per hour.
+    pub storage_hourly: Option<Usd>,
     /// Provider-native region it landed in.
     pub region: String,
     /// When it was created, seconds since the Unix epoch.
@@ -201,6 +256,7 @@ pub struct ResizeMachine {
 mod tests {
     use super::{
         CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, OsFamily,
+        StoragePricing,
     };
     use crate::money::Usd;
 
@@ -210,6 +266,9 @@ mod tests {
             on_demand_hourly: Usd::from_micros(8_400),
             spot_hourly: Some(Usd::from_micros(7_560)),
             minimum_billing_hours: None,
+            storage: StoragePricing::PerGibHourly {
+                rate: Usd::from_micros(100),
+            },
         };
 
         assert_eq!(pricing.hourly(true), Some(Usd::from_micros(7_560)));
@@ -222,6 +281,9 @@ mod tests {
             on_demand_hourly: Usd::from_micros(8_400),
             spot_hourly: None,
             minimum_billing_hours: Some(24),
+            storage: StoragePricing::PerGibHourly {
+                rate: Usd::from_micros(100),
+            },
         };
 
         assert_eq!(pricing.hourly(true), Some(Usd::from_micros(8_400)));
@@ -251,6 +313,9 @@ mod tests {
                 on_demand_hourly: Usd::from_micros(8_400),
                 spot_hourly: None,
                 minimum_billing_hours: None,
+                storage: StoragePricing::PerGibHourly {
+                    rate: Usd::from_micros(100),
+                },
             },
         };
 
