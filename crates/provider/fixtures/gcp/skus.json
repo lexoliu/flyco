@@ -343,6 +343,44 @@
       "serviceProviderName": "Google"
     },
     {
+      "name": "services/6F81-5844-456A/skus/BALANCED-PD",
+      "skuId": "BALANCED-PD",
+      "description": "Balanced PD Capacity",
+      "category": {
+        "serviceDisplayName": "Compute Engine",
+        "resourceFamily": "Storage",
+        "resourceGroup": "PDStandard",
+        "usageType": "OnDemand"
+      },
+      "serviceRegions": [
+        "us-central1"
+      ],
+      "pricingInfo": [
+        {
+          "effectiveTime": "2026-08-01T00:00:00Z",
+          "summary": "",
+          "pricingExpression": {
+            "usageUnit": "GiBy.mo",
+            "usageUnitDescription": "gibibyte month",
+            "baseUnit": "By.s",
+            "baseUnitConversionFactor": 2678400000,
+            "displayQuantity": 1,
+            "tieredRates": [
+              {
+                "startUsageAmount": 0,
+                "unitPrice": {
+                  "currencyCode": "USD",
+                  "units": "0",
+                  "nanos": 100000000
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "serviceProviderName": "Google"
+    },
+    {
       "name": "services/6F81-5844-456A/skus/1882-1E28-17E5",
       "skuId": "1882",
       "description": "Licensing Fee for Ubuntu Pro on VM with 2 VCPU",

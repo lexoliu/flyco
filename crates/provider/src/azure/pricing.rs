@@ -24,6 +24,7 @@
 
 use core::fmt::Write as _;
 
+use flyco_core::machine::{StoragePriceTier, StoragePricing};
 use flyco_core::money::Usd;
 use serde::Deserialize;
 
@@ -55,6 +56,7 @@ const LOW_PRIORITY_SUFFIX: &str = " Low Priority";
 
 /// Substring marking a Windows meter.
 const WINDOWS_MARKER: &str = "Windows";
+const HOURS_PER_MONTH: u64 = 730;
 
 /// One page of retail prices.
 #[derive(Debug, Clone, Deserialize)]
@@ -83,6 +85,12 @@ pub struct PriceRow {
     /// SKU name; carries the ` Spot` and ` Low Priority` suffixes.
     #[serde(rename = "skuName", default)]
     pub sku_name: String,
+    /// Meter name distinguishes disk capacity from mounts and operations.
+    #[serde(rename = "meterName", default)]
+    pub meter_name: String,
+    /// Unit the price is quoted per.
+    #[serde(rename = "unitOfMeasure", default)]
+    pub unit_of_measure: String,
 }
 
 /// What kind of meter a row is.
@@ -146,10 +154,18 @@ struct CachedRegion {
     expires_after: u64,
 }
 
+#[derive(Debug, Clone)]
+struct CachedStorage {
+    region: String,
+    pricing: StoragePricing,
+    expires_after: u64,
+}
+
 /// Prices per region, with a time-to-live.
 #[derive(Debug, Clone, Default)]
 pub struct PriceCatalog {
     cached: Option<CachedRegion>,
+    storage_cached: Option<CachedStorage>,
 }
 
 /// The `OData` filter for one region's Linux consumption meters.
@@ -181,7 +197,10 @@ impl PriceCatalog {
     /// An empty catalog.
     #[must_use]
     pub const fn new() -> Self {
-        Self { cached: None }
+        Self {
+            cached: None,
+            storage_cached: None,
+        }
     }
 
     /// The prices of one machine type in one region, reading the region's
@@ -248,6 +267,117 @@ impl PriceCatalog {
             .expect("the cache was just filled")
             .prices)
     }
+
+    /// Published Standard SSD LRS capacity tiers for one region.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the retail-prices API refuses the read,
+    /// returns malformed data, or publishes no usable capacity tiers.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: the cache is filled immediately before the borrow.
+    pub async fn storage_pricing<T: HttpTransport, C: MonotonicClock>(
+        &mut self,
+        transport: &T,
+        clock: &C,
+        region: &str,
+    ) -> Result<&StoragePricing, ProviderError> {
+        let now = clock.elapsed_seconds();
+        let fresh = self
+            .storage_cached
+            .as_ref()
+            .is_some_and(|cached| cached.region == region && now < cached.expires_after);
+        if !fresh {
+            self.storage_cached = Some(CachedStorage {
+                region: region.to_owned(),
+                pricing: read_storage(transport, region).await?,
+                expires_after: now.saturating_add(CACHE_TTL_SECONDS),
+            });
+        }
+        Ok(&self
+            .storage_cached
+            .as_ref()
+            .expect("the storage cache was just filled")
+            .pricing)
+    }
+}
+
+fn storage_filter(region: &str) -> String {
+    format!(
+        "productName eq 'Standard SSD Managed Disks' and armRegionName eq '{region}' and priceType eq 'Consumption'"
+    )
+}
+
+fn storage_url(region: &str) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("api-version", PRICES_API_VERSION)
+        .append_pair("$filter", &storage_filter(region))
+        .finish();
+    format!("{RETAIL_PRICES_URL}?{query}")
+}
+
+fn disk_capacity(sku_name: &str) -> Option<u32> {
+    let code = sku_name.strip_suffix(" LRS")?;
+    Some(match code {
+        "E1" => 4,
+        "E2" => 8,
+        "E3" => 16,
+        "E4" => 32,
+        "E6" => 64,
+        "E10" => 128,
+        "E15" => 256,
+        "E20" => 512,
+        "E30" => 1_024,
+        "E40" => 2_048,
+        "E50" => 4_096,
+        "E60" => 8_192,
+        "E70" => 16_384,
+        "E80" => 32_767,
+        _ => return None,
+    })
+}
+
+async fn read_storage<T: HttpTransport>(
+    transport: &T,
+    region: &str,
+) -> Result<StoragePricing, ProviderError> {
+    let mut tiers = Vec::new();
+    let mut next = Some(storage_url(region));
+    while let Some(url) = next {
+        let response = transport.send(HttpRequest::new(Method::Get, url)).await?;
+        if !response.is_success() {
+            return Err(ProviderError::Rejected(format!(
+                "Azure retail prices refused Standard SSD pricing with HTTP {}",
+                response.status
+            )));
+        }
+        let page: PricePage = response.json()?;
+        for row in &page.items {
+            if row.unit_of_measure != "1/Month" || !row.meter_name.ends_with(" Disk") {
+                continue;
+            }
+            let Some(capacity_gib) = disk_capacity(&row.sku_name) else {
+                continue;
+            };
+            let monthly = row.hourly().micros();
+            tiers.push(StoragePriceTier {
+                capacity_gib,
+                hourly: Usd::from_micros(
+                    monthly.saturating_add(HOURS_PER_MONTH - 1) / HOURS_PER_MONTH,
+                ),
+            });
+        }
+        next = page.next_page_link;
+    }
+    tiers.sort_by_key(|tier| tier.capacity_gib);
+    if tiers.is_empty() {
+        return Err(ProviderError::Malformed(
+            "Azure published no Standard SSD LRS capacity tiers for the requested region",
+        ));
+    }
+    Ok(StoragePricing::CapacityTiers { tiers })
 }
 
 /// Walks every page of one region's prices and folds them per machine type.

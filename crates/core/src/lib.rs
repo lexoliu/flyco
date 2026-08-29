@@ -48,13 +48,13 @@ pub use harness::{
     PermissionMode, UsageReport,
 };
 pub use id::{
-    ApiKeyId, ApprovalId, BudgetId, HarnessAccountId, HarnessObservationId, Id, MachineId,
-    McpServerId, MemoryNodeId, ProviderAccountId, PushSubscriptionId, SessionId, SkillId,
-    SpendEventId, UserId,
+    ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, HarnessAccountId, HarnessObservationId, Id,
+    MachineId, McpServerId, MemoryNodeId, ProviderAccountId, PushSubscriptionId, SessionId,
+    SkillId, SpendEventId, UserId,
 };
 pub use machine::{
     CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
-    MachineState, MachineView, OsFamily, ResizeMachine,
+    MachineState, MachineView, OsFamily, ResizeMachine, StoragePriceTier, StoragePricing,
 };
 pub use mcp::{HeaderEntry, McpServerConfig, McpServerView, UpsertMcpServer};
 pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};

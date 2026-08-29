@@ -1,0 +1,39 @@
+{
+  "BillingCurrency": "USD",
+  "CustomerEntityId": "Default",
+  "Items": [
+    {
+      "armSkuName": "",
+      "retailPrice": 0.3,
+      "productName": "Standard SSD Managed Disks",
+      "skuName": "E1 LRS",
+      "meterName": "E1 LRS Disk",
+      "unitOfMeasure": "1/Month"
+    },
+    {
+      "armSkuName": "",
+      "retailPrice": 4.8,
+      "productName": "Standard SSD Managed Disks",
+      "skuName": "E6 LRS",
+      "meterName": "E6 LRS Disk",
+      "unitOfMeasure": "1/Month"
+    },
+    {
+      "armSkuName": "",
+      "retailPrice": 2500.0,
+      "productName": "Standard SSD Managed Disks",
+      "skuName": "E80 LRS",
+      "meterName": "E80 LRS Disk",
+      "unitOfMeasure": "1/Month"
+    },
+    {
+      "armSkuName": "",
+      "retailPrice": 0.002,
+      "productName": "Standard SSD Managed Disks",
+      "skuName": "E6 LRS",
+      "meterName": "E6 LRS Disk Operations",
+      "unitOfMeasure": "10K"
+    }
+  ],
+  "NextPageLink": null
+}
