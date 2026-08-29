@@ -3,8 +3,8 @@
 use flyco_core::wire::{ApprovalDecision, ApprovalPayload};
 use flyco_core::{
     ApprovalState, ApprovalView, BudgetStage, CreateSession, CurrentUser, DecideApproval,
-    EnvDocument, EnvEntry, HarnessKind, Problem, ProviderAccountId, SessionDetail, SessionId,
-    SessionState, SessionSummary, SpendKind, UpdateEnv, UpdateMe, Usd,
+    EnvDocument, EnvEntry, HarnessKind, MachineState, Problem, ProviderAccountId, SessionDetail,
+    SessionId, SessionState, SessionSummary, SpendKind, UpdateEnv, UpdateMe, Usd,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -234,6 +234,15 @@ async fn a_session_can_be_archived_once(ctx: TestContext, kv: Kv, db: Db) {
         archived.json::<SessionDetail>().summary.state,
         SessionState::Archived
     );
+    let session_id = session.summary.id;
+    let machine_state: MachineState = sql!(
+        db,
+        "SELECT state FROM machines WHERE session_id = {session_id}"
+    )
+    .fetch_scalar()
+    .await
+    .expect("read the archived machine");
+    assert_eq!(machine_state, MachineState::Destroyed);
 
     let again = client.post(&path).bearer(&caller.token).send().await;
     again.assert_status(409);
