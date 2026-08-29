@@ -48,10 +48,31 @@ default = true
 name = "transcripts"
 type = "storage"
 
+# The provisioning queue. `POST /v1/sessions` and `POST
+# /v1/sessions/{id}/resume` enqueue one job per machine; the `#[skyzen::queue]`
+# consumer in `flyco_api::provisioning_queue` performs it. It is a queue rather
+# than a synchronous call because a provision is minutes long — an Azure
+# machine took over five in a live test — and a Worker request cannot wait on
+# that.
+#
+#   wrangler queues create flyco-provisioning
+[[service]]
+name = "provisioning"
+type = "queue"
+
 # Native wiring exists for `skyzen dev` and the openapi.json export. `memory`
 # resolves to skyzen-test's in-memory KV, which is why skyzen-test is a
 # dependency of the native target only.
 [native.service.auth_kv]
+backend = "memory"
+
+# The queue has the same in-memory backend natively, so `skyzen dev` and the
+# crate's own tests enqueue and drain the same instance. There is deliberately
+# no `[[native.queue_consumer]]`: a natively-driven handler may take nothing
+# but the batch, and this one needs the Worker environment to open D1 and read
+# its configuration, so the loop is Cloudflare's. Natively the consumer is
+# driven directly — see `flyco_api::provisioning_queue::consume`.
+[native.service.provisioning]
 backend = "memory"
 
 # Same story for R2: the only other storage backend is S3, which would drag
@@ -79,6 +100,9 @@ binding = "AUTH_KV"
 [cloudflare.service.transcripts]
 binding = "TRANSCRIPTS"
 
+[cloudflare.service.provisioning]
+binding = "PROVISIONING"
+
 [cloudflare.database.main]
 binding = "DB"
 
@@ -94,6 +118,25 @@ bucket_name = "flyco-transcripts"
 binding = "DB"
 database_name = "flyco-main"
 database_id = "TO-BE-PROVISIONED"
+
+# The Worker is both ends of the provisioning queue: `POST /v1/sessions`
+# produces through the `PROVISIONING` binding, and the exported `queue` handler
+# consumes from the same queue.
+[[cloudflare.queues.producers]]
+binding = "PROVISIONING"
+queue = "flyco-provisioning"
+
+# One invocation at a time, because two deliveries of the same job racing each
+# other is the one case the machine row's UNIQUE index cannot arbitrate on D1,
+# which has no transactions. The retries are an infrastructure backstop only:
+# the consumer counts its own attempts inside the job and re-enqueues, so a
+# provision that keeps failing ends as a visibly failed session rather than as
+# a message Cloudflare quietly stops redelivering.
+[[cloudflare.queues.consumers]]
+queue = "flyco-provisioning"
+max_batch_size = 1
+max_concurrency = 1
+max_retries = 3
 
 # One Durable Object per session: the live relay room. The daemon holds one
 # hibernating socket tagged `daemon`, browsers hold sockets tagged `client`,

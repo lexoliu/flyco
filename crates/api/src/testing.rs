@@ -2,9 +2,14 @@
 
 use core::future::{Future, ready};
 
-use flyco_core::CurrentUser;
+use flyco_core::{
+    CurrentUser, HarnessAccountId, HarnessKind, MachineChoice, ProviderAccountId,
+    ProviderCredentials, UserId,
+};
 use skyzen::routing::Router;
-use skyzen_services::Db;
+use skyzen::sql;
+use skyzen_services::{Db, Queue};
+use skyzen_test::mock::InMemoryQueue;
 
 use crate::app::router;
 use crate::config::ApiConfig;
@@ -12,7 +17,7 @@ use crate::github::{GithubClient, GithubError, GithubOauth, GithubToken, GithubU
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 7] = [
+pub const MIGRATIONS: [&str; 8] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -20,6 +25,7 @@ pub const MIGRATIONS: [&str; 7] = [
     include_str!("../../../migrations/0005_session_env.sql"),
     include_str!("../../../migrations/0006_machines.sql"),
     include_str!("../../../migrations/0007_observations.sql"),
+    include_str!("../../../migrations/0008_provisioning.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -117,15 +123,25 @@ impl GithubOauth for TestGithub {
     }
 }
 
-/// The full control-plane router, wired to [`TestGithub`] and `db`.
-pub fn test_router(db: Db) -> Router {
-    router(test_config(), GithubClient::Fake(TestGithub), db)
+/// The full control-plane router, wired to [`TestGithub`], `db`, and the
+/// provisioning queue its session routes produce to.
+pub fn test_router(db: Db, queue: Queue) -> Router {
+    router(test_config(), GithubClient::Fake(TestGithub), db, queue)
 }
 
 /// A migrated database plus the router that talks to it.
+///
+/// The provisioning queue is created here and kept by the router alone,
+/// because most tests only need session creation to *accept* a job. A test
+/// that has to read one back hands in its own with [`migrated_router_on`].
 pub async fn migrated_router(db: &Db) -> Router {
+    migrated_router_on(db, Queue::new(InMemoryQueue::new())).await
+}
+
+/// A migrated database plus a router producing to a queue the caller holds.
+pub async fn migrated_router_on(db: &Db, queue: Queue) -> Router {
     migrate(db).await;
-    test_router(db.clone())
+    test_router(db.clone(), queue)
 }
 
 /// Applies every migration to a fresh in-memory database.
@@ -205,4 +221,90 @@ async fn seed_account(db: &Db, github_id: i64, login: &str) -> CurrentUser {
     )
     .await
     .expect("seed the user row")
+}
+
+/// The registered host every test provisions onto.
+///
+/// A real address rather than a placeholder, because it is also the machine
+/// type and the region a byo-ssh catalog reports: the tests assert against
+/// the same string the driver derives from the credentials.
+pub const SSH_HOST: &str = "build.lexo.cool";
+
+/// The SHA-256 host key fingerprint the fixture registers.
+pub const SSH_FINGERPRINT: &str = "SHA256:qWyVLPxNBRr7Nnkm1xTQKMDcXwHFsSFRnLW6iNfPmcQ";
+
+/// Links a byo-ssh provider account, sealed exactly as the link route seals
+/// one.
+///
+/// byo-ssh is the provider whose catalog needs no network: it reports the
+/// one machine it is. That is what lets creation-time validation and the
+/// whole provisioning queue be exercised without a cloud account.
+pub async fn seed_provider_account(db: &Db, user: UserId) -> ProviderAccountId {
+    let credentials = ProviderCredentials::ByoSsh {
+        host: SSH_HOST.to_owned(),
+        port: 22,
+        user: "flyco".to_owned(),
+        private_key: "-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-real-key\n".to_owned(),
+        host_fingerprint: SSH_FINGERPRINT.to_owned(),
+    };
+    let sealed = test_config()
+        .token_cipher()
+        .seal(&serde_json::to_string(&credentials).expect("encode credentials"))
+        .expect("seal credentials");
+
+    let id = ProviderAccountId::generate();
+    let kind = credentials.kind();
+    let label = "the laptop".to_owned();
+    let linked_at = 1_787_000_000_u64;
+    sql!(
+        db,
+        "INSERT INTO provider_accounts \
+         (id, user_id, kind, label, credentials_enc, linked_at_unix) \
+         VALUES ({id}, {user}, {kind}, {label}, {sealed}, {linked_at})"
+    )
+    .execute()
+    .await
+    .expect("link a provider account");
+    id
+}
+
+/// The machine a test session asks for: the registered host itself.
+#[must_use]
+pub fn machine_choice(account: ProviderAccountId) -> MachineChoice {
+    MachineChoice {
+        provider_account: account,
+        machine_type: SSH_HOST.to_owned(),
+        region: SSH_HOST.to_owned(),
+        spot: true,
+        disk_gib: flyco_core::DEFAULT_DISK_GIB,
+    }
+}
+
+/// The Claude OAuth token the linked harness account seals.
+///
+/// Provisioned onto every machine a Claude Code session runs on, which is
+/// why the provisioning tests assert on it: a credential that does not reach
+/// the daemon is a session whose agent cannot sign in.
+pub const HARNESS_TOKEN: &str = "sk-ant-oat01-a-linked-account";
+
+/// Links a harness account, sealed the way the link callback will seal one.
+pub async fn seed_harness_account(db: &Db, user: UserId, harness: HarnessKind) -> HarnessAccountId {
+    let id = HarnessAccountId::generate();
+    let sealed = test_config()
+        .token_cipher()
+        .seal(HARNESS_TOKEN)
+        .expect("seal a harness token");
+    let label = "lexo@lexo.cool".to_owned();
+    let linked_at = 1_787_000_000_u64;
+
+    sql!(
+        db,
+        "INSERT INTO harness_accounts \
+         (id, user_id, harness, label, token_enc, linked_at_unix) \
+         VALUES ({id}, {user}, {harness}, {label}, {sealed}, {linked_at})"
+    )
+    .execute()
+    .await
+    .expect("link a harness account");
+    id
 }
