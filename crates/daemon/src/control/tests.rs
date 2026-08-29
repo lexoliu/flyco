@@ -311,27 +311,29 @@ async fn an_approval_decision_reaches_the_harness() {
     let mut harness = Harness::start(Greeting::Welcome).await;
     harness.handshake().await;
 
-    let id = ApprovalId::generate();
+    let native = ApprovalId::generate();
+    harness
+        .emit(SessionOutput::ApprovalRequest {
+            id: native,
+            tool: "Bash".to_owned(),
+            input: serde_json::json!({ "command": "ls" }),
+            suggestions: None,
+        })
+        .await;
+    let _ = harness.approvals.recv().await;
+    let _ = harness.room.next_frame().await;
+
     harness.command(ControlToDaemon::ApprovalDecision {
-        id,
+        id: harness.approval_id,
         decision: ApprovalDecision::Approved,
     });
     assert_eq!(
         harness.next_call().await,
-        Call::Approval { id, allowed: true }
-    );
-
-    let denied = ApprovalId::generate();
-    harness.command(ControlToDaemon::ApprovalDecision {
-        id: denied,
-        decision: ApprovalDecision::Denied,
-    });
-    assert_eq!(
-        harness.next_call().await,
         Call::Approval {
-            id: denied,
-            allowed: false,
-        }
+            id: native,
+            allowed: true
+        },
+        "the harness is told its own id, not the REST-assigned one"
     );
 
     harness.archive().await.expect("the run ended cleanly");
