@@ -250,13 +250,64 @@ async fn provider_quickstart(
 }
 
 /// Reports metered cloud spend per linked account.
+///
+/// The provider's own meter is the authority — a total flyco assembled from
+/// its machine records would miss the storage, egress and support charges
+/// on the same invoice — so every row here was read from the account it
+/// describes, over the window it names.
+///
+/// Not every linked account produces a row. A registered SSH host is
+/// hardware the user already owns and already pays for: flyco meters
+/// nothing there and says nothing, rather than reporting a `$0.00` that
+/// would read as "this costs nothing".
 #[skyzen::openapi]
 async fn cloud_usage(
-    State(_user): State<CurrentUser>,
-    Query(_filter): Query<CloudUsageFilter>,
-    _db: Db,
+    State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
+    Query(filter): Query<CloudUsageFilter>,
+    db: Db,
 ) -> Outcome<Json<Vec<CloudUsageView>>> {
-    todo!("M6: read each provider's cost-management API for the current billing period")
+    usage(&db, &config, user.id, filter.provider)
+        .await
+        .map(Json)
+        .into()
+}
+
+/// Reads every linked account's meter into one document.
+///
+/// An account whose usage cannot be read is skipped with a warning rather
+/// than failing the request, exactly as the machine catalog does: one
+/// expired credential must not hide every other account's spend.
+async fn usage(
+    db: &Db,
+    config: &ApiConfig,
+    user: UserId,
+    provider: Option<CloudProviderKind>,
+) -> Result<Vec<CloudUsageView>, ApiError> {
+    let accounts = crate::provisioning::accounts_for(db, config, user, provider).await?;
+    let now = now_unix();
+
+    let mut rows = Vec::new();
+    for account in accounts {
+        match crate::provisioning::cloud_usage(&account, now).await {
+            Ok(Some(spend)) => rows.push(CloudUsageView::of(account.id, account.kind(), spend)),
+            Ok(None) => {
+                tracing::debug!(
+                    account = %account.id,
+                    kind = ?account.kind(),
+                    "this provider meters nothing on flyco's behalf"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    account = %account.id,
+                    %error,
+                    "skipping a provider account whose usage could not be read"
+                );
+            }
+        }
+    }
+    Ok(rows)
 }
 
 /// The user-scoped provider-account routes.

@@ -1,4 +1,4 @@
-//! The LLM usage panel, and the daemon route that fills it.
+//! The two usage panels, and the daemon route that fills one of them.
 //!
 //! What is worth pinning here is the *claim* the panel makes. It reports
 //! what flyco observed, so an account nothing has been observed about must
@@ -7,8 +7,9 @@
 //! observation reaches exactly the account of the session that posted it.
 
 use flyco_core::{
-    HarnessAccountId, HarnessKind, HarnessObservation, LlmUsageView, OBSERVATION_WINDOW_SECONDS,
-    Problem, RateLimitObservation, SessionId, Usd, UserId,
+    CloudUsageView, HarnessAccountId, HarnessKind, HarnessObservation, LinkProvider, LlmUsageView,
+    OBSERVATION_WINDOW_SECONDS, Problem, ProviderAccountView, ProviderCredentials,
+    RateLimitObservation, SessionId, Usd, UserId,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -314,4 +315,72 @@ async fn a_panel_shows_only_the_callers_own_accounts(ctx: TestContext, kv: Kv, d
     let rows = panel(&client, &owner_token).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].label, "mine");
+}
+
+// ── The cloud panel ──
+
+/// Registers the SSH host flyco develops against, which is a real machine
+/// the user owns rather than anything flyco meters.
+async fn link_host(client: &TestClient<Router>, token: &str) -> ProviderAccountView {
+    let response = client
+        .post("/v1/providers")
+        .bearer(token)
+        .json(&LinkProvider {
+            label: "the build host".to_owned(),
+            credentials: ProviderCredentials::ByoSsh {
+                host: "build.lexo.cool".to_owned(),
+                port: 22,
+                user: "flyco".to_owned(),
+                private_key: "-----BEGIN OPENSSH PRIVATE KEY-----".to_owned(),
+                host_fingerprint: "SHA256:qWyVLPxNBRr7Nnkm1xTQKMDcXwHFsSFRnLW6iNfPmcQ".to_owned(),
+            },
+        })
+        .send()
+        .await;
+    response.assert_status(201);
+    response.json()
+}
+
+async fn cloud(client: &TestClient<Router>, token: &str) -> Vec<CloudUsageView> {
+    let response = client.get("/v1/usage/cloud").bearer(token).send().await;
+    response.assert_status(200);
+    response.json()
+}
+
+#[skyzen::test]
+async fn a_user_with_no_linked_provider_has_an_empty_cloud_panel(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+
+    assert_eq!(cloud(&client, &token).await, [] as [CloudUsageView; 0]);
+}
+
+#[skyzen::test]
+async fn a_host_the_user_owns_contributes_no_row(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+
+    let account = link_host(&client, &token).await;
+    assert!(
+        client
+            .get("/v1/providers")
+            .bearer(&token)
+            .send()
+            .await
+            .json::<Vec<ProviderAccountView>>()
+            .iter()
+            .any(|row| row.id == account.id),
+        "the account is linked"
+    );
+
+    // Flyco meters nothing on hardware the user already owns and already
+    // pays for, so it says nothing. A `$0.00` row would assert the machine
+    // is free, which is the one thing flyco knows it cannot claim.
+    assert_eq!(
+        cloud(&client, &token).await,
+        [] as [CloudUsageView; 0],
+        "an unmetered provider contributes no row rather than a zero"
+    );
 }

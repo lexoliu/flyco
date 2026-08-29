@@ -76,6 +76,15 @@ const USAGES: &str = include_str!("../../fixtures/azure/usages.json");
 const LOW_PRIORITY_SPENT: &str =
     include_str!("../../fixtures/azure/usages_low_priority_spent.json");
 const PRICES: &str = include_str!("../../fixtures/azure/retail_prices.json");
+const COST: &str = include_str!("../../fixtures/azure/cost_month_to_date.json");
+const COST_IN_EUROS: &str = include_str!("../../fixtures/azure/cost_month_to_date_euros.json");
+const COST_EMPTY: &str = include_str!("../../fixtures/azure/cost_month_to_date_empty.json");
+
+/// 2026-08-29T12:00:00Z, an instant inside the month `MonthToDate` covers.
+const QUERIED_AT: u64 = 1_788_004_800;
+
+/// 2026-08-01T00:00:00Z: midnight UTC on the first of that month.
+const MONTH_START: u64 = 1_785_542_400;
 
 /// A driver over a scripted transport, a clock at zero and a timer that
 /// records rather than waits.
@@ -1314,4 +1323,89 @@ async fn live_provision_and_destroy() {
     let provision = request_in(MachineId::generate(), &region, &cheapest, true);
     let machine = azure.provision(&provision).await.expect("provision");
     azure.destroy(&machine).await.expect("destroy");
+}
+
+// ── Metered spend ──
+
+#[tokio::test]
+async fn the_cost_query_names_the_subscription_scope_and_asks_for_actual_cost() {
+    let mut azure = provider(vec![token(), json(200, COST)]);
+
+    let spend = azure
+        .billing_period_cost(QUERIED_AT)
+        .await
+        .expect("read the metered spend");
+
+    // The token call is first; the query is what this test is about.
+    let request = azure.transport().request(1);
+    assert_eq!(request.method, Method::Post);
+    assert_eq!(
+        request.url,
+        format!(
+            "https://management.azure.com/subscriptions/{SUBSCRIPTION}\
+             /providers/Microsoft.CostManagement/query?api-version=2025-03-01"
+        )
+    );
+
+    let body: Value =
+        serde_json::from_str(request.body_text().expect("a UTF-8 body")).expect("a JSON body");
+    assert_eq!(body["type"], "ActualCost");
+    assert_eq!(body["timeframe"], "MonthToDate");
+    assert_eq!(body["dataset"]["granularity"], "None");
+    assert_eq!(body["dataset"]["aggregation"]["totalCost"]["name"], "Cost");
+    assert_eq!(
+        body["dataset"]["aggregation"]["totalCost"]["function"],
+        "Sum"
+    );
+    // A grouping would split the total across rows for no gain, and the
+    // 2025-03-01 API refuses several of the obvious dimensions outright.
+    assert!(body["dataset"].get("grouping").is_none());
+
+    assert_eq!(spend.spent, flyco_core::Usd::from_micros(12_345_678));
+    assert_eq!(spend.period_start_unix, MONTH_START);
+    assert_eq!(
+        spend.period_end_unix, QUERIED_AT,
+        "the window flyco reports ends where the query did"
+    );
+    assert_eq!(
+        spend.remaining_credit, None,
+        "a credit balance is EA-only, and inventing a zero would say it is spent"
+    );
+}
+
+#[tokio::test]
+async fn a_month_with_nothing_metered_is_a_real_zero() {
+    let mut azure = provider(vec![token(), json(200, COST_EMPTY)]);
+
+    let spend = azure
+        .billing_period_cost(QUERIED_AT)
+        .await
+        .expect("read the metered spend");
+
+    // Unlike an unmetered provider, which contributes no row at all, Azure
+    // answering "nothing" is Azure's own number.
+    assert_eq!(spend.spent, flyco_core::Usd::ZERO);
+}
+
+#[tokio::test]
+async fn a_subscription_billed_in_another_currency_is_refused() {
+    let mut azure = provider(vec![token(), json(200, COST_IN_EUROS)]);
+
+    let error = azure
+        .billing_period_cost(QUERIED_AT)
+        .await
+        .expect_err("euros must not be reported as dollars");
+    assert!(error.to_string().contains("EUR"));
+}
+
+#[tokio::test]
+async fn a_cost_query_azure_answered_with_no_content_meters_nothing() {
+    let mut azure = provider(vec![token(), HttpResponse::new(204, Vec::new())]);
+
+    let spend = azure
+        .billing_period_cost(QUERIED_AT)
+        .await
+        .expect("a 204 is an empty period, not an unreadable answer");
+    assert_eq!(spend.spent, flyco_core::Usd::ZERO);
+    assert_eq!(spend.period_start_unix, MONTH_START);
 }
