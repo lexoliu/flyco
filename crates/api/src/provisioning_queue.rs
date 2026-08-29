@@ -309,7 +309,21 @@ async fn build(
         .map_err(|error| classify(&error))?;
 
     let hourly = entry.pricing.hourly(machine.capacity_mode.is_spot());
-    machines::record(db, &machine, hourly).await?;
+    let storage_hourly = match &entry.pricing {
+        flyco_core::MachinePricing::UserOwned => None,
+        flyco_core::MachinePricing::Metered { .. } => Some(
+            entry
+                .pricing
+                .storage_hourly(claim.machine.spec().disk_gib)
+                .ok_or_else(|| {
+                    Provisioned::Failed(format!(
+                        "the provider published no storage tier for a {} GiB disk",
+                        claim.machine.spec().disk_gib
+                    ))
+                })?,
+        ),
+    };
+    machines::record(db, &machine, hourly, storage_hourly).await?;
 
     tracing::info!(
         session = %claim.session,

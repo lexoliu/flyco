@@ -77,6 +77,7 @@ const USAGES: &str = include_str!("../../fixtures/azure/usages.json");
 const LOW_PRIORITY_SPENT: &str =
     include_str!("../../fixtures/azure/usages_low_priority_spent.json");
 const PRICES: &str = include_str!("../../fixtures/azure/retail_prices.json");
+const STORAGE_PRICES: &str = include_str!("../../fixtures/azure/standard_ssd_prices.json");
 const COST: &str = include_str!("../../fixtures/azure/cost_month_to_date.json");
 const COST_IN_EUROS: &str = include_str!("../../fixtures/azure/cost_month_to_date_euros.json");
 const COST_EMPTY: &str = include_str!("../../fixtures/azure/cost_month_to_date_empty.json");
@@ -1125,6 +1126,7 @@ fn catalog_script() -> Vec<HttpResponse> {
         json(200, SKUS),
         json(200, USAGES),
         json(200, PRICES),
+        json(200, STORAGE_PRICES),
     ]
 }
 
@@ -1164,6 +1166,22 @@ async fn the_catalog_offers_only_what_passes_all_three_gates() {
             on_demand_hourly: flyco_core::Usd::from_micros(76_400),
             spot_hourly: Some(flyco_core::Usd::from_micros(14_126)),
             minimum_billing_hours: None,
+            storage: flyco_core::StoragePricing::CapacityTiers {
+                tiers: vec![
+                    flyco_core::StoragePriceTier {
+                        capacity_gib: 4,
+                        hourly: flyco_core::Usd::from_micros(411),
+                    },
+                    flyco_core::StoragePriceTier {
+                        capacity_gib: 64,
+                        hourly: flyco_core::Usd::from_micros(6_576),
+                    },
+                    flyco_core::StoragePriceTier {
+                        capacity_gib: 32_767,
+                        hourly: flyco_core::Usd::from_micros(3_424_658),
+                    },
+                ],
+            },
         }
     );
 }

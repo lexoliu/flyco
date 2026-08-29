@@ -1,0 +1,6 @@
+{
+  "FormatVersion": "aws_v1",
+  "PriceList": [
+    "{\"product\": {\"productFamily\": \"Storage\", \"attributes\": {\"volumeApiName\": \"gp3\", \"regionCode\": \"us-west-2\"}, \"sku\": \"SKUGP3\"}, \"serviceCode\": \"AmazonEC2\", \"terms\": {\"OnDemand\": {\"SKUGP3.JRTCKXETXF\": {\"offerTermCode\": \"JRTCKXETXF\", \"priceDimensions\": {\"SKUGP3.JRTCKXETXF.6YS6EN2CT7\": {\"unit\": \"GB-Mo\", \"description\": \"$0.08 per GB-month of General Purpose SSD (gp3) provisioned storage\", \"pricePerUnit\": {\"USD\": \"0.0800000000\"}}}}}}, \"version\": \"20260801000000\"}"
+  ]
+}

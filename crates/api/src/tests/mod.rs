@@ -7,6 +7,7 @@ mod contract;
 mod harness_accounts;
 mod mcp;
 mod memory;
+mod metering;
 mod provisioning;
 mod push;
 mod relay;
