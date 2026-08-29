@@ -66,8 +66,8 @@ pub use providers::{
 pub use push::{PushKeys, PushSubscription, PushSubscriptionView, VapidPublicKey};
 pub use repo::{RepoSlug, RepoStatus};
 pub use session::{
-    CreateSession, SendMessage, SessionDetail, SessionState, SessionSummary,
-    SessionTransitionError, TurnPage, TurnSummary,
+    CreateSession, DEFAULT_DISK_GIB, MachineChoice, SendMessage, SessionDetail, SessionState,
+    SessionSummary, SessionTransitionError, TurnPage, TurnSummary,
 };
 pub use skills::{SkillScope, SkillView};
 pub use usage::{

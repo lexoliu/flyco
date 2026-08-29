@@ -34,7 +34,6 @@ struct Pending {
 /// them, so a diff on this list reads as one line per handler.
 const EXPECTED: &[(&str, &str)] = &[
     ("complete_harness_link", "M4"),
-    ("resume_session", "M4"),
     ("start_harness_link", "M4"),
 ];
 
