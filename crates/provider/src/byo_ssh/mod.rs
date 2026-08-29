@@ -182,6 +182,8 @@ impl ByoSsh {
     #[must_use]
     pub fn catalog(&self) -> Vec<MachineCatalogEntry> {
         vec![MachineCatalogEntry {
+            // Stamped by the control plane, which knows the row.
+            account: None,
             provider: CloudProviderKind::ByoSsh,
             region: self.address.clone(),
             machine_type: self.address.clone(),
@@ -263,6 +265,7 @@ mod tests {
         Machine {
             id,
             native_id: container_name(id),
+            region: HOST.to_owned(),
             state: MachineState::Running,
             capacity_mode: CapacityMode::OnDemand,
             address: Some(HOST.to_owned()),

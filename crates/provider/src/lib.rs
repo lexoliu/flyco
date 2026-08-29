@@ -2,18 +2,26 @@
 //!
 //! Every implementation is an HTTP client over the provider's public API
 //! ([`http`], backed by [`zenwave`]), never a native SDK — the same code runs
-//! in the Cloudflare Worker (wasm32) and in tests. Implementations land per
-//! milestone: [`byo_ssh`], then [`azure`], then AWS and GCP.
+//! in the Cloudflare Worker (wasm32) and in tests: [`byo_ssh`], [`azure`],
+//! [`aws`] and [`gcp`].
+//!
+//! Where two drivers need the same decision they share it rather than each
+//! having one: [`cloud_init`] is the document every provisioned machine
+//! boots, [`polling`] is how long to wait before asking again, and
+//! [`datetime`] turns an instant into the strings a provider's API asks for.
 //!
 //! # Where a driver runs
 //!
-//! Azure is reachable from the Worker because every step of it is an HTTPS
-//! call. byo-ssh is not: SSH is a TCP transport and a Worker has no sockets.
-//! The two shapes are told apart in the type system rather than by a runtime
+//! All three cloud drivers are reachable from the Worker because every step
+//! of them is an HTTPS call — an AWS signature and a Google assertion are
+//! both computed in-process rather than by an SDK, which is what keeps it so.
+//! byo-ssh is not: SSH is a TCP transport and a Worker has no sockets. The
+//! two shapes are told apart in the type system rather than by a runtime
 //! check —
 //!
-//! * [`azure::AzureProvider`] speaks only HTTPS, so it implements
-//!   [`CloudProvider`] on every target — the Worker included.
+//! * [`azure::AzureProvider`], [`aws::AwsProvider`] and [`gcp::GcpProvider`]
+//!   speak only HTTPS, so they implement [`CloudProvider`] on every target —
+//!   the Worker included.
 //! * [`byo_ssh::ByoSsh`] compiles everywhere but implements **no** provider
 //!   trait. It *plans*: it turns a machine operation into a
 //!   [`byo_ssh::ContainerJob`], a serializable description of the container
@@ -33,11 +41,16 @@
 //! only ever touched by its owner. `&mut self` says the same thing with the
 //! borrow checker and costs nothing.
 
+pub mod aws;
 pub mod azure;
 pub mod byo_ssh;
 pub mod clock;
+pub mod cloud_init;
+pub mod datetime;
 pub mod flycod;
+pub mod gcp;
 pub mod http;
+pub mod polling;
 
 use core::fmt;
 
@@ -45,7 +58,7 @@ use flyco_core::machine::{MachineCatalogEntry, MachineSpec, MachineState};
 use flyco_core::{HarnessKind, MachineId, PermissionMode, SessionId};
 use serde::{Deserialize, Serialize};
 
-pub use clock::{MonotonicClock, SystemClock};
+pub use clock::{MonotonicClock, SystemClock, SystemWallClock, WallClock};
 pub use flycod::ClaudeCredential;
 pub use http::{HttpError, HttpRequest, HttpResponse, HttpTransport, ZenwaveTransport};
 
@@ -79,6 +92,15 @@ pub struct Machine {
     /// Provider-native resource identifier (instance id, VM resource id,
     /// or container id for byo-ssh).
     pub native_id: String,
+    /// Provider-native region the machine lives in.
+    ///
+    /// Carried rather than derived: every later operation needs it — an EC2
+    /// call is addressed to a regional endpoint, an ARM resize re-checks the
+    /// region's quota — and the alternatives are all worse. Reading it back
+    /// off a public DNS name works until a provider spells a region
+    /// differently in one (`us-east-1` is `compute-1` in an EC2 hostname),
+    /// and a machine with no address yet would have nowhere to keep it.
+    pub region: String,
     /// Current lifecycle state.
     pub state: MachineState,
     /// Which capacity market it actually holds.

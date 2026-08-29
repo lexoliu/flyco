@@ -36,11 +36,12 @@ use flyco_core::{HarnessKind, MachineId, PermissionMode, SessionId};
 use serde_json::Value;
 
 use super::{
-    ADMIN_USERNAME, AzureProvider, CONFIG_PATH, ExclusionReason, IMAGE_SKU_ARM64, IMAGE_SKU_X64,
+    ADMIN_USERNAME, AzureProvider, ExclusionReason, IMAGE_SKU_ARM64, IMAGE_SKU_X64,
     SPOT_UNSUPPORTED_CODES, Workspace, names,
 };
 use crate::azure::auth::ServicePrincipal;
 use crate::clock::ManualClock;
+use crate::cloud_init::CONFIG_PATH;
 use crate::http::{HttpRequest, HttpResponse, Method};
 use crate::testing::{RecordedTransport, RecordingTimer};
 use crate::{
@@ -196,6 +197,7 @@ fn provisioned(machine: MachineId) -> Machine {
              /providers/Microsoft.Compute/virtualMachines/{}",
             names::machine(machine)
         ),
+        region: REGION.to_owned(),
         state: MachineState::Running,
         capacity_mode: CapacityMode::OnDemand,
         address: Some(names::fqdn(machine, REGION)),

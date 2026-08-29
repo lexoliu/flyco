@@ -209,26 +209,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/harness-accounts/{harness}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * Unlinks the caller's account for one harness.
-         * @description Unlinks the caller's account for one harness.
-         */
-        delete: operations["flyco_api::harness_accounts::unlink_harness_account"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/harness-accounts/{harness}/link/callback": {
         parameters: {
             query?: never;
@@ -268,6 +248,26 @@ export interface paths {
          */
         post: operations["flyco_api::harness_accounts::start_harness_link"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/harness-accounts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Unlinks the caller's account for one harness.
+         * @description Unlinks the caller's account for one harness.
+         */
+        delete: operations["flyco_api::harness_accounts::unlink_harness_account"];
         options?: never;
         head?: never;
         patch?: never;
@@ -586,9 +586,14 @@ export interface paths {
         get: operations["flyco_api::app::list_sessions"];
         put?: never;
         /**
-         * Starts a session: reserves the budget and puts the session in the provisioning queue. No machine exists yet.
-         * @description Starts a session: reserves the budget and puts the session in the
-         *     provisioning queue. No machine exists yet.
+         * Starts a session: reserves its budget and its machine, and queues the machine to be built. No machine exists yet.
+         * @description Starts a session: reserves its budget and its machine, and queues the
+         *     machine to be built. No machine exists yet.
+         *
+         *     The choice of machine is validated against the named account's own
+         *     catalog *before* anything is written, so a machine the account cannot
+         *     deploy is refused here rather than accepted and then failed minutes later
+         *     by a queue consumer the caller is no longer watching.
          */
         post: operations["flyco_api::app::create_session"];
         delete?: never;
@@ -759,6 +764,36 @@ export interface paths {
         get: operations["flyco_api::app::get_session_events"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/harness-observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Records one thing this session's daemon observed about the harness account driving it.
+         * @description Records one thing this session's daemon observed about the harness
+         *     account driving it.
+         *
+         *     The LLM usage panel is reactive by necessity — no vendor publishes a
+         *     remaining-quota API — so this is where its numbers come from: the daemon
+         *     holds the turn's `UsageReport` and is what receives `UsageLimited`, and
+         *     neither can be asked for after the fact.
+         *
+         *     Which account the observation lands on is derived from the session
+         *     itself, so a daemon never names one. Answers `204`: the row's identity
+         *     is of no use to the daemon that posted it.
+         */
+        post: operations["flyco_api::app::record_harness_observation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -985,11 +1020,18 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Puts an interrupted or archived session back on a machine.
-         * @description Puts an interrupted or archived session back on a machine.
+         * Puts an interrupted, failed, or archived session back on a machine.
+         * @description Puts an interrupted, failed, or archived session back on a machine.
          *
-         *     The transcript lives in the control plane, so a session resumes onto
-         *     whatever machine is provisioned for it rather than the one it left.
+         *     The same queue every other machine comes from — there is one
+         *     implementation of provisioning and this is not a second one. The session
+         *     moves back to `provisioning` durably before the job is enqueued, so a
+         *     browser that reloads immediately sees a session on its way back rather
+         *     than the state it was resumed out of.
+         *
+         *     The machine row keeps its identity, which is what lets the provider
+         *     recognise the machine it already made: what a resume rebuilds is the
+         *     session's own machine, not another one beside it.
          */
         post: operations["flyco_api::app::resume_session"];
         delete?: never;
@@ -1115,6 +1157,16 @@ export interface paths {
         /**
          * Reports metered cloud spend per linked account.
          * @description Reports metered cloud spend per linked account.
+         *
+         *     The provider's own meter is the authority — a total flyco assembled from
+         *     its machine records would miss the storage, egress and support charges
+         *     on the same invoice — so every row here was read from the account it
+         *     describes, over the window it names.
+         *
+         *     Not every linked account produces a row. A registered SSH host is
+         *     hardware the user already owns and already pays for: flyco meters
+         *     nothing there and says nothing, rather than reporting a `$0.00` that
+         *     would read as "this costs nothing".
          */
         get: operations["flyco_api::provider_accounts::cloud_usage"];
         put?: never;
@@ -1140,6 +1192,12 @@ export interface paths {
          *     remaining-quota API, so this reports the cost telemetry the harness
          *     emitted and the rate limits it actually hit. A panel built on it says
          *     what has happened, never what is left.
+         *
+         *     The rows come out of [`crate::observations`], which is filled in by the
+         *     sessions' own daemons as they run — the only place either number exists.
+         *     An account with nothing observed about it still appears, reporting
+         *     nothing, because "nothing has happened" is an answer and a missing row
+         *     would read as an account that is not linked.
          */
         get: operations["flyco_api::harness_accounts::llm_usage"];
         put?: never;
@@ -1164,7 +1222,8 @@ export interface paths {
          * @description Accepts a signed GitHub webhook delivery.
          *
          *     Answers `204`: GitHub only needs to know the delivery was accepted, and
-         *     the work it triggers is queued rather than done inline.
+         *     what it triggers happens on the session relay rather than in this
+         *     response.
          */
         post: operations["flyco_api::webhooks::receive_github_webhook"];
         delete?: never;
@@ -1395,17 +1454,14 @@ export interface components {
             budget_limit: components["schemas"]["Usd"];
             /** @description Which coding harness drives the session. */
             harness: components["schemas"]["HarnessKind"];
+            /** @description The machine to provision for it. */
+            machine: components["schemas"]["MachineChoice"];
             /**
              * @description Repository to work in, `owner/name`. Untyped here because it is
              *     untrusted input; the control plane parses it into a
              *     [`RepoSlug`](crate::repo::RepoSlug) and rejects anything else.
              */
             repo: string;
-            /**
-             * @description Whether to use interruptible spot capacity. Spot is the default
-             *     because it is the cheaper option and flyco handles eviction.
-             */
-            spot?: boolean;
         };
         /**
          * @description A freshly minted API key.
@@ -1533,6 +1589,23 @@ export interface components {
          * @enum {string}
          */
         HarnessKind: "claude_code" | "codex";
+        /**
+         * @description One thing a session's daemon saw happen to the harness account driving
+         *     it, as `POST /v1/sessions/{id}/harness-observations` records it.
+         *
+         *     The daemon is the only place both facts exist: it holds the turn's
+         *     [`UsageReport`](crate::harness::UsageReport) and it is what receives
+         *     [`HarnessEvent::UsageLimited`](crate::harness::HarnessEvent::UsageLimited).
+         *     Neither can be asked for after the fact, which is why they are posted as
+         *     they happen rather than polled.
+         *
+         *     An observation that reports neither is nothing to record, and the
+         *     control plane refuses it rather than storing a row that says nothing.
+         */
+        HarnessObservation: {
+            observed_cost?: null | components["schemas"]["Usd"];
+            rate_limit?: null | components["schemas"]["RateLimitObservation"];
+        };
         /** @description One HTTP header sent with every request to a remote MCP server. */
         HeaderEntry: {
             /** @description Header name. */
@@ -1621,6 +1694,7 @@ export interface components {
          *     to keep, upgrade, or downgrade its machine.
          */
         MachineCatalogEntry: {
+            account?: null | components["schemas"]["Uuid"];
             capacity?: null | components["schemas"]["MachineCapacity"];
             /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
             machine_type: string;
@@ -1639,6 +1713,39 @@ export interface components {
              *     region, and there is nowhere else to put it.
              */
             region: string;
+        };
+        /**
+         * @description Which machine a session asks for.
+         *
+         *     Part of [`CreateSession`] rather than a follow-up call, because a session
+         *     created without one would have to be started on a guess and moved
+         *     afterwards — and the window between the two is a session running on the
+         *     wrong machine, billed at the wrong price. The choice is validated against
+         *     the named account's own catalog before anything is written, so a machine
+         *     the account cannot deploy is refused where the user made the choice.
+         */
+        MachineChoice: {
+            /**
+             * Format: int32
+             * @description Disk size in GiB.
+             */
+            disk_gib?: number;
+            /** @description Provider-native machine type, as `GET /v1/machines/catalog` names it. */
+            machine_type: string;
+            /** @description Which linked provider account to provision on. */
+            provider_account: components["schemas"]["Uuid"];
+            /** @description Provider-native region, as the catalog entry names it. */
+            region: string;
+            /**
+             * @description Whether to ask for interruptible spot capacity. Spot is the default
+             *     because it is the cheaper option and flyco handles eviction.
+             *
+             *     A request, not a promise: a provider that cannot honour it is
+             *     answered with on-demand capacity, and
+             *     [`MachineView::spot`](crate::machine::MachineView::spot) is what was
+             *     actually obtained.
+             */
+            spot?: boolean;
         };
         /**
          * @description What an hour on a machine costs.
@@ -1879,10 +1986,29 @@ export interface components {
         } | {
             /** @description Access key id. */
             access_key_id: string;
+            /**
+             * @description Name of an EC2 key pair in the user's own account, for a
+             *     break-glass login.
+             *
+             *     Optional, unlike Azure's public key: EC2 creates an instance
+             *     perfectly well without one. It is the *user's* key pair either
+             *     way — flyco never holds a private key for a machine it
+             *     provisions, and a key pair lives in their account, not in
+             *     flyco's.
+             */
+            key_name?: string | null;
             /** @enum {string} */
             kind: "aws";
             /** @description Secret access key. */
             secret_access_key: string;
+            /**
+             * @description Session token, for a temporary credential.
+             *
+             *     Absent for the long-lived IAM key most users will paste in.
+             *     Present, and required, for anything minted by `sts:AssumeRole` —
+             *     a signature made without it is refused however correct it is.
+             */
+            session_token?: string | null;
         } | {
             /** @enum {string} */
             kind: "gcp";
@@ -1974,6 +2100,20 @@ export interface components {
              */
             new_to_provider: boolean;
         };
+        /**
+         * @description The account hit its usage limit.
+         *
+         *     A struct rather than a bare timestamp field beside the cost, so "when it
+         *     resets" cannot be set on an observation that is not a rate limit: the
+         *     reset time only exists inside the event that has one.
+         */
+        RateLimitObservation: {
+            /**
+             * Format: int64
+             * @description When the harness said the limit resets, when it named a time.
+             */
+            resets_at_unix?: number | null;
+        };
         /** @description A minted relay ticket. */
         RelayTicket: {
             /**
@@ -2052,12 +2192,21 @@ export interface components {
         SessionDetail: components["schemas"]["SessionSummary"] & {
             /** @description Budget accounting as of this request. */
             budget: components["schemas"]["BudgetView"];
+            /**
+             * @description Why the session is [`SessionState::Failed`], in the provider's own
+             *     words where it has any.
+             *
+             *     `None` for every other state. A failed session that could not say
+             *     why would leave the user with a dead session and no idea whether to
+             *     retry it, pick another region, or ask for a quota increase.
+             */
+            failure?: string | null;
         };
         /**
          * @description Lifecycle state of a session.
          * @enum {string}
          */
-        SessionState: "provisioning" | "active" | "paused" | "interrupted" | "archived";
+        SessionState: "provisioning" | "active" | "paused" | "interrupted" | "archived" | "failed";
         /** @description A session in a list. */
         SessionSummary: {
             /**
@@ -2657,26 +2806,6 @@ export interface operations {
             };
         };
     };
-    "flyco_api::harness_accounts::unlink_harness_account": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                harness: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Done. There is nothing to return. */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     "flyco_api::harness_accounts::complete_harness_link": {
         parameters: {
             query: {
@@ -2728,6 +2857,26 @@ export interface operations {
             };
         };
     };
+    "flyco_api::harness_accounts::unlink_harness_account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     "flyco_api::app::healthz": {
         parameters: {
             query?: never;
@@ -2774,6 +2923,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        account?: null | components["schemas"]["Uuid"];
                         capacity?: null | components["schemas"]["MachineCapacity"];
                         /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
                         machine_type: string;
@@ -3524,17 +3674,14 @@ export interface operations {
                     budget_limit: components["schemas"]["Usd"];
                     /** @description Which coding harness drives the session. */
                     harness: components["schemas"]["HarnessKind"];
+                    /** @description The machine to provision for it. */
+                    machine: components["schemas"]["MachineChoice"];
                     /**
                      * @description Repository to work in, `owner/name`. Untyped here because it is
                      *     untrusted input; the control plane parses it into a
                      *     [`RepoSlug`](crate::repo::RepoSlug) and rejects anything else.
                      */
                     repo: string;
-                    /**
-                     * @description Whether to use interruptible spot capacity. Spot is the default
-                     *     because it is the cheaper option and flyco handles eviction.
-                     */
-                    spot?: boolean;
                 };
             };
         };
@@ -3548,6 +3695,15 @@ export interface operations {
                     "application/json": components["schemas"]["SessionSummary"] & {
                         /** @description Budget accounting as of this request. */
                         budget: components["schemas"]["BudgetView"];
+                        /**
+                         * @description Why the session is [`SessionState::Failed`], in the provider's own
+                         *     words where it has any.
+                         *
+                         *     `None` for every other state. A failed session that could not say
+                         *     why would leave the user with a dead session and no idea whether to
+                         *     retry it, pick another region, or ask for a quota increase.
+                         */
+                        failure?: string | null;
                     };
                 };
             };
@@ -3573,6 +3729,15 @@ export interface operations {
                     "application/json": components["schemas"]["SessionSummary"] & {
                         /** @description Budget accounting as of this request. */
                         budget: components["schemas"]["BudgetView"];
+                        /**
+                         * @description Why the session is [`SessionState::Failed`], in the provider's own
+                         *     words where it has any.
+                         *
+                         *     `None` for every other state. A failed session that could not say
+                         *     why would leave the user with a dead session and no idea whether to
+                         *     retry it, pick another region, or ask for a quota increase.
+                         */
+                        failure?: string | null;
                     };
                 };
             };
@@ -3671,6 +3836,15 @@ export interface operations {
                     "application/json": components["schemas"]["SessionSummary"] & {
                         /** @description Budget accounting as of this request. */
                         budget: components["schemas"]["BudgetView"];
+                        /**
+                         * @description Why the session is [`SessionState::Failed`], in the provider's own
+                         *     words where it has any.
+                         *
+                         *     `None` for every other state. A failed session that could not say
+                         *     why would leave the user with a dead session and no idea whether to
+                         *     retry it, pick another region, or ask for a quota increase.
+                         */
+                        failure?: string | null;
                     };
                 };
             };
@@ -3828,6 +4002,34 @@ export interface operations {
                         more: boolean;
                     };
                 };
+            };
+        };
+    };
+    "flyco_api::app::record_harness_observation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    observed_cost?: null | components["schemas"]["Usd"];
+                    rate_limit?: null | components["schemas"]["RateLimitObservation"];
+                };
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -4120,6 +4322,15 @@ export interface operations {
                     "application/json": components["schemas"]["SessionSummary"] & {
                         /** @description Budget accounting as of this request. */
                         budget: components["schemas"]["BudgetView"];
+                        /**
+                         * @description Why the session is [`SessionState::Failed`], in the provider's own
+                         *     words where it has any.
+                         *
+                         *     `None` for every other state. A failed session that could not say
+                         *     why would leave the user with a dead session and no idea whether to
+                         *     retry it, pick another region, or ask for a quota increase.
+                         */
+                        failure?: string | null;
                     };
                 };
             };

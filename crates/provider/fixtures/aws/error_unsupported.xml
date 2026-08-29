@@ -1,0 +1,9 @@
+<Response>
+  <Errors>
+    <Error>
+      <Code>Unsupported</Code>
+      <Message>The requested configuration is currently not supported. Please check the documentation for supported configurations.</Message>
+    </Error>
+  </Errors>
+  <RequestID>8f7d3e11-4a2b-4c3d-9e8f-1a2b3c4d5e6f</RequestID>
+</Response>

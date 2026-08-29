@@ -245,6 +245,9 @@ impl<R: CommandRunner> CloudProvider for SshExecutor<R> {
         Ok(Machine {
             id: request.machine,
             native_id: super::container_name(request.machine),
+            // A registered host is its own region, and there is nowhere else
+            // to put it — the same answer `catalog` gives.
+            region: self.host.address().to_owned(),
             state: MachineState::Running,
             // A container on hardware the user owns is never interruptible,
             // whatever the session asked for.
