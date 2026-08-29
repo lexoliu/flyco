@@ -277,6 +277,18 @@ pub enum ApiError {
         max: u32,
     },
 
+    /// A daemon posted an observation that observes nothing.
+    ///
+    /// The LLM usage panel is the sum of what actually happened, so a row
+    /// reporting neither a cost nor a rate limit would add nothing to it
+    /// and would make "no observations yet" indistinguishable from "several
+    /// observations of nothing".
+    #[error(
+        "an observation must report a cost, a rate limit, or both",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    EmptyObservation,
+
     /// A message with nothing in it was sent to an agent.
     #[error(
         "a message to an agent cannot be empty",
@@ -408,6 +420,7 @@ impl ApiError {
             Self::InvalidBudget => "invalid-budget",
             Self::InvalidSessionCap { .. } => "invalid-session-cap",
             Self::EmptyMessage => "empty-message",
+            Self::EmptyObservation => "empty-observation",
             Self::InvalidCursor(_) => "invalid-cursor",
             Self::MalformedId(_) => "malformed-id",
             Self::InvalidStreamKey(_) => "invalid-stream-key",

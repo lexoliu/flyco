@@ -13,4 +13,5 @@ mod room;
 mod schema;
 mod sessions;
 mod skills;
+mod usage;
 mod webhooks;
