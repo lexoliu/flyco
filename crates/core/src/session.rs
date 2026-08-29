@@ -15,6 +15,7 @@ use crate::repo::RepoSlug;
 /// Lifecycle state of a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum SessionState {
     /// A machine is being provisioned; code is not yet fetched.
     Provisioning,

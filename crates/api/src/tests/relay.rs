@@ -325,14 +325,14 @@ async fn a_daemon_relay_upgrade_is_authenticated_before_it_reaches_a_room(
     );
 
     // The right credential gets past the check and stops only where this
-    // build genuinely cannot go: skyzen 0.1.2 hosts hibernating sockets on
-    // Cloudflare alone.
+    // build genuinely cannot go: nothing native forwards a browser's
+    // upgrade into a session room.
     let accepted = client.get(&path).bearer(&token).send().await;
     accepted.assert_status(501);
     let problem: Problem = accepted.json();
     assert_eq!(problem.kind, problem_kind("relay-unavailable"));
     assert!(
-        problem.detail.contains("Cloudflare"),
+        problem.detail.contains("session room"),
         "a deliberate refusal must say what is missing: {}",
         problem.detail
     );

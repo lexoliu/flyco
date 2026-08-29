@@ -27,6 +27,8 @@ pub mod push;
 pub mod repo;
 pub mod session;
 pub mod skills;
+#[cfg(feature = "sql")]
+pub mod sql;
 pub mod usage;
 pub mod wire;
 

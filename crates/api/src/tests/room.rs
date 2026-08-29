@@ -1,21 +1,14 @@
 //! The session room, driven the way Cloudflare drives it.
 //!
-//! # Why this file builds its own Durable Object plumbing
-//!
-//! skyzen 0.1.2's native Durable Object simulator serves a room's HTTP
-//! routes but never delivers a WebSocket event: `NativeDurableConnections`
-//! answers every `all()`/`by_tag()` with an empty set, and nothing calls
-//! `DurableObject::websocket`. Its `InMemoryDurableDb` mock is also a stub
-//! that records the SQL it was handed and returns no rows, so a room's
-//! `events` table cannot be exercised through it either.
-//!
-//! Both constructors flyco needs are public, though —
+//! The room is exercised through the real trait surface —
 //! `WebSocketConnection::new`, `DurableConnections::new`,
-//! `DurableContext::new` — so the room is driven here through the real
-//! trait surface, against a real SQLite database and a connection registry
-//! that records what was sent. These tests exercise the shipping
-//! `SessionRoom::websocket` and `SessionRoom::fetch`, not a reimplementation
-//! of them.
+//! `DurableContext::new` — against skyzen's SQLite-backed
+//! [`InMemoryDurableDb`] and a connection registry that records what was
+//! sent. What these tests observe is what the room *did to its sockets*, and
+//! that is the one thing the runtime cannot supply: a socket here reports
+//! every frame the room wrote to it, which is how a broadcast, a targeted
+//! forward and a refusal are told apart. So the sockets are flyco's and
+//! everything behind them is skyzen's.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, RwLock};
@@ -31,65 +24,13 @@ use skyzen::durable::{
 };
 use skyzen::http_kit::ws::WebSocketMessage;
 use skyzen::{Body, Method, Request};
-use skyzen_services::durable::{Alarm, DurableDb, DurableDbBackend, DurableDbError, DurableKv};
-use skyzen_services::{Db, DbExecResult, DbValue};
-use skyzen_test::mock::{InMemoryAlarm, InMemoryDurableKv};
+use skyzen_services::durable::{Alarm, DurableDb, DurableKv};
+use skyzen_test::mock::{InMemoryAlarm, InMemoryDurableDb, InMemoryDurableKv};
 
 use crate::room::{
     EventPage, HEADER_INTERNAL, HEADER_ROLE, HEADER_SESSION, INTERNAL, ROLE_CLIENT, ROLE_DAEMON,
     SessionRoom, StoredEvent,
 };
-
-// ── A real SQLite database behind `DurableDb` ──
-
-/// `DurableDbBackend` over an in-memory SQLite database.
-///
-/// Stands in for `CfDurableSqlite`. skyzen-test's `InMemoryDurableDb` cannot
-/// be used: it records queries and returns `DbExecResult::default()`, so
-/// every read comes back empty and no ordering or sequence behaviour is
-/// observable.
-#[derive(Debug, Clone)]
-struct SqliteDurableDb {
-    db: Db,
-}
-
-impl DurableDbBackend for SqliteDurableDb {
-    async fn query(&self, query: &str, params: &[DbValue]) -> Result<DbExecResult, DurableDbError> {
-        let mut statement = self.db.query(query);
-        for value in params {
-            statement = statement.bind(value.clone());
-        }
-        let rows = statement
-            .fetch_all::<serde_json::Value>()
-            .await
-            .map_err(DurableDbError::from)?;
-        Ok(DbExecResult {
-            rows_read: rows.len() as u64,
-            rows,
-            rows_written: 0,
-        })
-    }
-
-    async fn execute(
-        &self,
-        query: &str,
-        params: &[DbValue],
-    ) -> Result<DbExecResult, DurableDbError> {
-        let mut statement = self.db.query(query);
-        for value in params {
-            statement = statement.bind(value.clone());
-        }
-        statement.execute().await.map_err(DurableDbError::from)
-    }
-
-    fn database_size(
-        &self,
-    ) -> impl core::future::Future<Output = Result<u64, DurableDbError>> + Send {
-        // Nothing in the room reads its own size; a room that outgrows a
-        // Durable Object is a capacity question for a later milestone.
-        core::future::ready(Ok(0))
-    }
-}
 
 // ── A connection registry that records what the room sent ──
 
@@ -223,7 +164,7 @@ struct Room {
     daemon: WebSocketConnection,
     client: WebSocketConnection,
     connections: FakeConnections,
-    db: SqliteDurableDb,
+    db: InMemoryDurableDb,
     kv: InMemoryDurableKv,
     sent: Receiver<Sent>,
 }
@@ -250,11 +191,9 @@ impl Room {
             daemon: WebSocketConnection::new(Box::new(daemon)),
             client: WebSocketConnection::new(Box::new(client)),
             connections,
-            db: SqliteDurableDb {
-                db: Db::connect_sqlite_memory()
-                    .await
-                    .expect("an in-memory database"),
-            },
+            db: InMemoryDurableDb::in_memory()
+                .await
+                .expect("an in-memory database"),
             kv: InMemoryDurableKv::new(),
             sent,
         }
@@ -958,7 +897,7 @@ async fn a_relay_upgrade_names_its_role_and_session() {
     assert_eq!(status, 502, "an upgrade with no role is refused");
 
     // The right role reaches the accept path, which native builds refuse
-    // with 501 because skyzen 0.1.2 has no native hibernating sockets.
+    // with 501: nothing native carries a browser's upgrade this far.
     let mut request = Request::new(Body::empty());
     *request.method_mut() = Method::GET;
     *request.uri_mut() = "https://session-room.flyco.invalid/relay/daemon"

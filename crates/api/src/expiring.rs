@@ -1,9 +1,12 @@
-//! Time-to-live on top of skyzen 0.1.2's `Kv`.
+//! Time-to-live that belongs to flyco rather than to the store.
 //!
-//! The portable `KeyValueStore` trait has no expiry parameter, so every
-//! entry carries its own deadline and a read past that deadline is
-//! indistinguishable from a miss. Cloudflare KV's native TTL would evict the
-//! bytes as well, but nothing may depend on that: correctness lives here.
+//! `Kv::put_with_ttl` exists, and both backends flyco runs on implement it —
+//! but a deadline enforced by the store is a deadline flyco cannot state.
+//! Cloudflare KV's expiry has a sixty-second floor, which is exactly the
+//! life of a relay ticket, and eviction is the platform's schedule rather
+//! than a promise about the next read. So every entry carries its own
+//! deadline and a read past it is indistinguishable from a miss. Native
+//! expiry would be an optimisation on top of that, never the rule.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;

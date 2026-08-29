@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 )]
 #[serde(transparent)]
 #[schema(value_type = u64, description = "Amount in integer microdollars (1 USD = 1e6)")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub struct Usd(u64);
 
 impl Usd {

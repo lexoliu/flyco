@@ -13,15 +13,15 @@ use flyco_core::AuthorizeUrl;
 use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::utils::{Json, State};
-use skyzen::{Body, Response, StatusCode, header};
 use skyzen_services::{Db, Kv};
 use url::Url;
 
 use crate::config::ApiConfig;
 use crate::crypto::random_token;
 use crate::error::ApiError;
-use crate::github::{GithubOauth, SCOPE};
+use crate::github::{GithubClient, GithubOauth, SCOPE};
 use crate::problem::Outcome;
+use crate::respond::SeeOther;
 use crate::{expiring, session, users};
 
 /// Where the browser is sent to approve the OAuth app.
@@ -38,7 +38,7 @@ const POST_LOGIN_PATH: &str = "/auth/complete";
 const TOKEN_PARAM: &str = "token";
 
 /// Query string GitHub appends when it redirects back.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, skyzen::ToSchema)]
 pub struct Callback {
     /// The single-use authorization code.
     code: String,
@@ -92,23 +92,24 @@ async fn begin(config: &ApiConfig, kv: &Kv) -> Result<Json<AuthorizeUrl>, ApiErr
 /// generic over [`GithubOauth`], whose parameter does not exist at module
 /// scope. The route still appears in the exported document, without its
 /// parameter schemas.
-pub async fn callback<G: GithubOauth>(
+#[skyzen::openapi]
+pub async fn callback(
     Query(callback): Query<Callback>,
     State(config): State<ApiConfig>,
-    State(github): State<G>,
+    State(github): State<GithubClient>,
     kv: Kv,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<SeeOther> {
     complete(callback, &config, &github, &kv, &db).await.into()
 }
 
-async fn complete<G: GithubOauth>(
+async fn complete(
     callback: Callback,
     config: &ApiConfig,
-    github: &G,
+    github: &GithubClient,
     kv: &Kv,
     db: &Db,
-) -> Result<Response, ApiError> {
+) -> Result<SeeOther, ApiError> {
     if expiring::take::<()>(kv, &state_key(&callback.state))
         .await?
         .is_none()
@@ -131,7 +132,7 @@ async fn complete<G: GithubOauth>(
     let session_token = session::issue(kv, user.id).await?;
 
     tracing::info!(login = %user.login, "completed a GitHub sign-in");
-    Ok(see_other(&completion_url(config, &session_token)))
+    Ok(SeeOther(completion_url(config, &session_token)))
 }
 
 /// Where the browser is sent once it has a token: the SPA's completion route
@@ -147,19 +148,6 @@ fn completion_url(config: &ApiConfig, session_token: &str) -> Url {
             .finish(),
     ));
     url
-}
-
-/// A 303 redirect, which is what turns GitHub's GET into a plain navigation.
-fn see_other(location: &Url) -> Response {
-    // A parsed `Url` percent-encodes everything a header value forbids, so
-    // this conversion cannot fail.
-    let value = header::HeaderValue::from_str(location.as_str())
-        .expect("a parsed URL is always a valid header value");
-
-    let mut response = Response::new(Body::empty());
-    *response.status_mut() = StatusCode::SEE_OTHER;
-    response.headers_mut().insert(header::LOCATION, value);
-    response
 }
 
 #[cfg(test)]
@@ -314,12 +302,9 @@ mod tests {
 
         let stored: Vec<String> = db
             .query("SELECT github_token_enc FROM users")
-            .fetch_all::<std::collections::BTreeMap<String, String>>()
+            .fetch_scalars()
             .await
-            .expect("read the stored token")
-            .into_iter()
-            .filter_map(|row| row.get("github_token_enc").cloned())
-            .collect();
+            .expect("read the stored token");
 
         let sealed = stored.first().expect("one user row exists");
         assert!(!sealed.contains(GITHUB_ACCESS_TOKEN));
@@ -342,13 +327,11 @@ mod tests {
                 .await
                 .assert_status(303);
 
-            let row: std::collections::BTreeMap<String, String> = db
-                .query("SELECT id FROM users WHERE github_id = ?")
-                .bind(GITHUB_ID)
-                .fetch_one()
+            let id: String = skyzen::sql!(db, "SELECT id FROM users WHERE github_id = {GITHUB_ID}")
+                .fetch_scalar()
                 .await
                 .expect("exactly one row per GitHub account");
-            ids.push(row.get("id").cloned().expect("id column"));
+            ids.push(id);
         }
 
         assert_eq!(ids[0], ids[1]);
