@@ -148,7 +148,7 @@ pub enum DaemonToControl {
 }
 
 /// Messages from the control plane to the daemon.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlToDaemon {
     /// Acknowledges [`DaemonToControl::Hello`]; the session is live.

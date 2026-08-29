@@ -13,10 +13,10 @@ authors = ["Lexo Liu <me@lexo.cool>"]
 flyco-core = { path = "crates/core" }
 flyco-provider = { path = "crates/provider" }
 
-skyzen = "0.1.2"
-skyzen-services = "0.1.0"
-skyzen-test = "0.1.0"
-skyzen-cloudflare = "0.1.1"
+skyzen = "0.2"
+skyzen-services = "0.2"
+skyzen-test = "0.2"
+skyzen-cloudflare = "0.2"
 zenwave = "0.5"
 
 # Provider drivers render structured documents — cloud-init YAML, podman

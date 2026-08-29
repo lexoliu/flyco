@@ -14,16 +14,11 @@
 //! the previous daemon holds.
 
 use flyco_core::{DAEMON_TOKEN_PREFIX, DaemonToken, SessionId, UserId};
-use serde::Deserialize;
+use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::crypto::{prefixed_token, token_hash};
 use crate::error::ApiError;
-
-#[derive(Debug, Deserialize)]
-struct TokenHashRow {
-    daemon_token_hash: Option<String>,
-}
 
 /// Mints a daemon token for one of `user`'s sessions, replacing any token
 /// the session already had.
@@ -38,13 +33,13 @@ struct TokenHashRow {
 pub async fn issue(db: &Db, user: UserId, session: SessionId) -> Result<DaemonToken, ApiError> {
     let token = prefixed_token(DAEMON_TOKEN_PREFIX)?;
 
-    let result = db
-        .query("UPDATE sessions SET daemon_token_hash = ? WHERE id = ? AND user_id = ?")
-        .bind(token_hash(&token))
-        .bind(session.to_string())
-        .bind(user.to_string())
-        .execute()
-        .await?;
+    let result = sql!(
+        db,
+        "UPDATE sessions SET daemon_token_hash = {token_hash(&token)} \
+         WHERE id = {session} AND user_id = {user}"
+    )
+    .execute()
+    .await?;
 
     if result.rows_written == 0 {
         return Err(ApiError::SessionNotFound);
@@ -66,14 +61,18 @@ pub async fn authenticates(db: &Db, session: SessionId, presented: &str) -> Resu
         return Ok(false);
     }
 
-    let row: Option<TokenHashRow> = db
-        .query("SELECT daemon_token_hash FROM sessions WHERE id = ?")
-        .bind(session.to_string())
-        .fetch_optional()
-        .await?;
+    // The column is nullable, so the scalar is `Option<String>` and the row
+    // itself is optional: an unknown session and an unpaired one both arrive
+    // here as `None`.
+    let stored: Option<Option<String>> = sql!(
+        db,
+        "SELECT daemon_token_hash FROM sessions WHERE id = {session}"
+    )
+    .fetch_scalar_optional()
+    .await?;
 
-    Ok(row
-        .and_then(|row| row.daemon_token_hash)
+    Ok(stored
+        .flatten()
         .is_some_and(|stored| stored == token_hash(presented)))
 }
 

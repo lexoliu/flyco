@@ -9,13 +9,13 @@
 //! it.
 
 use flyco_core::{
-    CloudProviderKind, CurrentUser, MachineCatalogEntry, MachineSpec, MachineView, OsFamily,
-    ResizeMachine, SessionId, Usd, UserId,
+    CloudProviderKind, CurrentUser, MachineCatalogEntry, MachineId, MachineSpec, MachineState,
+    MachineView, OsFamily, ProviderAccountId, ResizeMachine, SessionId, Usd, UserId,
 };
 use serde::Deserialize;
-use skyzen::Response;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
+use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
@@ -24,66 +24,51 @@ use crate::error::ApiError;
 use crate::extract::path_id;
 use crate::problem::Outcome;
 use crate::provisioning;
-use crate::respond::accepted;
-use crate::sql::{decode_enum, encode_enum, from_column, to_column};
+use crate::respond::Accepted;
 
 /// The columns every read on this path projects.
-#[derive(Debug, Deserialize)]
+///
+/// `requested_spot` and `spot` are `INTEGER 0/1` — SQLite and D1 have no
+/// boolean type — and `bool`'s [`FromColumn`](skyzen_services::sql::FromColumn)
+/// reads exactly that.
+#[derive(Debug, skyzen::FromRow)]
 struct MachineRow {
-    id: String,
-    session_id: String,
-    provider_account_id: String,
-    provider: String,
+    id: MachineId,
+    session_id: SessionId,
+    provider_account_id: ProviderAccountId,
+    provider: CloudProviderKind,
     machine_type: String,
     region: String,
-    disk_gib: i64,
-    requested_spot: i64,
-    spot: i64,
-    state: String,
-    hourly_micros: Option<i64>,
+    disk_gib: u32,
+    requested_spot: bool,
+    spot: bool,
+    state: MachineState,
+    hourly_micros: Option<Usd>,
     native_id: Option<String>,
     address: Option<String>,
-    created_at_unix: i64,
+    created_at_unix: u64,
 }
 
-impl TryFrom<MachineRow> for MachineView {
-    type Error = ApiError;
-
-    fn try_from(row: MachineRow) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: row
-                .id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("machines.id is not a UUID"))?,
-            session: row
-                .session_id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("machines.session_id is not a UUID"))?,
+impl From<MachineRow> for MachineView {
+    fn from(row: MachineRow) -> Self {
+        Self {
+            id: row.id,
+            session: row.session_id,
             spec: MachineSpec {
-                provider: decode_enum(&row.provider, "machines.provider")?,
+                provider: row.provider,
                 machine_type: row.machine_type,
                 region: row.region.clone(),
-                spot: row.requested_spot != 0,
-                disk_gib: u32::try_from(row.disk_gib)
-                    .map_err(|_| ApiError::CorruptRecord("machines.disk_gib is out of range"))?,
+                spot: row.requested_spot,
+                disk_gib: row.disk_gib,
             },
-            state: decode_enum(&row.state, "machines.state")?,
-            spot: row.spot != 0,
-            hourly: row
-                .hourly_micros
-                .map(|micros| from_column(micros, "machines.hourly_micros").map(Usd::from_micros))
-                .transpose()?,
+            state: row.state,
+            spot: row.spot,
+            hourly: row.hourly_micros,
             region: row.region,
-            created_at_unix: from_column(row.created_at_unix, "machines.created_at_unix")?,
-        })
+            created_at_unix: row.created_at_unix,
+        }
     }
 }
-
-/// Every column the machine projection needs, in one place so the three
-/// readers below cannot drift apart.
-const MACHINE_COLUMNS: &str = "id, session_id, provider_account_id, provider, machine_type, \
-                               region, disk_gib, requested_spot, spot, state, hourly_micros, \
-                               native_id, address, created_at_unix";
 
 impl MachineRow {
     /// Rebuilds what a driver needs to act on this machine.
@@ -93,25 +78,16 @@ impl MachineRow {
     /// conflict rather than a request to retry.
     fn as_provider_machine(&self) -> Result<flyco_provider::Machine, ApiError> {
         Ok(flyco_provider::Machine {
-            id: self
-                .id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("machines.id is not a UUID"))?,
+            id: self.id,
             native_id: self.native_id.clone().ok_or(ApiError::MachineNotReady)?,
-            state: decode_enum(&self.state, "machines.state")?,
-            capacity_mode: if self.spot == 0 {
-                flyco_provider::CapacityMode::OnDemand
-            } else {
+            state: self.state,
+            capacity_mode: if self.spot {
                 flyco_provider::CapacityMode::Spot
+            } else {
+                flyco_provider::CapacityMode::OnDemand
             },
             address: self.address.clone(),
         })
-    }
-
-    fn account(&self) -> Result<flyco_core::ProviderAccountId, ApiError> {
-        self.provider_account_id
-            .parse()
-            .map_err(|_| ApiError::CorruptRecord("machines.provider_account_id is not a UUID"))
     }
 }
 
@@ -126,11 +102,11 @@ async fn run(
     user: UserId,
     params: &Params,
     operation: provisioning::Operation<'_>,
-) -> Result<Response, ApiError> {
+) -> Result<Accepted, ApiError> {
     let session: SessionId = path_id(params, "id")?;
     let row = load(db, user, session).await?;
     let machine = row.as_provider_machine()?;
-    let account = provisioning::account(db, config, user, row.account()?).await?;
+    let account = provisioning::account(db, config, user, row.provider_account_id).await?;
 
     let updated = provisioning::operate(&account, &machine, operation)
         .await
@@ -141,21 +117,18 @@ async fn run(
         provisioning::Operation::Stop | provisioning::Operation::Start => row.machine_type.clone(),
     };
 
-    db.query(
-        "UPDATE machines SET state = ?, machine_type = ?, spot = ?, native_id = ?, address = ? \
-         WHERE id = ?",
+    sql!(
+        db,
+        "UPDATE machines SET state = {updated.state}, machine_type = {machine_type}, \
+         spot = {updated.capacity_mode.is_spot()}, native_id = {updated.native_id.clone()}, \
+         address = {updated.address.clone()} \
+         WHERE id = {row.id}"
     )
-    .bind(encode_enum(&updated.state)?)
-    .bind(machine_type)
-    .bind(to_column(u64::from(updated.capacity_mode.is_spot())))
-    .bind(updated.native_id.clone())
-    .bind(updated.address.clone())
-    .bind(row.id.clone())
     .execute()
     .await?;
 
     tracing::info!(machine = %row.id, state = ?updated.state, "ran a machine lifecycle operation");
-    Ok(accepted())
+    Ok(Accepted)
 }
 
 /// Loads the machine a session runs on, scoped to its owner.
@@ -164,16 +137,17 @@ async fn run(
 /// reachable only via the session it serves, and that session carries the
 /// `user_id`.
 async fn load(db: &Db, user: UserId, session: SessionId) -> Result<MachineRow, ApiError> {
-    let sql = format!(
-        "SELECT {MACHINE_COLUMNS} FROM machines \
-         WHERE session_id = (SELECT id FROM sessions WHERE id = ? AND user_id = ?)"
-    );
-    db.query(&sql)
-        .bind(session.to_string())
-        .bind(user.to_string())
-        .fetch_optional()
-        .await?
-        .ok_or(ApiError::MachineNotFound)
+    sql!(
+        db,
+        "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
+         disk_gib, requested_spot, spot, state, hourly_micros, native_id, address, \
+         created_at_unix \
+         FROM machines \
+         WHERE session_id = (SELECT id FROM sessions WHERE id = {session} AND user_id = {user})"
+    )
+    .fetch_optional()
+    .await?
+    .ok_or(ApiError::MachineNotFound)
 }
 
 /// Narrows the machine catalog.
@@ -257,7 +231,7 @@ async fn get_session_machine(
 
 async fn read_machine(db: &Db, user: UserId, params: &Params) -> Result<MachineView, ApiError> {
     let session: SessionId = path_id(params, "id")?;
-    load(db, user, session).await?.try_into()
+    Ok(load(db, user, session).await?.into())
 }
 
 /// Moves a session's machine to another type, keeping its disk.
@@ -271,7 +245,7 @@ async fn resize_session_machine(
     params: Params,
     Json(request): Json<ResizeMachine>,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<Accepted> {
     run(
         &db,
         &config,
@@ -295,7 +269,7 @@ async fn stop_session_machine(
     State(config): State<ApiConfig>,
     params: Params,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<Accepted> {
     run(
         &db,
         &config,
@@ -314,7 +288,7 @@ async fn start_session_machine(
     State(config): State<ApiConfig>,
     params: Params,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<Accepted> {
     run(
         &db,
         &config,

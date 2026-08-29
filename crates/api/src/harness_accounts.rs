@@ -11,58 +11,55 @@
 //! itself names the account in a path rather than an identifier.
 
 use flyco_core::{
-    AuthorizeUrl, CurrentUser, HarnessAccountView, HarnessKind, LlmUsageView, UserId,
+    AuthorizeUrl, CurrentUser, HarnessAccountId, HarnessAccountView, HarnessKind, LlmUsageView,
+    UserId,
 };
 use serde::Deserialize;
-use skyzen::Response;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
+use skyzen::sql;
 use skyzen::utils::{Json, State};
+use skyzen_services::sql::ColumnEnum as _;
 use skyzen_services::{Db, Kv};
 
 use crate::error::ApiError;
 use crate::extract::path_segment;
 use crate::problem::Outcome;
-use crate::respond::no_content;
-use crate::sql::{decode_enum, encode_enum, from_column};
+use crate::respond::{NoContent, SeeOther};
 
 /// The columns every read on this path projects.
 ///
 /// `token_enc` is deliberately absent: the sealed credential is provisioned
 /// onto machines and is never selected by a route that answers a browser.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct HarnessAccountRow {
-    id: String,
-    harness: String,
+    id: HarnessAccountId,
+    harness: HarnessKind,
     label: String,
-    linked_at_unix: i64,
-    expires_at_unix: Option<i64>,
+    linked_at_unix: u64,
+    expires_at_unix: Option<u64>,
 }
 
-impl TryFrom<HarnessAccountRow> for HarnessAccountView {
-    type Error = ApiError;
-
-    fn try_from(row: HarnessAccountRow) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: row
-                .id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("harness_accounts.id is not a UUID"))?,
-            harness: decode_enum(&row.harness, "harness_accounts.harness")?,
+impl From<HarnessAccountRow> for HarnessAccountView {
+    fn from(row: HarnessAccountRow) -> Self {
+        Self {
+            id: row.id,
+            harness: row.harness,
             label: row.label,
-            linked_at_unix: from_column(row.linked_at_unix, "harness_accounts.linked_at_unix")?,
-            expires_at_unix: row
-                .expires_at_unix
-                .map(|at| from_column(at, "harness_accounts.expires_at_unix"))
-                .transpose()?,
-        })
+            linked_at_unix: row.linked_at_unix,
+            expires_at_unix: row.expires_at_unix,
+        }
     }
 }
 
 /// Reads the `{harness}` path segment as the harness it names.
+///
+/// The segment and the `harness` column speak the same tokens, because both
+/// are [`ColumnEnum::from_token`] — a path a caller can type cannot name a
+/// harness the table could not hold.
 fn harness_of(params: &Params) -> Result<HarnessKind, ApiError> {
     let segment = path_segment(params, "harness")?;
-    decode_enum(&segment, "the {harness} path segment").map_err(|_| ApiError::MalformedId(segment))
+    HarnessKind::from_token(&segment).ok_or(ApiError::MalformedId(segment))
 }
 
 /// Query string the vendor appends when it redirects back.
@@ -84,16 +81,15 @@ async fn list_harness_accounts(
 }
 
 async fn list(db: &Db, user: UserId) -> Result<Vec<HarnessAccountView>, ApiError> {
-    let rows: Vec<HarnessAccountRow> = db
-        .query(
-            "SELECT id, harness, label, linked_at_unix, expires_at_unix \
-             FROM harness_accounts WHERE user_id = ? ORDER BY harness",
-        )
-        .bind(user.to_string())
-        .fetch_all()
-        .await?;
+    let rows: Vec<HarnessAccountRow> = sql!(
+        db,
+        "SELECT id, harness, label, linked_at_unix, expires_at_unix \
+         FROM harness_accounts WHERE user_id = {user} ORDER BY harness"
+    )
+    .fetch_all()
+    .await?;
 
-    rows.into_iter().map(TryInto::try_into).collect()
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// Begins linking a harness account, returning the vendor's authorize URL.
@@ -117,7 +113,7 @@ async fn complete_harness_link(
     Query(_callback): Query<LinkCallback>,
     _kv: Kv,
     _db: Db,
-) -> Outcome<Response> {
+) -> Outcome<SeeOther> {
     todo!(
         "M4: consume the state, exchange the code with the vendor, seal the token, 303 to the SPA"
     )
@@ -129,7 +125,7 @@ async fn unlink_harness_account(
     State(user): State<CurrentUser>,
     params: Params,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<NoContent> {
     unlink(&db, user.id, &params).await.into()
 }
 
@@ -138,22 +134,22 @@ async fn unlink_harness_account(
 /// It does not reach into machines already running: their environment was
 /// fixed when the process started, and a session mid-turn keeps the
 /// credential it was given until it is archived.
-async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<Response, ApiError> {
+async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, ApiError> {
     let harness = harness_of(params)?;
 
-    let removed = db
-        .query("DELETE FROM harness_accounts WHERE user_id = ? AND harness = ?")
-        .bind(user.to_string())
-        .bind(encode_enum(&harness)?)
-        .execute()
-        .await?;
+    let removed = sql!(
+        db,
+        "DELETE FROM harness_accounts WHERE user_id = {user} AND harness = {harness}"
+    )
+    .execute()
+    .await?;
 
     if removed.rows_written == 0 {
         return Err(ApiError::HarnessAccountNotFound);
     }
 
     tracing::info!(?harness, "unlinked a harness account");
-    Ok(no_content())
+    Ok(NoContent)
 }
 
 /// Reports what flyco has observed of each harness account's usage.

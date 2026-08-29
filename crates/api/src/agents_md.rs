@@ -15,31 +15,28 @@
 //! in this build.
 
 use flyco_core::{AgentsDocument, CurrentUser, UpdateAgentsDocument, UserId};
-use serde::Deserialize;
 use skyzen::routing::{CreateRouteNode, Route, RouteNode, Routes as _};
+use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
 use crate::error::ApiError;
 use crate::problem::Outcome;
-use crate::sql::{from_column, to_column};
 
 /// The columns the document is stored in.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct DocumentRow {
     content: String,
-    updated_at_unix: i64,
+    updated_at_unix: u64,
 }
 
-impl TryFrom<DocumentRow> for AgentsDocument {
-    type Error = ApiError;
-
-    fn try_from(row: DocumentRow) -> Result<Self, Self::Error> {
-        Ok(Self {
+impl From<DocumentRow> for AgentsDocument {
+    fn from(row: DocumentRow) -> Self {
+        Self {
             content: row.content,
-            updated_at_unix: from_column(row.updated_at_unix, "agents_md.updated_at_unix")?,
-        })
+            updated_at_unix: row.updated_at_unix,
+        }
     }
 }
 
@@ -64,40 +61,37 @@ async fn put_agents_md(
 
 /// The caller's document, or an empty one if they have never written it.
 async fn read(db: &Db, user: UserId) -> Result<AgentsDocument, ApiError> {
-    let row: Option<DocumentRow> = db
-        .query("SELECT content, updated_at_unix FROM agents_md WHERE user_id = ?")
-        .bind(user.to_string())
-        .fetch_optional()
-        .await?;
-
-    row.map_or_else(
-        || {
-            Ok(AgentsDocument {
-                content: String::new(),
-                updated_at_unix: 0,
-            })
-        },
-        TryInto::try_into,
+    let row: Option<DocumentRow> = sql!(
+        db,
+        "SELECT content, updated_at_unix FROM agents_md WHERE user_id = {user}"
     )
+    .fetch_optional()
+    .await?;
+
+    Ok(row.map_or_else(
+        || AgentsDocument {
+            content: String::new(),
+            updated_at_unix: 0,
+        },
+        Into::into,
+    ))
 }
 
 /// Replaces the document, stamping the time the control plane recorded it.
 async fn write(db: &Db, user: UserId, content: String) -> Result<AgentsDocument, ApiError> {
-    let row: DocumentRow = db
-        .query(
-            "INSERT INTO agents_md (user_id, content, updated_at_unix) VALUES (?, ?, ?) \
-             ON CONFLICT (user_id) DO UPDATE SET \
-             content = excluded.content, updated_at_unix = excluded.updated_at_unix \
-             RETURNING content, updated_at_unix",
-        )
-        .bind(user.to_string())
-        .bind(content)
-        .bind(to_column(now_unix()))
-        .fetch_one()
-        .await?;
+    let row: DocumentRow = sql!(
+        db,
+        "INSERT INTO agents_md (user_id, content, updated_at_unix) \
+         VALUES ({user}, {content}, {now_unix()}) \
+         ON CONFLICT (user_id) DO UPDATE SET \
+         content = excluded.content, updated_at_unix = excluded.updated_at_unix \
+         RETURNING content, updated_at_unix"
+    )
+    .fetch_one()
+    .await?;
 
     tracing::info!(bytes = row.content.len(), "replaced the shared AGENTS.md");
-    row.try_into()
+    Ok(row.into())
 }
 
 /// The user-scoped routes of the shared `AGENTS.md`.

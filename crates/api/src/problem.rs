@@ -110,7 +110,7 @@ impl<T: Responder> Responder for Outcome<T> {
         defs: &mut std::collections::BTreeMap<String, skyzen::openapi::SchemaRef>,
     ) {
         T::register_openapi_schemas(defs);
-        skyzen::openapi::maybe_register_schema_for::<flyco_core::Problem>(defs);
+        skyzen::openapi::register_schema_for::<flyco_core::Problem>(defs);
     }
 }
 
@@ -160,20 +160,25 @@ mod schema_forwarding {
 
     /// Wrapping a responder must not erase what it says about itself.
     ///
-    /// Note that skyzen 0.1.2 reports no payload schema through this path at
-    /// all (`maybe_schema_of` is generic, so its specialization probe cannot
-    /// fire) — see [`crate::responses`], which is what describes the
-    /// responses in the meantime. This test pins the forwarding itself, so
-    /// the operation documents improve the moment that is fixed upstream.
+    /// This is what every operation's response schema now rests on: almost
+    /// every flyco handler returns an [`Outcome`], so a forwarding that
+    /// stopped working would empty the exported document without failing
+    /// anything else.
     #[test]
     fn outcome_reports_whatever_the_wrapped_responder_reports() {
         let direct = <Json<flyco_core::Problem> as skyzen::Responder>::openapi();
         let wrapped = <Outcome<Json<flyco_core::Problem>> as skyzen::Responder>::openapi();
-        assert_eq!(direct.is_some(), wrapped.is_some());
-        assert_eq!(
-            direct.map(|s| s.len()),
-            wrapped.map(|s| s.len()),
-            "Outcome must pass the wrapped responder's descriptions through"
-        );
+        let direct = direct.expect("a JSON responder describes its payload");
+        let wrapped = wrapped.expect("Outcome must not erase the wrapped responder");
+
+        assert_eq!(direct.len(), wrapped.len());
+        for (direct, wrapped) in direct.iter().zip(&wrapped) {
+            assert!(
+                wrapped.schema.is_some(),
+                "the forwarded response carries no schema"
+            );
+            assert_eq!(direct.schema.is_some(), wrapped.schema.is_some());
+            assert_eq!(direct.content_type, wrapped.content_type);
+        }
     }
 }

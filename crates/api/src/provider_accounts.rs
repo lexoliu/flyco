@@ -15,9 +15,9 @@ use flyco_core::{
 use flyco_provider::azure::auth::{ServicePrincipal, TokenCache};
 use flyco_provider::{SystemClock, ZenwaveTransport};
 use serde::Deserialize;
-use skyzen::Response;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
+use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
@@ -27,34 +27,28 @@ use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::path_id;
 use crate::problem::Outcome;
-use crate::respond::{Created, no_content};
-use crate::sql::{encode_enum, from_column, to_column};
+use crate::respond::{Created, NoContent};
 
 /// The columns every read on this path projects.
 ///
 /// `credentials_enc` is deliberately absent: a credential that is never
 /// selected cannot be leaked by a later edit to a response type.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct AccountRow {
-    id: String,
-    kind: String,
+    id: ProviderAccountId,
+    kind: CloudProviderKind,
     label: String,
-    linked_at_unix: i64,
+    linked_at_unix: u64,
 }
 
-impl TryFrom<AccountRow> for ProviderAccountView {
-    type Error = ApiError;
-
-    fn try_from(row: AccountRow) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: row
-                .id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("provider_accounts.id is not a UUID"))?,
-            kind: crate::sql::decode_enum(&row.kind, "provider_accounts.kind")?,
+impl From<AccountRow> for ProviderAccountView {
+    fn from(row: AccountRow) -> Self {
+        Self {
+            id: row.id,
+            kind: row.kind,
             label: row.label,
-            linked_at_unix: from_column(row.linked_at_unix, "provider_accounts.linked_at_unix")?,
-        })
+            linked_at_unix: row.linked_at_unix,
+        }
     }
 }
 
@@ -75,16 +69,15 @@ async fn list_providers(
 }
 
 async fn list(db: &Db, user: UserId) -> Result<Vec<ProviderAccountView>, ApiError> {
-    let rows: Vec<AccountRow> = db
-        .query(
-            "SELECT id, kind, label, linked_at_unix FROM provider_accounts \
-             WHERE user_id = ? ORDER BY linked_at_unix DESC, id",
-        )
-        .bind(user.to_string())
-        .fetch_all()
-        .await?;
+    let rows: Vec<AccountRow> = sql!(
+        db,
+        "SELECT id, kind, label, linked_at_unix FROM provider_accounts \
+         WHERE user_id = {user} ORDER BY linked_at_unix DESC, id"
+    )
+    .fetch_all()
+    .await?;
 
-    rows.into_iter().map(TryInto::try_into).collect()
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// Links a cloud-provider account, sealing its credentials at rest.
@@ -174,17 +167,12 @@ async fn link(
 
     let id = ProviderAccountId::generate();
     let linked_at = now_unix();
-    db.query(
+    sql!(
+        db,
         "INSERT INTO provider_accounts \
          (id, user_id, kind, label, credentials_enc, linked_at_unix) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES ({id}, {user}, {kind}, {request.label.clone()}, {sealed}, {linked_at})"
     )
-    .bind(id.to_string())
-    .bind(user.to_string())
-    .bind(encode_enum(&kind)?)
-    .bind(request.label.clone())
-    .bind(sealed)
-    .bind(to_column(linked_at))
     .execute()
     .await?;
 
@@ -204,29 +192,22 @@ async fn unlink_provider(
     State(user): State<CurrentUser>,
     params: Params,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<NoContent> {
     unlink(&db, user.id, &params).await.into()
 }
 
-#[derive(Debug, Deserialize)]
-struct LiveCount {
-    live: i64,
-}
-
-async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<Response, ApiError> {
+async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, ApiError> {
     let id: ProviderAccountId = path_id(params, "id")?;
 
     // Scoped by user so somebody else's account is indistinguishable from
     // one that does not exist.
-    let owned: Option<AccountRow> = db
-        .query(
-            "SELECT id, kind, label, linked_at_unix FROM provider_accounts \
-             WHERE id = ? AND user_id = ?",
-        )
-        .bind(id.to_string())
-        .bind(user.to_string())
-        .fetch_optional()
-        .await?;
+    let owned: Option<AccountRow> = sql!(
+        db,
+        "SELECT id, kind, label, linked_at_unix FROM provider_accounts \
+         WHERE id = {id} AND user_id = {user}"
+    )
+    .fetch_optional()
+    .await?;
     if owned.is_none() {
         return Err(ApiError::ProviderAccountNotFound);
     }
@@ -234,27 +215,26 @@ async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<Response, ApiE
     // Unlinking discards the only credentials that can destroy what is
     // running there, so a live machine makes this a 409 rather than a leak
     // nobody can clean up afterwards.
-    let counted: LiveCount = db
-        .query(
-            "SELECT COUNT(*) AS live FROM machines \
-             WHERE provider_account_id = ? AND state != ?",
-        )
-        .bind(id.to_string())
-        .bind(encode_enum(&flyco_core::MachineState::Destroyed)?)
-        .fetch_one()
-        .await?;
-    let live = from_column(counted.live, "machines.live")?;
+    let destroyed = flyco_core::MachineState::Destroyed;
+    let live: u64 = sql!(
+        db,
+        "SELECT COUNT(*) AS live FROM machines \
+         WHERE provider_account_id = {id} AND state != {destroyed}"
+    )
+    .fetch_scalar()
+    .await?;
     if live > 0 {
         return Err(ApiError::ProviderInUse { sessions: live });
     }
 
-    db.query("DELETE FROM provider_accounts WHERE id = ? AND user_id = ?")
-        .bind(id.to_string())
-        .bind(user.to_string())
-        .execute()
-        .await?;
+    sql!(
+        db,
+        "DELETE FROM provider_accounts WHERE id = {id} AND user_id = {user}"
+    )
+    .execute()
+    .await?;
 
-    Ok(no_content())
+    Ok(NoContent)
 }
 
 /// Suggests free-credit programmes the caller qualifies for.

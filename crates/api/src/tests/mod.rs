@@ -4,9 +4,12 @@
 //! `testing` fixtures without exposing them in the public API.
 
 mod contract;
+mod mcp;
 mod memory;
 mod push;
 mod relay;
 mod responses;
 mod room;
+mod schema;
 mod sessions;
+mod skills;

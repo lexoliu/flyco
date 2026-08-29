@@ -9,6 +9,7 @@ use crate::money::Usd;
 /// A supported compute provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum CloudProviderKind {
     /// Microsoft Azure.
     Azure,
@@ -135,6 +136,7 @@ pub struct MachineSpec {
 /// Lifecycle state of a provisioned machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum MachineState {
     /// Being created.
     Provisioning,
