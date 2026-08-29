@@ -126,6 +126,21 @@ impl GetProducts {
             next_token,
         }
     }
+
+    /// The gp3 persistent-volume capacity meter for one region.
+    #[must_use]
+    pub fn gp3_storage(region: &str, next_token: Option<String>) -> Self {
+        Self {
+            service_code: EC2_SERVICE_CODE,
+            filters: vec![
+                ProductFilter::term("regionCode", region),
+                ProductFilter::term("productFamily", "Storage"),
+                ProductFilter::term("volumeApiName", "gp3"),
+            ],
+            max_results: 100,
+            next_token,
+        }
+    }
 }
 
 /// One page of priced products.
@@ -159,6 +174,8 @@ struct ProductBody {
 struct ProductAttributes {
     #[serde(rename = "instanceType", default)]
     instance_type: String,
+    #[serde(rename = "volumeApiName", default)]
+    volume_api_name: String,
 }
 
 /// The pricing half of a product.
@@ -203,6 +220,32 @@ fn on_demand_hourly(product: &Product) -> Option<Usd> {
     None
 }
 
+fn storage_gib_hourly(product: &Product) -> Option<Usd> {
+    if product.product.attributes.volume_api_name != "gp3" {
+        return None;
+    }
+    let dimensions = product
+        .terms
+        .on_demand
+        .values()
+        .filter_map(|term| term.get("priceDimensions")?.as_object())
+        .flat_map(serde_json::Map::values);
+    for dimension in dimensions {
+        if dimension.get("unit").and_then(serde_json::Value::as_str) != Some("GB-Mo") {
+            continue;
+        }
+        let quoted = dimension
+            .get("pricePerUnit")?
+            .get("USD")
+            .and_then(serde_json::Value::as_str)?;
+        let monthly = quoted.parse::<f64>().ok()?;
+        if monthly > 0.0 {
+            return Some(micros(monthly / 730.0));
+        }
+    }
+    None
+}
+
 /// A decimal amount of dollars as exact microdollars.
 fn micros(amount: f64) -> Usd {
     #[expect(
@@ -229,6 +272,7 @@ pub struct MachinePrices {
 struct CachedRegion {
     region: String,
     prices: Vec<(String, MachinePrices)>,
+    storage_gib_hourly: Usd,
     expires_after: u64,
 }
 
@@ -264,7 +308,7 @@ impl PriceCatalog {
         key: &AccessKey,
         region: &str,
         now_unix: u64,
-    ) -> Result<&[(String, MachinePrices)], ProviderError>
+    ) -> Result<(&[(String, MachinePrices)], Usd), ProviderError>
     where
         T: HttpTransport,
         C: MonotonicClock,
@@ -277,19 +321,56 @@ impl PriceCatalog {
 
         if !fresh {
             let mut prices = read_on_demand(transport, key, region, now_unix).await?;
+            let storage_gib_hourly = read_storage(transport, key, region, now_unix).await?;
             apply_spot(transport, key, region, now_unix, &mut prices).await?;
             self.cached = Some(CachedRegion {
                 region: region.to_owned(),
                 prices,
+                storage_gib_hourly,
                 expires_after: now.saturating_add(CACHE_TTL_SECONDS),
             });
         }
 
-        Ok(&self
-            .cached
-            .as_ref()
-            .expect("the cache was just filled")
-            .prices)
+        let cached = self.cached.as_ref().expect("the cache was just filled");
+        Ok((&cached.prices, cached.storage_gib_hourly))
+    }
+}
+
+async fn read_storage<T: HttpTransport>(
+    transport: &T,
+    key: &AccessKey,
+    region: &str,
+    now_unix: u64,
+) -> Result<Usd, ProviderError> {
+    let mut next = None;
+    loop {
+        let page: ProductPage = json_rpc(
+            transport,
+            key,
+            PRICING_ENDPOINT,
+            Scope {
+                region: PRICING_REGION,
+                service: SERVICE,
+            },
+            GET_PRODUCTS_TARGET,
+            &GetProducts::gp3_storage(region, next),
+            now_unix,
+        )
+        .await?;
+        for encoded in &page.price_list {
+            let Ok(product) = serde_json::from_str::<Product>(encoded) else {
+                continue;
+            };
+            if let Some(hourly) = storage_gib_hourly(&product) {
+                return Ok(hourly);
+            }
+        }
+        next = page.next_token.filter(|token| !token.is_empty());
+        if next.is_none() {
+            return Err(ProviderError::Malformed(
+                "AWS published no gp3 capacity price for the requested region",
+            ));
+        }
     }
 }
 
@@ -430,9 +511,10 @@ async fn apply_spot<T: HttpTransport>(
 mod tests {
     use flyco_core::money::Usd;
 
-    use super::{GetProducts, ProductPage, on_demand_hourly};
+    use super::{GetProducts, ProductPage, on_demand_hourly, storage_gib_hourly};
 
     const PRODUCTS: &str = include_str!("../../fixtures/aws/get_products.json");
+    const STORAGE_PRODUCTS: &str = include_str!("../../fixtures/aws/get_storage_products.json");
 
     #[test]
     fn the_product_query_narrows_to_one_meter_per_instance_type() {
@@ -455,6 +537,21 @@ mod tests {
         assert_eq!(field("preInstalledSw"), "NA");
         assert_eq!(field("capacitystatus"), "Used");
         assert_eq!(field("marketoption"), "OnDemand");
+    }
+
+    #[test]
+    fn the_storage_query_and_rate_name_gp3_capacity_exactly() {
+        let query = GetProducts::gp3_storage("us-west-2", None);
+        assert!(
+            query
+                .filters
+                .iter()
+                .any(|filter| { filter.field == "volumeApiName" && filter.value == "gp3" })
+        );
+        let page: ProductPage = serde_json::from_str(STORAGE_PRODUCTS).expect("fixture parses");
+        let product =
+            serde_json::from_str::<super::Product>(&page.price_list[0]).expect("product parses");
+        assert_eq!(storage_gib_hourly(&product), Some(Usd::from_micros(110)));
     }
 
     #[test]
