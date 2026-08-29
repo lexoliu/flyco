@@ -344,12 +344,13 @@ async fn complete_link(
 /// `None` linked account is not a failure: the machine comes up with
 /// [`ClaudeCredential::Inherit`] and the harness reports itself
 /// unauthenticated, which is a far better outcome than a machine that never
-/// provisions because the user has not linked Anthropic yet.
+/// provisions because the user has not linked a vendor account yet.
 ///
-/// Only Claude Code has a credential shape in the daemon's bootstrap, so a
-/// Codex session inherits whatever its image carries. `token_enc` seals the
-/// OAuth token the vendor's own authorization page returned, which is the
-/// only kind of credential [`crate::harness_accounts`] ever stores.
+/// `token_enc` seals the OAuth token the vendor's own authorization page
+/// returned, which is the only kind of credential
+/// [`crate::harness_accounts`] ever stores. The same three modes — inherit,
+/// oauth token, api key — are written into the Claude or Codex table of
+/// the `flycod` config depending on [`HarnessKind`].
 ///
 /// # Errors
 ///
@@ -361,10 +362,6 @@ pub async fn credential(
     user: UserId,
     harness: HarnessKind,
 ) -> Result<ClaudeCredential, ApiError> {
-    if harness != HarnessKind::ClaudeCode {
-        return Ok(ClaudeCredential::Inherit);
-    }
-
     let sealed: Option<String> = sql!(
         db,
         "SELECT token_enc FROM harness_accounts \

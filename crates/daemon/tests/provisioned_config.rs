@@ -14,8 +14,10 @@
 //! depends on being carried.
 
 use flyco_core::{HarnessKind, PermissionMode, SessionId};
-use flyco_daemon::config::{ClaudeAuth, DaemonConfig};
-use flyco_provider::flycod::{self, CLAUDE_CONFIG_DIR, CLAUDE_PROJECT_DIR_NAME, WORKDIR};
+use flyco_daemon::config::{ClaudeAuth, CodexAuth, DaemonConfig};
+use flyco_provider::flycod::{
+    self, CLAUDE_CONFIG_DIR, CLAUDE_PROJECT_DIR_NAME, CODEX_HOME, WORKDIR,
+};
 use flyco_provider::{ClaudeCredential, DaemonBootstrap};
 
 const CONTROL_PLANE: &str = "https://flyco.dev/";
@@ -48,7 +50,10 @@ fn a_provisioned_configuration_is_one_this_daemon_accepts() {
     assert_eq!(config.session, bootstrap.session);
     assert_eq!(config.harness, HarnessKind::ClaudeCode);
     assert_eq!(config.workdir, std::path::PathBuf::from(WORKDIR));
-    assert_eq!(config.claude.permission_mode, PermissionMode::Default);
+    assert_eq!(
+        config.claude.as_ref().expect("claude").permission_mode,
+        PermissionMode::Default
+    );
 }
 
 #[test]
@@ -72,7 +77,8 @@ fn an_injected_claude_credential_arrives_with_its_isolated_config_tree() {
         token: "sk-ant-oat01-provisioned".to_owned(),
     }));
 
-    let ClaudeAuth::OauthToken { token, isolation } = &config.claude.auth else {
+    let ClaudeAuth::OauthToken { token, isolation } = &config.claude.as_ref().expect("claude").auth
+    else {
         panic!("an oauth credential must parse back as one");
     };
     assert_eq!(token, "sk-ant-oat01-provisioned");
@@ -92,4 +98,22 @@ fn a_resuming_session_carries_its_harness_native_session_id() {
         parse(&bootstrap).resume_session_id,
         bootstrap.resume_session_id
     );
+}
+
+#[test]
+fn a_provisioned_codex_configuration_is_one_this_daemon_accepts() {
+    let mut bootstrap = bootstrap(ClaudeCredential::OauthToken {
+        token: "chatgpt-access".to_owned(),
+    });
+    bootstrap.harness = HarnessKind::Codex;
+    let config = parse(&bootstrap);
+
+    assert_eq!(config.harness, HarnessKind::Codex);
+    assert!(config.claude.is_none());
+    let CodexAuth::OauthToken { token, isolation } = &config.codex.as_ref().expect("codex").auth
+    else {
+        panic!("an oauth credential must parse back as Codex oauth");
+    };
+    assert_eq!(token, "chatgpt-access");
+    assert_eq!(isolation.home, std::path::PathBuf::from(CODEX_HOME));
 }
