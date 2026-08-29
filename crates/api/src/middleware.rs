@@ -132,3 +132,56 @@ impl Middleware for RequireDaemon {
         vec![TypeId::of::<State<DaemonSession>>()]
     }
 }
+
+/// Reads deployment configuration from the Worker `env` on each request.
+///
+/// `#[skyzen::main]` builds the router inside the fetch factory, but skyzen
+/// 0.2.0 never publishes that `env` through `current_env()`. Reading
+/// bindings at factory time therefore panics, wasm-bindgen leaves the
+/// fetch promise unsettled, and Cloudflare cancels the isolate as hung.
+/// The `env` *is* in request extensions by the time middleware runs
+/// ([`skyzen::runtime::wasm::WasmEnv`]), so this is where configuration
+/// is assembled on the Worker.
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LoadApiConfig;
+
+#[cfg(target_arch = "wasm32")]
+impl Middleware for LoadApiConfig {
+    async fn handle(&self, request: &mut Request, next: Next<'_>) -> Result<Response, Error> {
+        let Some(env) = request
+            .extensions()
+            .get::<skyzen::runtime::wasm::WasmEnv>()
+            .cloned()
+        else {
+            tracing::error!("the Worker environment was not in request extensions");
+            return Ok(misconfigured());
+        };
+        match crate::config::ApiConfig::from_worker_env(env.as_js()) {
+            Ok(config) => {
+                request.extensions_mut().insert(State(config));
+                next.run(request).await
+            }
+            Err(error) => {
+                tracing::error!(%error, "flyco control plane is misconfigured");
+                Ok(misconfigured())
+            }
+        }
+    }
+
+    fn provisions(&self) -> Vec<TypeId> {
+        vec![TypeId::of::<State<crate::config::ApiConfig>>()]
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn misconfigured() -> Response {
+    crate::problem::response(
+        &flyco_core::Problem::about_blank(
+            500,
+            "Internal Server Error",
+            "The control plane is misconfigured.",
+        ),
+        None,
+    )
+}
