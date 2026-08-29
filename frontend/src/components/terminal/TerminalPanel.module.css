@@ -1,13 +1,24 @@
-.placeholder {
-  border: var(--border-width) dashed var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-4);
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
-.hint {
-  color: var(--color-text-faint);
-  margin-top: var(--space-2);
+.toggle {
+  align-self: flex-start;
+  border: var(--border-width) solid var(--color-border);
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.terminal {
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: #0b0d11;
+  padding: var(--space-2);
+  min-height: 220px;
 }

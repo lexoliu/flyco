@@ -1,13 +1,33 @@
-import { lazy } from "solid-js";
+import { Show, createSignal, lazy } from "solid-js";
+import type { SessionRelay } from "../../api/relay";
+import styles from "./TerminalPanel.module.css";
 
 /**
  * Lazily-loaded seam for the session terminal.
  *
- * `TerminalPanelImpl` is a placeholder today. When the terminal ships, it
- * becomes the xterm.js-backed implementation; because it's behind
- * `lazy()`, xterm's JS/CSS only enters the bundle once a user actually
- * opens a session, and callers of `TerminalPanel` don't need to change.
+ * xterm.js (and its CSS) only enters the bundle once a user actually opens
+ * the pane: `TerminalPanelImpl` is behind `lazy()`, and this shell renders
+ * it only after the "Open terminal" toggle is clicked — not merely once the
+ * session view itself mounts.
  */
-const TerminalPanel = lazy(() => import("./TerminalPanelImpl"));
+const TerminalPanelImpl = lazy(() => import("./TerminalPanelImpl"));
 
-export default TerminalPanel;
+export interface TerminalPanelProps {
+  sessionId: string;
+  relay: SessionRelay;
+}
+
+export default function TerminalPanel(props: TerminalPanelProps) {
+  const [open, setOpen] = createSignal(false);
+
+  return (
+    <div class={styles.wrapper}>
+      <button type="button" class={styles.toggle} onClick={() => setOpen((was) => !was)}>
+        {open() ? "Hide terminal" : "Open terminal"}
+      </button>
+      <Show when={open()}>
+        <TerminalPanelImpl sessionId={props.sessionId} relay={props.relay} />
+      </Show>
+    </div>
+  );
+}

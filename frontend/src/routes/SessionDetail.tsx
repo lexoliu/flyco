@@ -1,37 +1,229 @@
 import { useParams } from "@solidjs/router";
+import { For, Match, Show, Switch, createMemo, createResource, createSignal, onCleanup } from "solid-js";
 import BudgetBar from "../components/BudgetBar";
 import UsageMeter from "../components/UsageMeter";
 import ApprovalsPanel from "../components/ApprovalsPanel";
+import ProblemNotice from "../components/ProblemNotice";
 import TerminalPanel from "../components/terminal/TerminalPanel";
+import { getSession, decideApproval } from "../api/client";
+import { createSessionRelay, type ConnectionState } from "../api/relay";
+import { foldTranscript, type TranscriptItem } from "../lib/transcript";
+import { foldApprovals } from "../lib/approvals";
+import { usdMicrosToDollars } from "../lib/money";
 import styles from "./SessionDetail.module.css";
 
+/** One transcript row. A plain switch, not nested `<Show>`s, so the union narrows without casts. */
+function TranscriptRow(props: { item: TranscriptItem }) {
+  return (
+    <Switch>
+      <Match when={props.item.kind === "user_message" && props.item}>
+        {(item) => <p class={styles.userMessage}>{item().text}</p>}
+      </Match>
+      <Match when={props.item.kind === "notice" && props.item}>
+        {(item) => <p class={styles.notice}>{item().text}</p>}
+      </Match>
+      <Match when={props.item.kind === "turn" && props.item}>
+        {(item) => (
+          <div class={styles.turn} data-status={item().status}>
+            <Show when={item().text !== ""}>
+              <p class={styles.assistantText}>{item().text}</p>
+            </Show>
+            <For each={item().tools}>
+              {(tool) => (
+                <details class={styles.toolRow}>
+                  <summary>
+                    {tool.tool}
+                    <span class={styles.toolStatus} data-ok={tool.ok === null ? "pending" : tool.ok}>
+                      {tool.ok === null ? "running" : tool.ok ? "done" : "failed"}
+                    </span>
+                  </summary>
+                  <pre class={styles.toolInput}>{JSON.stringify(tool.input, null, 2)}</pre>
+                </details>
+              )}
+            </For>
+            <Show when={item().status === "failed"}>
+              <p class={styles.turnError}>{item().error}</p>
+            </Show>
+          </div>
+        )}
+      </Match>
+    </Switch>
+  );
+}
+
+const CONNECTION_LABEL: Record<ConnectionState, string> = {
+  connecting: "Connecting…",
+  live: "Live",
+  reconnecting: "Reconnecting…",
+  closed: "Closed",
+};
+
 /**
- * The session view shell. Nothing here is fetched yet — every meter and
- * panel renders its own "not loaded" state until GET /v1/sessions/{id}
- * and the relay socket are wired through the generated client.
+ * The session view: budget/usage meters seeded from `GET /v1/sessions/{id}`
+ * then kept current from the relay's own `usage`/`session_state_changed`
+ * events, a folded transcript, approvals, and the terminal pane. See
+ * docs/ARCHITECTURE.md's "Session relay" section for the protocol this
+ * wires to (`src/api/relay.ts`).
  */
 export default function SessionDetail() {
   const params = useParams<{ id: string }>();
+  const [session, { refetch: refetchSession }] = createResource(() => params.id, getSession);
+
+  const relay = createSessionRelay(params.id);
+  onCleanup(() => relay.dispose());
+
+  const transcript = createMemo(() => foldTranscript(relay.events()));
+  const approvals = createMemo(() => foldApprovals(relay.events()));
+  const latestUsage = createMemo(() => {
+    const events = relay.events();
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i];
+      if (event !== undefined && event.type === "usage") {
+        return event.usage;
+      }
+    }
+    return null;
+  });
+
+  const [messageText, setMessageText] = createSignal("");
+  const [sendError, setSendError] = createSignal<unknown>(null);
+  const [decideError, setDecideError] = createSignal<unknown>(null);
+
+  function submitMessage(): void {
+    const text = messageText().trim();
+    if (text === "") {
+      return;
+    }
+    setSendError(null);
+    try {
+      relay.send({ type: "user_message", text });
+      setMessageText("");
+    } catch (err) {
+      setSendError(err);
+    }
+  }
+
+  function onInterrupt(): void {
+    setSendError(null);
+    try {
+      relay.send({ type: "interrupt" });
+    } catch (err) {
+      setSendError(err);
+    }
+  }
+
+  async function onDecide(id: string, decision: "approved" | "denied"): Promise<void> {
+    setDecideError(null);
+    try {
+      await decideApproval(id, decision);
+    } catch (err) {
+      setDecideError(err);
+    }
+  }
+
+  const budgetSpentUsd = () => {
+    const usage = latestUsage();
+    const budget = session()?.budget;
+    if (usage?.estimated_cost !== null && usage?.estimated_cost !== undefined) {
+      return usdMicrosToDollars(usage.estimated_cost);
+    }
+    return budget !== undefined ? usdMicrosToDollars(budget.spent) : undefined;
+  };
+  const budgetLimitUsd = () => {
+    const budget = session()?.budget;
+    return budget !== undefined ? usdMicrosToDollars(budget.limit) : undefined;
+  };
 
   return (
     <section class={styles.page}>
       <header class={styles.header}>
         <h1>{params.id}</h1>
+        <span class={styles.connection} data-state={relay.state()}>
+          <span class={styles.connectionDot} />
+          {CONNECTION_LABEL[relay.state()]}
+        </span>
       </header>
 
+      <ProblemNotice error={session.error} />
+
       <div class={styles.meters}>
-        <BudgetBar label="Budget" />
-        <UsageMeter label="LLM usage" unit="tokens" />
-        <UsageMeter label="Context window" unit="tokens" />
+        <BudgetBar label="Budget" spentUsd={budgetSpentUsd()} limitUsd={budgetLimitUsd()} />
+        <UsageMeter
+          label="Context window"
+          used={latestUsage()?.context?.used_tokens}
+          total={latestUsage()?.context?.size_tokens}
+          unit="tokens"
+        />
+        <div class={styles.tokenReadout}>
+          <span>LLM usage</span>
+          <Show when={latestUsage()} fallback={<span class={styles.muted}>Not loaded yet</span>}>
+            {(usage) => (
+              <span>
+                {usage().input_tokens.toLocaleString()} in / {usage().output_tokens.toLocaleString()} out
+              </span>
+            )}
+          </Show>
+        </div>
       </div>
 
       <div class={styles.body}>
-        <div class={styles.transcript} aria-label="Transcript">
-          <p class={styles.empty}>No turns yet. Send the first message to get started.</p>
+        <div class={styles.transcriptColumn}>
+          <ul class={styles.transcript} aria-label="Transcript">
+            <Show
+              when={transcript().length > 0}
+              fallback={<li class={styles.empty}>No turns yet. Send the first message to get started.</li>}
+            >
+              <For each={transcript()}>
+                {(item) => (
+                  <li class={styles.transcriptItem} data-kind={item.kind}>
+                    <TranscriptRow item={item} />
+                  </li>
+                )}
+              </For>
+            </Show>
+          </ul>
+
+          <ProblemNotice error={sendError()} />
+          <form
+            class={styles.composer}
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitMessage();
+            }}
+          >
+            <textarea
+              class={styles.composerInput}
+              placeholder="Message the session…"
+              value={messageText()}
+              disabled={relay.state() !== "live"}
+              onInput={(event) => setMessageText(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  submitMessage();
+                }
+              }}
+            />
+            <div class={styles.composerActions}>
+              <button type="button" class={styles.interruptButton} disabled={relay.state() !== "live"} onClick={onInterrupt}>
+                Interrupt
+              </button>
+              <button type="submit" class={styles.sendButton} disabled={relay.state() !== "live"}>
+                Send
+              </button>
+            </div>
+          </form>
         </div>
+
         <aside class={styles.side}>
-          <ApprovalsPanel approvals={[]} />
-          <TerminalPanel />
+          <ProblemNotice error={decideError()} />
+          <ApprovalsPanel
+            approvals={approvals()}
+            onDecide={(id, decision) => {
+              void onDecide(id, decision).then(() => refetchSession());
+            }}
+          />
+          <TerminalPanel sessionId={params.id} relay={relay} />
         </aside>
       </div>
     </section>

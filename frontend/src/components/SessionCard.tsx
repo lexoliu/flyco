@@ -1,23 +1,25 @@
-import { Show } from "solid-js";
 import { A } from "@solidjs/router";
-import BudgetBar from "./BudgetBar";
+import type { HarnessKind, SessionState } from "../api/client";
 import styles from "./SessionCard.module.css";
-
-/** Mirrors the wire enum `HarnessKind` in openapi.json. */
-export type HarnessKind = "claude_code" | "codex";
 
 const HARNESS_LABEL: Record<HarnessKind, string> = {
   claude_code: "Claude Code",
   codex: "Codex",
 };
 
+const STATE_LABEL: Record<SessionState, string> = {
+  provisioning: "Provisioning",
+  active: "Active",
+  paused: "Paused",
+  interrupted: "Interrupted",
+  archived: "Archived",
+};
+
 export interface SessionCardProps {
   id: string;
   repo: string;
   harness: HarnessKind;
-  archived: boolean;
-  budgetSpentUsd?: number | undefined;
-  budgetLimitUsd?: number | undefined;
+  state: SessionState;
 }
 
 export default function SessionCard(props: SessionCardProps) {
@@ -27,12 +29,9 @@ export default function SessionCard(props: SessionCardProps) {
         <span class={styles.repo}>{props.repo}</span>
         <span class={styles.harness}>{HARNESS_LABEL[props.harness]}</span>
       </div>
-      <Show when={props.archived}>
-        <span class={styles.archivedBadge}>Archived</span>
-      </Show>
-      <div class={styles.budget}>
-        <BudgetBar spentUsd={props.budgetSpentUsd} limitUsd={props.budgetLimitUsd} />
-      </div>
+      <span class={styles.stateBadge} data-state={props.state}>
+        {STATE_LABEL[props.state]}
+      </span>
     </A>
   );
 }
