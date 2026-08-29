@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
 use skyzen::middleware::ErrorHandlingMiddleware;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Router, Routes as _};
+use skyzen::static_files::EmbeddedStaticDir;
 use skyzen::utils::{Bytes, Json, State};
 use skyzen::{HttpError as _, Response};
 use skyzen_services::{Db, Kv, Queue, Storage};
@@ -994,6 +995,17 @@ fn routes() -> Route {
     Route::new(nodes)
 }
 
+/// The PWA, compiled into the Worker so the control plane and the UI share
+/// an origin. Cloudflare Assets is not a skyzen capability; the files ride
+/// the wasm binary instead.
+fn frontend() -> EmbeddedStaticDir {
+    static ASSETS: skyzen::include_dir::Dir<'static> =
+        skyzen::embed_dir!("$CARGO_MANIFEST_DIR/../../frontend/dist");
+    EmbeddedStaticDir::new("/", &ASSETS)
+        .index_file("index.html")
+        .spa()
+}
+
 /// Gives the route tree somewhere to find session rooms.
 ///
 /// On the Worker a room is resolved from the `SESSION_ROOMS` binding the
@@ -1057,42 +1069,67 @@ pub fn router(config: ApiConfig, github: GithubClient, db: Db, queue: Queue) -> 
 /// The router without the database and queue the declared `[[database]]`
 /// and `[[service]]` entries supply.
 fn configured(config: ApiConfig, github: GithubClient) -> Route {
-    with_rooms(routes())
-        .with(State(config))
-        .with(State(github))
-        // Outermost, so extractor and routing failures answer in the same
-        // shape flyco's own errors do.
-        .with(ErrorHandlingMiddleware::new(
-            |error: skyzen::BoxHttpError| async move {
-                let status = error.status();
-                let title = status.canonical_reason().unwrap_or("Error");
-                let detail = if status.is_server_error() {
-                    tracing::error!(%error, "request failed");
-                    "The control plane failed to handle this request.".to_owned()
-                } else {
-                    error.to_string()
-                };
-                problem::response(
-                    &flyco_core::Problem::about_blank(status.as_u16(), title, detail),
-                    None,
-                )
-            },
-        ))
+    with_error_handling(
+        with_rooms(Route::new((routes(), frontend())))
+            .with(State(config))
+            .with(State(github)),
+    )
+}
+
+/// Worker path: configuration is read from the request's `env`, not at
+/// isolate startup. See [`crate::middleware::LoadApiConfig`].
+#[cfg(target_arch = "wasm32")]
+fn configured_from_request(github: GithubClient) -> Route {
+    with_error_handling(
+        with_rooms(Route::new((routes(), frontend())))
+            .with(crate::middleware::LoadApiConfig)
+            .with(State(github)),
+    )
+}
+
+fn with_error_handling(route: Route) -> Route {
+    // Outermost, so extractor and routing failures answer in the same
+    // shape flyco's own errors do.
+    route.with(ErrorHandlingMiddleware::new(
+        |error: skyzen::BoxHttpError| async move {
+            let status = error.status();
+            let title = status.canonical_reason().unwrap_or("Error");
+            let detail = if status.is_server_error() {
+                tracing::error!(%error, "request failed");
+                "The control plane failed to handle this request.".to_owned()
+            } else {
+                error.to_string()
+            };
+            problem::response(
+                &flyco_core::Problem::about_blank(status.as_u16(), title, detail),
+                None,
+            )
+        },
+    ))
 }
 
 /// Builds the router the deployed control plane runs.
 ///
 /// # Panics
 ///
-/// Panics if any required configuration binding is missing or malformed — a
-/// misconfigured control plane must fail at startup, not at the first
-/// sign-in attempt. The database is the manifest's to open, and its own
-/// failure to resolve panics there for the same reason.
+/// On native targets, panics if any required configuration binding is
+/// missing or malformed — a misconfigured control plane must fail at
+/// startup, not at the first sign-in attempt. On the Worker the `env` is
+/// not published during router construction, so missing bindings fail the
+/// request that needs them instead. The database is the manifest's to
+/// open, and its own failure to resolve panics there for the same reason.
 #[must_use]
 pub fn router_from_environment() -> Router {
-    let config = ApiConfig::from_environment()
-        .unwrap_or_else(|error| panic!("flyco control plane is misconfigured: {error}"));
-    configured(config, GithubClient::default()).build()
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let config = ApiConfig::from_environment()
+            .unwrap_or_else(|error| panic!("flyco control plane is misconfigured: {error}"));
+        configured(config, GithubClient::default()).build()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        configured_from_request(GithubClient::default()).build()
+    }
 }
 
 #[cfg(test)]
@@ -1114,6 +1151,22 @@ mod tests {
             body["wire_protocol_version"],
             u64::from(flyco_core::WIRE_PROTOCOL_VERSION)
         );
+    }
+
+    #[skyzen::test]
+    async fn the_spa_is_served_at_the_root(ctx: TestContext, db: Db, queue: Queue) {
+        let client = ctx.client(test_router(db, queue));
+
+        let root = client.get("/").send().await;
+        root.assert_status(200);
+        assert!(
+            root.body_text().contains(r#"id="app""#),
+            "the root document must mount the PWA"
+        );
+
+        let login = client.get("/login").send().await;
+        login.assert_status(200);
+        assert_eq!(login.body_text(), root.body_text());
     }
 
     #[skyzen::test]
