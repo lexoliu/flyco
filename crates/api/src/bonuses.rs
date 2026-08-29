@@ -179,7 +179,10 @@ mod tests {
     #[test]
     fn a_returning_student_still_qualifies_for_the_student_tiers() {
         let hints = matching(&answers(false, true));
-        assert!(!hints.is_empty(), "a new student should be offered something");
+        assert!(
+            !hints.is_empty(),
+            "a new student should be offered something"
+        );
         assert!(
             hints
                 .iter()

@@ -5,6 +5,7 @@
 
 mod contract;
 mod memory;
+mod push;
 mod relay;
 mod responses;
 mod room;
