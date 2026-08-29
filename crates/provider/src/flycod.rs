@@ -1,0 +1,277 @@
+//! The `flycod` configuration a provisioned machine boots with.
+//!
+//! Every provider hands the daemon the same document — Azure writes it into
+//! cloud-init, byo-ssh into the container's environment — so it is rendered
+//! once, here, and both drivers embed the result.
+//!
+//! It is a serde structure serialized by [`toml`] rather than a template:
+//! the daemon's own [`DaemonConfig`] is `deny_unknown_fields` and rejects the
+//! whole file over one stray key, so the escaping and the layout have to be
+//! the serializer's problem, not a template author's. What the serializer
+//! cannot check is that the *shape* still matches what the daemon expects,
+//! which is why `crates/daemon/tests/provisioned_config.rs` renders this and
+//! parses it back with the daemon's own loader: a field renamed on either
+//! side fails that test rather than a machine that boots and never phones
+//! home.
+//!
+//! [`DaemonConfig`]: https://github.com/lexoliu/flyco/blob/main/crates/daemon/src/config.rs
+
+use core::fmt;
+
+use flyco_core::{HarnessKind, PermissionMode, SessionId};
+use serde::Serialize;
+
+use crate::DaemonBootstrap;
+
+/// Where the agent's checkout lives inside a flyco machine.
+pub const WORKDIR: &str = "/srv/flyco/work";
+
+/// Where a daemon with no control plane would keep its transcript. Present
+/// because the field is required, unused because a provisioned machine
+/// always has a control plane and keeps its transcript in R2.
+pub const TRANSCRIPT_DIR: &str = "/var/lib/flyco/transcripts";
+
+/// Where the Bun sidecar is materialized.
+pub const SIDECAR_DIR: &str = "/var/lib/flyco/sidecar";
+
+/// The isolated `CLAUDE_CONFIG_DIR` an injected credential runs under.
+pub const CLAUDE_CONFIG_DIR: &str = "/var/lib/flyco/claude";
+
+/// `CLAUDE_CODE_PROJECT_DIR_NAME`, the Agent SDK's project key.
+///
+/// It is what a session's transcript is filed under, and therefore what
+/// cross-host resume joins on. Varying it with the machine would lose the
+/// history on every move, which is why it is a constant.
+pub const CLAUDE_PROJECT_DIR_NAME: &str = "flyco-session";
+
+/// How the supervised `claude` CLI authenticates on a provisioned machine.
+///
+/// [`Inherit`](Self::Inherit) is the developer-machine mode and is what a
+/// machine gets when the user has linked no Claude account yet: the session
+/// comes up, and the harness says it is unauthenticated, which is a better
+/// failure than a machine that never provisions.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ClaudeCredential {
+    /// No credential injected.
+    Inherit,
+    /// A Claude subscription OAuth token.
+    OauthToken {
+        /// Value for `CLAUDE_CODE_OAUTH_TOKEN`.
+        token: String,
+    },
+    /// An Anthropic API key.
+    ApiKey {
+        /// Value for `ANTHROPIC_API_KEY`.
+        key: String,
+    },
+}
+
+impl fmt::Debug for ClaudeCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mode = match self {
+            Self::Inherit => "inherit",
+            Self::OauthToken { .. } => "oauth_token",
+            Self::ApiKey { .. } => "api_key",
+        };
+        f.debug_struct("ClaudeCredential")
+            .field("mode", &mode)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ClaudeCredential {
+    /// The isolated config tree this mode runs under, if any.
+    ///
+    /// Credentials and isolation are one decision in the daemon's model:
+    /// injecting a token into a shared `~/.claude` would trample a real
+    /// login, so every credential-bearing mode carries its own tree.
+    const fn isolation(&self) -> Option<Isolation> {
+        match self {
+            Self::Inherit => None,
+            Self::OauthToken { .. } | Self::ApiKey { .. } => Some(Isolation {
+                config_dir: CLAUDE_CONFIG_DIR,
+                project_dir_name: CLAUDE_PROJECT_DIR_NAME,
+            }),
+        }
+    }
+}
+
+/// An isolated Claude configuration tree, as the daemon's config spells it.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct Isolation {
+    config_dir: &'static str,
+    project_dir_name: &'static str,
+}
+
+/// The `[claude.auth]` table.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+enum Auth<'a> {
+    Inherit,
+    OauthToken {
+        token: &'a str,
+        isolation: Isolation,
+    },
+    ApiKey {
+        key: &'a str,
+        isolation: Isolation,
+    },
+}
+
+/// The `[claude]` table.
+#[derive(Debug, Clone, Serialize)]
+struct Claude<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
+    permission_mode: PermissionMode,
+    auth: Auth<'a>,
+}
+
+/// The `[control_plane]` table.
+#[derive(Debug, Clone, Serialize)]
+struct ControlPlane<'a> {
+    url: &'a str,
+    daemon_token: &'a str,
+}
+
+/// The `[sidecar]` table.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct Sidecar {
+    dir: &'static str,
+    bun: &'static str,
+}
+
+/// The whole document.
+///
+/// Field order is the serialization order and TOML puts every scalar before
+/// the first table, so the scalars come first here. Getting that wrong makes
+/// `toml` refuse to serialize rather than emit an invalid document.
+#[derive(Debug, Clone, Serialize)]
+struct Document<'a> {
+    session: SessionId,
+    harness: HarnessKind,
+    workdir: &'static str,
+    transcript_dir: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resume_session_id: Option<&'a str>,
+    control_plane: ControlPlane<'a>,
+    claude: Claude<'a>,
+    sidecar: Sidecar,
+}
+
+/// Why a configuration could not be rendered.
+#[derive(Debug, thiserror::Error)]
+#[error("the flycod configuration could not be rendered as TOML: {0}")]
+pub struct RenderError(#[from] toml::ser::Error);
+
+/// Renders the configuration a machine's `flycod` boots with.
+///
+/// # Errors
+///
+/// Returns [`RenderError`] if the document does not serialize, which would
+/// mean this module's own structure is malformed rather than anything the
+/// caller did.
+pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
+    let isolation = bootstrap.claude_auth.isolation();
+    let auth = match (&bootstrap.claude_auth, isolation) {
+        (ClaudeCredential::OauthToken { token }, Some(isolation)) => Auth::OauthToken {
+            token: token.as_str(),
+            isolation,
+        },
+        (ClaudeCredential::ApiKey { key }, Some(isolation)) => Auth::ApiKey {
+            key: key.as_str(),
+            isolation,
+        },
+        _ => Auth::Inherit,
+    };
+
+    let document = Document {
+        session: bootstrap.session,
+        harness: bootstrap.harness,
+        workdir: WORKDIR,
+        transcript_dir: TRANSCRIPT_DIR,
+        resume_session_id: bootstrap.resume_session_id.as_deref(),
+        control_plane: ControlPlane {
+            url: &bootstrap.control_plane_url,
+            daemon_token: &bootstrap.daemon_token,
+        },
+        claude: Claude {
+            model: None,
+            permission_mode: bootstrap.permission_mode,
+            auth,
+        },
+        sidecar: Sidecar {
+            dir: SIDECAR_DIR,
+            bun: "bun",
+        },
+    };
+
+    Ok(toml::to_string_pretty(&document)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use flyco_core::{HarnessKind, PermissionMode, SessionId};
+
+    use super::{CLAUDE_CONFIG_DIR, ClaudeCredential, render};
+    use crate::DaemonBootstrap;
+
+    fn bootstrap(claude_auth: ClaudeCredential) -> DaemonBootstrap {
+        DaemonBootstrap {
+            session: SessionId::generate(),
+            control_plane_url: "https://flyco.dev/".to_owned(),
+            daemon_token: "fd_token".to_owned(),
+            harness: HarnessKind::ClaudeCode,
+            permission_mode: PermissionMode::Default,
+            claude_auth,
+            resume_session_id: None,
+        }
+    }
+
+    #[test]
+    fn a_provisioned_config_names_the_control_plane_and_the_token() {
+        let rendered = render(&bootstrap(ClaudeCredential::Inherit)).expect("render");
+        assert!(rendered.contains("[control_plane]"));
+        assert!(rendered.contains("url = \"https://flyco.dev/\""));
+        assert!(rendered.contains("daemon_token = \"fd_token\""));
+        assert!(rendered.contains("permission_mode = \"default\""));
+        assert!(rendered.contains("mode = \"inherit\""));
+    }
+
+    #[test]
+    fn an_injected_credential_always_carries_its_own_config_tree() {
+        let rendered = render(&bootstrap(ClaudeCredential::OauthToken {
+            token: "sk-ant-oat01-x".to_owned(),
+        }))
+        .expect("render");
+
+        assert!(rendered.contains("mode = \"oauth_token\""));
+        assert!(rendered.contains(CLAUDE_CONFIG_DIR));
+    }
+
+    #[test]
+    fn a_credential_never_shows_up_in_a_debug_rendering() {
+        let credential = ClaudeCredential::ApiKey {
+            key: "sk-ant-secret".to_owned(),
+        };
+        assert!(!format!("{credential:?}").contains("sk-ant-secret"));
+    }
+
+    #[test]
+    fn a_resume_id_is_written_only_when_there_is_one() {
+        let mut with_resume = bootstrap(ClaudeCredential::Inherit);
+        with_resume.resume_session_id = Some("1f6d2c50-8a4b-4a2b-9f6d-2c508a4b4a2b".to_owned());
+
+        assert!(
+            !render(&bootstrap(ClaudeCredential::Inherit))
+                .expect("render")
+                .contains("resume_session_id")
+        );
+        assert!(
+            render(&with_resume)
+                .expect("render")
+                .contains("resume_session_id")
+        );
+    }
+}

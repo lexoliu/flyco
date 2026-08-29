@@ -38,27 +38,10 @@ impl StoreRequestId {
 
 /// The permission mode the Claude Agent SDK runs the session under.
 ///
-/// Mirrors the SDK's own `PermissionMode` union, spelled in its `camelCase`
-/// so the sidecar passes the value straight into `query`'s `permissionMode`
-/// option. Every mode other than [`Self::Default`] narrows what reaches
-/// flyco's approval UI, because an auto-approved tool never calls back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PermissionMode {
-    /// Every non-auto-approved tool call reaches `canUseTool`.
-    Default,
-    /// File edits are auto-approved; everything else still asks.
-    AcceptEdits,
-    /// Nothing asks. Only ever safe behind flyco's managed-settings deny
-    /// rules, which bind even in this mode.
-    BypassPermissions,
-    /// Planning only: the model may not mutate anything.
-    Plan,
-    /// Never prompt; deny anything not pre-approved.
-    DontAsk,
-    /// A model classifier decides prompts — the proposal's "Auto mode".
-    Auto,
-}
+/// Defined in [`flyco_core`] because the control plane writes it into the
+/// `flycod` configuration it provisions, and re-exported here so the
+/// sidecar protocol reads as one module.
+pub use flyco_core::PermissionMode;
 
 /// How the sidecar authenticates the `claude` CLI it supervises.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

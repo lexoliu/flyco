@@ -32,6 +32,10 @@ url.workspace = true
 
 [dev-dependencies]
 tokio-tungstenite = { workspace = true, features = ["handshake"] }
+# `tests/provisioned_config.rs` pins the configuration a provisioner writes
+# against the loader that reads it. The `ssh` feature stays off: the daemon
+# needs the renderer, not an SSH client.
+flyco-provider.workspace = true
 
 [lints]
 workspace = true
