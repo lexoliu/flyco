@@ -1,0 +1,32 @@
+{
+  "value": [
+    {
+      "name": {
+        "value": "cores",
+        "localizedValue": "cores"
+      },
+      "currentValue": 6,
+      "limit": 6,
+      "unit": "Count"
+    },
+    {
+      "name": {
+        "value": "lowPriorityCores",
+        "localizedValue": "lowPriorityCores"
+      },
+      "currentValue": 0,
+      "limit": 3,
+      "unit": "Count"
+    },
+    {
+      "name": {
+        "value": "StandardDalsv6Family",
+        "localizedValue": "StandardDalsv6Family"
+      },
+      "currentValue": 0,
+      "limit": 10,
+      "unit": "Count"
+    }
+  ],
+  "nextLink": null
+}

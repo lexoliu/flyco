@@ -3667,15 +3667,21 @@
         "oneOf": [
           {
             "type": "object",
-            "description": "An Azure service principal with rights over one subscription.",
+            "description": "An Azure service principal with rights over one resource group.",
             "required": [
               "tenant_id",
               "client_id",
               "client_secret",
               "subscription_id",
+              "resource_group",
+              "admin_ssh_public_key",
               "kind"
             ],
             "properties": {
+              "admin_ssh_public_key": {
+                "type": "string",
+                "description": "The `OpenSSH` public key a machine's break-glass login is created\nwith.\n\nAzure refuses to create a Linux machine with neither a password\nnor a key and flyco sets no passwords, so one is required. It is\nthe *user's* key: flyco never holds a private key for a machine\nit provisions."
+              },
               "client_id": {
                 "type": "string",
                 "description": "Application (client) id of the service principal."
@@ -3689,6 +3695,10 @@
                 "enum": [
                   "azure"
                 ]
+              },
+              "resource_group": {
+                "type": "string",
+                "description": "The resource group flyco creates everything inside, which must\nalready exist.\n\nCreating a resource group is a subscription-scope write and no\nresource-group-scoped role can create the group it is scoped to,\nso the group is made out of band and named here. Scope the\nprincipal `Contributor` on it — `Virtual Machine Contributor`\nalone cannot create a virtual network, a public IP or a security\ngroup."
               },
               "subscription_id": {
                 "type": "string",
