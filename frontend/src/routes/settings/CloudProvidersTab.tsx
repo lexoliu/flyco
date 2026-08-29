@@ -3,18 +3,15 @@ import ProblemNotice from "../../components/ProblemNotice";
 import {
   linkProvider,
   listProviders,
+  providerQuickstart,
   unlinkProvider,
   type CloudProviderKind,
+  type ProviderBonusHint,
   type ProviderCredentials,
 } from "../../api/client";
-import styles from "./Tab.module.css";
-
-const PROVIDER_LABEL: Record<CloudProviderKind, string> = {
-  azure: "Azure",
-  aws: "AWS",
-  gcp: "Google Cloud",
-  byo_ssh: "Your own machine (SSH)",
-};
+import { formatUsd } from "../../lib/money";
+import { PROVIDER_LABEL } from "../../lib/providers";
+import styles from "../../components/Panel.module.css";
 
 function LinkForm(props: { onLinked: () => void }) {
   const [kind, setKind] = createSignal<CloudProviderKind>("aws");
@@ -28,6 +25,8 @@ function LinkForm(props: { onLinked: () => void }) {
   const [clientSecret, setClientSecret] = createSignal("");
   const [subscriptionId, setSubscriptionId] = createSignal("");
   const [tenantId, setTenantId] = createSignal("");
+  const [resourceGroup, setResourceGroup] = createSignal("");
+  const [adminSshPublicKey, setAdminSshPublicKey] = createSignal("");
   // GCP
   const [serviceAccountJson, setServiceAccountJson] = createSignal("");
   // BYO SSH
@@ -51,6 +50,8 @@ function LinkForm(props: { onLinked: () => void }) {
           client_secret: clientSecret(),
           subscription_id: subscriptionId(),
           tenant_id: tenantId(),
+          resource_group: resourceGroup(),
+          admin_ssh_public_key: adminSshPublicKey(),
         };
       case "gcp":
         return { kind: "gcp", service_account_json: serviceAccountJson() };
@@ -138,6 +139,25 @@ function LinkForm(props: { onLinked: () => void }) {
           <label for="azure-tenant-id">Tenant ID</label>
           <input id="azure-tenant-id" value={tenantId()} onInput={(event) => setTenantId(event.currentTarget.value)} />
         </div>
+        <div class={styles.field}>
+          <label for="azure-resource-group">Resource group</label>
+          <input
+            id="azure-resource-group"
+            value={resourceGroup()}
+            onInput={(event) => setResourceGroup(event.currentTarget.value)}
+            placeholder="Where session machines are created"
+          />
+        </div>
+        <div class={styles.field}>
+          <label for="azure-admin-ssh-key">Admin SSH public key</label>
+          <textarea
+            id="azure-admin-ssh-key"
+            rows="2"
+            value={adminSshPublicKey()}
+            onInput={(event) => setAdminSshPublicKey(event.currentTarget.value)}
+            placeholder="ssh-ed25519 AAAA..."
+          />
+        </div>
       </Show>
 
       <Show when={kind() === "gcp"}>
@@ -193,6 +213,93 @@ function LinkForm(props: { onLinked: () => void }) {
   );
 }
 
+function bonusLabel(kind: CloudProviderKind): string {
+  return PROVIDER_LABEL[kind];
+}
+
+/**
+ * Two-question quickstart: which of the providers' free-credit and
+ * education programmes are actually worth this user's time, given whether
+ * they are new to each provider and whether they qualify as a student.
+ */
+function QuickstartForm() {
+  const [newToProvider, setNewToProvider] = createSignal(true);
+  const [isStudent, setIsStudent] = createSignal(false);
+  const [hints, setHints] = createSignal<ProviderBonusHint[] | null>(null);
+  const [submitting, setSubmitting] = createSignal(false);
+  const [error, setError] = createSignal<unknown>(null);
+
+  async function onSubmit(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const result = await providerQuickstart({
+        new_to_provider: newToProvider(),
+        is_student: isStudent(),
+      });
+      setHints(result);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div class={styles.form}>
+      <h3>Quickstart: find free credit</h3>
+      <form onSubmit={(event) => void onSubmit(event)} class={styles.form} style={{ border: "none", padding: "0" }}>
+        <label class={styles.checkboxField}>
+          <input
+            type="checkbox"
+            checked={newToProvider()}
+            onChange={(event) => setNewToProvider(event.currentTarget.checked)}
+          />
+          I've never held an account with these providers
+        </label>
+        <label class={styles.checkboxField}>
+          <input type="checkbox" checked={isStudent()} onChange={(event) => setIsStudent(event.currentTarget.checked)} />
+          I'm a student
+        </label>
+        <ProblemNotice error={error()} />
+        <button type="submit" class={styles.primaryButton} disabled={submitting()}>
+          {submitting() ? "Checking…" : "Check for bonus programmes"}
+        </button>
+      </form>
+
+      <Show when={hints()}>
+        {(list) => (
+          <Show when={list().length > 0} fallback={<p class={styles.empty}>No bonus programmes apply right now.</p>}>
+            <ul class={styles.list}>
+              <For each={list()}>
+                {(hint) => (
+                  <li class={styles.listItem}>
+                    <div>
+                      <strong>
+                        {hint.title} — {bonusLabel(hint.provider)}
+                      </strong>
+                      <p class={styles.itemDetail}>
+                        {hint.detail}
+                        {hint.credit !== null && hint.credit !== undefined ? ` · up to ${formatUsd(hint.credit)}` : ""}
+                      </p>
+                    </div>
+                    <div class={styles.itemActions}>
+                      <a href={hint.url} target="_blank" rel="noreferrer noopener">
+                        Sign up
+                      </a>
+                    </div>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </Show>
+        )}
+      </Show>
+    </div>
+  );
+}
+
 export default function CloudProvidersTab() {
   const [providers, { refetch }] = createResource(listProviders);
   const [unlinkError, setUnlinkError] = createSignal<unknown>(null);
@@ -218,6 +325,7 @@ export default function CloudProvidersTab() {
         </p>
       </div>
 
+      <QuickstartForm />
       <LinkForm onLinked={() => void refetch()} />
       <ProblemNotice error={providers.error ?? unlinkError()} />
 

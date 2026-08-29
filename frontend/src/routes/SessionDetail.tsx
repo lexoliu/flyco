@@ -5,7 +5,10 @@ import UsageMeter from "../components/UsageMeter";
 import ApprovalsPanel from "../components/ApprovalsPanel";
 import ProblemNotice from "../components/ProblemNotice";
 import TerminalPanel from "../components/terminal/TerminalPanel";
-import { getSession, decideApproval } from "../api/client";
+import MachinePanel from "../components/MachinePanel";
+import RepoStatusPanel from "../components/RepoStatusPanel";
+import EnvEditor from "../components/EnvEditor";
+import { getSession, decideApproval, interruptSession, sendMessage } from "../api/client";
 import { createSessionRelay, type ConnectionState } from "../api/relay";
 import { foldTranscript, type TranscriptItem } from "../lib/transcript";
 import { foldApprovals } from "../lib/approvals";
@@ -88,27 +91,54 @@ export default function SessionDetail() {
   const [messageText, setMessageText] = createSignal("");
   const [sendError, setSendError] = createSignal<unknown>(null);
   const [decideError, setDecideError] = createSignal<unknown>(null);
+  const [sending, setSending] = createSignal(false);
+  const [interrupting, setInterrupting] = createSignal(false);
 
-  function submitMessage(): void {
+  /**
+   * The relay socket is preferred whenever it's live — lower latency, and
+   * the echo comes back as a `ClientEvent` on the same connection. While
+   * it isn't (paused session, stopped machine, still reconnecting), these
+   * fall back to the REST handlers so a message or interrupt is still
+   * recorded rather than silently dropped. See the module doc comment on
+   * `sendMessage`/`interruptSession` in `src/api/client.ts`.
+   */
+  async function submitMessage(): Promise<void> {
     const text = messageText().trim();
-    if (text === "") {
+    if (text === "" || sending()) {
       return;
     }
     setSendError(null);
+    setSending(true);
     try {
-      relay.send({ type: "user_message", text });
+      if (relay.state() === "live") {
+        relay.send({ type: "user_message", text });
+      } else {
+        await sendMessage(params.id, text);
+      }
       setMessageText("");
     } catch (err) {
       setSendError(err);
+    } finally {
+      setSending(false);
     }
   }
 
-  function onInterrupt(): void {
+  async function onInterrupt(): Promise<void> {
+    if (interrupting()) {
+      return;
+    }
     setSendError(null);
+    setInterrupting(true);
     try {
-      relay.send({ type: "interrupt" });
+      if (relay.state() === "live") {
+        relay.send({ type: "interrupt" });
+      } else {
+        await interruptSession(params.id);
+      }
     } catch (err) {
       setSendError(err);
+    } finally {
+      setInterrupting(false);
     }
   }
 
@@ -188,28 +218,33 @@ export default function SessionDetail() {
             class={styles.composer}
             onSubmit={(event) => {
               event.preventDefault();
-              submitMessage();
+              void submitMessage();
             }}
           >
             <textarea
               class={styles.composerInput}
               placeholder="Message the session…"
               value={messageText()}
-              disabled={relay.state() !== "live"}
+              disabled={sending()}
               onInput={(event) => setMessageText(event.currentTarget.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
-                  submitMessage();
+                  void submitMessage();
                 }
               }}
             />
             <div class={styles.composerActions}>
-              <button type="button" class={styles.interruptButton} disabled={relay.state() !== "live"} onClick={onInterrupt}>
-                Interrupt
+              <button
+                type="button"
+                class={styles.interruptButton}
+                disabled={interrupting()}
+                onClick={() => void onInterrupt()}
+              >
+                {interrupting() ? "Interrupting…" : "Interrupt"}
               </button>
-              <button type="submit" class={styles.sendButton} disabled={relay.state() !== "live"}>
-                Send
+              <button type="submit" class={styles.sendButton} disabled={sending()}>
+                {sending() ? "Sending…" : "Send"}
               </button>
             </div>
           </form>
@@ -223,7 +258,10 @@ export default function SessionDetail() {
               void onDecide(id, decision).then(() => refetchSession());
             }}
           />
+          <MachinePanel sessionId={params.id} />
+          <RepoStatusPanel sessionId={params.id} />
           <TerminalPanel sessionId={params.id} relay={relay} />
+          <EnvEditor sessionId={params.id} />
         </aside>
       </div>
     </section>
