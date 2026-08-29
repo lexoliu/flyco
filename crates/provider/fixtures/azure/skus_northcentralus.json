@@ -1,0 +1,195 @@
+{
+  "value": [
+    {
+      "resourceType": "virtualMachines",
+      "name": "Standard_D2als_v6",
+      "tier": "Standard",
+      "size": "D2als_v6",
+      "family": "StandardDalsv6Family",
+      "locations": [
+        "northcentralus"
+      ],
+      "capabilities": [
+        {
+          "name": "vCPUs",
+          "value": "2"
+        },
+        {
+          "name": "MemoryGB",
+          "value": "4"
+        },
+        {
+          "name": "CpuArchitectureType",
+          "value": "x64"
+        },
+        {
+          "name": "PremiumIO",
+          "value": "True"
+        },
+        {
+          "name": "HyperVGenerations",
+          "value": "V2"
+        },
+        {
+          "name": "LowPriorityCapable",
+          "value": "True"
+        }
+      ],
+      "restrictions": []
+    },
+    {
+      "resourceType": "virtualMachines",
+      "name": "Standard_D2ads_v5",
+      "tier": "Standard",
+      "size": "D2ads_v5",
+      "family": "standardDADSv5Family",
+      "locations": [
+        "northcentralus"
+      ],
+      "capabilities": [
+        {
+          "name": "vCPUs",
+          "value": "2"
+        },
+        {
+          "name": "MemoryGB",
+          "value": "8"
+        },
+        {
+          "name": "CpuArchitectureType",
+          "value": "x64"
+        },
+        {
+          "name": "PremiumIO",
+          "value": "True"
+        },
+        {
+          "name": "HyperVGenerations",
+          "value": "V2"
+        },
+        {
+          "name": "LowPriorityCapable",
+          "value": "True"
+        }
+      ],
+      "restrictions": []
+    },
+    {
+      "resourceType": "virtualMachines",
+      "name": "Standard_B2ats_v2",
+      "tier": "Standard",
+      "size": "B2ats_v2",
+      "family": "standardBasv2Family",
+      "locations": [
+        "northcentralus"
+      ],
+      "capabilities": [
+        {
+          "name": "vCPUs",
+          "value": "2"
+        },
+        {
+          "name": "MemoryGB",
+          "value": "1"
+        },
+        {
+          "name": "CpuArchitectureType",
+          "value": "x64"
+        },
+        {
+          "name": "PremiumIO",
+          "value": "True"
+        },
+        {
+          "name": "HyperVGenerations",
+          "value": "V2"
+        },
+        {
+          "name": "LowPriorityCapable",
+          "value": "True"
+        }
+      ],
+      "restrictions": [
+        {
+          "type": "Zone",
+          "reasonCode": "NotAvailableForSubscription",
+          "restrictionInfo": {
+            "locations": [
+              "northcentralus"
+            ],
+            "zones": [
+              "1",
+              "2",
+              "3"
+            ]
+          },
+          "values": [
+            "northcentralus"
+          ]
+        }
+      ]
+    },
+    {
+      "resourceType": "virtualMachines",
+      "name": "Standard_B2ls_v2",
+      "tier": "Standard",
+      "size": "B2ls_v2",
+      "family": "standardBsv2Family",
+      "locations": [
+        "northcentralus"
+      ],
+      "capabilities": [
+        {
+          "name": "vCPUs",
+          "value": "2"
+        },
+        {
+          "name": "MemoryGB",
+          "value": "4"
+        },
+        {
+          "name": "CpuArchitectureType",
+          "value": "x64"
+        },
+        {
+          "name": "PremiumIO",
+          "value": "True"
+        },
+        {
+          "name": "HyperVGenerations",
+          "value": "V2"
+        },
+        {
+          "name": "LowPriorityCapable",
+          "value": "True"
+        }
+      ],
+      "restrictions": [
+        {
+          "type": "Location",
+          "reasonCode": "NotAvailableForSubscription",
+          "restrictionInfo": {
+            "locations": [
+              "northcentralus"
+            ]
+          },
+          "values": [
+            "northcentralus"
+          ]
+        }
+      ]
+    },
+    {
+      "resourceType": "disks",
+      "name": "Premium_LRS",
+      "tier": "Premium",
+      "size": "Premium_LRS",
+      "locations": [
+        "northcentralus"
+      ],
+      "capabilities": [],
+      "restrictions": []
+    }
+  ],
+  "nextLink": null
+}

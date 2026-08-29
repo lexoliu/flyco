@@ -23,6 +23,9 @@ zenwave = "0.5"
 # scripts — from compiled templates rather than string concatenation, so a
 # dropped field fails the build instead of emitting a broken document.
 askama = "0.14"
+# One timer that works on both sides: a real timer natively, `setTimeout` on
+# the Worker. Provider polling loops honour `Retry-After` with it.
+futures-timer = { version = "3", features = ["wasm-bindgen"] }
 shell-escape = "0.1"
 
 serde = { version = "1", features = ["derive"] }

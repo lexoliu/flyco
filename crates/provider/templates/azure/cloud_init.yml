@@ -1,0 +1,10 @@
+#cloud-config
+write_files:
+  - path: {{ config_path }}
+    permissions: '0600'
+    owner: 'root:root'
+    encoding: b64
+    content: {{ config_base64 }}
+runcmd:
+  - ['sh', '-c', 'curl --fail --silent --show-error --location {{ installer_url }} | sh']
+  - ['systemctl', 'enable', '--now', 'flycod']
