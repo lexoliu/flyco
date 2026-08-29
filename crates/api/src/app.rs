@@ -22,12 +22,12 @@ use crate::github::{GithubOauth, ZenwaveGithub};
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
 use crate::relay::{RelayTicket, TicketQuery};
-use crate::respond::{Created, accepted, no_content};
+use crate::respond::{Accepted, Created, NoContent};
 use crate::room::EventPage;
 use crate::rooms::Rooms;
 use crate::{
-    agents_md, api_keys, approvals, daemon_tokens, database, env, harness_accounts, machines, mcp,
-    memory, oauth, problem, provider_accounts, push, relay, repos, responses, sessions, skills,
+    agents_md, api_keys, approvals, daemon_tokens, env, harness_accounts, machines, mcp, memory,
+    oauth, problem, provider_accounts, push, relay, repos, responses, sessions, skills,
     transcripts, turns, users, webhooks,
 };
 
@@ -109,13 +109,13 @@ async fn revoke_api_key(
     State(user): State<CurrentUser>,
     params: Params,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<NoContent> {
     revoke(&user, &params, &db).await.into()
 }
 
-async fn revoke(user: &CurrentUser, params: &Params, db: &Db) -> Result<Response, ApiError> {
+async fn revoke(user: &CurrentUser, params: &Params, db: &Db) -> Result<NoContent, ApiError> {
     api_keys::revoke(db, user.id, path_id::<ApiKeyId>(params, "id")?).await?;
-    Ok(no_content())
+    Ok(NoContent)
 }
 
 /// Starts a session: reserves the budget and puts the session in the
@@ -439,7 +439,7 @@ async fn send_message(
     Json(message): Json<SendMessage>,
     rooms: Rooms,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<Accepted> {
     say(&user, &params, message, &rooms, &db).await.into()
 }
 
@@ -449,7 +449,7 @@ async fn say(
     message: SendMessage,
     rooms: &Rooms,
     db: &Db,
-) -> Result<Response, ApiError> {
+) -> Result<Accepted, ApiError> {
     if message.text.trim().is_empty() {
         return Err(ApiError::EmptyMessage);
     }
@@ -476,7 +476,7 @@ async fn interrupt_session(
     params: Params,
     rooms: Rooms,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<Accepted> {
     drive(&user, &params, &rooms, &db, ControlToDaemon::Interrupt)
         .await
         .into()
@@ -496,13 +496,13 @@ async fn drive(
     rooms: &Rooms,
     db: &Db,
     command: ControlToDaemon,
-) -> Result<Response, ApiError> {
+) -> Result<Accepted, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
     sessions::require_active(db, user.id, id).await?;
 
     rooms.command(id, &command).await?;
     tracing::info!(session = %id, command = ?core::mem::discriminant(&command), "drove a session");
-    Ok(accepted())
+    Ok(Accepted)
 }
 
 /// Puts an interrupted or archived session back on a machine.
@@ -687,7 +687,7 @@ async fn put_transcript_batch(
     params: Params,
     body: Bytes,
     storage: Storage,
-) -> Outcome<Response> {
+) -> Outcome<NoContent> {
     store_batch(session.0, &params, body, &storage).await.into()
 }
 
@@ -696,13 +696,13 @@ async fn store_batch(
     params: &Params,
     body: Bytes,
     storage: &Storage,
-) -> Result<Response, ApiError> {
+) -> Result<NoContent, ApiError> {
     let stream = path_segment(params, "stream")?;
     let raw = path_segment(params, "seq")?;
     let seq = raw.parse::<u64>().map_err(|_| ApiError::MalformedId(raw))?;
 
     transcripts::put_batch(storage, session, &stream, seq, body.to_vec()).await?;
-    Ok(no_content())
+    Ok(NoContent)
 }
 
 /// Reads a session's transcript stream back, for a resume onto a new host.
@@ -894,7 +894,7 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
     // describes flyco's API, whose version is the `/v1` prefix. Using the
     // crate version instead would churn the checked-in file on every release.
     spec.info = utoipa::openapi::Info::new("Flyco control plane", "v1");
-    responses::describe(&mut spec);
+    responses::finish(&mut spec);
     spec
 }
 
@@ -902,15 +902,22 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
 /// client, and database.
 ///
 /// All three are injected rather than discovered, so tests can drive the
-/// OAuth callback without reaching `github.com` or a real D1. The KV store
-/// arrives separately: it is a declared portable service, so
-/// `#[skyzen::main]` wraps the router with it.
+/// OAuth callback without reaching `github.com` or a real D1. In the
+/// deployed control plane the database arrives the way the KV namespace and
+/// the R2 bucket do — it is declared in `Skyzen.toml`, and `#[skyzen::main]`
+/// wraps the router with it — which is what
+/// [`router_from_environment`] builds instead.
 #[must_use]
 pub fn router<G: GithubOauth>(config: ApiConfig, github: G, db: Db) -> Router {
+    configured::<G>(config, github).with(db).build()
+}
+
+/// The router without its database, which the declared `[[database]]`
+/// supplies.
+fn configured<G: GithubOauth>(config: ApiConfig, github: G) -> Route {
     with_rooms(routes::<G>())
         .with(State(config))
         .with(State(github))
-        .with(db)
         // Outermost, so extractor and routing failures answer in the same
         // shape flyco's own errors do.
         .with(ErrorHandlingMiddleware::new(
@@ -929,20 +936,21 @@ pub fn router<G: GithubOauth>(config: ApiConfig, github: G, db: Db) -> Router {
                 )
             },
         ))
-        .build()
 }
 
 /// Builds the router the deployed control plane runs.
 ///
 /// # Panics
 ///
-/// Panics if any required configuration binding is missing or malformed, or
-/// if the database cannot be opened — a misconfigured control plane must
-/// fail at startup, not at the first sign-in attempt.
-pub async fn router_from_environment() -> Router {
+/// Panics if any required configuration binding is missing or malformed — a
+/// misconfigured control plane must fail at startup, not at the first
+/// sign-in attempt. The database is the manifest's to open, and its own
+/// failure to resolve panics there for the same reason.
+#[must_use]
+pub fn router_from_environment() -> Router {
     let config = ApiConfig::from_environment()
         .unwrap_or_else(|error| panic!("flyco control plane is misconfigured: {error}"));
-    router(config, ZenwaveGithub::new(), database::open().await)
+    configured(config, ZenwaveGithub::new()).build()
 }
 
 #[cfg(test)]

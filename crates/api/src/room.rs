@@ -38,7 +38,7 @@ use crate::ApiError;
 use crate::clock::now_unix;
 use crate::extract::Headers;
 use crate::problem::Outcome;
-use crate::respond::no_content;
+use crate::respond::NoContent;
 
 /// Tag on the daemon's socket. Exactly one is expected at a time.
 pub const ROLE_DAEMON: &str = "daemon";
@@ -117,21 +117,22 @@ pub struct EventCursor {
 /// The columns the `events` table stores.
 #[derive(Debug, skyzen::FromRow)]
 struct EventRow {
-    seq: i64,
-    json: String,
-    at_unix: i64,
+    seq: u64,
+    /// The event, kept as a JSON document in a text column. Untyped for the
+    /// same reason [`StoredEvent::event`] is: the room replays what the
+    /// daemon sent, including a variant this build does not know.
+    #[row(json)]
+    json: serde_json::Value,
+    at_unix: u64,
 }
 
-impl TryFrom<EventRow> for StoredEvent {
-    type Error = ApiError;
-
-    fn try_from(row: EventRow) -> Result<Self, Self::Error> {
-        Ok(Self {
-            seq: crate::sql::from_column(row.seq, "events.seq")?,
-            event: serde_json::from_str(&row.json)
-                .map_err(|_| ApiError::CorruptRecord("events.json is not a client event"))?,
-            at_unix: crate::sql::from_column(row.at_unix, "events.at_unix")?,
-        })
+impl From<EventRow> for StoredEvent {
+    fn from(row: EventRow) -> Self {
+        Self {
+            seq: row.seq,
+            event: row.json,
+            at_unix: row.at_unix,
+        }
     }
 }
 
@@ -402,7 +403,7 @@ async fn append(db: &DurableDb, event: &ClientEvent) -> Result<(), DurableObject
     ensure_schema(db).await?;
     db.query("INSERT INTO events (json, at_unix) VALUES (?, ?)")
         .bind(json)
-        .bind(crate::sql::to_column(now_unix()))
+        .bind(now_unix())
         .execute()
         .await
         .map_err(|error| stored(&error))?;
@@ -533,7 +534,7 @@ async fn run_command(
     Json(command): Json<ControlToDaemon>,
     connections: DurableConnections,
     db: DurableDb,
-) -> Outcome<skyzen::Response> {
+) -> Outcome<NoContent> {
     dispatch_command(&headers, &command, &connections, &db)
         .await
         .into()
@@ -544,7 +545,7 @@ async fn dispatch_command(
     command: &ControlToDaemon,
     connections: &DurableConnections,
     db: &DurableDb,
-) -> Result<skyzen::Response, ApiError> {
+) -> Result<NoContent, ApiError> {
     internal(headers)?;
 
     // A user message forwarded from the Worker is recorded exactly as one
@@ -573,7 +574,7 @@ async fn dispatch_command(
     if let Some(event) = echo {
         broadcast(connections, &event).map_err(|error| room_failed(&error))?;
     }
-    Ok(no_content())
+    Ok(NoContent)
 }
 
 /// Serves a page of the room's event tail.
@@ -593,10 +594,10 @@ async fn page(headers: &Headers, after: u64, db: &DurableDb) -> Result<Json<Even
 
     // One row past the page tells the caller whether to come back, without
     // a second `COUNT(*)` over a table that only grows.
-    let limit = i64::from(EVENT_PAGE_LIMIT) + 1;
+    let limit = EVENT_PAGE_LIMIT + 1;
     let rows: Vec<EventRow> = db
         .query("SELECT seq, json, at_unix FROM events WHERE seq > ? ORDER BY seq LIMIT ?")
-        .bind(crate::sql::to_column(after))
+        .bind(after)
         .bind(limit)
         .fetch_all()
         .await
@@ -606,8 +607,8 @@ async fn page(headers: &Headers, after: u64, db: &DurableDb) -> Result<Json<Even
     let events = rows
         .into_iter()
         .take(EVENT_PAGE_LIMIT as usize)
-        .map(TryInto::try_into)
-        .collect::<Result<Vec<StoredEvent>, ApiError>>()?;
+        .map(Into::into)
+        .collect();
 
     Ok(Json(EventPage { events, more }))
 }
@@ -649,13 +650,16 @@ fn accept(headers: &Headers, expected: Role) -> Result<Accepted, ApiError> {
         .tag(format!("{SESSION_TAG_PREFIX}{session}")))
 }
 
-/// Native builds have no hibernating sockets to accept.
+/// Native builds do not reach this route with a socket to accept.
 ///
-/// `HibernationWebSocketUpgrade` implements `Responder` only on `wasm32`,
-/// and skyzen 0.1.2's native Durable Object simulator answers every
-/// `by_tag` with an empty set — so a native room could accept a socket and
-/// then never deliver a frame to it. Refusing is the honest answer; the
-/// room's HTTP routes work natively and are what the tests drive.
+/// The simulator delivers WebSocket events now, and
+/// `HibernationWebSocketUpgrade` responds on both targets — but an upgrade
+/// only becomes a socket if the *browser's own* handshake request reaches
+/// the object, and `Rooms::upgrade` on the Worker forwards exactly that.
+/// Natively the control plane has no path that carries a client's upgrade
+/// into a room, so the route refuses rather than accepting a socket nothing
+/// would write to. The room's HTTP routes work natively and are what the
+/// tests drive, alongside `websocket` called directly.
 ///
 /// # Errors
 ///
@@ -665,7 +669,7 @@ fn accept(headers: &Headers, expected: Role) -> Result<Accepted, ApiError> {
 fn accept(headers: &Headers, expected: Role) -> Result<Accepted, ApiError> {
     admit(headers, expected)?;
     Err(ApiError::RelayUnavailable(
-        "hibernating WebSockets are a Cloudflare-only capability of skyzen 0.1.2",
+        "a native control plane does not forward relay upgrades into a session room",
     ))
 }
 

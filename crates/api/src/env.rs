@@ -29,13 +29,6 @@ use skyzen_services::Db;
 use crate::clock::now_unix;
 use crate::crypto::TokenCipher;
 use crate::error::ApiError;
-use crate::sql::to_column;
-
-/// The sealed document, as the column holds it.
-#[derive(Debug, skyzen::FromRow)]
-struct EnvRow {
-    entries_enc: String,
-}
 
 /// Reads a session's environment.
 ///
@@ -58,14 +51,14 @@ pub async fn read(
         return Err(ApiError::SessionNotFound);
     }
 
-    let row: Option<EnvRow> = db
+    let sealed: Option<String> = db
         .query("SELECT entries_enc FROM session_env WHERE session_id = ?")
-        .bind(session.to_string())
-        .fetch_optional()
+        .bind(session)
+        .fetch_scalar_optional()
         .await?;
 
-    let entries = match row {
-        Some(row) => unseal(cipher, &row.entries_enc)?,
+    let entries = match sealed {
+        Some(sealed) => unseal(cipher, &sealed)?,
         None => Vec::new(),
     };
     Ok(EnvDocument::new(entries))
@@ -99,9 +92,9 @@ pub async fn replace(
          ON CONFLICT (session_id) DO UPDATE SET \
          entries_enc = excluded.entries_enc, updated_at_unix = excluded.updated_at_unix",
     )
-    .bind(session.to_string())
+    .bind(session)
     .bind(seal(cipher, &entries)?)
-    .bind(to_column(now_unix()))
+    .bind(now_unix())
     .execute()
     .await?;
 

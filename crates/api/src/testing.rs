@@ -12,7 +12,7 @@ use crate::github::{GithubError, GithubOauth, GithubToken, GithubUser};
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-const MIGRATIONS: [&str; 6] = [
+pub const MIGRATIONS: [&str; 6] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -127,10 +127,13 @@ pub async fn migrated_router(db: &Db) -> Router {
     test_router(db.clone())
 }
 
-/// Applies `migrations/0001_init.sql` to a fresh in-memory database.
+/// Applies every migration to a fresh in-memory database.
 ///
-/// Skyzen 0.1.2's `Db` executes one statement per call, so the file is split
-/// on statement boundaries first.
+/// `Db` executes one statement per call, so each file is split on statement
+/// boundaries first. Deliberately not skyzen's migration runner: the
+/// deployed schema is applied by `wrangler d1 migrations apply`, and a
+/// second runner keeping its own bookkeeping table would be a second
+/// opinion about which migrations a database has.
 pub async fn migrate(db: &Db) {
     for migration in MIGRATIONS {
         for statement in statements(migration) {

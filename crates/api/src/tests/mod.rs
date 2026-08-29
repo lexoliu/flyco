@@ -10,4 +10,5 @@ mod push;
 mod relay;
 mod responses;
 mod room;
+mod schema;
 mod sessions;

@@ -12,7 +12,6 @@
 use flyco_core::{
     CurrentUser, PushSubscription, PushSubscriptionId, PushSubscriptionView, UserId, VapidPublicKey,
 };
-use skyzen::Response;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
@@ -22,8 +21,7 @@ use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::path_id;
 use crate::problem::Outcome;
-use crate::respond::{Created, no_content};
-use crate::sql::{from_column, to_column};
+use crate::respond::{Created, NoContent};
 
 /// The columns a subscription is read back through.
 ///
@@ -31,26 +29,18 @@ use crate::sql::{from_column, to_column};
 /// encrypting a message body, and nothing that answers a browser needs them.
 #[derive(Debug, skyzen::FromRow)]
 struct SubscriptionRow {
-    id: String,
+    id: PushSubscriptionId,
     endpoint: String,
-    created_at_unix: i64,
+    created_at_unix: u64,
 }
 
-impl TryFrom<SubscriptionRow> for PushSubscriptionView {
-    type Error = ApiError;
-
-    fn try_from(row: SubscriptionRow) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: row
-                .id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("push_subscriptions.id is not a UUID"))?,
+impl From<SubscriptionRow> for PushSubscriptionView {
+    fn from(row: SubscriptionRow) -> Self {
+        Self {
+            id: row.id,
             endpoint: row.endpoint,
-            created_at_unix: from_column(
-                row.created_at_unix,
-                "push_subscriptions.created_at_unix",
-            )?,
-        })
+            created_at_unix: row.created_at_unix,
+        }
     }
 }
 
@@ -108,17 +98,17 @@ async fn subscribe(
              expiration_time_ms = excluded.expiration_time_ms \
              RETURNING id, endpoint, created_at_unix",
         )
-        .bind(PushSubscriptionId::generate().to_string())
-        .bind(user.to_string())
+        .bind(PushSubscriptionId::generate())
+        .bind(user)
         .bind(subscription.endpoint)
         .bind(subscription.keys.p256dh)
         .bind(subscription.keys.auth)
-        .bind(subscription.expiration_time.map(to_column))
-        .bind(to_column(now_unix()))
+        .bind(subscription.expiration_time)
+        .bind(now_unix())
         .fetch_one()
         .await?;
 
-    row.try_into()
+    Ok(row.into())
 }
 
 /// Removes one of the caller's push subscriptions.
@@ -127,17 +117,17 @@ async fn unsubscribe_push(
     State(user): State<CurrentUser>,
     params: Params,
     db: Db,
-) -> Outcome<Response> {
+) -> Outcome<NoContent> {
     unsubscribe(&db, user.id, &params).await.into()
 }
 
-async fn unsubscribe(db: &Db, user: UserId, params: &Params) -> Result<Response, ApiError> {
+async fn unsubscribe(db: &Db, user: UserId, params: &Params) -> Result<NoContent, ApiError> {
     let id: PushSubscriptionId = path_id(params, "id")?;
 
     let removed = db
         .query("DELETE FROM push_subscriptions WHERE id = ? AND user_id = ?")
-        .bind(id.to_string())
-        .bind(user.to_string())
+        .bind(id)
+        .bind(user)
         .execute()
         .await?;
 
@@ -145,7 +135,7 @@ async fn unsubscribe(db: &Db, user: UserId, params: &Params) -> Result<Response,
         return Err(ApiError::PushSubscriptionNotFound);
     }
 
-    Ok(no_content())
+    Ok(NoContent)
 }
 
 /// The user-scoped push routes.

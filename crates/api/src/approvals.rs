@@ -12,35 +12,28 @@ use skyzen_services::Db;
 
 use crate::clock::now_unix;
 use crate::error::ApiError;
-use crate::sql::{decode_enum, encode_enum, from_column, to_column};
 
+/// The columns every read on this path projects.
 #[derive(Debug, skyzen::FromRow)]
 struct ApprovalRow {
-    id: String,
-    session_id: String,
-    payload: String,
-    state: String,
-    created_at_unix: i64,
+    id: ApprovalId,
+    session_id: SessionId,
+    /// What the agent asked for, kept as a JSON document in a text column.
+    #[row(json)]
+    payload: ApprovalPayload,
+    state: ApprovalState,
+    created_at_unix: u64,
 }
 
-impl TryFrom<ApprovalRow> for ApprovalView {
-    type Error = ApiError;
-
-    fn try_from(row: ApprovalRow) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: row
-                .id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("approvals.id is not a UUID"))?,
-            session: row
-                .session_id
-                .parse()
-                .map_err(|_| ApiError::CorruptRecord("approvals.session_id is not a UUID"))?,
-            payload: serde_json::from_str::<ApprovalPayload>(&row.payload)
-                .map_err(|_| ApiError::CorruptRecord("approvals.payload is not an approval"))?,
-            state: decode_enum::<ApprovalState>(&row.state, "approvals.state")?,
-            created_at_unix: from_column(row.created_at_unix, "approvals.created_at_unix")?,
-        })
+impl From<ApprovalRow> for ApprovalView {
+    fn from(row: ApprovalRow) -> Self {
+        Self {
+            id: row.id,
+            session: row.session_id,
+            payload: row.payload,
+            state: row.state,
+            created_at_unix: row.created_at_unix,
+        }
     }
 }
 
@@ -65,11 +58,11 @@ pub async fn raise(
         "INSERT INTO approvals (id, session_id, payload, state, created_at_unix, decided_at_unix) \
          VALUES (?, ?, ?, ?, ?, NULL)",
     )
-    .bind(id.to_string())
-    .bind(session.to_string())
+    .bind(id)
+    .bind(session)
     .bind(encoded)
-    .bind(encode_enum(&ApprovalState::Pending)?)
-    .bind(to_column(now_unix()))
+    .bind(ApprovalState::Pending)
+    .bind(now_unix())
     .execute()
     .await?;
 
@@ -99,15 +92,15 @@ pub async fn list(
              AND (? IS NULL OR a.state = ?) \
              ORDER BY a.created_at_unix DESC, a.id DESC",
         )
-        .bind(user.to_string())
-        .bind(session.map(|id| id.to_string()))
-        .bind(session.map(|id| id.to_string()))
-        .bind(state.map(|state| encode_enum(&state)).transpose()?)
-        .bind(state.map(|state| encode_enum(&state)).transpose()?)
+        .bind(user)
+        .bind(session)
+        .bind(session)
+        .bind(state)
+        .bind(state)
         .fetch_all()
         .await?;
 
-    rows.into_iter().map(TryInto::try_into).collect()
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// Records the user's decision on one of their pending approvals.
@@ -138,10 +131,10 @@ pub async fn decide(
             "UPDATE approvals SET state = ?, decided_at_unix = ? \
              WHERE id = ? AND state = ?",
         )
-        .bind(encode_enum(&next)?)
-        .bind(to_column(now_unix()))
-        .bind(id.to_string())
-        .bind(encode_enum(&ApprovalState::Pending)?)
+        .bind(next)
+        .bind(now_unix())
+        .bind(id)
+        .bind(ApprovalState::Pending)
         .execute()
         .await?;
 
@@ -174,12 +167,12 @@ pub async fn find_for_session(
             "SELECT id, session_id, payload, state, created_at_unix \
              FROM approvals WHERE id = ? AND session_id = ?",
         )
-        .bind(id.to_string())
-        .bind(session.to_string())
+        .bind(id)
+        .bind(session)
         .fetch_optional()
         .await?;
 
-    row.ok_or(ApiError::ApprovalNotFound)?.try_into()
+    Ok(row.ok_or(ApiError::ApprovalNotFound)?.into())
 }
 
 async fn load(db: &Db, user: UserId, id: ApprovalId) -> Result<ApprovalView, ApiError> {
@@ -189,10 +182,10 @@ async fn load(db: &Db, user: UserId, id: ApprovalId) -> Result<ApprovalView, Api
              FROM approvals a JOIN sessions s ON s.id = a.session_id \
              WHERE a.id = ? AND s.user_id = ?",
         )
-        .bind(id.to_string())
-        .bind(user.to_string())
+        .bind(id)
+        .bind(user)
         .fetch_optional()
         .await?;
 
-    row.ok_or(ApiError::ApprovalNotFound)?.try_into()
+    Ok(row.ok_or(ApiError::ApprovalNotFound)?.into())
 }

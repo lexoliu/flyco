@@ -22,23 +22,20 @@ use skyzen_services::Db;
 use crate::clock::now_unix;
 use crate::error::ApiError;
 use crate::problem::Outcome;
-use crate::sql::{from_column, to_column};
 
 /// The columns the document is stored in.
 #[derive(Debug, skyzen::FromRow)]
 struct DocumentRow {
     content: String,
-    updated_at_unix: i64,
+    updated_at_unix: u64,
 }
 
-impl TryFrom<DocumentRow> for AgentsDocument {
-    type Error = ApiError;
-
-    fn try_from(row: DocumentRow) -> Result<Self, Self::Error> {
-        Ok(Self {
+impl From<DocumentRow> for AgentsDocument {
+    fn from(row: DocumentRow) -> Self {
+        Self {
             content: row.content,
-            updated_at_unix: from_column(row.updated_at_unix, "agents_md.updated_at_unix")?,
-        })
+            updated_at_unix: row.updated_at_unix,
+        }
     }
 }
 
@@ -65,19 +62,17 @@ async fn put_agents_md(
 async fn read(db: &Db, user: UserId) -> Result<AgentsDocument, ApiError> {
     let row: Option<DocumentRow> = db
         .query("SELECT content, updated_at_unix FROM agents_md WHERE user_id = ?")
-        .bind(user.to_string())
+        .bind(user)
         .fetch_optional()
         .await?;
 
-    row.map_or_else(
-        || {
-            Ok(AgentsDocument {
-                content: String::new(),
-                updated_at_unix: 0,
-            })
+    Ok(row.map_or_else(
+        || AgentsDocument {
+            content: String::new(),
+            updated_at_unix: 0,
         },
-        TryInto::try_into,
-    )
+        Into::into,
+    ))
 }
 
 /// Replaces the document, stamping the time the control plane recorded it.
@@ -89,14 +84,14 @@ async fn write(db: &Db, user: UserId, content: String) -> Result<AgentsDocument,
              content = excluded.content, updated_at_unix = excluded.updated_at_unix \
              RETURNING content, updated_at_unix",
         )
-        .bind(user.to_string())
+        .bind(user)
         .bind(content)
-        .bind(to_column(now_unix()))
+        .bind(now_unix())
         .fetch_one()
         .await?;
 
     tracing::info!(bytes = row.content.len(), "replaced the shared AGENTS.md");
-    row.try_into()
+    Ok(row.into())
 }
 
 /// The user-scoped routes of the shared `AGENTS.md`.

@@ -18,7 +18,6 @@ pub mod clock;
 pub mod config;
 pub mod crypto;
 pub mod daemon_tokens;
-pub mod database;
 pub mod env;
 pub mod error;
 pub mod expiring;
@@ -43,7 +42,6 @@ pub mod rooms;
 pub mod session;
 pub mod sessions;
 pub mod skills;
-pub mod sql;
 pub mod transcripts;
 pub mod turns;
 pub mod users;
@@ -61,6 +59,6 @@ pub use error::ApiError;
 
 #[cfg(target_arch = "wasm32")]
 #[skyzen::main]
-async fn worker() -> skyzen::routing::Router {
-    router_from_environment().await
+fn worker() -> skyzen::routing::Router {
+    router_from_environment()
 }
