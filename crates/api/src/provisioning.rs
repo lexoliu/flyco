@@ -9,8 +9,8 @@
 //! supports.
 
 use flyco_core::{
-    CloudProviderKind, CloudSpend, MachineCatalogEntry, ProviderAccountId, ProviderCredentials,
-    UserId,
+    CloudProviderKind, CloudSpend, MachineCatalogEntry, MachineSpec, ProviderAccountId,
+    ProviderCredentials, UserId,
 };
 use flyco_provider::aws::sigv4::AccessKey;
 use flyco_provider::aws::{AwsProvider, AwsWorkspace};
@@ -19,7 +19,7 @@ use flyco_provider::azure::{AzureProvider, Workspace};
 use flyco_provider::byo_ssh::ByoSsh;
 use flyco_provider::gcp::auth::ServiceAccountKey;
 use flyco_provider::gcp::{GcpProvider, GcpWorkspace};
-use flyco_provider::{CloudProvider, ProviderError};
+use flyco_provider::{CloudProvider, Machine, ProviderError, ProvisionRequest};
 use skyzen::sql;
 use skyzen_services::Db;
 
@@ -52,6 +52,17 @@ impl LinkedAccount {
     #[must_use]
     pub const fn kind(&self) -> CloudProviderKind {
         self.credentials.kind()
+    }
+
+    /// The unsealed credentials, for a driver that is about to use them.
+    ///
+    /// Public because [`Provisioner`] is a trait: an implementation outside
+    /// this module still has to open the account it was handed. It is the
+    /// same borrow the dispatch below takes, and it is still true that
+    /// nothing serializes, logs, or returns what it points at.
+    #[must_use]
+    pub const fn credentials(&self) -> &ProviderCredentials {
+        &self.credentials
     }
 }
 
@@ -431,4 +442,206 @@ impl Operation<'_> {
             Self::Start => provider.start(machine).await,
         }
     }
+}
+
+/// The Azure driver an account opens, when it is an Azure account.
+///
+/// A thin destructuring over [`azure_driver`], so a caller holding whole
+/// credentials does not repeat which six fields matter.
+fn azure_driver_for(credentials: &ProviderCredentials) -> Option<AzureProvider> {
+    let ProviderCredentials::Azure {
+        tenant_id,
+        client_id,
+        client_secret,
+        subscription_id,
+        resource_group,
+        admin_ssh_public_key,
+    } = credentials
+    else {
+        return None;
+    };
+
+    Some(azure_driver(
+        tenant_id,
+        client_id,
+        client_secret,
+        subscription_id,
+        resource_group,
+        admin_ssh_public_key,
+    ))
+}
+
+/// Confirms an account can actually deploy the machine a session asked for,
+/// and answers with the catalog entry that prices it.
+///
+/// Run before a session row exists, so an impossible choice fails where the
+/// user made it rather than two minutes later inside a queue consumer. The
+/// entry that comes back is what the machine row's hourly price is taken
+/// from, which is why this returns it instead of a bare `bool`: reading the
+/// catalog twice would let the price drift from the machine it was checked
+/// against.
+///
+/// For Azure the answer is the region report rather than the merged catalog,
+/// because the report keeps *why* a machine type is missing — the SKU is not
+/// sold here, the quota does not cover it, or the subscription's own policy
+/// forbids the whole region — and those are three different things for the
+/// user to fix.
+///
+/// # Errors
+///
+/// Returns [`ProviderError::Unavailable`] naming the reason when the account
+/// cannot deploy this machine type in this region, or another
+/// [`ProviderError`] when the provider could not be asked at all.
+pub async fn deployable(
+    account: &LinkedAccount,
+    spec: &MachineSpec,
+) -> Result<MachineCatalogEntry, ProviderError> {
+    if let Some(mut azure) = azure_driver_for(account.credentials()) {
+        let report = azure.region_report(&spec.region).await?;
+        return report
+            .offered
+            .into_iter()
+            .find(|entry| entry.machine_type == spec.machine_type)
+            .ok_or_else(|| ProviderError::Unavailable {
+                machine_type: spec.machine_type.clone(),
+                region: spec.region.clone(),
+                reason: report
+                    .excluded
+                    .iter()
+                    .find(|(name, _)| *name == spec.machine_type || *name == spec.region)
+                    .map_or_else(
+                        || "this subscription is not offered it".to_owned(),
+                        |(_, reason)| reason.to_string(),
+                    ),
+            });
+    }
+
+    let offered = catalog(account).await?;
+    offered
+        .into_iter()
+        .find(|entry| {
+            entry.machine_type == spec.machine_type
+                && entry.region.eq_ignore_ascii_case(&spec.region)
+        })
+        .ok_or_else(|| ProviderError::Unavailable {
+            machine_type: spec.machine_type.clone(),
+            region: spec.region.clone(),
+            reason: "this account offers no such machine type there".to_owned(),
+        })
+}
+
+/// What brings a session's machine into existence.
+///
+/// A trait rather than one more free function, because the transport under a
+/// driver is not always one the caller has: byo-ssh needs a TCP connection
+/// the Worker does not have and a test has no host to open one to. The queue
+/// consumer therefore takes its provisioner as a parameter, and
+/// [`CloudProvisioner`] is what the deployed control plane hands it.
+///
+/// Not object-safe, for the same reason
+/// [`CloudProvider`](flyco_provider::CloudProvider) is not: every future on
+/// this path stays free of boxing on wasm32.
+pub trait Provisioner {
+    /// Brings one machine into existence, or says why it could not.
+    fn provision(
+        &mut self,
+        account: &LinkedAccount,
+        request: &ProvisionRequest,
+    ) -> impl Future<Output = Result<Machine, ProviderError>>;
+}
+
+/// The provisioner the deployed control plane uses: the real drivers, over
+/// the real network.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CloudProvisioner;
+
+impl Provisioner for CloudProvisioner {
+    async fn provision(
+        &mut self,
+        account: &LinkedAccount,
+        request: &ProvisionRequest,
+    ) -> Result<Machine, ProviderError> {
+        if let Some(mut azure) = azure_driver_for(account.credentials()) {
+            return azure.provision(request).await;
+        }
+
+        match account.credentials() {
+            ProviderCredentials::ByoSsh {
+                host,
+                port,
+                user,
+                private_key,
+                host_fingerprint,
+            } => {
+                provision_over_ssh(host, *port, user, private_key, host_fingerprint, request).await
+            }
+            // Unreachable: `azure_driver` answered for the Azure variant.
+            ProviderCredentials::Azure { .. } => Err(ProviderError::Malformed(
+                "an Azure account produced no Azure driver",
+            )),
+            ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
+                provider: "AWS",
+                operation: "provision",
+                reason: "flyco has no AWS driver yet",
+            }),
+            ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
+                provider: "GCP",
+                operation: "provision",
+                reason: "flyco has no GCP driver yet",
+            }),
+        }
+    }
+}
+
+/// Runs the podman job that is a byo-ssh machine, over a real connection.
+///
+/// Native only, and the split is the crate graph's rather than a runtime
+/// check: `SshExecutor` exists behind `flyco-provider/ssh`, which this crate
+/// enables for native targets and cannot enable for the Worker, because a
+/// Worker has no sockets to give an SSH client.
+#[cfg(not(target_arch = "wasm32"))]
+async fn provision_over_ssh(
+    host: &str,
+    port: u16,
+    user: &str,
+    private_key: &str,
+    host_fingerprint: &str,
+    request: &ProvisionRequest,
+) -> Result<Machine, ProviderError> {
+    use flyco_provider::byo_ssh::{ByoSsh, SshCommandRunner, SshExecutor, SshHost};
+
+    let mut executor = SshExecutor::new(
+        ByoSsh::new(host.to_owned()),
+        SshCommandRunner::new(SshHost {
+            address: host.to_owned(),
+            port,
+            user: user.to_owned(),
+            private_key: private_key.to_owned(),
+            host_fingerprint: host_fingerprint.to_owned(),
+        }),
+    );
+    executor.provision(request).await
+}
+
+/// See the native counterpart above: the Worker has no SSH client to reach a
+/// registered host with, and refusing says so rather than failing at a layer
+/// that would read as the host being down.
+#[cfg(target_arch = "wasm32")]
+#[expect(
+    clippy::unused_async,
+    reason = "the native counterpart is async; one signature for both targets"
+)]
+async fn provision_over_ssh(
+    _host: &str,
+    _port: u16,
+    _user: &str,
+    _private_key: &str,
+    _host_fingerprint: &str,
+    _request: &ProvisionRequest,
+) -> Result<Machine, ProviderError> {
+    Err(ProviderError::Unsupported {
+        provider: flyco_provider::byo_ssh::PROVIDER,
+        operation: "provision",
+        reason: "SSH is a TCP transport and a Cloudflare Worker has no sockets",
+    })
 }

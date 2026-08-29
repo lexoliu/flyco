@@ -7,6 +7,7 @@
 
 use flyco_core::{ApprovalState, Problem, SessionState};
 use skyzen::{Response, StatusCode};
+use skyzen_services::queue::QueueError;
 use skyzen_services::{DbError, KvError, StorageError};
 
 use crate::crypto::CryptoError;
@@ -132,6 +133,24 @@ pub enum ApiError {
     #[error("provider account not found", status = StatusCode::NOT_FOUND)]
     ProviderAccountNotFound,
 
+    /// This deployment holds no OAuth client for that vendor.
+    ///
+    /// Both vendors require a registered client, and flyco ships none of its
+    /// own — endpoints and client ids invented on a vendor's behalf would be
+    /// a guess about somebody else's service.
+    #[error(
+        "this flyco deployment cannot link {harness} accounts: no OAuth client is configured",
+        status = StatusCode::NOT_IMPLEMENTED
+    )]
+    HarnessLinkUnconfigured {
+        /// Which vendor was asked for.
+        harness: &'static str,
+    },
+
+    /// The vendor refused the authorization code exchange.
+    #[error("the vendor refused this authorization: {0}", status = StatusCode::BAD_GATEWAY)]
+    HarnessLinkRejected(String),
+
     /// The harness account does not exist, or belongs to somebody else.
     #[error("harness account not found", status = StatusCode::NOT_FOUND)]
     HarnessAccountNotFound,
@@ -149,6 +168,17 @@ pub enum ApiError {
     /// The provider refused or could not complete the operation.
     #[error("the provider could not complete this: {0}", status = StatusCode::BAD_GATEWAY)]
     Provisioning(String),
+
+    /// The linked account cannot deploy the machine the caller asked for.
+    ///
+    /// Checked against the account's own catalog while the session is being
+    /// created, so an impossible choice is refused where it was made rather
+    /// than two minutes later inside a queue consumer. The detail is the
+    /// provider's own reason, which is what tells the three answers apart:
+    /// this machine type is not sold to you here, your quota does not cover
+    /// it, or your subscription's policy forbids the region outright.
+    #[error("{0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    MachineUnavailable(String),
 
     /// The session has not been given a machine yet.
     ///
@@ -370,6 +400,10 @@ pub enum ApiError {
     #[error("key-value store failed: {0}")]
     Kv(#[from] KvError),
 
+    /// The provisioning queue would not take, or would not give up, a job.
+    #[error("the provisioning queue failed: {0}")]
+    Queue(#[from] QueueError),
+
     /// The database failed.
     #[error("database failed: {0}")]
     Db(#[from] DbError),
@@ -403,10 +437,13 @@ impl ApiError {
             Self::PushSubscriptionNotFound => "push-subscription-not-found",
             Self::InvalidPushSubscription(_) => "invalid-push-subscription",
             Self::ProviderAccountNotFound => "provider-account-not-found",
+            Self::HarnessLinkUnconfigured { .. } => "harness-link-unconfigured",
+            Self::HarnessLinkRejected(_) => "harness-link-rejected",
             Self::HarnessAccountNotFound => "harness-account-not-found",
             Self::MachineNotFound => "machine-not-found",
             Self::MachineNotReady => "machine-not-ready",
             Self::Provisioning(_) => "provisioning-failed",
+            Self::MachineUnavailable(_) => "machine-unavailable",
             Self::ProviderInUse { .. } => "provider-in-use",
             Self::ProviderUnsupported { .. } => "provider-unsupported",
             Self::ProviderRejectedCredentials { .. } => "provider-rejected-credentials",
@@ -434,6 +471,7 @@ impl ApiError {
             | Self::ServiceMissing(_)
             | Self::Kv(_)
             | Self::Db(_)
+            | Self::Queue(_)
             | Self::Storage(_)
             | Self::Crypto(_) => "internal",
         }
