@@ -1,10 +1,14 @@
 //! Deployment configuration, read once when the router is built.
 //!
 //! On the Worker these values come from the Cloudflare `env` object — the
-//! two non-secret ones from `[cloudflare.vars]` in `Skyzen.toml`, the two
-//! secret ones from `wrangler secret put`. On native they come from the
-//! process environment. A missing or malformed value is a startup failure,
-//! never a default.
+//! non-secret ones from `[cloudflare.vars]` in `Skyzen.toml`, the secret
+//! ones from `wrangler secret put`. On native they come from the process
+//! environment. A missing or malformed *required* value is a startup
+//! failure, never a default.
+//!
+//! Two bindings are optional, and each absence disables a capability rather
+//! than weakening one: with no VAPID key this deployment sends no push, and
+//! with no webhook secret it accepts no GitHub deliveries.
 
 use url::Url;
 
@@ -29,6 +33,16 @@ pub mod var {
     /// key pair, and refusing to start without one would make web push a
     /// requirement rather than a feature.
     pub const VAPID_PUBLIC_KEY: &str = "FLYCO_VAPID_PUBLIC_KEY";
+    /// Shared secret GitHub signs webhook deliveries with. Secret;
+    /// `wrangler secret put`.
+    ///
+    /// Optional, and its absence is a decision rather than an oversight:
+    /// a deployment with no secret has nothing to verify a delivery
+    /// against, so it accepts no webhooks at all and says so. Defaulting
+    /// to "no signature required" would turn the one thing standing
+    /// between a forgery and a live session into a missing environment
+    /// variable.
+    pub const GITHUB_WEBHOOK_SECRET: &str = "FLYCO_GITHUB_WEBHOOK_SECRET";
 }
 
 /// Why the control plane refused to start.
@@ -64,6 +78,7 @@ pub struct ApiConfig {
     redirect_uri: Url,
     encryption_key: [u8; KEY_LEN],
     vapid_public_key: Option<String>,
+    github_webhook_secret: Option<String>,
 }
 
 impl core::fmt::Debug for ApiConfig {
@@ -99,6 +114,7 @@ impl ApiConfig {
 
         Ok(Self {
             vapid_public_key: None,
+            github_webhook_secret: None,
             github_client_id,
             github_client_secret,
             redirect_uri,
@@ -120,6 +136,7 @@ impl ApiConfig {
             &read_var(var::ENCRYPTION_KEY)?,
         )?;
         config.vapid_public_key = read_var(var::VAPID_PUBLIC_KEY).ok();
+        config.github_webhook_secret = read_var(var::GITHUB_WEBHOOK_SECRET).ok();
         Ok(config)
     }
 
@@ -135,6 +152,23 @@ impl ApiConfig {
     #[must_use]
     pub fn with_vapid_public_key(mut self, key: impl Into<String>) -> Self {
         self.vapid_public_key = Some(key.into());
+        self
+    }
+
+    /// The secret GitHub signs this deployment's webhook deliveries with.
+    ///
+    /// `None` means this deployment accepts no webhooks: there is nothing
+    /// to check a signature against, and an unverified body is never read.
+    #[must_use]
+    pub fn github_webhook_secret(&self) -> Option<&str> {
+        self.github_webhook_secret.as_deref()
+    }
+
+    /// Replaces the GitHub webhook secret, for tests and for callers that
+    /// resolve configuration themselves.
+    #[must_use]
+    pub fn with_github_webhook_secret(mut self, secret: impl Into<String>) -> Self {
+        self.github_webhook_secret = Some(secret.into());
         self
     }
 
@@ -218,8 +252,20 @@ mod tests {
 
     #[test]
     fn the_debug_rendering_never_shows_a_secret() {
-        let rendered = format!("{:?}", test_config());
+        let rendered = format!(
+            "{:?}",
+            test_config().with_github_webhook_secret("a-webhook-secret")
+        );
         assert!(!rendered.contains(CLIENT_SECRET));
         assert!(!rendered.contains(KEY_HEX));
+        assert!(!rendered.contains("a-webhook-secret"));
+    }
+
+    #[test]
+    fn a_deployment_without_a_webhook_secret_accepts_no_webhooks() {
+        // The absence of a secret is the whole refusal: there is nothing to
+        // verify a delivery against, and `webhooks` reads that as "this
+        // deployment accepts none" rather than "verification is optional".
+        assert!(test_config().github_webhook_secret().is_none());
     }
 }

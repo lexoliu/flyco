@@ -27,6 +27,10 @@ askama = "0.14"
 # the Worker. Provider polling loops honour `Retry-After` with it.
 futures-timer = { version = "3", features = ["wasm-bindgen"] }
 shell-escape = "0.1"
+# Calendar arithmetic, for the one place flyco needs it: the start of the
+# billing month a cloud provider meters against. No clock is read from it —
+# the caller supplies the instant — so it compiles on wasm32 untouched.
+time = { version = "0.3", default-features = false }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -70,6 +74,9 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes", "allo
 base64 = "0.22"
 getrandom = { version = "0.4", features = ["wasm_js"] }
 hex = "0.4"
+# GitHub signs every webhook delivery with HMAC-SHA256 over the raw body;
+# `Mac::verify_slice` is the constant-time comparison that check needs.
+hmac = { version = "0.12", default-features = false }
 js-sys = "0.3"
 sha2 = { version = "0.10", default-features = false }
 url = { version = "2", features = ["serde"] }

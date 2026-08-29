@@ -1,0 +1,32 @@
+{
+  "action": "completed",
+  "check_run": {
+    "id": 41234567890,
+    "name": "cargo clippy",
+    "node_id": "CR_kwDOABCDEF8AAAAJmfNSaQ",
+    "head_sha": "9f1c0f0d2f6f5f0a1b2c3d4e5f60718293a4b5c6",
+    "status": "completed",
+    "conclusion": "failure",
+    "started_at": "2026-08-29T09:14:03Z",
+    "completed_at": "2026-08-29T09:19:47Z",
+    "html_url": "https://github.com/lexoliu/flyco/runs/41234567890",
+    "check_suite": {
+      "id": 987654321,
+      "head_branch": "feat/m6-webhook-usage",
+      "status": "completed",
+      "conclusion": "failure"
+    }
+  },
+  "repository": {
+    "id": 902135467,
+    "name": "flyco",
+    "full_name": "lexoliu/flyco",
+    "private": true,
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "lexoliu",
+    "id": 4242,
+    "type": "User"
+  }
+}
