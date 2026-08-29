@@ -28,7 +28,7 @@ use crate::respond::accepted;
 use crate::sql::{decode_enum, encode_enum, from_column, to_column};
 
 /// The columns every read on this path projects.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct MachineRow {
     id: String,
     session_id: String,

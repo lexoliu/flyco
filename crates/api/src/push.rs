@@ -12,7 +12,6 @@
 use flyco_core::{
     CurrentUser, PushSubscription, PushSubscriptionId, PushSubscriptionView, UserId, VapidPublicKey,
 };
-use serde::Deserialize;
 use skyzen::Response;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::utils::{Json, State};
@@ -30,7 +29,7 @@ use crate::sql::{from_column, to_column};
 ///
 /// `p256dh` and `auth` are never selected: they are write-only material for
 /// encrypting a message body, and nothing that answers a browser needs them.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct SubscriptionRow {
     id: String,
     endpoint: String,

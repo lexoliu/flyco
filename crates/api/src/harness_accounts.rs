@@ -30,7 +30,7 @@ use crate::sql::{decode_enum, encode_enum, from_column};
 ///
 /// `token_enc` is deliberately absent: the sealed credential is provisioned
 /// onto machines and is never selected by a route that answers a browser.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct HarnessAccountRow {
     id: String,
     harness: String,

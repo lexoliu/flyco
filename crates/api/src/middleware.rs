@@ -1,13 +1,13 @@
 //! Middleware flyco supplies for itself.
 
-use core::convert::Infallible;
+use core::any::TypeId;
 
 use flyco_core::{CurrentUser, SessionId};
-use skyzen::http_kit::middleware::MiddlewareError;
+use skyzen::middleware::Next;
 use skyzen::middleware::auth::Authenticator;
 use skyzen::routing::Params;
 use skyzen::utils::State;
-use skyzen::{Endpoint, Middleware, Request, Response};
+use skyzen::{Error, Middleware, Request, Response};
 use skyzen_services::Db;
 
 use crate::daemon_tokens;
@@ -32,24 +32,20 @@ impl<A> RequireAuth<A> {
 
 impl<A> Middleware for RequireAuth<A>
 where
-    A: Authenticator<User = CurrentUser, Error = ApiError> + Send + Sync + Clone + 'static,
+    A: Authenticator<User = CurrentUser, Error = ApiError> + Send + Sync + 'static,
 {
-    type Error = Infallible;
-
-    async fn handle<N: Endpoint>(
-        &mut self,
-        request: &mut Request,
-        mut next: N,
-    ) -> Result<Response, MiddlewareError<N::Error, Self::Error>> {
+    async fn handle(&self, request: &mut Request, next: Next<'_>) -> Result<Response, Error> {
         match self.0.authenticate(request).await {
             Ok(user) => {
                 request.extensions_mut().insert(State(user));
-                next.respond(request)
-                    .await
-                    .map_err(MiddlewareError::Endpoint)
+                next.run(request).await
             }
             Err(error) => Ok(error.into_response()),
         }
+    }
+
+    fn provisions(&self) -> Vec<TypeId> {
+        vec![TypeId::of::<State<CurrentUser>>()]
     }
 }
 
@@ -120,23 +116,19 @@ impl RequireDaemon {
 }
 
 impl Middleware for RequireDaemon {
-    type Error = Infallible;
-
-    async fn handle<N: Endpoint>(
-        &mut self,
-        request: &mut Request,
-        mut next: N,
-    ) -> Result<Response, MiddlewareError<N::Error, Self::Error>> {
+    async fn handle(&self, request: &mut Request, next: Next<'_>) -> Result<Response, Error> {
         match Self::authorize(request).await {
             Ok(session) => {
                 request
                     .extensions_mut()
                     .insert(State(DaemonSession(session)));
-                next.respond(request)
-                    .await
-                    .map_err(MiddlewareError::Endpoint)
+                next.run(request).await
             }
             Err(error) => Ok(error.into_response()),
         }
+    }
+
+    fn provisions(&self) -> Vec<TypeId> {
+        vec![TypeId::of::<State<DaemonSession>>()]
     }
 }

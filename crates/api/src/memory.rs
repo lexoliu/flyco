@@ -41,7 +41,7 @@ pub struct MemoryFilter {
 }
 
 /// The columns every read on this path projects.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct MemoryRow {
     id: String,
     parent_id: Option<String>,

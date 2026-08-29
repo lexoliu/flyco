@@ -8,14 +8,13 @@ use flyco_core::{
     ApprovalId, ApprovalState, ApprovalView, SessionId, UserId, wire::ApprovalDecision,
     wire::ApprovalPayload,
 };
-use serde::Deserialize;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
 use crate::error::ApiError;
 use crate::sql::{decode_enum, encode_enum, from_column, to_column};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct ApprovalRow {
     id: String,
     session_id: String,

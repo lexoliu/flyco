@@ -9,7 +9,6 @@ use flyco_core::{
     BudgetConfig, HarnessKind, RepoSlug, SessionDetail, SessionId, SessionState, SessionSummary,
     UserId,
 };
-use serde::Deserialize;
 use skyzen_services::Db;
 
 use crate::budgets;
@@ -18,7 +17,7 @@ use crate::error::ApiError;
 use crate::sql::{decode_enum, encode_enum, from_column, to_column};
 
 /// The session a caller may still archive, and its budget.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct SessionRow {
     id: String,
     harness: String,
@@ -29,7 +28,7 @@ struct SessionRow {
     last_active_unix: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, skyzen::FromRow)]
 struct CountRow {
     live: i64,
 }

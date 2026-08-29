@@ -38,7 +38,7 @@ const POST_LOGIN_PATH: &str = "/auth/complete";
 const TOKEN_PARAM: &str = "token";
 
 /// Query string GitHub appends when it redirects back.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, skyzen::ToSchema)]
 pub struct Callback {
     /// The single-use authorization code.
     code: String,
@@ -314,12 +314,9 @@ mod tests {
 
         let stored: Vec<String> = db
             .query("SELECT github_token_enc FROM users")
-            .fetch_all::<std::collections::BTreeMap<String, String>>()
+            .fetch_scalars()
             .await
-            .expect("read the stored token")
-            .into_iter()
-            .filter_map(|row| row.get("github_token_enc").cloned())
-            .collect();
+            .expect("read the stored token");
 
         let sealed = stored.first().expect("one user row exists");
         assert!(!sealed.contains(GITHUB_ACCESS_TOKEN));
@@ -342,13 +339,13 @@ mod tests {
                 .await
                 .assert_status(303);
 
-            let row: std::collections::BTreeMap<String, String> = db
+            let id: String = db
                 .query("SELECT id FROM users WHERE github_id = ?")
                 .bind(GITHUB_ID)
-                .fetch_one()
+                .fetch_scalar()
                 .await
                 .expect("exactly one row per GitHub account");
-            ids.push(row.get("id").cloned().expect("id column"));
+            ids.push(id);
         }
 
         assert_eq!(ids[0], ids[1]);
