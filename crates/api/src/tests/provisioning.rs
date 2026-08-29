@@ -35,7 +35,7 @@ use crate::testing::{
     HARNESS_TOKEN, machine_choice, migrated_router_on, seed_harness_account, seed_provider_account,
     seed_user, test_config,
 };
-use crate::{machines, session};
+use crate::{machines, session, sessions};
 
 const REPO: &str = "lexoliu/flyco";
 
@@ -513,6 +513,10 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         "an archived session drops its stale job"
     );
 
+    sessions::record_harness_session(&db, session, "harness-native-thread")
+        .await
+        .expect("record the identity the original daemon announced");
+
     let resumed = client
         .post(&format!("/v1/sessions/{session}/resume"))
         .bearer(&caller.token)
@@ -540,6 +544,14 @@ async fn an_archived_session_comes_back_through_the_same_queue(
             if decisions == &[QueueMessageDisposition::Ack]
     ));
     assert_eq!(host.provisions, 1);
+    assert_eq!(
+        host.bootstrap
+            .expect("the rebuilt machine was handed a bootstrap")
+            .resume_session_id
+            .as_deref(),
+        Some("harness-native-thread"),
+        "a resume continues the harness conversation the previous machine announced"
+    );
     assert_eq!(
         machines::for_session(&db, session)
             .await
@@ -656,6 +668,10 @@ async fn a_machine_boots_already_holding_its_session_credentials(
         ClaudeCredential::OauthToken {
             token: HARNESS_TOKEN.to_owned()
         }
+    );
+    assert_eq!(
+        bootstrap.resume_session_id, None,
+        "a first machine has no harness conversation to continue"
     );
 }
 

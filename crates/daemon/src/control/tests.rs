@@ -73,6 +73,13 @@ impl ControlApi for RecordingApi {
                 .map_err(|error| ControlApiError::Transport(error.to_string())),
         )
     }
+
+    fn record_harness_session(
+        &self,
+        _harness_session_id: &str,
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        core::future::ready(Ok(()))
+    }
 }
 
 /// Everything a relay test drives.
@@ -796,6 +803,13 @@ mod remote_store {
             core::future::ready(Err(ControlApiError::Transport(
                 "the transcript store records no observations".to_owned(),
             )))
+        }
+
+        fn record_harness_session(
+            &self,
+            _harness_session_id: &str,
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Ok(()))
         }
 
         fn put_transcript_batch(
