@@ -800,6 +800,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/harness-session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Records the harness-native session id so a later resume continues it.
+         * @description Records the harness-native session id so a later resume continues it.
+         */
+        put: operations["flyco_api::app::put_harness_session"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/interrupt": {
         parameters: {
             query?: never;
@@ -1606,6 +1626,11 @@ export interface components {
             observed_cost?: null | components["schemas"]["Usd"];
             rate_limit?: null | components["schemas"]["RateLimitObservation"];
         };
+        /** @description The harness-native session id the daemon announced at start. */
+        HarnessSessionIdentity: {
+            /** @description Identity the harness minted; resume reopens this conversation. */
+            harness_session_id: string;
+        };
         /** @description One HTTP header sent with every request to a remote MCP server. */
         HeaderEntry: {
             /** @description Header name. */
@@ -1769,6 +1794,8 @@ export interface components {
             /** @description On-demand price per hour. */
             on_demand_hourly: components["schemas"]["Usd"];
             spot_hourly?: null | components["schemas"]["Usd"];
+            /** @description Persistent-disk pricing published by the provider. */
+            storage: components["schemas"]["StoragePricing"];
         } | {
             /** @enum {string} */
             kind: "user_owned";
@@ -1825,6 +1852,7 @@ export interface components {
             spot: boolean;
             /** @description Where it is in its lifecycle. */
             state: components["schemas"]["MachineState"];
+            storage_hourly?: null | components["schemas"]["Usd"];
         };
         /**
          * @description How a session reaches one MCP server.
@@ -2256,6 +2284,28 @@ export interface components {
              * @description When it was last uploaded, seconds since the Unix epoch.
              */
             uploaded_at_unix: number;
+        };
+        /** @description One fixed-price disk tier. */
+        StoragePriceTier: {
+            /**
+             * Format: int32
+             * @description Maximum provisioned size covered by the tier.
+             */
+            capacity_gib: number;
+            /** @description Price of the tier for one hour. */
+            hourly: components["schemas"]["Usd"];
+        };
+        /** @description How a provider prices the persistent disk attached to a machine. */
+        StoragePricing: {
+            /** @enum {string} */
+            kind: "per_gib_hourly";
+            /** @description Price of one GiB for one hour. */
+            rate: components["schemas"]["Usd"];
+        } | {
+            /** @enum {string} */
+            kind: "capacity_tiers";
+            /** @description Tiers in ascending capacity order. */
+            tiers: components["schemas"]["StoragePriceTier"][];
         };
         /** @description One stored event, as the catch-up API serves it. */
         StoredEvent: {
@@ -4033,6 +4083,34 @@ export interface operations {
             };
         };
     };
+    "flyco_api::app::put_harness_session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Identity the harness minted; resume reopens this conversation. */
+                    harness_session_id: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     "flyco_api::app::interrupt_session": {
         parameters: {
             query?: never;
@@ -4097,6 +4175,7 @@ export interface operations {
                         spot: boolean;
                         /** @description Where it is in its lifecycle. */
                         state: components["schemas"]["MachineState"];
+                        storage_hourly?: null | components["schemas"]["Usd"];
                     };
                 };
             };
