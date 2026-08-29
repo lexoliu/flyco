@@ -40,6 +40,9 @@ pub enum ConfigError {
          `POST /v1/sessions/{{id}}/daemon-token`, not a session token or an API key"
     )]
     NotADaemonToken,
+    /// The tables in the file do not match `harness`.
+    #[error("{0}")]
+    WrongHarness(&'static str),
 }
 
 /// An isolated Claude Code configuration tree.
@@ -126,6 +129,123 @@ pub struct ClaudeConfig {
     pub auth: ClaudeAuth,
 }
 
+/// An isolated Codex home directory.
+///
+/// Present on exactly the auth modes that inject credentials: a session VM
+/// gets its own `CODEX_HOME`, so nothing about one session's Codex state can
+/// be seen or trampled by another.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexIsolation {
+    /// `CODEX_HOME` for the supervised app-server.
+    pub home: PathBuf,
+}
+
+/// How the supervised `codex` CLI authenticates.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CodexAuth {
+    /// Use the host user's existing Codex login.
+    Inherit,
+    /// A `ChatGPT` OAuth access token in an isolated `CODEX_HOME`.
+    OauthToken {
+        /// Value written into `auth.json` as `tokens.access_token`.
+        token: String,
+        /// The home directory it applies to.
+        isolation: CodexIsolation,
+    },
+    /// An `OpenAI` API key in an isolated `CODEX_HOME`.
+    ApiKey {
+        /// Value written into `auth.json` as `OPENAI_API_KEY`.
+        key: String,
+        /// The home directory it applies to.
+        isolation: CodexIsolation,
+    },
+}
+
+impl CodexAuth {
+    /// The isolated `CODEX_HOME`, when this mode has one.
+    #[must_use]
+    pub fn home(&self) -> Option<&Path> {
+        match self {
+            Self::Inherit => None,
+            Self::OauthToken { isolation, .. } | Self::ApiKey { isolation, .. } => {
+                Some(isolation.home.as_path())
+            }
+        }
+    }
+}
+
+/// Approval policy the app-server applies, spelled as the protocol's kebab-case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CodexApprovalPolicy {
+    /// Prompt on everything.
+    Untrusted,
+    /// Prompt on request — flyco's default, so every tool reaches the UI.
+    OnRequest,
+    /// Never prompt.
+    Never,
+}
+
+impl CodexApprovalPolicy {
+    /// The protocol token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Untrusted => "untrusted",
+            Self::OnRequest => "on-request",
+            Self::Never => "never",
+        }
+    }
+}
+
+/// Sandbox mode the app-server applies, spelled as the protocol's kebab-case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CodexSandbox {
+    /// Read-only sandbox.
+    ReadOnly,
+    /// Workspace-write sandbox.
+    WorkspaceWrite,
+    /// No sandbox.
+    DangerFullAccess,
+}
+
+impl CodexSandbox {
+    /// The protocol token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::WorkspaceWrite => "workspace-write",
+            Self::DangerFullAccess => "danger-full-access",
+        }
+    }
+}
+
+fn default_codex_bin() -> PathBuf {
+    PathBuf::from("codex")
+}
+
+/// Settings specific to the Codex harness.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexConfig {
+    /// The `codex` executable. A bare name is resolved through `PATH`.
+    #[serde(default = "default_codex_bin")]
+    pub bin: PathBuf,
+    /// Model override; omitted leaves the CLI's own default in place.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Approval policy for `thread/start`.
+    pub approval_policy: CodexApprovalPolicy,
+    /// Sandbox mode for `thread/start`.
+    pub sandbox: CodexSandbox,
+    /// Credentials and `CODEX_HOME` isolation.
+    pub auth: CodexAuth,
+}
+
 /// Where the control plane is, and what authenticates this daemon to it.
 ///
 /// Present on a provisioned session VM; absent on a developer machine,
@@ -188,10 +308,18 @@ pub struct DaemonConfig {
     /// [REPL](crate::repl) instead.
     #[serde(default)]
     pub control_plane: Option<ControlPlaneConfig>,
-    /// Claude Code settings.
-    pub claude: ClaudeConfig,
-    /// Where the Bun sidecar is materialized and how Bun is run.
-    pub sidecar: SidecarConfig,
+    /// Claude Code settings. Required when [`harness`](Self::harness) is
+    /// [`HarnessKind::ClaudeCode`].
+    #[serde(default)]
+    pub claude: Option<ClaudeConfig>,
+    /// Where the Bun sidecar is materialized and how Bun is run. Required
+    /// when [`harness`](Self::harness) is [`HarnessKind::ClaudeCode`].
+    #[serde(default)]
+    pub sidecar: Option<SidecarConfig>,
+    /// Codex settings. Required when [`harness`](Self::harness) is
+    /// [`HarnessKind::Codex`].
+    #[serde(default)]
+    pub codex: Option<CodexConfig>,
 }
 
 impl DaemonConfig {
@@ -213,7 +341,72 @@ impl DaemonConfig {
         if let Some(control_plane) = &config.control_plane {
             control_plane.validate()?;
         }
+        config.validate_harness()?;
         Ok(config)
+    }
+
+    /// Returns the Claude Code settings, which a Claude session always has.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`load`](Self::load) admitted a Claude session without a
+    /// `[claude]` table — that combination is unrepresentable after load.
+    #[must_use]
+    pub const fn claude(&self) -> &ClaudeConfig {
+        self.claude
+            .as_ref()
+            .expect("a loaded Claude Code config has a [claude] table")
+    }
+
+    /// Returns the sidecar settings, which a Claude session always has.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`load`](Self::load) admitted a Claude session without a
+    /// `[sidecar]` table — that combination is unrepresentable after load.
+    #[must_use]
+    pub const fn sidecar(&self) -> &SidecarConfig {
+        self.sidecar
+            .as_ref()
+            .expect("a loaded Claude Code config has a [sidecar] table")
+    }
+
+    /// Returns the Codex settings, which a Codex session always has.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`load`](Self::load) admitted a Codex session without a
+    /// `[codex]` table — that combination is unrepresentable after load.
+    #[must_use]
+    pub const fn codex(&self) -> &CodexConfig {
+        self.codex
+            .as_ref()
+            .expect("a loaded Codex config has a [codex] table")
+    }
+
+    const fn validate_harness(&self) -> Result<(), ConfigError> {
+        match self.harness {
+            HarnessKind::ClaudeCode => {
+                if self.claude.is_none() {
+                    return Err(ConfigError::WrongHarness(
+                        "a claude_code session requires a [claude] table",
+                    ));
+                }
+                if self.sidecar.is_none() {
+                    return Err(ConfigError::WrongHarness(
+                        "a claude_code session requires a [sidecar] table",
+                    ));
+                }
+            }
+            HarnessKind::Codex => {
+                if self.codex.is_none() {
+                    return Err(ConfigError::WrongHarness(
+                        "a codex session requires a [codex] table",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -234,19 +427,24 @@ mod tests {
     fn the_shipped_example_is_a_valid_config() {
         let config = parse(EXAMPLE).expect("the example config must parse");
         assert_eq!(config.harness, HarnessKind::ClaudeCode);
-        assert!(matches!(config.claude.auth, ClaudeAuth::Inherit));
-        assert_eq!(config.claude.permission_mode, PermissionMode::Default);
-        assert_eq!(config.sidecar.bun, std::path::PathBuf::from("bun"));
+        let claude = config
+            .claude
+            .as_ref()
+            .expect("the example drives Claude Code");
+        assert!(matches!(claude.auth, ClaudeAuth::Inherit));
+        assert_eq!(claude.permission_mode, PermissionMode::Default);
+        assert_eq!(
+            config.sidecar.as_ref().expect("example sidecar").bun,
+            std::path::PathBuf::from("bun")
+        );
     }
 
     #[test]
     fn inheriting_the_host_login_isolates_nothing() {
         let config = parse(EXAMPLE).expect("parse");
-        assert!(config.claude.auth.isolation().is_none());
-        assert!(matches!(
-            config.claude.auth.sidecar_auth(),
-            SidecarAuth::Inherit
-        ));
+        let claude = config.claude.as_ref().expect("example");
+        assert!(claude.auth.isolation().is_none());
+        assert!(matches!(claude.auth.sidecar_auth(), SidecarAuth::Inherit));
     }
 
     #[test]
@@ -259,12 +457,14 @@ mod tests {
         let config = parse(&text).expect("parse");
         let isolation = config
             .claude
+            .as_ref()
+            .expect("example")
             .auth
             .isolation()
             .expect("credential modes are isolated");
         assert_eq!(isolation.project_dir_name, "flyco-session");
         assert!(matches!(
-            config.claude.auth.sidecar_auth(),
+            config.claude.as_ref().expect("example").auth.sidecar_auth(),
             SidecarAuth::OauthToken { .. }
         ));
     }
