@@ -326,9 +326,7 @@ mod tests {
                 .await
                 .assert_status(303);
 
-            let id: String = db
-                .query("SELECT id FROM users WHERE github_id = ?")
-                .bind(GITHUB_ID)
+            let id: String = skyzen::sql!(db, "SELECT id FROM users WHERE github_id = {GITHUB_ID}")
                 .fetch_scalar()
                 .await
                 .expect("exactly one row per GitHub account");

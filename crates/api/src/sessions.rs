@@ -9,6 +9,7 @@ use flyco_core::{
     BudgetConfig, BudgetId, HarnessKind, RepoSlug, SessionDetail, SessionId, SessionState,
     SessionSummary, UserId,
 };
+use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::budgets;
@@ -54,12 +55,13 @@ async fn detail_from(db: &Db, row: SessionRow) -> Result<SessionDetail, ApiError
 ///
 /// Returns [`ApiError`] if the database fails.
 pub async fn live_count(db: &Db, user: UserId) -> Result<u32, ApiError> {
-    Ok(db
-        .query("SELECT COUNT(*) AS live FROM sessions WHERE user_id = ? AND state != ?")
-        .bind(user)
-        .bind(SessionState::Archived)
-        .fetch_scalar()
-        .await?)
+    let archived = SessionState::Archived;
+    Ok(sql!(
+        db,
+        "SELECT COUNT(*) AS live FROM sessions WHERE user_id = {user} AND state != {archived}"
+    )
+    .fetch_scalar()
+    .await?)
 }
 
 /// Creates a session and the budget it accounts against.
@@ -93,19 +95,13 @@ pub async fn create(
     let budget_id = budgets::create(db, id, budget).await?;
     let now = now_unix();
 
-    db.query(
+    sql!(
+        db,
         "INSERT INTO sessions \
          (id, user_id, harness, repo, state, budget_id, created_at_unix, last_active_unix) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ({id}, {user}, {harness}, {repo}, \
+                 {SessionState::Provisioning}, {budget_id}, {now}, {now})"
     )
-    .bind(id)
-    .bind(user)
-    .bind(harness)
-    .bind(repo)
-    .bind(SessionState::Provisioning)
-    .bind(budget_id)
-    .bind(now)
-    .bind(now)
     .execute()
     .await?;
 
@@ -118,14 +114,13 @@ pub async fn create(
 ///
 /// Returns [`ApiError`] if the database fails or a stored row is malformed.
 pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError> {
-    let rows: Vec<SessionRow> = db
-        .query(
-            "SELECT id, harness, repo, state, budget_id, created_at_unix, last_active_unix \
-             FROM sessions WHERE user_id = ? ORDER BY created_at_unix DESC, id DESC",
-        )
-        .bind(user)
-        .fetch_all()
-        .await?;
+    let rows: Vec<SessionRow> = sql!(
+        db,
+        "SELECT id, harness, repo, state, budget_id, created_at_unix, last_active_unix \
+         FROM sessions WHERE user_id = {user} ORDER BY created_at_unix DESC, id DESC"
+    )
+    .fetch_all()
+    .await?;
 
     Ok(rows.into_iter().map(Into::into).collect())
 }
@@ -165,13 +160,13 @@ pub async fn transition(
             to: error.to,
         })?;
 
-    db.query("UPDATE sessions SET state = ?, last_active_unix = ? WHERE id = ? AND user_id = ?")
-        .bind(next)
-        .bind(now_unix())
-        .bind(id)
-        .bind(user)
-        .execute()
-        .await?;
+    sql!(
+        db,
+        "UPDATE sessions SET state = {next}, last_active_unix = {now_unix()} \
+         WHERE id = {id} AND user_id = {user}"
+    )
+    .execute()
+    .await?;
 
     find(db, user, id).await
 }
@@ -182,12 +177,12 @@ pub async fn transition(
 ///
 /// Returns [`ApiError`] if the database fails.
 pub async fn is_owned_by(db: &Db, user: UserId, session: SessionId) -> Result<bool, ApiError> {
-    let owned: u32 = db
-        .query("SELECT COUNT(*) AS live FROM sessions WHERE id = ? AND user_id = ?")
-        .bind(session)
-        .bind(user)
-        .fetch_scalar()
-        .await?;
+    let owned: u32 = sql!(
+        db,
+        "SELECT COUNT(*) AS live FROM sessions WHERE id = {session} AND user_id = {user}"
+    )
+    .fetch_scalar()
+    .await?;
     Ok(owned > 0)
 }
 
@@ -223,12 +218,11 @@ pub async fn require_active(db: &Db, user: UserId, id: SessionId) -> Result<(), 
 }
 
 async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiError> {
-    db.query(
+    sql!(
+        db,
         "SELECT id, harness, repo, state, budget_id, created_at_unix, last_active_unix \
-         FROM sessions WHERE id = ? AND user_id = ?",
+         FROM sessions WHERE id = {id} AND user_id = {user}"
     )
-    .bind(id)
-    .bind(user)
     .fetch_optional()
     .await?
     .ok_or(ApiError::SessionNotFound)

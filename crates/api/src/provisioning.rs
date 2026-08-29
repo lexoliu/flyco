@@ -15,6 +15,7 @@ use flyco_provider::azure::auth::ServicePrincipal;
 use flyco_provider::azure::{AzureProvider, Workspace};
 use flyco_provider::byo_ssh::ByoSsh;
 use flyco_provider::{CloudProvider, ProviderError};
+use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::config::ApiConfig;
@@ -68,27 +69,16 @@ pub async fn accounts_for(
     user: UserId,
     kind: Option<CloudProviderKind>,
 ) -> Result<Vec<LinkedAccount>, ApiError> {
-    let rows: Vec<SealedRow> = match kind {
-        Some(kind) => {
-            db.query(
-                "SELECT id, credentials_enc FROM provider_accounts \
-                 WHERE user_id = ? AND kind = ? ORDER BY linked_at_unix",
-            )
-            .bind(user)
-            .bind(kind)
-            .fetch_all()
-            .await?
-        }
-        None => {
-            db.query(
-                "SELECT id, credentials_enc FROM provider_accounts \
-                 WHERE user_id = ? ORDER BY linked_at_unix",
-            )
-            .bind(user)
-            .fetch_all()
-            .await?
-        }
-    };
+    // A NULL filter matches every provider, which keeps one statement for
+    // both callers rather than assembling SQL per request.
+    let rows: Vec<SealedRow> = sql!(
+        db,
+        "SELECT id, credentials_enc FROM provider_accounts \
+         WHERE user_id = {user} AND ({kind} IS NULL OR kind = {kind}) \
+         ORDER BY linked_at_unix"
+    )
+    .fetch_all()
+    .await?;
 
     let cipher = config.token_cipher();
     rows.into_iter()
@@ -117,13 +107,14 @@ pub async fn account(
     user: UserId,
     id: ProviderAccountId,
 ) -> Result<LinkedAccount, ApiError> {
-    let row: SealedRow = db
-        .query("SELECT id, credentials_enc FROM provider_accounts WHERE id = ? AND user_id = ?")
-        .bind(id)
-        .bind(user)
-        .fetch_optional()
-        .await?
-        .ok_or(ApiError::ProviderAccountNotFound)?;
+    let row: SealedRow = sql!(
+        db,
+        "SELECT id, credentials_enc FROM provider_accounts \
+         WHERE id = {id} AND user_id = {user}"
+    )
+    .fetch_optional()
+    .await?
+    .ok_or(ApiError::ProviderAccountNotFound)?;
 
     let credentials: ProviderCredentials =
         serde_json::from_str(&config.token_cipher().open(&row.credentials_enc)?).map_err(|_| {

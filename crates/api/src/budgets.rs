@@ -10,6 +10,7 @@ use flyco_core::{
     BudgetConfig, BudgetId, BudgetState, BudgetView, SessionId, SpendEvent, SpendEventId,
     SpendKind, Usd,
 };
+use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
@@ -44,14 +45,11 @@ pub async fn create(
     let id = BudgetId::generate();
     let state = BudgetState::new(config);
 
-    db.query(
+    sql!(
+        db,
         "INSERT INTO budgets (id, session_id, limit_micros, spent_micros, stage) \
-         VALUES (?, ?, ?, 0, ?)",
+         VALUES ({id}, {session}, {config.limit()}, 0, {state.stage()})"
     )
-    .bind(id)
-    .bind(session)
-    .bind(config.limit())
-    .bind(state.stage())
     .execute()
     .await?;
 
@@ -65,9 +63,7 @@ pub async fn create(
 /// Returns [`ApiError::CorruptRecord`] if the budget row is missing or
 /// holds a limit the engine rejects, or a database error otherwise.
 pub async fn view(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
-    let limit: Option<Usd> = db
-        .query("SELECT limit_micros FROM budgets WHERE id = ?")
-        .bind(budget)
+    let limit: Option<Usd> = sql!(db, "SELECT limit_micros FROM budgets WHERE id = {budget}")
         .fetch_scalar_optional()
         .await?;
     let limit = limit.ok_or(ApiError::CorruptRecord(
@@ -76,14 +72,13 @@ pub async fn view(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
     let config = BudgetConfig::new(limit)
         .map_err(|_| ApiError::CorruptRecord("budgets.limit_micros is zero"))?;
 
-    let events: Vec<SpendRow> = db
-        .query(
-            "SELECT kind, amount_micros FROM spend_events \
-             WHERE budget_id = ? ORDER BY at_unix, id",
-        )
-        .bind(budget)
-        .fetch_all()
-        .await?;
+    let events: Vec<SpendRow> = sql!(
+        db,
+        "SELECT kind, amount_micros FROM spend_events \
+         WHERE budget_id = {budget} ORDER BY at_unix, id"
+    )
+    .fetch_all()
+    .await?;
 
     let mut state = BudgetState::new(config);
     for event in events {
@@ -92,12 +87,13 @@ pub async fn view(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
         let _ = state.apply(event.into());
     }
 
-    db.query("UPDATE budgets SET spent_micros = ?, stage = ? WHERE id = ?")
-        .bind(state.spent())
-        .bind(state.stage())
-        .bind(budget)
-        .execute()
-        .await?;
+    sql!(
+        db,
+        "UPDATE budgets SET spent_micros = {state.spent()}, stage = {state.stage()} \
+         WHERE id = {budget}"
+    )
+    .execute()
+    .await?;
 
     Ok(state.into())
 }
@@ -118,16 +114,11 @@ pub async fn record(
     amount: Usd,
     detail: &str,
 ) -> Result<(), ApiError> {
-    db.query(
+    sql!(
+        db,
         "INSERT INTO spend_events (id, budget_id, kind, amount_micros, at_unix, detail) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES ({SpendEventId::generate()}, {budget}, {kind}, {amount}, {now_unix()}, {detail})"
     )
-    .bind(SpendEventId::generate())
-    .bind(budget)
-    .bind(kind)
-    .bind(amount)
-    .bind(now_unix())
-    .bind(detail)
     .execute()
     .await?;
 
