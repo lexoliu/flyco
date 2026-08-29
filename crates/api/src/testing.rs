@@ -138,6 +138,21 @@ pub async fn migrated_router(db: &Db) -> Router {
     migrated_router_on(db, Queue::new(InMemoryQueue::new())).await
 }
 
+/// A migrated database plus a router built around a caller's configuration.
+///
+/// For the routes whose behaviour *is* their configuration — harness
+/// linking, web push — where the difference between configured and not is
+/// the thing under test.
+pub async fn migrated_router_with_config(db: &Db, config: ApiConfig) -> Router {
+    migrate(db).await;
+    router(
+        config,
+        GithubClient::Fake(TestGithub),
+        db.clone(),
+        Queue::new(InMemoryQueue::new()),
+    )
+}
+
 /// A migrated database plus a router producing to a queue the caller holds.
 pub async fn migrated_router_on(db: &Db, queue: Queue) -> Router {
     migrate(db).await;
