@@ -1,0 +1,17 @@
+{
+  "id": "/subscriptions/e47d07d8-2715-4909-aa56-1bfde801bdf0/providers/Microsoft.CostManagement/query/8c4b1b6e-6d70-4a2d-8f21-2a5c6b0f9a11",
+  "name": "8c4b1b6e-6d70-4a2d-8f21-2a5c6b0f9a11",
+  "type": "microsoft.costmanagement/Query",
+  "location": null,
+  "sku": null,
+  "properties": {
+    "nextLink": null,
+    "columns": [
+      { "name": "Cost", "type": "Number" },
+      { "name": "Currency", "type": "String" }
+    ],
+    "rows": [
+      [ 12.345678, "USD" ]
+    ]
+  }
+}
