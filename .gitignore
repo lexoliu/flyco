@@ -1,4 +1,7 @@
 /target
-/.skyzen
+.skyzen/
+.wrangler/
+.dev.vars
 /dist
+crates/api/dist/
 node_modules
