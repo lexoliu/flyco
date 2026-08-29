@@ -71,6 +71,14 @@ pub enum ApiError {
     #[error("this MCP server definition is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     InvalidMcpServer(&'static str),
 
+    /// The skill does not exist, or belongs to somebody else.
+    #[error("skill not found", status = StatusCode::NOT_FOUND)]
+    SkillNotFound,
+
+    /// The uploaded bundle is not one flyco can install.
+    #[error("this skill bundle is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    InvalidSkill(&'static str),
+
     /// This deployment has no VAPID key pair, so it cannot send push.
     #[error(
         "this flyco deployment is not configured for web push",
@@ -340,6 +348,8 @@ impl ApiError {
             Self::McpServerNotFound => "mcp-server-not-found",
             Self::McpServerNameTaken { .. } => "mcp-server-name-taken",
             Self::InvalidMcpServer(_) => "invalid-mcp-server",
+            Self::SkillNotFound => "skill-not-found",
+            Self::InvalidSkill(_) => "invalid-skill",
             Self::PushUnconfigured => "push-unconfigured",
             Self::PushSubscriptionNotFound => "push-subscription-not-found",
             Self::InvalidPushSubscription(_) => "invalid-push-subscription",
