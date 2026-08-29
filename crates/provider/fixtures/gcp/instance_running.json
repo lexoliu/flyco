@@ -1,0 +1,24 @@
+{
+  "kind": "compute#instance",
+  "id": "8112993871560298431",
+  "name": "flyco-machine",
+  "status": "RUNNING",
+  "zone": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a",
+  "machineType": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/e2-standard-2",
+  "networkInterfaces": [
+    {
+      "name": "nic0",
+      "network": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/global/networks/default",
+      "networkIP": "10.128.0.7",
+      "accessConfigs": [
+        {
+          "type": "ONE_TO_ONE_NAT",
+          "name": "External NAT",
+          "networkTier": "PREMIUM",
+          "natIP": "34.72.118.204"
+        }
+      ]
+    }
+  ],
+  "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/instances/flyco-machine"
+}

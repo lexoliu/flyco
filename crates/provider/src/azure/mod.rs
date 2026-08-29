@@ -69,8 +69,6 @@ pub mod skus;
 #[cfg(test)]
 mod tests;
 
-use askama::Template;
-use base64::Engine as _;
 use flyco_core::machine::{
     CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
     MachineState, OsFamily,
@@ -79,8 +77,10 @@ use flyco_core::{CloudSpend, MachineId};
 
 use crate::clock::{MonotonicClock, SystemClock, SystemTimer, Timer};
 use crate::http::{HttpRequest, HttpResponse, HttpTransport, Method};
+use crate::polling::{MAX_POLL_ATTEMPTS, poll_delay};
 use crate::{
-    CapacityMode, CloudProvider, Machine, ProviderError, ProvisionRequest, ZenwaveTransport, flycod,
+    CapacityMode, CloudProvider, Machine, ProviderError, ProvisionRequest, ZenwaveTransport,
+    cloud_init, flycod,
 };
 
 use arm::{ErrorBody, Follow, OperationBody, OperationStatus, api_version};
@@ -116,9 +116,6 @@ pub const SUBNET_NAME: &str = "default";
 /// Name of the inbound SSH rule on the workspace security group.
 pub const SSH_RULE_NAME: &str = "allow-ssh-inbound";
 
-/// Where the `flycod` configuration lands on a provisioned machine.
-pub const CONFIG_PATH: &str = "/etc/flycod/config.toml";
-
 /// The administrative login a machine is created with.
 pub const ADMIN_USERNAME: &str = "flyco";
 
@@ -141,10 +138,6 @@ pub const IMAGE_SKU_ARM64: &str = "server-arm64";
 /// Storage tier of the OS disk.
 pub const OS_DISK_TYPE: &str = "StandardSSD_LRS";
 
-/// Where a machine fetches `flycod` from on first boot, unless the caller
-/// names somewhere else.
-pub const DEFAULT_FLYCOD_INSTALLER_URL: &str = "https://flyco.dev/install/flycod.sh";
-
 /// The two refusals that mean "ask again without the spot fields".
 ///
 /// The first is the subscription's offer type — Azure for Students is not a
@@ -156,13 +149,6 @@ pub const SPOT_UNSUPPORTED_CODES: [&str; 2] = [
     "AzureSpotFeatureNotEnabledForSubscription",
     "AzureSpotIsNotSupportedForThisVMSize",
 ];
-
-/// Longest a single asynchronous operation is followed for.
-///
-/// At the ten-second polling cap this is forty minutes, which is an order of
-/// magnitude beyond the minute or two a machine takes. Past it the driver
-/// gives up rather than polling for the life of the process.
-pub const MAX_POLL_ATTEMPTS: usize = 240;
 
 /// The names every flyco resource in one workspace answers to.
 ///
@@ -297,7 +283,7 @@ impl Workspace {
         Self {
             resource_group: resource_group.into(),
             admin_ssh_public_key: admin_ssh_public_key.into(),
-            flycod_installer_url: DEFAULT_FLYCOD_INSTALLER_URL.to_owned(),
+            flycod_installer_url: cloud_init::DEFAULT_FLYCOD_INSTALLER_URL.to_owned(),
             regions: Vec::new(),
         }
     }
@@ -315,32 +301,6 @@ impl Workspace {
         self.flycod_installer_url = url.into();
         self
     }
-}
-
-/// The cloud-config a machine boots with.
-#[derive(Template)]
-#[template(path = "azure/cloud_init.yml", escape = "none")]
-struct CloudInit {
-    config_path: String,
-    config_base64: String,
-    installer_url: String,
-}
-
-/// Quotes a value as a YAML single-quoted scalar.
-///
-/// Single quotes because nothing inside one is an escape except a doubled
-/// quote, which makes the encoding total: any byte sequence round-trips.
-fn yaml_quoted(value: &str) -> String {
-    let mut quoted = String::with_capacity(value.len() + 2);
-    quoted.push('\'');
-    for character in value.chars() {
-        if character == '\'' {
-            quoted.push('\'');
-        }
-        quoted.push(character);
-    }
-    quoted.push('\'');
-    quoted
 }
 
 /// The Azure driver.
@@ -439,10 +399,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             .tokens
             .access_token(&self.transport, &self.clock)
             .await?;
-        let response = self
-            .transport
-            .send(authorized(request.clone(), &token))
-            .await?;
+        let response = self.transport.send(request.clone().bearer(&token)).await?;
         if response.status != 401 {
             return Ok(response);
         }
@@ -453,7 +410,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             .tokens
             .access_token(&self.transport, &self.clock)
             .await?;
-        Ok(self.transport.send(authorized(request, &token)).await?)
+        Ok(self.transport.send(request.bearer(&token)).await?)
     }
 
     /// Sends a mutating request and waits for the operation it started.
@@ -483,9 +440,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
                 Follow::Location { url, retry_after } => (url.clone(), *retry_after, true),
             };
 
-            self.timer
-                .sleep(arm::poll_delay(retry_after, attempt))
-                .await;
+            self.timer.sleep(poll_delay(retry_after, attempt)).await;
             let polled = self
                 .send(HttpRequest::new(Method::Get, url.clone()))
                 .await?;
@@ -747,15 +702,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     fn cloud_init(&self, request: &ProvisionRequest) -> Result<String, ProviderError> {
         let config = flycod::render(&request.bootstrap)
             .map_err(|_| ProviderError::Malformed("the flycod configuration did not render"))?;
-        let rendered = CloudInit {
-            config_path: yaml_quoted(CONFIG_PATH),
-            config_base64: base64::engine::general_purpose::STANDARD.encode(config),
-            installer_url: self.workspace.flycod_installer_url.clone(),
-        }
-        .render()
-        .map_err(|_| ProviderError::Malformed("the cloud-init template did not render"))?;
-
-        Ok(base64::engine::general_purpose::STANDARD.encode(rendered))
+        cloud_init::render(&config, &self.workspace.flycod_installer_url)
     }
 
     /// The virtual-machine body for one request, asking for spot when the
@@ -1076,6 +1023,8 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         let on_demand_hourly = published.on_demand.ok_or(ExclusionReason::Unpriced)?;
 
         Ok(MachineCatalogEntry {
+            // Stamped by the control plane, which knows the row.
+            account: None,
             provider: CloudProviderKind::Azure,
             region: region.to_owned(),
             machine_type: sku.name.clone(),
@@ -1136,27 +1085,6 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         };
         costs::spend_of(&properties, now_unix)
     }
-
-    /// The region a provisioned machine lives in, read back off its
-    /// address.
-    fn region_of(machine: &Machine) -> Result<String, ProviderError> {
-        machine
-            .address
-            .as_ref()
-            .and_then(|address| address.split('.').nth(1))
-            .map(ToOwned::to_owned)
-            .ok_or(ProviderError::Malformed(
-                "an Azure machine carries no address to read its region from",
-            ))
-    }
-}
-
-/// Attaches the bearer token and the JSON media type ARM expects.
-fn authorized(request: HttpRequest, token: &str) -> HttpRequest {
-    let mut authorization = String::with_capacity(7 + token.len());
-    authorization.push_str("Bearer ");
-    authorization.push_str(token);
-    request.header("authorization", authorization)
 }
 
 /// Turns a refused response into an error that keeps its code.
@@ -1231,6 +1159,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> CloudProvider for AzureProvi
         Ok(Machine {
             id,
             native_id: self.resource_id("Microsoft.Compute/virtualMachines", &names::machine(id)),
+            region: region.clone(),
             state: MachineState::Running,
             capacity_mode,
             address: Some(names::fqdn(id, region)),
@@ -1250,8 +1179,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> CloudProvider for AzureProvi
         machine: &Machine,
         new_machine_type: &str,
     ) -> Result<Machine, ProviderError> {
-        let region = Self::region_of(machine)?;
-        self.deployable_sku(&region, new_machine_type, machine.capacity_mode)
+        self.deployable_sku(&machine.region, new_machine_type, machine.capacity_mode)
             .await?;
 
         self.post_action(machine.id, "deallocate").await?;

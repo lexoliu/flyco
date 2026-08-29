@@ -12,9 +12,13 @@ use flyco_core::{
     CloudProviderKind, CloudSpend, MachineCatalogEntry, MachineSpec, ProviderAccountId,
     ProviderCredentials, UserId,
 };
+use flyco_provider::aws::sigv4::AccessKey;
+use flyco_provider::aws::{AwsProvider, AwsWorkspace};
 use flyco_provider::azure::auth::ServicePrincipal;
 use flyco_provider::azure::{AzureProvider, Workspace};
 use flyco_provider::byo_ssh::ByoSsh;
+use flyco_provider::gcp::auth::ServiceAccountKey;
+use flyco_provider::gcp::{GcpProvider, GcpWorkspace};
 use flyco_provider::{CloudProvider, Machine, ProviderError, ProvisionRequest};
 use skyzen::sql;
 use skyzen_services::Db;
@@ -60,6 +64,66 @@ impl LinkedAccount {
     pub const fn credentials(&self) -> &ProviderCredentials {
         &self.credentials
     }
+}
+
+/// The Azure driver one set of Azure credentials opens.
+///
+/// Every dispatch below needs the same construction, so it is written once:
+/// a credential field added or renamed is one edit rather than three that
+/// can drift apart.
+pub(crate) fn azure_driver(
+    tenant_id: &str,
+    client_id: &str,
+    client_secret: &str,
+    subscription_id: &str,
+    resource_group: &str,
+    admin_ssh_public_key: &str,
+) -> AzureProvider {
+    AzureProvider::new(
+        ServicePrincipal {
+            tenant_id: tenant_id.to_owned(),
+            client_id: client_id.to_owned(),
+            client_secret: client_secret.to_owned(),
+            subscription_id: subscription_id.to_owned(),
+        },
+        Workspace::new(resource_group, admin_ssh_public_key),
+    )
+}
+
+/// The AWS driver one access key opens.
+pub(crate) fn aws_driver(
+    access_key_id: &str,
+    secret_access_key: &str,
+    session_token: Option<&str>,
+    key_name: Option<&str>,
+) -> AwsProvider {
+    let mut key = AccessKey::new(access_key_id, secret_access_key);
+    if let Some(token) = session_token {
+        key = key.with_session_token(token);
+    }
+
+    let mut workspace = AwsWorkspace::new();
+    if let Some(key_name) = key_name {
+        workspace = workspace.with_key_pair(key_name);
+    }
+    AwsProvider::new(key, workspace)
+}
+
+/// The GCP driver one service-account key opens.
+///
+/// Fallible where the other two are not: a Google credential is a *document*
+/// rather than a set of fields, and one that is not a service-account key is
+/// a credential to fix rather than a failure to retry.
+///
+/// # Errors
+///
+/// Returns [`ProviderError::Malformed`] if the document is not a
+/// service-account key.
+pub(crate) fn gcp_driver(service_account_json: &str) -> Result<GcpProvider, ProviderError> {
+    Ok(GcpProvider::new(
+        ServiceAccountKey::parse(service_account_json)?,
+        GcpWorkspace::new(),
+    ))
 }
 
 #[derive(Debug, skyzen::FromRow)]
@@ -138,17 +202,28 @@ pub async fn account(
 
 /// Reads what an account can actually deploy today.
 ///
-/// For Azure that is the intersection of three independent gates — the
-/// SKU's own restrictions, the subscription's quota, and the region policy
-/// assigned to the subscription — so an entry that comes back is one a
-/// provision request will be allowed to create. A registered SSH host
-/// reports the single machine it is, unpriced: the user already owns it.
+/// For every cloud provider that is the intersection of the independent
+/// gates its API exposes — availability, quota, and whatever the account
+/// itself forbids — so an entry that comes back is one a provision request
+/// will be allowed to create. A registered SSH host reports the single
+/// machine it is, unpriced: the user already owns it.
 ///
 /// # Errors
 ///
 /// Returns [`ProviderError`] if the provider rejects the credentials or
 /// cannot be reached, and for providers flyco has no driver for yet.
 pub async fn catalog(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>, ProviderError> {
+    let mut entries = catalog_of(account).await?;
+    // A driver holds credentials, not the row they came from, so the
+    // account is stamped here — otherwise a choice from the merged list
+    // could not name the account it must be provisioned through.
+    for entry in &mut entries {
+        entry.account = Some(account.id);
+    }
+    Ok(entries)
+}
+
+async fn catalog_of(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>, ProviderError> {
     match &account.credentials {
         ProviderCredentials::Azure {
             tenant_id,
@@ -158,39 +233,50 @@ pub async fn catalog(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>
             resource_group,
             admin_ssh_public_key,
         } => {
-            let mut provider = AzureProvider::new(
-                ServicePrincipal {
-                    tenant_id: tenant_id.clone(),
-                    client_id: client_id.clone(),
-                    client_secret: client_secret.clone(),
-                    subscription_id: subscription_id.clone(),
-                },
-                Workspace::new(resource_group.clone(), admin_ssh_public_key.clone()),
-            );
-            provider.catalog().await
+            azure_driver(
+                tenant_id,
+                client_id,
+                client_secret,
+                subscription_id,
+                resource_group,
+                admin_ssh_public_key,
+            )
+            .catalog()
+            .await
         }
         ProviderCredentials::ByoSsh { host, .. } => Ok(ByoSsh::new(host.clone()).catalog()),
-        ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
-            provider: "AWS",
-            operation: "catalog",
-            reason: "flyco has no AWS driver yet",
-        }),
-        ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
-            provider: "GCP",
-            operation: "catalog",
-            reason: "flyco has no GCP driver yet",
-        }),
+        ProviderCredentials::Aws {
+            access_key_id,
+            secret_access_key,
+            session_token,
+            key_name,
+        } => {
+            aws_driver(
+                access_key_id,
+                secret_access_key,
+                session_token.as_deref(),
+                key_name.as_deref(),
+            )
+            .catalog()
+            .await
+        }
+        ProviderCredentials::Gcp {
+            service_account_json,
+        } => gcp_driver(service_account_json)?.catalog().await,
     }
 }
 
 /// Reads what the provider's own meter says this account has been billed
 /// over its current billing period.
 ///
-/// `None` is not a failure and not a zero: it means this provider meters
-/// nothing on flyco's behalf. A registered SSH host is hardware the user
-/// already owns and already pays for, so it contributes no row at all —
-/// reporting `$0.00` against it would be flyco asserting the machine is
-/// free.
+/// `None` is not a failure and not a zero: it means flyco has no metered
+/// number to report, for one of two reasons. A registered SSH host is
+/// hardware the user already owns and already pays for, so there is nothing
+/// to meter; a GCP project has plenty to meter and no API that will say so,
+/// because Google delivers billing data through a `BigQuery` export the user
+/// configures rather than through a running total a service account can
+/// read. Either way the answer is silence rather than a `$0.00` that would
+/// read as "this costs nothing".
 ///
 /// Exposed here for the same reason [`catalog`] is: the driver trait is not
 /// object-safe, so the dispatch on the credential variant lives in the
@@ -212,39 +298,48 @@ pub async fn cloud_usage(
             subscription_id,
             resource_group,
             admin_ssh_public_key,
-        } => {
-            let mut provider = AzureProvider::new(
-                ServicePrincipal {
-                    tenant_id: tenant_id.clone(),
-                    client_id: client_id.clone(),
-                    client_secret: client_secret.clone(),
-                    subscription_id: subscription_id.clone(),
-                },
-                Workspace::new(resource_group.clone(), admin_ssh_public_key.clone()),
-            );
-            provider.billing_period_cost(now_unix).await.map(Some)
-        }
-        ProviderCredentials::ByoSsh { .. } => Ok(None),
-        ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
-            provider: "AWS",
-            operation: "usage",
-            reason: "flyco has no AWS driver yet",
-        }),
-        ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
-            provider: "GCP",
-            operation: "usage",
-            reason: "flyco has no GCP driver yet",
-        }),
+        } => azure_driver(
+            tenant_id,
+            client_id,
+            client_secret,
+            subscription_id,
+            resource_group,
+            admin_ssh_public_key,
+        )
+        .billing_period_cost(now_unix)
+        .await
+        .map(Some),
+        ProviderCredentials::Aws {
+            access_key_id,
+            secret_access_key,
+            session_token,
+            key_name,
+        } => aws_driver(
+            access_key_id,
+            secret_access_key,
+            session_token.as_deref(),
+            key_name.as_deref(),
+        )
+        .billing_period_cost(now_unix)
+        .await
+        .map(Some),
+        // Two providers contribute no row, for the two different reasons
+        // this function's documentation gives: a registered SSH host has
+        // nothing flyco meters, and a GCP project has plenty and no API that
+        // will say so. The answer is the same because the honest answer to
+        // "how much has this cost" is silence in both cases.
+        ProviderCredentials::ByoSsh { .. } | ProviderCredentials::Gcp { .. } => Ok(None),
     }
 }
 
 /// One lifecycle operation against an already-provisioned machine.
 ///
 /// Each arm dispatches on the credential variant for the same reason
-/// [`catalog`] does: the driver trait is not object-safe, deliberately.
-/// Only Azure implements these today — a registered SSH host cannot be
-/// resized, and its container lifecycle is executed natively rather than
-/// from the Worker.
+/// [`catalog`] does: the driver trait is not object-safe, deliberately, and
+/// what an operation *means* is written once in [`Operation::run`] rather
+/// than once per provider. Every cloud driver implements these; a registered
+/// SSH host does not, because it cannot be resized and its container
+/// lifecycle is executed natively rather than from the Worker.
 ///
 /// # Errors
 ///
@@ -264,40 +359,50 @@ pub async fn operate(
             resource_group,
             admin_ssh_public_key,
         } => {
-            let mut provider = AzureProvider::new(
-                ServicePrincipal {
-                    tenant_id: tenant_id.clone(),
-                    client_id: client_id.clone(),
-                    client_secret: client_secret.clone(),
-                    subscription_id: subscription_id.clone(),
-                },
-                Workspace::new(resource_group.clone(), admin_ssh_public_key.clone()),
-            );
-            match operation {
-                Operation::Resize { machine_type } => provider.resize(machine, machine_type).await,
-                Operation::Stop => provider.deallocate(machine).await.map(|()| {
-                    let mut stopped = machine.clone();
-                    stopped.state = flyco_core::MachineState::Deallocated;
-                    stopped
-                }),
-                Operation::Start => provider.start(machine).await,
-            }
+            operation
+                .run(
+                    &mut azure_driver(
+                        tenant_id,
+                        client_id,
+                        client_secret,
+                        subscription_id,
+                        resource_group,
+                        admin_ssh_public_key,
+                    ),
+                    machine,
+                )
+                .await
         }
         ProviderCredentials::ByoSsh { .. } => Err(ProviderError::Unsupported {
             provider: "byo-ssh",
             operation: operation.name(),
             reason: "a host you own is started and stopped by you, not by flyco",
         }),
-        ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
-            provider: "AWS",
-            operation: operation.name(),
-            reason: "flyco has no AWS driver yet",
-        }),
-        ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
-            provider: "GCP",
-            operation: operation.name(),
-            reason: "flyco has no GCP driver yet",
-        }),
+        ProviderCredentials::Aws {
+            access_key_id,
+            secret_access_key,
+            session_token,
+            key_name,
+        } => {
+            operation
+                .run(
+                    &mut aws_driver(
+                        access_key_id,
+                        secret_access_key,
+                        session_token.as_deref(),
+                        key_name.as_deref(),
+                    ),
+                    machine,
+                )
+                .await
+        }
+        ProviderCredentials::Gcp {
+            service_account_json,
+        } => {
+            operation
+                .run(&mut gcp_driver(service_account_json)?, machine)
+                .await
+        }
     }
 }
 
@@ -324,14 +429,37 @@ impl Operation<'_> {
             Self::Start => "start",
         }
     }
+
+    /// Performs this operation against one driver.
+    ///
+    /// Generic over the driver rather than repeated per credential variant:
+    /// the trait is not object-safe on purpose, and a generic function is
+    /// what keeps every future unboxed while still writing "what a stop
+    /// means" exactly once. A stop is the one that has something to say —
+    /// the driver answers with nothing, and the machine a caller gets back
+    /// has to say it is deallocated.
+    async fn run<P: CloudProvider>(
+        self,
+        provider: &mut P,
+        machine: &flyco_provider::Machine,
+    ) -> Result<flyco_provider::Machine, ProviderError> {
+        match self {
+            Self::Resize { machine_type } => provider.resize(machine, machine_type).await,
+            Self::Stop => provider.deallocate(machine).await.map(|()| {
+                let mut stopped = machine.clone();
+                stopped.state = flyco_core::MachineState::Deallocated;
+                stopped
+            }),
+            Self::Start => provider.start(machine).await,
+        }
+    }
 }
 
 /// The Azure driver an account opens, when it is an Azure account.
 ///
-/// The six fields a service principal and a workspace are built from are
-/// read out in one place, so the two operations below cannot disagree about
-/// which of them matter.
-fn azure_driver(credentials: &ProviderCredentials) -> Option<AzureProvider> {
+/// A thin destructuring over [`azure_driver`], so a caller holding whole
+/// credentials does not repeat which six fields matter.
+fn azure_driver_for(credentials: &ProviderCredentials) -> Option<AzureProvider> {
     let ProviderCredentials::Azure {
         tenant_id,
         client_id,
@@ -344,14 +472,13 @@ fn azure_driver(credentials: &ProviderCredentials) -> Option<AzureProvider> {
         return None;
     };
 
-    Some(AzureProvider::new(
-        ServicePrincipal {
-            tenant_id: tenant_id.clone(),
-            client_id: client_id.clone(),
-            client_secret: client_secret.clone(),
-            subscription_id: subscription_id.clone(),
-        },
-        Workspace::new(resource_group.clone(), admin_ssh_public_key.clone()),
+    Some(azure_driver(
+        tenant_id,
+        client_id,
+        client_secret,
+        subscription_id,
+        resource_group,
+        admin_ssh_public_key,
     ))
 }
 
@@ -380,7 +507,7 @@ pub async fn deployable(
     account: &LinkedAccount,
     spec: &MachineSpec,
 ) -> Result<MachineCatalogEntry, ProviderError> {
-    if let Some(mut azure) = azure_driver(account.credentials()) {
+    if let Some(mut azure) = azure_driver_for(account.credentials()) {
         let report = azure.region_report(&spec.region).await?;
         return report
             .offered
@@ -445,7 +572,7 @@ impl Provisioner for CloudProvisioner {
         account: &LinkedAccount,
         request: &ProvisionRequest,
     ) -> Result<Machine, ProviderError> {
-        if let Some(mut azure) = azure_driver(account.credentials()) {
+        if let Some(mut azure) = azure_driver_for(account.credentials()) {
             return azure.provision(request).await;
         }
 

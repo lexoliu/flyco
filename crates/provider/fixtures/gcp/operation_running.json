@@ -1,0 +1,12 @@
+{
+  "kind": "compute#operation",
+  "id": "4501862738261923841",
+  "name": "operation-1788004800000-flyco",
+  "operationType": "insert",
+  "targetLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/instances/flyco-machine",
+  "status": "RUNNING",
+  "zone": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a",
+  "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/operations/operation-1788004800000-flyco",
+  "insertTime": "2026-08-29T05:00:00.000-07:00",
+  "progress": 0
+}

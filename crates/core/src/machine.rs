@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::{MachineId, SessionId};
+use crate::id::{MachineId, ProviderAccountId, SessionId};
 use crate::money::Usd;
 
 /// A supported compute provider.
@@ -96,6 +96,14 @@ impl MachinePricing {
 pub struct MachineCatalogEntry {
     /// Which provider offers it.
     pub provider: CloudProviderKind,
+    /// Which linked account offers it.
+    ///
+    /// A driver cannot know this — it holds credentials, not the row they
+    /// were unsealed from — so it is stamped by the control plane as it
+    /// merges each account's catalog. Without it a caller could not turn a
+    /// choice from the merged list back into a request, which names the
+    /// account it provisions through.
+    pub account: Option<ProviderAccountId>,
     /// Provider-native region this entry is offered in.
     ///
     /// A catalog spans every region an account may deploy into, so an entry
@@ -230,6 +238,7 @@ mod tests {
     #[test]
     fn a_catalog_entry_round_trips_with_its_pricing_tag() {
         let entry = MachineCatalogEntry {
+            account: None,
             region: "northcentralus".to_owned(),
             provider: CloudProviderKind::Azure,
             machine_type: "Standard_B2pts_v2".to_owned(),
