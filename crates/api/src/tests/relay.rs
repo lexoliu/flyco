@@ -45,7 +45,8 @@ async fn open_session(client: &TestClient<Router>, caller: &Caller, repo: &str) 
             harness: HarnessKind::ClaudeCode,
             repo: repo.to_owned(),
             budget_limit: Usd::from_dollars(10),
-            machine: machine_choice(caller.account),
+            machine: Some(machine_choice(caller.account)),
+            spot: true,
         })
         .send()
         .await;

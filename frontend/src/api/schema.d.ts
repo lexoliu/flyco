@@ -1474,14 +1474,19 @@ export interface components {
             budget_limit: components["schemas"]["Usd"];
             /** @description Which coding harness drives the session. */
             harness: components["schemas"]["HarnessKind"];
-            /** @description The machine to provision for it. */
-            machine: components["schemas"]["MachineChoice"];
+            machine?: null | components["schemas"]["MachineChoice"];
             /**
              * @description Repository to work in, `owner/name`. Untyped here because it is
              *     untrusted input; the control plane parses it into a
              *     [`RepoSlug`](crate::repo::RepoSlug) and rejects anything else.
              */
             repo: string;
+            /**
+             * @description Whether to ask for interruptible spot capacity when flyco picks the
+             *     machine. Ignored when [`Self::machine`] names a type, because that
+             *     choice already carries its own `spot`.
+             */
+            spot?: boolean;
         };
         /**
          * @description A freshly minted API key.
@@ -1742,12 +1747,11 @@ export interface components {
         /**
          * @description Which machine a session asks for.
          *
-         *     Part of [`CreateSession`] rather than a follow-up call, because a session
-         *     created without one would have to be started on a guess and moved
-         *     afterwards — and the window between the two is a session running on the
-         *     wrong machine, billed at the wrong price. The choice is validated against
-         *     the named account's own catalog before anything is written, so a machine
-         *     the account cannot deploy is refused where the user made the choice.
+         *     Named on [`CreateSession`] when the caller picks a type themselves. The
+         *     choice is validated against the named account's own catalog before
+         *     anything is written, so a machine the account cannot deploy is refused
+         *     where the user made the choice. Omitted, flyco picks the cheapest
+         *     deployable Linux type instead of guessing and resizing afterwards.
          */
         MachineChoice: {
             /**
@@ -3724,14 +3728,19 @@ export interface operations {
                     budget_limit: components["schemas"]["Usd"];
                     /** @description Which coding harness drives the session. */
                     harness: components["schemas"]["HarnessKind"];
-                    /** @description The machine to provision for it. */
-                    machine: components["schemas"]["MachineChoice"];
+                    machine?: null | components["schemas"]["MachineChoice"];
                     /**
                      * @description Repository to work in, `owner/name`. Untyped here because it is
                      *     untrusted input; the control plane parses it into a
                      *     [`RepoSlug`](crate::repo::RepoSlug) and rejects anything else.
                      */
                     repo: string;
+                    /**
+                     * @description Whether to ask for interruptible spot capacity when flyco picks the
+                     *     machine. Ignored when [`Self::machine`] names a type, because that
+                     *     choice already carries its own `spot`.
+                     */
+                    spot?: boolean;
                 };
             };
         };
