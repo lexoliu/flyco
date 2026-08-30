@@ -29,7 +29,7 @@ fn bootstrap(claude_auth: ClaudeCredential) -> DaemonBootstrap {
         control_plane_url: CONTROL_PLANE.to_owned(),
         daemon_token: DAEMON_TOKEN.to_owned(),
         harness: HarnessKind::ClaudeCode,
-        permission_mode: PermissionMode::Default,
+        permission_mode: PermissionMode::Auto,
         claude_auth,
         resume_session_id: None,
     }
@@ -52,7 +52,7 @@ fn a_provisioned_configuration_is_one_this_daemon_accepts() {
     assert_eq!(config.workdir, std::path::PathBuf::from(WORKDIR));
     assert_eq!(
         config.claude.as_ref().expect("claude").permission_mode,
-        PermissionMode::Default
+        PermissionMode::Auto
     );
 }
 

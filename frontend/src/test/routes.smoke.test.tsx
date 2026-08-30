@@ -12,6 +12,7 @@ import SkillsTab from "../routes/settings/SkillsTab";
 import CloudProvidersTab from "../routes/settings/CloudProvidersTab";
 import ApiKeysTab from "../routes/settings/ApiKeysTab";
 import HarnessAccountsTab from "../routes/settings/HarnessAccountsTab";
+import FeaturesTab from "../routes/settings/FeaturesTab";
 import MemoryTab from "../routes/settings/MemoryTab";
 import AgentsMdTab from "../routes/settings/AgentsMdTab";
 import NotificationsTab from "../routes/settings/NotificationsTab";
@@ -41,6 +42,7 @@ function renderAt(url: string) {
         <Route path="/skills" component={SkillsTab} />
         <Route path="/providers" component={CloudProvidersTab} />
         <Route path="/harness-accounts" component={HarnessAccountsTab} />
+        <Route path="/features" component={FeaturesTab} />
         <Route path="/memory" component={MemoryTab} />
         <Route path="/agents-md" component={AgentsMdTab} />
         <Route path="/notifications" component={NotificationsTab} />
@@ -85,6 +87,11 @@ describe("route smoke tests", () => {
   it("renders /settings/harness-accounts", async () => {
     const { findByRole } = renderAt("/settings/harness-accounts");
     expect(await findByRole("heading", { level: 2, name: "Harness accounts" })).toBeInTheDocument();
+  });
+
+  it("renders /settings/features", async () => {
+    const { findByRole } = renderAt("/settings/features");
+    expect(await findByRole("heading", { level: 2, name: "Harness features" })).toBeInTheDocument();
   });
 
   it("renders /settings/memory", () => {

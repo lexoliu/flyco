@@ -359,11 +359,10 @@ async fn bootstrap(
         control_plane_url: config.control_plane_url(),
         daemon_token: token.token,
         harness: claim.harness,
-        // Flyco's takeover enforcement is what makes a mode safe, and it is
-        // installed on the machine rather than chosen per session; the
-        // default mode is the one that routes every tool call through the
-        // approval UI.
-        permission_mode: PermissionMode::Default,
+        // Auto is the product default. Flyco's managed deny rules still bind
+        // even in this mode, and anything the classifier does not auto-allow
+        // still reaches the approval UI.
+        permission_mode: PermissionMode::Auto,
         claude_auth,
         resume_session_id: sessions::harness_session_id(db, claim.session)
             .await
