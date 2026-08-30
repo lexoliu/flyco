@@ -179,6 +179,27 @@ pub struct MachineCatalogEntry {
     pub pricing: MachinePricing,
 }
 
+/// The cheapest deployable Linux machine in a catalog.
+///
+/// User-owned hardware wins (flyco meters nothing on it). Metered entries
+/// are ordered by the hourly rate the session actually asked for — spot
+/// when the caller wants it and the type has a spot price, otherwise
+/// on-demand. Entries without a linked account cannot be provisioned and
+/// are ignored. Mac and Windows types are never the automatic first
+/// machine: flyco's image is Linux.
+#[must_use]
+pub fn cheapest_linux(entries: &[MachineCatalogEntry], spot: bool) -> Option<&MachineCatalogEntry> {
+    entries
+        .iter()
+        .filter(|entry| entry.os == OsFamily::Linux && entry.account.is_some())
+        .min_by_key(|entry| {
+            entry
+                .pricing
+                .hourly(spot)
+                .map_or((0_u8, Usd::ZERO), |hourly| (1_u8, hourly))
+        })
+}
+
 /// Everything needed to provision a machine for a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MachineSpec {
@@ -256,9 +277,11 @@ pub struct ResizeMachine {
 mod tests {
     use super::{
         CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, OsFamily,
-        StoragePricing,
+        StoragePricing, cheapest_linux,
     };
+    use crate::id::ProviderAccountId;
     use crate::money::Usd;
+    use uuid::Uuid;
 
     #[test]
     fn a_metered_entry_prices_spot_when_there_is_a_spot_price() {
@@ -325,5 +348,55 @@ mod tests {
             serde_json::from_value::<MachineCatalogEntry>(json).expect("deserialize"),
             entry
         );
+    }
+
+    fn linux(machine_type: &str, hourly: Option<Usd>) -> MachineCatalogEntry {
+        MachineCatalogEntry {
+            account: Some(ProviderAccountId::from_uuid(Uuid::from_u128(1))),
+            region: "us-east-1".to_owned(),
+            provider: CloudProviderKind::Aws,
+            machine_type: machine_type.to_owned(),
+            os: OsFamily::Linux,
+            capacity: None,
+            pricing: hourly.map_or(MachinePricing::UserOwned, |on_demand_hourly| {
+                MachinePricing::Metered {
+                    on_demand_hourly,
+                    spot_hourly: Some(Usd::from_micros(on_demand_hourly.micros() / 2)),
+                    minimum_billing_hours: None,
+                    storage: StoragePricing::PerGibHourly {
+                        rate: Usd::from_micros(1),
+                    },
+                }
+            }),
+        }
+    }
+
+    #[test]
+    fn automatic_choice_is_the_cheapest_linux_with_an_account() {
+        let mac = MachineCatalogEntry {
+            os: OsFamily::MacOs,
+            ..linux("mac.metal", Some(Usd::from_cents(1)))
+        };
+        let expensive = linux("big", Some(Usd::from_cents(50)));
+        let cheap = linux("small", Some(Usd::from_cents(2)));
+        let owned = linux("home", None);
+        let catalog = [mac, expensive, cheap, owned];
+
+        assert_eq!(
+            cheapest_linux(&catalog, true).map(|entry| entry.machine_type.as_str()),
+            Some("home")
+        );
+        assert_eq!(
+            cheapest_linux(&catalog[..3], true).map(|entry| entry.machine_type.as_str()),
+            Some("small")
+        );
+        assert!(cheapest_linux(&catalog[..1], true).is_none());
+    }
+
+    #[test]
+    fn an_entry_without_an_account_cannot_be_chosen() {
+        let mut orphan = linux("small", Some(Usd::from_cents(1)));
+        orphan.account = None;
+        assert!(cheapest_linux(&[orphan], true).is_none());
     }
 }
