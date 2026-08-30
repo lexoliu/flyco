@@ -10,16 +10,21 @@ export interface NewSessionInput {
   /** Whole-dollar budget limit, as entered in the new-session form. */
   budgetLimitDollars: number;
   /**
-   * The machine to provision on. Chosen at creation rather than resized
-   * into afterwards, so a session never starts on one nobody asked for.
+   * The machine to provision on. Omitted, flyco picks the cheapest
+   * deployable Linux type from the caller's catalog.
    */
-  machine: {
+  machine?: {
     providerAccount: string;
     machineType: string;
     region: string;
     spot: boolean;
     diskGib?: number;
   };
+  /**
+   * Spot preference when flyco picks the machine. Ignored when `machine`
+   * names a type.
+   */
+  spot?: boolean;
 }
 
 export function requestNewSession(input: NewSessionInput): Promise<SessionDetail> {
@@ -27,14 +32,18 @@ export function requestNewSession(input: NewSessionInput): Promise<SessionDetail
     repo: input.repo,
     harness: input.harness,
     budget_limit: dollarsToUsdMicros(input.budgetLimitDollars),
-    machine: {
-      provider_account: input.machine.providerAccount,
-      machine_type: input.machine.machineType,
-      region: input.machine.region,
-      spot: input.machine.spot,
-      ...(input.machine.diskGib === undefined
-        ? {}
-        : { disk_gib: input.machine.diskGib }),
-    },
+    ...(input.machine === undefined
+      ? { spot: input.spot ?? true }
+      : {
+          machine: {
+            provider_account: input.machine.providerAccount,
+            machine_type: input.machine.machineType,
+            region: input.machine.region,
+            spot: input.machine.spot,
+            ...(input.machine.diskGib === undefined
+              ? {}
+              : { disk_gib: input.machine.diskGib }),
+          },
+        }),
   });
 }

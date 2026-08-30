@@ -11,7 +11,7 @@ import {
   type MachineCatalogEntry,
   type RepoSummary,
 } from "../api/client";
-import { requestNewSession } from "../api/sessions";
+import { requestNewSession, type NewSessionInput } from "../api/sessions";
 import { cx } from "../lib/cx";
 import { formatUsd } from "../lib/money";
 import { PROVIDER_LABEL } from "../lib/providers";
@@ -76,24 +76,29 @@ function NewSessionForm(props: { onCreated: (id: string) => void; onCancel: () =
     setError(null);
     try {
       const machineKey = selectedMachineKey();
-      const entry = (catalog() ?? []).find(
-        (candidate) => catalogEntryKey(candidate) === machineKey,
-      );
-      if (entry === undefined || entry.account === null || entry.account === undefined) {
-        setError(new Error("Pick a machine before starting a session."));
-        return;
-      }
-
-      const created = await requestNewSession({
-        repo: repo.slug,
-        harness: harness(),
-        budgetLimitDollars: budgetDollars(),
-        machine: {
+      let machine: NewSessionInput["machine"];
+      if (machineKey !== null) {
+        const entry = (catalog() ?? []).find(
+          (candidate) => catalogEntryKey(candidate) === machineKey,
+        );
+        if (entry === undefined || entry.account === null || entry.account === undefined) {
+          setError(new Error("Pick a machine before starting a session."));
+          setSubmitting(false);
+          return;
+        }
+        machine = {
           providerAccount: entry.account,
           machineType: entry.machine_type,
           region: entry.region,
           spot: spot(),
-        },
+        };
+      }
+      const created = await requestNewSession({
+        repo: repo.slug,
+        harness: harness(),
+        budgetLimitDollars: budgetDollars(),
+        machine,
+        spot: machine === undefined ? spot() : undefined,
       });
       props.onCreated(created.id);
     } catch (err) {
