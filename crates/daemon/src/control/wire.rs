@@ -83,6 +83,10 @@ const BUDGET_NOTICE_PREFIX: &str = "[flyco budget notice]";
 /// What the agent is told when a turn finishes on a dirty tree.
 const DIRTY_NOTICE: &str = "[flyco repo notice] the working tree has uncommitted changes. Commit them before considering this task complete. Flyco keeps the session awake while it is dirty, unless the compute budget is exhausted.";
 
+/// What the agent is told when a usage limit has reset.
+const USAGE_RESET_NOTICE: &str =
+    "[flyco usage notice] the account usage limit has reset. Continue.";
+
 /// The daemon could not keep its end of the relay.
 #[derive(Debug, thiserror::Error)]
 pub enum WireError {
@@ -419,6 +423,8 @@ struct Connection<S, T, A, W> {
     harness_alive: bool,
     /// Whether the working-tree watcher is still producing summaries.
     repo_watch_alive: bool,
+    /// When to auto-continue after a usage limit, if one is in force.
+    continue_at: Option<tokio::time::Instant>,
     /// REST-assigned approval id → harness-native id.
     approvals: BTreeMap<ApprovalId, ApprovalId>,
 }
@@ -495,6 +501,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
                     if completed_dirty {
                         self.nudge_if_dirty().await?;
                     }
+                    self.schedule_usage_continue(&outbound.frame);
                 }
                 inbound = next_frame(socket) => {
                     let Some(command) = inbound? else {
@@ -513,6 +520,15 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
                         tracing::warn!(%error, "a terminal frame did not reach the room; retrying it on the next connection");
                         *in_flight = Some(frame);
                         return Ok(Ended::Disconnected);
+                    }
+                }
+                () = tokio::time::sleep_until(self.continue_at.unwrap_or_else(tokio::time::Instant::now)), if self.continue_at.is_some() => {
+                    self.continue_at = None;
+                    if !self.paused {
+                        self.session
+                            .send_user_message(USAGE_RESET_NOTICE.to_owned())
+                            .await
+                            .map_err(harness)?;
                     }
                 }
                 summary = self.repo_status.recv(), if self.repo_watch_alive => {
@@ -603,6 +619,24 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
                 .map_err(harness)?;
         }
         Ok(())
+    }
+
+    fn schedule_usage_continue(&mut self, frame: &DaemonToControl) {
+        let DaemonToControl::Harness {
+            event:
+                HarnessEvent::UsageLimited {
+                    resets_at_unix: Some(unix),
+                },
+        } = frame
+        else {
+            return;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the host clock is set before the Unix epoch")
+            .as_secs();
+        let wait = unix.saturating_sub(now);
+        self.continue_at = Some(tokio::time::Instant::now() + Duration::from_secs(wait));
     }
 
     /// Applies a budget threshold.
@@ -705,6 +739,7 @@ where
         tree: Tree::Clean,
         harness_alive: true,
         repo_watch_alive: true,
+        continue_at: None,
         approvals: BTreeMap::new(),
     };
     let mut attempt = 0_u32;

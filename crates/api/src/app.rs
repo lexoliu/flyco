@@ -3,9 +3,9 @@
 use flyco_core::{
     ApiKeyId, ApiKeySummary, ApprovalId, ApprovalState, ApprovalView, BudgetConfig, BudgetView,
     ControlToDaemon, CreateApiKey, CreateSession, CreatedApiKey, CurrentUser, DaemonToken,
-    DecideApproval, EnvDocument, HarnessObservation, MachineSpec, RepoSlug, RepoStatus,
-    SendMessage, SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv,
-    UpdateMe, UserId, wire::ApprovalPayload,
+    DecideApproval, EnvDocument, HarnessFeature, HarnessObservation, MachineSpec, RepoSlug,
+    RepoStatus, SendMessage, SessionDetail, SessionId, SessionState, SessionSummary, TurnPage,
+    UpdateEnv, UpdateMe, UserId, wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -220,6 +220,12 @@ fn undeployable(error: flyco_provider::ProviderError) -> ApiError {
         }
         other => ApiError::Provisioning(other.to_string()),
     }
+}
+
+/// The verified per-harness feature matrix.
+#[skyzen::openapi]
+async fn list_harness_features() -> Outcome<Json<Vec<HarnessFeature>>> {
+    Ok(Json(flyco_core::matrix())).into()
 }
 
 /// Lists the caller's sessions, newest first.
@@ -1102,6 +1108,7 @@ fn daemon_routes() -> Vec<RouteNode> {
 fn account_routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/me".at(me).patch(update_me),
+        "/v1/harness-features".at(list_harness_features),
         "/v1/api-keys".post(create_api_key).get(list_api_keys),
         "/v1/api-keys/{id}".delete(revoke_api_key),
         "/v1/approvals".at(list_approvals),

@@ -12,6 +12,7 @@ const TABS: readonly SettingsTab[] = [
   { href: "/settings/skills", label: "Skills" },
   { href: "/settings/providers", label: "Cloud providers" },
   { href: "/settings/harness-accounts", label: "Harness accounts" },
+  { href: "/settings/features", label: "Harness features" },
   { href: "/settings/memory", label: "Memory" },
   { href: "/settings/agents-md", label: "AGENTS.md" },
   { href: "/settings/notifications", label: "Notifications" },

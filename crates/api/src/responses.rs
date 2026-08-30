@@ -144,6 +144,7 @@ fn register_schemas(spec: &mut OpenApi) {
     register::<flyco_core::DaemonToken>(components);
     register::<flyco_core::EnvDocument>(components);
     register::<flyco_core::HarnessAccountView>(components);
+    register::<flyco_core::HarnessFeature>(components);
     register::<flyco_core::LlmUsageView>(components);
     register::<flyco_core::MachineCatalogEntry>(components);
     register::<flyco_core::MachineView>(components);
