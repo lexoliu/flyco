@@ -566,7 +566,7 @@ async fn dispatch_command(
             id: *id,
             decision: *decision,
         }),
-        ControlToDaemon::Archive => Some(ClientEvent::SessionStateChanged {
+        ControlToDaemon::Archive { .. } => Some(ClientEvent::SessionStateChanged {
             state: flyco_core::SessionState::Archived,
         }),
         _ => None,

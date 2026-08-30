@@ -53,6 +53,7 @@ use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::control::rest::{ControlApi, ControlApiError};
+use crate::git::{GitError, WorkingTree};
 use crate::harness::{HarnessSession, SessionOutput, ToolApproval};
 use crate::terminal::{TerminalError, TerminalSession};
 
@@ -78,6 +79,9 @@ pub const BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// [`BudgetSignal::Pause`] is the exception: that one is enforced, not
 /// announced.
 const BUDGET_NOTICE_PREFIX: &str = "[flyco budget notice]";
+
+/// What the agent is told when a turn finishes on a dirty tree.
+const DIRTY_NOTICE: &str = "[flyco repo notice] the working tree has uncommitted changes. Commit them before considering this task complete. Flyco keeps the session awake while it is dirty, unless the compute budget is exhausted.";
 
 /// The daemon could not keep its end of the relay.
 #[derive(Debug, thiserror::Error)]
@@ -111,6 +115,9 @@ pub enum WireError {
     /// The web terminal failed.
     #[error(transparent)]
     Terminal(#[from] TerminalError),
+    /// The session checkout could not be read or snapshotted.
+    #[error(transparent)]
+    Git(#[from] GitError),
 }
 
 /// The socket type a connected daemon holds.
@@ -381,10 +388,25 @@ async fn collect<A: ControlApi>(
 }
 
 /// The socket half of the relay.
-struct Connection<S, T> {
+/// Whether the checkout currently has uncommitted work, and whether the
+/// agent has been told this episode.
+enum Tree {
+    /// `git status --short` was empty, or nobody has looked yet.
+    Clean,
+    /// Uncommitted work is present.
+    Dirty {
+        /// Whether this episode has already been announced to the agent.
+        noticed: bool,
+    },
+}
+
+struct Connection<S, T, A, W> {
     session: S,
     terminal: T,
     terminal_out: mpsc::Receiver<String>,
+    api: A,
+    workdir: W,
+    repo_status: mpsc::UnboundedReceiver<String>,
     endpoint: Endpoint,
     /// Whether a budget pause has stopped this session accepting work.
     ///
@@ -392,6 +414,11 @@ struct Connection<S, T> {
     /// control plane provisioning a new one, not by the daemon deciding the
     /// pause is over.
     paused: bool,
+    tree: Tree,
+    /// Whether the harness is still producing output.
+    harness_alive: bool,
+    /// Whether the working-tree watcher is still producing summaries.
+    repo_watch_alive: bool,
     /// REST-assigned approval id → harness-native id.
     approvals: BTreeMap<ApprovalId, ApprovalId>,
 }
@@ -406,7 +433,7 @@ enum Ended {
     HarnessStopped,
 }
 
-impl<S: HarnessSession, T: TerminalSession> Connection<S, T> {
+impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Connection<S, T, A, W> {
     /// Pumps one connection until it ends.
     ///
     /// `in_flight` holds the one frame that has left the queue but has not
@@ -431,8 +458,15 @@ impl<S: HarnessSession, T: TerminalSession> Connection<S, T> {
 
         loop {
             tokio::select! {
-                outbound = queue.recv() => {
+                outbound = queue.recv(), if self.harness_alive => {
                     let Some(outbound) = outbound else {
+                        self.harness_alive = false;
+                        if matches!(self.tree, Tree::Dirty { .. }) && !self.paused {
+                            tracing::info!(
+                                "the harness stopped on a dirty tree; keeping the session awake"
+                            );
+                            continue;
+                        }
                         return Ok(Ended::HarnessStopped);
                     };
                     if let Some(harness_id) = outbound.harness_approval {
@@ -447,10 +481,19 @@ impl<S: HarnessSession, T: TerminalSession> Connection<S, T> {
                         };
                         self.approvals.insert(rest_id, harness_id);
                     }
+                    let completed_dirty = matches!(
+                        &outbound.frame,
+                        DaemonToControl::Harness {
+                            event: HarnessEvent::TurnCompleted { .. },
+                        }
+                    );
                     if let Err(error) = send(socket, &outbound.frame).await {
                         tracing::warn!(%error, "a frame did not reach the room; retrying it on the next connection");
                         *in_flight = Some(outbound.frame);
                         return Ok(Ended::Disconnected);
+                    }
+                    if completed_dirty {
+                        self.nudge_if_dirty().await?;
                     }
                 }
                 inbound = next_frame(socket) => {
@@ -468,6 +511,25 @@ impl<S: HarnessSession, T: TerminalSession> Connection<S, T> {
                     let frame = DaemonToControl::TerminalOutput { data };
                     if let Err(error) = send(socket, &frame).await {
                         tracing::warn!(%error, "a terminal frame did not reach the room; retrying it on the next connection");
+                        *in_flight = Some(frame);
+                        return Ok(Ended::Disconnected);
+                    }
+                }
+                summary = self.repo_status.recv(), if self.repo_watch_alive => {
+                    let Some(summary) = summary else {
+                        self.repo_watch_alive = false;
+                        continue;
+                    };
+                    self.tree = if summary.trim().is_empty() {
+                        Tree::Clean
+                    } else {
+                        Tree::Dirty {
+                            noticed: matches!(self.tree, Tree::Dirty { noticed: true }),
+                        }
+                    };
+                    let frame = DaemonToControl::RepoDirty { summary };
+                    if let Err(error) = send(socket, &frame).await {
+                        tracing::warn!(%error, "a repo-status frame did not reach the room; retrying it on the next connection");
                         *in_flight = Some(frame);
                         return Ok(Ended::Disconnected);
                     }
@@ -519,13 +581,28 @@ impl<S: HarnessSession, T: TerminalSession> Connection<S, T> {
                     .map_err(harness)?;
             }
             ControlToDaemon::Budget { signal } => self.budget(signal).await?,
-            ControlToDaemon::Archive => {
+            ControlToDaemon::Archive { preserve_workdir } => {
+                if preserve_workdir && let Some(patch) = self.workdir.snapshot().await? {
+                    self.api.put_workdir_patch(patch).await?;
+                }
                 tracing::info!(session = %self.endpoint.session, "the control plane archived this session");
                 self.terminal.shutdown()?;
                 return Ok(Ended::Archived);
             }
         }
         Ok(Ended::Disconnected)
+    }
+
+    /// Tells the agent it may not stop while the tree is dirty.
+    async fn nudge_if_dirty(&mut self) -> Result<(), WireError> {
+        if !self.paused && matches!(self.tree, Tree::Dirty { noticed: false }) {
+            self.tree = Tree::Dirty { noticed: true };
+            self.session
+                .send_user_message(DIRTY_NOTICE.to_owned())
+                .await
+                .map_err(harness)?;
+        }
+        Ok(())
     }
 
     /// Applies a budget threshold.
@@ -570,6 +647,34 @@ fn harness(error: impl core::fmt::Display) -> WireError {
     WireError::Harness(error.to_string())
 }
 
+/// Everything [`run`] needs to drive one session.
+pub struct SessionRelay<S, A, T, W> {
+    /// Where the daemon connects.
+    pub endpoint: Endpoint,
+    /// The live harness handle.
+    pub session: S,
+    /// Harness output, consumed exactly once.
+    pub outputs: mpsc::Receiver<SessionOutput>,
+    /// REST client for durable writes.
+    pub api: A,
+    /// The web terminal.
+    pub terminal: T,
+    /// Bytes the terminal produces.
+    pub terminal_out: mpsc::Receiver<String>,
+    /// Snapshot handle for the checkout.
+    pub workdir: W,
+    /// `git status --short` summaries as they change.
+    pub repo_status: mpsc::UnboundedReceiver<String>,
+}
+
+impl<S, A, T, W> core::fmt::Debug for SessionRelay<S, A, T, W> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SessionRelay")
+            .field("endpoint", &self.endpoint)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Drives a session from the control plane until it is archived or the
 /// harness stops.
 ///
@@ -578,28 +683,28 @@ fn harness(error: impl core::fmt::Display) -> WireError {
 /// Returns [`WireError`] if the relay queue overflows, the control plane
 /// speaks a protocol this daemon cannot read, or the harness stops
 /// accepting commands. A dropped socket is not an error: it is reconnected.
-pub async fn run<S, A, T>(
-    endpoint: Endpoint,
-    session: S,
-    outputs: mpsc::Receiver<SessionOutput>,
-    api: A,
-    terminal: T,
-    terminal_out: mpsc::Receiver<String>,
-) -> Result<(), WireError>
+pub async fn run<S, A, T, W>(relay: SessionRelay<S, A, T, W>) -> Result<(), WireError>
 where
     S: HarnessSession + 'static,
-    A: ControlApi,
+    A: ControlApi + Clone,
     T: TerminalSession + 'static,
+    W: WorkingTree + 'static,
 {
     let (sender, mut queue) = mpsc::channel(QUEUE_DEPTH);
-    let collector = tokio::spawn(collect(outputs, sender, api));
+    let collector = tokio::spawn(collect(relay.outputs, sender, relay.api.clone()));
 
     let mut connection = Connection {
-        session,
-        terminal,
-        terminal_out,
-        endpoint,
+        session: relay.session,
+        terminal: relay.terminal,
+        terminal_out: relay.terminal_out,
+        api: relay.api,
+        workdir: relay.workdir,
+        repo_status: relay.repo_status,
+        endpoint: relay.endpoint,
         paused: false,
+        tree: Tree::Clean,
+        harness_alive: true,
+        repo_watch_alive: true,
         approvals: BTreeMap::new(),
     };
     let mut attempt = 0_u32;
