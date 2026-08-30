@@ -682,7 +682,9 @@ async fn every_command_a_client_may_send_is_forwarded() {
 #[skyzen::test]
 async fn a_client_reaching_for_control_plane_authority_is_closed() {
     for command in [
-        ControlToDaemon::Archive,
+        ControlToDaemon::Archive {
+            preserve_workdir: false,
+        },
         ControlToDaemon::Budget {
             signal: flyco_core::BudgetSignal::Pause,
         },
@@ -829,7 +831,12 @@ async fn an_archive_command_announces_the_new_lifecycle_state() {
         .call(
             Method::POST,
             "/internal/command",
-            Some(serde_json::to_vec(&ControlToDaemon::Archive).expect("serialize")),
+            Some(
+                serde_json::to_vec(&ControlToDaemon::Archive {
+                    preserve_workdir: false,
+                })
+                .expect("serialize"),
+            ),
         )
         .await;
     assert_eq!(status, 204);
@@ -837,7 +844,9 @@ async fn an_archive_command_announces_the_new_lifecycle_state() {
     assert_eq!(
         room.drain(),
         vec![
-            to_daemon(&ControlToDaemon::Archive),
+            to_daemon(&ControlToDaemon::Archive {
+                preserve_workdir: false,
+            }),
             to_client(&ClientEvent::SessionStateChanged {
                 state: flyco_core::SessionState::Archived,
             }),

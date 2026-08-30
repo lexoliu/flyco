@@ -2425,6 +2425,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "discard_uncommitted",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Required when the working tree is dirty: the caller has seen the\nwarning and still wants the disk released without keeping the\nuncommitted work."
+            }
           }
         ],
         "responses": {
@@ -3414,6 +3423,59 @@
         }
       }
     },
+    "/v1/sessions/{id}/workdir-patch": {
+      "get": {
+        "summary": "Reads a previously stored uncommitted diff, for a resume onto a new host.",
+        "description": "Reads a previously stored uncommitted diff, for a resume onto a new host.",
+        "operationId": "flyco_api::app::get_workdir_patch",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response"
+          }
+        }
+      },
+      "put": {
+        "summary": "Stores the uncommitted diff of a session about to be archived automatically.",
+        "description": "Stores the uncommitted diff of a session about to be archived automatically.",
+        "operationId": "flyco_api::app::put_workdir_patch",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "default": null
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
     "/v1/skills": {
       "get": {
         "summary": "Lists the caller's skills.",
@@ -4069,6 +4131,16 @@
           "state": {
             "$ref": "#/components/schemas/ApprovalState",
             "description": "Whether it is still waiting, and what the user decided if not."
+          }
+        }
+      },
+      "ArchiveQuery": {
+        "type": "object",
+        "description": "Narrows a manual archive.",
+        "properties": {
+          "discard_uncommitted": {
+            "type": "boolean",
+            "description": "Required when the working tree is dirty: the caller has seen the\nwarning and still wants the disk released without keeping the\nuncommitted work."
           }
         }
       },
