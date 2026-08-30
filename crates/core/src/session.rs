@@ -106,12 +106,11 @@ impl SessionState {
 
 /// Which machine a session asks for.
 ///
-/// Part of [`CreateSession`] rather than a follow-up call, because a session
-/// created without one would have to be started on a guess and moved
-/// afterwards — and the window between the two is a session running on the
-/// wrong machine, billed at the wrong price. The choice is validated against
-/// the named account's own catalog before anything is written, so a machine
-/// the account cannot deploy is refused where the user made the choice.
+/// Named on [`CreateSession`] when the caller picks a type themselves. The
+/// choice is validated against the named account's own catalog before
+/// anything is written, so a machine the account cannot deploy is refused
+/// where the user made the choice. Omitted, flyco picks the cheapest
+/// deployable Linux type instead of guessing and resizing afterwards.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MachineChoice {
     /// Which linked provider account to provision on.
@@ -160,8 +159,15 @@ pub struct CreateSession {
     pub repo: String,
     /// Spending limit for the whole session.
     pub budget_limit: Usd,
-    /// The machine to provision for it.
-    pub machine: MachineChoice,
+    /// The machine to provision for it. Omitted, flyco picks the cheapest
+    /// deployable Linux type from the caller's catalog.
+    #[serde(default)]
+    pub machine: Option<MachineChoice>,
+    /// Whether to ask for interruptible spot capacity when flyco picks the
+    /// machine. Ignored when [`Self::machine`] names a type, because that
+    /// choice already carries its own `spot`.
+    #[serde(default = "default_spot")]
+    pub spot: bool,
 }
 
 /// A session in a list.
@@ -253,8 +259,20 @@ mod tests {
                             "region":"northcentralus"}}}}"#
         ))
         .expect("deserialize");
-        assert!(request.machine.spot);
-        assert_eq!(request.machine.disk_gib, DEFAULT_DISK_GIB);
+        let machine = request.machine.expect("the JSON named a machine");
+        assert!(machine.spot);
+        assert_eq!(machine.disk_gib, DEFAULT_DISK_GIB);
+        assert!(request.spot);
+    }
+
+    #[test]
+    fn omitting_the_machine_lets_flyco_choose() {
+        let request: CreateSession = serde_json::from_str(
+            r#"{"harness":"claude_code","repo":"lexoliu/flyco","budget_limit":10000000}"#,
+        )
+        .expect("deserialize");
+        assert!(request.machine.is_none());
+        assert!(request.spot);
     }
 
     #[test]

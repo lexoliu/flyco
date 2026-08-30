@@ -13,7 +13,7 @@ use skyzen_services::{Db, Kv};
 use skyzen_test::{TestClient, TestContext};
 
 use crate::testing::{
-    machine_choice, migrated_router, seed_other_user, seed_provider_account, seed_user,
+    SSH_HOST, machine_choice, migrated_router, seed_other_user, seed_provider_account, seed_user,
 };
 use crate::{approvals, budgets, session, sessions};
 
@@ -48,7 +48,8 @@ fn open(caller: &Caller, repo: &str, dollars: u64) -> CreateSession {
         harness: HarnessKind::ClaudeCode,
         repo: repo.to_owned(),
         budget_limit: Usd::from_dollars(dollars),
-        machine: machine_choice(caller.account),
+        machine: Some(machine_choice(caller.account)),
+        spot: true,
     }
 }
 
@@ -87,6 +88,71 @@ async fn creating_a_session_returns_it_provisioning_with_its_budget(
     assert_eq!(session.budget.spent, Usd::ZERO);
     assert_eq!(session.budget.remaining, Usd::from_dollars(10));
     assert_eq!(session.budget.stage, BudgetStage::Ok);
+}
+
+#[skyzen::test]
+async fn omitting_the_machine_provisions_the_cheapest_linux_type(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let session = create(
+        &client,
+        &caller,
+        &CreateSession {
+            harness: HarnessKind::ClaudeCode,
+            repo: REPO.to_owned(),
+            budget_limit: Usd::from_dollars(10),
+            machine: None,
+            spot: true,
+        },
+    )
+    .await;
+
+    assert_eq!(session.summary.state, SessionState::Provisioning);
+    let session_id = session.summary.id;
+    let machine_type: String = sql!(
+        db,
+        "SELECT machine_type FROM machines WHERE session_id = {session_id}"
+    )
+    .fetch_scalar()
+    .await
+    .expect("the cheapest type was recorded");
+    assert_eq!(
+        machine_type, SSH_HOST,
+        "the only deployable Linux type in tests is the registered host"
+    );
+}
+
+#[skyzen::test]
+async fn flyco_cannot_choose_a_machine_without_a_deployable_linux_type(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let router = migrated_router(&db).await;
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+
+    let response = ctx
+        .client(router)
+        .post("/v1/sessions")
+        .bearer(&token)
+        .json(&CreateSession {
+            harness: HarnessKind::ClaudeCode,
+            repo: REPO.to_owned(),
+            budget_limit: Usd::from_dollars(10),
+            machine: None,
+            spot: true,
+        })
+        .send()
+        .await;
+
+    response.assert_status(422);
+    assert_eq!(
+        response.json::<Problem>().kind,
+        problem_kind("no-deployable-linux-machine")
+    );
 }
 
 #[skyzen::test]

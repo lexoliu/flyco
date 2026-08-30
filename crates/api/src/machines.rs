@@ -9,8 +9,9 @@
 //! it.
 
 use flyco_core::{
-    CloudProviderKind, CurrentUser, MachineCatalogEntry, MachineId, MachineSpec, MachineState,
-    MachineView, OsFamily, ProviderAccountId, ResizeMachine, SessionId, Usd, UserId,
+    CloudProviderKind, CurrentUser, DEFAULT_DISK_GIB, MachineCatalogEntry, MachineChoice,
+    MachineId, MachineSpec, MachineState, MachineView, OsFamily, ProviderAccountId, ResizeMachine,
+    SessionId, Usd, UserId, cheapest_linux,
 };
 use serde::Deserialize;
 use skyzen::extract::Query;
@@ -263,7 +264,7 @@ async fn get_catalog(
 /// catalog cannot be read is skipped with a warning rather than failing the
 /// whole request: one expired credential should not hide the machines every
 /// other account can still offer.
-async fn catalog(
+pub(crate) async fn catalog(
     db: &Db,
     config: &ApiConfig,
     user: UserId,
@@ -293,6 +294,40 @@ async fn catalog(
             && filter.os.is_none_or(|os| entry.os == os)
     });
     Ok(entries)
+}
+
+/// Picks the cheapest deployable Linux machine from the caller's catalog.
+///
+/// # Errors
+///
+/// Returns [`ApiError::NoDeployableLinuxMachine`] if no linked account
+/// offers a Linux type flyco can provision.
+pub(crate) async fn cheapest_linux_choice(
+    db: &Db,
+    config: &ApiConfig,
+    user: UserId,
+    spot: bool,
+) -> Result<MachineChoice, ApiError> {
+    let entries = catalog(
+        db,
+        config,
+        user,
+        &CatalogFilter {
+            provider: None,
+            region: None,
+            os: Some(OsFamily::Linux),
+        },
+    )
+    .await?;
+    let entry = cheapest_linux(&entries, spot).ok_or(ApiError::NoDeployableLinuxMachine)?;
+    let account = entry.account.ok_or(ApiError::NoDeployableLinuxMachine)?;
+    Ok(MachineChoice {
+        provider_account: account,
+        machine_type: entry.machine_type.clone(),
+        region: entry.region.clone(),
+        spot,
+        disk_gib: DEFAULT_DISK_GIB,
+    })
 }
 
 /// Describes the machine a session is running on.

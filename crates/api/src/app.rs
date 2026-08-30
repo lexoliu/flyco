@@ -154,14 +154,17 @@ async fn start_session(
         .map_err(|_| ApiError::InvalidRepo(request.repo.clone()))?;
     let budget = BudgetConfig::new(request.budget_limit).map_err(|_| ApiError::InvalidBudget)?;
 
-    let account =
-        provisioning::account(db, config, user.id, request.machine.provider_account).await?;
+    let choice = match request.machine {
+        Some(choice) => choice,
+        None => machines::cheapest_linux_choice(db, config, user.id, request.spot).await?,
+    };
+    let account = provisioning::account(db, config, user.id, choice.provider_account).await?;
     let spec = MachineSpec {
         provider: account.kind(),
-        machine_type: request.machine.machine_type,
-        region: request.machine.region,
-        spot: request.machine.spot,
-        disk_gib: request.machine.disk_gib,
+        machine_type: choice.machine_type,
+        region: choice.region,
+        spot: choice.spot,
+        disk_gib: choice.disk_gib,
     };
     provisioning::deployable(&account, &spec)
         .await

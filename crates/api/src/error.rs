@@ -242,6 +242,14 @@ pub enum ApiError {
         cap: u32,
     },
 
+    /// The caller asked flyco to pick a machine, but no deployable Linux
+    /// type exists on any linked account.
+    #[error(
+        "none of your linked accounts can deploy a Linux machine for flyco to choose",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    NoDeployableLinuxMachine,
+
     /// The requested lifecycle move is not part of the session state machine.
     #[error(
         "a session cannot move from {from:?} to {to:?}",
@@ -450,6 +458,7 @@ impl ApiError {
             Self::RepoStatusUnknown => "repo-status-unknown",
             Self::SessionNotActive { .. } => "session-not-active",
             Self::SessionCapReached { .. } => "session-cap-reached",
+            Self::NoDeployableLinuxMachine => "no-deployable-linux-machine",
             Self::InvalidTransition { .. } => "invalid-session-transition",
             Self::ApprovalAlreadyDecided { .. } => "approval-already-decided",
             Self::InvalidRepo(_) => "invalid-repo",
