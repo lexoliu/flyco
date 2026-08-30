@@ -21,6 +21,8 @@
 //! - [`repl`] — a line-oriented stand-in for the control plane, used to
 //!   drive and verify a session from a terminal.
 //! - [`terminal`] — a PTY-backed `fish` shell relayed to the browser.
+//! - [`git`] — `git status --short` polling, dirty-tree keep-awake, and
+//!   workdir snapshots for automatic archive.
 //!
 //! `flycod run` picks between [`control`] and [`repl`] on whether the
 //! configuration names a control plane, and logs which it chose.
@@ -31,6 +33,7 @@
 
 pub mod config;
 pub mod control;
+pub mod git;
 pub mod harness;
 pub mod repl;
 pub mod terminal;
