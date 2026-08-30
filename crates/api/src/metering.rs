@@ -203,7 +203,8 @@ mod worker {
     use skyzen::wasm_bindgen_futures;
 
     use super::{accrue, deliver};
-    use crate::config::binding;
+    use crate::app;
+    use crate::config::{ApiConfig, binding};
     use crate::rooms::Rooms;
 
     #[skyzen::scheduled]
@@ -226,6 +227,11 @@ mod worker {
             .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         deliver(&db, &rooms)
+            .await
+            .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
+        let config = ApiConfig::from_worker_env(&env)
+            .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
+        app::archive_idle(&db, &config, &rooms, at_unix)
             .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))
     }
