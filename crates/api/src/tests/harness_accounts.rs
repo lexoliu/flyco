@@ -77,6 +77,23 @@ async fn a_stranger_cannot_unlink_somebody_elses_account(ctx: TestContext, kv: K
         .assert_status(404);
 }
 
+#[skyzen::test]
+async fn the_feature_matrix_is_the_verified_table(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+
+    let response = ctx
+        .client(router)
+        .get("/v1/harness-features")
+        .bearer(&token)
+        .send()
+        .await;
+    response.assert_status(200);
+    let rows: Vec<flyco_core::HarnessFeature> = response.json();
+    assert_eq!(rows, flyco_core::matrix());
+}
+
 /// Linking is deployment configuration, and its absence must say so.
 mod linking {
     use flyco_core::{AuthorizeUrl, HarnessKind, Problem};

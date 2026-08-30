@@ -75,6 +75,45 @@ pub enum Feature {
     BackgroundTasks,
     /// Automatic continue when the usage limit resets.
     AutoContinueAtUsageLimit,
+    /// Remote control of a local official-app session.
+    RemoteControl,
+    /// Harness-native resume (flyco owns History instead).
+    Resume,
+    /// Skills.
+    Skills,
+    /// MCP servers.
+    Mcp,
+    /// Memory.
+    Memory,
+    /// Browser control.
+    BrowserControl,
+    /// Computer control.
+    ComputerControl,
+}
+
+impl Feature {
+    /// Every feature the matrix tracks, in display order.
+    pub const ALL: &'static [Self] = &[
+        Self::UsageDisplay,
+        Self::ContextWindowDisplay,
+        Self::GoalMode,
+        Self::AutoMode,
+        Self::SideChat,
+        Self::DynamicWorkflows,
+        Self::Settings,
+        Self::Compact,
+        Self::Advisor,
+        Self::Monitor,
+        Self::BackgroundTasks,
+        Self::AutoContinueAtUsageLimit,
+        Self::RemoteControl,
+        Self::Resume,
+        Self::Skills,
+        Self::Mcp,
+        Self::Memory,
+        Self::BrowserControl,
+        Self::ComputerControl,
+    ];
 }
 
 /// Whether a [`Feature`] is available for a given harness, mirrored in the
@@ -88,6 +127,63 @@ pub enum Availability {
     HarnessLimitation,
     /// Reachable but not yet implemented in flyco.
     Planned,
+    /// Flyco deliberately does not offer this; it owns the equivalent.
+    Disabled,
+    /// Flyco took the feature over from the harness (central registry, MCP).
+    Takeover,
+    /// Scheduled for a later product phase.
+    Phase2,
+    /// This harness does not have the feature.
+    NotApplicable,
+}
+
+/// One row of the per-harness feature matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct HarnessFeature {
+    /// The capability.
+    pub feature: Feature,
+    /// Status on Claude Code.
+    pub claude_code: Availability,
+    /// Status on Codex.
+    pub codex: Availability,
+}
+
+/// The verified availability of `feature` on `harness`.
+#[must_use]
+pub const fn availability(harness: HarnessKind, feature: Feature) -> Availability {
+    match (harness, feature) {
+        (
+            _,
+            Feature::UsageDisplay
+            | Feature::ContextWindowDisplay
+            | Feature::GoalMode
+            | Feature::AutoMode
+            | Feature::BackgroundTasks
+            | Feature::AutoContinueAtUsageLimit,
+        ) => Availability::Supported,
+        (_, Feature::SideChat) => Availability::HarnessLimitation,
+        (_, Feature::DynamicWorkflows | Feature::Settings | Feature::Compact) => {
+            Availability::Planned
+        }
+        (HarnessKind::ClaudeCode, Feature::Advisor | Feature::Monitor) => Availability::Planned,
+        (HarnessKind::Codex, Feature::Advisor | Feature::Monitor) => Availability::NotApplicable,
+        (_, Feature::RemoteControl | Feature::Resume) => Availability::Disabled,
+        (_, Feature::Skills | Feature::Mcp | Feature::Memory) => Availability::Takeover,
+        (_, Feature::BrowserControl | Feature::ComputerControl) => Availability::Phase2,
+    }
+}
+
+/// The full matrix, one row per [`Feature::ALL`] entry.
+#[must_use]
+pub fn matrix() -> Vec<HarnessFeature> {
+    Feature::ALL
+        .iter()
+        .map(|&feature| HarnessFeature {
+            feature,
+            claude_code: availability(HarnessKind::ClaudeCode, feature),
+            codex: availability(HarnessKind::Codex, feature),
+        })
+        .collect()
 }
 
 /// How full the model's context window is.
@@ -222,7 +318,10 @@ pub enum HarnessEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContextWindow, HarnessEvent, UsageReport};
+    use super::{
+        Availability, ContextWindow, Feature, HarnessEvent, HarnessKind, UsageReport, availability,
+        matrix,
+    };
     use crate::money::Usd;
 
     #[test]
@@ -260,5 +359,56 @@ mod tests {
         assert!(json["usage"]["context"].is_null());
         let back: HarnessEvent = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, event);
+    }
+
+    #[test]
+    fn the_matrix_covers_every_feature_once() {
+        let rows = matrix();
+        assert_eq!(rows.len(), Feature::ALL.len());
+        for (row, &feature) in rows.iter().zip(Feature::ALL) {
+            assert_eq!(row.feature, feature);
+            assert_eq!(
+                row.claude_code,
+                availability(HarnessKind::ClaudeCode, feature)
+            );
+            assert_eq!(row.codex, availability(HarnessKind::Codex, feature));
+        }
+    }
+
+    #[test]
+    fn verified_capabilities_are_supported() {
+        for feature in [
+            Feature::UsageDisplay,
+            Feature::ContextWindowDisplay,
+            Feature::GoalMode,
+            Feature::AutoMode,
+            Feature::BackgroundTasks,
+            Feature::AutoContinueAtUsageLimit,
+        ] {
+            assert_eq!(
+                availability(HarnessKind::ClaudeCode, feature),
+                Availability::Supported
+            );
+            assert_eq!(
+                availability(HarnessKind::Codex, feature),
+                Availability::Supported
+            );
+        }
+        assert_eq!(
+            availability(HarnessKind::Codex, Feature::Advisor),
+            Availability::NotApplicable
+        );
+        assert_eq!(
+            availability(HarnessKind::ClaudeCode, Feature::Skills),
+            Availability::Takeover
+        );
+        assert_eq!(
+            availability(HarnessKind::ClaudeCode, Feature::Resume),
+            Availability::Disabled
+        );
+        assert_eq!(
+            availability(HarnessKind::ClaudeCode, Feature::SideChat),
+            Availability::HarnessLimitation
+        );
     }
 }

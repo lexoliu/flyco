@@ -763,6 +763,32 @@ async fn a_dirty_tree_is_reported_and_keeps_the_agent_awake() {
     harness.archive().await.expect("the run ended cleanly");
 }
 
+#[tokio::test]
+async fn a_usage_limit_with_a_reset_time_auto_continues() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness
+        .emit(SessionOutput::Event {
+            event: HarnessEvent::UsageLimited {
+                resets_at_unix: Some(0),
+            },
+        })
+        .await;
+    assert!(matches!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness {
+            event: HarnessEvent::UsageLimited { .. }
+        }
+    ));
+    assert!(matches!(
+        harness.next_call().await,
+        Call::UserMessage(text) if text.starts_with("[flyco usage notice]")
+    ));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
 // ── The REST client, against a real HTTP server ──
 
 mod rest_client {
