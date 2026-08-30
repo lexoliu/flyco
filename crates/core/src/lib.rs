@@ -55,6 +55,7 @@ pub use id::{
 pub use machine::{
     CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
     MachineState, MachineView, OsFamily, ResizeMachine, StoragePriceTier, StoragePricing,
+    cheapest_linux,
 };
 pub use mcp::{HeaderEntry, McpServerConfig, McpServerView, UpsertMcpServer};
 pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};

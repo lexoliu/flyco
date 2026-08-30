@@ -151,7 +151,8 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
             budget_limit: Usd::from_dollars(10),
-            machine: machine_choice(caller.account),
+            machine: Some(machine_choice(caller.account)),
+            spot: true,
         })
         .send()
         .await;
@@ -265,7 +266,8 @@ async fn a_machine_the_account_cannot_deploy_is_refused_where_it_was_chosen(
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
             budget_limit: Usd::from_dollars(10),
-            machine: choice,
+            machine: Some(choice),
+            spot: true,
         })
         .send()
         .await;
