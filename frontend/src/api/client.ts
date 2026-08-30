@@ -63,6 +63,9 @@ export type VapidPublicKey = Schemas["VapidPublicKey"];
 export type TurnSummary = Schemas["TurnSummary"];
 export type TurnPage = Schemas["TurnPage"];
 export type RepoStatus = Schemas["RepoStatus"];
+export type HarnessFeature = Schemas["HarnessFeature"];
+export type Feature = Schemas["Feature"];
+export type Availability = Schemas["Availability"];
 
 /** Extracts an operation's JSON request body type, or `never` if it has none. */
 type JsonBody<Op extends keyof operations> = operations[Op] extends {
@@ -178,6 +181,12 @@ export function updateMe(
 }
 
 // --- /v1/sessions -----------------------------------------------------------
+
+export function listHarnessFeatures(): Promise<
+  JsonResponse<"flyco_api::app::list_harness_features", 200>
+> {
+  return requestJson("GET", "/v1/harness-features");
+}
 
 export function listSessions(): Promise<JsonResponse<"flyco_api::app::list_sessions", 200>> {
   return requestJson("GET", "/v1/sessions");
