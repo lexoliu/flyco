@@ -273,6 +273,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/harness-features": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The verified per-harness feature matrix.
+         * @description The verified per-harness feature matrix.
+         */
+        get: operations["flyco_api::app::list_harness_features"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/healthz": {
         parameters: {
             query?: never;
@@ -1395,6 +1415,12 @@ export interface components {
             authorize_url: string;
         };
         /**
+         * @description Whether a [`Feature`] is available for a given harness, mirrored in the
+         *     UI so vendor releases create tracked gaps instead of broken promises.
+         * @enum {string}
+         */
+        Availability: "supported" | "harness_limitation" | "planned" | "disabled" | "takeover" | "phase2" | "not_applicable";
+        /**
          * @description How far through the budget the session is. Monotonically increasing.
          * @enum {string}
          */
@@ -1610,6 +1636,11 @@ export interface components {
             more: boolean;
         };
         /**
+         * @description A harness capability tracked in the per-harness feature matrix.
+         * @enum {string}
+         */
+        Feature: "usage_display" | "context_window_display" | "goal_mode" | "auto_mode" | "side_chat" | "dynamic_workflows" | "settings" | "compact" | "advisor" | "monitor" | "background_tasks" | "auto_continue_at_usage_limit" | "remote_control" | "resume" | "skills" | "mcp" | "memory" | "browser_control" | "computer_control";
+        /**
          * @description A Claude or Codex account the user has linked, as `GET
          *     /v1/harness-accounts` lists it.
          *
@@ -1640,6 +1671,15 @@ export interface components {
              * @description When it was linked, seconds since the Unix epoch.
              */
             linked_at_unix: number;
+        };
+        /** @description One row of the per-harness feature matrix. */
+        HarnessFeature: {
+            /** @description Status on Claude Code. */
+            claude_code: components["schemas"]["Availability"];
+            /** @description Status on Codex. */
+            codex: components["schemas"]["Availability"];
+            /** @description The capability. */
+            feature: components["schemas"]["Feature"];
         };
         /**
          * @description The coding harness driving a session. Flyco supports exactly these two
@@ -2961,6 +3001,33 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    "flyco_api::app::list_harness_features": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Status on Claude Code. */
+                        claude_code: components["schemas"]["Availability"];
+                        /** @description Status on Codex. */
+                        codex: components["schemas"]["Availability"];
+                        /** @description The capability. */
+                        feature: components["schemas"]["Feature"];
+                    }[];
+                };
             };
         };
     };

@@ -698,6 +698,48 @@
         }
       }
     },
+    "/v1/harness-features": {
+      "get": {
+        "summary": "The verified per-harness feature matrix.",
+        "description": "The verified per-harness feature matrix.",
+        "operationId": "flyco_api::app::list_harness_features",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "One row of the per-harness feature matrix.",
+                    "required": [
+                      "feature",
+                      "claude_code",
+                      "codex"
+                    ],
+                    "properties": {
+                      "claude_code": {
+                        "$ref": "#/components/schemas/Availability",
+                        "description": "Status on Claude Code."
+                      },
+                      "codex": {
+                        "$ref": "#/components/schemas/Availability",
+                        "description": "Status on Codex."
+                      },
+                      "feature": {
+                        "$ref": "#/components/schemas/Feature",
+                        "description": "The capability."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/healthz": {
       "get": {
         "summary": "Reports that the control plane is up, and which wire protocol version it speaks to session daemons.",
@@ -4157,6 +4199,19 @@
           }
         }
       },
+      "Availability": {
+        "type": "string",
+        "description": "Whether a [`Feature`] is available for a given harness, mirrored in the\nUI so vendor releases create tracked gaps instead of broken promises.",
+        "enum": [
+          "supported",
+          "harness_limitation",
+          "planned",
+          "disabled",
+          "takeover",
+          "phase2",
+          "not_applicable"
+        ]
+      },
       "BudgetStage": {
         "type": "string",
         "description": "How far through the budget the session is. Monotonically increasing.",
@@ -4598,6 +4653,31 @@
           }
         }
       },
+      "Feature": {
+        "type": "string",
+        "description": "A harness capability tracked in the per-harness feature matrix.",
+        "enum": [
+          "usage_display",
+          "context_window_display",
+          "goal_mode",
+          "auto_mode",
+          "side_chat",
+          "dynamic_workflows",
+          "settings",
+          "compact",
+          "advisor",
+          "monitor",
+          "background_tasks",
+          "auto_continue_at_usage_limit",
+          "remote_control",
+          "resume",
+          "skills",
+          "mcp",
+          "memory",
+          "browser_control",
+          "computer_control"
+        ]
+      },
       "HarnessAccountView": {
         "type": "object",
         "description": "A Claude or Codex account the user has linked, as `GET\n/v1/harness-accounts` lists it.\n\nLinking runs against the *vendor's own* authorization page — the flow the\nofficial CLIs wrap — so flyco never sees a password, and what it stores\nis the resulting token, sealed. No representation of an account carries\nthat token; it leaves the control plane only when it is provisioned onto\na session machine.",
@@ -4634,6 +4714,29 @@
             "format": "int64",
             "description": "When it was linked, seconds since the Unix epoch.",
             "minimum": 0
+          }
+        }
+      },
+      "HarnessFeature": {
+        "type": "object",
+        "description": "One row of the per-harness feature matrix.",
+        "required": [
+          "feature",
+          "claude_code",
+          "codex"
+        ],
+        "properties": {
+          "claude_code": {
+            "$ref": "#/components/schemas/Availability",
+            "description": "Status on Claude Code."
+          },
+          "codex": {
+            "$ref": "#/components/schemas/Availability",
+            "description": "Status on Codex."
+          },
+          "feature": {
+            "$ref": "#/components/schemas/Feature",
+            "description": "The capability."
           }
         }
       },
