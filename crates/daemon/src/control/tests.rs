@@ -11,7 +11,8 @@ use tokio::sync::mpsc;
 
 use crate::control::rest::{ControlApi, ControlApiError, HttpControlApi, TranscriptRead};
 use crate::control::store::{RemoteTranscriptStore, stream_key};
-use crate::control::wire::{self, Endpoint, QUEUE_DEPTH, WireError};
+use crate::control::wire::{self, Endpoint, QUEUE_DEPTH, SessionRelay, WireError};
+use crate::git::FakeWorkdir;
 use crate::harness::SessionOutput;
 use crate::harness::claude::protocol::SessionKey;
 use crate::harness::claude::store::{StoreError, TranscriptStore};
@@ -81,6 +82,19 @@ impl ControlApi for RecordingApi {
     ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
         core::future::ready(Ok(()))
     }
+
+    fn put_workdir_patch(
+        &self,
+        _patch: Vec<u8>,
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        core::future::ready(Ok(()))
+    }
+
+    fn get_workdir_patch(
+        &self,
+    ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send {
+        core::future::ready(Ok(None))
+    }
 }
 
 /// Everything a relay test drives.
@@ -94,6 +108,7 @@ struct Harness {
     approval_id: ApprovalId,
     terminal_writes: mpsc::UnboundedReceiver<String>,
     terminal_inject: mpsc::Sender<String>,
+    repo_inject: mpsc::UnboundedSender<String>,
     run: tokio::task::JoinHandle<Result<(), WireError>>,
 }
 
@@ -120,14 +135,17 @@ impl Harness {
         };
 
         let (terminal, terminal_writes, terminal_inject, terminal_out) = FakeTerminal::pair();
-        let run = tokio::spawn(wire::run(
+        let (workdir, repo_inject, repo_status) = FakeWorkdir::pair();
+        let run = tokio::spawn(wire::run(SessionRelay {
             endpoint,
-            fake,
-            receiver,
+            session: fake,
+            outputs: receiver,
             api,
             terminal,
             terminal_out,
-        ));
+            workdir,
+            repo_status,
+        }));
 
         Self {
             room,
@@ -139,6 +157,7 @@ impl Harness {
             approval_id,
             terminal_writes,
             terminal_inject,
+            repo_inject,
             run,
         }
     }
@@ -193,7 +212,9 @@ impl Harness {
 
     /// Stops the run by archiving, and returns its result.
     async fn archive(mut self) -> Result<(), WireError> {
-        self.command(ControlToDaemon::Archive);
+        self.command(ControlToDaemon::Archive {
+            preserve_workdir: false,
+        });
         assert_eq!(self.next_call().await, Call::Shutdown);
         tokio::time::timeout(Duration::from_secs(5), self.run)
             .await
@@ -491,14 +512,17 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         id: ApprovalId::generate(),
     };
     let (terminal, _, _, terminal_out) = FakeTerminal::pair();
-    let run = tokio::spawn(wire::run(
+    let (workdir, _, repo_status) = FakeWorkdir::pair();
+    let run = tokio::spawn(wire::run(SessionRelay {
         endpoint,
-        fake,
-        receiver,
+        session: fake,
+        outputs: receiver,
         api,
         terminal,
         terminal_out,
-    ));
+        workdir,
+        repo_status,
+    }));
 
     // One more than the queue holds, plus the one the collector is carrying.
     for index in 0..=QUEUE_DEPTH + 1 {
@@ -696,6 +720,49 @@ async fn a_refused_observation_does_not_stop_the_session() {
     harness.archive().await.expect("the run ended cleanly");
 }
 
+#[tokio::test]
+async fn a_dirty_tree_is_reported_and_keeps_the_agent_awake() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness
+        .repo_inject
+        .send(" M src/lib.rs\n".to_owned())
+        .expect("the watcher is live");
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::RepoDirty {
+            summary: " M src/lib.rs\n".to_owned(),
+        }
+    );
+
+    harness
+        .emit(SessionOutput::Event {
+            event: HarnessEvent::TurnCompleted {
+                turn_id: "turn-1".to_owned(),
+                usage: UsageReport {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    context: None,
+                    estimated_cost: None,
+                },
+            },
+        })
+        .await;
+    assert!(matches!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness {
+            event: HarnessEvent::TurnCompleted { .. }
+        }
+    ));
+    assert!(matches!(
+        harness.next_call().await,
+        Call::UserMessage(text) if text.starts_with("[flyco repo notice]")
+    ));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
 // ── The REST client, against a real HTTP server ──
 
 mod rest_client {
@@ -876,6 +943,22 @@ mod remote_store {
                     })
                     .map_err(|error| ControlApiError::Transport(error.to_string())),
             )
+        }
+
+        fn put_workdir_patch(
+            &self,
+            _patch: Vec<u8>,
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Err(ControlApiError::Transport(
+                "the transcript store stores no workdir patches".to_owned(),
+            )))
+        }
+
+        fn get_workdir_patch(
+            &self,
+        ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send
+        {
+            core::future::ready(Ok(None))
         }
 
         fn get_transcript(

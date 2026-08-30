@@ -193,8 +193,13 @@ export function getSession(id: string): Promise<JsonResponse<"flyco_api::app::ge
   return requestJson("GET", `/v1/sessions/${id}`);
 }
 
-export function archiveSession(id: string): Promise<JsonResponse<"flyco_api::app::archive_session", 200>> {
-  return requestJson("POST", `/v1/sessions/${id}/archive`);
+export function archiveSession(
+  id: string,
+  options: { discardUncommitted?: boolean } = {},
+): Promise<JsonResponse<"flyco_api::app::archive_session", 200>> {
+  return requestJson("POST", `/v1/sessions/${id}/archive`, {
+    query: { discard_uncommitted: options.discardUncommitted === true ? true : null },
+  });
 }
 
 export function getSessionBudget(id: string): Promise<JsonResponse<"flyco_api::app::get_session_budget", 200>> {

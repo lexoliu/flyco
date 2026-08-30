@@ -6,8 +6,8 @@
 //! no business knowing.
 
 use flyco_core::{
-    BudgetConfig, BudgetId, HarnessKind, RepoSlug, SessionDetail, SessionId, SessionState,
-    SessionSummary, UserId,
+    ARCHIVE_AFTER_IDLE_SECS, BudgetConfig, BudgetId, HarnessKind, RepoSlug, SessionDetail,
+    SessionId, SessionState, SessionSummary, UserId,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -463,4 +463,34 @@ pub async fn daemon_arrived(db: &Db, id: SessionId) -> Result<(), ApiError> {
         tracing::info!(session = %id, "a session went live: its daemon reached the control plane");
     }
     Ok(())
+}
+
+/// A session idle long enough that flyco archives it automatically.
+#[derive(Debug, skyzen::FromRow)]
+pub struct IdleSession {
+    /// Identifier.
+    pub id: SessionId,
+    /// Owner, so archive can destroy their machine.
+    pub user_id: UserId,
+}
+
+/// Sessions that have sat idle past [`ARCHIVE_AFTER_IDLE_SECS`] and still
+/// hold an environment.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn idle_since(db: &Db, at_unix: u64) -> Result<Vec<IdleSession>, ApiError> {
+    let cutoff = at_unix.saturating_sub(ARCHIVE_AFTER_IDLE_SECS);
+    let active = SessionState::Active;
+    let paused = SessionState::Paused;
+    let interrupted = SessionState::Interrupted;
+    Ok(sql!(
+        db,
+        "SELECT id, user_id FROM sessions \
+         WHERE last_active_unix <= {cutoff} \
+         AND (state = {active} OR state = {paused} OR state = {interrupted})"
+    )
+    .fetch_all()
+    .await?)
 }

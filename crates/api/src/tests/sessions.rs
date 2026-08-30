@@ -15,7 +15,7 @@ use skyzen_test::{TestClient, TestContext};
 use crate::testing::{
     SSH_HOST, machine_choice, migrated_router, seed_other_user, seed_provider_account, seed_user,
 };
-use crate::{approvals, budgets, session, sessions};
+use crate::{app, approvals, budgets, session, sessions, testing};
 
 const REPO: &str = "lexoliu/flyco";
 
@@ -318,6 +318,72 @@ async fn a_session_can_be_archived_once(ctx: TestContext, kv: Kv, db: Db) {
         problem.detail.contains("Archived"),
         "the detail names both states: {}",
         problem.detail
+    );
+}
+
+#[skyzen::test]
+async fn an_idle_session_is_archived_automatically(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    let id = session.summary.id;
+
+    sessions::daemon_arrived(&db, id)
+        .await
+        .expect("the session is live");
+    let cutoff = crate::clock::now_unix() - flyco_core::ARCHIVE_AFTER_IDLE_SECS - 1;
+    sql!(
+        db,
+        "UPDATE sessions SET last_active_unix = {cutoff} WHERE id = {id}"
+    )
+    .execute()
+    .await
+    .expect("backdate idle time");
+
+    let rooms = crate::rooms::Rooms::from_native(crate::rooms::NativeRooms::new());
+    app::archive_idle(
+        &db,
+        &testing::test_config(),
+        &rooms,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("archive idle sessions");
+
+    let archived: SessionDetail = client
+        .get(&format!("/v1/sessions/{id}"))
+        .bearer(&caller.token)
+        .send()
+        .await
+        .json();
+    assert_eq!(archived.summary.state, SessionState::Archived);
+}
+
+#[skyzen::test]
+async fn an_active_session_cannot_be_archived_before_the_daemon_reports_its_tree(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    let id = session.summary.id;
+    sessions::daemon_arrived(&db, id)
+        .await
+        .expect("the session is live");
+
+    let refused = client
+        .post(&format!("/v1/sessions/{id}/archive"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    refused.assert_status(404);
+    assert_eq!(
+        refused.json::<Problem>().kind,
+        problem_kind("repo-status-unknown")
     );
 }
 

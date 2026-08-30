@@ -232,6 +232,17 @@ pub enum ApiError {
     )]
     RepoStatusUnknown,
 
+    /// The working tree is dirty and the caller has not confirmed discarding
+    /// the uncommitted work.
+    #[error(
+        "this session's working tree has uncommitted changes; pass discard_uncommitted to archive without keeping them: {summary}",
+        status = StatusCode::CONFLICT
+    )]
+    DirtyArchive {
+        /// `git status --short` as last reported.
+        summary: String,
+    },
+
     /// The caller already holds as many live sessions as they may.
     #[error(
         "you already hold {cap} sessions, which is your limit; archive one first",
@@ -456,6 +467,7 @@ impl ApiError {
             Self::ProviderUnsupported { .. } => "provider-unsupported",
             Self::ProviderRejectedCredentials { .. } => "provider-rejected-credentials",
             Self::RepoStatusUnknown => "repo-status-unknown",
+            Self::DirtyArchive { .. } => "dirty-archive",
             Self::SessionNotActive { .. } => "session-not-active",
             Self::SessionCapReached { .. } => "session-cap-reached",
             Self::NoDeployableLinuxMachine => "no-deployable-linux-machine",

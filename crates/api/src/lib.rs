@@ -49,6 +49,7 @@ pub mod transcripts;
 pub mod turns;
 pub mod users;
 pub mod webhooks;
+pub mod workdirs;
 
 #[cfg(test)]
 mod testing;

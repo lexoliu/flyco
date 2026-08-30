@@ -162,6 +162,19 @@ pub trait ControlApi: Send + Sync + 'static {
         &self,
         harness_session_id: &str,
     ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
+
+    /// Stores a binary diff of uncommitted work, taken just before an
+    /// automatic archive releases the disk.
+    fn put_workdir_patch(
+        &self,
+        patch: Vec<u8>,
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
+
+    /// Reads a previously stored workdir patch, if an automatic archive
+    /// left one.
+    fn get_workdir_patch(
+        &self,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send;
 }
 
 /// A transcript stream as the control plane serves it.
@@ -301,6 +314,46 @@ impl ControlApi for HttpControlApi {
 
         debug_assert!(response.status().is_success());
         Ok(())
+    }
+
+    async fn put_workdir_patch(&self, patch: Vec<u8>) -> Result<(), ControlApiError> {
+        let url = self.url("workdir-patch")?;
+        let mut client = zenwave::client();
+        let response = client
+            .put(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .header("Content-Type", "application/octet-stream")
+            .map_err(transport)?
+            .bytes_body(patch)
+            .await
+            .map_err(|error| refused("PUT", &url, &error))?;
+
+        debug_assert!(response.status().is_success());
+        Ok(())
+    }
+
+    async fn get_workdir_patch(&self) -> Result<Option<Vec<u8>>, ControlApiError> {
+        let url = self.url("workdir-patch")?;
+        let mut client = zenwave::client();
+        let response = match client
+            .get(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                if let zenwave::Error::Http { status, .. } = &error
+                    && status.as_u16() == 404
+                {
+                    return Ok(None);
+                }
+                return Err(refused("GET", &url, &error));
+            }
+        };
+        let body = response.into_bytes().await.map_err(transport)?;
+        Ok(Some(body.to_vec()))
     }
 
     async fn get_transcript(&self, stream: &str) -> Result<TranscriptRead, ControlApiError> {
