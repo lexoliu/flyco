@@ -2100,8 +2100,7 @@
                 "required": [
                   "harness",
                   "repo",
-                  "budget_limit",
-                  "machine"
+                  "budget_limit"
                 ],
                 "properties": {
                   "budget_limit": {
@@ -2113,12 +2112,23 @@
                     "description": "Which coding harness drives the session."
                   },
                   "machine": {
-                    "$ref": "#/components/schemas/MachineChoice",
-                    "description": "The machine to provision for it."
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/MachineChoice",
+                        "description": "The machine to provision for it. Omitted, flyco picks the cheapest\ndeployable Linux type from the caller's catalog."
+                      }
+                    ]
                   },
                   "repo": {
                     "type": "string",
                     "description": "Repository to work in, `owner/name`. Untyped here because it is\nuntrusted input; the control plane parses it into a\n[`RepoSlug`](crate::repo::RepoSlug) and rejects anything else."
+                  },
+                  "spot": {
+                    "type": "boolean",
+                    "description": "Whether to ask for interruptible spot capacity when flyco picks the\nmachine. Ignored when [`Self::machine`] names a type, because that\nchoice already carries its own `spot`."
                   }
                 }
               }
@@ -4323,8 +4333,7 @@
         "required": [
           "harness",
           "repo",
-          "budget_limit",
-          "machine"
+          "budget_limit"
         ],
         "properties": {
           "budget_limit": {
@@ -4336,12 +4345,23 @@
             "description": "Which coding harness drives the session."
           },
           "machine": {
-            "$ref": "#/components/schemas/MachineChoice",
-            "description": "The machine to provision for it."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MachineChoice",
+                "description": "The machine to provision for it. Omitted, flyco picks the cheapest\ndeployable Linux type from the caller's catalog."
+              }
+            ]
           },
           "repo": {
             "type": "string",
             "description": "Repository to work in, `owner/name`. Untyped here because it is\nuntrusted input; the control plane parses it into a\n[`RepoSlug`](crate::repo::RepoSlug) and rejects anything else."
+          },
+          "spot": {
+            "type": "boolean",
+            "description": "Whether to ask for interruptible spot capacity when flyco picks the\nmachine. Ignored when [`Self::machine`] names a type, because that\nchoice already carries its own `spot`."
           }
         }
       },
@@ -4801,7 +4821,7 @@
       },
       "MachineChoice": {
         "type": "object",
-        "description": "Which machine a session asks for.\n\nPart of [`CreateSession`] rather than a follow-up call, because a session\ncreated without one would have to be started on a guess and moved\nafterwards — and the window between the two is a session running on the\nwrong machine, billed at the wrong price. The choice is validated against\nthe named account's own catalog before anything is written, so a machine\nthe account cannot deploy is refused where the user made the choice.",
+        "description": "Which machine a session asks for.\n\nNamed on [`CreateSession`] when the caller picks a type themselves. The\nchoice is validated against the named account's own catalog before\nanything is written, so a machine the account cannot deploy is refused\nwhere the user made the choice. Omitted, flyco picks the cheapest\ndeployable Linux type instead of guessing and resizing afterwards.",
         "required": [
           "provider_account",
           "machine_type",
