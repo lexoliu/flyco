@@ -178,8 +178,23 @@ pub enum ControlToDaemon {
         /// Bytes to write to the terminal, UTF-8.
         data: String,
     },
-    /// Archive the session: flush state, snapshot the repo, shut down.
-    Archive,
+    /// Archive the session: flush state, optionally snapshot the repo, shut
+    /// down.
+    Archive {
+        /// Snapshot uncommitted work into object storage before the disk is
+        /// released. Automatic archives set this; a confirmed manual archive
+        /// of a dirty tree does not — the user chose to discard.
+        #[serde(default, skip_serializing_if = "crate::wire::is_false")]
+        preserve_workdir: bool,
+    },
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires fn(&T) -> bool"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl ControlToDaemon {
@@ -407,7 +422,12 @@ mod tests {
             ControlToDaemon::TerminalInput {
                 data: "ls\n".to_owned(),
             },
-            ControlToDaemon::Archive,
+            ControlToDaemon::Archive {
+                preserve_workdir: false,
+            },
+            ControlToDaemon::Archive {
+                preserve_workdir: true,
+            },
         ]
     }
 

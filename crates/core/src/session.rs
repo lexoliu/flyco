@@ -137,6 +137,12 @@ const fn default_spot() -> bool {
     true
 }
 
+/// How long a session may sit idle before flyco archives it automatically.
+///
+/// A week is long enough that a paused thought is not destroyed overnight,
+/// and short enough that forgotten machines do not sit on a disk forever.
+pub const ARCHIVE_AFTER_IDLE_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// Disk a session gets when the request names no size.
 ///
 /// Big enough for a repository, a toolchain and a build cache, which is what

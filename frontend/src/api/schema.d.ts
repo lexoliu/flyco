@@ -1119,6 +1119,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/workdir-patch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reads a previously stored uncommitted diff, for a resume onto a new host.
+         * @description Reads a previously stored uncommitted diff, for a resume onto a new host.
+         */
+        get: operations["flyco_api::app::get_workdir_patch"];
+        /**
+         * Stores the uncommitted diff of a session about to be archived automatically.
+         * @description Stores the uncommitted diff of a session about to be archived automatically.
+         */
+        put: operations["flyco_api::app::put_workdir_patch"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/skills": {
         parameters: {
             query?: never;
@@ -1352,6 +1376,15 @@ export interface components {
             session: components["schemas"]["Uuid"];
             /** @description Whether it is still waiting, and what the user decided if not. */
             state: components["schemas"]["ApprovalState"];
+        };
+        /** @description Narrows a manual archive. */
+        ArchiveQuery: {
+            /**
+             * @description Required when the working tree is dirty: the caller has seen the
+             *     warning and still wants the disk released without keeping the
+             *     uncommitted work.
+             */
+            discard_uncommitted?: boolean;
         };
         /** @description Where the browser must be sent to begin a GitHub OAuth code flow. */
         AuthorizeUrl: {
@@ -3877,7 +3910,9 @@ export interface operations {
     };
     "flyco_api::app::archive_session": {
         parameters: {
-            query?: never;
+            query?: {
+                discard_uncommitted?: boolean;
+            };
             header?: never;
             path: {
                 id: string;
@@ -4494,6 +4529,51 @@ export interface operations {
                         turns: components["schemas"]["TurnSummary"][];
                     };
                 };
+            };
+        };
+    };
+    "flyco_api::app::get_workdir_patch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::put_workdir_patch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/octet-stream": unknown;
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

@@ -22,4 +22,4 @@ mod tests;
 
 pub use rest::{ControlApi, ControlApiError, HttpControlApi, TranscriptRead};
 pub use store::RemoteTranscriptStore;
-pub use wire::{Endpoint, WireError};
+pub use wire::{Endpoint, SessionRelay, WireError};

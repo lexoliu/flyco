@@ -8,7 +8,8 @@ import TerminalPanel from "../components/terminal/TerminalPanel";
 import MachinePanel from "../components/MachinePanel";
 import RepoStatusPanel from "../components/RepoStatusPanel";
 import EnvEditor from "../components/EnvEditor";
-import { getSession, decideApproval, interruptSession, sendMessage } from "../api/client";
+import { archiveSession, getSession, decideApproval, interruptSession, sendMessage } from "../api/client";
+import { ApiProblem } from "../api/problem";
 import { createSessionRelay, type ConnectionState } from "../api/relay";
 import { foldTranscript, type TranscriptItem } from "../lib/transcript";
 import { foldApprovals } from "../lib/approvals";
@@ -93,6 +94,20 @@ export default function SessionDetail() {
   const [decideError, setDecideError] = createSignal<unknown>(null);
   const [sending, setSending] = createSignal(false);
   const [interrupting, setInterrupting] = createSignal(false);
+  const [archiving, setArchiving] = createSignal(false);
+  const [archiveError, setArchiveError] = createSignal<unknown>(null);
+  const [pendingDirtySummary, setPendingDirtySummary] = createSignal<string | null>(null);
+
+  const liveRepoSummary = createMemo(() => {
+    const events = relay.events();
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i];
+      if (event !== undefined && event.type === "repo_dirty") {
+        return event.summary;
+      }
+    }
+    return null;
+  });
 
   /**
    * The relay socket is preferred whenever it's live — lower latency, and
@@ -142,6 +157,27 @@ export default function SessionDetail() {
     }
   }
 
+  async function onArchive(discardUncommitted: boolean): Promise<void> {
+    if (archiving()) {
+      return;
+    }
+    setArchiveError(null);
+    setArchiving(true);
+    try {
+      await archiveSession(params.id, { discardUncommitted });
+      setPendingDirtySummary(null);
+      await refetchSession();
+    } catch (err) {
+      if (!discardUncommitted && err instanceof ApiProblem && err.type.endsWith("/dirty-archive")) {
+        setPendingDirtySummary(err.detail);
+      } else {
+        setArchiveError(err);
+      }
+    } finally {
+      setArchiving(false);
+    }
+  }
+
   async function onDecide(id: string, decision: "approved" | "denied"): Promise<void> {
     setDecideError(null);
     try {
@@ -168,13 +204,51 @@ export default function SessionDetail() {
     <section class={styles.page}>
       <header class={styles.header}>
         <h1>{params.id}</h1>
-        <span class={styles.connection} data-state={relay.state()}>
-          <span class={styles.connectionDot} />
-          {CONNECTION_LABEL[relay.state()]}
-        </span>
+        <div class={styles.headerActions}>
+          <span class={styles.connection} data-state={relay.state()}>
+            <span class={styles.connectionDot} />
+            {CONNECTION_LABEL[relay.state()]}
+          </span>
+          <Show when={session()?.state !== "archived"}>
+            <button
+              type="button"
+              class={styles.interruptButton}
+              disabled={archiving()}
+              onClick={() => void onArchive(false)}
+            >
+              {archiving() ? "Archiving…" : "Archive"}
+            </button>
+          </Show>
+        </div>
       </header>
 
       <ProblemNotice error={session.error} />
+      <ProblemNotice error={archiveError()} />
+      <Show when={pendingDirtySummary()}>
+        {(summary) => (
+          <div class={styles.archiveConfirm} role="alertdialog" aria-labelledby="archive-dirty-title">
+            <h2 id="archive-dirty-title">Uncommitted changes</h2>
+            <p>
+              Archiving releases the disk without keeping this work. Commit it first, or discard it
+              to archive anyway.
+            </p>
+            <pre class={styles.archiveSummary}>{summary()}</pre>
+            <div class={styles.composerActions}>
+              <button type="button" class={styles.sendButton} onClick={() => setPendingDirtySummary(null)}>
+                Keep session
+              </button>
+              <button
+                type="button"
+                class={styles.interruptButton}
+                disabled={archiving()}
+                onClick={() => void onArchive(true)}
+              >
+                Discard and archive
+              </button>
+            </div>
+          </div>
+        )}
+      </Show>
 
       <div class={styles.meters}>
         <BudgetBar label="Budget" spentUsd={budgetSpentUsd()} limitUsd={budgetLimitUsd()} />
@@ -259,7 +333,7 @@ export default function SessionDetail() {
             }}
           />
           <MachinePanel sessionId={params.id} />
-          <RepoStatusPanel sessionId={params.id} />
+          <RepoStatusPanel sessionId={params.id} liveSummary={liveRepoSummary()} />
           <TerminalPanel sessionId={params.id} relay={relay} />
           <EnvEditor sessionId={params.id} />
         </aside>

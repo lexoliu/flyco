@@ -5,7 +5,7 @@ use flyco_core::{
     ControlToDaemon, CreateApiKey, CreateSession, CreatedApiKey, CurrentUser, DaemonToken,
     DecideApproval, EnvDocument, HarnessObservation, MachineSpec, RepoSlug, RepoStatus,
     SendMessage, SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv,
-    UpdateMe, wire::ApprovalPayload,
+    UpdateMe, UserId, wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -31,7 +31,7 @@ use crate::rooms::Rooms;
 use crate::{
     agents_md, api_keys, approvals, daemon_tokens, env, harness_accounts, machines, mcp, memory,
     oauth, observations, problem, provider_accounts, provisioning, push, relay, repos, responses,
-    sessions, skills, transcripts, turns, users, webhooks,
+    sessions, skills, transcripts, turns, users, webhooks, workdirs,
 };
 
 /// Health probe response.
@@ -250,41 +250,145 @@ async fn read_session(
     sessions::find(db, user.id, id).await.map(Json)
 }
 
+/// Narrows a manual archive.
+#[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
+struct ArchiveQuery {
+    /// Required when the working tree is dirty: the caller has seen the
+    /// warning and still wants the disk released without keeping the
+    /// uncommitted work.
+    #[serde(default)]
+    discard_uncommitted: bool,
+}
+
 /// Archives a session, releasing its execution environment for good.
 #[skyzen::openapi]
 async fn archive_session(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    Query(query): Query<ArchiveQuery>,
     params: Params,
     rooms: Rooms,
     db: Db,
 ) -> Outcome<Json<SessionDetail>> {
-    end_session(&user, &config, &params, &rooms, &db)
-        .await
-        .into()
+    end_session(
+        user.id,
+        &config,
+        &params,
+        &rooms,
+        &db,
+        ArchiveKind::Manual {
+            discard_uncommitted: query.discard_uncommitted,
+        },
+    )
+    .await
+    .into()
+}
+
+/// How a session is being archived.
+pub(crate) enum ArchiveKind {
+    /// The user asked. A dirty tree requires confirmation and is discarded.
+    Manual { discard_uncommitted: bool },
+    /// The session sat idle. Uncommitted work is snapshotted first.
+    Automatic,
 }
 
 async fn end_session(
-    user: &CurrentUser,
+    user: UserId,
     config: &ApiConfig,
     params: &Params,
     rooms: &Rooms,
     db: &Db,
+    kind: ArchiveKind,
 ) -> Result<Json<SessionDetail>, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
-    sessions::state_of(db, user.id, id)
-        .await?
+    archive(db, config, rooms, user, id, kind).await.map(Json)
+}
+
+/// Archives one session.
+///
+/// # Errors
+///
+/// Returns [`ApiError::DirtyArchive`] when a manual archive would discard
+/// uncommitted work without confirmation, [`ApiError::RepoStatusUnknown`]
+/// when an active session has never reported its tree, or
+/// [`ApiError::InvalidTransition`] when the lifecycle forbids the move.
+pub(crate) async fn archive(
+    db: &Db,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    user: UserId,
+    id: SessionId,
+    kind: ArchiveKind,
+) -> Result<SessionDetail, ApiError> {
+    let state = sessions::state_of(db, user, id).await?;
+    state
         .transition(SessionState::Archived)
         .map_err(|error| ApiError::InvalidTransition {
             from: error.from,
             to: error.to,
         })?;
 
-    rooms.command(id, &ControlToDaemon::Archive).await?;
-    machines::destroy_for_archive(db, config, user.id, id).await?;
-    sessions::transition(db, user.id, id, SessionState::Archived)
-        .await
-        .map(Json)
+    let preserve_workdir = match kind {
+        ArchiveKind::Automatic => true,
+        ArchiveKind::Manual {
+            discard_uncommitted,
+        } => {
+            confirm_manual_archive(rooms, id, state, discard_uncommitted).await?;
+            false
+        }
+    };
+
+    rooms
+        .command(id, &ControlToDaemon::Archive { preserve_workdir })
+        .await?;
+    machines::destroy_for_archive(db, config, user, id).await?;
+    sessions::transition(db, user, id, SessionState::Archived).await
+}
+
+async fn confirm_manual_archive(
+    rooms: &Rooms,
+    id: SessionId,
+    state: SessionState,
+    discard_uncommitted: bool,
+) -> Result<(), ApiError> {
+    if !matches!(
+        state,
+        SessionState::Active | SessionState::Paused | SessionState::Interrupted
+    ) {
+        return Ok(());
+    }
+    let status = rooms.repo_status(id).await?;
+    if status.dirty && !discard_uncommitted {
+        return Err(ApiError::DirtyArchive {
+            summary: status.summary,
+        });
+    }
+    Ok(())
+}
+
+/// Archives every session that has sat idle for a week.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if listing or archiving a session fails.
+pub async fn archive_idle(
+    db: &Db,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    at_unix: u64,
+) -> Result<(), ApiError> {
+    for idle in sessions::idle_since(db, at_unix).await? {
+        archive(
+            db,
+            config,
+            rooms,
+            idle.user_id,
+            idle.id,
+            ArchiveKind::Automatic,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Reports a session's budget, recomputed from its spend ledger.
@@ -903,6 +1007,46 @@ async fn read_transcript(
     Ok(response)
 }
 
+/// Stores the uncommitted diff of a session about to be archived automatically.
+#[skyzen::openapi]
+async fn put_workdir_patch(
+    State(session): State<DaemonSession>,
+    body: Bytes,
+    storage: Storage,
+) -> Outcome<NoContent> {
+    store_workdir_patch(session.0, body, &storage).await.into()
+}
+
+async fn store_workdir_patch(
+    session: SessionId,
+    body: Bytes,
+    storage: &Storage,
+) -> Result<NoContent, ApiError> {
+    workdirs::put(storage, session, body.to_vec()).await?;
+    Ok(NoContent)
+}
+
+/// Reads a previously stored uncommitted diff, for a resume onto a new host.
+#[skyzen::openapi]
+async fn get_workdir_patch(
+    State(session): State<DaemonSession>,
+    storage: Storage,
+) -> Outcome<Response> {
+    read_workdir_patch(session.0, &storage).await.into()
+}
+
+async fn read_workdir_patch(session: SessionId, storage: &Storage) -> Result<Response, ApiError> {
+    let Some(body) = workdirs::get(storage, session).await? else {
+        return Err(ApiError::SessionNotFound);
+    };
+    let mut response = Response::new(skyzen::Body::from(body));
+    response.headers_mut().insert(
+        skyzen::header::CONTENT_TYPE,
+        skyzen::header::HeaderValue::from_static(workdirs::CONTENT_TYPE),
+    );
+    Ok(response)
+}
+
 /// Routes that anyone may call.
 ///
 /// Three of them are public because they cannot be anything else: a browser
@@ -946,6 +1090,9 @@ fn daemon_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),
         "/v1/sessions/{id}/transcript/{stream}".at(get_transcript),
         "/v1/sessions/{id}/transcript/{stream}/batches/{seq}".put(put_transcript_batch),
+        "/v1/sessions/{id}/workdir-patch"
+            .at(get_workdir_patch)
+            .put(put_workdir_patch),
     ))
     .middleware(RequireDaemon::new())
     .into_route_nodes()

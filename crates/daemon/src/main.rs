@@ -6,7 +6,9 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use flyco_core::HarnessKind;
 use flyco_daemon::config::{ControlPlaneConfig, DaemonConfig, EXAMPLE};
-use flyco_daemon::control::{Endpoint, HttpControlApi, RemoteTranscriptStore, wire};
+use flyco_daemon::control::{
+    ControlApi, Endpoint, HttpControlApi, RemoteTranscriptStore, SessionRelay, wire,
+};
 use flyco_daemon::harness::claude::ClaudeCodeHarness;
 use flyco_daemon::harness::claude::store::{JsonlTranscriptStore, TranscriptStore};
 use flyco_daemon::harness::codex::CodexHarness;
@@ -135,14 +137,18 @@ async fn drive_claude_code(config: DaemonConfig) -> Result<(), Failure> {
     let started = start(&config, RemoteTranscriptStore::new(api.clone())).await?;
     let (terminal, terminal_out) =
         flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
-    wire::run(
+    let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
+    apply_stored_patch(&api, &workdir).await?;
+    wire::run(SessionRelay {
         endpoint,
-        started.session,
-        started.outputs,
+        session: started.session,
+        outputs: started.outputs,
         api,
         terminal,
         terminal_out,
-    )
+        workdir,
+        repo_status,
+    })
     .await?;
     Ok(())
 }
@@ -183,15 +189,32 @@ async fn report<S: HarnessSession + 'static>(
     let endpoint = Endpoint::from_base(&url, config.session, daemon_token)?;
     let (terminal, terminal_out) =
         flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
-    wire::run(
+    let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
+    apply_stored_patch(&api, &workdir).await?;
+    wire::run(SessionRelay {
         endpoint,
-        started.session,
-        started.outputs,
+        session: started.session,
+        outputs: started.outputs,
         api,
         terminal,
         terminal_out,
-    )
+        workdir,
+        repo_status,
+    })
     .await?;
+    Ok(())
+}
+
+/// Replays uncommitted work an automatic archive stored, if any.
+async fn apply_stored_patch(
+    api: &HttpControlApi,
+    workdir: &flyco_daemon::git::GitWorkdir,
+) -> Result<(), flyco_daemon::control::WireError> {
+    use flyco_daemon::git::WorkingTree as _;
+
+    if let Some(patch) = api.get_workdir_patch().await? {
+        workdir.apply(&patch).await?;
+    }
     Ok(())
 }
 
