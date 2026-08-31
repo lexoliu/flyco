@@ -202,51 +202,11 @@ export interface paths {
          */
         get: operations["flyco_api::harness_accounts::list_harness_accounts"];
         put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/harness-accounts/{harness}/link/callback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
         /**
-         * Completes a harness link and returns the browser to the SPA.
-         * @description Completes a harness link and returns the browser to the SPA.
-         *
-         *     Public, because the browser arrives from the vendor with no flyco
-         *     credential; the single-use `state` minted by the start call is what says
-         *     whose account this is.
+         * Links a harness credential, replacing the credential for that harness.
+         * @description Links a harness credential, replacing the credential for that harness.
          */
-        get: operations["flyco_api::harness_accounts::complete_harness_link"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/harness-accounts/{harness}/link/start": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Begins linking a harness account, returning the vendor's authorize URL.
-         * @description Begins linking a harness account, returning the vendor's authorize URL.
-         */
-        post: operations["flyco_api::harness_accounts::start_harness_link"];
+        post: operations["flyco_api::harness_accounts::link_harness_account"];
         delete?: never;
         options?: never;
         head?: never;
@@ -264,8 +224,8 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * Unlinks the caller's account for one harness.
-         * @description Unlinks the caller's account for one harness.
+         * Unlinks one account owned by the caller.
+         * @description Unlinks one account owned by the caller.
          */
         delete: operations["flyco_api::harness_accounts::unlink_harness_account"];
         options?: never;
@@ -1249,19 +1209,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Reports what flyco has observed of each harness account's usage.
-         * @description Reports what flyco has observed of each harness account's usage.
-         *
-         *     Reactive by necessity: neither Anthropic nor `OpenAI` publishes a
-         *     remaining-quota API, so this reports the cost telemetry the harness
-         *     emitted and the rate limits it actually hit. A panel built on it says
-         *     what has happened, never what is left.
-         *
-         *     The rows come out of [`crate::observations`], which is filled in by the
-         *     sessions' own daemons as they run — the only place either number exists.
-         *     An account with nothing observed about it still appears, reporting
-         *     nothing, because "nothing has happened" is an answer and a missing row
-         *     would read as an account that is not linked.
+         * Reports observed usage for each linked harness account.
+         * @description Reports observed usage for each linked harness account.
          */
         get: operations["flyco_api::harness_accounts::llm_usage"];
         put?: never;
@@ -1644,11 +1593,8 @@ export interface components {
          * @description A Claude or Codex account the user has linked, as `GET
          *     /v1/harness-accounts` lists it.
          *
-         *     Linking runs against the *vendor's own* authorization page — the flow the
-         *     official CLIs wrap — so flyco never sees a password, and what it stores
-         *     is the resulting token, sealed. No representation of an account carries
-         *     that token; it leaves the control plane only when it is provisioned onto
-         *     a session machine.
+         *     No representation of an account carries its credential; the sealed value
+         *     leaves the control plane only when it is provisioned onto a session machine.
          */
         HarnessAccountView: {
             /**
@@ -1671,6 +1617,29 @@ export interface components {
              * @description When it was linked, seconds since the Unix epoch.
              */
             linked_at_unix: number;
+        };
+        /**
+         * @description A credential accepted when linking a Claude Code or Codex account.
+         *
+         *     Each variant determines its harness, so the wire format cannot pair a
+         *     Claude credential with Codex or vice versa. Secret fields are deliberately
+         *     omitted from [`Debug`](core::fmt::Debug).
+         */
+        HarnessCredentialInput: {
+            /** @enum {string} */
+            kind: "claude_setup_token";
+            /** @description Value printed by `claude setup-token`. */
+            token: string;
+        } | {
+            /** @description Value for `ANTHROPIC_API_KEY`. */
+            key: string;
+            /** @enum {string} */
+            kind: "claude_api_key";
+        } | {
+            /** @description Value for `OPENAI_API_KEY`. */
+            key: string;
+            /** @enum {string} */
+            kind: "codex_api_key";
         };
         /** @description One row of the per-harness feature matrix. */
         HarnessFeature: {
@@ -1724,12 +1693,12 @@ export interface components {
              */
             wire_protocol_version: number;
         };
-        /** @description Query string the vendor appends when it redirects back. */
-        LinkCallback: {
-            /** @description The single-use authorization code. */
-            code: string;
-            /** @description The `state` this control plane minted when the link began. */
-            state: string;
+        /** @description Request to link a Claude Code or Codex account. */
+        LinkHarnessAccount: {
+            /** @description Authentication material, tagged with the mode that consumes it. */
+            credential: components["schemas"]["HarnessCredentialInput"];
+            /** @description User-facing name that distinguishes this credential from another. */
+            label: string;
         };
         /** @description Request body of `POST /v1/providers`. */
         LinkProvider: {
@@ -2933,52 +2902,52 @@ export interface operations {
             };
         };
     };
-    "flyco_api::harness_accounts::complete_harness_link": {
-        parameters: {
-            query: {
-                code: string;
-                state: string;
-            };
-            header?: never;
-            path: {
-                harness: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The browser is sent on to the flyco web app. */
-            303: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    "flyco_api::harness_accounts::start_harness_link": {
+    "flyco_api::harness_accounts::link_harness_account": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                harness: string;
-            };
+            path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Authentication material, tagged with the mode that consumes it. */
+                    credential: components["schemas"]["HarnessCredentialInput"];
+                    /** @description User-facing name that distinguishes this credential from another. */
+                    label: string;
+                };
+            };
+        };
         responses: {
-            /** @description Response */
-            200: {
+            /** @description The resource that was created. */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": {
                         /**
-                         * @description Fully-formed `https://github.com/login/oauth/authorize` URL, including
-                         *     the single-use `state` this control plane will accept back.
+                         * Format: int64
+                         * @description When the stored credential expires, when the vendor states a
+                         *     lifetime.
                          */
-                        authorize_url: string;
+                        expires_at_unix?: number | null;
+                        /** @description Which harness this account drives. */
+                        harness: components["schemas"]["HarnessKind"];
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /**
+                         * @description Account name as the vendor reports it, so the user can tell two
+                         *     linked accounts apart.
+                         */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When it was linked, seconds since the Unix epoch.
+                         */
+                        linked_at_unix: number;
                     };
                 };
             };

@@ -12,8 +12,6 @@
 
 use url::Url;
 
-use flyco_core::HarnessKind;
-
 use crate::crypto::{KEY_LEN, TokenCipher};
 
 /// Names of the bindings the control plane reads.
@@ -29,45 +27,6 @@ pub mod var {
     pub const REDIRECT_URI: &str = "FLYCO_REDIRECT_URI";
     /// AES-256 key for sealing third-party tokens, hex-encoded. Secret.
     pub const ENCRYPTION_KEY: &str = "FLYCO_ENCRYPTION_KEY";
-    /// Per-harness OAuth client, one set per vendor.
-    ///
-    /// Optional as a group: a deployment links a harness account only if it
-    /// holds a registered OAuth client for that vendor. Flyco does not ship
-    /// endpoints or client ids of its own — inventing them would be a guess
-    /// about somebody else's service — so an unconfigured harness reports
-    /// itself unlinkable rather than sending a browser somewhere hopeful.
-    pub const CLAUDE_OAUTH: HarnessOauthVars = HarnessOauthVars {
-        authorize_url: "FLYCO_CLAUDE_OAUTH_AUTHORIZE_URL",
-        token_url: "FLYCO_CLAUDE_OAUTH_TOKEN_URL",
-        client_id: "FLYCO_CLAUDE_OAUTH_CLIENT_ID",
-        client_secret: "FLYCO_CLAUDE_OAUTH_CLIENT_SECRET",
-        scope: "FLYCO_CLAUDE_OAUTH_SCOPE",
-    };
-
-    /// The same set for Codex.
-    pub const CODEX_OAUTH: HarnessOauthVars = HarnessOauthVars {
-        authorize_url: "FLYCO_CODEX_OAUTH_AUTHORIZE_URL",
-        token_url: "FLYCO_CODEX_OAUTH_TOKEN_URL",
-        client_id: "FLYCO_CODEX_OAUTH_CLIENT_ID",
-        client_secret: "FLYCO_CODEX_OAUTH_CLIENT_SECRET",
-        scope: "FLYCO_CODEX_OAUTH_SCOPE",
-    };
-
-    /// The five variable names one harness's OAuth client is read from.
-    #[derive(Debug, Clone, Copy)]
-    pub struct HarnessOauthVars {
-        /// Where the browser is sent to approve.
-        pub authorize_url: &'static str,
-        /// Where the authorization code is exchanged.
-        pub token_url: &'static str,
-        /// The registered client id.
-        pub client_id: &'static str,
-        /// The registered client secret.
-        pub client_secret: &'static str,
-        /// Space-separated scopes to request.
-        pub scope: &'static str,
-    }
-
     /// VAPID public key browsers subscribe against, base64url unpadded.
     ///
     /// Optional: a deployment that never sends a push notification needs no
@@ -136,36 +95,6 @@ pub struct ApiConfig {
     encryption_key: [u8; KEY_LEN],
     vapid_public_key: Option<String>,
     github_webhook_secret: Option<String>,
-    claude_oauth: Option<HarnessOauthClient>,
-    codex_oauth: Option<HarnessOauthClient>,
-}
-
-/// One vendor's registered OAuth client.
-///
-/// Every field is deployment configuration. Flyco ships no client of its own
-/// for either vendor: both require registration, and inventing endpoints or
-/// a client id would be a guess about somebody else's service.
-#[derive(Clone)]
-pub struct HarnessOauthClient {
-    /// Where the browser is sent to approve.
-    pub authorize_url: Url,
-    /// Where the authorization code is exchanged.
-    pub token_url: Url,
-    /// The registered client id.
-    pub client_id: String,
-    /// The registered client secret.
-    pub client_secret: String,
-    /// Space-separated scopes to request.
-    pub scope: String,
-}
-
-impl core::fmt::Debug for HarnessOauthClient {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("HarnessOauthClient")
-            .field("authorize_url", &self.authorize_url.as_str())
-            .field("client_id", &self.client_id)
-            .finish_non_exhaustive()
-    }
 }
 
 impl core::fmt::Debug for ApiConfig {
@@ -201,8 +130,6 @@ impl ApiConfig {
 
         Ok(Self {
             vapid_public_key: None,
-            claude_oauth: None,
-            codex_oauth: None,
             github_webhook_secret: None,
             github_client_id,
             github_client_secret,
@@ -256,30 +183,7 @@ impl ApiConfig {
         )?;
         config.vapid_public_key = read(var::VAPID_PUBLIC_KEY).ok();
         config.github_webhook_secret = read(var::GITHUB_WEBHOOK_SECRET).ok();
-        config.claude_oauth = read_harness_oauth(&read, var::CLAUDE_OAUTH);
-        config.codex_oauth = read_harness_oauth(&read, var::CODEX_OAUTH);
         Ok(config)
-    }
-
-    /// The OAuth client registered for one harness, when this deployment
-    /// holds one.
-    #[must_use]
-    pub const fn harness_oauth(&self, harness: HarnessKind) -> Option<&HarnessOauthClient> {
-        match harness {
-            HarnessKind::ClaudeCode => self.claude_oauth.as_ref(),
-            HarnessKind::Codex => self.codex_oauth.as_ref(),
-        }
-    }
-
-    /// Replaces one harness's OAuth client, for tests and for callers that
-    /// resolve configuration themselves.
-    #[must_use]
-    pub fn with_harness_oauth(mut self, harness: HarnessKind, client: HarnessOauthClient) -> Self {
-        match harness {
-            HarnessKind::ClaudeCode => self.claude_oauth = Some(client),
-            HarnessKind::Codex => self.codex_oauth = Some(client),
-        }
-        self
     }
 
     /// The VAPID public key browsers subscribe against, when this
@@ -367,24 +271,6 @@ fn read_var(name: &'static str) -> Result<String, ConfigError> {
 fn read_var(name: &'static str) -> Result<String, ConfigError> {
     let value = std::env::var(name).map_err(|_| ConfigError::Missing(name))?;
     reject_empty(name, value)
-}
-
-/// Reads one harness's OAuth client, or nothing if any part is missing.
-///
-/// All or nothing on purpose: a half-configured client would fail at the
-/// vendor's door with an error the user cannot act on, where an absent one
-/// says plainly that this deployment cannot link that harness.
-fn read_harness_oauth(
-    read: &impl Fn(&'static str) -> Result<String, ConfigError>,
-    vars: var::HarnessOauthVars,
-) -> Option<HarnessOauthClient> {
-    Some(HarnessOauthClient {
-        authorize_url: read(vars.authorize_url).ok()?.parse().ok()?,
-        token_url: read(vars.token_url).ok()?.parse().ok()?,
-        client_id: read(vars.client_id).ok()?,
-        client_secret: read(vars.client_secret).ok()?,
-        scope: read(vars.scope).ok()?,
-    })
 }
 
 fn reject_empty(name: &'static str, value: String) -> Result<String, ConfigError> {

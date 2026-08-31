@@ -17,7 +17,7 @@ use crate::github::{GithubClient, GithubError, GithubOauth, GithubToken, GithubU
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 10] = [
+pub const MIGRATIONS: [&str; 11] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -28,6 +28,7 @@ pub const MIGRATIONS: [&str; 10] = [
     include_str!("../../../migrations/0008_provisioning.sql"),
     include_str!("../../../migrations/0009_budget_metering.sql"),
     include_str!("../../../migrations/0010_harness_session.sql"),
+    include_str!("../../../migrations/0012_harness_credentials.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -138,21 +139,6 @@ pub fn test_router(db: Db, queue: Queue) -> Router {
 /// that has to read one back hands in its own with [`migrated_router_on`].
 pub async fn migrated_router(db: &Db) -> Router {
     migrated_router_on(db, Queue::new(InMemoryQueue::new())).await
-}
-
-/// A migrated database plus a router built around a caller's configuration.
-///
-/// For the routes whose behaviour *is* their configuration — harness
-/// linking, web push — where the difference between configured and not is
-/// the thing under test.
-pub async fn migrated_router_with_config(db: &Db, config: ApiConfig) -> Router {
-    migrate(db).await;
-    router(
-        config,
-        GithubClient::Fake(TestGithub),
-        db.clone(),
-        Queue::new(InMemoryQueue::new()),
-    )
 }
 
 /// A migrated database plus a router producing to a queue the caller holds.
@@ -297,27 +283,36 @@ pub fn machine_choice(account: ProviderAccountId) -> MachineChoice {
     }
 }
 
-/// The Claude OAuth token the linked harness account seals.
+/// Test secret a linked harness account seals.
 ///
 /// Provisioned onto every machine a Claude Code session runs on, which is
 /// why the provisioning tests assert on it: a credential that does not reach
 /// the daemon is a session whose agent cannot sign in.
 pub const HARNESS_TOKEN: &str = "sk-ant-oat01-a-linked-account";
 
-/// Links a harness account, sealed the way the link callback will seal one.
+/// Links a harness account, sealed the way the authenticated link route does.
 pub async fn seed_harness_account(db: &Db, user: UserId, harness: HarnessKind) -> HarnessAccountId {
     let id = HarnessAccountId::generate();
+    let credential = match harness {
+        HarnessKind::ClaudeCode => flyco_provider::ClaudeCredential::OauthToken {
+            token: HARNESS_TOKEN.to_owned(),
+        },
+        HarnessKind::Codex => flyco_provider::ClaudeCredential::ApiKey {
+            key: HARNESS_TOKEN.to_owned(),
+        },
+    };
+    let encoded = serde_json::to_string(&credential).expect("encode a harness credential");
     let sealed = test_config()
         .token_cipher()
-        .seal(HARNESS_TOKEN)
-        .expect("seal a harness token");
+        .seal(&encoded)
+        .expect("seal a harness credential");
     let label = "lexo@lexo.cool".to_owned();
     let linked_at = 1_787_000_000_u64;
 
     sql!(
         db,
         "INSERT INTO harness_accounts \
-         (id, user_id, harness, label, token_enc, linked_at_unix) \
+         (id, user_id, harness, label, credential_enc, linked_at_unix) \
          VALUES ({id}, {user}, {harness}, {label}, {sealed}, {linked_at})"
     )
     .execute()

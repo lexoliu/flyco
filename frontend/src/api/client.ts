@@ -56,6 +56,7 @@ export type MachinePricing = Schemas["MachinePricing"];
 export type MachineCapacity = Schemas["MachineCapacity"];
 export type OsFamily = Schemas["OsFamily"];
 export type HarnessAccountView = Schemas["HarnessAccountView"];
+export type HarnessCredentialInput = Schemas["HarnessCredentialInput"];
 export type MemoryNode = Schemas["MemoryNode"];
 export type AgentsDocument = Schemas["AgentsDocument"];
 export type PushSubscriptionView = Schemas["PushSubscriptionView"];
@@ -398,11 +399,6 @@ export function revokeApiKey(id: string): Promise<void> {
 }
 
 // --- /v1/harness-accounts -----------------------------------------------------
-//
-// Linking a new account (`link/start`, `link/callback`) needs a vendor
-// OAuth app this deployment does not hold credentials for yet, so it stays
-// unwired here on purpose — the settings UI explains that rather than
-// offering a button that would 501.
 
 export function listHarnessAccounts(): Promise<
   JsonResponse<"flyco_api::harness_accounts::list_harness_accounts", 200>
@@ -410,8 +406,14 @@ export function listHarnessAccounts(): Promise<
   return requestJson("GET", "/v1/harness-accounts");
 }
 
-export function unlinkHarnessAccount(harness: HarnessKind): Promise<void> {
-  return requestVoid("DELETE", `/v1/harness-accounts/${harness}`);
+export function linkHarnessAccount(
+  input: JsonBody<"flyco_api::harness_accounts::link_harness_account">,
+): Promise<JsonResponse<"flyco_api::harness_accounts::link_harness_account", 201>> {
+  return requestJson("POST", "/v1/harness-accounts", { json: input });
+}
+
+export function unlinkHarnessAccount(id: string): Promise<void> {
+  return requestVoid("DELETE", `/v1/harness-accounts/${id}`);
 }
 
 // --- /v1/memory ----------------------------------------------------------------
