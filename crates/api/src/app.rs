@@ -1095,7 +1095,6 @@ fn public_routes() -> Vec<RouteNode> {
         "/v1/auth/github".route(("/start".post(oauth::start), "/callback".at(oauth::callback))),
     ))
     .into_route_nodes();
-    nodes.extend(harness_accounts::public_routes());
     nodes.extend(push::public_routes());
     nodes.extend(webhooks::routes());
     nodes

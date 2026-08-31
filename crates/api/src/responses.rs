@@ -39,8 +39,8 @@ const COLLECTION_PLACEHOLDER: &str = "Vec";
 ///
 /// * `204` and `202` answers — a revocation, a delete, a command handed to a
 ///   session's daemon — carry a status and nothing else.
-/// * `oauth::callback` and `harness_accounts::complete_harness_link` answer
-///   `303`: the body of a redirect is not what the caller reads.
+/// * `oauth::callback` answers `303`: the body of a redirect is not what the
+///   caller reads.
 /// * `app::open_daemon_relay` and `app::open_client_relay` answer `101` with
 ///   a WebSocket attached, which the response model has no way to describe.
 /// * `app::put_transcript_batch`, `app::get_transcript`, and the workdir
@@ -65,7 +65,6 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::app::record_harness_observation",
     "flyco_api::app::revoke_api_key",
     "flyco_api::app::send_message",
-    "flyco_api::harness_accounts::complete_harness_link",
     "flyco_api::harness_accounts::unlink_harness_account",
     "flyco_api::machines::resize_session_machine",
     "flyco_api::machines::start_session_machine",
