@@ -1,6 +1,12 @@
 import { For, Show, createResource, createSignal } from "solid-js";
 import ProblemNotice from "../../components/ProblemNotice";
-import { listHarnessAccounts, unlinkHarnessAccount, type HarnessKind } from "../../api/client";
+import {
+  linkHarnessAccount,
+  listHarnessAccounts,
+  unlinkHarnessAccount,
+  type HarnessCredentialInput,
+  type HarnessKind,
+} from "../../api/client";
 import styles from "../../components/Panel.module.css";
 
 const HARNESS_LABEL: Record<HarnessKind, string> = {
@@ -8,18 +14,132 @@ const HARNESS_LABEL: Record<HarnessKind, string> = {
   codex: "Codex",
 };
 
+type CredentialKind = HarnessCredentialInput["kind"];
+
 function formatUnix(seconds: number): string {
   return new Date(seconds * 1000).toLocaleString();
+}
+
+function LinkForm(props: { onLinked: () => unknown }) {
+  const [harness, setHarness] = createSignal<HarnessKind>("claude_code");
+  const [credentialKind, setCredentialKind] = createSignal<CredentialKind>("claude_setup_token");
+  const [label, setLabel] = createSignal("");
+  const [secret, setSecret] = createSignal("");
+  const [submitting, setSubmitting] = createSignal(false);
+  const [error, setError] = createSignal<unknown>(null);
+
+  function selectHarness(next: HarnessKind): void {
+    setHarness(next);
+    setCredentialKind(next === "claude_code" ? "claude_setup_token" : "codex_api_key");
+    setSecret("");
+  }
+
+  function credential(): HarnessCredentialInput {
+    switch (credentialKind()) {
+      case "claude_setup_token":
+        return { kind: "claude_setup_token", token: secret() };
+      case "claude_api_key":
+        return { kind: "claude_api_key", key: secret() };
+      case "codex_api_key":
+        return { kind: "codex_api_key", key: secret() };
+    }
+  }
+
+  async function onSubmit(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await linkHarnessAccount({ label: label(), credential: credential() });
+      setLabel("");
+      setSecret("");
+      await props.onLinked();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form class={styles.form} onSubmit={(event) => void onSubmit(event)}>
+      <div class={styles.field}>
+        <label for="harness-kind">Harness</label>
+        <select
+          id="harness-kind"
+          value={harness()}
+          onChange={(event) => selectHarness(event.currentTarget.value as HarnessKind)}
+        >
+          <option value="claude_code">Claude Code</option>
+          <option value="codex">Codex</option>
+        </select>
+      </div>
+
+      <Show when={harness() === "claude_code"}>
+        <div class={styles.field}>
+          <label for="credential-kind">Credential</label>
+          <select
+            id="credential-kind"
+            value={credentialKind()}
+            onChange={(event) => {
+              setCredentialKind(event.currentTarget.value as CredentialKind);
+              setSecret("");
+            }}
+          >
+            <option value="claude_setup_token">Claude subscription setup token</option>
+            <option value="claude_api_key">Anthropic API key</option>
+          </select>
+        </div>
+      </Show>
+
+      <div class={styles.field}>
+        <label for="harness-label">Label</label>
+        <input
+          id="harness-label"
+          value={label()}
+          onInput={(event) => setLabel(event.currentTarget.value)}
+          placeholder="Personal"
+          required
+        />
+      </div>
+
+      <div class={styles.field}>
+        <label for="harness-secret">
+          {credentialKind() === "claude_setup_token" ? "Setup token" : "API key"}
+        </label>
+        <input
+          id="harness-secret"
+          type="password"
+          value={secret()}
+          onInput={(event) => setSecret(event.currentTarget.value)}
+          autocomplete="off"
+          required
+        />
+      </div>
+
+      <Show when={credentialKind() === "claude_setup_token"}>
+        <p class={styles.tabDescription}>
+          Run <code>claude setup-token</code> on a trusted computer, then paste the long-lived
+          token it prints. Flyco encrypts it before storage.
+        </p>
+      </Show>
+
+      <ProblemNotice error={error()} />
+      <button type="submit" class={styles.primaryButton} disabled={submitting()}>
+        {submitting() ? "Linking…" : "Link account"}
+      </button>
+    </form>
+  );
 }
 
 export default function HarnessAccountsTab() {
   const [accounts, { refetch }] = createResource(listHarnessAccounts);
   const [unlinkError, setUnlinkError] = createSignal<unknown>(null);
 
-  async function onUnlink(harness: HarnessKind): Promise<void> {
+  async function onUnlink(id: string): Promise<void> {
     setUnlinkError(null);
     try {
-      await unlinkHarnessAccount(harness);
+      await unlinkHarnessAccount(id);
       await refetch();
     } catch (err) {
       setUnlinkError(err);
@@ -31,22 +151,13 @@ export default function HarnessAccountsTab() {
       <div class={styles.tabHeader}>
         <h2>Harness accounts</h2>
         <p class={styles.tabDescription}>
-          Claude Code and Codex accounts linked against the vendor's own authorization page —
-          flyco never sees a password, only the resulting sealed token, provisioned onto a
-          session machine when needed.
+          Link Claude Code with a subscription setup token or Anthropic API key, or link Codex
+          with an OpenAI API key. Flyco never receives a vendor password and stores credentials
+          encrypted.
         </p>
       </div>
 
-      <div class={styles.form}>
-        <p class={styles.tabDescription}>
-          Linking a new account needs a round trip through the vendor's OAuth consent page, which
-          this build doesn't have credentials to start yet. Existing linked accounts still work,
-          and unlinking one below is fully supported — new links are on the way.
-        </p>
-        <button type="button" class={styles.primaryButton} disabled title="Not built yet">
-          Link a new account
-        </button>
-      </div>
+      <LinkForm onLinked={refetch} />
 
       <ProblemNotice error={accounts.error ?? unlinkError()} />
       <Show when={!accounts.loading}>
@@ -68,7 +179,11 @@ export default function HarnessAccountsTab() {
                     </p>
                   </div>
                   <div class={styles.itemActions}>
-                    <button type="button" class={styles.dangerButton} onClick={() => void onUnlink(account.harness)}>
+                    <button
+                      type="button"
+                      class={styles.dangerButton}
+                      onClick={() => void onUnlink(account.id)}
+                    >
                       Unlink
                     </button>
                   </div>
