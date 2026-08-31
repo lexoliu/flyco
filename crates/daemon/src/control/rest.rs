@@ -152,6 +152,12 @@ pub trait ControlApi: Send + Sync + 'static {
         observation: HarnessObservation,
     ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 
+    /// Announces that a turn completed so the owner can be notified.
+    fn notify_turn_completed(&self) -> impl Future<Output = Result<(), ControlApiError>> + Send;
+
+    /// Announces that a turn failed so the owner can be notified.
+    fn notify_turn_failed(&self) -> impl Future<Output = Result<(), ControlApiError>> + Send;
+
     /// Records the harness-native session id so a later resume continues it.
     ///
     /// # Errors
@@ -292,6 +298,14 @@ impl ControlApi for HttpControlApi {
         Ok(())
     }
 
+    async fn notify_turn_completed(&self) -> Result<(), ControlApiError> {
+        self.post_empty("turn-completed").await
+    }
+
+    async fn notify_turn_failed(&self) -> Result<(), ControlApiError> {
+        self.post_empty("turn-failed").await
+    }
+
     async fn record_harness_session(
         &self,
         harness_session_id: &str,
@@ -382,5 +396,19 @@ impl ControlApi for HttpControlApi {
             body: body.to_vec(),
             batches,
         })
+    }
+}
+
+impl HttpControlApi {
+    async fn post_empty(&self, suffix: &str) -> Result<(), ControlApiError> {
+        let url = self.url(suffix)?;
+        let mut client = zenwave::client();
+        client
+            .post(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .await
+            .map_err(|error| refused("POST", &url, &error))?;
+        Ok(())
     }
 }
