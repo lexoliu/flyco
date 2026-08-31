@@ -221,6 +221,8 @@ mod worker {
         })?;
         let d1 = skyzen_cloudflare::CfD1::from_env(&env, binding::DATABASE)
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
+        let config = ApiConfig::from_worker_env(&env)
+            .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         let db = Db::new(d1);
         let rooms = Rooms::from_worker_env(env);
         accrue(&db, at_unix)
@@ -228,8 +230,6 @@ mod worker {
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         deliver(&db, &rooms)
             .await
-            .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
-        let config = ApiConfig::from_worker_env(&env)
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         app::archive_idle(&db, &config, &rooms, at_unix)
             .await
