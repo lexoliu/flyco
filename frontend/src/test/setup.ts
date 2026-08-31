@@ -16,9 +16,9 @@ window.scrollTo = () => {
 // vite-plugin-pwa's virtual module only exists inside a real Vite build;
 // components that call registerSW() need a stand-in for it under Vitest.
 vi.mock("virtual:pwa-register", () => ({
-  registerSW: () => async () => {
+  registerSW: vi.fn(() => async () => {
     /* no-op in tests */
-  },
+  }),
 }));
 
 /**
