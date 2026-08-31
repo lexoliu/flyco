@@ -1,15 +1,18 @@
 //! The GitHub side of the OAuth code flow.
 //!
 //! Everything that leaves the Worker for `github.com` goes through
-//! [`GithubOauth`]. The production implementation is [`ZenwaveGithub`]; tests
-//! substitute their own so the callback handler can be exercised end to end
-//! without the network.
+//! [`GithubOauth`]. Native builds use [`ZenwaveGithub`], while Cloudflare
+//! Workers use [`WorkerGithub`]; tests substitute their own so the callback
+//! handler can be exercised end to end without the network.
 
 use core::future::Future;
 
 use flyco_core::RepoSummary;
 
 use serde::{Deserialize, Serialize};
+#[cfg(target_arch = "wasm32")]
+use skyzen_cloudflare::worker::send::IntoSendFuture as _;
+#[cfg(not(target_arch = "wasm32"))]
 use zenwave::{Client as _, Response, ResponseExt as _};
 
 /// GitHub's OAuth token endpoint.
@@ -211,7 +214,11 @@ fn parse_rfc3339_seconds(value: &str) -> Option<u64> {
 #[derive(Debug, Clone)]
 pub enum GithubClient {
     /// Talks to `api.github.com`.
+    #[cfg(not(target_arch = "wasm32"))]
     Live(ZenwaveGithub),
+    /// Talks to `api.github.com` through `WorkerGlobalScope.fetch`.
+    #[cfg(target_arch = "wasm32")]
+    Live(WorkerGithub),
     /// Answers from fixtures, for tests.
     #[cfg(test)]
     Fake(crate::testing::TestGithub),
@@ -219,7 +226,14 @@ pub enum GithubClient {
 
 impl Default for GithubClient {
     fn default() -> Self {
-        Self::Live(ZenwaveGithub::new())
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self::Live(ZenwaveGithub::new())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self::Live(WorkerGithub::new())
+        }
     }
 }
 
@@ -267,11 +281,12 @@ impl GithubOauth for GithubClient {
     }
 }
 
-/// The production [`GithubOauth`], speaking HTTP through zenwave — which is
-/// Fetch-backed on the Worker and hyper-backed natively.
+/// The native production [`GithubOauth`], speaking HTTP through zenwave.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ZenwaveGithub;
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ZenwaveGithub {
     /// Creates the client.
     #[must_use]
@@ -284,8 +299,10 @@ fn transport(error: impl core::fmt::Display) -> GithubError {
     GithubError::Transport(error.to_string())
 }
 
-/// Reads a JSON body, but only after the status line says the call worked —
-/// otherwise a GitHub outage page would surface as a deserialization error.
+/// Reads a native JSON body, but only after the status line says the call
+/// worked — otherwise a GitHub outage page would surface as a deserialization
+/// error.
+#[cfg(not(target_arch = "wasm32"))]
 async fn json_body<T: serde::de::DeserializeOwned>(response: Response) -> Result<T, GithubError> {
     let status = response.status();
     if !status.is_success() {
@@ -294,6 +311,7 @@ async fn json_body<T: serde::de::DeserializeOwned>(response: Response) -> Result
     response.into_json::<T>().await.map_err(transport)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl GithubOauth for ZenwaveGithub {
     async fn exchange_code(
         &self,
@@ -320,15 +338,7 @@ impl GithubOauth for ZenwaveGithub {
             .await
             .map_err(transport)?;
 
-        match json_body::<TokenResponse>(response).await? {
-            TokenResponse::Token(token) => Ok(token),
-            TokenResponse::Failure(failure) => Err(GithubError::Rejected {
-                description: failure
-                    .error_description
-                    .unwrap_or_else(|| "no description".to_owned()),
-                code: failure.error,
-            }),
-        }
+        token_response(json_body::<TokenResponse>(response).await?)
     }
 
     async fn current_user(&self, token: &GithubToken) -> Result<GithubUser, GithubError> {
@@ -365,5 +375,151 @@ impl GithubOauth for ZenwaveGithub {
             .into_iter()
             .filter_map(GithubRepo::into_summary)
             .collect())
+    }
+}
+
+fn token_response(response: TokenResponse) -> Result<GithubToken, GithubError> {
+    match response {
+        TokenResponse::Token(token) => Ok(token),
+        TokenResponse::Failure(failure) => Err(GithubError::Rejected {
+            description: failure
+                .error_description
+                .unwrap_or_else(|| "no description".to_owned()),
+            code: failure.error,
+        }),
+    }
+}
+
+/// The Cloudflare production [`GithubOauth`], speaking HTTP through
+/// `WorkerGlobalScope.fetch`.
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WorkerGithub;
+
+#[cfg(target_arch = "wasm32")]
+impl WorkerGithub {
+    /// Creates the client.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+/// Reads a Worker JSON body after validating the HTTP status.
+#[cfg(target_arch = "wasm32")]
+async fn worker_json_body<T: serde::de::DeserializeOwned>(
+    mut response: skyzen_cloudflare::worker::Response,
+) -> Result<T, GithubError> {
+    let status = response.status_code();
+    if !(200..300).contains(&status) {
+        return Err(GithubError::Status(status));
+    }
+    response.json::<T>().into_send().await.map_err(transport)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn worker_fetch(
+    request: skyzen_cloudflare::worker::Request,
+) -> Result<skyzen_cloudflare::worker::Response, GithubError> {
+    skyzen_cloudflare::worker::Fetch::Request(request)
+        .send()
+        .into_send()
+        .await
+        .map_err(transport)
+}
+
+#[cfg(target_arch = "wasm32")]
+impl GithubOauth for WorkerGithub {
+    async fn exchange_code(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+        code: &str,
+        redirect_uri: &str,
+    ) -> Result<GithubToken, GithubError> {
+        let request = skyzen_cloudflare::json_request(
+            skyzen_cloudflare::worker::Method::Post,
+            ACCESS_TOKEN_URL,
+            &ExchangeRequest {
+                client_id,
+                client_secret,
+                code,
+                redirect_uri,
+            },
+            &[("Accept", "application/json"), ("User-Agent", USER_AGENT)],
+        )
+        .map_err(transport)?;
+        let response = worker_fetch(request).await?;
+
+        token_response(worker_json_body::<TokenResponse>(response).await?)
+    }
+
+    async fn current_user(&self, token: &GithubToken) -> Result<GithubUser, GithubError> {
+        let authorization = format!("Bearer {}", token.access_token);
+        let request = skyzen_cloudflare::bare_request(
+            skyzen_cloudflare::worker::Method::Get,
+            USER_URL,
+            &[
+                ("Accept", "application/vnd.github+json"),
+                ("User-Agent", USER_AGENT),
+                ("Authorization", authorization.as_str()),
+            ],
+            None,
+        )
+        .map_err(transport)?;
+
+        worker_json_body::<GithubUser>(worker_fetch(request).await?).await
+    }
+
+    async fn list_repos(&self, token: &GithubToken) -> Result<Vec<RepoSummary>, GithubError> {
+        let authorization = format!("Bearer {}", token.access_token);
+        let request = skyzen_cloudflare::bare_request(
+            skyzen_cloudflare::worker::Method::Get,
+            REPOS_URL,
+            &[
+                ("Accept", "application/vnd.github+json"),
+                ("User-Agent", USER_AGENT),
+                ("Authorization", authorization.as_str()),
+            ],
+            None,
+        )
+        .map_err(transport)?;
+
+        let repos = worker_json_body::<Vec<GithubRepo>>(worker_fetch(request).await?).await?;
+        Ok(repos
+            .into_iter()
+            .filter_map(GithubRepo::into_summary)
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GithubError, GithubOauthError, GithubToken, TokenResponse, token_response};
+
+    #[test]
+    fn a_token_response_yields_the_token() {
+        let token = token_response(TokenResponse::Token(GithubToken {
+            access_token: "github-test-token".to_owned(),
+        }))
+        .expect("token response");
+
+        assert_eq!(token.access_token, "github-test-token");
+    }
+
+    #[test]
+    fn an_oauth_error_response_keeps_githubs_reason() {
+        let error = token_response(TokenResponse::Failure(GithubOauthError {
+            error: "bad_verification_code".to_owned(),
+            error_description: Some("The code passed is incorrect or expired.".to_owned()),
+        }))
+        .expect_err("rejected code");
+
+        assert!(matches!(
+            error,
+            GithubError::Rejected { code, description }
+                if code == "bad_verification_code"
+                    && description == "The code passed is incorrect or expired."
+        ));
     }
 }
