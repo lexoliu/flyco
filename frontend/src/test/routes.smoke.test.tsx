@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render } from "@solidjs/testing-library";
 import { MemoryRouter, Navigate, Route, createMemoryHistory } from "@solidjs/router";
 import AppShell from "../components/AppShell";
@@ -17,6 +17,8 @@ import MemoryTab from "../routes/settings/MemoryTab";
 import AgentsMdTab from "../routes/settings/AgentsMdTab";
 import NotificationsTab from "../routes/settings/NotificationsTab";
 import NotFound from "../routes/NotFound";
+import { consumePostLoginPath } from "../lib/postLoginPath";
+import { clearSessionToken, setSessionToken } from "../lib/session";
 
 /**
  * Renders the same route tree as src/main.tsx, starting at a given path.
@@ -27,7 +29,11 @@ import NotFound from "../routes/NotFound";
  * prop only ever takes effect once per file. A dedicated in-memory history
  * per render keeps each test's navigation fully isolated.
  */
-function renderAt(url: string) {
+function renderAt(url: string, signedIn = true) {
+  clearSessionToken();
+  if (signedIn) {
+    setSessionToken("fs_route_test");
+  }
   const history = createMemoryHistory();
   history.set({ value: url, replace: true, scroll: false });
   return render(() => (
@@ -55,12 +61,51 @@ function renderAt(url: string) {
 
 describe("route smoke tests", () => {
   it("renders /login with the sign-in call to action", () => {
-    const { getByText } = renderAt("/login");
+    const { getByText } = renderAt("/login", false);
     expect(getByText("Sign in with GitHub")).toBeInTheDocument();
   });
 
+  it("redirects a signed-out first visit to GitHub sign-in without calling protected APIs", async () => {
+    const { findByText, queryByRole } = renderAt("/", false);
+
+    expect(await findByText("Sign in with GitHub")).toBeInTheDocument();
+    expect(queryByRole("heading", { level: 1, name: "Sessions" })).not.toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("restores the protected destination after sign-in", async () => {
+    const { findByText } = renderAt("/sessions/abc-123?panel=terminal", false);
+
+    expect(await findByText("Sign in with GitHub")).toBeInTheDocument();
+    expect(consumePostLoginPath()).toBe("/sessions/abc-123?panel=terminal");
+  });
+
+  it("redirects a signed-in visitor away from /login", async () => {
+    const { findByRole } = renderAt("/login");
+
+    expect(await findByRole("heading", { level: 1, name: "Sessions" })).toBeInTheDocument();
+  });
+
+  it("clears a rejected session and returns to sign-in", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          type: "https://flyco.dev/problems/invalid-credential",
+          title: "Unauthorized",
+          status: 401,
+          detail: "the session expired",
+        }),
+        { status: 401, headers: { "content-type": "application/problem+json" } },
+      ),
+    );
+    const { findByText } = renderAt("/");
+
+    expect(await findByText("Sign in with GitHub")).toBeInTheDocument();
+    expect(localStorage.getItem("flyco.session_token")).toBeNull();
+  });
+
   it("renders /auth/complete as an explicit error state without a token", () => {
-    const { getByRole } = renderAt("/auth/complete");
+    const { getByRole } = renderAt("/auth/complete", false);
     expect(getByRole("alert")).toBeInTheDocument();
   });
 
