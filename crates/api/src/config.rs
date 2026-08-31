@@ -6,9 +6,8 @@
 //! environment. A missing or malformed *required* value is a startup
 //! failure, never a default.
 //!
-//! GitHub webhook verification is optional: with no webhook secret this
-//! deployment accepts no GitHub deliveries. Web Push is a product capability,
-//! so its signing identity is required at startup like the OAuth identity.
+//! GitHub webhook verification and Web Push are product capabilities, so both
+//! signing identities are required at startup like the OAuth identity.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use url::Url;
@@ -77,12 +76,9 @@ pub mod var {
     /// Shared secret GitHub signs webhook deliveries with. Secret;
     /// `wrangler secret put`.
     ///
-    /// Optional, and its absence is a decision rather than an oversight:
-    /// a deployment with no secret has nothing to verify a delivery
-    /// against, so it accepts no webhooks at all and says so. Defaulting
-    /// to "no signature required" would turn the one thing standing
-    /// between a forgery and a live session into a missing environment
-    /// variable.
+    /// Required: a deployment with no secret has nothing to verify a delivery
+    /// against, so it must fail during startup rather than leave a product
+    /// route running in an unusable state.
     pub const GITHUB_WEBHOOK_SECRET: &str = "FLYCO_GITHUB_WEBHOOK_SECRET";
 }
 
@@ -138,7 +134,7 @@ pub struct ApiConfig {
     redirect_uri: Url,
     encryption_key: [u8; KEY_LEN],
     vapid: VapidConfig,
-    github_webhook_secret: Option<String>,
+    github_webhook_secret: String,
     claude_oauth: Option<HarnessOauthClient>,
     codex_oauth: Option<HarnessOauthClient>,
 }
@@ -211,7 +207,10 @@ impl ApiConfig {
         encryption_key_hex: &str,
         vapid_private_key: &str,
         vapid_subject: &str,
+        github_webhook_secret: String,
     ) -> Result<Self, ConfigError> {
+        let github_webhook_secret =
+            reject_empty(var::GITHUB_WEBHOOK_SECRET, github_webhook_secret)?;
         let redirect_uri = Url::parse(redirect_uri).map_err(|source| ConfigError::NotAUrl {
             name: var::REDIRECT_URI,
             source,
@@ -240,7 +239,7 @@ impl ApiConfig {
             },
             claude_oauth: None,
             codex_oauth: None,
-            github_webhook_secret: None,
+            github_webhook_secret,
             github_client_id,
             github_client_secret,
             redirect_uri,
@@ -292,8 +291,8 @@ impl ApiConfig {
             &read(var::ENCRYPTION_KEY)?,
             &read(var::VAPID_PRIVATE_KEY)?,
             &read(var::VAPID_SUBJECT)?,
+            read(var::GITHUB_WEBHOOK_SECRET)?,
         )?;
-        config.github_webhook_secret = read(var::GITHUB_WEBHOOK_SECRET).ok();
         config.claude_oauth = read_harness_oauth(&read, var::CLAUDE_OAUTH);
         config.codex_oauth = read_harness_oauth(&read, var::CODEX_OAUTH);
         Ok(config)
@@ -328,19 +327,9 @@ impl ApiConfig {
 
     /// The secret GitHub signs this deployment's webhook deliveries with.
     ///
-    /// `None` means this deployment accepts no webhooks: there is nothing
-    /// to check a signature against, and an unverified body is never read.
     #[must_use]
-    pub fn github_webhook_secret(&self) -> Option<&str> {
-        self.github_webhook_secret.as_deref()
-    }
-
-    /// Replaces the GitHub webhook secret, for tests and for callers that
-    /// resolve configuration themselves.
-    #[must_use]
-    pub fn with_github_webhook_secret(mut self, secret: impl Into<String>) -> Self {
-        self.github_webhook_secret = Some(secret.into());
-        self
+    pub fn github_webhook_secret(&self) -> &str {
+        &self.github_webhook_secret
     }
 
     /// GitHub OAuth app client id.
@@ -462,6 +451,7 @@ mod tests {
             "00112233",
             VAPID_PRIVATE_KEY,
             VAPID_SUBJECT,
+            "webhook-secret".to_owned(),
         )
         .expect_err("a 4-byte key must be rejected");
         assert!(matches!(error, ConfigError::NotAKey(var::ENCRYPTION_KEY)));
@@ -476,27 +466,35 @@ mod tests {
             KEY_HEX,
             VAPID_PRIVATE_KEY,
             VAPID_SUBJECT,
+            "webhook-secret".to_owned(),
         )
         .expect_err("a relative redirect URI must be rejected");
         assert!(matches!(error, ConfigError::NotAUrl { .. }));
     }
 
     #[test]
-    fn the_debug_rendering_never_shows_a_secret() {
-        let rendered = format!(
-            "{:?}",
-            test_config().with_github_webhook_secret("a-webhook-secret")
-        );
-        assert!(!rendered.contains(CLIENT_SECRET));
-        assert!(!rendered.contains(KEY_HEX));
-        assert!(!rendered.contains("a-webhook-secret"));
+    fn an_empty_webhook_secret_is_rejected() {
+        let error = ApiConfig::new(
+            "id".to_owned(),
+            "secret".to_owned(),
+            "https://flyco.test/cb",
+            KEY_HEX,
+            VAPID_PRIVATE_KEY,
+            VAPID_SUBJECT,
+            String::new(),
+        )
+        .expect_err("an empty webhook secret must be rejected at startup");
+        assert!(matches!(
+            error,
+            ConfigError::Missing(var::GITHUB_WEBHOOK_SECRET)
+        ));
     }
 
     #[test]
-    fn a_deployment_without_a_webhook_secret_accepts_no_webhooks() {
-        // The absence of a secret is the whole refusal: there is nothing to
-        // verify a delivery against, and `webhooks` reads that as "this
-        // deployment accepts none" rather than "verification is optional".
-        assert!(test_config().github_webhook_secret().is_none());
+    fn the_debug_rendering_never_shows_a_secret() {
+        let rendered = format!("{:?}", test_config());
+        assert!(!rendered.contains(CLIENT_SECRET));
+        assert!(!rendered.contains(KEY_HEX));
+        assert!(!rendered.contains(super::super::testing::GITHUB_WEBHOOK_SECRET));
     }
 }

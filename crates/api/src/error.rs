@@ -80,17 +80,6 @@ pub enum ApiError {
     #[error("this skill bundle is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     InvalidSkill(&'static str),
 
-    /// This deployment holds no webhook secret, so it can verify nothing.
-    ///
-    /// The refusal is the point: with no secret there is no way to tell a
-    /// GitHub delivery from a forgery, and the alternative — reading the
-    /// body anyway — is the bug the whole route is arranged to prevent.
-    #[error(
-        "this flyco deployment accepts no GitHub webhooks",
-        status = StatusCode::NOT_IMPLEMENTED
-    )]
-    WebhooksUnconfigured,
-
     /// The delivery carried no `X-Hub-Signature-256`, or one that does not
     /// match the body.
     ///
@@ -446,7 +435,6 @@ impl ApiError {
             Self::InvalidMcpServer(_) => "invalid-mcp-server",
             Self::SkillNotFound => "skill-not-found",
             Self::InvalidSkill(_) => "invalid-skill",
-            Self::WebhooksUnconfigured => "webhooks-unconfigured",
             Self::WebhookUnverified => "webhook-unverified",
             Self::WebhookMalformed { .. } => "webhook-malformed",
             Self::PushSubscriptionNotFound => "push-subscription-not-found",

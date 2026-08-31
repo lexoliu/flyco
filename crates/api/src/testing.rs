@@ -49,6 +49,9 @@ pub const VAPID_PRIVATE_KEY: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY
 /// Contact URI carried by test VAPID signatures.
 pub const VAPID_SUBJECT: &str = "mailto:me@lexo.cool";
 
+/// Shared secret used to sign GitHub webhook fixtures.
+pub const GITHUB_WEBHOOK_SECRET: &str = "a-shared-webhook-secret";
+
 /// The GitHub access token [`TestGithub`] hands back.
 pub const GITHUB_ACCESS_TOKEN: &str = "gho_test_access_token";
 
@@ -74,6 +77,7 @@ pub fn test_config() -> ApiConfig {
         ENCRYPTION_KEY_HEX,
         VAPID_PRIVATE_KEY,
         VAPID_SUBJECT,
+        GITHUB_WEBHOOK_SECRET.to_owned(),
     )
     .expect("the test configuration is valid")
 }
