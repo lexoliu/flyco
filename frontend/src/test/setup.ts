@@ -5,6 +5,7 @@ import { cleanup } from "@solidjs/testing-library";
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  sessionStorage.clear();
 });
 
 // jsdom doesn't implement scrollTo; the router calls it after navigation
