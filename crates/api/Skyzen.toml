@@ -16,14 +16,13 @@
 # Worker secrets never live in this file:
 #   skyzen secret set FLYCO_GITHUB_CLIENT_SECRET
 #   skyzen secret set FLYCO_ENCRYPTION_KEY          # 32 bytes, hex-encoded
-#   skyzen secret set FLYCO_GITHUB_WEBHOOK_SECRET   # optional; see below
+#   skyzen secret set FLYCO_GITHUB_WEBHOOK_SECRET
 # FLYCO_GITHUB_CLIENT_ID is shared across dev/nightly/production: one GitHub
 # OAuth app with a callback URI per hostname.
 #
 # FLYCO_GITHUB_WEBHOOK_SECRET is the secret GitHub signs webhook deliveries
-# with, and it is optional in one direction only: without it this deployment
-# has nothing to verify a delivery against, so it accepts no webhooks at all
-# rather than reading an unsigned body.
+# with. It is required because a deployment without it cannot authenticate
+# this public endpoint and must not start in a partially functional state.
 
 # The KV namespace is a portable service, so `#[skyzen::main]` wires it.
 [[service]]
