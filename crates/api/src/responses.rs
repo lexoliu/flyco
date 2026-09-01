@@ -43,15 +43,17 @@ const COLLECTION_PLACEHOLDER: &str = "Vec";
 ///   `303`: the body of a redirect is not what the caller reads.
 /// * `app::open_daemon_relay` and `app::open_client_relay` answer `101` with
 ///   a WebSocket attached, which the response model has no way to describe.
-/// * `app::put_transcript_batch`, `app::get_transcript`, and the workdir
-///   patch pair are daemon-scoped routes whose bodies are raw bytes: a
-///   transcript batch is newline-delimited JSON, and a workdir snapshot is
-///   a `git` binary diff, not a document.
+/// * `app::get_release_artifact`, `app::put_transcript_batch`,
+///   `app::get_transcript`, and the workdir patch pair carry raw bytes: a
+///   release is an executable or checksum, a transcript batch is
+///   newline-delimited JSON, and a workdir snapshot is a `git` binary diff,
+///   not a document.
 /// * `repos::list_repos` is generic over the GitHub client, and
 ///   `#[skyzen::openapi]` cannot annotate a generic handler — the macro
 ///   emits module-level items naming every argument type. Its id carries the
 ///   type argument it was monomorphized with, as `oauth::callback`'s does.
 pub const BODILESS: &[&str] = &[
+    "app::get_release_artifact",
     "app::get_transcript",
     "app::open_client_relay",
     "app::open_daemon_relay",
