@@ -354,18 +354,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-native-tls"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9343dc5acf07e79ff82d0c37899f079db3534d99f189a1837c8e549c99405bec"
-dependencies = [
- "futures-util",
- "native-tls",
- "thiserror 1.0.69",
- "url",
-]
-
-[[package]]
 name = "async-net"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6211,7 +6199,6 @@ dependencies = [
  "async-fs",
  "async-io 2.6.0",
  "async-lock 3.4.2",
- "async-native-tls",
  "async-net",
  "async-tungstenite 0.34.1",
  "base64",
@@ -6230,7 +6217,6 @@ dependencies = [
  "httpdate",
  "hyper",
  "js-sys",
- "native-tls",
  "objc",
  "once_cell",
  "rustls",
