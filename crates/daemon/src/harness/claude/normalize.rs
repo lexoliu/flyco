@@ -175,9 +175,23 @@ enum SystemBody {
         #[serde(default)]
         error: Option<String>,
     },
+    /// Completion status for a manual or automatic compaction.
+    Status {
+        #[serde(default)]
+        compact_result: Option<CompactResult>,
+        #[serde(default)]
+        compact_error: Option<String>,
+    },
     /// `init`, `compact_boundary`, and everything else.
     #[serde(other)]
     Other,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CompactResult {
+    Success,
+    Failed,
 }
 
 /// Subscription rate-limit status. The only place the SDK names a reset
@@ -429,7 +443,23 @@ impl Normalizer {
                 );
                 Vec::new()
             }
-            SystemBody::Other => Vec::new(),
+            SystemBody::Status {
+                compact_result: Some(CompactResult::Success),
+                ..
+            } => vec![HarnessEvent::ContextCompacted],
+            SystemBody::Status {
+                compact_result: Some(CompactResult::Failed),
+                compact_error,
+            } => vec![HarnessEvent::ContextCompactionFailed {
+                error: compact_error
+                    .clone()
+                    .unwrap_or_else(|| "Claude Code reported that compaction failed".to_owned()),
+            }],
+            SystemBody::Status {
+                compact_result: None,
+                ..
+            }
+            | SystemBody::Other => Vec::new(),
         }
     }
 
@@ -637,6 +667,21 @@ mod tests {
         assert_eq!(
             normalizer.normalize(&sdk("rate_limit_event_warning.json")),
             NOTHING
+        );
+    }
+
+    #[test]
+    fn compaction_status_is_reported_outside_a_turn() {
+        let mut normalizer = Normalizer::new();
+        assert_eq!(
+            normalizer.normalize(&sdk("system_status_compact_success.json")),
+            vec![HarnessEvent::ContextCompacted]
+        );
+        assert_eq!(
+            normalizer.normalize(&sdk("system_status_compact_failed.json")),
+            vec![HarnessEvent::ContextCompactionFailed {
+                error: "context window could not be summarized".to_owned()
+            }]
         );
     }
 

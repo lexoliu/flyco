@@ -179,6 +179,14 @@ pub trait HarnessSession: Send + Sync {
     /// Returns [`Self::Error`] if the session has already stopped.
     fn interrupt(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
+    /// Compacts the session context through the harness's native mechanism.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the session has already stopped or the
+    /// harness rejects compaction.
+    fn compact(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
     /// Answers a pending approval.
     ///
     /// # Errors

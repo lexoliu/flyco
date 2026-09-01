@@ -8,7 +8,7 @@ import TerminalPanel from "../components/terminal/TerminalPanel";
 import MachinePanel from "../components/MachinePanel";
 import RepoStatusPanel from "../components/RepoStatusPanel";
 import EnvEditor from "../components/EnvEditor";
-import { archiveSession, getSession, decideApproval, interruptSession, sendMessage } from "../api/client";
+import { archiveSession, compactSession, getSession, decideApproval, interruptSession, sendMessage } from "../api/client";
 import { ApiProblem } from "../api/problem";
 import { createSessionRelay, type ConnectionState } from "../api/relay";
 import { foldTranscript, type TranscriptItem } from "../lib/transcript";
@@ -94,6 +94,7 @@ export default function SessionDetail() {
   const [decideError, setDecideError] = createSignal<unknown>(null);
   const [sending, setSending] = createSignal(false);
   const [interrupting, setInterrupting] = createSignal(false);
+  const [compacting, setCompacting] = createSignal(false);
   const [archiving, setArchiving] = createSignal(false);
   const [archiveError, setArchiveError] = createSignal<unknown>(null);
   const [pendingDirtySummary, setPendingDirtySummary] = createSignal<string | null>(null);
@@ -154,6 +155,25 @@ export default function SessionDetail() {
       setSendError(err);
     } finally {
       setInterrupting(false);
+    }
+  }
+
+  async function onCompact(): Promise<void> {
+    if (compacting()) {
+      return;
+    }
+    setSendError(null);
+    setCompacting(true);
+    try {
+      if (relay.state() === "live") {
+        relay.send({ type: "compact" });
+      } else {
+        await compactSession(params.id);
+      }
+    } catch (err) {
+      setSendError(err);
+    } finally {
+      setCompacting(false);
     }
   }
 
@@ -309,6 +329,14 @@ export default function SessionDetail() {
               }}
             />
             <div class={styles.composerActions}>
+              <button
+                type="button"
+                class={styles.compactButton}
+                disabled={compacting()}
+                onClick={() => void onCompact()}
+              >
+                {compacting() ? "Compacting…" : "Compact context"}
+              </button>
               <button
                 type="button"
                 class={styles.interruptButton}

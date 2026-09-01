@@ -230,6 +230,8 @@ pub mod method {
     pub const TURN_START: &str = "turn/start";
     /// Interrupt the in-flight turn.
     pub const TURN_INTERRUPT: &str = "turn/interrupt";
+    /// Compact a thread's conversation context.
+    pub const THREAD_COMPACT_START: &str = "thread/compact/start";
     /// Server → client: a command wants permission.
     pub const COMMAND_APPROVAL: &str = "item/commandExecution/requestApproval";
     /// Server → client: a file change wants permission.
@@ -328,6 +330,14 @@ pub struct TurnStartParams {
 #[serde(rename_all = "camelCase")]
 pub struct TurnInterruptParams {
     /// Thread whose in-flight turn is interrupted.
+    pub thread_id: String,
+}
+
+/// Params for `thread/compact/start`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadCompactStartParams {
+    /// Thread whose context should be compacted.
     pub thread_id: String,
 }
 
