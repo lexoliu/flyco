@@ -43,6 +43,10 @@ pub enum ApiError {
     #[error("session not found", status = StatusCode::NOT_FOUND)]
     SessionNotFound,
 
+    /// The requested public execution-plane artifact is not published.
+    #[error("release artifact not found", status = StatusCode::NOT_FOUND)]
+    ReleaseArtifactNotFound,
+
     /// The approval does not exist, or belongs to somebody else.
     #[error("approval not found", status = StatusCode::NOT_FOUND)]
     ApprovalNotFound,
@@ -414,6 +418,7 @@ impl ApiError {
             Self::UnknownOauthState => "unknown-oauth-state",
             Self::ApiKeyNotFound => "api-key-not-found",
             Self::SessionNotFound => "session-not-found",
+            Self::ReleaseArtifactNotFound => "release-artifact-not-found",
             Self::ApprovalNotFound => "approval-not-found",
             Self::MemoryNodeNotFound => "memory-node-not-found",
             Self::McpServerNotFound => "mcp-server-not-found",

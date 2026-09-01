@@ -5,6 +5,27 @@
     "version": "v1"
   },
   "paths": {
+    "/install/{artifact}": {
+      "get": {
+        "summary": "app::get_release_artifact",
+        "operationId": "app::get_release_artifact",
+        "parameters": [
+          {
+            "name": "artifact",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
     "/v1/agents-md": {
       "get": {
         "summary": "Reads the caller's shared `AGENTS.md`.",
