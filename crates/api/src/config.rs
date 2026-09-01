@@ -6,12 +6,12 @@
 //! environment. A missing or malformed *required* value is a startup
 //! failure, never a default.
 //!
-//! The VAPID public key is optional because it advertises whether this build
-//! can subscribe a browser. The GitHub webhook secret is required: accepting
-//! CI deliveries is a product capability and cannot be left unusable at
-//! runtime.
+//! GitHub webhook verification and Web Push are product capabilities, so both
+//! signing identities are required at startup like the OAuth identity.
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use url::Url;
+use web_push_native::p256::ecdsa::SigningKey;
 
 use flyco_core::HarnessKind;
 
@@ -69,12 +69,10 @@ pub mod var {
         pub scope: &'static str,
     }
 
-    /// VAPID public key browsers subscribe against, base64url unpadded.
-    ///
-    /// Optional: a deployment that never sends a push notification needs no
-    /// key pair, and refusing to start without one would make web push a
-    /// requirement rather than a feature.
-    pub const VAPID_PUBLIC_KEY: &str = "FLYCO_VAPID_PUBLIC_KEY";
+    /// VAPID P-256 private key as raw base64url, unpadded. Secret.
+    pub const VAPID_PRIVATE_KEY: &str = "FLYCO_VAPID_PRIVATE_KEY";
+    /// Contact URI placed in every VAPID JWT, normally `mailto:`.
+    pub const VAPID_SUBJECT: &str = "FLYCO_VAPID_SUBJECT";
     /// Shared secret GitHub signs webhook deliveries with. Secret;
     /// `wrangler secret put`.
     ///
@@ -117,6 +115,9 @@ pub enum ConfigError {
     /// `FLYCO_ENCRYPTION_KEY` is not hex, or is not 32 bytes long.
     #[error("configuration `{0}` must be exactly {KEY_LEN} bytes of lowercase hex")]
     NotAKey(&'static str),
+    /// The VAPID private key is not a raw P-256 private key.
+    #[error("configuration `{0}` is not a base64url P-256 private key")]
+    NotAVapidKey(&'static str),
     /// The Cloudflare `env` object was not reachable during startup.
     #[error("the Cloudflare Workers environment is not available")]
     NoEnvironment,
@@ -132,10 +133,27 @@ pub struct ApiConfig {
     github_client_secret: String,
     redirect_uri: Url,
     encryption_key: [u8; KEY_LEN],
-    vapid_public_key: Option<String>,
+    vapid: VapidConfig,
     github_webhook_secret: String,
     claude_oauth: Option<HarnessOauthClient>,
     codex_oauth: Option<HarnessOauthClient>,
+}
+
+/// The application-server identity used to encrypt and sign Web Push.
+#[derive(Clone)]
+pub struct VapidConfig {
+    signing_key: SigningKey,
+    public_key: String,
+    subject: Url,
+}
+
+impl core::fmt::Debug for VapidConfig {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("VapidConfig")
+            .field("public_key", &self.public_key)
+            .field("subject", &self.subject.as_str())
+            .finish_non_exhaustive()
+    }
 }
 
 /// One vendor's registered OAuth client.
@@ -187,6 +205,8 @@ impl ApiConfig {
         github_client_secret: String,
         redirect_uri: &str,
         encryption_key_hex: &str,
+        vapid_private_key: &str,
+        vapid_subject: &str,
         github_webhook_secret: String,
     ) -> Result<Self, ConfigError> {
         let github_webhook_secret =
@@ -200,8 +220,23 @@ impl ApiConfig {
         hex::decode_to_slice(encryption_key_hex, &mut encryption_key)
             .map_err(|_| ConfigError::NotAKey(var::ENCRYPTION_KEY))?;
 
+        let private_key = URL_SAFE_NO_PAD
+            .decode(vapid_private_key)
+            .map_err(|_| ConfigError::NotAVapidKey(var::VAPID_PRIVATE_KEY))?;
+        let signing_key = SigningKey::from_slice(&private_key)
+            .map_err(|_| ConfigError::NotAVapidKey(var::VAPID_PRIVATE_KEY))?;
+        let subject = Url::parse(vapid_subject).map_err(|source| ConfigError::NotAUrl {
+            name: var::VAPID_SUBJECT,
+            source,
+        })?;
+
         Ok(Self {
-            vapid_public_key: None,
+            vapid: VapidConfig {
+                public_key: URL_SAFE_NO_PAD
+                    .encode(signing_key.verifying_key().to_encoded_point(false)),
+                signing_key,
+                subject,
+            },
             claude_oauth: None,
             codex_oauth: None,
             github_webhook_secret,
@@ -254,9 +289,10 @@ impl ApiConfig {
             read(var::GITHUB_CLIENT_SECRET)?,
             &read(var::REDIRECT_URI)?,
             &read(var::ENCRYPTION_KEY)?,
+            &read(var::VAPID_PRIVATE_KEY)?,
+            &read(var::VAPID_SUBJECT)?,
             read(var::GITHUB_WEBHOOK_SECRET)?,
         )?;
-        config.vapid_public_key = read(var::VAPID_PUBLIC_KEY).ok();
         config.claude_oauth = read_harness_oauth(&read, var::CLAUDE_OAUTH);
         config.codex_oauth = read_harness_oauth(&read, var::CODEX_OAUTH);
         Ok(config)
@@ -283,19 +319,10 @@ impl ApiConfig {
         self
     }
 
-    /// The VAPID public key browsers subscribe against, when this
-    /// deployment has one.
+    /// The VAPID application-server identity.
     #[must_use]
-    pub fn vapid_public_key(&self) -> Option<&str> {
-        self.vapid_public_key.as_deref()
-    }
-
-    /// Replaces the VAPID public key, for tests and for callers that resolve
-    /// configuration themselves.
-    #[must_use]
-    pub fn with_vapid_public_key(mut self, key: impl Into<String>) -> Self {
-        self.vapid_public_key = Some(key.into());
-        self
+    pub const fn vapid(&self) -> &VapidConfig {
+        &self.vapid
     }
 
     /// The secret GitHub signs this deployment's webhook deliveries with.
@@ -346,6 +373,26 @@ impl ApiConfig {
     }
 }
 
+impl VapidConfig {
+    /// P-256 key used to sign one push-service audience.
+    #[must_use]
+    pub const fn signing_key(&self) -> &SigningKey {
+        &self.signing_key
+    }
+
+    /// Uncompressed P-256 public key browsers subscribe against.
+    #[must_use]
+    pub fn public_key(&self) -> &str {
+        &self.public_key
+    }
+
+    /// Contact URI placed in the VAPID JWT.
+    #[must_use]
+    pub const fn subject(&self) -> &Url {
+        &self.subject
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 fn read_var(name: &'static str) -> Result<String, ConfigError> {
     let env = skyzen::runtime::wasm::current_env().ok_or(ConfigError::NoEnvironment)?;
@@ -389,7 +436,9 @@ fn reject_empty(name: &'static str, value: String) -> Result<String, ConfigError
 mod tests {
     use super::{ApiConfig, ConfigError, var};
 
-    use crate::testing::{CLIENT_SECRET, ENCRYPTION_KEY_HEX, test_config};
+    use crate::testing::{
+        CLIENT_SECRET, ENCRYPTION_KEY_HEX, VAPID_PRIVATE_KEY, VAPID_SUBJECT, test_config,
+    };
 
     const KEY_HEX: &str = ENCRYPTION_KEY_HEX;
 
@@ -400,6 +449,8 @@ mod tests {
             "secret".to_owned(),
             "https://flyco.test/cb",
             "00112233",
+            VAPID_PRIVATE_KEY,
+            VAPID_SUBJECT,
             "webhook-secret".to_owned(),
         )
         .expect_err("a 4-byte key must be rejected");
@@ -413,6 +464,8 @@ mod tests {
             "secret".to_owned(),
             "/v1/auth/github/callback",
             KEY_HEX,
+            VAPID_PRIVATE_KEY,
+            VAPID_SUBJECT,
             "webhook-secret".to_owned(),
         )
         .expect_err("a relative redirect URI must be rejected");
@@ -426,6 +479,8 @@ mod tests {
             "secret".to_owned(),
             "https://flyco.test/cb",
             KEY_HEX,
+            VAPID_PRIVATE_KEY,
+            VAPID_SUBJECT,
             String::new(),
         )
         .expect_err("an empty webhook secret must be rejected at startup");

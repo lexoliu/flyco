@@ -43,6 +43,12 @@ pub const REDIRECT_URI: &str = "https://flyco.test/v1/auth/github/callback";
 pub const ENCRYPTION_KEY_HEX: &str =
     "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
+/// Raw test-only P-256 VAPID private key.
+pub const VAPID_PRIVATE_KEY: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+
+/// Contact URI carried by test VAPID signatures.
+pub const VAPID_SUBJECT: &str = "mailto:me@lexo.cool";
+
 /// Shared secret used to sign GitHub webhook fixtures.
 pub const GITHUB_WEBHOOK_SECRET: &str = "a-shared-webhook-secret";
 
@@ -69,6 +75,8 @@ pub fn test_config() -> ApiConfig {
         CLIENT_SECRET.to_owned(),
         REDIRECT_URI,
         ENCRYPTION_KEY_HEX,
+        VAPID_PRIVATE_KEY,
+        VAPID_SUBJECT,
         GITHUB_WEBHOOK_SECRET.to_owned(),
     )
     .expect("the test configuration is valid")

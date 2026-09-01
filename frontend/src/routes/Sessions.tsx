@@ -93,13 +93,14 @@ function NewSessionForm(props: { onCreated: (id: string) => void; onCancel: () =
           spot: spot(),
         };
       }
-      const created = await requestNewSession({
+      const request = {
         repo: repo.slug,
         harness: harness(),
         budgetLimitDollars: budgetDollars(),
-        machine,
-        spot: machine === undefined ? spot() : undefined,
-      });
+      };
+      const created = await requestNewSession(
+        machine === undefined ? { ...request, spot: spot() } : { ...request, machine },
+      );
       props.onCreated(created.id);
     } catch (err) {
       setError(err);
