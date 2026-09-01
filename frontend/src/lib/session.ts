@@ -6,8 +6,19 @@
  */
 
 const STORAGE_KEY = "flyco.session_token";
+const SESSION_CHANGED_EVENT = "flyco:session-changed";
 
 let memoryToken: string | null = null;
+
+function notifySessionChanged(): void {
+  window.dispatchEvent(new Event(SESSION_CHANGED_EVENT));
+}
+
+/** Re-runs a listener whenever this tab's signed-in state changes. */
+export function onSessionChanged(listener: () => void): () => void {
+  window.addEventListener(SESSION_CHANGED_EVENT, listener);
+  return () => window.removeEventListener(SESSION_CHANGED_EVENT, listener);
+}
 
 /** Whether a string looks like a session token this build would have issued. */
 function looksLikeSessionToken(token: string): boolean {
@@ -34,6 +45,7 @@ export function setSessionToken(
   assertValidToken(token);
   memoryToken = token;
   storage.setItem(STORAGE_KEY, token);
+  notifySessionChanged();
 }
 
 /**
@@ -69,6 +81,7 @@ export function clearSessionToken(
 ): void {
   memoryToken = null;
   storage.removeItem(STORAGE_KEY);
+  notifySessionChanged();
 }
 
 export function isSignedIn(): boolean {

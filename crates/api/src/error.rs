@@ -103,13 +103,6 @@ pub enum ApiError {
         event: String,
     },
 
-    /// This deployment has no VAPID key pair, so it cannot send push.
-    #[error(
-        "this flyco deployment is not configured for web push",
-        status = StatusCode::NOT_IMPLEMENTED
-    )]
-    PushUnconfigured,
-
     /// The push subscription does not exist, or belongs to somebody else.
     #[error("push subscription not found", status = StatusCode::NOT_FOUND)]
     PushSubscriptionNotFound,
@@ -117,6 +110,10 @@ pub enum ApiError {
     /// The browser sent a subscription flyco cannot use.
     #[error("this push subscription is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     InvalidPushSubscription(&'static str),
+
+    /// A subscription could not be encoded or delivered to its push service.
+    #[error("web push delivery failed: {0}", status = StatusCode::BAD_GATEWAY)]
+    PushDeliveryFailed(String),
 
     /// The provider account does not exist, or belongs to somebody else.
     #[error("provider account not found", status = StatusCode::NOT_FOUND)]
@@ -440,9 +437,9 @@ impl ApiError {
             Self::InvalidSkill(_) => "invalid-skill",
             Self::WebhookUnverified => "webhook-unverified",
             Self::WebhookMalformed { .. } => "webhook-malformed",
-            Self::PushUnconfigured => "push-unconfigured",
             Self::PushSubscriptionNotFound => "push-subscription-not-found",
             Self::InvalidPushSubscription(_) => "invalid-push-subscription",
+            Self::PushDeliveryFailed(_) => "push-delivery-failed",
             Self::ProviderAccountNotFound => "provider-account-not-found",
             Self::HarnessLinkUnconfigured { .. } => "harness-link-unconfigured",
             Self::HarnessLinkRejected(_) => "harness-link-rejected",

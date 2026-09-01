@@ -1,13 +1,15 @@
 import { Show, createSignal, onMount } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { parseSessionTokenFragment } from "../lib/fragmentToken";
+import { consumePostLoginPath } from "../lib/postLoginPath";
 import { setSessionToken } from "../lib/session";
 import styles from "./AuthComplete.module.css";
 
 /**
  * The control plane 303-redirects here with the session token in the URL
  * fragment (`#token=fs_...`, see docs/ARCHITECTURE.md — "Auth"). This
- * reads it once on mount, stores it, and forwards to `/`.
+ * reads it once on mount, stores it, and restores the route that required
+ * sign-in (or `/` when sign-in started directly).
  */
 export default function AuthComplete() {
   const navigate = useNavigate();
@@ -17,7 +19,7 @@ export default function AuthComplete() {
     try {
       const token = parseSessionTokenFragment(window.location.hash);
       setSessionToken(token);
-      navigate("/", { replace: true });
+      navigate(consumePostLoginPath(), { replace: true });
     } catch (err) {
       if (!(err instanceof Error)) {
         throw err;

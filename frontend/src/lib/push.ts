@@ -41,10 +41,8 @@ export async function getPushSubscription(): Promise<PushSubscription | null> {
 
 /**
  * Requests notification permission, subscribes to push, and registers the
- * result with the control plane. Throws if push isn't supported, permission
- * is denied, or this deployment has no VAPID key configured (surfaced as a
- * `NotImplementedError` from `getVapidPublicKey`) — never returns a
- * half-subscribed state.
+ * result with the control plane. Throws if push isn't supported or permission
+ * is denied — never returns a half-subscribed state.
  */
 export async function subscribeToPush(): Promise<PushSubscription> {
   if (!isPushSupported()) {
