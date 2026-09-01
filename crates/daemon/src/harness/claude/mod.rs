@@ -247,6 +247,10 @@ impl HarnessSession for ClaudeSession {
         self.ask(|ack| DriverCommand::Interrupt { ack }).await
     }
 
+    async fn compact(&self) -> Result<(), ClaudeError> {
+        self.ask(|ack| DriverCommand::Compact { ack }).await
+    }
+
     async fn decide_approval(&self, approval: ToolApproval) -> Result<(), ClaudeError> {
         self.ask(|ack| DriverCommand::Approval { approval, ack })
             .await
@@ -267,6 +271,10 @@ enum DriverCommand {
     },
     /// From the handle: end the current turn.
     Interrupt {
+        ack: oneshot::Sender<Result<(), ClaudeError>>,
+    },
+    /// From the handle: compact the conversation context.
+    Compact {
         ack: oneshot::Sender<Result<(), ClaudeError>>,
     },
     /// From the handle: answer a pending approval.
@@ -435,6 +443,12 @@ impl<S: TranscriptStore> Driver<S> {
             }
             DriverCommand::Interrupt { ack } => {
                 let result = write_command(&mut self.stdin, &SidecarCommand::Interrupt).await;
+                let ok = result.is_ok();
+                let _ = ack.send(result);
+                ok
+            }
+            DriverCommand::Compact { ack } => {
+                let result = write_command(&mut self.stdin, &SidecarCommand::Compact).await;
                 let ok = result.is_ok();
                 let _ = ack.send(result);
                 ok

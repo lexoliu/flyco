@@ -1,9 +1,19 @@
-import { Show, createSignal } from "solid-js";
+import { Show, createSignal, onMount } from "solid-js";
+import { useLocation } from "@solidjs/router";
 import { beginGithubLogin } from "../api/auth";
+import { rememberPostLoginPath } from "../lib/postLoginPath";
 import styles from "./Login.module.css";
 
 export default function Login() {
+  const location = useLocation();
   const [error, setError] = createSignal<string | null>(null);
+
+  onMount(() => {
+    const returnTo = new URLSearchParams(location.search).get("returnTo");
+    if (returnTo !== null) {
+      rememberPostLoginPath(returnTo);
+    }
+  });
 
   async function onSignIn(): Promise<void> {
     setError(null);

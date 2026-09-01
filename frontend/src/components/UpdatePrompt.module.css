@@ -25,6 +25,11 @@
   cursor: pointer;
 }
 
+.reload:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
 .dismiss {
   border: none;
   background: transparent;

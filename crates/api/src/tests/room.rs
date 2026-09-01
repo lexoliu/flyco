@@ -665,6 +665,7 @@ async fn every_command_a_client_may_send_is_forwarded() {
             text: "go".to_owned(),
         },
         ControlToDaemon::Interrupt,
+        ControlToDaemon::Compact,
         ControlToDaemon::TerminalInput {
             data: "ls\n".to_owned(),
         },

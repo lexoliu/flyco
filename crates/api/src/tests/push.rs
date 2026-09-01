@@ -18,8 +18,8 @@ fn subscription() -> PushSubscription {
         endpoint: ENDPOINT.to_owned(),
         expiration_time: None,
         keys: PushKeys {
-            p256dh: "BJ2xEqSm9wKQe0tGkQxUvNz8".to_owned(),
-            auth: "k1Qc9AaB2dEf3GhI".to_owned(),
+            p256dh: "BH1HTeKM7-NwaLGHEqxeu2IamQaVVLkcsFHPIHmsCnqxcBHPQBprF41bEMOr3O1hUQ2jU1opNEm1F_lZV_sxMP8".to_owned(),
+            auth: "sBXU5_tIYz-5w7G2B25BEw".to_owned(),
         },
     }
 }
@@ -98,14 +98,12 @@ async fn a_subscription_belongs_to_the_browser_that_registered_it(
 }
 
 #[skyzen::test]
-async fn push_reports_itself_unconfigured_rather_than_inventing_a_key(ctx: TestContext, db: Db) {
-    // The test configuration carries no VAPID key pair, which is the state
-    // of any deployment that has not set one up.
+async fn push_always_reports_the_public_half_of_its_required_identity(ctx: TestContext, db: Db) {
     let response = ctx
         .client(migrated_router(&db).await)
         .get("/v1/push/vapid-public-key")
         .send()
         .await;
 
-    response.assert_status(501);
+    response.assert_status(200);
 }

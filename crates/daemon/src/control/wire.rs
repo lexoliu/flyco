@@ -348,6 +348,11 @@ async fn collect<A: ControlApi>(
                 (DaemonToControl::Capabilities { capabilities }, None)
             }
             SessionOutput::Event { event } => {
+                match &event {
+                    HarnessEvent::TurnCompleted { .. } => api.notify_turn_completed().await?,
+                    HarnessEvent::TurnFailed { .. } => api.notify_turn_failed().await?,
+                    _ => {}
+                }
                 if let Some(observation) = observation_in(&event)
                     && let Err(error) = api.record_observation(observation).await
                 {
@@ -570,6 +575,12 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
                     .map_err(harness)?;
             }
             ControlToDaemon::Interrupt => self.session.interrupt().await.map_err(harness)?,
+            ControlToDaemon::Compact => {
+                if self.refuse_while_paused("context compaction") {
+                    return Ok(Ended::Disconnected);
+                }
+                self.session.compact().await.map_err(harness)?;
+            }
             ControlToDaemon::TerminalInput { data } => {
                 if self.refuse_while_paused("terminal input") {
                     return Ok(Ended::Disconnected);

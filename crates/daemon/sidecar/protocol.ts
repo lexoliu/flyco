@@ -72,6 +72,7 @@ export const sidecarCommandSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("user_message"), text: z.string() }),
   z.object({ type: z.literal("interrupt") }),
+  z.object({ type: z.literal("compact") }),
   z.object({
     type: z.literal("approval_decision"),
     id: z.string(),

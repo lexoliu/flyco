@@ -276,6 +276,23 @@ async fn an_interrupted_turn_fails_rather_than_completing() {
 }
 
 #[tokio::test]
+async fn manual_compaction_reaches_the_sidecar_and_reports_completion() {
+    let scratch = Scratch::new("compact");
+    let (session, mut outputs) = start(&scratch).await;
+    let _ = next(&mut outputs, "started").await;
+
+    session.compact().await.expect("compact the session");
+    assert_eq!(
+        next(&mut outputs, "context_compacted").await,
+        SessionOutput::Event {
+            event: HarnessEvent::ContextCompacted,
+        }
+    );
+
+    session.shutdown().await.expect("shut the session down");
+}
+
+#[tokio::test]
 async fn a_missing_bun_names_itself_instead_of_failing_obscurely() {
     let scratch = Scratch::new("no-bun");
     let harness = ClaudeCodeHarness::new(

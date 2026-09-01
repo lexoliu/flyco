@@ -4,13 +4,7 @@ import { getVapidPublicKey } from "../../api/client";
 import { getPushSubscription, isPushSupported, subscribeToPush, unsubscribeFromPush } from "../../lib/push";
 import styles from "../../components/Panel.module.css";
 
-/**
- * Web push settings. `getVapidPublicKey` doubles as an availability check:
- * a deployment with no VAPID key configured answers 501, which
- * `ProblemNotice` already renders as a calm "not built yet" rather than an
- * error — exactly the "this deployment cannot send notifications" state
- * this tab needs, with no separate handling required.
- */
+/** Web push settings backed by the deployment's required VAPID identity. */
 export default function NotificationsTab() {
   const [vapid] = createResource(getVapidPublicKey);
   const [subscribed, setSubscribed] = createSignal(false);

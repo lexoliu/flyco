@@ -31,6 +31,7 @@ const TOKEN: &str = "fd_a-daemon-token";
 struct RecordingApi {
     approvals: mpsc::UnboundedSender<ApprovalPayload>,
     observations: mpsc::UnboundedSender<HarnessObservation>,
+    notifications: mpsc::UnboundedSender<bool>,
     id: ApprovalId,
 }
 
@@ -76,6 +77,26 @@ impl ControlApi for RecordingApi {
         )
     }
 
+    fn notify_turn_completed(
+        &self,
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        core::future::ready(
+            self.notifications
+                .send(true)
+                .map_err(|error| ControlApiError::Transport(error.to_string())),
+        )
+    }
+
+    fn notify_turn_failed(
+        &self,
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        core::future::ready(
+            self.notifications
+                .send(false)
+                .map_err(|error| ControlApiError::Transport(error.to_string())),
+        )
+    }
+
     fn record_harness_session(
         &self,
         _harness_session_id: &str,
@@ -105,6 +126,7 @@ struct Harness {
     calls: mpsc::UnboundedReceiver<Call>,
     approvals: mpsc::UnboundedReceiver<ApprovalPayload>,
     observations: mpsc::UnboundedReceiver<HarnessObservation>,
+    notifications: mpsc::UnboundedReceiver<bool>,
     approval_id: ApprovalId,
     terminal_writes: mpsc::UnboundedReceiver<String>,
     terminal_inject: mpsc::Sender<String>,
@@ -127,10 +149,12 @@ impl Harness {
         let (sender, receiver) = mpsc::channel(outputs);
         let (approval_sender, approvals) = mpsc::unbounded_channel();
         let (observation_sender, observations) = mpsc::unbounded_channel();
+        let (notification_sender, notifications) = mpsc::unbounded_channel();
         let approval_id = ApprovalId::generate();
         let api = RecordingApi {
             approvals: approval_sender,
             observations: observation_sender,
+            notifications: notification_sender,
             id: approval_id,
         };
 
@@ -154,6 +178,7 @@ impl Harness {
             calls,
             approvals,
             observations,
+            notifications,
             approval_id,
             terminal_writes,
             terminal_inject,
@@ -193,6 +218,13 @@ impl Harness {
         tokio::time::timeout(Duration::from_secs(5), self.observations.recv())
             .await
             .expect("the daemon filed an observation")
+            .expect("the collector is live")
+    }
+
+    async fn next_notification(&mut self) -> bool {
+        tokio::time::timeout(Duration::from_secs(5), self.notifications.recv())
+            .await
+            .expect("the daemon filed a notification")
             .expect("the collector is live")
     }
 
@@ -409,7 +441,7 @@ async fn terminal_input_reaches_the_shell_and_output_reaches_the_room() {
 }
 
 #[tokio::test]
-async fn a_user_message_and_an_interrupt_reach_the_harness() {
+async fn user_messages_interrupts_and_compaction_reach_the_harness() {
     let mut harness = Harness::start(Greeting::Welcome).await;
     harness.handshake().await;
 
@@ -423,6 +455,9 @@ async fn a_user_message_and_an_interrupt_reach_the_harness() {
 
     harness.command(ControlToDaemon::Interrupt);
     assert_eq!(harness.next_call().await, Call::Interrupt);
+
+    harness.command(ControlToDaemon::Compact);
+    assert_eq!(harness.next_call().await, Call::Compact);
 
     harness.archive().await.expect("the run ended cleanly");
 }
@@ -506,9 +541,11 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
     let (outputs, receiver) = mpsc::channel(1);
     let (approvals, _) = mpsc::unbounded_channel();
     let (observations, _) = mpsc::unbounded_channel();
+    let (notifications, _) = mpsc::unbounded_channel();
     let api = RecordingApi {
         approvals,
         observations,
+        notifications,
         id: ApprovalId::generate(),
     };
     let (terminal, _, _, terminal_out) = FakeTerminal::pair();
@@ -629,6 +666,30 @@ async fn archiving_shuts_the_harness_down_and_ends_the_run() {
 }
 
 // ── Usage observations ──
+
+#[tokio::test]
+async fn terminal_turn_events_notify_the_control_plane_before_relaying() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness
+        .emit(SessionOutput::Event {
+            event: HarnessEvent::TurnFailed {
+                turn_id: "turn-1".to_owned(),
+                error: "tool failed".to_owned(),
+            },
+        })
+        .await;
+    assert!(!harness.next_notification().await);
+    assert!(matches!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness {
+            event: HarnessEvent::TurnFailed { .. }
+        }
+    ));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
 
 #[tokio::test]
 async fn a_turn_that_reported_a_cost_files_an_observation() {
@@ -945,6 +1006,18 @@ mod remote_store {
             core::future::ready(Err(ControlApiError::Transport(
                 "the transcript store records no observations".to_owned(),
             )))
+        }
+
+        fn notify_turn_completed(
+            &self,
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Ok(()))
+        }
+
+        fn notify_turn_failed(
+            &self,
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Ok(()))
         }
 
         fn record_harness_session(
