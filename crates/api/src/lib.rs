@@ -37,6 +37,7 @@ pub mod provisioning;
 pub mod provisioning_queue;
 pub mod push;
 pub mod relay;
+pub mod releases;
 pub mod repos;
 pub mod respond;
 pub mod responses;

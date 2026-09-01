@@ -30,8 +30,8 @@ use crate::room::EventPage;
 use crate::rooms::Rooms;
 use crate::{
     agents_md, api_keys, approvals, daemon_tokens, env, harness_accounts, machines, mcp, memory,
-    oauth, observations, problem, provider_accounts, provisioning, push, relay, repos, responses,
-    sessions, skills, transcripts, turns, users, webhooks, workdirs,
+    oauth, observations, problem, provider_accounts, provisioning, push, relay, releases, repos,
+    responses, sessions, skills, transcripts, turns, users, webhooks, workdirs,
 };
 
 /// Health probe response.
@@ -48,6 +48,28 @@ async fn healthz() -> Json<Health> {
     Json(Health {
         wire_protocol_version: flyco_core::WIRE_PROTOCOL_VERSION,
     })
+}
+
+/// Serves one allowlisted execution-plane binary or checksum from R2.
+async fn get_release_artifact(params: Params, storage: Storage) -> Outcome<Response> {
+    read_release_artifact(&params, &storage).await.into()
+}
+
+async fn read_release_artifact(params: &Params, storage: &Storage) -> Result<Response, ApiError> {
+    let name = path_segment(params, "artifact")?;
+    let artifact = releases::get(storage, &name)
+        .await?
+        .ok_or(ApiError::ReleaseArtifactNotFound)?;
+    let mut response = Response::new(skyzen::Body::from(artifact.body));
+    response.headers_mut().insert(
+        skyzen::header::CONTENT_TYPE,
+        skyzen::header::HeaderValue::from_static(artifact.content_type),
+    );
+    response.headers_mut().insert(
+        skyzen::header::CACHE_CONTROL,
+        skyzen::header::HeaderValue::from_static("public, max-age=60"),
+    );
+    Ok(response)
 }
 
 /// Describes the account behind the presented credential.
@@ -1063,6 +1085,7 @@ async fn read_workdir_patch(session: SessionId, storage: &Storage) -> Result<Res
 fn public_routes() -> Vec<RouteNode> {
     let mut nodes = Route::new((
         "/v1/healthz".at(healthz),
+        "/install/{artifact}".at(get_release_artifact),
         "/v1/auth/github".route(("/start".post(oauth::start), "/callback".at(oauth::callback))),
     ))
     .into_route_nodes();
