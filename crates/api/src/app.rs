@@ -676,6 +676,22 @@ async fn interrupt_session(
         .into()
 }
 
+/// Compacts a session's conversation context.
+///
+/// Claude Code runs its native `/compact` command; Codex runs
+/// `thread/compact/start`. The result is reported on the session relay.
+#[skyzen::openapi]
+async fn compact_session(
+    State(user): State<CurrentUser>,
+    params: Params,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Accepted> {
+    drive(&user, &params, &rooms, &db, ControlToDaemon::Compact)
+        .await
+        .into()
+}
+
 /// Hands one command to a session's room.
 ///
 /// The two checks are in this order for a reason. Ownership settles in D1,
@@ -1159,6 +1175,7 @@ fn session_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/events".at(get_session_events),
         "/v1/sessions/{id}/messages".post(send_message),
         "/v1/sessions/{id}/interrupt".post(interrupt_session),
+        "/v1/sessions/{id}/compact".post(compact_session),
         "/v1/sessions/{id}/resume".post(resume_session),
         "/v1/sessions/{id}/turns".at(list_turns),
         "/v1/sessions/{id}/env"

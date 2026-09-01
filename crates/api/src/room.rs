@@ -321,7 +321,7 @@ async fn on_client_frame(
     if !command.is_client_command() {
         return refuse(
             ws,
-            "a client may only send `user_message`, `interrupt`, or `terminal_input`",
+            "a client may only send `user_message`, `interrupt`, `compact`, or `terminal_input`",
         );
     }
 

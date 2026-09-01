@@ -2571,6 +2571,28 @@
         }
       }
     },
+    "/v1/sessions/{id}/compact": {
+      "post": {
+        "summary": "Compacts a session's conversation context.",
+        "description": "Compacts a session's conversation context.\n\nClaude Code runs its native `/compact` command; Codex runs\n`thread/compact/start`. The result is reported on the session relay.",
+        "operationId": "flyco_api::app::compact_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/daemon-token": {
       "post": {
         "summary": "Mints the daemon token that pairs a session with its `flycod`.",

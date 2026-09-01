@@ -160,6 +160,8 @@ pub enum ControlToDaemon {
     },
     /// Interrupt the current turn.
     Interrupt,
+    /// Compact the session's context through the harness's native command.
+    Compact,
     /// The user decided a pending approval.
     ApprovalDecision {
         /// The approval being decided.
@@ -200,7 +202,7 @@ const fn is_false(value: &bool) -> bool {
 impl ControlToDaemon {
     /// Whether a browser may send this command.
     ///
-    /// A session room accepts exactly three commands from a client socket;
+    /// A session room accepts exactly four commands from a client socket;
     /// everything else is control-plane authority (budget signals, approval
     /// decisions, archival) and reaches the daemon only through an
     /// authenticated REST handler. A client that sends anything else is
@@ -209,7 +211,7 @@ impl ControlToDaemon {
     pub const fn is_client_command(&self) -> bool {
         matches!(
             self,
-            Self::UserMessage { .. } | Self::Interrupt | Self::TerminalInput { .. }
+            Self::UserMessage { .. } | Self::Interrupt | Self::Compact | Self::TerminalInput { .. }
         )
     }
 }
@@ -412,6 +414,7 @@ mod tests {
                 text: "what does this crate do?".to_owned(),
             },
             ControlToDaemon::Interrupt,
+            ControlToDaemon::Compact,
             ControlToDaemon::ApprovalDecision {
                 id: ApprovalId::generate(),
                 decision: ApprovalDecision::Approved,
@@ -517,6 +520,7 @@ mod tests {
                 frame,
                 ControlToDaemon::UserMessage { .. }
                     | ControlToDaemon::Interrupt
+                    | ControlToDaemon::Compact
                     | ControlToDaemon::TerminalInput { .. }
             );
             assert_eq!(frame.is_client_command(), allowed, "{frame:?}");

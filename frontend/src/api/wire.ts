@@ -36,7 +36,9 @@ export type HarnessEvent =
   | { type: "tool_completed"; turn_id: string; call_id: string; ok: boolean }
   | { type: "turn_completed"; turn_id: string; usage: UsageReport }
   | { type: "turn_failed"; turn_id: string; error: string }
-  | { type: "usage_limited"; resets_at_unix: number | null };
+  | { type: "usage_limited"; resets_at_unix: number | null }
+  | { type: "context_compacted" }
+  | { type: "context_compaction_failed"; error: string };
 
 /**
  * What a browser attached to a session room receives, mirroring
@@ -56,7 +58,7 @@ export type ClientEvent =
   | { type: "spot_notice"; seconds_remaining: number };
 
 /**
- * The three `ControlToDaemon` variants a browser may send directly over the
+ * The four `ControlToDaemon` variants a browser may send directly over the
  * relay socket, mirroring `ControlToDaemon::is_client_command()`. Every
  * other command (approval decisions, budget signals, archive) is
  * control-plane authority and reaches the daemon only through an
@@ -65,6 +67,7 @@ export type ClientEvent =
 export type ClientCommand =
   | { type: "user_message"; text: string }
   | { type: "interrupt" }
+  | { type: "compact" }
   | { type: "terminal_input"; data: string };
 
 /**

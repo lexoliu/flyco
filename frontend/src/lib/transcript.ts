@@ -117,6 +117,16 @@ export function foldTranscript(events: readonly ClientEvent[]): TranscriptItem[]
                   : `Usage limit reached; resets ${new Date(harness.resets_at_unix * 1000).toLocaleString()}.`,
             });
             break;
+          case "context_compacted":
+            items.push({ kind: "notice", key: `notice-${noticeSeq++}`, text: "Context compacted." });
+            break;
+          case "context_compaction_failed":
+            items.push({
+              kind: "notice",
+              key: `notice-${noticeSeq++}`,
+              text: `Context compaction failed: ${harness.error}`,
+            });
+            break;
         }
         break;
       }
