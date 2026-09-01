@@ -97,6 +97,8 @@ pub enum SidecarCommand {
     /// End the current turn through the SDK's `interrupt()` (SIGINT
     /// semantics). Never signal the child process directly.
     Interrupt,
+    /// Run Claude Code's native `/compact` command.
+    Compact,
     /// Resolve a pending [`SidecarEvent::ApprovalRequest`].
     ApprovalDecision {
         /// The approval being decided.
@@ -132,6 +134,7 @@ impl SidecarCommand {
             Self::Start { .. } => "start",
             Self::UserMessage { .. } => "user_message",
             Self::Interrupt => "interrupt",
+            Self::Compact => "compact",
             Self::ApprovalDecision { .. } => "approval_decision",
             Self::StoreResponse { .. } => "store_response",
             Self::Shutdown => "shutdown",
@@ -270,6 +273,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&SidecarCommand::Shutdown).expect("serialize"),
             r#"{"type":"shutdown"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&SidecarCommand::Compact).expect("serialize"),
+            r#"{"type":"compact"}"#
         );
     }
 

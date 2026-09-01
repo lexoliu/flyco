@@ -32,6 +32,8 @@ pub enum Call {
     UserMessage(String),
     /// The current turn was interrupted.
     Interrupt,
+    /// The session context was compacted.
+    Compact,
     /// A pending approval was answered.
     Approval {
         /// The approval that was answered.
@@ -79,6 +81,10 @@ impl HarnessSession for FakeSession {
 
     fn interrupt(&self) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
         core::future::ready(self.record(Call::Interrupt))
+    }
+
+    fn compact(&self) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
+        core::future::ready(self.record(Call::Compact))
     }
 
     fn decide_approval(

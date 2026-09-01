@@ -711,6 +711,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/compact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Compacts a session's conversation context.
+         * @description Compacts a session's conversation context.
+         *
+         *     Claude Code runs its native `/compact` command; Codex runs
+         *     `thread/compact/start`. The result is reported on the session relay.
+         */
+        post: operations["flyco_api::app::compact_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/daemon-token": {
         parameters: {
             query?: never;
@@ -4039,6 +4062,26 @@ export interface operations {
                         stage: components["schemas"]["BudgetStage"];
                     };
                 };
+            };
+        };
+    };
+    "flyco_api::app::compact_session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

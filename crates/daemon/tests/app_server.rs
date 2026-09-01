@@ -187,3 +187,20 @@ async fn an_interrupted_turn_fails_rather_than_completing() {
 
     session.shutdown().await.expect("shut the session down");
 }
+
+#[tokio::test]
+async fn manual_compaction_uses_the_native_thread_method_and_reports_completion() {
+    let scratch = Scratch::new("compact");
+    let (session, mut outputs) = start(&scratch).await;
+    let _ = next(&mut outputs, "started").await;
+
+    session.compact().await.expect("compact the thread");
+    assert_eq!(
+        next(&mut outputs, "context_compacted").await,
+        SessionOutput::Event {
+            event: HarnessEvent::ContextCompacted,
+        }
+    );
+
+    session.shutdown().await.expect("shut the session down");
+}

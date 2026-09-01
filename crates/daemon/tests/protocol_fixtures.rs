@@ -19,10 +19,11 @@ use flyco_daemon::harness::claude::protocol::{SidecarCommand, SidecarEvent};
 use serde_json::Value;
 
 /// Every `type` tag [`SidecarCommand`] can serialize under.
-const COMMAND_TAGS: [&str; 6] = [
+const COMMAND_TAGS: [&str; 7] = [
     "start",
     "user_message",
     "interrupt",
+    "compact",
     "approval_decision",
     "store_response",
     "shutdown",

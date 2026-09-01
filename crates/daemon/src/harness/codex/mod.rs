@@ -31,8 +31,8 @@ use tokio::sync::{mpsc, oneshot};
 use self::normalize::{ApprovalParams, Normalizer};
 use self::protocol::{
     ApprovalDecision, ApprovalDecisionBody, ClientCapabilities, ClientInfo, Envelope,
-    InitializeParams, RequestId, ThreadParams, TurnInterruptParams, TurnStartParams, UserInput,
-    method,
+    InitializeParams, RequestId, ThreadCompactStartParams, ThreadParams, TurnInterruptParams,
+    TurnStartParams, UserInput, method,
 };
 use super::{Harness, HarnessSession, SessionOutput, StartRequest, Started, ToolApproval};
 use crate::config::{CodexAuth, CodexConfig};
@@ -120,6 +120,17 @@ pub enum CodexError {
     /// The session's task is gone, so no command can be delivered.
     #[error("the Codex session has stopped")]
     Stopped,
+    /// A second compaction was requested before the first completed.
+    #[error("a Codex context compaction is already in flight")]
+    CompactionInFlight,
+    /// The app-server rejected a runtime request.
+    #[error("the app-server rejected {method}: {message}")]
+    RequestRejected {
+        /// Method that failed.
+        method: &'static str,
+        /// App-server explanation.
+        message: String,
+    },
     /// The app-server did not exit within [`SHUTDOWN_GRACE`].
     #[error("the app-server did not exit within {}s and was killed", SHUTDOWN_GRACE.as_secs())]
     ShutdownTimedOut,
@@ -187,6 +198,7 @@ impl Harness for CodexHarness {
                 normalizer: Normalizer::new(),
                 outputs,
                 pending_approvals: BTreeMap::new(),
+                pending_compaction: None,
                 stopped: false,
             }
             .run(inbox, resumed),
@@ -231,6 +243,10 @@ impl HarnessSession for CodexSession {
         self.ask(|ack| DriverCommand::Interrupt { ack }).await
     }
 
+    async fn compact(&self) -> Result<(), CodexError> {
+        self.ask(|ack| DriverCommand::Compact { ack }).await
+    }
+
     async fn decide_approval(&self, approval: ToolApproval) -> Result<(), CodexError> {
         self.ask(|ack| DriverCommand::Approval { approval, ack })
             .await
@@ -251,6 +267,10 @@ enum DriverCommand {
     },
     /// From the handle: end the current turn.
     Interrupt {
+        ack: oneshot::Sender<Result<(), CodexError>>,
+    },
+    /// From the handle: compact the conversation context.
+    Compact {
         ack: oneshot::Sender<Result<(), CodexError>>,
     },
     /// From the handle: answer a pending approval.
@@ -563,6 +583,7 @@ struct Driver {
     normalizer: Normalizer,
     outputs: mpsc::Sender<SessionOutput>,
     pending_approvals: BTreeMap<ApprovalId, RequestId>,
+    pending_compaction: Option<(RequestId, oneshot::Sender<Result<(), CodexError>>)>,
     stopped: bool,
 }
 
@@ -604,6 +625,24 @@ impl Driver {
                 let ok = result.is_ok();
                 let _ = ack.send(result);
                 ok
+            }
+            DriverCommand::Compact { ack } => {
+                if self.pending_compaction.is_some() {
+                    let _ = ack.send(Err(CodexError::CompactionInFlight));
+                    return true;
+                }
+                let id = take_id(&mut self.next_id);
+                let result = self.start_compaction(id.clone()).await;
+                match result {
+                    Ok(()) => {
+                        self.pending_compaction = Some((id, ack));
+                        true
+                    }
+                    Err(error) => {
+                        let _ = ack.send(Err(error));
+                        false
+                    }
+                }
             }
             DriverCommand::Approval { approval, ack } => {
                 let result = self.decide(approval).await;
@@ -670,6 +709,21 @@ impl Driver {
         .await
     }
 
+    async fn start_compaction(&mut self, id: RequestId) -> Result<(), CodexError> {
+        let params = ThreadCompactStartParams {
+            thread_id: self.thread_id.clone(),
+        };
+        write_envelope(
+            self.stdin.as_mut().ok_or(CodexError::Stopped)?,
+            &Envelope::request(
+                id,
+                method::THREAD_COMPACT_START,
+                serde_json::to_value(params).expect("ThreadCompactStartParams serializes"),
+            ),
+        )
+        .await
+    }
+
     async fn decide(&mut self, approval: ToolApproval) -> Result<(), CodexError> {
         let id = approval.id();
         let Some(request_id) = self.pending_approvals.remove(&id) else {
@@ -705,12 +759,41 @@ impl Driver {
             Envelope::Request { id, method, params } => {
                 self.on_server_request(id, method, params).await
             }
-            Envelope::Response { .. } => {
+            Envelope::Response { id, .. } => {
+                if self
+                    .pending_compaction
+                    .as_ref()
+                    .is_some_and(|(pending, _)| pending == &id)
+                {
+                    let (_, ack) = self.pending_compaction.take().expect("checked above");
+                    let _ = ack.send(Ok(()));
+                }
                 // turn/start and turn/interrupt acknowledge with `{}`; the
                 // terminal signal is the matching notification.
                 true
             }
-            Envelope::Error { error, .. } => {
+            Envelope::Error { id, error } => {
+                if self
+                    .pending_compaction
+                    .as_ref()
+                    .is_some_and(|(pending, _)| pending == &id)
+                {
+                    let (_, ack) = self.pending_compaction.take().expect("checked above");
+                    let message = error.message;
+                    let _ = ack.send(Err(CodexError::RequestRejected {
+                        method: method::THREAD_COMPACT_START,
+                        message: message.clone(),
+                    }));
+                    return emit(
+                        &self.outputs,
+                        SessionOutput::Event {
+                            event: flyco_core::HarnessEvent::ContextCompactionFailed {
+                                error: message,
+                            },
+                        },
+                    )
+                    .await;
+                }
                 emit(
                     &self.outputs,
                     SessionOutput::Fatal {

@@ -9,7 +9,7 @@
  * is read straight off the generated `operations`/`components` types in
  * `schema.d.ts` — nothing here is a hand-retyped DTO.
  *
- * `sendMessage` and `interruptSession` below hit the REST handlers
+ * `sendMessage`, `interruptSession`, and `compactSession` below hit the REST handlers
  * directly. The live session view (`src/routes/SessionDetail.tsx`) prefers
  * the relay socket instead (`src/api/relay.ts`, `ControlToDaemon::is_client_command`)
  * whenever it is connected — lower latency, and the echo comes back as a
@@ -253,6 +253,11 @@ export function sendMessage(id: string, text: string): Promise<void> {
 /** REST fallback for interrupting a turn; see the module doc comment above. */
 export function interruptSession(id: string): Promise<void> {
   return requestVoid("POST", `/v1/sessions/${id}/interrupt`);
+}
+
+/** REST fallback for compacting session context; see the module doc comment above. */
+export function compactSession(id: string): Promise<void> {
+  return requestVoid("POST", `/v1/sessions/${id}/compact`);
 }
 
 export function listTurns(
