@@ -39,8 +39,8 @@ const COLLECTION_PLACEHOLDER: &str = "Vec";
 ///
 /// * `204` and `202` answers — a revocation, a delete, a command handed to a
 ///   session's daemon — carry a status and nothing else.
-/// * `oauth::callback` and `harness_accounts::complete_harness_link` answer
-///   `303`: the body of a redirect is not what the caller reads.
+/// * `oauth::callback` answers `303`: the body of a redirect is not what the
+///   caller reads.
 /// * `app::open_daemon_relay` and `app::open_client_relay` answer `101` with
 ///   a WebSocket attached, which the response model has no way to describe.
 /// * `app::put_transcript_batch`, `app::get_transcript`, and the workdir
@@ -56,14 +56,16 @@ pub const BODILESS: &[&str] = &[
     "app::open_client_relay",
     "app::open_daemon_relay",
     "app::put_transcript_batch",
+    "flyco_api::app::compact_session",
     "flyco_api::app::get_workdir_patch",
     "flyco_api::app::interrupt_session",
+    "flyco_api::app::notify_turn_completed",
+    "flyco_api::app::notify_turn_failed",
     "flyco_api::app::put_harness_session",
     "flyco_api::app::put_workdir_patch",
     "flyco_api::app::record_harness_observation",
     "flyco_api::app::revoke_api_key",
     "flyco_api::app::send_message",
-    "flyco_api::harness_accounts::complete_harness_link",
     "flyco_api::harness_accounts::unlink_harness_account",
     "flyco_api::machines::resize_session_machine",
     "flyco_api::machines::start_session_machine",

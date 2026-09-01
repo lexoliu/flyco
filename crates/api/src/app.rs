@@ -676,6 +676,22 @@ async fn interrupt_session(
         .into()
 }
 
+/// Compacts a session's conversation context.
+///
+/// Claude Code runs its native `/compact` command; Codex runs
+/// `thread/compact/start`. The result is reported on the session relay.
+#[skyzen::openapi]
+async fn compact_session(
+    State(user): State<CurrentUser>,
+    params: Params,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Accepted> {
+    drive(&user, &params, &rooms, &db, ControlToDaemon::Compact)
+        .await
+        .into()
+}
+
 /// Hands one command to a session's room.
 ///
 /// The two checks are in this order for a reason. Ownership settles in D1,
@@ -912,21 +928,50 @@ async fn put_harness_session(
 #[skyzen::openapi]
 async fn raise_approval(
     State(session): State<DaemonSession>,
+    State(config): State<ApiConfig>,
     Json(payload): Json<ApprovalPayload>,
     db: Db,
 ) -> Outcome<Created<Json<ApprovalView>>> {
-    record_approval(session.0, &payload, &db).await.into()
+    record_approval(session.0, &payload, &db, &config)
+        .await
+        .into()
 }
 
 async fn record_approval(
     session: SessionId,
     payload: &ApprovalPayload,
     db: &Db,
+    config: &ApiConfig,
 ) -> Result<Created<Json<ApprovalView>>, ApiError> {
     let id = approvals::raise(db, session, payload).await?;
     let view = approvals::find_for_session(db, session, id).await?;
+    push::notify_approval(db, config, session).await?;
     tracing::info!(%session, "a daemon raised an approval");
     Ok(Created(Json(view)))
+}
+
+#[skyzen::openapi]
+async fn notify_turn_completed(
+    State(session): State<DaemonSession>,
+    State(config): State<ApiConfig>,
+    db: Db,
+) -> Outcome<NoContent> {
+    push::notify_turn(&db, &config, session.0, true)
+        .await
+        .map(|()| NoContent)
+        .into()
+}
+
+#[skyzen::openapi]
+async fn notify_turn_failed(
+    State(session): State<DaemonSession>,
+    State(config): State<ApiConfig>,
+    db: Db,
+) -> Outcome<NoContent> {
+    push::notify_turn(&db, &config, session.0, false)
+        .await
+        .map(|()| NoContent)
+        .into()
 }
 
 /// Records one thing this session's daemon observed about the harness
@@ -1066,7 +1111,6 @@ fn public_routes() -> Vec<RouteNode> {
         "/v1/auth/github".route(("/start".post(oauth::start), "/callback".at(oauth::callback))),
     ))
     .into_route_nodes();
-    nodes.extend(harness_accounts::public_routes());
     nodes.extend(push::public_routes());
     nodes.extend(webhooks::routes());
     nodes
@@ -1094,6 +1138,8 @@ fn daemon_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/approvals".post(raise_approval),
         "/v1/sessions/{id}/harness-session".put(put_harness_session),
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),
+        "/v1/sessions/{id}/turn-completed".post(notify_turn_completed),
+        "/v1/sessions/{id}/turn-failed".post(notify_turn_failed),
         "/v1/sessions/{id}/transcript/{stream}".at(get_transcript),
         "/v1/sessions/{id}/transcript/{stream}/batches/{seq}".put(put_transcript_batch),
         "/v1/sessions/{id}/workdir-patch"
@@ -1129,6 +1175,7 @@ fn session_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/events".at(get_session_events),
         "/v1/sessions/{id}/messages".post(send_message),
         "/v1/sessions/{id}/interrupt".post(interrupt_session),
+        "/v1/sessions/{id}/compact".post(compact_session),
         "/v1/sessions/{id}/resume".post(resume_session),
         "/v1/sessions/{id}/turns".at(list_turns),
         "/v1/sessions/{id}/env"

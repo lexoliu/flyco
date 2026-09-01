@@ -44,6 +44,9 @@ while IFS= read -r line; do
 	*'"type":"interrupt"'*)
 		say '{"type":"sdk_message","message":{"type":"result","subtype":"error_during_execution","is_error":true,"result":"interrupted","usage":{"input_tokens":7,"output_tokens":0}}}'
 		;;
+	*'"type":"compact"'*)
+		say '{"type":"sdk_message","message":{"type":"system","subtype":"status","status":null,"compact_result":"success","uuid":"status-1","session_id":"fake-session"}}'
+		;;
 	*'"type":"shutdown"'*)
 		exit 0
 		;;

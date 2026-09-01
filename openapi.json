@@ -553,7 +553,7 @@
                   "type": "array",
                   "items": {
                     "type": "object",
-                    "description": "A Claude or Codex account the user has linked, as `GET\n/v1/harness-accounts` lists it.\n\nLinking runs against the *vendor's own* authorization page — the flow the\nofficial CLIs wrap — so flyco never sees a password, and what it stores\nis the resulting token, sealed. No representation of an account carries\nthat token; it leaves the control plane only when it is provisioned onto\na session machine.",
+                    "description": "A Claude or Codex account the user has linked, as `GET\n/v1/harness-accounts` lists it.\n\nNo representation of an account carries its credential; the sealed value\nleaves the control plane only when it is provisioned onto a session machine.",
                     "required": [
                       "id",
                       "harness",
@@ -595,78 +595,78 @@
             }
           }
         }
-      }
-    },
-    "/v1/harness-accounts/{harness}/link/callback": {
-      "get": {
-        "summary": "Completes a harness link and returns the browser to the SPA.",
-        "description": "Completes a harness link and returns the browser to the SPA.\n\nPublic, because the browser arrives from the vendor with no flyco\ncredential; the single-use `state` minted by the start call is what says\nwhose account this is.",
-        "operationId": "flyco_api::harness_accounts::complete_harness_link",
-        "parameters": [
-          {
-            "name": "harness",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "code",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "description": "The single-use authorization code."
-            }
-          },
-          {
-            "name": "state",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "description": "The `state` this control plane minted when the link began."
-            }
-          }
-        ],
-        "responses": {
-          "303": {
-            "description": "The browser is sent on to the flyco web app."
-          }
-        }
-      }
-    },
-    "/v1/harness-accounts/{harness}/link/start": {
+      },
       "post": {
-        "summary": "Begins linking a harness account, returning the vendor's authorize URL.",
-        "description": "Begins linking a harness account, returning the vendor's authorize URL.",
-        "operationId": "flyco_api::harness_accounts::start_harness_link",
-        "parameters": [
-          {
-            "name": "harness",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
+        "summary": "Links a harness credential, replacing the credential for that harness.",
+        "description": "Links a harness credential, replacing the credential for that harness.",
+        "operationId": "flyco_api::harness_accounts::link_harness_account",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request to link a Claude Code or Codex account.",
+                "required": [
+                  "label",
+                  "credential"
+                ],
+                "properties": {
+                  "credential": {
+                    "$ref": "#/components/schemas/HarnessCredentialInput",
+                    "description": "Authentication material, tagged with the mode that consumes it."
+                  },
+                  "label": {
+                    "type": "string",
+                    "description": "User-facing name that distinguishes this credential from another."
+                  }
+                }
+              }
             }
-          }
-        ],
+          },
+          "required": true
+        },
         "responses": {
-          "200": {
-            "description": "Response",
+          "201": {
+            "description": "The resource that was created.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "description": "Where the browser must be sent to begin a GitHub OAuth code flow.",
+                  "description": "A Claude or Codex account the user has linked, as `GET\n/v1/harness-accounts` lists it.\n\nNo representation of an account carries its credential; the sealed value\nleaves the control plane only when it is provisioned onto a session machine.",
                   "required": [
-                    "authorize_url"
+                    "id",
+                    "harness",
+                    "label",
+                    "linked_at_unix"
                   ],
                   "properties": {
-                    "authorize_url": {
+                    "expires_at_unix": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "format": "int64",
+                      "description": "When the stored credential expires, when the vendor states a\nlifetime.",
+                      "minimum": 0
+                    },
+                    "harness": {
+                      "$ref": "#/components/schemas/HarnessKind",
+                      "description": "Which harness this account drives."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier."
+                    },
+                    "label": {
                       "type": "string",
-                      "description": "Fully-formed `https://github.com/login/oauth/authorize` URL, including\nthe single-use `state` this control plane will accept back."
+                      "description": "Account name as the vendor reports it, so the user can tell two\nlinked accounts apart."
+                    },
+                    "linked_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was linked, seconds since the Unix epoch.",
+                      "minimum": 0
                     }
                   }
                 }
@@ -678,8 +678,8 @@
     },
     "/v1/harness-accounts/{id}": {
       "delete": {
-        "summary": "Unlinks the caller's account for one harness.",
-        "description": "Unlinks the caller's account for one harness.",
+        "summary": "Unlinks one account owned by the caller.",
+        "description": "Unlinks one account owned by the caller.",
         "operationId": "flyco_api::harness_accounts::unlink_harness_account",
         "parameters": [
           {
@@ -2571,6 +2571,28 @@
         }
       }
     },
+    "/v1/sessions/{id}/compact": {
+      "post": {
+        "summary": "Compacts a session's conversation context.",
+        "description": "Compacts a session's conversation context.\n\nClaude Code runs its native `/compact` command; Codex runs\n`thread/compact/start`. The result is reported on the session relay.",
+        "operationId": "flyco_api::app::compact_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/daemon-token": {
       "post": {
         "summary": "Mints the daemon token that pairs a session with its `flycod`.",
@@ -3390,6 +3412,48 @@
         }
       }
     },
+    "/v1/sessions/{id}/turn-completed": {
+      "post": {
+        "summary": "flyco_api::app::notify_turn_completed",
+        "operationId": "flyco_api::app::notify_turn_completed",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/turn-failed": {
+      "post": {
+        "summary": "flyco_api::app::notify_turn_failed",
+        "operationId": "flyco_api::app::notify_turn_failed",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/turns": {
       "get": {
         "summary": "Lists a session's turns, oldest first.",
@@ -3826,8 +3890,8 @@
     },
     "/v1/usage/llm": {
       "get": {
-        "summary": "Reports what flyco has observed of each harness account's usage.",
-        "description": "Reports what flyco has observed of each harness account's usage.\n\nReactive by necessity: neither Anthropic nor `OpenAI` publishes a\nremaining-quota API, so this reports the cost telemetry the harness\nemitted and the rate limits it actually hit. A panel built on it says\nwhat has happened, never what is left.\n\nThe rows come out of [`crate::observations`], which is filled in by the\nsessions' own daemons as they run — the only place either number exists.\nAn account with nothing observed about it still appears, reporting\nnothing, because \"nothing has happened\" is an answer and a missing row\nwould read as an account that is not linked.",
+        "summary": "Reports observed usage for each linked harness account.",
+        "description": "Reports observed usage for each linked harness account.",
         "operationId": "flyco_api::harness_accounts::llm_usage",
         "responses": {
           "200": {
@@ -4680,7 +4744,7 @@
       },
       "HarnessAccountView": {
         "type": "object",
-        "description": "A Claude or Codex account the user has linked, as `GET\n/v1/harness-accounts` lists it.\n\nLinking runs against the *vendor's own* authorization page — the flow the\nofficial CLIs wrap — so flyco never sees a password, and what it stores\nis the resulting token, sealed. No representation of an account carries\nthat token; it leaves the control plane only when it is provisioned onto\na session machine.",
+        "description": "A Claude or Codex account the user has linked, as `GET\n/v1/harness-accounts` lists it.\n\nNo representation of an account carries its credential; the sealed value\nleaves the control plane only when it is provisioned onto a session machine.",
         "required": [
           "id",
           "harness",
@@ -4716,6 +4780,71 @@
             "minimum": 0
           }
         }
+      },
+      "HarnessCredentialInput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Long-lived Claude subscription token produced by `claude setup-token`.",
+            "required": [
+              "token",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "claude_setup_token"
+                ]
+              },
+              "token": {
+                "type": "string",
+                "description": "Value printed by `claude setup-token`."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Anthropic API key used by Claude Code.",
+            "required": [
+              "key",
+              "kind"
+            ],
+            "properties": {
+              "key": {
+                "type": "string",
+                "description": "Value for `ANTHROPIC_API_KEY`."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "claude_api_key"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "`OpenAI` API key used by Codex.",
+            "required": [
+              "key",
+              "kind"
+            ],
+            "properties": {
+              "key": {
+                "type": "string",
+                "description": "Value for `OPENAI_API_KEY`."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "codex_api_key"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A credential accepted when linking a Claude Code or Codex account.\n\nEach variant determines its harness, so the wire format cannot pair a\nClaude credential with Codex or vice versa. Secret fields are deliberately\nomitted from [`Debug`](core::fmt::Debug)."
       },
       "HarnessFeature": {
         "type": "object",
@@ -4822,21 +4951,21 @@
           }
         }
       },
-      "LinkCallback": {
+      "LinkHarnessAccount": {
         "type": "object",
-        "description": "Query string the vendor appends when it redirects back.",
+        "description": "Request to link a Claude Code or Codex account.",
         "required": [
-          "code",
-          "state"
+          "label",
+          "credential"
         ],
         "properties": {
-          "code": {
-            "type": "string",
-            "description": "The single-use authorization code."
+          "credential": {
+            "$ref": "#/components/schemas/HarnessCredentialInput",
+            "description": "Authentication material, tagged with the mode that consumes it."
           },
-          "state": {
+          "label": {
             "type": "string",
-            "description": "The `state` this control plane minted when the link began."
+            "description": "User-facing name that distinguishes this credential from another."
           }
         }
       },

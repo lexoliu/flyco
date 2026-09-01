@@ -44,8 +44,9 @@ pub use budget::{
 pub use env::{EnvDocument, EnvEntry, NETWORK_CONTROL_WARNING, UpdateEnv};
 pub use github::RepoSummary;
 pub use harness::{
-    Availability, ContextWindow, Feature, HarnessAccountView, HarnessEvent, HarnessFeature,
-    HarnessKind, PermissionMode, UsageReport, availability, matrix,
+    Availability, ContextWindow, Feature, HarnessAccountView, HarnessCredentialInput, HarnessEvent,
+    HarnessFeature, HarnessKind, LinkHarnessAccount, PermissionMode, UsageReport, availability,
+    matrix,
 };
 pub use id::{
     ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, HarnessAccountId, HarnessObservationId, Id,
@@ -82,4 +83,4 @@ pub use wire::{ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, 
 /// Bumped on every incompatible change to [`wire`]; the control plane
 /// refuses daemons speaking a different version (fast fail, no
 /// best-effort compatibility).
-pub const WIRE_PROTOCOL_VERSION: u32 = 1;
+pub const WIRE_PROTOCOL_VERSION: u32 = 2;

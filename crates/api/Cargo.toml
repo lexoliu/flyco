@@ -33,9 +33,12 @@ base64.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 hmac.workspace = true
+http.workspace = true
 sha2.workspace = true
 url.workspace = true
 utoipa.workspace = true
+jwt-compact.workspace = true
+web-push-native.workspace = true
 serde_urlencoded = "0.7"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

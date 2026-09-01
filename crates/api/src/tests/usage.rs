@@ -22,13 +22,13 @@ use crate::{daemon_tokens, session};
 
 const PATH: &str = "/v1/usage/llm";
 
-/// Links a harness account directly, which M4's OAuth flow will do for real.
+/// Links a harness account directly, matching the authenticated link route.
 async fn link(db: &Db, user: UserId, harness: HarnessKind, label: &str) -> HarnessAccountId {
     let id = HarnessAccountId::generate();
     sql!(
         db,
         "INSERT INTO harness_accounts \
-         (id, user_id, harness, label, token_enc, linked_at_unix, expires_at_unix) \
+         (id, user_id, harness, label, credential_enc, linked_at_unix, expires_at_unix) \
          VALUES ({id}, {user}, {harness}, {label}, {\"sealed\"}, {1_800_000_000_u64}, NULL)"
     )
     .execute()

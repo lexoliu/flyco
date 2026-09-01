@@ -94,106 +94,177 @@ async fn the_feature_matrix_is_the_verified_table(ctx: TestContext, kv: Kv, db: 
     assert_eq!(rows, flyco_core::matrix());
 }
 
-/// Linking is deployment configuration, and its absence must say so.
+/// Linking accepts only the supported credential modes and never returns a secret.
 mod linking {
-    use flyco_core::{AuthorizeUrl, HarnessKind, Problem};
+    use flyco_core::{
+        HarnessAccountView, HarnessCredentialInput, HarnessKind, LinkHarnessAccount, Problem,
+    };
+    use flyco_provider::ClaudeCredential;
     use skyzen_services::{Db, Kv};
     use skyzen_test::TestContext;
-    use url::Url;
 
-    use crate::config::HarnessOauthClient;
     use crate::session;
-    use crate::testing::{migrated_router_with_config, seed_user, test_config};
+    use crate::testing::{migrated_router, seed_user, test_config};
 
-    fn client() -> HarnessOauthClient {
-        HarnessOauthClient {
-            authorize_url: Url::parse("https://auth.example.invalid/authorize")
-                .expect("a valid URL"),
-            token_url: Url::parse("https://auth.example.invalid/token").expect("a valid URL"),
-            client_id: "flyco-test-client".to_owned(),
-            client_secret: "flyco-test-secret".to_owned(),
-            scope: "inference".to_owned(),
+    fn request(credential: HarnessCredentialInput) -> LinkHarnessAccount {
+        LinkHarnessAccount {
+            label: "Personal".to_owned(),
+            credential,
         }
     }
 
     #[skyzen::test]
-    async fn an_unconfigured_deployment_refuses_rather_than_guessing(
+    async fn each_supported_credential_is_sealed_and_listed_without_its_secret(
         ctx: TestContext,
         kv: Kv,
         db: Db,
     ) {
-        let router = migrated_router_with_config(&db, test_config()).await;
+        let router = migrated_router(&db).await;
         let user = seed_user(&db).await;
         let token = session::issue(&kv, user.id).await.expect("issue a session");
+        let client = ctx.client(router);
 
-        let response = ctx
-            .client(router)
-            .post("/v1/harness-accounts/claude_code/link/start")
-            .bearer(&token)
-            .send()
-            .await;
+        for (credential, expected_harness, secret) in [
+            (
+                HarnessCredentialInput::ClaudeSetupToken {
+                    token: "sk-ant-oat01-test".to_owned(),
+                },
+                HarnessKind::ClaudeCode,
+                "sk-ant-oat01-test",
+            ),
+            (
+                HarnessCredentialInput::ClaudeApiKey {
+                    key: "sk-ant-api03-test".to_owned(),
+                },
+                HarnessKind::ClaudeCode,
+                "sk-ant-api03-test",
+            ),
+            (
+                HarnessCredentialInput::CodexApiKey {
+                    key: "sk-openai-test".to_owned(),
+                },
+                HarnessKind::Codex,
+                "sk-openai-test",
+            ),
+        ] {
+            let response = client
+                .post("/v1/harness-accounts")
+                .bearer(&token)
+                .json(&request(credential))
+                .send()
+                .await;
+            response.assert_status(201);
+            let view: HarnessAccountView = response.json();
+            assert_eq!(view.harness, expected_harness);
+            let account = view.id;
 
-        response.assert_status(501);
-        assert!(
-            response
-                .json::<Problem>()
-                .kind
-                .ends_with("harness-link-unconfigured"),
-            "the refusal must name the missing configuration"
-        );
-    }
-
-    #[skyzen::test]
-    async fn a_configured_deployment_sends_the_browser_to_the_vendor(
-        ctx: TestContext,
-        kv: Kv,
-        db: Db,
-    ) {
-        let config = test_config().with_harness_oauth(HarnessKind::ClaudeCode, client());
-        let router = migrated_router_with_config(&db, config).await;
-        let user = seed_user(&db).await;
-        let token = session::issue(&kv, user.id).await.expect("issue a session");
-
-        let response = ctx
-            .client(router)
-            .post("/v1/harness-accounts/claude_code/link/start")
-            .bearer(&token)
-            .send()
-            .await;
-        response.assert_status(200);
-
-        let url = Url::parse(&response.json::<AuthorizeUrl>().authorize_url).expect("a valid URL");
-        assert_eq!(url.host_str(), Some("auth.example.invalid"));
-
-        let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
-        assert_eq!(query.get("response_type").map(AsRef::as_ref), Some("code"));
-        assert_eq!(
-            query.get("client_id").map(AsRef::as_ref),
-            Some("flyco-test-client")
-        );
-        // PKCE, so an intercepted code is useless without the verifier that
-        // never left this control plane.
-        assert_eq!(
-            query.get("code_challenge_method").map(AsRef::as_ref),
-            Some("S256")
-        );
-        assert!(query.contains_key("code_challenge"));
-        assert!(query.contains_key("state"));
-        assert!(
-            !url.as_str().contains("flyco-test-secret"),
-            "the client secret must never reach the browser"
-        );
-    }
-
-    #[skyzen::test]
-    async fn a_callback_carrying_an_unknown_state_is_refused(ctx: TestContext, _kv: Kv, db: Db) {
-        let config = test_config().with_harness_oauth(HarnessKind::ClaudeCode, client());
-        let router = migrated_router_with_config(&db, config).await;
-
-        ctx.client(router)
-            .get("/v1/harness-accounts/claude_code/link/callback?code=abc&state=never-minted")
-            .send()
+            let sealed: String = skyzen::sql!(
+                db,
+                "SELECT credential_enc FROM harness_accounts WHERE id = {account}"
+            )
+            .fetch_scalar()
             .await
-            .assert_status(400);
+            .expect("read the sealed credential");
+            assert!(!sealed.contains(secret));
+            let encoded = test_config()
+                .token_cipher()
+                .open(&sealed)
+                .expect("open credential");
+            assert_ne!(encoded, "");
+        }
+
+        let listed = client
+            .get("/v1/harness-accounts")
+            .bearer(&token)
+            .send()
+            .await;
+        listed.assert_status(200);
+        let body = serde_json::to_string(&listed.json::<Vec<HarnessAccountView>>())
+            .expect("encode the account list");
+        assert!(!body.contains("sk-ant"));
+        assert!(!body.contains("sk-openai"));
+    }
+
+    #[skyzen::test]
+    async fn linking_again_replaces_the_harness_credential(ctx: TestContext, kv: Kv, db: Db) {
+        let router = migrated_router(&db).await;
+        let user = seed_user(&db).await;
+        let token = session::issue(&kv, user.id).await.expect("issue a session");
+        let client = ctx.client(router);
+
+        for key in ["first-key", "second-key"] {
+            client
+                .post("/v1/harness-accounts")
+                .bearer(&token)
+                .json(&request(HarnessCredentialInput::CodexApiKey {
+                    key: key.to_owned(),
+                }))
+                .send()
+                .await
+                .assert_status(201);
+        }
+
+        let user_id = user.id;
+        let harness = HarnessKind::Codex;
+        let count: u64 = skyzen::sql!(
+            db,
+            "SELECT COUNT(*) FROM harness_accounts WHERE user_id = {user_id} AND harness = {harness}"
+        )
+        .fetch_scalar()
+        .await
+        .expect("count harness accounts");
+        assert_eq!(count, 1);
+
+        let stored = super::super::super::harness_accounts::credential(
+            &db,
+            &test_config().token_cipher(),
+            user.id,
+            HarnessKind::Codex,
+        )
+        .await
+        .expect("read the replacement");
+        assert_eq!(
+            stored,
+            ClaudeCredential::ApiKey {
+                key: "second-key".to_owned()
+            }
+        );
+    }
+
+    #[skyzen::test]
+    async fn empty_fields_are_rejected(ctx: TestContext, kv: Kv, db: Db) {
+        let router = migrated_router(&db).await;
+        let user = seed_user(&db).await;
+        let token = session::issue(&kv, user.id).await.expect("issue a session");
+        let client = ctx.client(router);
+
+        for invalid in [
+            LinkHarnessAccount {
+                label: " ".to_owned(),
+                credential: HarnessCredentialInput::CodexApiKey {
+                    key: "present".to_owned(),
+                },
+            },
+            LinkHarnessAccount {
+                label: "Personal".to_owned(),
+                credential: HarnessCredentialInput::ClaudeSetupToken {
+                    token: " ".to_owned(),
+                },
+            },
+        ] {
+            let response = client
+                .post("/v1/harness-accounts")
+                .bearer(&token)
+                .json(&invalid)
+                .send()
+                .await;
+            response.assert_status(422);
+            assert!(
+                response
+                    .json::<Problem>()
+                    .kind
+                    .ends_with("invalid-harness-credential")
+            );
+        }
     }
 }

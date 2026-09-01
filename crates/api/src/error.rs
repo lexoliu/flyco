@@ -80,17 +80,6 @@ pub enum ApiError {
     #[error("this skill bundle is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     InvalidSkill(&'static str),
 
-    /// This deployment holds no webhook secret, so it can verify nothing.
-    ///
-    /// The refusal is the point: with no secret there is no way to tell a
-    /// GitHub delivery from a forgery, and the alternative — reading the
-    /// body anyway — is the bug the whole route is arranged to prevent.
-    #[error(
-        "this flyco deployment accepts no GitHub webhooks",
-        status = StatusCode::NOT_IMPLEMENTED
-    )]
-    WebhooksUnconfigured,
-
     /// The delivery carried no `X-Hub-Signature-256`, or one that does not
     /// match the body.
     ///
@@ -114,13 +103,6 @@ pub enum ApiError {
         event: String,
     },
 
-    /// This deployment has no VAPID key pair, so it cannot send push.
-    #[error(
-        "this flyco deployment is not configured for web push",
-        status = StatusCode::NOT_IMPLEMENTED
-    )]
-    PushUnconfigured,
-
     /// The push subscription does not exist, or belongs to somebody else.
     #[error("push subscription not found", status = StatusCode::NOT_FOUND)]
     PushSubscriptionNotFound,
@@ -129,27 +111,17 @@ pub enum ApiError {
     #[error("this push subscription is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     InvalidPushSubscription(&'static str),
 
+    /// A subscription could not be encoded or delivered to its push service.
+    #[error("web push delivery failed: {0}", status = StatusCode::BAD_GATEWAY)]
+    PushDeliveryFailed(String),
+
     /// The provider account does not exist, or belongs to somebody else.
     #[error("provider account not found", status = StatusCode::NOT_FOUND)]
     ProviderAccountNotFound,
 
-    /// This deployment holds no OAuth client for that vendor.
-    ///
-    /// Both vendors require a registered client, and flyco ships none of its
-    /// own — endpoints and client ids invented on a vendor's behalf would be
-    /// a guess about somebody else's service.
-    #[error(
-        "this flyco deployment cannot link {harness} accounts: no OAuth client is configured",
-        status = StatusCode::NOT_IMPLEMENTED
-    )]
-    HarnessLinkUnconfigured {
-        /// Which vendor was asked for.
-        harness: &'static str,
-    },
-
-    /// The vendor refused the authorization code exchange.
-    #[error("the vendor refused this authorization: {0}", status = StatusCode::BAD_GATEWAY)]
-    HarnessLinkRejected(String),
+    /// The submitted harness credential cannot be stored or used.
+    #[error("this harness credential is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    InvalidHarnessCredential(&'static str),
 
     /// The harness account does not exist, or belongs to somebody else.
     #[error("harness account not found", status = StatusCode::NOT_FOUND)]
@@ -449,15 +421,13 @@ impl ApiError {
             Self::InvalidMcpServer(_) => "invalid-mcp-server",
             Self::SkillNotFound => "skill-not-found",
             Self::InvalidSkill(_) => "invalid-skill",
-            Self::WebhooksUnconfigured => "webhooks-unconfigured",
             Self::WebhookUnverified => "webhook-unverified",
             Self::WebhookMalformed { .. } => "webhook-malformed",
-            Self::PushUnconfigured => "push-unconfigured",
             Self::PushSubscriptionNotFound => "push-subscription-not-found",
             Self::InvalidPushSubscription(_) => "invalid-push-subscription",
+            Self::PushDeliveryFailed(_) => "push-delivery-failed",
             Self::ProviderAccountNotFound => "provider-account-not-found",
-            Self::HarnessLinkUnconfigured { .. } => "harness-link-unconfigured",
-            Self::HarnessLinkRejected(_) => "harness-link-rejected",
+            Self::InvalidHarnessCredential(_) => "invalid-harness-credential",
             Self::HarnessAccountNotFound => "harness-account-not-found",
             Self::MachineNotFound => "machine-not-found",
             Self::MachineNotReady => "machine-not-ready",
