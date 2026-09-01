@@ -413,8 +413,8 @@ export function listHarnessAccounts(): Promise<
   return requestJson("GET", "/v1/harness-accounts");
 }
 
-export function unlinkHarnessAccount(harness: HarnessKind): Promise<void> {
-  return requestVoid("DELETE", `/v1/harness-accounts/${harness}`);
+export function unlinkHarnessAccount(id: HarnessAccountView["id"]): Promise<void> {
+  return requestVoid("DELETE", `/v1/harness-accounts/${id}`);
 }
 
 // --- /v1/memory ----------------------------------------------------------------
