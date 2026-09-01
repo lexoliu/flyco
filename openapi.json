@@ -4846,7 +4846,7 @@
           },
           {
             "type": "object",
-            "description": "OpenAI API key used by Codex.",
+            "description": "`OpenAI` API key used by Codex.",
             "required": [
               "key",
               "kind"
