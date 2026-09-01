@@ -6,5 +6,6 @@ write_files:
     encoding: b64
     content: {{ config_base64 }}
 runcmd:
-  - ['sh', '-c', 'curl --fail --silent --show-error --location {{ installer_url }} | sh']
+  - ['curl', '--fail', '--silent', '--show-error', '--location', '--output', '/run/flycod-install.sh', {{ installer_url }}]
+  - ['sh', '/run/flycod-install.sh']
   - ['systemctl', 'enable', '--now', 'flycod']

@@ -1,0 +1,23 @@
+[Unit]
+Description=Flyco execution-plane daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=flyco
+Group=flyco
+WorkingDirectory=/srv/flyco/work
+Environment=HOME=/home/flyco
+Environment=PATH=/home/flyco/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/flycod run --config /etc/flycod/config.toml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/home/flyco /srv/flyco /var/lib/flyco
+
+[Install]
+WantedBy=multi-user.target

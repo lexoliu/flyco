@@ -21,7 +21,7 @@ pub const CONFIG_PATH: &str = "/etc/flycod/config.toml";
 
 /// Where a machine fetches `flycod` from on first boot, unless the caller
 /// names somewhere else.
-pub const DEFAULT_FLYCOD_INSTALLER_URL: &str = "https://flyco.dev/install/flycod.sh";
+pub const DEFAULT_FLYCOD_INSTALLER_URL: &str = "https://dev.flyco.dev/install/flycod.sh";
 
 /// The cloud-config a machine boots with.
 #[derive(Debug, Template)]
@@ -62,7 +62,7 @@ pub fn render(daemon_config: &str, installer_url: &str) -> Result<String, Provid
     let rendered = CloudInit {
         config_path: yaml_quoted(CONFIG_PATH),
         config_base64: engine.encode(daemon_config),
-        installer_url: installer_url.to_owned(),
+        installer_url: yaml_quoted(installer_url),
     }
     .render()
     .map_err(|_| ProviderError::Malformed("the cloud-init template did not render"))?;
@@ -74,7 +74,7 @@ pub fn render(daemon_config: &str, installer_url: &str) -> Result<String, Provid
 mod tests {
     use base64::Engine as _;
 
-    use super::{CONFIG_PATH, render, yaml_quoted};
+    use super::{CONFIG_PATH, DEFAULT_FLYCOD_INSTALLER_URL, render, yaml_quoted};
 
     fn decoded(encoded: &str) -> String {
         String::from_utf8(
@@ -109,5 +109,25 @@ mod tests {
     #[test]
     fn a_quoted_scalar_escapes_by_doubling() {
         assert_eq!(yaml_quoted("it's"), "'it''s'");
+    }
+
+    #[test]
+    fn the_default_installer_is_the_deployed_development_asset() {
+        assert_eq!(
+            DEFAULT_FLYCOD_INSTALLER_URL,
+            "https://dev.flyco.dev/install/flycod.sh"
+        );
+    }
+
+    #[test]
+    fn cloud_init_downloads_the_installer_before_executing_it() {
+        let cloud_config = decoded(
+            &render("daemon_token = \"fd_live\"\n", DEFAULT_FLYCOD_INSTALLER_URL)
+                .expect("the template renders"),
+        );
+
+        assert!(cloud_config.contains("'/run/flycod-install.sh'"));
+        assert!(cloud_config.contains("'https://dev.flyco.dev/install/flycod.sh'"));
+        assert!(!cloud_config.contains("| sh"));
     }
 }
