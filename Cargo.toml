@@ -20,7 +20,10 @@ skyzen = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923e
 skyzen-services = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923ecff14b42c5b6fbf9ad16" }
 skyzen-test = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923ecff14b42c5b6fbf9ad16" }
 skyzen-cloudflare = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923ecff14b42c5b6fbf9ad16" }
-zenwave = "0.5"
+# Select the native TLS backend in native crates below. Keeping the shared
+# dependency backend-free lets the Worker use Zenwave's built-in Fetch backend
+# without compiling an inapplicable native TLS stack.
+zenwave = { version = "0.5", default-features = false, features = ["ws"] }
 
 # Provider drivers render structured documents — cloud-init YAML, podman
 # scripts — from compiled templates rather than string concatenation, so a

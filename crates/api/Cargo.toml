@@ -62,6 +62,7 @@ skyzen-services = { workspace = true, features = [
     "runtime-async-std-rustls",
 ] }
 skyzen-test.workspace = true
+zenwave = { workspace = true, features = ["hyper-rustls"] }
 
 [features]
 default = ["openapi"]
