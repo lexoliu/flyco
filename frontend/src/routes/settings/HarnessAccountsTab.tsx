@@ -4,6 +4,7 @@ import {
   linkHarnessAccount,
   listHarnessAccounts,
   unlinkHarnessAccount,
+  type HarnessAccountView,
   type HarnessCredentialInput,
   type HarnessKind,
 } from "../../api/client";
@@ -136,7 +137,7 @@ export default function HarnessAccountsTab() {
   const [accounts, { refetch }] = createResource(listHarnessAccounts);
   const [unlinkError, setUnlinkError] = createSignal<unknown>(null);
 
-  async function onUnlink(id: string): Promise<void> {
+  async function onUnlink(id: HarnessAccountView["id"]): Promise<void> {
     setUnlinkError(null);
     try {
       await unlinkHarnessAccount(id);

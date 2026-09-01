@@ -19,7 +19,7 @@
  * than silently dropped.
  */
 import type { components, operations } from "./schema";
-import { getSessionToken } from "../lib/session";
+import { clearSessionToken, getSessionToken } from "../lib/session";
 import { NetworkError, problemFromResponse } from "./problem";
 
 type Schemas = components["schemas"];
@@ -154,6 +154,9 @@ async function send(method: string, path: string, options: SendOptions = {}): Pr
   }
 
   if (!response.ok) {
+    if (response.status === 401 && token !== null) {
+      clearSessionToken();
+    }
     throw await problemFromResponse(response);
   }
   return response;
@@ -412,7 +415,7 @@ export function linkHarnessAccount(
   return requestJson("POST", "/v1/harness-accounts", { json: input });
 }
 
-export function unlinkHarnessAccount(id: string): Promise<void> {
+export function unlinkHarnessAccount(id: HarnessAccountView["id"]): Promise<void> {
   return requestVoid("DELETE", `/v1/harness-accounts/${id}`);
 }
 

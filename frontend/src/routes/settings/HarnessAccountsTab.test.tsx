@@ -2,6 +2,8 @@ import { fireEvent, render, waitFor } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import HarnessAccountsTab from "./HarnessAccountsTab";
 
+const ACCOUNT_ID = "019d1d12-43f0-7bf2-b1f4-a3e7838c5c01";
+
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -21,7 +23,7 @@ describe("HarnessAccountsTab", () => {
           requests.push(JSON.parse(String(init?.body)));
           return response(
             {
-              id: crypto.randomUUID(),
+              id: ACCOUNT_ID,
               harness: "claude_code",
               label: "Personal",
               linked_at_unix: 1_788_000_000,
@@ -69,6 +71,39 @@ describe("HarnessAccountsTab", () => {
     expect(requests[0]).toEqual({
       label: "Work",
       credential: { kind: "codex_api_key", key: "openai-secret" },
+    });
+  });
+
+  it("unlinks the account by its listed resource id", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((_input, init) => {
+      if ((init?.method ?? "GET") === "DELETE") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      return Promise.resolve(
+        response([
+          {
+            id: ACCOUNT_ID,
+            harness: "codex",
+            label: "lexoliu",
+            linked_at_unix: 1_788_200_000,
+            expires_at_unix: null,
+          },
+        ]),
+      );
+    });
+
+    const view = render(() => <HarnessAccountsTab />);
+    await fireEvent.click(await view.findByRole("button", { name: "Unlink" }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([input, init]) =>
+            String(input).endsWith(`/v1/harness-accounts/${ACCOUNT_ID}`) &&
+            init?.method === "DELETE",
+        ),
+      ).toBe(true);
     });
   });
 });

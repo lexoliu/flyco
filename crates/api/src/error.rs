@@ -80,17 +80,6 @@ pub enum ApiError {
     #[error("this skill bundle is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     InvalidSkill(&'static str),
 
-    /// This deployment holds no webhook secret, so it can verify nothing.
-    ///
-    /// The refusal is the point: with no secret there is no way to tell a
-    /// GitHub delivery from a forgery, and the alternative — reading the
-    /// body anyway — is the bug the whole route is arranged to prevent.
-    #[error(
-        "this flyco deployment accepts no GitHub webhooks",
-        status = StatusCode::NOT_IMPLEMENTED
-    )]
-    WebhooksUnconfigured,
-
     /// The delivery carried no `X-Hub-Signature-256`, or one that does not
     /// match the body.
     ///
@@ -114,13 +103,6 @@ pub enum ApiError {
         event: String,
     },
 
-    /// This deployment has no VAPID key pair, so it cannot send push.
-    #[error(
-        "this flyco deployment is not configured for web push",
-        status = StatusCode::NOT_IMPLEMENTED
-    )]
-    PushUnconfigured,
-
     /// The push subscription does not exist, or belongs to somebody else.
     #[error("push subscription not found", status = StatusCode::NOT_FOUND)]
     PushSubscriptionNotFound,
@@ -128,6 +110,10 @@ pub enum ApiError {
     /// The browser sent a subscription flyco cannot use.
     #[error("this push subscription is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     InvalidPushSubscription(&'static str),
+
+    /// A subscription could not be encoded or delivered to its push service.
+    #[error("web push delivery failed: {0}", status = StatusCode::BAD_GATEWAY)]
+    PushDeliveryFailed(String),
 
     /// The provider account does not exist, or belongs to somebody else.
     #[error("provider account not found", status = StatusCode::NOT_FOUND)]
@@ -435,12 +421,11 @@ impl ApiError {
             Self::InvalidMcpServer(_) => "invalid-mcp-server",
             Self::SkillNotFound => "skill-not-found",
             Self::InvalidSkill(_) => "invalid-skill",
-            Self::WebhooksUnconfigured => "webhooks-unconfigured",
             Self::WebhookUnverified => "webhook-unverified",
             Self::WebhookMalformed { .. } => "webhook-malformed",
-            Self::PushUnconfigured => "push-unconfigured",
             Self::PushSubscriptionNotFound => "push-subscription-not-found",
             Self::InvalidPushSubscription(_) => "invalid-push-subscription",
+            Self::PushDeliveryFailed(_) => "push-delivery-failed",
             Self::ProviderAccountNotFound => "provider-account-not-found",
             Self::InvalidHarnessCredential(_) => "invalid-harness-credential",
             Self::HarnessAccountNotFound => "harness-account-not-found",
