@@ -10,9 +10,8 @@
 //!
 //! [`accept`] is written in that order and nothing else in this module reads
 //! the body, so there is no reachable path in which an unverified payload is
-//! looked at. A deployment holding no secret has nothing to verify against
-//! and therefore accepts no webhooks at all — [`ApiError::WebhooksUnconfigured`]
-//! — rather than treating a missing environment variable as permission.
+//! looked at. The signing secret is required deployment configuration, so a
+//! Worker can never start with this route present but unusable.
 //!
 //! # What a verified delivery does
 //!
@@ -193,8 +192,8 @@ async fn receive_github_webhook(
 /// Verifies a delivery and then, and only then, acts on it.
 ///
 /// The three steps are in this order because the order *is* the security
-/// property: no secret means no webhooks, an unverified body is never
-/// looked at, and the event header is read after the bytes it describes have
+/// property: an unverified body is never looked at, and the event header is
+/// read after the bytes it describes have
 /// been proven to come from GitHub.
 async fn accept(
     headers: &Headers,
@@ -203,9 +202,7 @@ async fn accept(
     rooms: &Rooms,
     db: &Db,
 ) -> Result<NoContent, ApiError> {
-    let secret = config
-        .github_webhook_secret()
-        .ok_or(ApiError::WebhooksUnconfigured)?;
+    let secret = config.github_webhook_secret();
     verify(secret, headers.get(SIGNATURE_HEADER), body)?;
 
     let event = headers.get(EVENT_HEADER).unwrap_or_default();

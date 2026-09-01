@@ -2,9 +2,8 @@
 //!
 //! The route carries no flyco credential, so its whole security boundary is
 //! the HMAC over the raw body. These tests sign real bodies with a real key
-//! and then attack the signature the three ways that matter: a wrong secret,
-//! a body edited after signing, and a deployment that holds no secret at
-//! all. Each has to be a refusal *before* the payload is looked at, which is
+//! and then attack the signature the ways that matter: a wrong secret and a
+//! body edited after signing. Each has to be a refusal *before* the payload is looked at, which is
 //! why the malformed-payload case is only reachable once a signature is
 //! valid.
 
@@ -19,11 +18,11 @@ use skyzen_test::{TestClient, TestContext};
 use crate::app::router;
 use crate::github::GithubClient;
 use crate::room::EventPage;
-use crate::testing::{TestGithub, migrate, seed_user, test_config};
+use crate::testing::{GITHUB_WEBHOOK_SECRET, TestGithub, migrate, seed_user, test_config};
 use crate::webhooks::{EVENT_HEADER, SIGNATURE_HEADER};
 
 /// The secret a configured deployment shares with GitHub.
-const SECRET: &str = "a-shared-webhook-secret";
+const SECRET: &str = GITHUB_WEBHOOK_SECRET;
 
 /// A different one, which is what a forger has.
 const WRONG_SECRET: &str = "not-the-shared-webhook-secret";
@@ -42,7 +41,7 @@ const PING: &str = include_str!("../../fixtures/github/ping.json");
 async fn configured_router(db: &Db) -> Router {
     migrate(db).await;
     router(
-        test_config().with_github_webhook_secret(SECRET),
+        test_config(),
         GithubClient::Fake(TestGithub),
         db.clone(),
         Queue::new(InMemoryQueue::new()),
@@ -123,26 +122,6 @@ async fn recorded(
 
 async fn sign_in(kv: &skyzen_services::Kv, user: UserId) -> String {
     crate::session::issue(kv, user).await.expect("issue")
-}
-
-#[skyzen::test]
-async fn a_deployment_without_a_secret_accepts_no_webhook(ctx: TestContext, db: Db) {
-    migrate(&db).await;
-    // `test_config` carries no webhook secret, which is the state of any
-    // deployment that has not been given one.
-    let client = ctx.client(crate::testing::test_router(
-        db.clone(),
-        Queue::new(InMemoryQueue::new()),
-    ));
-
-    // Correctly signed by *a* secret — there is simply no secret here to
-    // check it against, so it is refused rather than trusted.
-    let response = deliver(&client, "ping", PING, SECRET).await;
-    response.assert_status(501);
-    assert_eq!(
-        response.json::<Problem>().kind,
-        "https://flyco.dev/problems/webhooks-unconfigured"
-    );
 }
 
 #[skyzen::test]
