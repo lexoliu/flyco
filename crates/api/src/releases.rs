@@ -3,7 +3,7 @@
 //! The source repository is private, so GitHub release URLs cannot bootstrap
 //! an unauthenticated VM. Large binaries also cannot ride inside the Worker:
 //! the free Worker bundle limit is smaller than one `flycod` build. They live
-//! in the deployment's R2 bucket and this module exposes only the four exact
+//! in the deployment's R2 bucket and this module exposes only the six exact
 //! development-channel objects the installer needs.
 
 use skyzen_services::{Storage, StorageError};
@@ -16,7 +16,15 @@ struct Artifact {
     content_type: &'static str,
 }
 
-const ARTIFACTS: [Artifact; 4] = [
+const ARTIFACTS: [Artifact; 6] = [
+    Artifact {
+        name: "flycod.sh",
+        content_type: "text/x-shellscript; charset=utf-8",
+    },
+    Artifact {
+        name: "flycod.service",
+        content_type: "text/plain; charset=utf-8",
+    },
     Artifact {
         name: "flycod-linux-x86_64",
         content_type: "application/octet-stream",
