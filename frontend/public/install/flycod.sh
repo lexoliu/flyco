@@ -6,8 +6,8 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-release_base=${FLYCO_RELEASE_BASE:-https://github.com/lexoliu/flyco/releases/download/dev}
 asset_base=${FLYCO_ASSET_BASE:-https://dev.flyco.dev/install}
+binary_base=${FLYCO_BINARY_BASE:-$asset_base}
 install_root=/usr/local/bin
 service_root=/etc/systemd/system
 runtime_user=flyco
@@ -45,8 +45,8 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT HUP INT TERM
 chmod 0755 "$scratch"
 
-download "$release_base/$artifact" "$scratch/$artifact"
-download "$release_base/$artifact.sha256" "$scratch/$artifact.sha256"
+download "$binary_base/$artifact" "$scratch/$artifact"
+download "$binary_base/$artifact.sha256" "$scratch/$artifact.sha256"
 (cd "$scratch" && sha256sum --check "$artifact.sha256")
 install -m 0755 "$scratch/$artifact" "$install_root/flycod"
 
