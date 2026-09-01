@@ -230,14 +230,78 @@ pub struct UsageReport {
     pub estimated_cost: Option<Usd>,
 }
 
+/// A credential accepted when linking a Claude Code or Codex account.
+///
+/// Each variant determines its harness, so the wire format cannot pair a
+/// Claude credential with Codex or vice versa. Secret fields are deliberately
+/// omitted from [`Debug`](core::fmt::Debug).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HarnessCredentialInput {
+    /// Long-lived Claude subscription token produced by `claude setup-token`.
+    ClaudeSetupToken {
+        /// Value printed by `claude setup-token`.
+        token: String,
+    },
+    /// Anthropic API key used by Claude Code.
+    ClaudeApiKey {
+        /// Value for `ANTHROPIC_API_KEY`.
+        key: String,
+    },
+    /// `OpenAI` API key used by Codex.
+    CodexApiKey {
+        /// Value for `OPENAI_API_KEY`.
+        key: String,
+    },
+}
+
+impl core::fmt::Debug for HarnessCredentialInput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let kind = match self {
+            Self::ClaudeSetupToken { .. } => "claude_setup_token",
+            Self::ClaudeApiKey { .. } => "claude_api_key",
+            Self::CodexApiKey { .. } => "codex_api_key",
+        };
+        f.debug_struct("HarnessCredentialInput")
+            .field("kind", &kind)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HarnessCredentialInput {
+    /// Harness this credential can authenticate.
+    #[must_use]
+    pub const fn harness(&self) -> HarnessKind {
+        match self {
+            Self::ClaudeSetupToken { .. } | Self::ClaudeApiKey { .. } => HarnessKind::ClaudeCode,
+            Self::CodexApiKey { .. } => HarnessKind::Codex,
+        }
+    }
+
+    /// Secret carried by this credential.
+    #[must_use]
+    pub fn secret(&self) -> &str {
+        match self {
+            Self::ClaudeSetupToken { token } => token,
+            Self::ClaudeApiKey { key } | Self::CodexApiKey { key } => key,
+        }
+    }
+}
+
+/// Request to link a Claude Code or Codex account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct LinkHarnessAccount {
+    /// User-facing name that distinguishes this credential from another.
+    pub label: String,
+    /// Authentication material, tagged with the mode that consumes it.
+    pub credential: HarnessCredentialInput,
+}
+
 /// A Claude or Codex account the user has linked, as `GET
 /// /v1/harness-accounts` lists it.
 ///
-/// Linking runs against the *vendor's own* authorization page — the flow the
-/// official CLIs wrap — so flyco never sees a password, and what it stores
-/// is the resulting token, sealed. No representation of an account carries
-/// that token; it leaves the control plane only when it is provisioned onto
-/// a session machine.
+/// No representation of an account carries its credential; the sealed value
+/// leaves the control plane only when it is provisioned onto a session machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct HarnessAccountView {
     /// Identifier.
