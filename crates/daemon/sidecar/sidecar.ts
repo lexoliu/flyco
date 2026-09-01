@@ -320,6 +320,11 @@ class Session {
     await this.session.interrupt();
   }
 
+  /** Runs Claude Code's native manual-compaction command. */
+  compact(): void {
+    this.messages.push("/compact");
+  }
+
   /** Ends the streaming input, which ends the session. */
   close(): void {
     this.closing = true;
@@ -414,6 +419,9 @@ async function apply(command: SidecarCommand, session: Session | null): Promise<
       return true;
     case "interrupt":
       await session.interrupt();
+      return true;
+    case "compact":
+      session.compact();
       return true;
     case "approval_decision": {
       const result: PermissionResult = command.allow

@@ -19,6 +19,7 @@ const COMMAND_TAGS = [
   "start",
   "user_message",
   "interrupt",
+  "compact",
   "approval_decision",
   "store_response",
   "shutdown",

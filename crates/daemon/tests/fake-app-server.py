@@ -2,8 +2,9 @@
 """Stand-in for `codex app-server`, used by tests/app_server.rs.
 
 It speaks the newline-delimited JSON-RPC subset flycod uses and nothing
-else: no Codex binary, so the driver's handshake, turns, approvals and
-interrupt path can run in CI. Extra argv (`app-server --strict-config`) is
+else: no Codex binary, so the driver's handshake, turns, approvals,
+interrupt, and manual-compaction paths can run in CI. Extra argv
+(`app-server --strict-config`) is
 ignored the way a real binary's subcommand would consume it.
 """
 
@@ -94,6 +95,19 @@ def main() -> None:
                     "params": {
                         "threadId": "fake-thread",
                         "turn": {"id": "fake-turn", "status": "interrupted"},
+                    },
+                }
+            )
+        elif method == "thread/compact/start":
+            if msg.get("params") != {"threadId": "fake-thread"}:
+                sys.exit(1)
+            send({"id": msg["id"], "result": {}})
+            send(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "fake-thread",
+                        "item": {"id": "compact-1", "type": "contextCompaction"},
                     },
                 }
             )

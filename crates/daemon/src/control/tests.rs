@@ -409,7 +409,7 @@ async fn terminal_input_reaches_the_shell_and_output_reaches_the_room() {
 }
 
 #[tokio::test]
-async fn a_user_message_and_an_interrupt_reach_the_harness() {
+async fn user_messages_interrupts_and_compaction_reach_the_harness() {
     let mut harness = Harness::start(Greeting::Welcome).await;
     harness.handshake().await;
 
@@ -423,6 +423,9 @@ async fn a_user_message_and_an_interrupt_reach_the_harness() {
 
     harness.command(ControlToDaemon::Interrupt);
     assert_eq!(harness.next_call().await, Call::Interrupt);
+
+    harness.command(ControlToDaemon::Compact);
+    assert_eq!(harness.next_call().await, Call::Compact);
 
     harness.archive().await.expect("the run ended cleanly");
 }

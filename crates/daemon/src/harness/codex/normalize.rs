@@ -134,11 +134,11 @@ impl Normalizer {
     }
 
     fn on_item_completed(&self, params: &Value) -> Option<HarnessEvent> {
-        let turn_id = self.turn_id.clone()?;
         let item = params.get("item")?;
         let item_type = item.get("type").and_then(Value::as_str)?;
         match item_type {
             "commandExecution" | "mcpToolCall" | "dynamicToolCall" => {
+                let turn_id = self.turn_id.clone()?;
                 let status = item.get("status").and_then(Value::as_str);
                 Some(HarnessEvent::ToolCompleted {
                     turn_id,
@@ -146,6 +146,7 @@ impl Normalizer {
                     ok: status != Some("failed") && status != Some("declined"),
                 })
             }
+            "contextCompaction" => Some(HarnessEvent::ContextCompacted),
             _ => None,
         }
     }
@@ -276,5 +277,24 @@ impl ApprovalParams {
             return Value::String(command.clone());
         }
         Value::Null
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Normalizer;
+    use flyco_core::HarnessEvent;
+    use serde_json::json;
+
+    #[test]
+    fn a_completed_context_compaction_is_reported_without_a_turn() {
+        let mut normalizer = Normalizer::new();
+        assert_eq!(
+            normalizer.on_notification(
+                super::method::ITEM_COMPLETED,
+                &json!({ "item": { "id": "compact-1", "type": "contextCompaction" } }),
+            ),
+            vec![HarnessEvent::ContextCompacted]
+        );
     }
 }

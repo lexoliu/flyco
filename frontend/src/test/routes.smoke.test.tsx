@@ -75,6 +75,7 @@ describe("route smoke tests", () => {
   it("renders /sessions/:id as the session shell", () => {
     const { getByText } = renderAt("/sessions/abc-123");
     expect(getByText("abc-123")).toBeInTheDocument();
+    expect(getByText("Compact context")).toBeInTheDocument();
   });
 
   it("renders /settings, redirecting to the MCP tab", async () => {
