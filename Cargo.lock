@@ -4378,8 +4378,7 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 [[package]]
 name = "skyzen"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1706ed589b34d9b1e7d1cddbe8e6544ebb5b157413e984a9b03f1bcfa668613c"
+source = "git+https://github.com/zen-rs/skyzen?rev=ee225eb24d94c36f923ecff14b42c5b6fbf9ad16#ee225eb24d94c36f923ecff14b42c5b6fbf9ad16"
 dependencies = [
  "async-channel 2.5.0",
  "async-fs",
@@ -4434,8 +4433,7 @@ dependencies = [
 [[package]]
 name = "skyzen-cloudflare"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa6a319b411602d12db3b4daa40fb7bfea6a0db7f48270659b8bd1dfa1514637"
+source = "git+https://github.com/zen-rs/skyzen?rev=ee225eb24d94c36f923ecff14b42c5b6fbf9ad16#ee225eb24d94c36f923ecff14b42c5b6fbf9ad16"
 dependencies = [
  "bytes",
  "futures-core",
@@ -4458,8 +4456,7 @@ dependencies = [
 [[package]]
 name = "skyzen-core"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28cf72725dd575712980c9370b77d545f999add9dc0924c17cca1f35b296159e"
+source = "git+https://github.com/zen-rs/skyzen?rev=ee225eb24d94c36f923ecff14b42c5b6fbf9ad16#ee225eb24d94c36f923ecff14b42c5b6fbf9ad16"
 dependencies = [
  "executor-core",
  "http-kit",
@@ -4472,8 +4469,7 @@ dependencies = [
 [[package]]
 name = "skyzen-hyper"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4eb5ca43c33ae5f8ed2654799ce24825924ab8b1efbb50d622c2558ba2d8da4"
+source = "git+https://github.com/zen-rs/skyzen?rev=ee225eb24d94c36f923ecff14b42c5b6fbf9ad16#ee225eb24d94c36f923ecff14b42c5b6fbf9ad16"
 dependencies = [
  "async-io 2.6.0",
  "executor-core",
@@ -4489,8 +4485,7 @@ dependencies = [
 [[package]]
 name = "skyzen-macros"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a7af832b04d0830b703f27a9e3d622149b0449037898265d16fdc7efd8699da"
+source = "git+https://github.com/zen-rs/skyzen?rev=ee225eb24d94c36f923ecff14b42c5b6fbf9ad16#ee225eb24d94c36f923ecff14b42c5b6fbf9ad16"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4501,8 +4496,7 @@ dependencies = [
 [[package]]
 name = "skyzen-manifest"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9f2bcc1383f0caff525a51b41c33ef9c1f9d1bf161a363c000f5f547073f9f2"
+source = "git+https://github.com/zen-rs/skyzen?rev=ee225eb24d94c36f923ecff14b42c5b6fbf9ad16#ee225eb24d94c36f923ecff14b42c5b6fbf9ad16"
 dependencies = [
  "hex",
  "humantime-serde",
@@ -4515,8 +4509,7 @@ dependencies = [
 [[package]]
 name = "skyzen-services"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "584c90b6e8ade6f9c1aaa31f71fe4d7e66d83169ca10ded2b59134dc1b9e0802"
+source = "git+https://github.com/zen-rs/skyzen?rev=ee225eb24d94c36f923ecff14b42c5b6fbf9ad16#ee225eb24d94c36f923ecff14b42c5b6fbf9ad16"
 dependencies = [
  "base64",
  "bigdecimal",
@@ -4538,8 +4531,7 @@ dependencies = [
 [[package]]
 name = "skyzen-test"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03a6d39ed1b60a0d2f8ece7ef109755421621882a9860f526dac69a8e06b12ec"
+source = "git+https://github.com/zen-rs/skyzen?rev=ee225eb24d94c36f923ecff14b42c5b6fbf9ad16#ee225eb24d94c36f923ecff14b42c5b6fbf9ad16"
 dependencies = [
  "http-kit",
  "insta",
