@@ -3390,6 +3390,48 @@
         }
       }
     },
+    "/v1/sessions/{id}/turn-completed": {
+      "post": {
+        "summary": "flyco_api::app::notify_turn_completed",
+        "operationId": "flyco_api::app::notify_turn_completed",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/turn-failed": {
+      "post": {
+        "summary": "flyco_api::app::notify_turn_failed",
+        "operationId": "flyco_api::app::notify_turn_failed",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/turns": {
       "get": {
         "summary": "Lists a session's turns, oldest first.",
