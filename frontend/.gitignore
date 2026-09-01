@@ -5,6 +5,7 @@ node_modules
 out
 dist
 *.tgz
+public/install/flycod-linux-*
 
 # code coverage
 coverage
