@@ -40,6 +40,9 @@ wasm-bindgen = "0.2"
 # than a feature of one.
 getrandom-0-2.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+zenwave = { workspace = true, features = ["hyper-rustls"] }
+
 [features]
 default = []
 # Native execution of byo-ssh container jobs. See `byo_ssh::execute`.
