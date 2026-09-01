@@ -1,6 +1,11 @@
 import { For, Show, createResource, createSignal } from "solid-js";
 import ProblemNotice from "../../components/ProblemNotice";
-import { listHarnessAccounts, unlinkHarnessAccount, type HarnessKind } from "../../api/client";
+import {
+  listHarnessAccounts,
+  unlinkHarnessAccount,
+  type HarnessAccountView,
+  type HarnessKind,
+} from "../../api/client";
 import styles from "../../components/Panel.module.css";
 
 const HARNESS_LABEL: Record<HarnessKind, string> = {
@@ -16,10 +21,10 @@ export default function HarnessAccountsTab() {
   const [accounts, { refetch }] = createResource(listHarnessAccounts);
   const [unlinkError, setUnlinkError] = createSignal<unknown>(null);
 
-  async function onUnlink(harness: HarnessKind): Promise<void> {
+  async function onUnlink(id: HarnessAccountView["id"]): Promise<void> {
     setUnlinkError(null);
     try {
-      await unlinkHarnessAccount(harness);
+      await unlinkHarnessAccount(id);
       await refetch();
     } catch (err) {
       setUnlinkError(err);
@@ -68,7 +73,7 @@ export default function HarnessAccountsTab() {
                     </p>
                   </div>
                   <div class={styles.itemActions}>
-                    <button type="button" class={styles.dangerButton} onClick={() => void onUnlink(account.harness)}>
+                    <button type="button" class={styles.dangerButton} onClick={() => void onUnlink(account.id)}>
                       Unlink
                     </button>
                   </div>
