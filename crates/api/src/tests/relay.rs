@@ -494,7 +494,11 @@ fn message(text: &str) -> flyco_core::SendMessage {
 }
 
 #[skyzen::test]
-async fn an_active_session_accepts_a_message_and_an_interrupt(ctx: TestContext, kv: Kv, db: Db) {
+async fn an_active_session_accepts_message_interrupt_and_compaction(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
     let client = ctx.client(migrated_router(&db).await);
     let user = seed_user(&db).await;
     let caller = sign_in(&kv, &db, user.clone()).await;
@@ -516,6 +520,13 @@ async fn an_active_session_accepts_a_message_and_an_interrupt(ctx: TestContext, 
         .send()
         .await
         .assert_status(202);
+
+    client
+        .post(&format!("/v1/sessions/{session}/compact"))
+        .bearer(&caller.token)
+        .send()
+        .await
+        .assert_status(202);
 }
 
 #[skyzen::test]
@@ -532,6 +543,7 @@ async fn a_session_that_is_not_running_refuses_to_be_driven(ctx: TestContext, kv
             Some(message("hello")),
         ),
         (format!("/v1/sessions/{session}/interrupt"), None),
+        (format!("/v1/sessions/{session}/compact"), None),
     ] {
         let request = client.post(&path).bearer(&caller.token);
         let refused = match &body {
@@ -582,6 +594,7 @@ async fn another_users_session_cannot_be_driven_or_read(ctx: TestContext, kv: Kv
     for path in [
         format!("/v1/sessions/{session}/messages"),
         format!("/v1/sessions/{session}/interrupt"),
+        format!("/v1/sessions/{session}/compact"),
     ] {
         client
             .post(&path)

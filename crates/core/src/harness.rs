@@ -158,14 +158,13 @@ pub const fn availability(harness: HarnessKind, feature: Feature) -> Availabilit
             | Feature::ContextWindowDisplay
             | Feature::GoalMode
             | Feature::AutoMode
+            | Feature::Compact
             | Feature::BackgroundTasks
             | Feature::AutoContinueAtUsageLimit,
         ) => Availability::Supported,
         (_, Feature::SideChat) => Availability::HarnessLimitation,
-        (_, Feature::DynamicWorkflows | Feature::Settings | Feature::Compact) => {
-            Availability::Planned
-        }
-        (HarnessKind::ClaudeCode, Feature::Advisor | Feature::Monitor) => Availability::Planned,
+        (_, Feature::DynamicWorkflows | Feature::Settings)
+        | (HarnessKind::ClaudeCode, Feature::Advisor | Feature::Monitor) => Availability::Planned,
         (HarnessKind::Codex, Feature::Advisor | Feature::Monitor) => Availability::NotApplicable,
         (_, Feature::RemoteControl | Feature::Resume) => Availability::Disabled,
         (_, Feature::Skills | Feature::Mcp | Feature::Memory) => Availability::Takeover,
@@ -378,6 +377,13 @@ pub enum HarnessEvent {
         /// harness reports one.
         resets_at_unix: Option<u64>,
     },
+    /// The harness compacted the conversation context successfully.
+    ContextCompacted,
+    /// The harness could not compact the conversation context.
+    ContextCompactionFailed {
+        /// Harness-reported reason.
+        error: String,
+    },
 }
 
 #[cfg(test)]
@@ -446,6 +452,7 @@ mod tests {
             Feature::ContextWindowDisplay,
             Feature::GoalMode,
             Feature::AutoMode,
+            Feature::Compact,
             Feature::BackgroundTasks,
             Feature::AutoContinueAtUsageLimit,
         ] {

@@ -252,6 +252,16 @@
   cursor: pointer;
 }
 
+.compactButton {
+  border: var(--border-width) solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
 .sendButton {
   border: none;
   background: var(--color-accent);
@@ -264,6 +274,7 @@
 }
 
 .sendButton:disabled,
+.compactButton:disabled,
 .interruptButton:disabled {
   opacity: 0.5;
   cursor: not-allowed;
