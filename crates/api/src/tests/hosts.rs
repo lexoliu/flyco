@@ -228,6 +228,9 @@ async fn an_enrolled_machine_is_a_provider_account_offering_itself(
     assert_eq!(accounts.len(), 1);
     assert_eq!(accounts[0].kind, flyco_core::CloudProviderKind::Host);
     assert_eq!(accounts[0].label, SSH_HOST);
+    // The account says *which* machine it is, so a client holding both
+    // lists joins them on an id rather than guessing from the kind.
+    assert_eq!(accounts[0].host_id, Some(enrolled.host_id));
 
     // Offline until it connects, and therefore offering nothing yet: a
     // machine flyco cannot reach is not one to put on the slider.
@@ -358,6 +361,19 @@ async fn a_machine_can_be_renamed_and_is_only_ever_the_callers(ctx: TestContext,
         "the machine under the desk"
     );
 
+    // The account the machine provisions through is renamed with it, in one
+    // write: the compute chip labels a machine by its account, so an account
+    // left behind would call the same machine something its card does not.
+    let accounts: Vec<ProviderAccountView> = client
+        .get("/v1/providers")
+        .bearer(&session)
+        .send()
+        .await
+        .json();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].host_id, Some(enrolled.host_id));
+    assert_eq!(accounts[0].label, "the machine under the desk");
+
     let empty = client
         .patch(&path)
         .bearer(&session)
@@ -367,6 +383,29 @@ async fn a_machine_can_be_renamed_and_is_only_ever_the_callers(ctx: TestContext,
         .send()
         .await;
     empty.assert_status(422);
+
+    // A refused rename moves neither row: the label the machine and its
+    // account carry is still the one that landed.
+    assert_eq!(
+        client
+            .get(&path)
+            .bearer(&session)
+            .send()
+            .await
+            .json::<HostView>()
+            .label,
+        "the machine under the desk"
+    );
+    assert_eq!(
+        client
+            .get("/v1/providers")
+            .bearer(&session)
+            .send()
+            .await
+            .json::<Vec<ProviderAccountView>>()[0]
+            .label,
+        "the machine under the desk"
+    );
 
     // Somebody else's machine is indistinguishable from one that is not
     // there.
@@ -676,6 +715,9 @@ async fn removing_a_machine_with_a_session_on_it_is_refused_until_forced(
         "the refusal counts what is still running: {}",
         problem.detail
     );
+    // And it counts in a member of its own (RFC 9457 §3.2), so the card that
+    // offers `Remove anyway` reads a number rather than parsing the sentence.
+    assert_eq!(problem.extensions.active_sessions, Some(1));
     assert_eq!(state_of(&db, caller.host).await, HostState::Online);
 
     // Forced: the containers are stopped, their volumes kept, and the token

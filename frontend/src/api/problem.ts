@@ -25,6 +25,17 @@ export class ApiProblem extends Error {
   readonly title: string;
   readonly status: number;
   readonly detail: string;
+  /**
+   * The document exactly as it arrived, extension members included.
+   *
+   * RFC 9457 §3.2 lets a problem type carry typed members of its own beside
+   * the four every document has — `active_sessions` on
+   * `problems/host-has-active-sessions`, for instance — and those are the
+   * facts a caller acts on rather than renders. Keeping the whole document
+   * is what lets a caller read one without this class having to grow a
+   * field per problem type.
+   */
+  readonly document: Problem;
 
   constructor(problem: Problem) {
     super(`${problem.title}: ${problem.detail}`);
@@ -33,6 +44,7 @@ export class ApiProblem extends Error {
     this.title = problem.title;
     this.status = problem.status;
     this.detail = problem.detail;
+    this.document = problem;
   }
 }
 

@@ -123,9 +123,24 @@ pub struct ProviderAccountView {
     /// Which provider it is.
     pub kind: CloudProviderKind,
     /// Label supplied when it was linked.
+    ///
+    /// For a machine the user owns this is the host's own label, kept in
+    /// step by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so
+    /// a rename that moved only one of them would leave the compute chip
+    /// calling a machine something its card no longer does.
     pub label: String,
     /// When it was linked, seconds since the Unix epoch.
     pub linked_at_unix: u64,
+    /// The enrolled machine this account *is*, when it is one.
+    ///
+    /// `None` for every cloud account. A host is a provider account
+    /// (docs/host-enrollment.md), which is what keeps the catalog, session
+    /// creation and the usage panel free of a special case for it — but a
+    /// client holding both `GET /v1/hosts` and `GET /v1/providers` still has
+    /// to know which account is which machine, and an id is the only honest
+    /// way to say so. Inferring it from [`CloudProviderKind::Host`] would
+    /// name the kind and not the machine.
+    pub host_id: Option<HostId>,
 }
 
 /// Answer of `GET /v1/providers/aws/iam-policy`.

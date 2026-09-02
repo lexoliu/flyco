@@ -246,7 +246,9 @@ authenticates itself.
 The compute card for a host states `your hardware` where a cloud account
 states a price, and carries `Rename` and `Remove`. A removal the control
 plane refuses with `host-has-active-sessions` names how many sessions are
-still running there and offers `Remove anyway`, which passes `force`.
+still running there — read off the refusal's `active_sessions` extension
+member (RFC 9457 §3.2), never parsed out of its `detail` — and offers
+`Remove anyway`, which passes `force`.
 
 ### 7.6 Catalog curation
 

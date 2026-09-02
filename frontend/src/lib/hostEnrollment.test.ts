@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EnrollmentToken, HostView } from "../api/client";
+import { ApiProblem, type Problem } from "../api/problem";
 import {
   IDLE,
   POLL_INTERVAL_SECONDS,
@@ -41,14 +42,21 @@ const HOST: HostView = {
   created_at_unix: EXPIRES_AT - 600,
 };
 
-/** A problem document as the API answers with one. */
-function problem(slug: string, detail: string): Record<string, unknown> {
-  return {
+/**
+ * A refusal exactly as the client hands one to the UI.
+ *
+ * An `ApiProblem` rather than a bare object: `src/api/problem.ts` is what
+ * turns an `application/problem+json` response into an error, so a test that
+ * passed a plain object would be asserting against a shape nothing produces.
+ */
+function problem(slug: string, detail: string, extensions: Partial<Problem> = {}): ApiProblem {
+  return new ApiProblem({
     type: `https://flyco.dev/problems/${slug}`,
     title: "Conflict",
     status: 409,
     detail,
-  };
+    ...extensions,
+  });
 }
 
 /** The state the wizard is in once a command is on screen. */
@@ -183,17 +191,29 @@ describe("classifying a failure", () => {
     }
   });
 
-  it("reads the session count off the refusal that carries it", () => {
+  it("reads the session count off the member the refusal carries", () => {
     expect(
       activeSessions(
-        problem("host-has-active-sessions", "3 session(s) still run on this host; pass force"),
+        problem("host-has-active-sessions", "3 session(s) still run on this host; pass force", {
+          active_sessions: 3,
+        }),
       ),
     ).toBe(3);
   });
 
-  it("invents no number when the refusal does not state one", () => {
+  it("reads the member rather than the sentence around it", () => {
+    // `detail` is written for a person and free to be reworded; the number
+    // a client acts on is the extension member and nothing else.
+    expect(
+      activeSessions(
+        problem("host-has-active-sessions", "plenty of them", { active_sessions: 12 }),
+      ),
+    ).toBe(12);
+  });
+
+  it("invents no number when the refusal states none", () => {
     expect(activeSessions(problem("host-has-active-sessions", "sessions still run"))).toBeNull();
-    expect(activeSessions(problem("host-not-found", "7 of them"))).toBeNull();
+    expect(activeSessions(problem("host-not-found", "7 of them", { active_sessions: 7 }))).toBeNull();
   });
 });
 

@@ -2707,6 +2707,17 @@
                       "linked_at_unix"
                     ],
                     "properties": {
+                      "host_id": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/Uuid",
+                            "description": "The enrolled machine this account *is*, when it is one.\n\n`None` for every cloud account. A host is a provider account\n(docs/host-enrollment.md), which is what keeps the catalog, session\ncreation and the usage panel free of a special case for it — but a\nclient holding both `GET /v1/hosts` and `GET /v1/providers` still has\nto know which account is which machine, and an id is the only honest\nway to say so. Inferring it from [`CloudProviderKind::Host`] would\nname the kind and not the machine."
+                          }
+                        ]
+                      },
                       "id": {
                         "$ref": "#/components/schemas/Uuid",
                         "description": "Identifier used to unlink the account."
@@ -2717,7 +2728,7 @@
                       },
                       "label": {
                         "type": "string",
-                        "description": "Label supplied when it was linked."
+                        "description": "Label supplied when it was linked.\n\nFor a machine the user owns this is the host's own label, kept in\nstep by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so\na rename that moved only one of them would leave the compute chip\ncalling a machine something its card no longer does."
                       },
                       "linked_at_unix": {
                         "type": "integer",
@@ -2778,6 +2789,17 @@
                     "linked_at_unix"
                   ],
                   "properties": {
+                    "host_id": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/Uuid",
+                          "description": "The enrolled machine this account *is*, when it is one.\n\n`None` for every cloud account. A host is a provider account\n(docs/host-enrollment.md), which is what keeps the catalog, session\ncreation and the usage panel free of a special case for it — but a\nclient holding both `GET /v1/hosts` and `GET /v1/providers` still has\nto know which account is which machine, and an id is the only honest\nway to say so. Inferring it from [`CloudProviderKind::Host`] would\nname the kind and not the machine."
+                        }
+                      ]
+                    },
                     "id": {
                       "$ref": "#/components/schemas/Uuid",
                       "description": "Identifier used to unlink the account."
@@ -2788,7 +2810,7 @@
                     },
                     "label": {
                       "type": "string",
-                      "description": "Label supplied when it was linked."
+                      "description": "Label supplied when it was linked.\n\nFor a machine the user owns this is the host's own label, kept in\nstep by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so\na rename that moved only one of them would leave the compute chip\ncalling a machine something its card no longer does."
                     },
                     "linked_at_unix": {
                       "type": "integer",
@@ -8168,32 +8190,55 @@
         ]
       },
       "Problem": {
-        "type": "object",
-        "description": "An RFC 9457 problem detail document.\n\n`instance` is deliberately absent: flyco has no per-occurrence URI to\npoint at yet.",
-        "required": [
-          "type",
-          "title",
-          "status",
-          "detail"
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ProblemExtensions",
+            "description": "The typed facts this problem type carries beyond its prose.\n\nFlattened, because RFC 9457 §3.2 puts extension members at the top\nlevel of the document rather than under an object of their own."
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "title",
+              "status",
+              "detail"
+            ],
+            "properties": {
+              "detail": {
+                "type": "string",
+                "description": "Human-readable explanation of this particular occurrence."
+              },
+              "status": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The HTTP status code, repeated in the body as RFC 9457 advises.",
+                "minimum": 0
+              },
+              "title": {
+                "type": "string",
+                "description": "Short, human-readable summary of the problem type."
+              },
+              "type": {
+                "type": "string",
+                "description": "URI identifying the problem type, or [`ABOUT_BLANK`] when the status\ncode carries all the meaning there is."
+              }
+            }
+          }
         ],
+        "description": "An RFC 9457 problem detail document.\n\n`instance` is deliberately absent: flyco has no per-occurrence URI to\npoint at yet."
+      },
+      "ProblemExtensions": {
+        "type": "object",
+        "description": "The extension members RFC 9457 §3.2 lets a problem document carry.\n\nA refusal often knows a number the client wants to act on, and prose is\nthe wrong place to keep it: a sentence is written for a person, and a\nclient that reads one back out is parsing English to find an integer.\nSo every such fact is a member of its own, typed here and flattened onto\nthe document beside `type`, `title`, `status` and `detail`.\n\nOne struct rather than a map of `serde_json::Value`: which members exist\nis a fact about this API, the generated OpenAPI document states each of\nthem with its type, and a member that is dropped or renamed fails the\nbuild instead of quietly disappearing from the wire.\n\nEvery member is optional, because each belongs to the one problem type\nthat defines it and is absent everywhere else — RFC 9457's rule that a\nconsumer must ignore extensions it does not recognise.",
         "properties": {
-          "detail": {
-            "type": "string",
-            "description": "Human-readable explanation of this particular occurrence."
-          },
-          "status": {
-            "type": "integer",
+          "active_sessions": {
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int32",
-            "description": "The HTTP status code, repeated in the body as RFC 9457 advises.",
+            "description": "How many sessions are still running, on\n`problems/host-has-active-sessions`.\n\nThe count the refusal is *about*: removing a host stops the work on\nit, so the confirmation the user is shown has to state how much work\nthat is.",
             "minimum": 0
-          },
-          "title": {
-            "type": "string",
-            "description": "Short, human-readable summary of the problem type."
-          },
-          "type": {
-            "type": "string",
-            "description": "URI identifying the problem type, or [`ABOUT_BLANK`] when the status\ncode carries all the meaning there is."
           }
         }
       },
@@ -8207,6 +8252,17 @@
           "linked_at_unix"
         ],
         "properties": {
+          "host_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Uuid",
+                "description": "The enrolled machine this account *is*, when it is one.\n\n`None` for every cloud account. A host is a provider account\n(docs/host-enrollment.md), which is what keeps the catalog, session\ncreation and the usage panel free of a special case for it — but a\nclient holding both `GET /v1/hosts` and `GET /v1/providers` still has\nto know which account is which machine, and an id is the only honest\nway to say so. Inferring it from [`CloudProviderKind::Host`] would\nname the kind and not the machine."
+              }
+            ]
+          },
           "id": {
             "$ref": "#/components/schemas/Uuid",
             "description": "Identifier used to unlink the account."
@@ -8217,7 +8273,7 @@
           },
           "label": {
             "type": "string",
-            "description": "Label supplied when it was linked."
+            "description": "Label supplied when it was linked.\n\nFor a machine the user owns this is the host's own label, kept in\nstep by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so\na rename that moved only one of them would leave the compute chip\ncalling a machine something its card no longer does."
           },
           "linked_at_unix": {
             "type": "integer",

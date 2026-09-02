@@ -20,14 +20,26 @@ const HOST: HostView = {
   created_at_unix: 1_789_991_000,
 };
 
-/** A response carrying an RFC 9457 problem, as the control plane answers. */
-function problemResponse(status: number, slug: string, detail: string): Response {
+/**
+ * A response carrying an RFC 9457 problem, as the control plane answers.
+ *
+ * `extensions` are the typed members a problem type defines beside the four
+ * every document has (RFC 9457 §3.2) — `active_sessions` on
+ * `host-has-active-sessions`.
+ */
+function problemResponse(
+  status: number,
+  slug: string,
+  detail: string,
+  extensions: Record<string, unknown> = {},
+): Response {
   return new Response(
     JSON.stringify({
       type: `https://flyco.dev/problems/${slug}`,
       title: "Conflict",
       status,
       detail,
+      ...extensions,
     }),
     { status, headers: { "content-type": "application/problem+json" } },
   );
@@ -113,6 +125,7 @@ describe("HostCard", () => {
           409,
           "host-has-active-sessions",
           "2 session(s) still run on this host; pass force to stop them",
+          { active_sessions: 2 },
         ),
       )
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
@@ -137,6 +150,7 @@ describe("HostCard", () => {
         409,
         "host-has-active-sessions",
         "1 session(s) still run on this host; pass force to stop them",
+        { active_sessions: 1 },
       ),
     );
 
@@ -149,6 +163,32 @@ describe("HostCard", () => {
     expect(queryByRole("button", { name: "Remove anyway" })).toBeNull();
     expect(onChanged).not.toHaveBeenCalled();
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts what the refusal states, not what its sentence says", async () => {
+    // The card reads the `active_sessions` member; `detail` is prose for a
+    // person and nothing parses it.
+    vi.mocked(fetch).mockResolvedValueOnce(
+      problemResponse(409, "host-has-active-sessions", "work is still running here", {
+        active_sessions: 4,
+      }),
+    );
+
+    const { getByRole, findByText } = mount();
+    getByRole("button", { name: "Remove" }).click();
+
+    expect(await findByText(/4 sessions are still running on mercury/)).toBeInTheDocument();
+  });
+
+  it("states no number when the refusal carries none", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      problemResponse(409, "host-has-active-sessions", "sessions are still running"),
+    );
+
+    const { getByRole, findByText } = mount();
+    getByRole("button", { name: "Remove" }).click();
+
+    expect(await findByText(/Sessions are still running on mercury/)).toBeInTheDocument();
   });
 
   it("shows any other refusal as what it was", async () => {

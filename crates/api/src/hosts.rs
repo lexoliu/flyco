@@ -42,7 +42,7 @@ use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::sql;
 use skyzen::utils::{Json, State};
-use skyzen_services::Db;
+use skyzen_services::{BatchStatement, Db};
 
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
@@ -433,7 +433,18 @@ pub async fn arrived(db: &Db, host: HostId) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// Renames one of the caller's hosts.
+/// Renames one of the caller's hosts, and the account it provisions
+/// through.
+///
+/// A machine somebody owns is two rows: the host it is, and the provider
+/// account it offers itself as. Both carry the name — the card reads the
+/// host's, the compute chip's account selector reads the account's — so a
+/// rename that wrote only one of them would leave the same machine called
+/// two different things depending on where you looked at it.
+///
+/// One atomic batch rather than two writes, because a rename that landed
+/// halfway is exactly the drift this fixes: `execute_batch` is a real
+/// transaction on the native backend and D1's own `batch()` on the Worker.
 ///
 /// # Errors
 ///
@@ -453,9 +464,16 @@ pub async fn rename(
         });
     }
     let row = load(db, user, id).await?;
-    sql!(db, "UPDATE hosts SET label = {label} WHERE id = {row.id}")
-        .execute()
-        .await?;
+
+    db.execute_batch(vec![
+        BatchStatement::new("UPDATE hosts SET label = ? WHERE id = ?")
+            .bind(label)
+            .bind(row.id),
+        BatchStatement::new("UPDATE provider_accounts SET label = ? WHERE host_id = ?")
+            .bind(label)
+            .bind(row.id),
+    ])
+    .await?;
 
     refresh(
         db,
@@ -555,7 +573,7 @@ pub async fn remove(
     let live = machines::live_on_account(db, account).await?;
     if !live.is_empty() && !force {
         return Err(ApiError::HostHasActiveSessions {
-            sessions: u64::try_from(live.len()).unwrap_or(u64::MAX),
+            sessions: u32::try_from(live.len()).unwrap_or(u32::MAX),
         });
     }
 

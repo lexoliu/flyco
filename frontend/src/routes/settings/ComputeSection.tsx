@@ -13,8 +13,14 @@
  * different kind of thing. They come from `GET /v1/hosts` rather than from
  * readiness because a host's state, facts and label live on the host row;
  * the provider account beside it carries only the link. That is also why
- * the `host` accounts are dropped from the cloud run here: they are already
- * on screen, as the machine itself.
+ * the machines' accounts are dropped from the cloud run here: they are
+ * already on screen, as the machine itself.
+ *
+ * Which accounts those are is read off `host_id`, which names the machine an
+ * account *is*. The kind would only say that some machine is behind it, and
+ * a page holding both lists has to join them on an id — that is what lets a
+ * card that needs its account (the compute chip's selector, which labels a
+ * machine by the account's own label) find exactly one.
  *
  * Adding an account is a link to `/connect/compute` rather than a form here.
  * The wizards live on that route, and settings is not a second place to paste
@@ -38,8 +44,20 @@ export default function ComputeSection() {
   const [actionError, setActionError] = createSignal<unknown>(null);
   const [spot, setSpot] = createSignal(spotPreference());
 
-  /** The accounts a credential was pasted for, which is every card but a host. */
-  const clouds = createMemo(() => readiness.compute().filter((account) => account.kind !== "host"));
+  /** The machines on screen, by the account each one provisions through. */
+  const machines = createMemo(() => new Set((hosts() ?? []).map((host) => host.id)));
+
+  /**
+   * The accounts a credential was pasted for, which is every account that is
+   * not one of the machines already carded above.
+   */
+  const clouds = createMemo(() => {
+    const carded = machines();
+    return readiness.compute().filter((account) => {
+      const host = account.host_id ?? null;
+      return host === null || !carded.has(host);
+    });
+  });
 
   async function unlink(id: string): Promise<void> {
     setActionError(null);

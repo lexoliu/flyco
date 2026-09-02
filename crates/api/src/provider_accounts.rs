@@ -10,8 +10,9 @@
 
 use askama::Template;
 use flyco_core::{
-    AwsIamPolicy, CloudProviderKind, CloudUsageView, CurrentUser, LinkProvider, ProviderAccountId,
-    ProviderAccountView, ProviderBonusHint, ProviderCredentials, QuickstartAnswers, UserId,
+    AwsIamPolicy, CloudProviderKind, CloudUsageView, CurrentUser, HostId, LinkProvider,
+    ProviderAccountId, ProviderAccountView, ProviderBonusHint, ProviderCredentials,
+    QuickstartAnswers, UserId,
 };
 use flyco_provider::aws::iam;
 use flyco_provider::azure::RESOURCE_GROUP;
@@ -40,6 +41,7 @@ struct AccountRow {
     kind: CloudProviderKind,
     label: String,
     linked_at_unix: u64,
+    host_id: Option<HostId>,
 }
 
 impl From<AccountRow> for ProviderAccountView {
@@ -49,6 +51,7 @@ impl From<AccountRow> for ProviderAccountView {
             kind: row.kind,
             label: row.label,
             linked_at_unix: row.linked_at_unix,
+            host_id: row.host_id,
         }
     }
 }
@@ -76,7 +79,7 @@ async fn list(db: &Db, user: UserId) -> Result<Vec<ProviderAccountView>, ApiErro
     let removed = flyco_core::HostState::Removed;
     let rows: Vec<AccountRow> = sql!(
         db,
-        "SELECT provider_accounts.id, kind, provider_accounts.label, linked_at_unix \
+        "SELECT provider_accounts.id, kind, provider_accounts.label, linked_at_unix, host_id \
          FROM provider_accounts \
          LEFT JOIN hosts ON hosts.id = provider_accounts.host_id \
          WHERE provider_accounts.user_id = {user} \
@@ -258,7 +261,7 @@ pub(crate) async fn create(
     user: UserId,
     label: String,
     credentials: &ProviderCredentials,
-    host: Option<flyco_core::HostId>,
+    host: Option<HostId>,
 ) -> Result<ProviderAccountView, ApiError> {
     create_with(db, config, user, label, credentials, None, host).await
 }
@@ -270,7 +273,7 @@ async fn create_with(
     label: String,
     credentials: &ProviderCredentials,
     resource_group: Option<String>,
-    host: Option<flyco_core::HostId>,
+    host: Option<HostId>,
 ) -> Result<ProviderAccountView, ApiError> {
     let kind = credentials.kind();
     let sealed = config.token_cipher().seal(
@@ -297,6 +300,7 @@ async fn create_with(
         kind,
         label,
         linked_at_unix: linked_at,
+        host_id: host,
     })
 }
 
@@ -317,7 +321,7 @@ async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, Api
     // one that does not exist.
     let owned: Option<AccountRow> = sql!(
         db,
-        "SELECT id, kind, label, linked_at_unix FROM provider_accounts \
+        "SELECT id, kind, label, linked_at_unix, host_id FROM provider_accounts \
          WHERE id = {id} AND user_id = {user}"
     )
     .fetch_optional()

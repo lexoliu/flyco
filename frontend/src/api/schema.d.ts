@@ -3252,7 +3252,7 @@ export interface components {
          *     `instance` is deliberately absent: flyco has no per-occurrence URI to
          *     point at yet.
          */
-        Problem: {
+        Problem: components["schemas"]["ProblemExtensions"] & {
             /** @description Human-readable explanation of this particular occurrence. */
             detail: string;
             /**
@@ -3268,13 +3268,51 @@ export interface components {
              */
             type: string;
         };
+        /**
+         * @description The extension members RFC 9457 §3.2 lets a problem document carry.
+         *
+         *     A refusal often knows a number the client wants to act on, and prose is
+         *     the wrong place to keep it: a sentence is written for a person, and a
+         *     client that reads one back out is parsing English to find an integer.
+         *     So every such fact is a member of its own, typed here and flattened onto
+         *     the document beside `type`, `title`, `status` and `detail`.
+         *
+         *     One struct rather than a map of `serde_json::Value`: which members exist
+         *     is a fact about this API, the generated OpenAPI document states each of
+         *     them with its type, and a member that is dropped or renamed fails the
+         *     build instead of quietly disappearing from the wire.
+         *
+         *     Every member is optional, because each belongs to the one problem type
+         *     that defines it and is absent everywhere else — RFC 9457's rule that a
+         *     consumer must ignore extensions it does not recognise.
+         */
+        ProblemExtensions: {
+            /**
+             * Format: int32
+             * @description How many sessions are still running, on
+             *     `problems/host-has-active-sessions`.
+             *
+             *     The count the refusal is *about*: removing a host stops the work on
+             *     it, so the confirmation the user is shown has to state how much work
+             *     that is.
+             */
+            active_sessions?: number | null;
+        };
         /** @description One row of `GET /v1/providers`. */
         ProviderAccountView: {
+            host_id?: null | components["schemas"]["Uuid"];
             /** @description Identifier used to unlink the account. */
             id: components["schemas"]["Uuid"];
             /** @description Which provider it is. */
             kind: components["schemas"]["CloudProviderKind"];
-            /** @description Label supplied when it was linked. */
+            /**
+             * @description Label supplied when it was linked.
+             *
+             *     For a machine the user owns this is the host's own label, kept in
+             *     step by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so
+             *     a rename that moved only one of them would leave the compute chip
+             *     calling a machine something its card no longer does.
+             */
             label: string;
             /**
              * Format: int64
@@ -5566,11 +5604,19 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        host_id?: null | components["schemas"]["Uuid"];
                         /** @description Identifier used to unlink the account. */
                         id: components["schemas"]["Uuid"];
                         /** @description Which provider it is. */
                         kind: components["schemas"]["CloudProviderKind"];
-                        /** @description Label supplied when it was linked. */
+                        /**
+                         * @description Label supplied when it was linked.
+                         *
+                         *     For a machine the user owns this is the host's own label, kept in
+                         *     step by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so
+                         *     a rename that moved only one of them would leave the compute chip
+                         *     calling a machine something its card no longer does.
+                         */
                         label: string;
                         /**
                          * Format: int64
@@ -5611,11 +5657,19 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        host_id?: null | components["schemas"]["Uuid"];
                         /** @description Identifier used to unlink the account. */
                         id: components["schemas"]["Uuid"];
                         /** @description Which provider it is. */
                         kind: components["schemas"]["CloudProviderKind"];
-                        /** @description Label supplied when it was linked. */
+                        /**
+                         * @description Label supplied when it was linked.
+                         *
+                         *     For a machine the user owns this is the host's own label, kept in
+                         *     step by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so
+                         *     a rename that moved only one of them would leave the compute chip
+                         *     calling a machine something its card no longer does.
+                         */
                         label: string;
                         /**
                          * Format: int64

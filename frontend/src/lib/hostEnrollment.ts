@@ -15,6 +15,7 @@
  * `src/lib/codexDevice.ts`, which is the same shape of problem.
  */
 import type { EnrollmentToken, HostView } from "../api/client";
+import { ApiProblem, type Problem } from "../api/problem";
 
 /**
  * How often the wizard asks whether the machine has arrived.
@@ -51,16 +52,21 @@ export type EnrollmentEvent =
 /** The state the wizard opens in. */
 export const IDLE: Enrollment = { step: "idle" };
 
-/** A problem document, as far as this module needs to read one. */
-interface ProblemLike {
-  type?: unknown;
-  detail?: unknown;
+/**
+ * The RFC 9457 document behind a failure, when there is one.
+ *
+ * `src/api/problem.ts` is the only thing that builds one of these: every
+ * REST call goes through it, so an error either is an [`ApiProblem`] and
+ * carries a document, or it is a network failure, an unparseable response,
+ * or a bug — none of which this module has an opinion about.
+ */
+function problemOf(error: unknown): Problem | null {
+  return error instanceof ApiProblem ? error.document : null;
 }
 
 /** The `type` URI of an error, when it carries one. */
 function problemType(error: unknown): string | null {
-  const type = (error as ProblemLike | null)?.type;
-  return typeof type === "string" ? type : null;
+  return problemOf(error)?.type ?? null;
 }
 
 /**
@@ -153,19 +159,19 @@ export function hasExpired(state: Enrollment, now: number): boolean {
  * How many sessions a refused removal named, or `null` when the refusal did
  * not say.
  *
- * `host-has-active-sessions` carries its count in the problem's `detail`
- * ("3 session(s) still run on this host…") rather than as a member of its
- * own, so this reads the number off the front of that sentence. A detail in
- * any other shape yields `null` and the card says that sessions are running
- * without inventing a number.
+ * `host-has-active-sessions` states the count as the `active_sessions`
+ * extension member of its problem document (RFC 9457 §3.2), so this reads a
+ * number rather than parsing the sentence in `detail` — which is written for
+ * a person and free to be reworded. A refusal that carries no member yields
+ * `null` and the card says that sessions are running without inventing a
+ * number.
  */
 export function activeSessions(error: unknown): number | null {
-  if (problemType(error)?.endsWith("/host-has-active-sessions") !== true) {
+  const problem = problemOf(error);
+  if (problem === null || !problem.type.endsWith("/host-has-active-sessions")) {
     return null;
   }
-  const detail = (error as ProblemLike).detail;
-  const match = typeof detail === "string" ? /^(\d+)\b/.exec(detail) : null;
-  return match === null ? null : Number(match[1]);
+  return problem.active_sessions ?? null;
 }
 
 /** Whether `error` is the control plane refusing to remove a busy machine. */
