@@ -13,6 +13,11 @@ export interface NewSessionInput {
    */
   prompt: string;
   repo: string;
+  /**
+   * Branch to work on. Omitted, the control plane records the repository's
+   * default branch, so a session always names the branch it is on.
+   */
+  branch?: string;
   harness: HarnessKind;
   /** Whole-dollar budget limit, as the budget chip sets it. */
   budgetLimitDollars: number;
@@ -39,6 +44,7 @@ export function requestNewSession(input: NewSessionInput): Promise<SessionDetail
   return createSession({
     prompt: input.prompt,
     repo: input.repo,
+    ...(input.branch === undefined ? {} : { branch: input.branch }),
     harness: input.harness,
     budget_limit: dollarsToUsdMicros(input.budgetLimitDollars),
     ...(input.machine === undefined

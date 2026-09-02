@@ -206,6 +206,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/github/repos/{owner}/{name}/branches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lists one repository's branches, default branch first.
+         * @description Lists one repository's branches, default branch first.
+         */
+        get: operations["flyco_api::repos::list_branches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness-accounts": {
         parameters: {
             query?: never;
@@ -1069,6 +1089,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/provisioning-stage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Records a provisioning milestone the session's own machine reached.
+         * @description Records a provisioning milestone the session's own machine reached.
+         *
+         *     The queue announces everything up to the machine existing; everything
+         *     after it is a fact only the daemon holds. Most of those ride the relay,
+         *     but the checkout happens *before* the harness exists and therefore before
+         *     there is a relay socket — so the one stage that cannot be a relay frame
+         *     gets a route (docs/ux.md §9.2).
+         *
+         *     The control plane stamps the time rather than taking the daemon's: a
+         *     session VM with a wrong clock must not be able to put a line of the
+         *     timeline in 1970.
+         */
+        post: operations["flyco_api::app::report_provisioning_stage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/relay-ticket": {
         parameters: {
             query?: never;
@@ -1580,6 +1630,46 @@ export interface components {
              */
             hours: number;
         };
+        /** @description Git branch name */
+        BranchName: string;
+        /**
+         * @description One page of `GET /v1/github/repos/{owner}/{name}/branches`.
+         *
+         *     The default branch is the first row of the first page and appears on no
+         *     other page, so a picker opens on the branch a session would otherwise
+         *     take without reading to the end of a repository with two hundred of them.
+         *
+         *     The cursor is opaque: it names a position in GitHub's own listing, and a
+         *     client that stores it must hand it back unread.
+         */
+        BranchPage: {
+            /** @description The branches, default first and the rest as GitHub orders them. */
+            branches: components["schemas"]["BranchSummary"][];
+            /** @description Cursor to pass as `cursor` for the next page, or `None` at the end. */
+            next_cursor?: string | null;
+        };
+        /** @description Asks for one page of a repository's branches. */
+        BranchQuery: {
+            /**
+             * @description Cursor from a previous page's `next_cursor`. Omitted starts at the
+             *     first page, whose first row is the repository's default branch.
+             */
+            cursor?: string | null;
+        };
+        /** @description One row of `GET /v1/github/repos/{owner}/{name}/branches`. */
+        BranchSummary: {
+            /**
+             * @description Whether this is the repository's default branch.
+             *
+             *     Carried rather than worked out by the client: the first row of the
+             *     first page *is* the default branch, and a client deriving that for
+             *     itself would be repeating the question the control plane already
+             *     asked GitHub.
+             */
+            is_default: boolean;
+            /** @description The branch, as git spells it. */
+            name: components["schemas"]["BranchName"];
+        };
         /**
          * @description How far through the budget the session is. Monotonically increasing.
          * @enum {string}
@@ -1728,6 +1818,17 @@ export interface components {
         };
         /** @description Request body of `POST /v1/sessions`. */
         CreateSession: {
+            /**
+             * @description Branch to check out. Untyped for the same reason as
+             *     [`repo`](Self::repo): the control plane parses it into a
+             *     [`BranchName`](crate::repo::BranchName) and refuses anything git
+             *     would.
+             *
+             *     Omitted, the control plane asks GitHub for the repository's default
+             *     branch and records *that*, so a session always names the branch it
+             *     works on rather than leaving every later reader to guess.
+             */
+            branch?: string | null;
             /** @description Spending limit for the whole session. */
             budget_limit: components["schemas"]["Usd"];
             /** @description Which coding harness drives the session. */
@@ -2445,6 +2546,21 @@ export interface components {
             user: string;
         };
         /**
+         * @description How far a session's machine has got towards running an agent.
+         *
+         *     Provisioning takes minutes, and a spinner for those minutes tells the
+         *     user nothing about whether anything is wrong. The stages are the five
+         *     milestones flyco can actually observe, in the order they happen, and the
+         *     session page renders them as a timeline inside the transcript
+         *     (docs/ux.md §9.2).
+         *
+         *     Who announces which is decided by who can see it: the control plane's
+         *     provisioning queue owns everything up to the machine existing, and the
+         *     daemon on that machine owns everything after it boots.
+         * @enum {string}
+         */
+        ProvisioningStage: "reserving" | "booting" | "installing" | "cloning" | "ready";
+        /**
          * @description The two keys a browser derives for message encryption ([RFC 8291]).
          *
          *     [RFC 8291]: https://www.rfc-editor.org/rfc/rfc8291
@@ -2559,7 +2675,7 @@ export interface components {
         /** @description One row of `GET /v1/github/repos`. */
         RepoSummary: {
             /** @description Branch a session starts from unless the user names another. */
-            default_branch: string;
+            default_branch: components["schemas"]["BranchName"];
             /** @description GitHub's description, when the repository has one. */
             description?: string | null;
             /** @description Whether the repository is private. */
@@ -2572,6 +2688,17 @@ export interface components {
             pushed_at_unix?: number | null;
             /** @description `owner/name`, which is what `POST /v1/sessions` takes. */
             slug: components["schemas"]["RepoSlug"];
+        };
+        /**
+         * @description Request body of `POST /v1/sessions/{id}/provisioning-stage`.
+         *
+         *     The daemon names the milestone; the control plane times it, exactly as it
+         *     times the stages its own provisioning queue announces. A daemon whose
+         *     clock is wrong would otherwise put its line of the timeline in 1970.
+         */
+        ReportProvisioningStage: {
+            /** @description The milestone the machine has reached. */
+            stage: components["schemas"]["ProvisioningStage"];
         };
         /**
          * @description Request body of `POST /v1/sessions/{id}/machine/resize`.
@@ -2614,6 +2741,7 @@ export interface components {
         SessionState: "provisioning" | "active" | "paused" | "interrupted" | "archived" | "failed";
         /** @description A session in a list. */
         SessionSummary: {
+            branch?: null | components["schemas"]["BranchName"];
             /**
              * Format: int64
              * @description When it was created, seconds since the Unix epoch.
@@ -3212,7 +3340,7 @@ export interface operations {
                 content: {
                     "application/json": {
                         /** @description Branch a session starts from unless the user names another. */
-                        default_branch: string;
+                        default_branch: components["schemas"]["BranchName"];
                         /** @description GitHub's description, when the repository has one. */
                         description?: string | null;
                         /** @description Whether the repository is private. */
@@ -3226,6 +3354,36 @@ export interface operations {
                         /** @description `owner/name`, which is what `POST /v1/sessions` takes. */
                         slug: components["schemas"]["RepoSlug"];
                     }[];
+                };
+            };
+        };
+    };
+    "flyco_api::repos::list_branches": {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                owner: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The branches, default first and the rest as GitHub orders them. */
+                        branches: components["schemas"]["BranchSummary"][];
+                        /** @description Cursor to pass as `cursor` for the next page, or `None` at the end. */
+                        next_cursor?: string | null;
+                    };
                 };
             };
         };
@@ -4271,6 +4429,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        branch?: null | components["schemas"]["BranchName"];
                         /**
                          * Format: int64
                          * @description When it was created, seconds since the Unix epoch.
@@ -4315,6 +4474,17 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /**
+                     * @description Branch to check out. Untyped for the same reason as
+                     *     [`repo`](Self::repo): the control plane parses it into a
+                     *     [`BranchName`](crate::repo::BranchName) and refuses anything git
+                     *     would.
+                     *
+                     *     Omitted, the control plane asks GitHub for the repository's default
+                     *     branch and records *that*, so a session always names the branch it
+                     *     works on rather than leaving every later reader to guess.
+                     */
+                    branch?: string | null;
                     /** @description Spending limit for the whole session. */
                     budget_limit: components["schemas"]["Usd"];
                     /** @description Which coding harness drives the session. */
@@ -4950,6 +5120,34 @@ export interface operations {
         responses: {
             /** @description Recorded. The outcome arrives on the session relay, not in this response. */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::report_provisioning_stage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The milestone the machine has reached. */
+                    stage: components["schemas"]["ProvisioningStage"];
+                };
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };

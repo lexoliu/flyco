@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use flyco_core::{DAEMON_TOKEN_PREFIX, HarnessKind, SessionId};
+use flyco_core::{BranchName, DAEMON_TOKEN_PREFIX, HarnessKind, RepoSlug, SessionId};
 use serde::Deserialize;
 use url::Url;
 
@@ -307,6 +307,71 @@ impl ControlPlaneConfig {
     }
 }
 
+/// Who the checkout's commits are authored as.
+///
+/// Flyco's default is to behave as the user rather than as a bot: the clone
+/// is authenticated with the user's own GitHub token, so the commits the
+/// agent writes carry the user's own name and address. Configuring the two
+/// here rather than leaving git to guess is what stops a session VM
+/// authoring commits as `flyco@<hostname>`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitIdentity {
+    /// `user.name` for the checkout.
+    pub name: String,
+    /// `user.email` for the checkout.
+    pub email: String,
+}
+
+/// The repository this session works in, and what authenticates it.
+///
+/// Present on a provisioned session VM; omitted on a developer machine,
+/// where [`DaemonConfig::workdir`] is a directory the developer already
+/// has. A daemon with no `[repo]` clones nothing and works in the directory
+/// it was pointed at.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepoConfig {
+    /// The repository, `owner/name`.
+    pub slug: RepoSlug,
+    /// The branch to check out.
+    pub branch: BranchName,
+    /// The user's GitHub token.
+    ///
+    /// Fed to git through a credential helper that reads it from the
+    /// environment of one child process, so it is never written into a
+    /// remote URL, into `.git/config`, or into a log line. The hand-written
+    /// [`fmt::Debug`] is the other half of that: this structure is exactly
+    /// what a `?config` in a trace would print.
+    pub token: String,
+    /// Who the checkout's commits are authored as.
+    pub identity: GitIdentity,
+}
+
+impl core::fmt::Debug for RepoConfig {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RepoConfig")
+            .field("slug", &self.slug)
+            .field("branch", &self.branch)
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RepoConfig {
+    /// Where the repository is cloned from.
+    ///
+    /// HTTPS rather than SSH because the credential flyco holds is an OAuth
+    /// token, not a key: `https://github.com/owner/name.git` is the one form
+    /// a token can authenticate, and it carries no credential itself — the
+    /// token reaches git through the credential helper instead, so nothing
+    /// on disk or in a process listing ever holds it.
+    #[must_use]
+    pub fn remote_url(&self) -> String {
+        format!("https://github.com/{}.git", self.slug)
+    }
+}
+
 /// Everything `flycod run` needs.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -330,6 +395,11 @@ pub struct DaemonConfig {
     /// [REPL](crate::repl) instead.
     #[serde(default)]
     pub control_plane: Option<ControlPlaneConfig>,
+    /// The repository to clone into [`workdir`](Self::workdir) before the
+    /// harness starts. Omitted works in whatever is already there, which is
+    /// the developer-machine shape.
+    #[serde(default)]
+    pub repo: Option<RepoConfig>,
     /// Claude Code settings. Required when [`harness`](Self::harness) is
     /// [`HarnessKind::ClaudeCode`].
     #[serde(default)]

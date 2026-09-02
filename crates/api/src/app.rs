@@ -1,12 +1,12 @@
 //! Router assembly and the handlers that are not part of the OAuth flow.
 
 use flyco_core::{
-    ApiKeyId, ApiKeySummary, ApprovalId, ApprovalState, ApprovalView, BudgetConfig, BudgetView,
-    ControlToDaemon, CreateApiKey, CreateSession, CreatedApiKey, CurrentUser, DaemonToken,
-    DecideApproval, EnvDocument, HarnessFeature, HarnessObservation, MAX_SESSION_TITLE_CHARS,
-    MachineOrigin, MachineSpec, RepoSlug, RepoStatus, SendMessage, SessionDetail, SessionId,
-    SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId,
-    wire::ApprovalPayload,
+    ApiKeyId, ApiKeySummary, ApprovalId, ApprovalState, ApprovalView, BranchName, BudgetConfig,
+    BudgetView, ClientEvent, ControlToDaemon, CreateApiKey, CreateSession, CreatedApiKey,
+    CurrentUser, DaemonToken, DecideApproval, EnvDocument, HarnessFeature, HarnessObservation,
+    MAX_SESSION_TITLE_CHARS, MachineOrigin, MachineSpec, RepoSlug, RepoStatus,
+    ReportProvisioningStage, SendMessage, SessionDetail, SessionId, SessionState, SessionSummary,
+    TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId, wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -156,12 +156,13 @@ async fn revoke(user: &CurrentUser, params: &Params, db: &Db) -> Result<NoConten
 async fn create_session(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Json(request): Json<CreateSession>,
     rooms: Rooms,
     queue: Queue,
     db: Db,
 ) -> Outcome<Created<Json<SessionDetail>>> {
-    start_session(&user, request, &config, &rooms, &queue, &db)
+    start_session(&user, request, &config, &github, &rooms, &queue, &db)
         .await
         .into()
 }
@@ -170,6 +171,7 @@ async fn start_session(
     user: &CurrentUser,
     request: CreateSession,
     config: &ApiConfig,
+    github: &GithubClient,
     rooms: &Rooms,
     queue: &Queue,
     db: &Db,
@@ -183,6 +185,7 @@ async fn start_session(
         .repo
         .parse::<RepoSlug>()
         .map_err(|_| ApiError::InvalidRepo(request.repo.clone()))?;
+    let branch = resolve_branch(github, config, db, user, &repo, request.branch.as_deref()).await?;
     let budget = BudgetConfig::new(request.budget_limit).map_err(|_| ApiError::InvalidBudget)?;
 
     let machine_origin = if request.machine.is_some() {
@@ -218,6 +221,7 @@ async fn start_session(
             title: &flyco_core::excerpt(&prompt, MAX_SESSION_TITLE_CHARS),
             harness: request.harness,
             repo: &repo,
+            branch: &branch,
             machine_origin,
             budget,
         },
@@ -254,6 +258,7 @@ async fn start_session(
 
     tracing::info!(
         repo = %repo,
+        branch = %branch,
         harness = ?request.harness,
         machine_type = %spec.machine_type,
         region = %spec.region,
@@ -261,6 +266,52 @@ async fn start_session(
         "opened a session and queued its machine"
     );
     Ok(Created(Json(session)))
+}
+
+/// Settles which branch a session works on, before any row is written.
+///
+/// A session must always know its branch — the machine has to clone
+/// *something*, and the header renders `repo · branch` (docs/ux.md §9.1) —
+/// so a request that names none has the repository's default read from
+/// GitHub here rather than left for the provisioning queue to guess at
+/// minutes later.
+///
+/// The same call establishes that the caller's stored GitHub authorization
+/// can actually reach the repository. Checking it here as well as in the
+/// queue is deliberate: this is where the user is watching, and being told
+/// to sign in again in the moment they pressed send is worth a great deal
+/// more than the same sentence attached to a session that failed while they
+/// were elsewhere.
+async fn resolve_branch(
+    github: &GithubClient,
+    config: &ApiConfig,
+    db: &Db,
+    user: &CurrentUser,
+    repo: &RepoSlug,
+    requested: Option<&str>,
+) -> Result<BranchName, ApiError> {
+    use crate::github::{GithubOauth as _, REPO_SCOPE};
+
+    let token = users::github_token(db, config, user.id).await?;
+    if !github.current_user(&token).await?.grants_repo_scope() {
+        return Err(ApiError::GithubTokenInsufficient {
+            scope: REPO_SCOPE,
+            repo: repo.clone(),
+        });
+    }
+
+    match requested {
+        Some(name) => name
+            .trim()
+            .parse()
+            .map_err(
+                |error: flyco_core::BranchNameError| ApiError::InvalidBranch {
+                    name: name.to_owned(),
+                    reason: error.to_string(),
+                },
+            ),
+        None => Ok(github.get_repo(&token, repo).await?.default_branch),
+    }
 }
 
 /// Marks a freshly opened session failed when one of its hand-off steps
@@ -1060,6 +1111,36 @@ async fn notify_turn_completed(
         .into()
 }
 
+/// Records a provisioning milestone the session's own machine reached.
+///
+/// The queue announces everything up to the machine existing; everything
+/// after it is a fact only the daemon holds. Most of those ride the relay,
+/// but the checkout happens *before* the harness exists and therefore before
+/// there is a relay socket — so the one stage that cannot be a relay frame
+/// gets a route (docs/ux.md §9.2).
+///
+/// The control plane stamps the time rather than taking the daemon's: a
+/// session VM with a wrong clock must not be able to put a line of the
+/// timeline in 1970.
+#[skyzen::openapi]
+async fn report_provisioning_stage(
+    State(session): State<DaemonSession>,
+    Json(report): Json<ReportProvisioningStage>,
+    rooms: Rooms,
+) -> Outcome<NoContent> {
+    rooms
+        .broadcast(
+            session.0,
+            &ClientEvent::ProvisioningStage {
+                stage: report.stage,
+                at_unix: crate::clock::now_unix(),
+            },
+        )
+        .await
+        .map(|()| NoContent)
+        .into()
+}
+
 #[skyzen::openapi]
 async fn notify_turn_failed(
     State(session): State<DaemonSession>,
@@ -1239,6 +1320,7 @@ fn daemon_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),
         "/v1/sessions/{id}/turn-completed".post(notify_turn_completed),
         "/v1/sessions/{id}/turn-failed".post(notify_turn_failed),
+        "/v1/sessions/{id}/provisioning-stage".post(report_provisioning_stage),
         "/v1/sessions/{id}/transcript/{stream}".at(get_transcript),
         "/v1/sessions/{id}/transcript/{stream}/batches/{seq}".put(put_transcript_batch),
         "/v1/sessions/{id}/workdir-patch"

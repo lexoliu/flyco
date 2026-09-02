@@ -149,6 +149,7 @@ fn request_in(machine: MachineId, zone: &str, machine_type: &str, spot: bool) ->
             harness: HarnessKind::ClaudeCode,
             permission_mode: PermissionMode::Default,
             claude_auth: ClaudeCredential::Inherit,
+            repo: crate::testing::checkout(),
             resume_session_id: None,
         },
     }

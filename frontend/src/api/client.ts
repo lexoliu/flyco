@@ -47,6 +47,8 @@ export type ApiKeySummary = Schemas["ApiKeySummary"];
 export type CreatedApiKey = Schemas["CreatedApiKey"];
 export type AuthorizeUrl = Schemas["AuthorizeUrl"];
 export type RepoSummary = Schemas["RepoSummary"];
+export type BranchSummary = Schemas["BranchSummary"];
+export type BranchPage = Schemas["BranchPage"];
 export type HarnessKind = Schemas["HarnessKind"];
 export type SessionState = Schemas["SessionState"];
 export type MachineCatalogEntry = Schemas["MachineCatalogEntry"];
@@ -586,4 +588,21 @@ export function startGithubLogin(): Promise<JsonResponse<"flyco_api::oauth::star
 
 export function listRepos(q?: string): Promise<JsonResponse<"flyco_api::repos::list_repos", 200>> {
   return requestJson("GET", "/v1/github/repos", { query: { q } });
+}
+
+/**
+ * One page of a repository's branches, the default branch first.
+ *
+ * `slug` is `owner/name`; both halves are path segments, so they are
+ * encoded rather than interpolated raw.
+ */
+export function listBranches(
+  slug: string,
+  cursor?: string,
+): Promise<JsonResponse<"flyco_api::repos::list_branches", 200>> {
+  const path = slug
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return requestJson("GET", `/v1/github/repos/${path}/branches`, { query: { cursor } });
 }

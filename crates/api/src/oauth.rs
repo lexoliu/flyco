@@ -125,10 +125,13 @@ async fn complete(
             config.redirect_uri().as_str(),
         )
         .await?;
+    // Only the account half is stored. What the token may *do* is read
+    // fresh wherever it matters — a scope can be narrowed after the fact,
+    // and a copy in D1 would say it still holds.
     let account = github.current_user(&token).await?;
 
     let sealed = config.token_cipher().seal(&token.access_token)?;
-    let user = users::upsert_from_github(db, &account, &sealed).await?;
+    let user = users::upsert_from_github(db, &account.user, &sealed).await?;
     let session_token = session::issue(kv, user.id).await?;
 
     tracing::info!(login = %user.login, "completed a GitHub sign-in");

@@ -106,7 +106,13 @@ pub enum ContainerJob {
         /// The machine this container is.
         machine: MachineId,
         /// What its `flycod` needs to phone home.
-        bootstrap: DaemonBootstrap,
+        ///
+        /// Boxed because it is much the largest thing any variant of this
+        /// enum carries — three credentials, a repository and a commit
+        /// identity — and every other variant is a container name. Without
+        /// the indirection each `Stop` on a queue would be padded out to the
+        /// size of a `Create`.
+        bootstrap: Box<DaemonBootstrap>,
     },
     /// Stop the container, keeping its writable layer.
     Stop {
@@ -218,7 +224,7 @@ impl ByoSsh {
                     container: container_name(request.machine),
                     image: self.image.clone(),
                     machine: request.machine,
-                    bootstrap: request.bootstrap.clone(),
+                    bootstrap: Box::new(request.bootstrap.clone()),
                 })
             }
             MachineOperation::Resize { .. } => Err(ProviderError::Unsupported {
@@ -261,6 +267,7 @@ mod tests {
             harness: HarnessKind::ClaudeCode,
             permission_mode: PermissionMode::Default,
             claude_auth: ClaudeCredential::Inherit,
+            repo: crate::testing::checkout(),
             resume_session_id: None,
         }
     }

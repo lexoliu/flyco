@@ -56,7 +56,7 @@ pub mod polling;
 use core::fmt;
 
 use flyco_core::machine::{MachineCatalogEntry, MachineSpec, MachineState};
-use flyco_core::{HarnessKind, MachineId, PermissionMode, SessionId};
+use flyco_core::{BranchName, HarnessKind, MachineId, PermissionMode, RepoSlug, SessionId};
 use serde::{Deserialize, Serialize};
 
 pub use clock::{MonotonicClock, SystemClock, SystemWallClock, WallClock};
@@ -110,14 +110,67 @@ pub struct Machine {
     pub address: Option<String>,
 }
 
+/// Who a session's commits are authored as.
+///
+/// Flyco's default is to behave *as the user* rather than as a bot: the
+/// agent pushes with the user's own GitHub authorization, so the commits it
+/// writes must carry the user's own name and address or the history would
+/// disagree with the account that produced it.
+///
+/// The address is GitHub's own `id+login@users.noreply.github.com` form,
+/// which is what GitHub itself attributes web edits to — it maps to the
+/// account without publishing a private address flyco has no right to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitIdentity {
+    /// `user.name` for the checkout.
+    pub name: String,
+    /// `user.email` for the checkout.
+    pub email: String,
+}
+
+/// The repository a session's machine checks out before its agent starts.
+///
+/// Carried as a structure rather than as environment strings the daemon
+/// would have to re-parse: the slug and the branch are already types by the
+/// time the control plane has them, and a machine is not the place to
+/// discover that one of them was never a repository.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoCheckout {
+    /// The repository, `owner/name`.
+    pub slug: RepoSlug,
+    /// The branch to check out.
+    pub branch: BranchName,
+    /// The user's own GitHub token, which is what "behave as the user"
+    /// means in practice: the clone and any later push are the user's, not a
+    /// flyco bot's.
+    ///
+    /// Kept out of [`fmt::Debug`] and never written into a remote URL — the
+    /// daemon feeds it to git through a credential helper that reads it from
+    /// the environment of that one child process.
+    pub token: String,
+    /// Who the checkout's commits are authored as.
+    pub identity: GitIdentity,
+}
+
+impl fmt::Debug for RepoCheckout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RepoCheckout")
+            .field("slug", &self.slug)
+            .field("branch", &self.branch)
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Everything a provisioned machine's `flycod` needs to come up already
 /// paired with its session.
 ///
-/// Two of these fields are live credentials — the daemon token, and the
-/// harness credential inside [`claude_auth`](Self::claude_auth) — and both
-/// travel inside cloud-init documents and container environments, which are
-/// exactly the values a driver is tempted to trace. The hand-written
-/// [`fmt::Debug`] is what keeps them out of a log line.
+/// Three of these fields are live credentials — the daemon token, the
+/// harness credential inside [`claude_auth`](Self::claude_auth), and the
+/// GitHub token inside [`repo`](Self::repo) — and all three travel inside
+/// cloud-init documents and container environments, which are exactly the
+/// values a driver is tempted to trace. The hand-written [`fmt::Debug`] is
+/// what keeps them out of a log line.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonBootstrap {
     /// The session this machine serves.
@@ -132,6 +185,8 @@ pub struct DaemonBootstrap {
     pub permission_mode: PermissionMode,
     /// How the supervised Claude CLI authenticates.
     pub claude_auth: ClaudeCredential,
+    /// The repository to check out before the harness starts.
+    pub repo: RepoCheckout,
     /// Harness-native session id to resume, for a session moving onto a new
     /// machine.
     pub resume_session_id: Option<String>,
@@ -145,6 +200,7 @@ impl fmt::Debug for DaemonBootstrap {
             .field("harness", &self.harness)
             .field("permission_mode", &self.permission_mode)
             .field("claude_auth", &self.claude_auth)
+            .field("repo", &self.repo)
             .field("resume_session_id", &self.resume_session_id)
             .finish_non_exhaustive()
     }
@@ -402,12 +458,14 @@ mod tests {
             claude_auth: crate::ClaudeCredential::OauthToken {
                 token: "sk-ant-oat01-live".to_owned(),
             },
+            repo: crate::testing::checkout(),
             resume_session_id: None,
         };
 
         let rendered = format!("{bootstrap:?}");
         assert!(!rendered.contains("fd_a-live-credential"));
         assert!(!rendered.contains("sk-ant-oat01-live"));
+        assert!(!rendered.contains(crate::testing::GITHUB_TOKEN));
         assert!(rendered.contains("https://flyco.dev/"));
     }
 

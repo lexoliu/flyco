@@ -45,7 +45,7 @@ async fn configured_router(db: &Db) -> Router {
     migrate(db).await;
     router(
         test_config(),
-        GithubClient::Fake(TestGithub),
+        GithubClient::Fake(TestGithub::default()),
         ClaudeClient::Fake(TestClaude),
         db.clone(),
         Queue::new(InMemoryQueue::new()),
@@ -90,6 +90,9 @@ async fn active_session(db: &Db, user: &CurrentUser, repo: &str) -> SessionId {
             title: crate::testing::SEEDED_TITLE,
             harness: flyco_core::HarnessKind::ClaudeCode,
             repo: &repo.parse().expect("a valid repo slug"),
+            branch: &crate::testing::TEST_DEFAULT_BRANCH
+                .parse()
+                .expect("a valid branch"),
             machine_origin: flyco_core::MachineOrigin::Auto,
             budget: flyco_core::BudgetConfig::new(flyco_core::Usd::from_dollars(10))
                 .expect("a valid budget"),

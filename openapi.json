@@ -524,7 +524,7 @@
                     ],
                     "properties": {
                       "default_branch": {
-                        "type": "string",
+                        "$ref": "#/components/schemas/BranchName",
                         "description": "Branch a session starts from unless the user names another."
                       },
                       "description": {
@@ -551,6 +551,75 @@
                         "$ref": "#/components/schemas/RepoSlug",
                         "description": "`owner/name`, which is what `POST /v1/sessions` takes."
                       }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/github/repos/{owner}/{name}/branches": {
+      "get": {
+        "summary": "Lists one repository's branches, default branch first.",
+        "description": "Lists one repository's branches, default branch first.",
+        "operationId": "flyco_api::repos::list_branches",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Cursor from a previous page's `next_cursor`. Omitted starts at the\nfirst page, whose first row is the repository's default branch."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One page of `GET /v1/github/repos/{owner}/{name}/branches`.\n\nThe default branch is the first row of the first page and appears on no\nother page, so a picker opens on the branch a session would otherwise\ntake without reading to the end of a repository with two hundred of them.\n\nThe cursor is opaque: it names a position in GitHub's own listing, and a\nclient that stores it must hand it back unread.",
+                  "required": [
+                    "branches"
+                  ],
+                  "properties": {
+                    "branches": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BranchSummary"
+                      },
+                      "description": "The branches, default first and the rest as GitHub orders them."
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Cursor to pass as `cursor` for the next page, or `None` at the end."
                     }
                   }
                 }
@@ -2358,6 +2427,17 @@
                       "last_active_unix"
                     ],
                     "properties": {
+                      "branch": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/BranchName",
+                            "description": "Branch it works on, which the header renders as `repo · branch`\n(docs/ux.md §9.1).\n\n`None` only for a session opened before flyco recorded a branch at\nall. A placeholder would be a claim about somebody's checkout that\nflyco cannot support, so the header shows the repository alone for\nthose and every session opened since names its branch."
+                          }
+                        ]
+                      },
                       "created_at_unix": {
                         "type": "integer",
                         "format": "int64",
@@ -2420,6 +2500,13 @@
                   "budget_limit"
                 ],
                 "properties": {
+                  "branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Branch to check out. Untyped for the same reason as\n[`repo`](Self::repo): the control plane parses it into a\n[`BranchName`](crate::repo::BranchName) and refuses anything git\nwould.\n\nOmitted, the control plane asks GitHub for the repository's default\nbranch and records *that*, so a session always names the branch it\nworks on rather than leaving every later reader to guess."
+                  },
                   "budget_limit": {
                     "$ref": "#/components/schemas/Usd",
                     "description": "Spending limit for the whole session."
@@ -3508,6 +3595,49 @@
         "responses": {
           "202": {
             "description": "Recorded. The outcome arrives on the session relay, not in this response."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/provisioning-stage": {
+      "post": {
+        "summary": "Records a provisioning milestone the session's own machine reached.",
+        "description": "Records a provisioning milestone the session's own machine reached.\n\nThe queue announces everything up to the machine existing; everything\nafter it is a fact only the daemon holds. Most of those ride the relay,\nbut the checkout happens *before* the harness exists and therefore before\nthere is a relay socket — so the one stage that cannot be a relay frame\ngets a route (docs/ux.md §9.2).\n\nThe control plane stamps the time rather than taking the daemon's: a\nsession VM with a wrong clock must not be able to put a line of the\ntimeline in 1970.",
+        "operationId": "flyco_api::app::report_provisioning_stage",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions/{id}/provisioning-stage`.\n\nThe daemon names the milestone; the control plane times it, exactly as it\ntimes the stages its own provisioning queue announces. A daemon whose\nclock is wrong would otherwise put its line of the timeline in 1970.",
+                "required": [
+                  "stage"
+                ],
+                "properties": {
+                  "stage": {
+                    "$ref": "#/components/schemas/ProvisioningStage",
+                    "description": "The milestone the machine has reached."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
           }
         }
       }
@@ -4669,6 +4799,64 @@
           }
         }
       },
+      "BranchName": {
+        "type": "string",
+        "description": "Git branch name"
+      },
+      "BranchPage": {
+        "type": "object",
+        "description": "One page of `GET /v1/github/repos/{owner}/{name}/branches`.\n\nThe default branch is the first row of the first page and appears on no\nother page, so a picker opens on the branch a session would otherwise\ntake without reading to the end of a repository with two hundred of them.\n\nThe cursor is opaque: it names a position in GitHub's own listing, and a\nclient that stores it must hand it back unread.",
+        "required": [
+          "branches"
+        ],
+        "properties": {
+          "branches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BranchSummary"
+            },
+            "description": "The branches, default first and the rest as GitHub orders them."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor to pass as `cursor` for the next page, or `None` at the end."
+          }
+        }
+      },
+      "BranchQuery": {
+        "type": "object",
+        "description": "Asks for one page of a repository's branches.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor from a previous page's `next_cursor`. Omitted starts at the\nfirst page, whose first row is the repository's default branch."
+          }
+        }
+      },
+      "BranchSummary": {
+        "type": "object",
+        "description": "One row of `GET /v1/github/repos/{owner}/{name}/branches`.",
+        "required": [
+          "name",
+          "is_default"
+        ],
+        "properties": {
+          "is_default": {
+            "type": "boolean",
+            "description": "Whether this is the repository's default branch.\n\nCarried rather than worked out by the client: the first row of the\nfirst page *is* the default branch, and a client deriving that for\nitself would be repeating the question the control plane already\nasked GitHub."
+          },
+          "name": {
+            "$ref": "#/components/schemas/BranchName",
+            "description": "The branch, as git spells it."
+          }
+        }
+      },
       "BudgetStage": {
         "type": "string",
         "description": "How far through the budget the session is. Monotonically increasing.",
@@ -4976,6 +5164,13 @@
           "budget_limit"
         ],
         "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Branch to check out. Untyped for the same reason as\n[`repo`](Self::repo): the control plane parses it into a\n[`BranchName`](crate::repo::BranchName) and refuses anything git\nwould.\n\nOmitted, the control plane asks GitHub for the repository's default\nbranch and records *that*, so a session always names the branch it\nworks on rather than leaving every later reader to guess."
+          },
           "budget_limit": {
             "$ref": "#/components/schemas/Usd",
             "description": "Spending limit for the whole session."
@@ -6342,6 +6537,17 @@
         ],
         "description": "Provider-native credentials, tagged by the provider they open.\n\nThe tag *is* the provider: an account's kind is read off the variant\nrather than carried beside it, so a request cannot name Azure and enclose\nan AWS key pair."
       },
+      "ProvisioningStage": {
+        "type": "string",
+        "description": "How far a session's machine has got towards running an agent.\n\nProvisioning takes minutes, and a spinner for those minutes tells the\nuser nothing about whether anything is wrong. The stages are the five\nmilestones flyco can actually observe, in the order they happen, and the\nsession page renders them as a timeline inside the transcript\n(docs/ux.md §9.2).\n\nWho announces which is decided by who can see it: the control plane's\nprovisioning queue owns everything up to the machine existing, and the\ndaemon on that machine owns everything after it boots.",
+        "enum": [
+          "reserving",
+          "booting",
+          "installing",
+          "cloning",
+          "ready"
+        ]
+      },
       "PushKeys": {
         "type": "object",
         "description": "The two keys a browser derives for message encryption ([RFC 8291]).\n\n[RFC 8291]: https://www.rfc-editor.org/rfc/rfc8291",
@@ -6510,7 +6716,7 @@
         ],
         "properties": {
           "default_branch": {
-            "type": "string",
+            "$ref": "#/components/schemas/BranchName",
             "description": "Branch a session starts from unless the user names another."
           },
           "description": {
@@ -6536,6 +6742,19 @@
           "slug": {
             "$ref": "#/components/schemas/RepoSlug",
             "description": "`owner/name`, which is what `POST /v1/sessions` takes."
+          }
+        }
+      },
+      "ReportProvisioningStage": {
+        "type": "object",
+        "description": "Request body of `POST /v1/sessions/{id}/provisioning-stage`.\n\nThe daemon names the milestone; the control plane times it, exactly as it\ntimes the stages its own provisioning queue announces. A daemon whose\nclock is wrong would otherwise put its line of the timeline in 1970.",
+        "required": [
+          "stage"
+        ],
+        "properties": {
+          "stage": {
+            "$ref": "#/components/schemas/ProvisioningStage",
+            "description": "The milestone the machine has reached."
           }
         }
       },
@@ -6619,6 +6838,17 @@
           "last_active_unix"
         ],
         "properties": {
+          "branch": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BranchName",
+                "description": "Branch it works on, which the header renders as `repo · branch`\n(docs/ux.md §9.1).\n\n`None` only for a session opened before flyco recorded a branch at\nall. A placeholder would be a claim about somebody's checkout that\nflyco cannot support, so the header shows the repository alone for\nthose and every session opened since names its branch."
+              }
+            ]
+          },
           "created_at_unix": {
             "type": "integer",
             "format": "int64",

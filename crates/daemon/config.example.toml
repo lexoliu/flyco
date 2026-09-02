@@ -33,6 +33,22 @@ transcript_dir = "/tmp/flycod-dev/transcripts"
 # url = "https://flyco.dev/"
 # daemon_token = "fd_a-token-from-the-control-plane"
 
+# The repository to clone into `workdir` before the harness starts. Present
+# on a provisioned session VM; omitted here, so `flycod run` works in
+# whatever `workdir` already holds — which is what a developer wants when
+# they are reproducing a harness bug in a checkout they already have.
+#
+# `token` is the user's own GitHub token: flyco behaves as the user rather
+# than as a bot, so the clone and any push the agent makes are theirs. It
+# reaches git through a credential helper that reads it from the environment
+# of one child process, and is therefore never written into the remote URL,
+# into .git/config, or into a log line.
+# [repo]
+# slug = "lexoliu/flyco"
+# branch = "dev"
+# token = "gho_a-user-access-token"
+# identity = { name = "lexoliu", email = "4242+lexoliu@users.noreply.github.com" }
+
 [claude]
 # Model override. Omit to leave the CLI's own default in place.
 # model = "claude-sonnet-4-5-20250929"

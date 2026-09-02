@@ -146,12 +146,19 @@ export default function SessionHeader(props: SessionHeaderProps) {
         </Show>
         <Show when={props.session}>
           {/*
-            `repo · branch` in docs/ux.md §9.1. Nothing in the control plane
-            records which branch a session works on yet, so the repository
-            stands alone: a placeholder branch would be a claim, and an
-            em dash would be a claim that there is no branch.
+            `repo · branch` in docs/ux.md §9.1. A session opened before flyco
+            recorded branches has none, and the repository stands alone for
+            those: a placeholder would be a claim about somebody's checkout,
+            and an em dash would be a claim that there is no branch.
           */}
-          {(session) => <span class={styles.repo}>{session().repo}</span>}
+          {(session) => (
+            <span class={styles.repo}>
+              {session().repo}
+              <Show when={session().branch}>
+                {(branch) => <span class={styles.branch}>· {branch()}</span>}
+              </Show>
+            </span>
+          )}
         </Show>
       </div>
 

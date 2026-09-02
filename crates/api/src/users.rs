@@ -9,8 +9,9 @@ use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::clock::now_unix;
+use crate::config::ApiConfig;
 use crate::error::ApiError;
-use crate::github::GithubUser;
+use crate::github::{GithubToken, GithubUser};
 
 /// The columns every read on this path projects.
 #[derive(Debug, skyzen::FromRow)]
@@ -109,4 +110,31 @@ pub async fn sealed_github_token(db: &Db, id: UserId) -> Result<Option<String>, 
             .fetch_scalar_optional()
             .await?,
     )
+}
+
+/// Opens a user's stored GitHub token for a call flyco makes on their
+/// behalf.
+///
+/// The one place the seal is broken, because everything that acts as the
+/// user needs exactly this: the repository picker, the branch picker, and
+/// the provisioning queue building a machine's checkout.
+///
+/// # Errors
+///
+/// Returns [`ApiError::CorruptRecord`] if the row holds no token — a user
+/// row is only ever written by a completed sign-in, which always stores one
+/// — or a database or cryptography error otherwise.
+pub async fn github_token(
+    db: &Db,
+    config: &ApiConfig,
+    id: UserId,
+) -> Result<GithubToken, ApiError> {
+    let sealed = sealed_github_token(db, id)
+        .await?
+        .ok_or(ApiError::CorruptRecord(
+            "the user has no stored GitHub token",
+        ))?;
+    Ok(GithubToken {
+        access_token: config.token_cipher().open(&sealed)?,
+    })
 }

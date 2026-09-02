@@ -12,13 +12,14 @@
 //! written out below:
 //!
 //! * [`Id<T>`] is generic, and the derive works on a concrete newtype.
-//! * [`RepoSlug`] has an invariant. The newtype derive rebuilds the wrapper
-//!   from the column without asking, which would let a corrupt row become a
-//!   slug that never passed [`RepoSlug::from_str`].
+//! * [`RepoSlug`] and [`BranchName`] have invariants. The newtype derive
+//!   rebuilds the wrapper from the column without asking, which would let a
+//!   corrupt row become a slug that never passed [`RepoSlug::from_str`] or a
+//!   branch git would refuse to check out.
 //!
-//! Both are text columns read back through their own [`FromStr`], so a value
-//! the type would refuse is a decode failure rather than a value in the
-//! wrong shape travelling on.
+//! All three are text columns read back through their own [`FromStr`], so a
+//! value the type would refuse is a decode failure rather than a value in
+//! the wrong shape travelling on.
 
 use core::fmt::Display;
 use core::str::FromStr;
@@ -26,7 +27,7 @@ use core::str::FromStr;
 use serde_json::Value;
 use skyzen_services::sql::{ColumnError, DbValue, FromColumn};
 
-use crate::{Id, RepoSlug};
+use crate::{BranchName, Id, RepoSlug};
 
 /// Reads a text column back through the type's own parser.
 fn parse_text<T>(value: &Value, expected: &'static str) -> Result<T, ColumnError>
@@ -68,5 +69,23 @@ impl From<&RepoSlug> for DbValue {
 impl FromColumn for RepoSlug {
     fn from_column(value: &Value) -> Result<Self, ColumnError> {
         parse_text(value, "a GitHub repository in `owner/name` form")
+    }
+}
+
+impl From<BranchName> for DbValue {
+    fn from(branch: BranchName) -> Self {
+        Self::Text(branch.as_str().to_owned())
+    }
+}
+
+impl From<&BranchName> for DbValue {
+    fn from(branch: &BranchName) -> Self {
+        Self::Text(branch.as_str().to_owned())
+    }
+}
+
+impl FromColumn for BranchName {
+    fn from_column(value: &Value) -> Result<Self, ColumnError> {
+        parse_text(value, "a git branch name")
     }
 }

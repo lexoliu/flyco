@@ -1,8 +1,12 @@
 //! The daemon's REST client for its own session.
 //!
-//! Four things a daemon does over ordinary HTTP rather than over the relay
+//! Five things a daemon does over ordinary HTTP rather than over the relay
 //! socket, each for its own reason:
 //!
+//! * **The `Cloning` stage** happens *before* the harness exists, and the
+//!   relay socket is not opened until there is a session behind it. A
+//!   checkout is what the harness is started in, so the one milestone that
+//!   cannot ride the relay is the one announcing it.
 //! * **Approvals** must be *durable* before they are announced. The control
 //!   plane assigns the id, so a decision routed back through the relay names
 //!   an approval the API can actually settle. A relay frame is live state;
@@ -22,7 +26,10 @@
 use core::future::Future;
 
 use flyco_core::wire::ApprovalPayload;
-use flyco_core::{ApprovalId, ApprovalView, HarnessObservation, Problem, SessionId};
+use flyco_core::{
+    ApprovalId, ApprovalView, HarnessObservation, Problem, ProvisioningStage,
+    ReportProvisioningStage, SessionId,
+};
 use url::Url;
 use zenwave::{Client as _, ResponseExt as _};
 
@@ -181,6 +188,20 @@ pub trait ControlApi: Send + Sync + 'static {
     fn get_workdir_patch(
         &self,
     ) -> impl Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send;
+
+    /// Announces a provisioning milestone the machine has reached.
+    ///
+    /// The control plane times it, so a session VM whose clock is wrong
+    /// cannot put a line of the timeline in 1970.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or refused the report.
+    fn report_stage(
+        &self,
+        stage: ProvisioningStage,
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 }
 
 /// A transcript stream as the control plane serves it.
@@ -290,6 +311,22 @@ impl ControlApi for HttpControlApi {
             .map_err(transport)?
             .bearer_auth(self.token.clone())
             .json_body(&observation)
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("POST", &url, &error))?;
+
+        debug_assert!(response.status().is_success());
+        Ok(())
+    }
+
+    async fn report_stage(&self, stage: ProvisioningStage) -> Result<(), ControlApiError> {
+        let url = self.url("provisioning-stage")?;
+        let mut client = zenwave::client();
+        let response = client
+            .post(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(&ReportProvisioningStage { stage })
             .map_err(transport)?
             .await
             .map_err(|error| refused("POST", &url, &error))?;

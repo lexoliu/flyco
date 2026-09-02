@@ -18,10 +18,10 @@
 
 use core::fmt;
 
-use flyco_core::{HarnessKind, PermissionMode, SessionId};
+use flyco_core::{BranchName, HarnessKind, PermissionMode, RepoSlug, SessionId};
 use serde::Serialize;
 
-use crate::DaemonBootstrap;
+use crate::{DaemonBootstrap, GitIdentity};
 
 /// Where the agent's checkout lives inside a flyco machine.
 pub const WORKDIR: &str = "/srv/flyco/work";
@@ -138,6 +138,20 @@ struct ControlPlane<'a> {
     daemon_token: &'a str,
 }
 
+/// The `[repo]` table, and `[repo.identity]` under it.
+///
+/// The token is a field of the same table as the slug because the two are
+/// one decision: a checkout flyco cannot authenticate is not a checkout, and
+/// a token with no repository to spend it on has no reason to be on the
+/// machine at all.
+#[derive(Debug, Clone, Serialize)]
+struct Repo<'a> {
+    slug: &'a RepoSlug,
+    branch: &'a BranchName,
+    token: &'a str,
+    identity: &'a GitIdentity,
+}
+
 /// The `[sidecar]` table.
 #[derive(Debug, Clone, Copy, Serialize)]
 struct Sidecar {
@@ -189,6 +203,7 @@ struct Document<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     resume_session_id: Option<&'a str>,
     control_plane: ControlPlane<'a>,
+    repo: Repo<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     claude: Option<Claude<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -270,6 +285,12 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
             url: &bootstrap.control_plane_url,
             daemon_token: &bootstrap.daemon_token,
         },
+        repo: Repo {
+            slug: &bootstrap.repo.slug,
+            branch: &bootstrap.repo.branch,
+            token: &bootstrap.repo.token,
+            identity: &bootstrap.repo.identity,
+        },
         claude,
         sidecar,
         codex,
@@ -284,6 +305,7 @@ mod tests {
 
     use super::{CLAUDE_CONFIG_DIR, CODEX_HOME, ClaudeCredential, render};
     use crate::DaemonBootstrap;
+    use crate::testing::{GITHUB_TOKEN, checkout};
 
     fn bootstrap(claude_auth: ClaudeCredential) -> DaemonBootstrap {
         DaemonBootstrap {
@@ -293,6 +315,7 @@ mod tests {
             harness: HarnessKind::ClaudeCode,
             permission_mode: PermissionMode::Default,
             claude_auth,
+            repo: checkout(),
             resume_session_id: None,
         }
     }
@@ -324,6 +347,34 @@ mod tests {
             key: "sk-ant-secret".to_owned(),
         };
         assert!(!format!("{credential:?}").contains("sk-ant-secret"));
+    }
+
+    #[test]
+    fn the_machine_is_told_which_repository_and_branch_to_check_out() {
+        let rendered = render(&bootstrap(ClaudeCredential::Inherit)).expect("render");
+
+        assert!(rendered.contains("[repo]"));
+        assert!(rendered.contains("slug = \"lexoliu/flyco\""));
+        assert!(rendered.contains("branch = \"dev\""));
+        assert!(rendered.contains("[repo.identity]"));
+        assert!(rendered.contains("email = \"4242+lexoliu@users.noreply.github.com\""));
+    }
+
+    #[test]
+    fn the_github_token_never_shows_up_in_a_debug_rendering() {
+        // The bootstrap is what a driver traces while it is being debugged,
+        // and it now carries a live GitHub token as well as two other
+        // credentials. None of the three may survive a `{:?}`.
+        let bootstrap = bootstrap(ClaudeCredential::OauthToken {
+            token: "sk-ant-oat01-x".to_owned(),
+        });
+        let debugged = format!("{bootstrap:?}");
+
+        assert!(!debugged.contains(GITHUB_TOKEN));
+        assert!(!debugged.contains("sk-ant-oat01-x"));
+        assert!(!debugged.contains("fd_token"));
+        // What is left is still enough to tell two bootstraps apart.
+        assert!(debugged.contains("lexoliu/flyco"));
     }
 
     #[test]

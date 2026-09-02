@@ -44,7 +44,7 @@ pub use budget::{
 };
 pub use catalog::curate;
 pub use env::{EnvDocument, EnvEntry, NETWORK_CONTROL_WARNING, UpdateEnv};
-pub use github::RepoSummary;
+pub use github::{BranchPage, BranchSummary, RepoSummary};
 pub use harness::{
     Availability, ClaudeOauthStart, CompleteClaudeOauth, ContextWindow, Feature,
     HarnessAccountView, HarnessCredentialInput, HarnessEvent, HarnessFeature, HarnessKind,
@@ -70,7 +70,7 @@ pub use providers::{
     QuickstartAnswers,
 };
 pub use push::{PushKeys, PushSubscription, PushSubscriptionView, VapidPublicKey};
-pub use repo::{RepoSlug, RepoStatus};
+pub use repo::{BranchName, BranchNameError, RepoSlug, RepoStatus};
 pub use session::{
     ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, MAX_SESSION_TITLE_CHARS,
     MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS, SendMessage, SessionDetail, SessionState,
@@ -83,7 +83,7 @@ pub use usage::{
 };
 pub use wire::{
     ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-    ProvisioningStage,
+    ProvisioningStage, ReportProvisioningStage,
 };
 
 /// Version of the daemon⇄control-plane wire protocol.
