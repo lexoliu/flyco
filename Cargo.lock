@@ -1552,7 +1552,6 @@ dependencies = [
  "tracing",
  "url",
  "wasm-bindgen",
- "worker",
  "zenwave",
 ]
 
@@ -5522,9 +5521,9 @@ dependencies = [
 
 [[package]]
 name = "zenwave"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b64726f86ce442885125f08400ab5574e4516d2b1da069bed80d23db65296bf"
+checksum = "435349c21d9a319242d720885ad571a0a1eab52c79e546a08030bb1ad0f84716"
 dependencies = [
  "anyhow",
  "async-fs",
