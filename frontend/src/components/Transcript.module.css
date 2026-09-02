@@ -1,0 +1,357 @@
+/*
+ * The transcript is a reading surface, not a panel: no border, no card, no
+ * background of its own. What separates one item from the next is space,
+ * and the only boxed things in the column are the ones the user has to act
+ * on or copy — an approval, a tool call, a code block.
+ */
+.transcript {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  margin: 0;
+  padding: 0;
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+}
+
+/* A user message is the one right-aligned thing on the page. */
+.item[data-kind="user_message"] {
+  align-items: flex-end;
+}
+
+.userMessage {
+  max-width: 80%;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-sunken);
+  font-size: var(--text-md);
+  line-height: var(--line-normal);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.turnError {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+}
+
+.workedFor {
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Tool calls ──────────────────────────────────────────────────────── */
+
+.tools {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+}
+
+.toolRow {
+  border-radius: var(--radius-sm);
+}
+
+.toolSummary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  transition: background var(--transition-fast);
+}
+
+.toolSummary::-webkit-details-marker {
+  display: none;
+}
+
+.toolSummary:hover {
+  background: var(--color-surface-sunken);
+}
+
+.toolChevron {
+  flex: none;
+  color: var(--color-text-faint);
+  transition: transform var(--transition-fast);
+}
+
+.toolRow[open] .toolChevron {
+  transform: rotate(90deg);
+}
+
+.toolIcon {
+  flex: none;
+  color: var(--color-text-faint);
+}
+
+.toolText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.toolDuration {
+  margin-left: auto;
+  flex: none;
+  color: var(--color-text-faint);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-xs);
+}
+
+.toolStatus {
+  display: inline-flex;
+  flex: none;
+  color: var(--color-text-faint);
+}
+
+.toolStatus[data-ok="true"] {
+  color: var(--color-success);
+}
+
+.toolStatus[data-ok="false"] {
+  color: var(--color-danger);
+}
+
+.toolDetail {
+  padding: var(--space-2) var(--space-2) var(--space-3) var(--space-6);
+}
+
+.toolDetailLabel {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-faint);
+}
+
+.toolInput {
+  margin: 0;
+  padding: var(--space-3);
+  max-height: 320px;
+  overflow: auto;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ── Provisioning timeline ───────────────────────────────────────────── */
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.stage {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.stage[data-active="true"] {
+  color: var(--color-text);
+}
+
+.stageMark {
+  display: inline-flex;
+  flex: none;
+  color: var(--color-text-faint);
+}
+
+.stage[data-active="true"] .stageMark {
+  color: var(--color-text-muted);
+}
+
+.stageLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stageElapsed {
+  margin-left: auto;
+  flex: none;
+  color: var(--color-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Provisioning is a neutral pulse: something is happening, nothing is wrong. */
+.spin {
+  animation: spin 1.4s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Approvals ───────────────────────────────────────────────────────── */
+
+.approval {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-width) solid var(--color-warning);
+  border-radius: var(--radius-lg);
+  background: var(--color-warning-soft);
+}
+
+/* A decided approval is a record, not a request: it goes quiet. */
+.approval[data-state="approved"],
+.approval[data-state="denied"] {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+}
+
+.approvalTitle {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+}
+
+.approvalDetail {
+  margin: 0;
+  padding: var(--space-3);
+  max-height: 220px;
+  overflow: auto;
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.approvalActions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.approve,
+.deny {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-full);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+
+.approve {
+  border: none;
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+}
+
+.approve:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.deny {
+  border: var(--border-width) solid var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text);
+}
+
+.deny:hover:not(:disabled) {
+  border-color: var(--color-text-muted);
+}
+
+.approve:active:not(:disabled),
+.deny:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.approve:disabled,
+.deny:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.approvalDecided {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* ── Notices ─────────────────────────────────────────────────────────── */
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--line-normal);
+}
+
+.notice svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.notice[data-tone="warning"] {
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+
+.notice[data-tone="danger"] {
+  background: var(--color-danger-muted);
+  color: var(--color-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin,
+  .toolChevron {
+    animation: none;
+    transition: none;
+  }
+
+  .approve:active:not(:disabled),
+  .deny:active:not(:disabled) {
+    transform: none;
+  }
+}

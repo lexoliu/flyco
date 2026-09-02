@@ -44,13 +44,41 @@ import { parseClientEvent, type ClientCommand, type ClientEvent } from "./wire";
 const RECENT_WINDOW = 256;
 
 /**
- * Turns catch-up pages and live socket text into a deduplicated
+ * One event and when it happened.
+ *
+ * The wire protocol times almost nothing: a `turn_started` frame says which
+ * turn started, never when. The room does record an arrival time per stored
+ * event (`StoredEvent.at_unix`), and a live frame arrives now, so the two
+ * deliveries between them can date every event — which is what a
+ * `Worked for 8m 23s` footer and a provisioning timeline are computed from
+ * (docs/ux.md §9.2). Carrying the time beside the event rather than inside
+ * it keeps `ClientEvent` an exact mirror of the Rust enum.
+ */
+export interface TimedEvent {
+  /** The event itself. */
+  event: ClientEvent;
+  /** When it was recorded or received, seconds since the Unix epoch. */
+  atUnix: number;
+}
+
+/** The clock a stream dates live frames against. Injectable for tests. */
+export type Clock = () => number;
+
+const systemClock: Clock = () => Math.floor(Date.now() / 1000);
+
+/**
+ * Turns catch-up pages and live socket text into a deduplicated, dated
  * [`ClientEvent`] sequence. Pure and framework-free, so it is unit-testable
  * without a socket or a fetch mock.
  */
 export class EventStream {
   private lastSeq: number | null = null;
   private readonly recentRaw: string[] = [];
+  private readonly clock: Clock;
+
+  constructor(clock: Clock = systemClock) {
+    this.clock = clock;
+  }
 
   /** The highest `seq` consumed so far, for the next catch-up page's `after`. */
   get cursor(): number | null {
@@ -62,8 +90,8 @@ export class EventStream {
    * or below the cursor already reached, and anything byte-identical to an
    * event already shown (because it arrived live first).
    */
-  ingestCatchUp(events: StoredEvent[]): ClientEvent[] {
-    const out: ClientEvent[] = [];
+  ingestCatchUp(events: StoredEvent[]): TimedEvent[] {
+    const out: TimedEvent[] = [];
     for (const stored of events) {
       if (this.lastSeq !== null && stored.seq <= this.lastSeq) {
         continue;
@@ -71,7 +99,7 @@ export class EventStream {
       this.lastSeq = stored.seq;
       const raw = JSON.stringify(stored.event);
       if (this.remember(raw)) {
-        out.push(parseClientEvent(stored.event));
+        out.push({ event: parseClientEvent(stored.event), atUnix: stored.at_unix });
       }
     }
     return out;
@@ -82,11 +110,11 @@ export class EventStream {
    * duplicates an event already shown (from catch-up or an earlier live
    * frame) rather than emitting it twice.
    */
-  ingestLive(raw: string): ClientEvent | null {
+  ingestLive(raw: string): TimedEvent | null {
     if (!this.remember(raw)) {
       return null;
     }
-    return parseClientEvent(JSON.parse(raw));
+    return { event: parseClientEvent(JSON.parse(raw)), atUnix: this.clock() };
   }
 
   /** Records `raw` as shown; returns whether it was new. */
@@ -128,8 +156,8 @@ export type ConnectionState = "connecting" | "live" | "reconnecting" | "closed";
 export interface SessionRelay {
   /** Connection lifecycle: never a silently dead socket. */
   state: Accessor<ConnectionState>;
-  /** Every event shown so far, oldest first, already deduplicated. */
-  events: Accessor<ClientEvent[]>;
+  /** Every event shown so far, oldest first, deduplicated and dated. */
+  events: Accessor<TimedEvent[]>;
   /**
    * Sends a client-initiated command over the live socket. Throws — fast
    * fail, no silent drop — when the socket is not currently live; the UI
@@ -156,7 +184,7 @@ const OPEN = 1;
 export function createSessionRelay(sessionId: string, options: CreateSessionRelayOptions = {}): SessionRelay {
   const WebSocketImpl = options.webSocketImpl ?? WebSocket;
   const [state, setState] = createSignal<ConnectionState>("connecting");
-  const [events, setEvents] = createSignal<ClientEvent[]>([]);
+  const [events, setEvents] = createSignal<TimedEvent[]>([]);
   const stream = new EventStream();
 
   let socket: WebSocket | null = null;
@@ -164,7 +192,7 @@ export function createSessionRelay(sessionId: string, options: CreateSessionRela
   let disposed = false;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
-  function pushEvent(event: ClientEvent): void {
+  function pushEvent(event: TimedEvent): void {
     setEvents((prev) => [...prev, event]);
   }
 

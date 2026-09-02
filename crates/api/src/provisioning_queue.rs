@@ -37,7 +37,10 @@
 
 use core::time::Duration;
 
-use flyco_core::{HarnessKind, MachineId, PermissionMode, SessionId, SessionState, UserId};
+use flyco_core::{
+    ClientEvent, HarnessKind, MachineId, PermissionMode, ProvisioningStage, SessionId,
+    SessionState, UserId,
+};
 use flyco_provider::{DaemonBootstrap, ProviderError, ProvisionRequest};
 use serde::{Deserialize, Serialize};
 use skyzen_services::queue::{
@@ -45,10 +48,12 @@ use skyzen_services::queue::{
 };
 use skyzen_services::{Db, Queue};
 
+use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::machines::MachineRow;
 use crate::provisioning::Provisioner;
+use crate::rooms::Rooms;
 use crate::{daemon_tokens, harness_accounts, machines, provisioning, sessions};
 
 /// How many times one machine is asked for before the session is failed.
@@ -141,13 +146,14 @@ pub async fn consume(
     db: &Db,
     config: &ApiConfig,
     queue: &Queue,
+    rooms: &Rooms,
     provisioner: &mut impl Provisioner,
     batch: QueueBatch<ProvisioningJob>,
 ) -> QueueBatchDisposition {
     let mut decisions = Vec::with_capacity(batch.messages.len());
     for message in batch.messages {
         decisions.push(
-            match perform(db, config, queue, provisioner, message.body).await {
+            match perform(db, config, queue, rooms, provisioner, message.body).await {
                 Settled::Done => QueueMessageDisposition::Ack,
                 Settled::Redeliver(error) => {
                     tracing::error!(
@@ -172,12 +178,13 @@ async fn perform(
     db: &Db,
     config: &ApiConfig,
     queue: &Queue,
+    rooms: &Rooms,
     provisioner: &mut impl Provisioner,
     job: ProvisioningJob,
 ) -> Settled {
     match claim(db, job).await {
         Ok(None) => Settled::Done,
-        Ok(Some(claimed)) => match build(db, config, provisioner, &claimed).await {
+        Ok(Some(claimed)) => match build(db, config, rooms, provisioner, &claimed).await {
             Ok(()) => Settled::Done,
             Err(Provisioned::Failed(reason)) => {
                 match sessions::fail(db, job.session, &reason).await {
@@ -279,6 +286,7 @@ impl From<ApiError> for Provisioned {
 async fn build(
     db: &Db,
     config: &ApiConfig,
+    rooms: &Rooms,
     provisioner: &mut impl Provisioner,
     claim: &Claim,
 ) -> Result<(), Provisioned> {
@@ -296,6 +304,7 @@ async fn build(
         .map_err(|error| classify(&error))?;
 
     let bootstrap = bootstrap(db, config, claim).await?;
+    announce(rooms, claim.session, ProvisioningStage::Reserving).await;
     let machine = provisioner
         .provision(
             &account,
@@ -307,6 +316,8 @@ async fn build(
         )
         .await
         .map_err(|error| classify(&error))?;
+    // The provider handed back a machine, so it exists and is powering on.
+    announce(rooms, claim.session, ProvisioningStage::Booting).await;
 
     let hourly = entry.pricing.hourly(machine.capacity_mode.is_spot());
     let storage_hourly = match &entry.pricing {
@@ -324,6 +335,11 @@ async fn build(
         ),
     };
     machines::record(db, &machine, hourly, storage_hourly).await?;
+    // Recorded, so the machine is durably flyco's; what happens on it next
+    // is its bootstrap fetching and running the `flycod` installer. That is
+    // the last stage the control plane can see — everything after it is
+    // announced by the daemon on the machine itself.
+    announce(rooms, claim.session, ProvisioningStage::Installing).await;
 
     tracing::info!(
         session = %claim.session,
@@ -368,6 +384,33 @@ async fn bootstrap(
             .await
             .map_err(Provisioned::from)?,
     })
+}
+
+/// Tells the session's watchers how far its machine has got.
+///
+/// The timeline is what a user reads instead of a five-minute spinner
+/// (docs/ux.md §9.2), and it is *only* that: a room that cannot be reached
+/// is logged and stepped over rather than failing a provision that is
+/// otherwise going fine. Losing a line of the timeline costs the user a
+/// progress report; failing the job over it costs them the machine.
+async fn announce(rooms: &Rooms, session: SessionId, stage: ProvisioningStage) {
+    if let Err(error) = rooms
+        .broadcast(
+            session,
+            &ClientEvent::ProvisioningStage {
+                stage,
+                at_unix: now_unix(),
+            },
+        )
+        .await
+    {
+        tracing::warn!(
+            %session,
+            ?stage,
+            %error,
+            "a provisioning stage did not reach the session room"
+        );
+    }
 }
 
 /// Sorts a provider failure into "try again" and "tell the user".
@@ -446,6 +489,7 @@ mod worker {
     use super::{ProvisioningJob, consume};
     use crate::config::{ApiConfig, binding};
     use crate::provisioning::CloudProvisioner;
+    use crate::rooms::Rooms;
 
     #[skyzen::queue]
     async fn provisioning_jobs(
@@ -474,6 +518,7 @@ mod worker {
             }
         };
 
-        consume(&db, &config, &queue, &mut CloudProvisioner, batch).await
+        let rooms = Rooms::from_worker_env(env);
+        consume(&db, &config, &queue, &rooms, &mut CloudProvisioner, batch).await
     }
 }

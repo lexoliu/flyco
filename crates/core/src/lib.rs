@@ -77,11 +77,14 @@ pub use usage::{
     CloudSpend, CloudUsageView, HarnessObservation, LlmUsageView, OBSERVATION_WINDOW_SECONDS,
     RateLimitObservation,
 };
-pub use wire::{ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl};
+pub use wire::{
+    ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
+    ProvisioningStage,
+};
 
 /// Version of the daemon⇄control-plane wire protocol.
 ///
 /// Bumped on every incompatible change to [`wire`]; the control plane
 /// refuses daemons speaking a different version (fast fail, no
 /// best-effort compatibility).
-pub const WIRE_PROTOCOL_VERSION: u32 = 2;
+pub const WIRE_PROTOCOL_VERSION: u32 = 3;

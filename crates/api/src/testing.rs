@@ -14,6 +14,7 @@ use skyzen_test::mock::InMemoryQueue;
 use crate::app::router;
 use crate::config::ApiConfig;
 use crate::github::{GithubClient, GithubError, GithubOauth, GithubToken, GithubUser};
+use crate::rooms::{NativeRooms, Rooms};
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
@@ -82,6 +83,16 @@ pub fn test_config() -> ApiConfig {
         GITHUB_WEBHOOK_SECRET.to_owned(),
     )
     .expect("the test configuration is valid")
+}
+
+/// Session rooms backed by skyzen's in-process simulator.
+///
+/// A fresh namespace per call: nothing in the unit tests reads a room back,
+/// they only need somewhere for a broadcast to land, and sharing one
+/// namespace between tests would share its event streams too.
+#[must_use]
+pub fn test_rooms() -> Rooms {
+    Rooms::from_native(NativeRooms::new())
 }
 
 /// A [`GithubOauth`] that answers without a network.

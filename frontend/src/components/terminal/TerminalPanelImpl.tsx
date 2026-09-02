@@ -63,9 +63,9 @@ export default function TerminalPanelImpl(props: TerminalPanelImplProps) {
       createEffect(() => {
         const events = props.relay.events();
         for (let i = processed; i < events.length; i += 1) {
-          const event = events[i];
-          if (event !== undefined && event.type === "terminal_output") {
-            term.write(event.data);
+          const entry = events[i];
+          if (entry !== undefined && entry.event.type === "terminal_output") {
+            term.write(entry.event.data);
           }
         }
         processed = events.length;

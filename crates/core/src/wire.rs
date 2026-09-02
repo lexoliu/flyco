@@ -68,6 +68,41 @@ pub enum ApprovalPayload {
     },
 }
 
+/// How far a session's machine has got towards running an agent.
+///
+/// Provisioning takes minutes, and a spinner for those minutes tells the
+/// user nothing about whether anything is wrong. The stages are the five
+/// milestones flyco can actually observe, in the order they happen, and the
+/// session page renders them as a timeline inside the transcript
+/// (docs/ux.md §9.2).
+///
+/// Who announces which is decided by who can see it: the control plane's
+/// provisioning queue owns everything up to the machine existing, and the
+/// daemon on that machine owns everything after it boots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvisioningStage {
+    /// The provider is being asked for capacity.
+    Reserving,
+    /// The provider handed back a machine and it is powering on.
+    Booting,
+    /// The machine's bootstrap is fetching and installing `flycod`.
+    Installing,
+    /// The session's repository is being checked out.
+    ///
+    /// Nothing emits this yet: flyco does not put a checkout on a machine —
+    /// the bootstrap installs `flycod` and nothing clones a repository into
+    /// [`WORKDIR`]. The stage is defined here because the timeline is one
+    /// ordered protocol rather than five independent ones, and the daemon
+    /// will announce it from the same place it announces
+    /// [`Ready`](Self::Ready) once the checkout lands.
+    ///
+    /// [`WORKDIR`]: https://github.com/lexoliu/flyco/blob/main/crates/provider/src/flycod.rs
+    Cloning,
+    /// The daemon is connected and the harness is accepting work.
+    Ready,
+}
+
 /// The user's decision on an approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -144,6 +179,17 @@ pub enum DaemonToControl {
     SpotNotice {
         /// Seconds until reclamation, as announced.
         seconds_remaining: u32,
+    },
+    /// The machine reached a provisioning milestone the daemon can see.
+    ///
+    /// The control plane cannot observe anything past the provider's
+    /// answer — it has no way onto the machine — so the last stages are
+    /// reported from the machine itself.
+    ProvisioningStage {
+        /// The milestone reached.
+        stage: ProvisioningStage,
+        /// When it was reached, seconds since the Unix epoch.
+        at_unix: u64,
     },
 }
 
@@ -222,7 +268,7 @@ impl ControlToDaemon {
 /// [`DaemonToControl`] frame carries that a user may see, plus the
 /// control-plane facts the daemon never knows about (an approval's
 /// decision, a lifecycle change).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientEvent {
     /// A normalized harness event.
@@ -292,6 +338,17 @@ pub enum ClientEvent {
         /// Seconds until reclamation, as announced.
         seconds_remaining: u32,
     },
+    /// The machine reached a provisioning milestone.
+    ///
+    /// Announced by the provisioning queue up to the machine existing and
+    /// by the daemon after it boots, and rendered as one timeline inside
+    /// the transcript.
+    ProvisioningStage {
+        /// The milestone reached.
+        stage: ProvisioningStage,
+        /// When it was reached, seconds since the Unix epoch.
+        at_unix: u64,
+    },
 }
 
 impl ClientEvent {
@@ -321,13 +378,19 @@ impl ClientEvent {
             DaemonToControl::SpotNotice { seconds_remaining } => {
                 Some(Self::SpotNotice { seconds_remaining })
             }
+            DaemonToControl::ProvisioningStage { stage, at_unix } => {
+                Some(Self::ProvisioningStage { stage, at_unix })
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl};
+    use super::{
+        ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
+        ProvisioningStage,
+    };
     use crate::budget::BudgetSignal;
     use crate::harness::{ContextWindow, HarnessEvent, UsageReport};
     use crate::id::{ApprovalId, SessionId};
@@ -403,6 +466,10 @@ mod tests {
             },
             DaemonToControl::SpotNotice {
                 seconds_remaining: 30,
+            },
+            DaemonToControl::ProvisioningStage {
+                stage: ProvisioningStage::Ready,
+                at_unix: 1_800_000_000,
             },
         ]
     }
@@ -483,6 +550,10 @@ mod tests {
             },
             ClientEvent::SpotNotice {
                 seconds_remaining: 30,
+            },
+            ClientEvent::ProvisioningStage {
+                stage: ProvisioningStage::Booting,
+                at_unix: 1_800_000_000,
             },
         ];
         for event in events {

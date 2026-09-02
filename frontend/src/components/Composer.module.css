@@ -18,6 +18,11 @@
   border-color: var(--color-border-strong);
 }
 
+/* The anchor a floating panel — the session's command palette — sits over. */
+.composerRelative {
+  position: relative;
+}
+
 .prompt {
   width: 100%;
   min-height: 76px;
@@ -76,6 +81,29 @@
 
 .send:disabled {
   opacity: 0.35;
+}
+
+.send:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+/*
+ * While a turn is in flight the send button becomes `Stop` (docs/ux.md
+ * §9.3). Same circle, same position — it is the same control, doing the
+ * opposite thing — with a square glyph instead of an arrow.
+ */
+.stop {
+  composes: send;
+}
+
+.stop:hover:not(:disabled) {
+  background: var(--color-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .send:active:not(:disabled) {
+    transform: none;
+  }
 }
 
 /* ── Chips ───────────────────────────────────────────────────────────── */

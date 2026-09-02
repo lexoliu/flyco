@@ -42,7 +42,7 @@ use std::collections::BTreeMap;
 
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
-    HarnessObservation, RateLimitObservation, SessionId, WIRE_PROTOCOL_VERSION,
+    HarnessObservation, ProvisioningStage, RateLimitObservation, SessionId, WIRE_PROTOCOL_VERSION,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
 use rand::Rng as _;
@@ -230,6 +230,17 @@ impl Endpoint {
             )),
         }
     }
+}
+
+/// The host clock, in seconds since the Unix epoch.
+///
+/// Panics on a clock set before 1970, which is not a state a session VM can
+/// be in and not one this daemon could do anything sensible about.
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the host clock is set before the Unix epoch")
+        .as_secs()
 }
 
 /// Sends one frame.
@@ -642,11 +653,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
         else {
             return;
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("the host clock is set before the Unix epoch")
-            .as_secs();
-        let wait = unix.saturating_sub(now);
+        let wait = unix.saturating_sub(now_unix());
         self.continue_at = Some(tokio::time::Instant::now() + Duration::from_secs(wait));
     }
 
@@ -755,6 +762,13 @@ where
     };
     let mut attempt = 0_u32;
     let mut in_flight = None;
+    // The last stage of the provisioning timeline (docs/ux.md §9.2). The
+    // control plane can watch a machine be reserved and boot but has no way
+    // onto it, so "the agent is up" is a fact only this process holds: the
+    // harness has already started by the time `run` is called, and the room
+    // has just welcomed the socket. Announced once, not on every reconnect
+    // — a reconnect is not a second provision.
+    let mut ready_announced = false;
 
     let ending = loop {
         // A collector failure is fatal and must not wait for a reconnect
@@ -769,6 +783,25 @@ where
         match connection.endpoint.connect().await {
             Ok(mut socket) => {
                 attempt = 0;
+                if !ready_announced {
+                    // A failure here is a dropped socket, which the loop is
+                    // already built to survive: the announcement is a line
+                    // in a timeline, and retrying it on the next connection
+                    // would date it to the reconnect rather than to when
+                    // the agent actually came up.
+                    if let Err(error) = send(
+                        &mut socket,
+                        &DaemonToControl::ProvisioningStage {
+                            stage: ProvisioningStage::Ready,
+                            at_unix: now_unix(),
+                        },
+                    )
+                    .await
+                    {
+                        tracing::warn!(%error, "the agent-ready stage did not reach the room");
+                    }
+                    ready_announced = true;
+                }
                 match connection
                     .pump(&mut socket, &mut queue, &mut in_flight)
                     .await

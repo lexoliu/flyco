@@ -41,6 +41,15 @@ export type HarnessEvent =
   | { type: "context_compaction_failed"; error: string };
 
 /**
+ * How far a session's machine has got towards running an agent.
+ *
+ * Mirrors `flyco_core::wire::ProvisioningStage`: the five milestones flyco
+ * can observe, in the order they happen. The session page renders them as a
+ * timeline inside the transcript (docs/ux.md §9.2).
+ */
+export type ProvisioningStage = "reserving" | "booting" | "installing" | "cloning" | "ready";
+
+/**
  * What a browser attached to a session room receives, mirroring
  * `flyco_core::wire::ClientEvent` exactly.
  */
@@ -55,7 +64,8 @@ export type ClientEvent =
   | { type: "usage"; usage: UsageReport }
   | { type: "terminal_output"; data: string }
   | { type: "repo_dirty"; summary: string }
-  | { type: "spot_notice"; seconds_remaining: number };
+  | { type: "spot_notice"; seconds_remaining: number }
+  | { type: "provisioning_stage"; stage: ProvisioningStage; at_unix: number };
 
 /**
  * The four `ControlToDaemon` variants a browser may send directly over the
@@ -101,4 +111,5 @@ const CLIENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "terminal_output",
   "repo_dirty",
   "spot_notice",
+  "provisioning_stage",
 ]);

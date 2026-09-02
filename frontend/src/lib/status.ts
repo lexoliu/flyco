@@ -8,15 +8,17 @@
  * module is the single derivation of them, so a row, a group heading and a
  * session header can never disagree.
  *
- * **What is deliberately not here yet.** Telling `Working` from `Needs
- * input` needs the session's live relay events — whether a turn is in
- * flight, whether an approval is pending — and those are not on
- * `SessionSummary`. Until the session page lands them (issue #62), an
- * `active` session reads as `Idle`, which is the honest answer for a list
- * built from summaries alone. The refinement is an extra argument to
- * {@link deriveStatus}, not a second derivation somewhere else.
+ * Telling `Working` from `Needs input` needs the session's live relay
+ * events — whether a turn is in flight, whether an approval is pending —
+ * and those are not on `SessionSummary`. {@link liveSignalsFrom} reads them
+ * off a relay stream, and {@link deriveStatus} takes the result as an extra
+ * argument rather than deriving the same thing twice. The session page has
+ * a relay open and passes them; the home list is built from summaries alone
+ * and passes none, so an `active` row there reads as `Idle`, which is the
+ * honest answer for what a summary knows.
  */
 import type { SessionState, SessionSummary } from "../api/client";
+import type { TimedEvent } from "../api/relay";
 
 /** What a session looks like to the person who opened it. */
 export type SessionStatus =
@@ -103,6 +105,64 @@ export function deriveStatus(
     return { status: "needs_input", label: "Needs input", tone: "attention", breathing: false };
   }
   return { status: "idle", label: "Idle", tone: "quiet", breathing: false };
+}
+
+/**
+ * Reads the two live facts a status needs off a session's relay stream.
+ *
+ * docs/ux.md §6 defines them in terms of what has happened, not of what the
+ * lifecycle enum says, so both are folded from the events themselves:
+ *
+ * - **A turn is in flight** when a turn started and neither completed nor
+ *   failed. Turns do not nest, so the last one seen is the answer.
+ * - **The agent is waiting on the user** when an approval is pending, or
+ *   when the last turn completed and no user message followed it. The
+ *   second half is what makes a finished session read as `Needs input`
+ *   rather than as `Idle`: the agent said its piece and it is the user's
+ *   move.
+ *
+ * Pure, and taking the whole stream rather than an incremental update, so
+ * it agrees with {@link foldTranscript} by construction — both are a single
+ * pass over the same list.
+ */
+export function liveSignalsFrom(events: readonly TimedEvent[]): LiveSignals {
+  const undecided = new Set<string>();
+  let turnInFlight = false;
+  /** Whether the most recent conversational move was the agent finishing. */
+  let agentSpokeLast = false;
+
+  for (const { event } of events) {
+    switch (event.type) {
+      case "user_message":
+        agentSpokeLast = false;
+        break;
+      case "approval_pending":
+        undecided.add(event.id);
+        break;
+      case "approval_decided":
+        undecided.delete(event.id);
+        break;
+      case "harness":
+        switch (event.event.type) {
+          case "turn_started":
+            turnInFlight = true;
+            agentSpokeLast = false;
+            break;
+          case "turn_completed":
+          case "turn_failed":
+            turnInFlight = false;
+            agentSpokeLast = true;
+            break;
+          default:
+            break;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  return { turnInFlight, awaitingUser: undecided.size > 0 || agentSpokeLast };
 }
 
 /**

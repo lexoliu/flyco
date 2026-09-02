@@ -2,32 +2,45 @@ import { describe, expect, it } from "vitest";
 import { EventStream, nextBackoffDelay } from "./relay";
 import type { StoredEvent } from "./client";
 
-function stored(seq: number, event: unknown): StoredEvent {
-  return { at_unix: 0, seq, event };
+/** The instant the fixture's live frames are dated at. */
+const LIVE_NOW = 1_800_000_000;
+
+/** A stream whose live clock does not move, so an assertion can name it. */
+function freshStream(): EventStream {
+  return new EventStream(() => LIVE_NOW);
+}
+
+function stored(seq: number, event: unknown, atUnix = 0): StoredEvent {
+  return { at_unix: atUnix, seq, event };
 }
 
 const started = { type: "started", harness_session_id: "h-1" };
 const usage = { type: "usage", usage: { input_tokens: 1, output_tokens: 2, estimated_cost: null, context: null } };
 const notice = { type: "spot_notice", seconds_remaining: 30 };
 
+/** Drops the timestamps, for the assertions that are only about dedup and order. */
+function eventsOf(timed: { event: unknown }[]): unknown[] {
+  return timed.map((entry) => entry.event);
+}
+
 describe("EventStream.ingestCatchUp", () => {
   it("emits every event on an empty stream and advances the cursor", () => {
-    const stream = new EventStream();
+    const stream = freshStream();
     const out = stream.ingestCatchUp([stored(1, started), stored(2, usage)]);
-    expect(out).toEqual([started, usage]);
+    expect(eventsOf(out)).toEqual([started, usage]);
     expect(stream.cursor).toBe(2);
   });
 
   it("skips events at or below the cursor already reached", () => {
-    const stream = new EventStream();
+    const stream = freshStream();
     stream.ingestCatchUp([stored(1, started), stored(2, usage)]);
     const out = stream.ingestCatchUp([stored(2, usage), stored(3, notice)]);
-    expect(out).toEqual([notice]);
+    expect(eventsOf(out)).toEqual([notice]);
     expect(stream.cursor).toBe(3);
   });
 
   it("still advances the cursor for a duplicate event byte-identical to one already shown live", () => {
-    const stream = new EventStream();
+    const stream = freshStream();
     // The exact same JSON text arrives live first...
     stream.ingestLive(JSON.stringify(notice));
     // ...then catch-up replays it with a seq attached. It must not be
@@ -38,61 +51,78 @@ describe("EventStream.ingestCatchUp", () => {
   });
 
   it("returns nothing for an empty page and leaves the cursor untouched", () => {
-    const stream = new EventStream();
+    const stream = freshStream();
     const out = stream.ingestCatchUp([]);
     expect(out).toEqual([]);
     expect(stream.cursor).toBeNull();
   });
+
+  it("dates a replayed event by when the room recorded it, not by now", () => {
+    // This is what makes a `Worked for 8m 23s` footer readable on a
+    // session opened tomorrow: the times come off the stored stream.
+    const stream = freshStream();
+    const out = stream.ingestCatchUp([stored(1, started, 1_700_000_000)]);
+    expect(out).toEqual([{ event: started, atUnix: 1_700_000_000 }]);
+  });
 });
 
 describe("EventStream.ingestLive", () => {
-  it("parses and emits a fresh live frame", () => {
-    const stream = new EventStream();
+  it("parses and emits a fresh live frame, dated on arrival", () => {
+    const stream = freshStream();
     const event = stream.ingestLive(JSON.stringify(started));
-    expect(event).toEqual(started);
+    expect(event).toEqual({ event: started, atUnix: LIVE_NOW });
   });
 
   it("dedupes a live frame byte-identical to one already shown via catch-up", () => {
-    const stream = new EventStream();
+    const stream = freshStream();
     stream.ingestCatchUp([stored(1, started)]);
     const event = stream.ingestLive(JSON.stringify(started));
     expect(event).toBeNull();
   });
 
   it("dedupes a repeated live frame against itself", () => {
-    const stream = new EventStream();
+    const stream = freshStream();
     const first = stream.ingestLive(JSON.stringify(notice));
     const second = stream.ingestLive(JSON.stringify(notice));
-    expect(first).toEqual(notice);
+    expect(first).toEqual({ event: notice, atUnix: LIVE_NOW });
     expect(second).toBeNull();
   });
 
   it("does not dedupe two distinct events", () => {
-    const stream = new EventStream();
+    const stream = freshStream();
     const first = stream.ingestLive(JSON.stringify(started));
     const second = stream.ingestLive(JSON.stringify(usage));
-    expect(first).toEqual(started);
-    expect(second).toEqual(usage);
+    expect(eventsOf([first, second].filter((entry) => entry !== null))).toEqual([started, usage]);
+  });
+
+  it("dates each live frame against the clock at the moment it arrived", () => {
+    let seconds = 1_000;
+    const stream = new EventStream(() => seconds);
+    const first = stream.ingestLive(JSON.stringify(started));
+    seconds = 1_042;
+    const second = stream.ingestLive(JSON.stringify(usage));
+    expect(first?.atUnix).toBe(1_000);
+    expect(second?.atUnix).toBe(1_042);
   });
 });
 
 describe("EventStream catch-up + live interleaving (the reconnect race)", () => {
   it("shows nothing twice across a catch-up pass, a live frame that beat it, and a second catch-up pass", () => {
-    const stream = new EventStream();
+    const stream = freshStream();
 
     // First catch-up page on initial connect.
     const first = stream.ingestCatchUp([stored(1, started)]);
-    expect(first).toEqual([started]);
+    expect(eventsOf(first)).toEqual([started]);
 
     // A live frame arrives that duplicates what catch-up already showed
     // (the same fact reaching the browser twice during the handshake).
     const live = stream.ingestLive(JSON.stringify(usage));
-    expect(live).toEqual(usage);
+    expect(live?.event).toEqual(usage);
 
     // The "double catch-up" run fired from the socket's open handler
     // replays the same page plus one more row; only the new one shows.
     const second = stream.ingestCatchUp([stored(1, started), stored(2, usage), stored(3, notice)]);
-    expect(second).toEqual([notice]);
+    expect(eventsOf(second)).toEqual([notice]);
     expect(stream.cursor).toBe(3);
   });
 });

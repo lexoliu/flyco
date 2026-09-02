@@ -93,9 +93,11 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
     return Promise.resolve(
       jsonResponse({
         id,
+        title: "Audit the relay for dropped frames",
         repo: "octocat/hello-world",
         harness: "claude_code",
         state: "active",
+        machine_origin: "auto",
         created_at_unix: 0,
         last_active_unix: 0,
         budget: { limit: 10_000_000, spent: 0, remaining: 10_000_000, stage: "ok" },

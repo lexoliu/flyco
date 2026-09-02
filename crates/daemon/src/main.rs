@@ -100,7 +100,7 @@ async fn run(cli: Cli) -> Result<(), Failure> {
                 "starting flycod"
             );
             match config.harness {
-                HarnessKind::ClaudeCode => drive_claude_code(config).await,
+                HarnessKind::ClaudeCode => Box::pin(drive_claude_code(config)).await,
                 HarnessKind::Codex => Box::pin(drive_codex(config)).await,
             }
         }
@@ -163,7 +163,7 @@ async fn drive_codex(config: DaemonConfig) -> Result<(), Failure> {
             resume_session_id: config.resume_session_id.clone(),
         })
         .await?;
-    report(config, started).await
+    Box::pin(report(config, started)).await
 }
 
 /// Hands a started session to the control plane or the REPL.

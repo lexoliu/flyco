@@ -167,6 +167,7 @@ impl DurableObject for SessionRoom {
             "/relay/daemon".at(accept_daemon),
             "/relay/client".at(accept_client),
             "/internal/command".post(run_command),
+            "/internal/broadcast".post(run_broadcast),
             "/internal/events".at(read_events),
             "/internal/repo-status".at(read_repo_status),
         ))
@@ -407,10 +408,11 @@ async fn deliver_user_message(
 /// Appends a frame to the room's durable stream and caches what the UI
 /// reads on connect.
 ///
-/// Only the harness stream is appended: a catch-up must replay what
-/// happened, and a usage meter or a capability set is a *current value*, so
-/// storing every one of them would grow the table without making the replay
-/// any more complete. Those go to KV, newest wins.
+/// Only what *happened* is appended — the harness stream and the
+/// provisioning timeline: a catch-up must replay events, and a usage meter
+/// or a capability set is a *current value*, so storing every one of them
+/// would grow the table without making the replay any more complete. Those
+/// go to KV, newest wins.
 async fn record(
     frame: &DaemonToControl,
     db: &DurableDb,
@@ -431,6 +433,15 @@ async fn record(
         DaemonToControl::Capabilities { capabilities } => {
             put_latest(kv, KEY_CAPABILITIES, capabilities).await
         }
+        DaemonToControl::ProvisioningStage { stage, at_unix } => append(
+            db,
+            &ClientEvent::ProvisioningStage {
+                stage: *stage,
+                at_unix: *at_unix,
+            },
+        )
+        .await
+        .map(drop),
         DaemonToControl::RepoDirty { summary } => {
             // The daemon is the only thing that can see the working tree, and
             // it reports the whole `git status --short` output rather than a
@@ -741,6 +752,41 @@ async fn dispatch_command(
     if let Some(event) = echo {
         broadcast(connections, &event).map_err(|error| room_failed(&error))?;
     }
+    Ok(NoContent)
+}
+
+/// Appends a control-plane event to the room's stream and shows it to every
+/// browser watching.
+///
+/// The other half of [`run_command`]: a command is something the *daemon*
+/// must act on, and this is something only the user needs to see. The
+/// provisioning timeline is the case that needs it — the queue knows the
+/// machine was reserved minutes before any daemon exists to say so — and it
+/// is appended rather than only broadcast, because a browser opened after
+/// provisioning finished must still be able to replay how long each stage
+/// took.
+async fn run_broadcast(
+    headers: Headers,
+    Json(event): Json<ClientEvent>,
+    connections: DurableConnections,
+    db: DurableDb,
+) -> Outcome<NoContent> {
+    dispatch_broadcast(&headers, &event, &connections, &db)
+        .await
+        .into()
+}
+
+async fn dispatch_broadcast(
+    headers: &Headers,
+    event: &ClientEvent,
+    connections: &DurableConnections,
+    db: &DurableDb,
+) -> Result<NoContent, ApiError> {
+    internal(headers)?;
+    append(db, event)
+        .await
+        .map_err(|error| room_failed(&error))?;
+    broadcast(connections, event).map_err(|error| room_failed(&error))?;
     Ok(NoContent)
 }
 

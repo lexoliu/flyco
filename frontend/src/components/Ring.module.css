@@ -1,0 +1,36 @@
+.ring {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+
+.track {
+  stroke: var(--color-border);
+}
+
+.value {
+  stroke: var(--color-text-muted);
+  transition: stroke-dashoffset var(--transition-panel), stroke var(--transition-fast);
+}
+
+/* Colour only once the thing being measured is running out. */
+.value[data-tone="warn"] {
+  stroke: var(--color-warning);
+}
+
+.value[data-tone="danger"] {
+  stroke: var(--color-danger);
+}
+
+.readout {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .value {
+    transition: none;
+  }
+}
