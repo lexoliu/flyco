@@ -189,11 +189,39 @@ describe("route smoke tests", () => {
     // The title, not the id: a session is identified by what it is for.
     expect(await findByText("Audit the relay for dropped frames")).toBeInTheDocument();
     expect(getByLabelText("Message the agent")).toBeInTheDocument();
-    // A session with no events yet says what to do about it rather than
-    // showing an empty box.
+    // The prompt already went out with `POST /v1/sessions` and the machine
+    // is being built, so the empty transcript is the build itself — and
+    // the one sentence a new user needs, which is that nothing is being
+    // asked of them.
+    expect(
+      await findByText("Your task is queued and will start as soon as the machine is ready."),
+    ).toBeInTheDocument();
+    expect(getByLabelText("Provisioning")).toBeInTheDocument();
+    expect(await findByText("Reserving a machine on AWS")).toBeInTheDocument();
+  });
+
+  it("asks a running session with no events for a message", async () => {
+    const base = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      const response = await base!(input, init);
+      if (!/^\/v1\/sessions\/[^/]+$/.test(url.pathname)) {
+        return response;
+      }
+      // The same session, but with a machine that is up and an agent that
+      // has nothing to do until someone speaks.
+      const session = (await response.json()) as Record<string, unknown>;
+      return new Response(JSON.stringify({ ...session, state: "active", activity: "idle" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const { findByText, queryByLabelText } = renderAt("/sessions/abc-123");
+
     expect(
       await findByText("Nothing has happened yet. Send a message to get the agent started."),
     ).toBeInTheDocument();
+    expect(queryByLabelText("Provisioning")).not.toBeInTheDocument();
   });
 
   it("keeps the session's side panels behind the collapsed drawer", async () => {

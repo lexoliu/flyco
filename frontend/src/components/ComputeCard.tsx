@@ -25,6 +25,7 @@ import { Server } from "lucide-solid";
 import Logomark, { PROVIDER_MARK } from "./Logomark";
 import Toggle from "./Toggle";
 import { getDefaultMachine, type CloudUsageRow, type ProviderAccountView } from "../api/client";
+import { ApiProblem } from "../api/problem";
 import { formatDate } from "../lib/dates";
 import { hourlyLabel } from "../lib/machines";
 import { formatUsd } from "../lib/money";
@@ -138,32 +139,31 @@ export default function ComputeCard(props: ComputeCardProps) {
       }
     >
       <Fact label="Machine">
+        {/*
+          The error is checked before the value is read: a Solid resource
+          that rejected throws from its accessor, and a refusal read the
+          other way round would take the card down and leave the cell blank.
+        */}
         <Show
-          when={machine()}
-          fallback={
-            <Show
-              when={machine.error === undefined || machine.error === null}
-              fallback={
-                <span class={styles.absent}>
-                  No machine here is big enough for flyco to pick on its own.
-                </span>
-              }
-            >
-              <span class={styles.skeleton} aria-label="Reading the catalog" />
-            </Show>
-          }
+          when={machine.error === undefined}
+          fallback={<span class={styles.absent}>{machineAbsence(machine.error)}</span>}
         >
-          {(chosen) => (
-            <>
-              {chosen().entry.machine_type}
-              <span class={styles.dim}>
-                {" · "}
-                {chosen().entry.region}
-                {" · "}
-                {hourlyLabel(chosen().entry, props.spot)}
-              </span>
-            </>
-          )}
+          <Show
+            when={machine()}
+            fallback={<span class={styles.skeleton} aria-label="Reading the catalog" />}
+          >
+            {(chosen) => (
+              <>
+                {chosen().entry.machine_type}
+                <span class={styles.dim}>
+                  {" · "}
+                  {chosen().entry.region}
+                  {" · "}
+                  {hourlyLabel(chosen().entry, props.spot)}
+                </span>
+              </>
+            )}
+          </Show>
         </Show>
       </Fact>
 
@@ -182,29 +182,85 @@ export default function ComputeCard(props: ComputeCardProps) {
 
       <Fact label="This billing period">
         <Show
-          when={props.usage}
-          fallback={
-            /* `GET /v1/usage/cloud` deliberately returns no row for
-               hardware the user already owns; a `$0.00` there would read
-               as "this is free", which it is not. */
-            <span class={styles.absent}>Flyco meters no spend on this account.</span>
-          }
+          when={props.account.kind !== "host"}
+          /* `GET /v1/usage/cloud` deliberately returns no row for hardware
+             the user already owns; a `$0.00` there would read as "this is
+             free", which it is not. */
+          fallback={<YourHardware />}
         >
-          {(row) => (
-            <>
-              <strong>{formatUsd(row().spent)}</strong>
-              <span class={styles.dim}>
-                {" since "}
-                {formatDate(row().period_start_unix)}
-                <Show when={row().remaining_credit !== null && row().remaining_credit !== undefined}>
-                  {" · "}
-                  {formatUsd(row().remaining_credit ?? 0)} credit left
-                </Show>
+          <Show
+            when={metered(props.usage)}
+            /* A cloud account that has not been billed yet is a different
+               fact from one flyco cannot meter: the meter is running, it
+               has just read nothing so far. */
+            fallback={
+              <span class={styles.absent}>
+                No metered spend yet this period.
+                <CreditLeft usage={props.usage} />
               </span>
-            </>
-          )}
+            }
+          >
+            {(row) => (
+              <>
+                <strong>{formatUsd(row().spent)}</strong>
+                <span class={styles.dim}>
+                  {" since "}
+                  {formatDate(row().period_start_unix)}
+                  <CreditLeft usage={row()} />
+                </span>
+              </>
+            )}
+          </Show>
         </Show>
       </Fact>
     </CardShell>
   );
+}
+
+/** The usage row, when it carries any spend at all. */
+function metered(usage: CloudUsageRow | undefined): CloudUsageRow | undefined {
+  return usage !== undefined && usage.spent > 0 ? usage : undefined;
+}
+
+/** `· $80.00 credit left`, on whichever spend line has a credit to report. */
+function CreditLeft(props: { usage: CloudUsageRow | undefined }) {
+  const credit = () => props.usage?.remaining_credit ?? null;
+  return (
+    <Show when={credit() !== null}>
+      {" · "}
+      {formatUsd(credit() ?? 0)} credit left
+    </Show>
+  );
+}
+
+/**
+ * What a machine the user owns costs: nothing flyco meters.
+ *
+ * Not `$0.00`, and not silence either — a zero would tell a budget it can
+ * run forever, and an empty cell would look like a number that failed to
+ * load. Shared with `HostCard`, so the host's own card and the compute card
+ * that stands in for it before the host's facts arrive say the same words.
+ */
+export function YourHardware() {
+  return (
+    <>
+      <strong>your hardware</strong>
+      <span class={styles.dim}> · a session here spends no budget</span>
+    </>
+  );
+}
+
+/**
+ * Why there is no machine to name, in words.
+ *
+ * The control plane refuses `GET /v1/machines/default` with one specific
+ * problem when the account offers no Linux type flyco would pick on its
+ * own; that is a fact about the account and is said as one. Anything else
+ * is a failure, and its own message is the most honest thing to show.
+ */
+function machineAbsence(error: unknown): string {
+  if (error instanceof ApiProblem && error.type.endsWith("/no-deployable-linux-machine")) {
+    return "No deployable Linux machine in this account yet.";
+  }
+  return error instanceof Error ? error.message : String(error);
 }

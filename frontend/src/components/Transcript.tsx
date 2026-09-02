@@ -279,7 +279,7 @@ function ShellBlock(props: { shell: Extract<TranscriptItem, { kind: "shell" }> }
  * The step still in progress counts against the clock passed in, which is
  * what makes the timeline move while the user watches it.
  */
-function ProvisioningTimeline(props: {
+export function ProvisioningTimeline(props: {
   steps: ProvisioningStep[];
   recovery: boolean;
   repo: string;

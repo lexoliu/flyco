@@ -5,6 +5,26 @@ import styles from "./ProblemNotice.module.css";
 export interface ProblemNoticeProps {
   /** Whatever a resource's `.error` accessor returned; `undefined`/`null` renders nothing. */
   error: unknown;
+  /**
+   * One thing the reader can do about it, e.g. `Retry`.
+   *
+   * On the notice rather than beside it, so the failure and the way out of
+   * it are one line and never drift apart on a page that has several.
+   */
+  action?: { label: string; onClick: () => void } | undefined;
+}
+
+/** The action, when there is one, as a quiet pill at the end of the line. */
+function Action(props: Pick<ProblemNoticeProps, "action">) {
+  return (
+    <Show when={props.action}>
+      {(action) => (
+        <button type="button" class={styles.action} onClick={() => action().onClick()}>
+          {action().label}
+        </button>
+      )}
+    </Show>
+  );
 }
 
 /**
@@ -25,15 +45,19 @@ export default function ProblemNotice(props: ProblemNoticeProps) {
           when={error() instanceof NotImplementedError}
           fallback={
             <p class={styles.error} role="alert">
-              {(() => {
-                const value = error();
-                return value instanceof Error ? value.message : String(value);
-              })()}
+              <span>
+                {(() => {
+                  const value = error();
+                  return value instanceof Error ? value.message : String(value);
+                })()}
+              </span>
+              <Action action={props.action} />
             </p>
           }
         >
           <p class={styles.notImplemented} role="status">
-            Not built yet — this part of flyco is still on its way.
+            <span>Not built yet — this part of flyco is still on its way.</span>
+            <Action action={props.action} />
           </p>
         </Show>
       )}

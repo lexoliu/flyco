@@ -158,7 +158,8 @@ function McpServers() {
               fallback={
                 <div class={styles.empty}>
                   <p class={styles.emptyLine}>
-                    No MCP servers yet. Add one and every session gets its tools.
+                    MCP servers give every session extra tools, such as a database, a browser or
+                    documentation.
                   </p>
                   <button type="button" class={styles.pillPrimary} onClick={() => setAdding(true)}>
                     <Plus size={14} aria-hidden="true" />
@@ -212,7 +213,16 @@ function Skills() {
       <p class={styles.groupLabel}>Skills</p>
       <ProblemNotice error={skills.error ?? error()} />
 
-      <Show when={(skills() ?? []).length > 0}>
+      <Show
+        when={(skills() ?? []).length > 0}
+        fallback={
+          /* The drop zone is the action; the sentence before it says what a
+             skill is, which a first visit has no other way to learn. */
+          <p class={styles.lede}>
+            Skills are folders of instructions an agent can load; upload one as a .zip.
+          </p>
+        }
+      >
         <div class={cx(styles.cards, styles.cardsPaired)}>
           <For each={skills()}>
             {(skill) => <SkillCard skill={skill} onRemove={() => void remove(skill.id)} />}

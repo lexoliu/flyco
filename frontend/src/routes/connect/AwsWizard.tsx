@@ -30,13 +30,19 @@ export interface AwsWizardProps {
 }
 
 export default function AwsWizard(props: AwsWizardProps) {
-  const [policy] = createResource(getAwsIamPolicy);
+  const [policy, { refetch: refetchPolicy }] = createResource(getAwsIamPolicy);
   const [accessKeyId, setAccessKeyId] = createSignal("");
   const [secretAccessKey, setSecretAccessKey] = createSignal("");
   const [sessionToken, setSessionToken] = createSignal("");
   const [keyName, setKeyName] = createSignal("");
 
-  const ready = () => accessKeyId().trim() !== "" && secretAccessKey().trim() !== "";
+  // The policy is part of what is being linked: an access key attached to
+  // nothing would validate here and fail on the first `RunInstances`. So a
+  // key typed before the policy has arrived waits for it.
+  // Read as a state rather than a value: a rejected resource throws from
+  // its accessor, and this is called on every keystroke.
+  const ready = () =>
+    policy.state === "ready" && accessKeyId().trim() !== "" && secretAccessKey().trim() !== "";
 
   async function link(): Promise<void> {
     const token = sessionToken().trim();
@@ -57,30 +63,39 @@ export default function AwsWizard(props: AwsWizardProps) {
     <div class={styles.step}>
       <section class={styles.stage}>
         <p class={styles.stageTitle}>1 · Attach this policy to a new IAM user</p>
+        {/*
+          The error is checked before the value is read: a Solid resource
+          that rejected *throws* from its accessor, so `policy()` inside the
+          failure branch would take the whole wizard down with it, and the
+          user would see neither a policy nor a reason.
+        */}
         <Show
-          when={policy()}
+          when={policy.error === undefined}
           fallback={
-            <Show
-              when={policy.error === undefined || policy.error === null}
-              fallback={<ProblemNotice error={policy.error} />}
-            >
-              <div class={styles.policySkeleton} aria-label="Reading the policy" />
-            </Show>
+            <ProblemNotice
+              error={policy.error}
+              action={{ label: "Retry", onClick: () => void refetchPolicy() }}
+            />
           }
         >
-          {(document) => (
-            <>
-              <CommandBlock
-                value={document().document}
-                label="Copy policy"
-                caption={`${document().actions.length} actions, and nothing else`}
-              />
-              <p class={styles.hint}>
-                This is generated from the calls the driver actually makes, so it grants what flyco
-                needs and no more.
-              </p>
-            </>
-          )}
+          <Show
+            when={policy()}
+            fallback={<div class={styles.policySkeleton} aria-label="Reading the policy" />}
+          >
+            {(document) => (
+              <>
+                <CommandBlock
+                  value={document().document}
+                  label="Copy policy"
+                  caption={`${document().actions.length} actions, and nothing else`}
+                />
+                <p class={styles.hint}>
+                  This is generated from the calls the driver actually makes, so it grants what
+                  flyco needs and no more.
+                </p>
+              </>
+            )}
+          </Show>
         </Show>
         <a
           class={styles.pill}

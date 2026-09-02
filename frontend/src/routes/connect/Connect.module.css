@@ -271,10 +271,19 @@
   align-items: center;
   gap: var(--space-1);
   margin-right: auto;
-  font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--color-text-muted);
   overflow-wrap: anywhere;
+}
+
+/* The word is set in the body face; only the hash itself is mono, so the
+   line reads as a label and a value rather than as one opaque token. */
+.fingerprintLabel {
+  margin-right: var(--space-1);
+}
+
+.fingerprint code {
+  font-family: var(--font-mono);
 }
 
 /* ── The GCP drop zone ───────────────────────────────────────────────── */

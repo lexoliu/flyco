@@ -1,17 +1,35 @@
-.error {
-  color: var(--color-danger);
-  background: var(--color-danger-muted);
+.error,
+.notImplemented {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
   border-radius: var(--radius-md);
   padding: var(--space-3) var(--space-4);
   font-size: var(--text-sm);
   margin: 0;
 }
 
+.error {
+  color: var(--color-danger);
+  background: var(--color-danger-muted);
+}
+
 .notImplemented {
   color: var(--color-text-muted);
   background: var(--color-surface-sunken);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
+}
+
+/* A pill in the notice's own ink, so the way out of a failure is drawn in
+   the same colour as the failure and never reads as a second alert. */
+.action {
+  margin-left: auto;
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) solid currentcolor;
+  border-radius: var(--radius-full);
+  background: none;
+  color: inherit;
+  font: inherit;
   font-size: var(--text-sm);
-  margin: 0;
+  cursor: pointer;
 }

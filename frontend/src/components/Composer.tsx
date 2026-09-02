@@ -501,16 +501,12 @@ function BranchChip(props: {
     () => props.branch ?? page()?.branches.find((candidate) => candidate.is_default)?.name ?? null,
   );
 
+  // Nothing at all until a repository is chosen: a branch is a fact about
+  // one repository, and a disabled `Branch` chip beside `Select repository`
+  // is a second thing to wonder about on a page that should pose one
+  // question at a time.
   return (
-    <Show
-      when={props.slug !== null}
-      fallback={
-        <span class={cx(styles.chip, styles.chipMissing)} aria-disabled="true">
-          <GitBranch size={13} aria-hidden="true" />
-          <span class={styles.chipLabel}>Branch</span>
-        </span>
-      }
-    >
+    <Show when={props.slug !== null}>
       <Popover
         label="Branch"
         trigger={(attrs) => (

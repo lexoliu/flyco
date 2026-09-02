@@ -13,13 +13,13 @@
  * screen can never disagree about what happened.
  */
 import { useParams } from "@solidjs/router";
-import { Show, createMemo, createResource, createSignal, onCleanup } from "solid-js";
+import { Match, Show, Switch, createMemo, createResource, createSignal, onCleanup } from "solid-js";
 import { AlertTriangle } from "lucide-solid";
 import ProblemNotice from "../components/ProblemNotice";
 import SessionComposer, { type SessionCommand } from "../components/SessionComposer";
 import SessionDrawer from "../components/SessionDrawer";
 import SessionHeader from "../components/SessionHeader";
-import Transcript from "../components/Transcript";
+import Transcript, { ProvisioningTimeline } from "../components/Transcript";
 import {
   archiveSession,
   compactSession,
@@ -37,7 +37,7 @@ import { createSessionRelay } from "../api/relay";
 import { PROVIDER_LABEL } from "../lib/providers";
 import { usdMicrosToDollars } from "../lib/money";
 import { shellCommandIn } from "../lib/shell";
-import { deriveStatus, liveSignalsFrom } from "../lib/status";
+import { deriveStatus, liveSignalsFrom, type StatusView } from "../lib/status";
 import { foldTranscript, pendingApprovals } from "../lib/transcript";
 import styles from "./SessionDetail.module.css";
 
@@ -72,12 +72,12 @@ export default function SessionDetail() {
   const waiting = createMemo(() => pendingApprovals(transcript()));
   const signals = createMemo(() => liveSignalsFrom(relay.events()));
 
-  const status = createMemo(() => {
+  const status = createMemo((): StatusView => {
     const current = session();
     if (current === undefined) {
       // Nothing is known yet; the pill says so rather than guessing at a
       // lifecycle the request has not answered with.
-      return { status: "idle", label: "Loading", tone: "quiet", breathing: false } as const;
+      return { status: "idle", label: "Loading", tone: "quiet", breathing: false };
     }
     return deriveStatus(current, now(), signals());
   });
@@ -355,12 +355,48 @@ export default function SessionDetail() {
             </p>
           </Show>
 
+          {/*
+            An empty transcript says something different in every state,
+            and the first one a new user meets is the one that matters
+            most: the prompt has already gone out with `POST /v1/sessions`
+            and the machine is being built, so asking for a message there
+            would be asking for what was just given. The daemon has not
+            spoken yet, so the timeline starts from the fact the page does
+            hold — when the session was opened — and moves with the clock.
+          */}
           <Show
             when={transcript().length > 0}
             fallback={
-              <p class={styles.empty}>
-                Nothing has happened yet. Send a message to get the agent started.
-              </p>
+              <Switch>
+                <Match when={session()?.state === "provisioning" && session()}>
+                  {(current) => (
+                    <>
+                      <ProvisioningTimeline
+                        steps={[{ stage: "reserving", atUnix: current().created_at_unix }]}
+                        recovery={status().status === "migrating"}
+                        repo={current().repo}
+                        provider={providerLabel()}
+                        now={now()}
+                      />
+                      <p class={styles.empty}>
+                        Your task is queued and will start as soon as the machine is ready.
+                      </p>
+                    </>
+                  )}
+                </Match>
+                <Match when={session()?.state === "active"}>
+                  <p class={styles.empty}>
+                    Nothing has happened yet. Send a message to get the agent started.
+                  </p>
+                </Match>
+                <Match when={session()}>
+                  <p class={styles.empty}>
+                    {status().label}
+                    <Show when={status().detail}>{(detail) => <> · {detail()}</>}</Show>. Nothing
+                    ran before it stopped.
+                  </p>
+                </Match>
+              </Switch>
             }
           >
             <Transcript

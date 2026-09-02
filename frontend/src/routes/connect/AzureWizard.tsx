@@ -169,20 +169,21 @@ export default function AzureWizard(props: AzureWizardProps) {
       </section>
 
       <section class={styles.stage}>
-        <p class={styles.stageTitle}>3 · Keep the break-glass key</p>
+        <p class={styles.stageTitle}>3 · Save the machine's admin SSH key (optional)</p>
         <ProblemNotice error={keyError()} />
         <Show when={generated()}>
           {(key) => (
             <>
               <p class={styles.hint}>
-                Azure will not build a Linux machine without a login key, so flyco generated one in
-                this browser. It is offered once: flyco keeps the public half and never sees the
-                private one.
+                Azure requires an SSH login key for every Linux machine it builds. Flyco made one in
+                this browser and keeps only the public half. The private key is only needed if you
+                ever want to SSH into a session machine yourself, so save it now or skip this.
               </p>
               <div class={styles.keyRow}>
                 <span class={styles.fingerprint}>
                   <KeyRound size={13} aria-hidden="true" />
-                  {key().fingerprint}
+                  <span class={styles.fingerprintLabel}>Fingerprint</span>
+                  <code>{key().fingerprint}</code>
                 </span>
                 <button
                   type="button"
