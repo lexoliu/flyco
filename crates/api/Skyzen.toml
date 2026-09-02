@@ -40,6 +40,7 @@ type = "kv"
 name = "main"
 type = "sql"
 default = true
+migrations_dir = "../../migrations"
 
 # R2 holds session transcripts: `transcripts/{session}/{stream}/{seq:08}.jsonl`,
 # written batch by batch by flycod. Bulk transcript data must never ride the
