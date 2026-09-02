@@ -13,7 +13,7 @@
  */
 import { For, Show, createMemo, createResource, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
-import { ArrowUp, Cpu, DollarSign, FolderGit2, Plus, Server } from "lucide-solid";
+import { ArrowUp, Cpu, FolderGit2, Plus, Server, Wallet } from "lucide-solid";
 import Popover from "./Popover";
 import Logomark, { HARNESS_MARK, PROVIDER_MARK } from "./Logomark";
 import ProblemNotice from "./ProblemNotice";
@@ -170,19 +170,21 @@ export default function Composer(props: ComposerProps) {
           }}
         />
         <div class={styles.controls}>
-          <HarnessChip harness={harness()} linked={readiness.harness().length > 0} />
-          <ComputeChip
-            linked={readiness.compute().length > 0}
-            automatic={automatic()}
-            entry={chosen()}
-            catalog={catalog() ?? []}
-            chosenKey={chosenKey()}
-            spot={spot()}
-            onChoose={setChosenKey}
-            onSpot={setSpot}
-          />
-          <RepoChip slug={repo()} onChoose={chooseRepo} />
-          <BudgetChip dollars={budget()} onChange={setBudget} />
+          <div class={styles.chips}>
+            <HarnessChip harness={harness()} linked={readiness.harness().length > 0} />
+            <ComputeChip
+              linked={readiness.compute().length > 0}
+              automatic={automatic()}
+              entry={chosen()}
+              catalog={catalog() ?? []}
+              chosenKey={chosenKey()}
+              spot={spot()}
+              onChoose={setChosenKey}
+              onSpot={setSpot}
+            />
+            <RepoChip slug={repo()} onChoose={chooseRepo} />
+            <BudgetChip dollars={budget()} onChange={setBudget} />
+          </div>
           <button
             type="button"
             class={styles.send}
@@ -269,7 +271,14 @@ function ComputeChip(props: {
         label="Compute"
         panelClass={styles.popoverWide}
         trigger={(attrs) => (
-          <button {...attrs} type="button" class={styles.chip}>
+          <button
+            id={attrs.id}
+            onClick={attrs.onClick}
+            aria-expanded={attrs.expanded()}
+            aria-haspopup="dialog"
+            type="button"
+            class={styles.chip}
+          >
             <Show
               when={props.entry !== undefined && PROVIDER_MARK[props.entry.provider]}
               fallback={<Server size={13} aria-hidden="true" />}
@@ -356,13 +365,28 @@ function RepoChip(props: { slug: string | null; onChoose: (slug: string) => void
   const [results] = createResource(query, listRepos);
   const recents = createMemo(() => recentRepos().slice(0, MAX_RECENT_REPOS));
 
+  /**
+   * The rest of the account's repositories.
+   *
+   * While the search box is empty the recents are already listed above, and
+   * repeating them under a second heading would make the popover look like
+   * it had failed to notice.
+   */
+  const rest = createMemo(() => {
+    const listed = new Set(query().trim() === "" ? recents() : []);
+    return (results() ?? []).filter((candidate) => !listed.has(candidate.slug));
+  });
+
   return (
     <Popover
       label="Repository"
       panelClass={styles.popoverWide}
       trigger={(attrs) => (
         <button
-          {...attrs}
+          id={attrs.id}
+          onClick={attrs.onClick}
+          aria-expanded={attrs.expanded()}
+          aria-haspopup="dialog"
           type="button"
           class={cx(styles.chip, props.slug === null && styles.chipMissing)}
         >
@@ -402,10 +426,10 @@ function RepoChip(props: { slug: string | null; onChoose: (slug: string) => void
               </For>
             </ul>
           </Show>
-          <Show when={(results() ?? []).length > 0}>
+          <Show when={rest().length > 0}>
             <p class={styles.popoverTitle}>Your repositories</p>
             <ul class={styles.options}>
-              <For each={results()}>
+              <For each={rest()}>
                 {(candidate: RepoSummary) => (
                   <li>
                     <button
@@ -439,8 +463,15 @@ function BudgetChip(props: { dollars: number; onChange: (dollars: number) => voi
     <Popover
       label="Budget"
       trigger={(attrs) => (
-        <button {...attrs} type="button" class={styles.chip}>
-          <DollarSign size={13} aria-hidden="true" />
+        <button
+          id={attrs.id}
+          onClick={attrs.onClick}
+          aria-expanded={attrs.expanded()}
+          aria-haspopup="dialog"
+          type="button"
+          class={styles.chip}
+        >
+          <Wallet size={13} aria-hidden="true" />
           <span class={styles.chipLabel}>${props.dollars}</span>
         </button>
       )}

@@ -17,14 +17,27 @@ import { type JSX, Show, createEffect, createSignal, createUniqueId, onCleanup }
 import { cx } from "../lib/cx";
 import styles from "./Popover.module.css";
 
+/** What a caller needs to wire onto the control that opens the panel. */
+export interface TriggerAttrs {
+  /** Element id, which the panel is labelled by. */
+  id: string;
+  /**
+   * Whether the panel is open, as an accessor.
+   *
+   * Deliberately not a plain boolean: the trigger is built once, and a
+   * `trigger` callback that *read* a signal would be re-invoked on every
+   * toggle, replacing the button element mid-click — which then makes the
+   * outside-press check compare against a node that is no longer in the
+   * document and close the panel it just opened.
+   */
+  expanded: () => boolean;
+  /** Toggles the panel. */
+  onClick: () => void;
+}
+
 export interface PopoverProps {
-  /** The control that opens the panel. Receives the trigger's props. */
-  trigger: (attrs: {
-    id: string;
-    "aria-expanded": boolean;
-    "aria-haspopup": "dialog";
-    onClick: () => void;
-  }) => JSX.Element;
+  /** The control that opens the panel. */
+  trigger: (attrs: TriggerAttrs) => JSX.Element;
   /** The panel's contents. `close` dismisses it — pass it to any action. */
   children: (close: () => void) => JSX.Element;
   /** What the panel is, for assistive technology. */
@@ -88,8 +101,7 @@ export default function Popover(props: PopoverProps) {
     >
       {props.trigger({
         id: triggerId,
-        "aria-expanded": open(),
-        "aria-haspopup": "dialog",
+        expanded: open,
         onClick: () => setOpen(!open()),
       })}
       <Show when={open()}>

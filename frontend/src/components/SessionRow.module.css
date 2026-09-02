@@ -1,6 +1,9 @@
 .row {
   display: grid;
-  grid-template-columns: 8px minmax(88px, auto) minmax(0, 1fr) auto auto;
+  /* The status column is a fixed width rather than `auto` so titles line
+     up down the whole list: each row is its own grid, and `auto` would let
+     "Paused · budget exhausted" push one title out of line with the rest. */
+  grid-template-columns: 8px 11.5rem minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-3);

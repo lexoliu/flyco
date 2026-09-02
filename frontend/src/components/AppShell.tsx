@@ -123,7 +123,10 @@ function AccountMenu(props: { onSignOut: () => void }) {
       panelClass={styles.menu}
       trigger={(attrs) => (
         <button
-          {...attrs}
+          id={attrs.id}
+          onClick={attrs.onClick}
+          aria-expanded={attrs.expanded()}
+          aria-haspopup="dialog"
           type="button"
           class={styles.avatar}
           aria-label={me() === undefined ? "Account" : `Account: ${me()?.login ?? ""}`}
