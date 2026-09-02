@@ -6,9 +6,9 @@
 //! no business knowing.
 
 use flyco_core::{
-    ARCHIVE_AFTER_IDLE_SECS, BranchName, BudgetConfig, BudgetId, HarnessKind, InterruptedReason,
-    MAX_SESSION_TITLE_CHARS, MachineOrigin, RepoSlug, SessionDetail, SessionId, SessionState,
-    SessionSummary, UserId,
+    ARCHIVE_AFTER_IDLE_SECS, ApprovalState, BranchName, BudgetConfig, BudgetId, HarnessKind,
+    InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineOrigin, RepoSlug, SessionActivity,
+    SessionDetail, SessionId, SessionState, SessionSummary, UserId,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -26,6 +26,13 @@ struct SessionRow {
     repo: RepoSlug,
     branch: Option<BranchName>,
     state: SessionState,
+    activity: SessionActivity,
+    /// Whether an approval raised against this session is still undecided.
+    ///
+    /// Read from `approvals` on every projection rather than mirrored onto
+    /// the session row: that table is where a decision is made durable, and
+    /// a copy here would be a second answer free to disagree with it.
+    approval_pending: bool,
     machine_origin: MachineOrigin,
     budget_id: BudgetId,
     failure_reason: Option<String>,
@@ -43,6 +50,10 @@ impl From<SessionRow> for SessionSummary {
             repo: row.repo,
             branch: row.branch,
             state: row.state,
+            // An undecided approval blocks the agent whatever the last turn
+            // event said, so it is applied here, once, where every reader
+            // of a session goes through.
+            activity: row.activity.with_pending_approval(row.approval_pending),
             machine_origin: row.machine_origin,
             interrupted_reason: row.interrupted_reason,
             created_at_unix: row.created_at_unix,
@@ -205,11 +216,16 @@ pub async fn rename(
 ///
 /// Returns [`ApiError`] if the database fails or a stored row is malformed.
 pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError> {
+    let pending = ApprovalState::Pending;
     let rows: Vec<SessionRow> = sql!(
         db,
-        "SELECT id, title, harness, repo, branch, state, machine_origin, budget_id, \
-         failure_reason, interrupted_reason, created_at_unix, last_active_unix \
-         FROM sessions WHERE user_id = {user} ORDER BY created_at_unix DESC, id DESC"
+        "SELECT s.id, s.title, s.harness, s.repo, s.branch, s.state, s.activity, \
+         EXISTS (SELECT 1 FROM approvals a WHERE a.session_id = s.id AND a.state = {pending}) \
+         AS approval_pending, \
+         s.machine_origin, s.budget_id, s.failure_reason, s.interrupted_reason, \
+         s.created_at_unix, s.last_active_unix \
+         FROM sessions s WHERE s.user_id = {user} \
+         ORDER BY s.created_at_unix DESC, s.id DESC"
     )
     .fetch_all()
     .await?;
@@ -310,11 +326,15 @@ pub async fn require_active(db: &Db, user: UserId, id: SessionId) -> Result<(), 
 }
 
 async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiError> {
+    let pending = ApprovalState::Pending;
     sql!(
         db,
-        "SELECT id, title, harness, repo, branch, state, machine_origin, budget_id, \
-         failure_reason, interrupted_reason, created_at_unix, last_active_unix \
-         FROM sessions WHERE id = {id} AND user_id = {user}"
+        "SELECT s.id, s.title, s.harness, s.repo, s.branch, s.state, s.activity, \
+         EXISTS (SELECT 1 FROM approvals a WHERE a.session_id = s.id AND a.state = {pending}) \
+         AS approval_pending, \
+         s.machine_origin, s.budget_id, s.failure_reason, s.interrupted_reason, \
+         s.created_at_unix, s.last_active_unix \
+         FROM sessions s WHERE s.id = {id} AND s.user_id = {user}"
     )
     .fetch_optional()
     .await?
@@ -651,6 +671,42 @@ pub async fn record_harness_session(
         db,
         "UPDATE sessions SET harness_session_id = {harness_session_id}, \
          last_active_unix = {now_unix()} WHERE id = {id}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
+/// Records what a session is doing, as its own daemon or its user just
+/// said.
+///
+/// The three writes that maintain it are the turn events the daemon reports
+/// (`turn-started`, `turn-completed`, `turn-failed`) and the user's own
+/// messages, which between them are the whole position of a conversation.
+/// A pending approval is not one of them on purpose: `approvals` owns that
+/// fact and [`SessionActivity::with_pending_approval`] applies it where a
+/// session is read, so deciding one needs no compensating write here.
+///
+/// Written by session id rather than by owner: the daemon-scoped routes
+/// carry no user, and the user-scoped one has already proved ownership
+/// before it drives the session at all.
+///
+/// The write also stamps `last_active_unix`, because a turn starting or
+/// ending is exactly what that column means — and a session running turns
+/// must not be swept up by the idle archiver.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the write fails.
+pub async fn record_activity(
+    db: &Db,
+    id: SessionId,
+    activity: SessionActivity,
+) -> Result<(), ApiError> {
+    sql!(
+        db,
+        "UPDATE sessions SET activity = {activity}, last_active_unix = {now_unix()} \
+         WHERE id = {id}"
     )
     .execute()
     .await?;

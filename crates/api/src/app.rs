@@ -6,8 +6,9 @@ use flyco_core::{
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, EnvDocument,
     HarnessFeature, HarnessObservation, HarnessSessionView, MAX_SESSION_TITLE_CHARS,
     MachineCatalogEntry, MachineOrigin, MachineSpec, RepoSlug, RepoStatus, ReportProvisioningStage,
-    ReportSpotNotice, ResizeMachine, SendMessage, SessionDetail, SessionId, SessionState,
-    SessionSummary, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId, wire::ApprovalPayload,
+    ReportSpotNotice, ResizeMachine, SendMessage, SessionActivity, SessionDetail, SessionId,
+    SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId,
+    wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -835,7 +836,7 @@ async fn say(
     if message.text.trim().is_empty() {
         return Err(ApiError::EmptyMessage);
     }
-    drive(
+    let id = drive(
         user,
         params,
         rooms,
@@ -844,7 +845,14 @@ async fn say(
             text: message.text.clone(),
         },
     )
-    .await
+    .await?;
+
+    // The user has spoken and no turn has started yet, which is exactly
+    // `Idle` (docs/ux.md §6). Written after the room took the message, so a
+    // session whose command was refused is never recorded as having heard
+    // one — and `drive` has already proved the session is the caller's.
+    sessions::record_activity(db, id, SessionActivity::Idle).await?;
+    Ok(Accepted)
 }
 
 /// Ends a session's current turn.
@@ -861,6 +869,7 @@ async fn interrupt_session(
 ) -> Outcome<Accepted> {
     drive(&user, &params, &rooms, &db, ControlToDaemon::Interrupt)
         .await
+        .map(|_| Accepted)
         .into()
 }
 
@@ -877,6 +886,7 @@ async fn compact_session(
 ) -> Outcome<Accepted> {
     drive(&user, &params, &rooms, &db, ControlToDaemon::Compact)
         .await
+        .map(|_| Accepted)
         .into()
 }
 
@@ -888,19 +898,24 @@ async fn compact_session(
 /// command sent to a session that is provisioning, paused, or archived would
 /// reach a room with no daemon attached and be dropped there — a `202` for
 /// work nobody will do. The refusal names the state instead.
+///
+/// Answers with the session it drove, so a caller that has something to
+/// record afterwards — [`say`] writes the activity a user's message leaves
+/// the session in — works from the id this function already parsed and
+/// proved, rather than reading the path a second time.
 async fn drive(
     user: &CurrentUser,
     params: &Params,
     rooms: &Rooms,
     db: &Db,
     command: ControlToDaemon,
-) -> Result<Accepted, ApiError> {
+) -> Result<SessionId, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
     sessions::require_active(db, user.id, id).await?;
 
     rooms.command(id, &command).await?;
     tracing::info!(session = %id, command = ?core::mem::discriminant(&command), "drove a session");
-    Ok(Accepted)
+    Ok(id)
 }
 
 /// Puts an interrupted, failed, or archived session back on a machine.
@@ -1217,16 +1232,49 @@ async fn record_approval(
     Ok(Created(Json(view)))
 }
 
+/// Records that this session's harness began a turn.
+///
+/// The mirror of [`notify_turn_completed`], and the reason the home list can
+/// say `Working` at all: a turn starting is announced on the relay, and a
+/// Durable Object cannot reach D1, so the durable half of the fact needs a
+/// route of its own (docs/ux.md §6).
+///
+/// No notification goes out for it. A turn starting is the user's own
+/// message being answered — they are looking at it — and a push for every
+/// turn would be noise.
+#[skyzen::openapi]
+async fn notify_turn_started(State(session): State<DaemonSession>, db: Db) -> Outcome<NoContent> {
+    sessions::record_activity(&db, session.0, SessionActivity::after_turn(true))
+        .await
+        .map(|()| NoContent)
+        .into()
+}
+
 #[skyzen::openapi]
 async fn notify_turn_completed(
     State(session): State<DaemonSession>,
     State(config): State<ApiConfig>,
     db: Db,
 ) -> Outcome<NoContent> {
-    push::notify_turn(&db, &config, session.0, true)
-        .await
-        .map(|()| NoContent)
-        .into()
+    finish_turn(session.0, true, &config, &db).await.into()
+}
+
+/// What both terminal turn routes do: record whose move it is, then tell the
+/// user's browsers.
+///
+/// The activity is written first and the notification is what may fail: a
+/// row that says `Needs input` is what the list is read from, and losing it
+/// because a push endpoint was gone would leave a finished session looking
+/// like one still working.
+async fn finish_turn(
+    session: SessionId,
+    completed: bool,
+    config: &ApiConfig,
+    db: &Db,
+) -> Result<NoContent, ApiError> {
+    sessions::record_activity(db, session, SessionActivity::after_turn(false)).await?;
+    push::notify_turn(db, config, session, completed).await?;
+    Ok(NoContent)
 }
 
 /// Records a provisioning milestone the session's own machine reached.
@@ -1265,10 +1313,7 @@ async fn notify_turn_failed(
     State(config): State<ApiConfig>,
     db: Db,
 ) -> Outcome<NoContent> {
-    push::notify_turn(&db, &config, session.0, false)
-        .await
-        .map(|()| NoContent)
-        .into()
+    finish_turn(session.0, false, &config, &db).await.into()
 }
 
 /// Records one thing this session's daemon observed about the harness
@@ -1532,6 +1577,7 @@ fn daemon_routes() -> Vec<RouteNode> {
             .put(put_harness_session),
         "/v1/sessions/{id}/spot-notice".post(report_spot_notice),
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),
+        "/v1/sessions/{id}/turn-started".post(notify_turn_started),
         "/v1/sessions/{id}/turn-completed".post(notify_turn_completed),
         "/v1/sessions/{id}/turn-failed".post(notify_turn_failed),
         "/v1/sessions/{id}/provisioning-stage".post(report_provisioning_stage),

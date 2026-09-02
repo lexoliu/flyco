@@ -2560,10 +2560,15 @@
                       "harness",
                       "repo",
                       "state",
+                      "activity",
                       "created_at_unix",
                       "last_active_unix"
                     ],
                     "properties": {
+                      "activity": {
+                        "$ref": "#/components/schemas/SessionActivity",
+                        "description": "What it is doing, for an [`Active`](SessionState::Active) session.\n\nWhat lets the home list say `Working` and `Needs input` rather than\nreading every running session as `Idle`: the facts behind those two\nlive in the relay and in the `approvals` table, and this is the\ncontrol plane's own answer, carried on the row the list is built\nfrom (docs/ux.md §6).\n\nMeaningless for every other state, and the UI ignores it there — a\nsession keeps the activity it had when it was paused, interrupted or\narchived rather than being reset to a position it was never in."
+                      },
                       "branch": {
                         "oneOf": [
                           {
@@ -4425,6 +4430,28 @@
       "post": {
         "summary": "flyco_api::app::notify_turn_failed",
         "operationId": "flyco_api::app::notify_turn_failed",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/turn-started": {
+      "post": {
+        "summary": "Records that this session's harness began a turn.",
+        "description": "Records that this session's harness began a turn.\n\nThe mirror of [`notify_turn_completed`], and the reason the home list can\nsay `Working` at all: a turn starting is announced on the relay, and a\nDurable Object cannot reach D1, so the durable half of the fact needs a\nroute of its own (docs/ux.md §6).\n\nNo notification goes out for it. A turn starting is the user's own\nmessage being answered — they are looking at it — and a push for every\nturn would be noise.",
+        "operationId": "flyco_api::app::notify_turn_started",
         "parameters": [
           {
             "name": "id",
@@ -7474,6 +7501,15 @@
           }
         }
       },
+      "SessionActivity": {
+        "type": "string",
+        "description": "What a session is doing right now, as the home list reads it.\n\n[`SessionState`] says where the machine is; this says whose move it is.\nAn `active` session may be thinking, waiting for a decision, or sitting\nidle since yesterday, and docs/ux.md §6 gives those three different\nstatuses — so the fact is recorded rather than guessed from a lifecycle\nenum that cannot tell them apart.\n\nMaintained by the control plane from the turn events the session's\ndaemon reports (`turn-started`, `turn-completed`, `turn-failed`) and\nfrom the messages the user sends, which is the whole of the\nconversation's position. A *pending approval* is deliberately not\nwritten here: the `approvals` table already owns that fact, and a copy\non the session row would be a second answer free to disagree with it.\nIt is applied on the way out instead, by\n[`with_pending_approval`](Self::with_pending_approval).\n\nMeaningless for a session that is not [`Active`](SessionState::Active):\narchiving, pausing and interruption leave it exactly as it was, so a\nsession that comes back reads as whatever it was doing when it went, and\nthe UI ignores it for every other state.",
+        "enum": [
+          "working",
+          "needs_input",
+          "idle"
+        ]
+      },
       "SessionDetail": {
         "allOf": [
           {
@@ -7575,10 +7611,15 @@
           "harness",
           "repo",
           "state",
+          "activity",
           "created_at_unix",
           "last_active_unix"
         ],
         "properties": {
+          "activity": {
+            "$ref": "#/components/schemas/SessionActivity",
+            "description": "What it is doing, for an [`Active`](SessionState::Active) session.\n\nWhat lets the home list say `Working` and `Needs input` rather than\nreading every running session as `Idle`: the facts behind those two\nlive in the relay and in the `approvals` table, and this is the\ncontrol plane's own answer, carried on the row the list is built\nfrom (docs/ux.md §6).\n\nMeaningless for every other state, and the UI ignores it there — a\nsession keeps the activity it had when it was paused, interrupted or\narchived rather than being reset to a position it was never in."
+          },
           "branch": {
             "oneOf": [
               {

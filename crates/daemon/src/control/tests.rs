@@ -28,6 +28,22 @@ use crate::testing::{
 /// A daemon token shaped the way the control plane mints them.
 const TOKEN: &str = "fd_a-daemon-token";
 
+/// One turn announcement the daemon filed over REST.
+///
+/// The three are told apart rather than reduced to "it ended well": the
+/// control plane records a different session activity for each, and a test
+/// that could not distinguish a start from an end would not be testing the
+/// thing the home list reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnNotice {
+    /// `POST /v1/sessions/{id}/turn-started`.
+    Started,
+    /// `POST /v1/sessions/{id}/turn-completed`.
+    Completed,
+    /// `POST /v1/sessions/{id}/turn-failed`.
+    Failed,
+}
+
 /// A [`ControlApi`] that answers without a network.
 ///
 /// The relay tests care about *ordering* — that an approval is durable
@@ -37,7 +53,7 @@ const TOKEN: &str = "fd_a-daemon-token";
 struct RecordingApi {
     approvals: mpsc::UnboundedSender<ApprovalPayload>,
     observations: mpsc::UnboundedSender<HarnessObservation>,
-    notifications: mpsc::UnboundedSender<bool>,
+    notifications: mpsc::UnboundedSender<TurnNotice>,
     /// The one channel every double in a test records into, so an ordering
     /// across the harness, the control plane and the disk is assertable.
     calls: mpsc::UnboundedSender<Call>,
@@ -88,12 +104,22 @@ impl ControlApi for RecordingApi {
         )
     }
 
+    fn notify_turn_started(
+        &self,
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        core::future::ready(
+            self.notifications
+                .send(TurnNotice::Started)
+                .map_err(|error| ControlApiError::Transport(error.to_string())),
+        )
+    }
+
     fn notify_turn_completed(
         &self,
     ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
         core::future::ready(
             self.notifications
-                .send(true)
+                .send(TurnNotice::Completed)
                 .map_err(|error| ControlApiError::Transport(error.to_string())),
         )
     }
@@ -103,7 +129,7 @@ impl ControlApi for RecordingApi {
     ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
         core::future::ready(
             self.notifications
-                .send(false)
+                .send(TurnNotice::Failed)
                 .map_err(|error| ControlApiError::Transport(error.to_string())),
         )
     }
@@ -167,7 +193,7 @@ struct Harness {
     calls: mpsc::UnboundedReceiver<Call>,
     approvals: mpsc::UnboundedReceiver<ApprovalPayload>,
     observations: mpsc::UnboundedReceiver<HarnessObservation>,
-    notifications: mpsc::UnboundedReceiver<bool>,
+    notifications: mpsc::UnboundedReceiver<TurnNotice>,
     approval_id: ApprovalId,
     terminal_writes: mpsc::UnboundedReceiver<String>,
     terminal_inject: mpsc::Sender<String>,
@@ -312,7 +338,7 @@ impl Harness {
             .expect("the collector is live")
     }
 
-    async fn next_notification(&mut self) -> bool {
+    async fn next_notification(&mut self) -> TurnNotice {
         tokio::time::timeout(Duration::from_secs(5), self.notifications.recv())
             .await
             .expect("the daemon filed a notification")
@@ -1005,11 +1031,38 @@ async fn terminal_turn_events_notify_the_control_plane_before_relaying() {
             },
         })
         .await;
-    assert!(!harness.next_notification().await);
+    assert_eq!(harness.next_notification().await, TurnNotice::Failed);
     assert!(matches!(
         harness.room.next_frame().await,
         DaemonToControl::Harness {
             event: HarnessEvent::TurnFailed { .. }
+        }
+    ));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_turn_starting_is_reported_before_it_is_relayed() {
+    // The start is what the control plane records the session as `working`
+    // from, and it is a fact a Durable Object cannot write to D1 — so it
+    // takes the same REST route the turn's end does, before the frame that
+    // announces it (docs/ux.md §6).
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness
+        .emit(SessionOutput::Event {
+            event: HarnessEvent::TurnStarted {
+                turn_id: "turn-1".to_owned(),
+            },
+        })
+        .await;
+    assert_eq!(harness.next_notification().await, TurnNotice::Started);
+    assert!(matches!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness {
+            event: HarnessEvent::TurnStarted { .. }
         }
     ));
 
@@ -1360,6 +1413,12 @@ mod remote_store {
             core::future::ready(Err(ControlApiError::Transport(
                 "the transcript store records no observations".to_owned(),
             )))
+        }
+
+        fn notify_turn_started(
+            &self,
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Ok(()))
         }
 
         fn notify_turn_completed(

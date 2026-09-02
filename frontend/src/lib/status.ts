@@ -8,16 +8,25 @@
  * module is the single derivation of them, so a row, a group heading and a
  * session header can never disagree.
  *
- * Telling `Working` from `Needs input` needs the session's live relay
- * events — whether a turn is in flight, whether an approval is pending —
- * and those are not on `SessionSummary`. {@link liveSignalsFrom} reads them
- * off a relay stream, and {@link deriveStatus} takes the result as an extra
- * argument rather than deriving the same thing twice. The session page has
- * a relay open and passes them; the home list is built from summaries alone
- * and passes none, so an `active` row there reads as `Idle`, which is the
- * honest answer for what a summary knows.
+ * Telling `Working` from `Needs input` needs facts the lifecycle enum does
+ * not carry — whether a turn is in flight, whether an approval is pending —
+ * and they reach this module by two routes. The control plane maintains
+ * them as `SessionSummary.activity`, which is what the home list is built
+ * from; and the session page, which holds a relay open, folds the same two
+ * facts out of the live event stream with {@link liveSignalsFrom}.
+ *
+ * The live stream wins where it says anything, because it is the newer of
+ * the two — a turn that started a moment ago is on the socket before the
+ * row it will be written to is read again. Where it says nothing, the
+ * summary's `activity` answers, which is what makes a home list row say
+ * `Working` at all.
  */
-import type { InterruptedReason, SessionState, SessionSummary } from "../api/client";
+import type {
+  InterruptedReason,
+  SessionActivity,
+  SessionState,
+  SessionSummary,
+} from "../api/client";
 import type { TimedEvent } from "../api/relay";
 
 /** What a session looks like to the person who opened it. */
@@ -107,6 +116,18 @@ function lostItsMachine(reason: InterruptedReason | null | undefined): string | 
   return reason === "spot_reclaimed" ? "spot reclaimed" : undefined;
 }
 
+/** What an `active` session reads as, one view per activity. */
+const ACTIVE: Record<SessionActivity, StatusView> = {
+  working: { status: "working", label: "Working", tone: "working", breathing: true },
+  needs_input: {
+    status: "needs_input",
+    label: "Needs input",
+    tone: "attention",
+    breathing: false,
+  },
+  idle: { status: "idle", label: "Idle", tone: "quiet", breathing: false },
+};
+
 /**
  * The status of one session.
  *
@@ -117,7 +138,8 @@ export function deriveStatus(
   session: Pick<
     SessionSummary,
     "state" | "created_at_unix" | "last_active_unix" | "interrupted_reason"
-  >,
+  > &
+    Partial<Pick<SessionSummary, "activity">>,
   now: number,
   live: LiveSignals = {},
 ): StatusView {
@@ -142,13 +164,17 @@ export function deriveStatus(
   if (session.state !== "active") {
     return BASE[session.state];
   }
+  // A relay that has said something is the freshest answer there is, so it
+  // is read first. One that has said nothing — a list with no socket, a
+  // page whose catch-up has not landed — falls through to the fact the
+  // control plane maintains, which is why a home row can say `Working`.
   if (live.turnInFlight === true) {
-    return { status: "working", label: "Working", tone: "working", breathing: true };
+    return ACTIVE.working;
   }
   if (live.awaitingUser === true) {
-    return { status: "needs_input", label: "Needs input", tone: "attention", breathing: false };
+    return ACTIVE.needs_input;
   }
-  return { status: "idle", label: "Idle", tone: "quiet", breathing: false };
+  return ACTIVE[session.activity ?? "idle"];
 }
 
 /**
@@ -210,17 +236,23 @@ export function liveSignalsFrom(events: readonly TimedEvent[]): LiveSignals {
 }
 
 /**
- * Order the home page groups sessions in: what needs the user, then what is
- * running, then everything at rest. Archived is a tab of its own and is
- * therefore last.
+ * Order the home page groups sessions in (docs/ux.md §5): `Needs input`,
+ * then `Working`, then `Idle`, then everything that is neither running nor
+ * waiting on anybody. Archived is a tab of its own and is therefore last.
+ *
+ * The three the user acts on lead, in the order they ask to be acted on: a
+ * blocked agent is waiting on them right now, a working one is not, and an
+ * idle one is a thread to pick back up. What follows is the machine's own
+ * business — a failed provision, a build, a migration, a pause — which the
+ * user reads when they go looking rather than first thing.
  */
 export const STATUS_ORDER: readonly SessionStatus[] = [
   "needs_input",
-  "failed",
   "working",
+  "idle",
+  "failed",
   "provisioning",
   "migrating",
-  "idle",
   "paused",
   "interrupted",
   "archived",

@@ -127,7 +127,19 @@ missing one. Sending calls `POST /v1/sessions` with the prompt included
 ## 6. Session states as the user reads them
 
 `SessionState` is a lifecycle enum; the UI shows a **status**, derived from
-the state plus the latest relay events:
+the state, the session's `activity`, and the latest relay events.
+
+`activity` is `working | needs_input | idle` on every `SessionSummary`. The
+three middle rows below need facts a lifecycle enum does not carry, and the
+home list has no relay to fold them out of — so the control plane maintains
+them itself, from the turn events the session's daemon reports
+(`POST /v1/sessions/{id}/turn-started`, `turn-completed`, `turn-failed`),
+from the messages the user sends, and from whether an approval against the
+session is still undecided. A page that *does* hold a relay open reads the
+same two facts off the live stream and prefers them, because they are the
+newer of the two. `activity` is meaningless for a session that is not
+`active`: it keeps whatever it had when it was paused, interrupted or
+archived, and the UI ignores it there.
 
 | Status | Derived from |
 |---|---|

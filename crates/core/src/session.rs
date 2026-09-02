@@ -135,6 +135,70 @@ pub enum InterruptedReason {
     SpotReclaimed,
 }
 
+/// What a session is doing right now, as the home list reads it.
+///
+/// [`SessionState`] says where the machine is; this says whose move it is.
+/// An `active` session may be thinking, waiting for a decision, or sitting
+/// idle since yesterday, and docs/ux.md §6 gives those three different
+/// statuses — so the fact is recorded rather than guessed from a lifecycle
+/// enum that cannot tell them apart.
+///
+/// Maintained by the control plane from the turn events the session's
+/// daemon reports (`turn-started`, `turn-completed`, `turn-failed`) and
+/// from the messages the user sends, which is the whole of the
+/// conversation's position. A *pending approval* is deliberately not
+/// written here: the `approvals` table already owns that fact, and a copy
+/// on the session row would be a second answer free to disagree with it.
+/// It is applied on the way out instead, by
+/// [`with_pending_approval`](Self::with_pending_approval).
+///
+/// Meaningless for a session that is not [`Active`](SessionState::Active):
+/// archiving, pausing and interruption leave it exactly as it was, so a
+/// session that comes back reads as whatever it was doing when it went, and
+/// the UI ignores it for every other state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
+pub enum SessionActivity {
+    /// A turn is in flight: the agent is working and nobody is waiting.
+    Working,
+    /// The agent has stopped and it is the user's move — the last turn
+    /// ended with no message after it, or an approval is pending.
+    NeedsInput,
+    /// Nothing is running and nobody is blocked: the user has spoken and
+    /// no turn has started yet, or the session has never run one.
+    Idle,
+}
+
+impl SessionActivity {
+    /// The activity a session takes on when its daemon reports a turn
+    /// event.
+    ///
+    /// The one mapping from a harness turn to what a person reads, so the
+    /// three routes that receive those events cannot each decide it
+    /// differently.
+    #[must_use]
+    pub const fn after_turn(started: bool) -> Self {
+        if started {
+            Self::Working
+        } else {
+            Self::NeedsInput
+        }
+    }
+
+    /// The same activity, raised to [`NeedsInput`](Self::NeedsInput) when
+    /// the session has an undecided approval against it.
+    ///
+    /// An approval blocks the agent whatever the turn was doing, so it wins
+    /// over every stored position. Applied where a session is read rather
+    /// than written, so deciding an approval needs no compensating write:
+    /// the row goes back to the position the turn left it in by itself.
+    #[must_use]
+    pub const fn with_pending_approval(self, pending: bool) -> Self {
+        if pending { Self::NeedsInput } else { self }
+    }
+}
+
 /// Which machine a session asks for.
 ///
 /// Named on [`CreateSession`] when the caller picks a type themselves. The
@@ -312,6 +376,18 @@ pub struct SessionSummary {
     pub branch: Option<BranchName>,
     /// Where it is in its lifecycle.
     pub state: SessionState,
+    /// What it is doing, for an [`Active`](SessionState::Active) session.
+    ///
+    /// What lets the home list say `Working` and `Needs input` rather than
+    /// reading every running session as `Idle`: the facts behind those two
+    /// live in the relay and in the `approvals` table, and this is the
+    /// control plane's own answer, carried on the row the list is built
+    /// from (docs/ux.md §6).
+    ///
+    /// Meaningless for every other state, and the UI ignores it there — a
+    /// session keeps the activity it had when it was paused, interrupted or
+    /// archived rather than being reset to a position it was never in.
+    pub activity: SessionActivity,
     /// Why the session lost its machine, while it is off one or being put
     /// back on one.
     ///
@@ -522,6 +598,7 @@ mod tests {
             repo: "lexoliu/flyco".parse().expect("a repository"),
             branch: None,
             state: SessionState::Active,
+            activity: SessionActivity::Idle,
             interrupted_reason: None,
             created_at_unix: 0,
             last_active_unix: 0,
@@ -541,6 +618,50 @@ mod tests {
         );
         let back: SessionSummary = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, reclaimed);
+    }
+
+    #[test]
+    fn activities_use_the_tokens_the_schema_stores() {
+        for (activity, token) in [
+            (SessionActivity::Working, "working"),
+            (SessionActivity::NeedsInput, "needs_input"),
+            (SessionActivity::Idle, "idle"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(activity).expect("serialize"),
+                serde_json::Value::String(token.to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn a_turn_event_says_whose_move_it_is() {
+        assert_eq!(SessionActivity::after_turn(true), SessionActivity::Working);
+        assert_eq!(
+            SessionActivity::after_turn(false),
+            SessionActivity::NeedsInput,
+            "a turn that ended with nothing said back is the user's move"
+        );
+    }
+
+    #[test]
+    fn a_pending_approval_outranks_whatever_the_turn_was_doing() {
+        for activity in [
+            SessionActivity::Working,
+            SessionActivity::NeedsInput,
+            SessionActivity::Idle,
+        ] {
+            assert_eq!(
+                activity.with_pending_approval(true),
+                SessionActivity::NeedsInput,
+                "an undecided approval blocks the agent whatever {activity:?} said"
+            );
+            assert_eq!(
+                activity.with_pending_approval(false),
+                activity,
+                "deciding the last approval puts the session back where the turn left it"
+            );
+        }
     }
 
     #[test]
