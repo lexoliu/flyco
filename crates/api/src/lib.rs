@@ -70,7 +70,11 @@ pub use config::ApiConfig;
 pub use error::ApiError;
 
 #[cfg(target_arch = "wasm32")]
+mod telemetry;
+
+#[cfg(target_arch = "wasm32")]
 #[skyzen::main]
 fn worker() -> skyzen::routing::Router {
+    telemetry::install();
     router_from_environment()
 }
