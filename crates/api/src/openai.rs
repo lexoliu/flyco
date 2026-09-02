@@ -175,19 +175,25 @@ struct AuthorizationCodeForm<'a> {
     code_verifier: &'a str,
 }
 
-/// The form body of a refresh.
+/// The JSON body of a refresh.
+///
+/// JSON rather than a form, and the fields in this order, because that is
+/// what `codex-rs/login/src/auth/manager.rs` sends: the refresh path is the
+/// one exchange where `OpenAI`'s own client does not use the form encoding
+/// RFC 6749 defines, and flyco speaks the bytes the CLI speaks rather than
+/// the bytes the RFC would allow.
 #[derive(Debug, Serialize)]
-struct RefreshTokenForm<'a> {
+struct RefreshTokenBody<'a> {
+    client_id: &'a str,
     grant_type: GrantType,
     refresh_token: &'a str,
-    client_id: &'a str,
 }
 
 /// One request to `OpenAI`'s token endpoint.
 ///
-/// Both grants are the same endpoint and the same media type — RFC 6749's
-/// `application/x-www-form-urlencoded` — so there is one request type and
-/// one method rather than two of each.
+/// One endpoint, two media types: the Codex CLI form-encodes the code
+/// redemption and sends the refresh as JSON, so [`token_request`] does
+/// exactly that rather than picking one for both.
 #[derive(Debug, Clone, Copy)]
 pub enum TokenRequest<'a> {
     /// Redeems the code an approved device authorization yielded.
@@ -469,41 +475,45 @@ pub fn device_token_request(
 
 /// Describes one token exchange as an [`HttpRequest`].
 ///
-/// Form-encoded, which is what RFC 6749 §4.1.3 makes the token endpoint's
-/// media type, and what `codex login` sends for the code redemption.
+/// The media type is the grant's, not the endpoint's: `codex login`
+/// form-encodes the authorization-code redemption — RFC 6749 §4.1.3's own
+/// encoding — and sends the refresh as JSON. Flyco sends the same bytes for
+/// each, because the point of pinning these requests is that a deployed
+/// control plane and the CLI are indistinguishable to `OpenAI`.
 ///
 /// # Errors
 ///
-/// Returns [`HttpError::Encoding`] if the form does not serialize, which
+/// Returns [`HttpError::Encoding`] if the body does not serialize, which
 /// would mean this module's own request type is malformed.
 pub fn token_request(request: TokenRequest<'_>) -> Result<HttpRequest, HttpError> {
-    let body = match request {
+    let endpoint = HttpRequest::new(Method::Post, TOKEN_URL).header("accept", "application/json");
+
+    match request {
         TokenRequest::AuthorizationCode {
             code,
             redirect_uri,
             client_id,
             code_verifier,
-        } => serde_urlencoded::to_string(AuthorizationCodeForm {
-            grant_type: GrantType::AuthorizationCode,
-            code,
-            redirect_uri,
-            client_id,
-            code_verifier,
-        }),
+        } => {
+            let form = serde_urlencoded::to_string(AuthorizationCodeForm {
+                grant_type: GrantType::AuthorizationCode,
+                code,
+                redirect_uri,
+                client_id,
+                code_verifier,
+            })
+            .map_err(|error| HttpError::Encoding(error.to_string()))?;
+            Ok(endpoint.body("application/x-www-form-urlencoded", form.into_bytes()))
+        }
         TokenRequest::RefreshToken {
             refresh_token,
             client_id,
-        } => serde_urlencoded::to_string(RefreshTokenForm {
+        } => endpoint.json_body(&RefreshTokenBody {
+            client_id,
             grant_type: GrantType::RefreshToken,
             refresh_token,
-            client_id,
         }),
     }
-    .map_err(|error| HttpError::Encoding(error.to_string()))?;
-
-    Ok(HttpRequest::new(Method::Post, TOKEN_URL)
-        .header("accept", "application/json")
-        .body("application/x-www-form-urlencoded", body.into_bytes()))
 }
 
 /// Turns a refusal into the reason `OpenAI` gave for it.
@@ -866,7 +876,7 @@ mod tests {
     }
 
     #[skyzen::test]
-    async fn a_refresh_sends_only_the_refresh_token_and_the_client_id() {
+    async fn a_refresh_sends_the_json_body_the_codex_cli_sends() {
         let transport = RecordedTransport::new(vec![HttpResponse::new(200, REFRESHED_BODY)]);
         let tokens = exchange_over(
             &transport,
@@ -878,11 +888,27 @@ mod tests {
         .await
         .expect("refresh the grant");
 
-        let body = transport.request(0).body_text().expect("UTF-8").to_owned();
-        assert_eq!(field(&body, "grant_type"), "refresh_token");
-        assert_eq!(field(&body, "refresh_token"), "rt_01JD5XKQZ8-issued");
-        assert_eq!(field(&body, "client_id"), "app_client");
-        assert!(!body.contains("code_verifier"));
+        // The one exchange OpenAI's own client does *not* form-encode. It
+        // is the same endpoint as the code redemption above, and a
+        // different media type, which is exactly the kind of thing a
+        // refactor unifies by accident.
+        let request = transport.request(0);
+        assert_eq!(request.url, "https://auth.openai.com/oauth/token");
+        assert_eq!(
+            request
+                .headers
+                .iter()
+                .find(|(name, _)| name == "content-type")
+                .map(|(_, value)| value.as_str()),
+            Some("application/json")
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(request.body_text().expect("UTF-8")).expect("a JSON body");
+        assert_eq!(body["grant_type"], "refresh_token");
+        assert_eq!(body["refresh_token"], "rt_01JD5XKQZ8-issued");
+        assert_eq!(body["client_id"], "app_client");
+        assert!(body.get("code_verifier").is_none());
+        assert!(body.get("redirect_uri").is_none());
 
         let previous = Grant {
             id_token: "stale-id".to_owned(),
