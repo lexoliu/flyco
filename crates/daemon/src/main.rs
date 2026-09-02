@@ -67,7 +67,7 @@ async fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .init();
 
-    match run(Cli::parse()).await {
+    match Box::pin(run(Cli::parse())).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(failure) => {
             tracing::error!(error = %failure, "flycod stopped");
@@ -101,7 +101,7 @@ async fn run(cli: Cli) -> Result<(), Failure> {
             );
             match config.harness {
                 HarnessKind::ClaudeCode => drive_claude_code(config).await,
-                HarnessKind::Codex => drive_codex(config).await,
+                HarnessKind::Codex => Box::pin(drive_codex(config)).await,
             }
         }
     }

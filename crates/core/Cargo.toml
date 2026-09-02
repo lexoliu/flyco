@@ -23,7 +23,7 @@ skyzen = { workspace = true, optional = true }
 # The traits the mapping is written against. `#[derive(skyzen::Column)]`
 # reaches them through `skyzen`; the two hand-written impls that no derive can
 # express — a phantom-typed id, a slug with a parser — name the crate itself.
-skyzen-services = { workspace = true, optional = true, default-features = false }
+skyzen-services = { workspace = true, optional = true }
 
 [features]
 # The SQL column mapping of the stored domain types. Enabled by flyco-api.
