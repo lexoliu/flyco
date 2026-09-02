@@ -6,7 +6,19 @@ export default defineConfig({
   plugins: [
     solid(),
     VitePWA({
-      registerType: "prompt",
+      // Nothing is cached and flyco is never used offline: the worker exists
+      // for web push, and a new build takes over as soon as it is fetched.
+      registerType: "autoUpdate",
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.js",
+      // An explicit `undefined` is how vite-plugin-pwa is told there is no
+      // precache manifest to inject; omitting the key means the default
+      // `self.__WB_MANIFEST`, which this worker deliberately lacks.
+      // @ts-expect-error exactOptionalPropertyTypes forbids the explicit undefined the plugin requires
+      injectManifest: {
+        injectionPoint: undefined,
+      },
       injectRegister: null,
       manifest: {
         id: "/",
@@ -33,11 +45,6 @@ export default defineConfig({
             purpose: "maskable",
           },
         ],
-      },
-      workbox: {
-        globPatterns: ["**/*.{js,css,html,svg}"],
-        navigateFallback: "/index.html",
-        importScripts: ["/push-sw.js"],
       },
       devOptions: {
         enabled: false,
