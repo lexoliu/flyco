@@ -17,7 +17,7 @@ flyco-provider = { path = "crates/provider" }
 # macros cross crate boundaries, so the family must come from one revision.
 # Keep the exact revision until the next crates.io release contains it.
 skyzen = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923ecff14b42c5b6fbf9ad16" }
-skyzen-services = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923ecff14b42c5b6fbf9ad16" }
+skyzen-services = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923ecff14b42c5b6fbf9ad16", default-features = false }
 skyzen-test = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923ecff14b42c5b6fbf9ad16" }
 skyzen-cloudflare = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923ecff14b42c5b6fbf9ad16" }
 # Select the native TLS backend in native crates below. Keeping the shared
@@ -117,7 +117,11 @@ missing_docs = "warn"
 missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
-all = "warn"
-pedantic = "warn"
-nursery = "warn"
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
 unwrap_used = "warn"
+# The Worker is single-threaded and every driver is generic over its
+# transport, so provider and control-plane futures are never sent across
+# threads; demanding `Send` of them would force bounds wasm32 cannot use.
+future_not_send = "allow"
