@@ -56,13 +56,6 @@
 //! `Detach`, so it outlives the instance and [`GcpProvider::destroy`]
 //! deletes it explicitly after the instance is gone. Deleting them in the
 //! other order fails on a disk that is still attached.
-//!
-//! `clippy::future_not_send` is allowed across this module for the same reason
-//! it is in [`pricing`]: `Send`-ness follows from the concrete transport — the
-//! deployed one is a unit struct and the Worker is single-threaded — while the
-//! recorded transport is deliberately not `Sync`, and bounding `T: Sync` here
-//! would forbid the double the whole driver is tested against.
-#![expect(clippy::future_not_send, reason = "see the module documentation")]
 
 pub mod auth;
 pub mod compute;
