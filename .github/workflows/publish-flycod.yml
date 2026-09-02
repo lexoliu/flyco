@@ -8,7 +8,10 @@ name: Publish flycod
 #
 # The job runs exactly the same `cargo xtask publish-flycod` a developer runs
 # locally, so there is one implementation of the procedure and this file only
-# supplies the toolchain and the credentials.
+# supplies the toolchain and the credentials. The installer and its systemd
+# unit are published by that command too, straight out of `crates/xtask/install/`
+# in this checkout, so a release is one commit's worth of daemon and installer
+# rather than a build here and a hand upload somewhere else.
 on:
   workflow_dispatch:
     inputs:
@@ -49,7 +52,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild
-      # wrangler performs the four `r2 object put` calls. Installed globally
+      # wrangler performs the six `r2 object put` calls. Installed globally
       # so it is on PATH under the name the xtask executes.
       - run: npm install --global wrangler@4
       - name: cargo xtask publish-flycod

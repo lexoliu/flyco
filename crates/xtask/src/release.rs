@@ -1,12 +1,19 @@
 //! The typed description of a `flycod` release.
 //!
 //! Everything the publish is allowed to do is spelled out here: which
-//! architectures exist, which four objects they produce, the exact bytes of a
-//! checksum file, and the exact argument vector of every external program the
-//! publish runs. Nothing in this module performs I/O, so all of it is
-//! assertable in unit tests — which is the point: the object names must equal
-//! the ones `crates/api/src/releases.rs` allowlists, and the commands must
+//! architectures exist, where the six objects they produce come from, the
+//! exact bytes of a checksum file, and the exact argument vector of every
+//! external program the publish runs. Nothing in this module performs I/O, so
+//! all of it is assertable in unit tests — which is the point: the published
+//! names must be the ones the control plane serves, and the commands must
 //! equal the ones the deploy notes document.
+//!
+//! The names themselves are not declared here. They come from
+//! [`flyco_core::release`], the one table `flyco_api::releases` allowlists
+//! from as well, so a publisher that grew a seventh object and a control plane
+//! that serves six cannot exist. What this module adds is how each object is
+//! produced: two cross-compiles, two checksum lines, and two files copied
+//! verbatim out of the repository.
 
 use std::{
     borrow::Cow,
@@ -16,6 +23,7 @@ use std::{
 };
 
 use askama::Template;
+use flyco_core::release::{ASSET_COUNT, BINARY_COUNT, PublishedBinary, PublishedObject};
 use sha2::{Digest as _, Sha256};
 
 /// The R2 bucket the control plane serves `releases/` out of.
@@ -35,34 +43,40 @@ const GLIBC: &str = "2.31";
 /// Cargo package that owns the daemon binary.
 const PACKAGE: &str = "flyco-daemon";
 
-/// The binary target, and the stem of every published object name.
+/// The binary target `cargo zigbuild` is asked for.
 const BINARY: &str = "flycod";
 
-/// Number of architectures a release covers, and therefore half its objects.
-pub const ARCHITECTURE_COUNT: usize = 2;
+/// Where the repository keeps the installer assets, relative to the workspace
+/// root.
+///
+/// They live beside the code that publishes them because the publish is the
+/// only thing that reads them. `/install/{artifact}` is answered from the
+/// bucket — the embedded PWA never serves these two — so a second copy under
+/// `frontend/public/` could only drift from the binaries it installs.
+pub const ASSET_DIR: [&str; 3] = ["crates", "xtask", "install"];
 
 /// One Linux CPU architecture `flycod` is published for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Architecture {
-    /// What `uname -m` reports on that machine, and the suffix of the
-    /// published object name the installer derives from it.
-    pub uname: &'static str,
+    /// The binary and checksum this architecture contributes, named by the
+    /// same table the control plane serves from.
+    pub published: PublishedBinary,
     /// Rust target triple, without the glibc pin.
     pub triple: &'static str,
 }
 
 /// Every architecture a release covers.
 ///
-/// These are the two the installer (`frontend/public/install/flycod.sh`)
-/// selects between; an architecture absent here has no binary and the
-/// installer refuses the machine rather than downloading the wrong one.
-pub const ARCHITECTURES: [Architecture; ARCHITECTURE_COUNT] = [
+/// One entry per [`flyco_core::release::BINARIES`] entry, since an
+/// architecture with no published binary has nothing to build and a binary
+/// with no architecture here would never be produced.
+pub const ARCHITECTURES: [Architecture; BINARY_COUNT] = [
     Architecture {
-        uname: "x86_64",
+        published: flyco_core::release::X86_64,
         triple: "x86_64-unknown-linux-gnu",
     },
     Architecture {
-        uname: "aarch64",
+        published: flyco_core::release::AARCH64,
         triple: "aarch64-unknown-linux-gnu",
     },
 ];
@@ -73,12 +87,6 @@ impl Architecture {
     #[must_use]
     pub fn zig_target(self) -> String {
         format!("{}.{GLIBC}", self.triple)
-    }
-
-    /// Name of the published binary object.
-    #[must_use]
-    pub fn object(self) -> String {
-        format!("{BINARY}-linux-{}", self.uname)
     }
 
     /// Where cargo writes the cross-compiled binary.
@@ -124,21 +132,31 @@ impl Channel {
         format!("{BUCKET}/{}", self.key(object))
     }
 
-    /// Public URL the checksum of `object` is served from once published.
+    /// Directory the publish stages this channel's objects in.
+    ///
+    /// Everything uploaded is uploaded from here, so what a `--dry-run`
+    /// leaves behind is byte for byte what a real publish would send.
     #[must_use]
-    pub fn checksum_url(self, object: &str) -> String {
-        format!("{}/install/{object}.sha256", self.origin)
+    pub fn stage_dir(self, target_dir: &Path) -> PathBuf {
+        target_dir.join("flycod-release").join(self.name)
     }
 
-    /// URL a just-published checksum is read back through.
+    /// Public URL `object` is served from once published, and the one the
+    /// installer downloads it from.
+    #[must_use]
+    pub fn url(self, object: &str) -> String {
+        format!("{}/install/{object}", self.origin)
+    }
+
+    /// URL a just-published object is read back through.
     ///
     /// The Worker serves release artifacts with `max-age=60`, so a plain
     /// fetch straight after an upload can be answered out of Cloudflare's
-    /// cache with the previous release's digest. The nonce is part of the
+    /// cache with the previous release's bytes. The nonce is part of the
     /// cache key, so this reads what the bucket now holds.
     #[must_use]
-    pub fn checksum_verification_url(self, object: &str, nonce: u128) -> String {
-        format!("{}?published={nonce}", self.checksum_url(object))
+    pub fn verification_url(self, object: &str, nonce: u128) -> String {
+        format!("{}?published={nonce}", self.url(object))
     }
 
     /// Public URL reporting the wire protocol version this channel speaks.
@@ -194,28 +212,56 @@ pub struct Checksum {
     /// Lowercase hex SHA-256 digest.
     pub digest: String,
     /// The object name the digest belongs to, as the installer downloads it.
-    pub name: String,
+    pub name: &'static str,
 }
 
 impl Checksum {
     /// Digests `bytes` as the checksum of the object called `name`.
     #[must_use]
-    pub fn of(name: &str, bytes: &[u8]) -> Self {
+    pub fn of(name: &'static str, bytes: &[u8]) -> Self {
         Self {
             digest: hex::encode(Sha256::digest(bytes)),
-            name: name.to_owned(),
+            name,
         }
     }
 }
 
-/// One object of a release: what it is called once published, and the local
-/// file holding its bytes.
+/// One object of a release: its published identity, and the staged file
+/// holding the bytes that will be uploaded under it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseObject {
-    /// Published name, which is also the last segment of its key.
-    pub name: String,
+    /// What the control plane serves this object as.
+    pub published: PublishedObject,
     /// Staged file uploaded as that object.
     pub file: PathBuf,
+}
+
+impl ReleaseObject {
+    /// The staged form of `published`, under its published name in
+    /// `stage_dir`.
+    #[must_use]
+    pub fn staged(published: PublishedObject, stage_dir: &Path) -> Self {
+        Self {
+            published,
+            file: stage_dir.join(published.name),
+        }
+    }
+
+    /// Published name, which is also the last segment of its key.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.published.name
+    }
+}
+
+/// Where the repository keeps the source of `asset`, the file a publish
+/// copies into the staging directory unchanged.
+#[must_use]
+pub fn asset_source(workspace_root: &Path, asset: PublishedObject) -> PathBuf {
+    let mut path = workspace_root.to_path_buf();
+    path.extend(ASSET_DIR);
+    path.push(asset.name);
+    path
 }
 
 /// What one architecture contributes to a release: a binary and its checksum.
@@ -236,19 +282,12 @@ impl ArchitectureArtifacts {
     /// staged, given the binary's `bytes`.
     #[must_use]
     pub fn stage(architecture: Architecture, stage_dir: &Path, bytes: &[u8]) -> Self {
-        let name = architecture.object();
-        let checksum_name = format!("{name}.sha256");
+        let published = architecture.published;
         Self {
             architecture,
-            binary: ReleaseObject {
-                file: stage_dir.join(&name),
-                name: name.clone(),
-            },
-            checksum: ReleaseObject {
-                file: stage_dir.join(&checksum_name),
-                name: checksum_name,
-            },
-            line: Checksum::of(&name, bytes),
+            binary: ReleaseObject::staged(published.binary, stage_dir),
+            checksum: ReleaseObject::staged(published.checksum, stage_dir),
+            line: Checksum::of(published.binary.name, bytes),
         }
     }
 
@@ -266,15 +305,35 @@ pub struct Release {
     /// Channel the objects belong to.
     pub channel: Channel,
     /// One pair of objects per architecture — four objects, by construction.
-    pub artifacts: [ArchitectureArtifacts; ARCHITECTURE_COUNT],
+    pub artifacts: [ArchitectureArtifacts; BINARY_COUNT],
+    /// The installer and its systemd unit, copied out of the repository —
+    /// two more objects, by construction, for six in all.
+    pub assets: [ReleaseObject; ASSET_COUNT],
 }
 
 impl Release {
-    /// Every object of the release, architecture by architecture.
+    /// Every object of the release, in upload order: each architecture's
+    /// binary and checksum, then the unit file, then the installer.
+    ///
+    /// The installer is last because it is the entry point cloud-init
+    /// fetches: the object that makes a release live is the object published
+    /// once everything it downloads is already there.
     pub fn objects(&self) -> impl Iterator<Item = &ReleaseObject> {
         self.artifacts
             .iter()
             .flat_map(ArchitectureArtifacts::objects)
+            .chain(&self.assets)
+    }
+
+    /// The objects a finished publish reads back through `/install/`.
+    ///
+    /// Everything but the binaries themselves, which are tens of megabytes
+    /// and are attested by the checksum objects that are read back.
+    pub fn verified_objects(&self) -> impl Iterator<Item = &ReleaseObject> {
+        self.artifacts
+            .iter()
+            .map(|artifact| &artifact.checksum)
+            .chain(&self.assets)
     }
 }
 
@@ -316,11 +375,13 @@ impl Invocation {
         }
     }
 
-    /// `wrangler r2 object put <bucket>/<key> --file <path> --remote`
+    /// `wrangler r2 object put <bucket>/<key> --file <path> --content-type <type> --remote`
     ///
     /// `--remote` is required: without it wrangler writes to the local
     /// simulator's bucket and the publish would report success having
-    /// uploaded nothing.
+    /// uploaded nothing. `--content-type` stores the same media type the
+    /// control plane serves the object with, so the bucket and the Worker
+    /// describe an object the same way.
     #[must_use]
     pub fn upload(channel: Channel, object: &ReleaseObject) -> Self {
         Self {
@@ -329,9 +390,11 @@ impl Invocation {
                 "r2".to_owned(),
                 "object".to_owned(),
                 "put".to_owned(),
-                channel.bucket_key(&object.name),
+                channel.bucket_key(object.name()),
                 "--file".to_owned(),
                 object.file.display().to_string(),
+                "--content-type".to_owned(),
+                object.published.content_type.to_owned(),
                 "--remote".to_owned(),
             ],
         }
@@ -421,10 +484,11 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use askama::Template as _;
+    use flyco_core::release::{ASSETS, OBJECT_COUNT, OBJECTS};
 
     use super::{
         ARCHITECTURES, ArchitectureArtifacts, CHANNELS, Channel, Checksum, Invocation, Release,
-        ReleaseObject, WireCheck,
+        ReleaseObject, WireCheck, asset_source,
     };
 
     /// The one channel that exists, as `--channel dev` resolves it.
@@ -454,19 +518,84 @@ mod tests {
     }
 
     #[test]
-    fn the_published_names_are_the_ones_the_worker_allowlists() {
+    fn a_release_publishes_the_six_objects_in_upload_order() {
         let release = release();
 
         assert_eq!(
             release
                 .objects()
-                .map(|object| object.name.as_str())
+                .map(ReleaseObject::name)
                 .collect::<Vec<_>>(),
             [
                 "flycod-linux-x86_64",
                 "flycod-linux-x86_64.sha256",
                 "flycod-linux-aarch64",
                 "flycod-linux-aarch64.sha256",
+                "flycod.service",
+                "flycod.sh",
+            ]
+        );
+    }
+
+    /// The publisher and the control plane are one allowlist or they are a
+    /// broken release: an object nobody serves is a wasted upload, and a name
+    /// the Worker serves that no publish writes is a permanent 404.
+    #[test]
+    fn a_release_publishes_exactly_the_objects_the_control_plane_serves() {
+        let mut published = release()
+            .objects()
+            .map(|object| object.published)
+            .collect::<Vec<_>>();
+        let mut allowlisted = OBJECTS.to_vec();
+        published.sort_by_key(|object| object.name);
+        allowlisted.sort_by_key(|object| object.name);
+
+        assert_eq!(published, allowlisted);
+        assert_eq!(published.len(), OBJECT_COUNT);
+    }
+
+    #[test]
+    fn every_object_is_uploaded_with_the_media_type_it_is_served_as() {
+        for object in release().objects() {
+            let upload = Invocation::upload(dev(), object);
+            let content_type = upload
+                .args
+                .iter()
+                .skip_while(|argument| argument.as_str() != "--content-type")
+                .nth(1)
+                .expect("the upload declares a content type");
+
+            assert_eq!(content_type, object.published.content_type);
+        }
+    }
+
+    #[test]
+    fn the_installer_and_its_unit_are_read_from_the_repository() {
+        let root = Path::new("/w");
+
+        assert_eq!(
+            ASSETS.map(|asset| asset_source(root, asset)),
+            [
+                PathBuf::from("/w/crates/xtask/install/flycod.service"),
+                PathBuf::from("/w/crates/xtask/install/flycod.sh"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_binaries_are_attested_rather_than_downloaded_back() {
+        let release = release();
+
+        assert_eq!(
+            release
+                .verified_objects()
+                .map(ReleaseObject::name)
+                .collect::<Vec<_>>(),
+            [
+                "flycod-linux-x86_64.sha256",
+                "flycod-linux-aarch64.sha256",
+                "flycod.service",
+                "flycod.sh",
             ]
         );
     }
@@ -477,7 +606,7 @@ mod tests {
 
         assert_eq!(x86_64.zig_target(), "x86_64-unknown-linux-gnu.2.31");
         assert_eq!(aarch64.zig_target(), "aarch64-unknown-linux-gnu.2.31");
-        assert_eq!(x86_64.object(), "flycod-linux-x86_64");
+        assert_eq!(x86_64.published.binary.name, "flycod-linux-x86_64");
         assert_eq!(
             aarch64.built_binary(Path::new("/w/target")),
             PathBuf::from("/w/target/aarch64-unknown-linux-gnu/release/flycod")
@@ -485,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn a_channel_addresses_one_bucket_prefix_and_one_origin() {
+    fn a_channel_addresses_one_bucket_prefix_one_stage_and_one_origin() {
         let channel = dev();
 
         assert_eq!(
@@ -493,8 +622,16 @@ mod tests {
             "flyco-transcripts/releases/dev/flycod-linux-x86_64"
         );
         assert_eq!(
-            channel.checksum_url("flycod-linux-x86_64"),
+            channel.stage_dir(Path::new("/w/target")),
+            PathBuf::from("/w/target/flycod-release/dev")
+        );
+        assert_eq!(
+            channel.url("flycod-linux-x86_64.sha256"),
             "https://dev.flyco.dev/install/flycod-linux-x86_64.sha256"
+        );
+        assert_eq!(
+            channel.url("flycod.sh"),
+            "https://dev.flyco.dev/install/flycod.sh"
         );
         assert_eq!(channel.health_url(), "https://dev.flyco.dev/v1/healthz");
     }
@@ -502,8 +639,12 @@ mod tests {
     #[test]
     fn verification_reads_past_the_edge_cache() {
         assert_eq!(
-            dev().checksum_verification_url("flycod-linux-aarch64", 17),
+            dev().verification_url("flycod-linux-aarch64.sha256", 17),
             "https://dev.flyco.dev/install/flycod-linux-aarch64.sha256?published=17"
+        );
+        assert_eq!(
+            dev().verification_url("flycod.sh", 17),
+            "https://dev.flyco.dev/install/flycod.sh?published=17"
         );
     }
 
@@ -544,10 +685,10 @@ mod tests {
     fn the_upload_command_is_exactly_the_documented_wrangler_put() {
         let invocation = Invocation::upload(
             dev(),
-            &ReleaseObject {
-                name: "flycod-linux-x86_64".to_owned(),
-                file: PathBuf::from("/w/target/flycod-release/dev/flycod-linux-x86_64"),
-            },
+            &ReleaseObject::staged(
+                flyco_core::release::X86_64.binary,
+                Path::new("/w/target/flycod-release/dev"),
+            ),
         );
 
         assert_eq!(invocation.program, "wrangler");
@@ -560,6 +701,8 @@ mod tests {
                 "flyco-transcripts/releases/dev/flycod-linux-x86_64",
                 "--file",
                 "/w/target/flycod-release/dev/flycod-linux-x86_64",
+                "--content-type",
+                "application/octet-stream",
                 "--remote",
             ]
         );
@@ -567,7 +710,8 @@ mod tests {
 
     #[test]
     fn no_invocation_goes_through_a_shell() {
-        let uploads = release()
+        let release = release();
+        let uploads = release
             .objects()
             .map(|object| Invocation::upload(dev(), object))
             .collect::<Vec<_>>();
@@ -644,6 +788,7 @@ mod tests {
                 ArchitectureArtifacts::stage(x86_64, stage, b"x86_64"),
                 ArchitectureArtifacts::stage(aarch64, stage, b"aarch64"),
             ],
+            assets: ASSETS.map(|asset| ReleaseObject::staged(asset, stage)),
         }
     }
 }
