@@ -109,8 +109,10 @@ impl SessionState {
 /// Named on [`CreateSession`] when the caller picks a type themselves. The
 /// choice is validated against the named account's own catalog before
 /// anything is written, so a machine the account cannot deploy is refused
-/// where the user made the choice. Omitted, flyco picks the cheapest
-/// deployable Linux type instead of guessing and resizing afterwards.
+/// where the user made the choice. Omitted, flyco picks a machine itself
+/// with [`auto_linux_choice`](crate::machine::auto_linux_choice) instead of
+/// guessing and resizing afterwards, and the session records that the
+/// choice was flyco's ([`MachineOrigin::Auto`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MachineChoice {
     /// Which linked provider account to provision on.
@@ -226,8 +228,13 @@ pub struct CreateSession {
     pub repo: String,
     /// Spending limit for the whole session.
     pub budget_limit: Usd,
-    /// The machine to provision for it. Omitted, flyco picks the cheapest
-    /// deployable Linux type from the caller's catalog.
+    /// The machine to provision for it.
+    ///
+    /// Omitted, flyco picks the cheapest Linux type in the caller's catalog
+    /// of at least
+    /// [`AUTO_MIN_VCPUS`](crate::machine::AUTO_MIN_VCPUS) vCPUs and
+    /// [`AUTO_MIN_MEMORY_MIB`](crate::machine::AUTO_MIN_MEMORY_MIB) of
+    /// memory, and records the machine as automatically chosen.
     #[serde(default)]
     pub machine: Option<MachineChoice>,
     /// Whether to ask for interruptible spot capacity when flyco picks the

@@ -615,26 +615,33 @@ fn broadcast(
 
 /// Sends a command to the session's daemon, and says whether one took it.
 ///
+/// A daemon is a *greeted* socket, not an open one: a connection that has
+/// not said `Hello` has not agreed a protocol version, and writing a command
+/// into it would be speaking before either side knows the other's language.
+/// The handshake is a moment away, and [`replay_mailbox`] hands over
+/// everything written during it.
+///
 /// A disconnected daemon is not an error — it is a daemon mid-reconnect, or
 /// a machine that does not exist yet. What happens next depends on the
-/// command: a user message is held in the mailbox and redelivered by
-/// [`replay_mailbox`], and everything else is dropped with a warning,
-/// because an interrupt or a keystroke replayed into a later turn would be
-/// an instruction about something that is no longer happening.
+/// command: a user message is held in the mailbox and redelivered on the
+/// next `Hello`, and everything else is dropped with a warning, because an
+/// interrupt or a keystroke replayed into a later turn would be an
+/// instruction about something that is no longer happening.
 fn forward_to_daemon(
     connections: &DurableConnections,
     command: &ControlToDaemon,
 ) -> Result<bool, DurableObjectError> {
     let json = serde_json::to_string(command)
         .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
-    let daemons = connections.by_tag(ROLE_DAEMON)?;
-    if daemons.is_empty() {
-        return Ok(false);
-    }
-    for daemon in daemons {
+    let mut delivered = false;
+    for daemon in connections.by_tag(ROLE_DAEMON)? {
+        if daemon.attachment::<Greeted>()?.is_none() {
+            continue;
+        }
         daemon.send_text(&json)?;
+        delivered = true;
     }
-    Ok(true)
+    Ok(delivered)
 }
 
 // ── The room's own HTTP surface ──

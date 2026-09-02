@@ -25,7 +25,7 @@ pub enum CloudProviderKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OsFamily {
-    /// Linux (the default; cheapest and always the first machine).
+    /// Linux (the default, and the only family flyco ever picks itself).
     Linux,
     /// macOS (dedicated-host constraints apply).
     MacOs,

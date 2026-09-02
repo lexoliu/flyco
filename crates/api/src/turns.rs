@@ -33,7 +33,9 @@
 //! following a live session watches the relay for what happens next and
 //! re-lists when it wants the history again.
 
-use flyco_core::{ClientEvent, HarnessEvent, SessionId, TurnPage, TurnSummary};
+use flyco_core::{
+    ClientEvent, HarnessEvent, PROMPT_EXCERPT_CHARS, SessionId, TurnPage, TurnSummary, excerpt,
+};
 
 use crate::error::ApiError;
 use crate::room::StoredEvent;
@@ -41,12 +43,6 @@ use crate::rooms::Rooms;
 
 /// Most turns one page returns.
 pub const MAX_TURNS_PER_PAGE: u32 = 50;
-
-/// How much of the prompt a turn is named by.
-///
-/// Enough to recognise the turn in a list, short enough that a history of
-/// fifty turns is not a transcript in its own right.
-pub const PROMPT_EXCERPT_CHARS: usize = 200;
 
 /// How many event pages one request may read.
 ///
@@ -146,7 +142,9 @@ impl Fold {
             let event: ClientEvent = serde_json::from_value(stored.event.clone())
                 .map_err(|_| ApiError::CorruptRecord("a room recorded a non-client event"))?;
             match event {
-                ClientEvent::UserMessage { text } => self.prompt = Some(excerpt(&text)),
+                ClientEvent::UserMessage { text } => {
+                    self.prompt = Some(excerpt(&text, PROMPT_EXCERPT_CHARS));
+                }
                 ClientEvent::Harness { event } => self.harness(&event, stored),
                 _ => {}
             }
@@ -218,20 +216,11 @@ impl Fold {
     }
 }
 
-/// The opening of a prompt, as the history list names a turn by it.
-fn excerpt(text: &str) -> String {
-    let trimmed = text.trim();
-    match trimmed.char_indices().nth(PROMPT_EXCERPT_CHARS) {
-        Some((end, _)) => format!("{}…", trimmed[..end].trim_end()),
-        None => trimmed.to_owned(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use flyco_core::{ClientEvent, ContextWindow, HarnessEvent, TurnPage, UsageReport, Usd};
 
-    use super::{Fold, PROMPT_EXCERPT_CHARS, excerpt};
+    use super::{Fold, PROMPT_EXCERPT_CHARS};
     use crate::room::StoredEvent;
 
     fn usage() -> UsageReport {
@@ -399,12 +388,15 @@ mod tests {
 
     #[test]
     fn a_prompt_is_shortened_rather_than_returned_whole() {
+        // The shortening itself lives in `flyco_core::excerpt`, which a
+        // session title uses at its own length; this pins the length the
+        // turn list asks for.
         let long = "x".repeat(PROMPT_EXCERPT_CHARS * 2);
-        let short = excerpt(&long);
-        assert_eq!(short.chars().count(), PROMPT_EXCERPT_CHARS + 1);
-        assert!(short.ends_with('…'));
-
-        assert_eq!(excerpt("  spaced  "), "spaced");
-        assert_eq!(excerpt("短い"), "短い");
+        let page = fold(vec![said(&long), started("t-1"), completed("t-1")]);
+        assert_eq!(
+            page.turns[0].prompt_excerpt.chars().count(),
+            PROMPT_EXCERPT_CHARS
+        );
+        assert!(page.turns[0].prompt_excerpt.ends_with('…'));
     }
 }

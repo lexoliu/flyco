@@ -2240,7 +2240,7 @@
                       },
                       {
                         "$ref": "#/components/schemas/MachineChoice",
-                        "description": "The machine to provision for it. Omitted, flyco picks the cheapest\ndeployable Linux type from the caller's catalog."
+                        "description": "The machine to provision for it.\n\nOmitted, flyco picks the cheapest Linux type in the caller's catalog\nof at least\n[`AUTO_MIN_VCPUS`](crate::machine::AUTO_MIN_VCPUS) vCPUs and\n[`AUTO_MIN_MEMORY_MIB`](crate::machine::AUTO_MIN_MEMORY_MIB) of\nmemory, and records the machine as automatically chosen."
                       }
                     ]
                   },
@@ -4700,7 +4700,7 @@
               },
               {
                 "$ref": "#/components/schemas/MachineChoice",
-                "description": "The machine to provision for it. Omitted, flyco picks the cheapest\ndeployable Linux type from the caller's catalog."
+                "description": "The machine to provision for it.\n\nOmitted, flyco picks the cheapest Linux type in the caller's catalog\nof at least\n[`AUTO_MIN_VCPUS`](crate::machine::AUTO_MIN_VCPUS) vCPUs and\n[`AUTO_MIN_MEMORY_MIB`](crate::machine::AUTO_MIN_MEMORY_MIB) of\nmemory, and records the machine as automatically chosen."
               }
             ]
           },
@@ -5300,7 +5300,7 @@
       },
       "MachineChoice": {
         "type": "object",
-        "description": "Which machine a session asks for.\n\nNamed on [`CreateSession`] when the caller picks a type themselves. The\nchoice is validated against the named account's own catalog before\nanything is written, so a machine the account cannot deploy is refused\nwhere the user made the choice. Omitted, flyco picks the cheapest\ndeployable Linux type instead of guessing and resizing afterwards.",
+        "description": "Which machine a session asks for.\n\nNamed on [`CreateSession`] when the caller picks a type themselves. The\nchoice is validated against the named account's own catalog before\nanything is written, so a machine the account cannot deploy is refused\nwhere the user made the choice. Omitted, flyco picks a machine itself\nwith [`auto_linux_choice`](crate::machine::auto_linux_choice) instead of\nguessing and resizing afterwards, and the session records that the\nchoice was flyco's ([`MachineOrigin::Auto`]).",
         "required": [
           "provider_account",
           "machine_type",

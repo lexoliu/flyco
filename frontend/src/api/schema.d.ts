@@ -1915,8 +1915,10 @@ export interface components {
          *     Named on [`CreateSession`] when the caller picks a type themselves. The
          *     choice is validated against the named account's own catalog before
          *     anything is written, so a machine the account cannot deploy is refused
-         *     where the user made the choice. Omitted, flyco picks the cheapest
-         *     deployable Linux type instead of guessing and resizing afterwards.
+         *     where the user made the choice. Omitted, flyco picks a machine itself
+         *     with [`auto_linux_choice`](crate::machine::auto_linux_choice) instead of
+         *     guessing and resizing afterwards, and the session records that the
+         *     choice was flyco's ([`MachineOrigin::Auto`]).
          */
         MachineChoice: {
             /**
