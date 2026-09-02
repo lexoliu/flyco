@@ -63,6 +63,12 @@ impl SessionState {
     /// Provisioning`) or given up on (`Failed -> Archived`), and nothing
     /// else.
     ///
+    /// `Interrupted -> Failed` is the one an interrupted session needs: its
+    /// machine was reclaimed and flyco could not put it back, so it is not
+    /// waiting for anything and the user has to decide what to do. Without
+    /// it a recovery that ran out of attempts would leave the session
+    /// looking like one that is still coming back.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionTransitionError`] when the move is not part of the
@@ -79,9 +85,10 @@ impl SessionState {
                     Self::Paused | Self::Interrupted | Self::Archived
                 )
                 | (
-                    Self::Interrupted | Self::Failed,
-                    Self::Provisioning | Self::Archived
+                    Self::Interrupted,
+                    Self::Provisioning | Self::Archived | Self::Failed
                 )
+                | (Self::Failed, Self::Provisioning | Self::Archived)
                 | (Self::Archived, Self::Provisioning)
         );
         if allowed {
@@ -630,6 +637,17 @@ mod tests {
         ] {
             assert!(!state.is_resumable());
         }
+    }
+
+    #[test]
+    fn a_reclaimed_session_flyco_cannot_recover_ends_up_failed() {
+        // The recovery gave up, so the session is not waiting for anything
+        // and the user has to decide: retry it, or archive it.
+        let failed = SessionState::Interrupted
+            .transition(SessionState::Failed)
+            .expect("a recovery that ran out of attempts fails the session");
+        assert!(failed.transition(SessionState::Provisioning).is_ok());
+        assert!(failed.transition(SessionState::Archived).is_ok());
     }
 
     #[test]
