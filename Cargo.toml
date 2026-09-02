@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/api", "crates/daemon", "crates/provider"]
+members = ["crates/core", "crates/api", "crates/daemon", "crates/provider", "crates/xtask"]
 resolver = "3"
 
 [workspace.package]
@@ -127,6 +127,19 @@ sha2 = { version = "0.10", default-features = false }
 url = { version = "2", features = ["serde"] }
 jwt-compact = { version = "0.9.0-beta.1", default-features = false, features = ["p256", "std"] }
 web-push-native = { version = "0.5", default-features = false }
+
+# Workspace automation only (crates/xtask). None of this reaches either plane:
+# it is the release procedure, run from a developer machine or a dispatched
+# workflow.
+#
+# `anyhow` because a task's failure is a message to an operator rather than
+# something a caller matches on; the decisions worth typing (an unknown
+# channel, a wire-protocol mismatch) are their own `thiserror` types.
+anyhow = "1"
+# Where cargo writes build output is cargo's answer to give, not something to
+# reconstruct from the environment.
+cargo_metadata = "0.23"
+which = "8"
 
 [workspace.lints.rust]
 missing_docs = "warn"
