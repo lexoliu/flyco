@@ -529,6 +529,39 @@ async fn the_event_tail_is_replayed_in_order_and_resumes_from_a_cursor() {
 }
 
 #[skyzen::test]
+async fn a_spot_notice_is_stored_as_well_as_broadcast() {
+    // A reclamation is something that happened to the session, and the
+    // browser most likely to want it is one opened *after* the machine was
+    // taken away — which reads the stored tail rather than a live frame.
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    room.deliver_json(
+        Which::Daemon,
+        &DaemonToControl::SpotNotice {
+            seconds_remaining: 30,
+        },
+    )
+    .await;
+
+    assert_eq!(
+        room.drain(),
+        vec![to_client(&ClientEvent::SpotNotice {
+            seconds_remaining: 30
+        })]
+    );
+    let page = room.events(0).await;
+    assert_eq!(page.events.len(), 1);
+    assert_eq!(
+        serde_json::from_value::<ClientEvent>(page.events[0].event.clone())
+            .expect("a client event"),
+        ClientEvent::SpotNotice {
+            seconds_remaining: 30
+        }
+    );
+}
+
+#[skyzen::test]
 async fn a_usage_report_is_broadcast_but_not_stored() {
     let mut room = Room::open().await;
     room.greet().await;

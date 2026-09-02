@@ -58,6 +58,7 @@ use crate::control::rest::{ControlApi, ControlApiError};
 use crate::git::{GitError, WorkingTree};
 use crate::harness::{HarnessSession, SessionOutput, ToolApproval};
 use crate::notice::{MachineChanged, MachineLine, OpeningMessage, SessionStart};
+use crate::spot::{Disk, Notices, SpotNotice};
 use crate::terminal::{TerminalError, TerminalSession};
 
 /// How many frames may wait for a socket that is not there.
@@ -436,13 +437,55 @@ enum Tree {
     },
 }
 
-struct Connection<S, T, A, W> {
+/// Which of the streams the pump selects on can still produce something.
+///
+/// A `select!` arm whose channel has closed is ready *immediately*, for
+/// ever, so an arm that is not disabled once its producer is gone turns the
+/// pump into a busy loop. Grouped rather than three fields on the
+/// connection because they are one question asked three times, and the
+/// answers are read together every time round the loop.
+#[derive(Debug, Clone, Copy)]
+struct Alive {
+    /// Whether the harness is still producing output.
+    harness: bool,
+    /// Whether the working-tree watcher is still producing summaries.
+    repo_watch: bool,
+    /// Whether an eviction watcher is still there to announce anything.
+    ///
+    /// False from the start on a machine nobody can reclaim, and false
+    /// again once a notice has arrived: a reclamation happens to a machine
+    /// exactly once.
+    spot_watch: bool,
+}
+
+struct Connection<S, T, A, W, D> {
     session: S,
     terminal: T,
     terminal_out: mpsc::Receiver<String>,
     api: A,
     workdir: W,
     repo_status: mpsc::UnboundedReceiver<String>,
+    disk: D,
+    /// Eviction notices from the provider's metadata endpoint.
+    spot: Notices,
+    /// Which of the streams the pump selects on are still producing.
+    alive: Alive,
+    /// Whether this machine's capacity has been announced as going away.
+    ///
+    /// Set once and never cleared, like [`Self::paused`] and for the same
+    /// kind of reason: what ends a reclamation is the machine stopping, not
+    /// the daemon deciding it is over. While it is set no new turn may
+    /// start — the transcript has already been flushed, and a turn opened
+    /// after it would be work the next machine has no record of.
+    reclaiming: bool,
+    /// The harness-native session id, once the harness has announced one.
+    ///
+    /// Kept so a reclamation can re-file it and *know* it landed: the
+    /// collector already records it when it arrives, but that write happened
+    /// minutes ago and on a socket that may since have dropped, and a
+    /// replacement machine with no id to resume opens a new conversation
+    /// instead of continuing this one.
+    harness_session_id: Option<String>,
     endpoint: Endpoint,
     /// Whether a budget pause has stopped this session accepting work.
     ///
@@ -451,10 +494,6 @@ struct Connection<S, T, A, W> {
     /// pause is over.
     paused: bool,
     tree: Tree,
-    /// Whether the harness is still producing output.
-    harness_alive: bool,
-    /// Whether the working-tree watcher is still producing summaries.
-    repo_watch_alive: bool,
     /// When to auto-continue after a usage limit, if one is in force.
     continue_at: Option<tokio::time::Instant>,
     /// REST-assigned approval id → harness-native id.
@@ -478,7 +517,9 @@ enum Ended {
     HarnessStopped,
 }
 
-impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Connection<S, T, A, W> {
+impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Disk>
+    Connection<S, T, A, W, D>
+{
     /// Pumps one connection until it ends.
     ///
     /// `in_flight` holds the one frame that has left the queue but has not
@@ -503,44 +544,10 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
 
         loop {
             tokio::select! {
-                outbound = queue.recv(), if self.harness_alive => {
-                    let Some(outbound) = outbound else {
-                        self.harness_alive = false;
-                        if matches!(self.tree, Tree::Dirty { .. }) && !self.paused {
-                            tracing::info!(
-                                "the harness stopped on a dirty tree; keeping the session awake"
-                            );
-                            continue;
-                        }
-                        return Ok(Ended::HarnessStopped);
-                    };
-                    if let Some(harness_id) = outbound.harness_approval {
-                        let rest_id = match &outbound.frame {
-                            DaemonToControl::ApprovalRequest { id, .. } => *id,
-                            _ => {
-                                return Err(WireError::Harness(
-                                    "an approval pairing was attached to a non-approval frame"
-                                        .to_owned(),
-                                ));
-                            }
-                        };
-                        self.approvals.insert(rest_id, harness_id);
+                outbound = queue.recv(), if self.alive.harness => {
+                    if let Some(ending) = self.on_outbound(socket, outbound, in_flight).await? {
+                        return Ok(ending);
                     }
-                    let completed_dirty = matches!(
-                        &outbound.frame,
-                        DaemonToControl::Harness {
-                            event: HarnessEvent::TurnCompleted { .. },
-                        }
-                    );
-                    if let Err(error) = send(socket, &outbound.frame).await {
-                        tracing::warn!(%error, "a frame did not reach the room; retrying it on the next connection");
-                        *in_flight = Some(outbound.frame);
-                        return Ok(Ended::Disconnected);
-                    }
-                    if completed_dirty {
-                        self.nudge_if_dirty().await?;
-                    }
-                    self.schedule_usage_continue(&outbound.frame);
                 }
                 inbound = next_frame(socket) => {
                     let Some(command) = inbound? else {
@@ -563,16 +570,30 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
                 }
                 () = tokio::time::sleep_until(self.continue_at.unwrap_or_else(tokio::time::Instant::now)), if self.continue_at.is_some() => {
                     self.continue_at = None;
-                    if !self.paused {
+                    if !self.paused && !self.reclaiming {
                         self.session
                             .send_user_message(USAGE_RESET_NOTICE.to_owned())
                             .await
                             .map_err(harness)?;
                     }
                 }
-                summary = self.repo_status.recv(), if self.repo_watch_alive => {
+                notice = self.spot.recv(), if self.alive.spot_watch => {
+                    self.alive.spot_watch = false;
+                    let Some(notice) = notice else {
+                        // No watcher: this machine holds capacity nobody
+                        // can reclaim.
+                        continue;
+                    };
+                    if let Err(error) = self.reclaim(socket, queue, in_flight, notice).await {
+                        // Whatever failed, the machine is still going. The
+                        // relay keeps its socket rather than tearing down
+                        // over an error it cannot act on.
+                        tracing::error!(%error, "the reclamation sequence did not complete");
+                    }
+                }
+                summary = self.repo_status.recv(), if self.alive.repo_watch => {
                     let Some(summary) = summary else {
-                        self.repo_watch_alive = false;
+                        self.alive.repo_watch = false;
                         continue;
                     };
                     self.tree = if summary.trim().is_empty() {
@@ -593,6 +614,167 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
         }
     }
 
+    /// Relays one frame the harness produced, or reacts to it stopping.
+    ///
+    /// `Ok(None)` is the ordinary case: the frame went out and the pump
+    /// keeps going. `Ok(Some(_))` ends the connection.
+    async fn on_outbound(
+        &mut self,
+        socket: &mut Socket,
+        outbound: Option<Outbound>,
+        in_flight: &mut Option<DaemonToControl>,
+    ) -> Result<Option<Ended>, WireError> {
+        let Some(outbound) = outbound else {
+            self.alive.harness = false;
+            if matches!(self.tree, Tree::Dirty { .. }) && !self.paused {
+                tracing::info!("the harness stopped on a dirty tree; keeping the session awake");
+                return Ok(None);
+            }
+            return Ok(Some(Ended::HarnessStopped));
+        };
+
+        if let Some(harness_id) = outbound.harness_approval {
+            let DaemonToControl::ApprovalRequest { id, .. } = &outbound.frame else {
+                return Err(WireError::Harness(
+                    "an approval pairing was attached to a non-approval frame".to_owned(),
+                ));
+            };
+            self.approvals.insert(*id, harness_id);
+        }
+        self.remember(&outbound.frame);
+        let completed_dirty = matches!(
+            &outbound.frame,
+            DaemonToControl::Harness {
+                event: HarnessEvent::TurnCompleted { .. },
+            }
+        );
+        if let Err(error) = send(socket, &outbound.frame).await {
+            tracing::warn!(
+                %error,
+                "a frame did not reach the room; retrying it on the next connection"
+            );
+            *in_flight = Some(outbound.frame);
+            return Ok(Some(Ended::Disconnected));
+        }
+        if completed_dirty {
+            self.nudge_if_dirty().await?;
+        }
+        self.schedule_usage_continue(&outbound.frame);
+        Ok(None)
+    }
+
+    /// Spends the seconds between an eviction notice and the machine going.
+    ///
+    /// Four steps, in this order, and the order *is* the feature — each one
+    /// is only correct because the one before it has finished:
+    ///
+    /// 1. **Interrupt the turn.** The harness stops writing, so what is
+    ///    flushed next is a transcript that has stopped moving rather than
+    ///    one truncated mid-sentence. Nothing asks the model about any of
+    ///    this: it is thirty seconds, and an LLM is slow and unpredictable.
+    /// 2. **Flush.** Everything the harness handed this daemon is written
+    ///    through to the control plane — the transcript batches, and then
+    ///    the harness-native session id, which is what lets the replacement
+    ///    machine continue this conversation instead of opening a new one.
+    ///    Both are awaited: the daemon has to *know* they landed, because
+    ///    it is about to stop existing.
+    /// 3. **`sync`.** The disk outlives the machine on every provider flyco
+    ///    provisions spot on, so what is still in the page cache is the only
+    ///    part of the working tree that a reclamation could lose.
+    /// 4. **Report.** The durable half over REST — which marks the session
+    ///    interrupted and queues its replacement — and then the relay frame
+    ///    that puts the countdown in front of the user.
+    ///
+    /// The socket is then held open until the machine dies. There is
+    /// nothing left to send on it and no reason to close it: a daemon that
+    /// disconnected cleanly would look like one that is coming back.
+    async fn reclaim(
+        &mut self,
+        socket: &mut Socket,
+        queue: &mut mpsc::Receiver<Outbound>,
+        in_flight: &mut Option<DaemonToControl>,
+        notice: SpotNotice,
+    ) -> Result<(), WireError> {
+        tracing::warn!(
+            seconds_remaining = notice.seconds_remaining,
+            "this machine's capacity is being reclaimed; saving the session"
+        );
+        // Before anything else, so a user message that arrives during the
+        // flush is refused rather than opening a turn nothing will record.
+        self.reclaiming = true;
+
+        self.session.interrupt().await.map_err(harness)?;
+        self.session.flush().await.map_err(harness)?;
+        self.drain(socket, queue, in_flight).await;
+        if let Some(id) = self.harness_session_id.clone() {
+            self.api.record_harness_session(&id).await?;
+        } else {
+            tracing::warn!(
+                "the harness never announced a session id; the replacement machine \
+                 opens a new conversation"
+            );
+        }
+
+        if let Err(error) = self.disk.sync().await {
+            // Not fatal, and not a reason to skip the notice: the seconds
+            // left are better spent telling the control plane than dying
+            // over a flush that may well have happened anyway.
+            tracing::error!(%error, "the filesystem could not be flushed before reclamation");
+        }
+
+        self.api
+            .report_spot_notice(notice.seconds_remaining)
+            .await?;
+        send(
+            socket,
+            &DaemonToControl::SpotNotice {
+                seconds_remaining: notice.seconds_remaining,
+            },
+        )
+        .await
+    }
+
+    /// Writes everything already queued into the socket.
+    ///
+    /// What makes the flush a *whole* one: the harness's output reaches the
+    /// room through a queue the pump drains one frame per loop, so a
+    /// reclamation that only flushed the transcript store would leave the
+    /// room's stored tail — which is what a browser replays — short by
+    /// whatever was still queued.
+    ///
+    /// A frame that will not send is kept for a connection that is not
+    /// coming, which is the honest thing to do with it: the room's tail is
+    /// the loss, and the transcript itself is already in object storage.
+    async fn drain(
+        &mut self,
+        socket: &mut Socket,
+        queue: &mut mpsc::Receiver<Outbound>,
+        in_flight: &mut Option<DaemonToControl>,
+    ) {
+        if let Some(frame) = in_flight.take()
+            && let Err(error) = send(socket, &frame).await
+        {
+            tracing::warn!(%error, "a retried frame did not reach the room before reclamation");
+            *in_flight = Some(frame);
+            return;
+        }
+        while let Ok(outbound) = queue.try_recv() {
+            self.remember(&outbound.frame);
+            if let Err(error) = send(socket, &outbound.frame).await {
+                tracing::warn!(%error, "a frame did not reach the room before reclamation");
+                *in_flight = Some(outbound.frame);
+                return;
+            }
+        }
+    }
+
+    /// Keeps what a reclamation will need out of a frame on its way past.
+    fn remember(&mut self, frame: &DaemonToControl) {
+        if let DaemonToControl::Started { harness_session_id } = frame {
+            self.harness_session_id = Some(harness_session_id.clone());
+        }
+    }
+
     /// Acts on one command from the control plane.
     async fn dispatch(&mut self, command: ControlToDaemon) -> Result<Ended, WireError> {
         match command {
@@ -600,7 +782,9 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
                 tracing::debug!("the room welcomed an already-welcomed daemon");
             }
             ControlToDaemon::UserMessage { text } => {
-                if self.refuse_while_paused("a user message") {
+                if self.refuse_while_paused("a user message")
+                    || self.refuse_while_reclaiming("a user message")
+                {
                     return Ok(Ended::Disconnected);
                 }
                 // The opening notice rides on the first message rather than
@@ -620,7 +804,9 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
             }
             ControlToDaemon::Interrupt => self.session.interrupt().await.map_err(harness)?,
             ControlToDaemon::Compact => {
-                if self.refuse_while_paused("context compaction") {
+                if self.refuse_while_paused("context compaction")
+                    || self.refuse_while_reclaiming("context compaction")
+                {
                     return Ok(Ended::Disconnected);
                 }
                 self.session.compact().await.map_err(harness)?;
@@ -707,8 +893,8 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
     /// it is not accepting work, and a notice would be an instruction it
     /// cannot act on.
     async fn tell_the_agent(&self, notice: &str) -> Result<(), WireError> {
-        if self.paused {
-            tracing::warn!("not telling a paused session about a change it cannot act on");
+        if self.paused || self.reclaiming {
+            tracing::warn!("not telling a stopped session about a change it cannot act on");
             return Ok(());
         }
         self.session
@@ -719,7 +905,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
 
     /// Tells the agent it may not stop while the tree is dirty.
     async fn nudge_if_dirty(&mut self) -> Result<(), WireError> {
-        if !self.paused && matches!(self.tree, Tree::Dirty { noticed: false }) {
+        if !self.paused && !self.reclaiming && matches!(self.tree, Tree::Dirty { noticed: false }) {
             self.tree = Tree::Dirty { noticed: true };
             self.session
                 .send_user_message(DIRTY_NOTICE.to_owned())
@@ -779,6 +965,25 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
         }
         self.paused
     }
+
+    /// Whether a machine being reclaimed must refuse this command.
+    ///
+    /// Everything that would open a turn, and nothing else. The transcript
+    /// has already been flushed to the control plane and the disk has
+    /// already been synced; a turn started after that is work the machine
+    /// will be taken away in the middle of and the replacement will have no
+    /// record of. The user's message is not lost — it stays in the room's
+    /// mailbox and is delivered to the daemon on the new machine.
+    fn refuse_while_reclaiming(&self, what: &str) -> bool {
+        if self.reclaiming {
+            tracing::warn!(
+                what,
+                "refused: this machine's capacity is being reclaimed; it is kept for the \
+                 daemon on the replacement"
+            );
+        }
+        self.reclaiming
+    }
 }
 
 fn harness(error: impl core::fmt::Display) -> WireError {
@@ -786,7 +991,7 @@ fn harness(error: impl core::fmt::Display) -> WireError {
 }
 
 /// Everything [`run`] needs to drive one session.
-pub struct SessionRelay<S, A, T, W> {
+pub struct SessionRelay<S, A, T, W, D> {
     /// Where the daemon connects.
     pub endpoint: Endpoint,
     /// The live harness handle.
@@ -803,13 +1008,18 @@ pub struct SessionRelay<S, A, T, W> {
     pub workdir: W,
     /// `git status --short` summaries as they change.
     pub repo_status: mpsc::UnboundedReceiver<String>,
+    /// The filesystems a reclamation flushes before the compute goes.
+    pub disk: D,
+    /// Eviction notices from the provider's metadata endpoint, or a closed
+    /// channel on a machine nobody can reclaim.
+    pub spot: Notices,
     /// The machine this session opened on, as the agent is told about it.
     pub machine: flyco_core::SessionMachine,
     /// Whether flyco or the user chose that machine.
     pub machine_origin: flyco_core::MachineOrigin,
 }
 
-impl<S, A, T, W> core::fmt::Debug for SessionRelay<S, A, T, W> {
+impl<S, A, T, W, D> core::fmt::Debug for SessionRelay<S, A, T, W, D> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SessionRelay")
             .field("endpoint", &self.endpoint)
@@ -825,12 +1035,13 @@ impl<S, A, T, W> core::fmt::Debug for SessionRelay<S, A, T, W> {
 /// Returns [`WireError`] if the relay queue overflows, the control plane
 /// speaks a protocol this daemon cannot read, or the harness stops
 /// accepting commands. A dropped socket is not an error: it is reconnected.
-pub async fn run<S, A, T, W>(relay: SessionRelay<S, A, T, W>) -> Result<(), WireError>
+pub async fn run<S, A, T, W, D>(relay: SessionRelay<S, A, T, W, D>) -> Result<(), WireError>
 where
     S: HarnessSession + 'static,
     A: ControlApi + Clone,
     T: TerminalSession + 'static,
     W: WorkingTree + 'static,
+    D: Disk,
 {
     let (sender, mut queue) = mpsc::channel(QUEUE_DEPTH);
     let collector = tokio::spawn(collect(relay.outputs, sender, relay.api.clone()));
@@ -849,11 +1060,18 @@ where
         api: relay.api,
         workdir: relay.workdir,
         repo_status: relay.repo_status,
+        disk: relay.disk,
+        spot: relay.spot,
+        reclaiming: false,
+        harness_session_id: None,
         endpoint: relay.endpoint,
         paused: false,
         tree: Tree::Clean,
-        harness_alive: true,
-        repo_watch_alive: true,
+        alive: Alive {
+            harness: true,
+            repo_watch: true,
+            spot_watch: true,
+        },
         continue_at: None,
         approvals: BTreeMap::new(),
         opening: Some(opening),

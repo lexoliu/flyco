@@ -176,6 +176,21 @@
   background: var(--color-surface);
 }
 
+/*
+ * What the timeline is for, when it is not the obvious one.
+ *
+ * A first provision needs no heading — it is the only thing on the screen
+ * and the stages say what is happening. A migration does: it appears in the
+ * middle of a conversation, and a bare `Reserving a machine` there reads as
+ * a second machine rather than as the one the session already had coming
+ * back.
+ */
+.timelineHeading {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+}
+
 .stage {
   display: flex;
   align-items: center;

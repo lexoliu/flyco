@@ -33,6 +33,7 @@ const COMMIT_EMAIL: &str = "4242+lexoliu@users.noreply.github.com";
 fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
     DaemonBootstrap {
         session: SessionId::generate(),
+        provider: flyco_core::CloudProviderKind::Azure,
         control_plane_url: CONTROL_PLANE.to_owned(),
         daemon_token: DAEMON_TOKEN.to_owned(),
         permission_mode: PermissionMode::Auto,
@@ -88,6 +89,26 @@ fn it_carries_the_machine_the_agent_is_told_about_and_who_chose_it() {
 
     assert_eq!(config.machine_origin, MachineOrigin::User);
     assert_eq!(config.machine, bootstrap.machine);
+}
+
+#[test]
+fn a_spot_machine_arrives_knowing_whose_metadata_announces_its_reclamation() {
+    // The daemon polls one endpoint out of three and probes none of them:
+    // which one is a fact the provisioner holds and the machine cannot
+    // recover for itself.
+    let config = parse(&claude(ClaudeCredential::Inherit));
+    assert_eq!(
+        config.spot_provider,
+        Some(flyco_core::CloudProviderKind::Azure)
+    );
+
+    let mut on_demand = claude(ClaudeCredential::Inherit);
+    on_demand.machine.spot = false;
+    assert_eq!(
+        parse(&on_demand).spot_provider,
+        None,
+        "capacity nobody can reclaim is capacity with nothing to watch for"
+    );
 }
 
 #[test]

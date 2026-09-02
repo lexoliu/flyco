@@ -25,13 +25,23 @@ use crate::harness::{HarnessSession, ToolApproval};
 
 // ── The harness, faked ──
 
-/// Something the wire client asked the harness to do.
+/// Something the wire client did, in the order it did it.
+///
+/// Mostly things it asked the harness to do, which is why it lives beside
+/// [`FakeSession`]. The last three are not the harness at all — a durable
+/// write, a disk flush — and they are in the same vocabulary on purpose:
+/// the reclamation sequence is an *ordering* across all three of those
+/// things (docs/ARCHITECTURE.md), and an ordering can only be asserted
+/// against one channel. Every double in a relay test therefore records into
+/// the sender [`FakeSession::recorder`] hands out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Call {
     /// A user message was pushed into the session.
     UserMessage(String),
     /// The current turn was interrupted.
     Interrupt,
+    /// Everything the harness had produced was flushed through.
+    Flush,
     /// The session context was compacted.
     Compact,
     /// A pending approval was answered.
@@ -43,6 +53,12 @@ pub enum Call {
     },
     /// The session was shut down.
     Shutdown,
+    /// The harness-native session id was filed with the control plane.
+    HarnessSessionRecorded(String),
+    /// Every filesystem was flushed.
+    Synced,
+    /// The reclamation was reported to the control plane over REST.
+    SpotNoticeReported(u32),
 }
 
 /// The harness never fails in these tests.
@@ -64,8 +80,41 @@ impl FakeSession {
         (Self { calls }, received)
     }
 
+    /// The sender every other double in the same test records into.
+    ///
+    /// One channel, so what a test reads back is the order things actually
+    /// happened in rather than the order it happened to drain them.
+    #[must_use]
+    pub fn recorder(&self) -> mpsc::UnboundedSender<Call> {
+        self.calls.clone()
+    }
+
     fn record(&self, call: Call) -> Result<(), FakeSessionError> {
         self.calls.send(call).map_err(|_| FakeSessionError)
+    }
+}
+
+/// A [`Disk`](crate::spot::Disk) that records the flush instead of
+/// performing one.
+#[derive(Debug)]
+pub struct FakeDisk {
+    calls: mpsc::UnboundedSender<Call>,
+}
+
+impl FakeDisk {
+    /// A disk recording into the same channel as everything else.
+    #[must_use]
+    pub const fn new(calls: mpsc::UnboundedSender<Call>) -> Self {
+        Self { calls }
+    }
+}
+
+impl crate::spot::Disk for FakeDisk {
+    fn sync(
+        &self,
+    ) -> impl core::future::Future<Output = Result<(), crate::spot::DiskError>> + Send {
+        let _ = self.calls.send(Call::Synced);
+        core::future::ready(Ok(()))
     }
 }
 
@@ -81,6 +130,10 @@ impl HarnessSession for FakeSession {
 
     fn interrupt(&self) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
         core::future::ready(self.record(Call::Interrupt))
+    }
+
+    fn flush(&self) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
+        core::future::ready(self.record(Call::Flush))
     }
 
     fn compact(&self) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
@@ -365,6 +418,20 @@ impl Reply {
         }
     }
 
+    /// A `200 OK` carrying plain text.
+    ///
+    /// What an instance-metadata endpoint answers with: a JSON document
+    /// Azure and EC2 do not label, and the bare word Compute Engine's
+    /// `preempted` key is.
+    #[must_use]
+    pub fn text(body: &str) -> Self {
+        Self {
+            status: 200,
+            headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
     /// A `204 No Content`.
     #[must_use]
     pub const fn no_content() -> Self {
@@ -406,6 +473,16 @@ impl Reply {
         reply
     }
 }
+
+/// An HTTP server standing in for a provider's instance-metadata endpoint.
+///
+/// The same server the control-plane double is, under the name a watcher's
+/// test reads it by: an instance-metadata endpoint *is* an HTTP server
+/// answering a scripted sequence of documents, and a watcher polling one is
+/// an HTTP client like any other. Scripting the sequence is what lets a
+/// test assert the poll — quiet, quiet, then a notice — rather than only
+/// the parse.
+pub type MetadataEndpoint = ControlPlane;
 
 /// An HTTP server standing in for the control plane's REST API.
 #[derive(Debug)]

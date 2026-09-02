@@ -229,7 +229,8 @@ describe("foldTranscript provisioning timeline", () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toEqual({
       kind: "provisioning",
-      key: "provisioning",
+      key: "provisioning-0",
+      recovery: false,
       steps: [
         { stage: "reserving", atUnix: T0 },
         { stage: "booting", atUnix: T0 + 40 },
@@ -237,6 +238,39 @@ describe("foldTranscript provisioning timeline", () => {
         { stage: "ready", atUnix: T0 + 210 },
       ],
     });
+  });
+
+  it("gives a session put back on its own disk a timeline of its own", () => {
+    // A reclaimed session is recovered by starting the same machine again,
+    // which is its own episode in the middle of the conversation — not
+    // more lines on the timeline of the machine it was built on. Nothing
+    // is installed and nothing is cloned: the disk already has both.
+    const items = foldTranscript([
+      at(100, { type: "provisioning_stage", stage: "reserving", at_unix: T0 }),
+      at(101, { type: "provisioning_stage", stage: "ready", at_unix: T0 + 210 }),
+      at(102, { type: "user_message", text: "audit the relay" }),
+      at(103, { type: "spot_notice", seconds_remaining: 30 }),
+      at(104, { type: "provisioning_stage", stage: "reserving", at_unix: T0 + 900 }),
+      at(105, { type: "provisioning_stage", stage: "booting", at_unix: T0 + 930 }),
+    ]);
+
+    const timelines = items.filter((item) => item.kind === "provisioning");
+    expect(timelines).toHaveLength(2);
+    expect(timelines[0]).toMatchObject({ recovery: false });
+    expect(timelines[1]).toMatchObject({
+      recovery: true,
+      steps: [
+        { stage: "reserving", atUnix: T0 + 900 },
+        { stage: "booting", atUnix: T0 + 930 },
+      ],
+    });
+    // And it sits where it happened: after the countdown that explains it.
+    expect(items.map((item) => item.kind)).toEqual([
+      "provisioning",
+      "user_message",
+      "notice",
+      "provisioning",
+    ]);
   });
 
   it("ignores a stage delivered twice, which an at-least-once relay will do", () => {

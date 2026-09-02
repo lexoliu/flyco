@@ -16,6 +16,16 @@ function session(state: SessionState, createdAgo = 0) {
   };
 }
 
+/** The same session, having lost its machine to the provider. */
+function reclaimed(state: SessionState, sinceAgo = 0) {
+  return {
+    state,
+    created_at_unix: NOW_UNIX - 3600,
+    last_active_unix: NOW_UNIX - sinceAgo,
+    interrupted_reason: "spot_reclaimed" as const,
+  };
+}
+
 describe("deriveStatus", () => {
   it("counts the wait while a machine is being built", () => {
     const view = deriveStatus(session("provisioning", 125), NOW);
@@ -54,7 +64,37 @@ describe("deriveStatus", () => {
 
   it("explains why a session stopped", () => {
     expect(deriveStatus(session("paused"), NOW).detail).toBe("budget exhausted");
-    expect(deriveStatus(session("interrupted"), NOW).detail).toBe("spot reclaimed");
+    expect(deriveStatus(reclaimed("interrupted"), NOW).detail).toBe("spot reclaimed");
+  });
+
+  it("says nothing it cannot support about why a session was interrupted", () => {
+    // The reason comes from the control plane; a build that has not heard
+    // of one renders the status without a clause rather than a raw token.
+    const view = deriveStatus(session("interrupted"), NOW);
+    expect(view.label).toBe("Interrupted");
+    expect(view.detail).toBeUndefined();
+  });
+
+  it("reads a session being put back on its own disk as migrating", () => {
+    // Recovering runs through `provisioning`, exactly as a first machine
+    // does. The reason is the only thing that tells them apart, and the
+    // wait is counted from when the machine went rather than from when the
+    // session was opened.
+    const view = deriveStatus(reclaimed("provisioning", 125), NOW);
+    expect(view.status).toBe("migrating");
+    expect(view.label).toBe("Migrating");
+    expect(view.detail).toBe("2m");
+    expect(view.breathing).toBe(true);
+  });
+
+  it("reads a first machine as provisioning, not as a migration", () => {
+    expect(deriveStatus(session("provisioning", 125), NOW).status).toBe("provisioning");
+  });
+
+  it("stops migrating once the reason is cleared", () => {
+    // The control plane clears it when the session's daemon is back, which
+    // is the moment the migration is genuinely over.
+    expect(deriveStatus(session("active"), NOW).status).toBe("idle");
   });
 
   it("colours a failed session red and everything at rest quietly", () => {

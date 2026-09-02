@@ -175,6 +175,16 @@ impl fmt::Debug for RepoCheckout {
 pub struct DaemonBootstrap {
     /// The session this machine serves.
     pub session: SessionId,
+    /// Which provider built the machine.
+    ///
+    /// The daemon needs it for exactly one thing, and nothing else on the
+    /// machine can tell it: an eviction notice arrives on an
+    /// instance-metadata endpoint whose address, headers and document are
+    /// the provider's own, so a daemon that did not know whose machine it
+    /// is on would have to probe three endpoints and guess. Written into
+    /// the configuration only when the capacity is interruptible — see
+    /// [`flycod::render`].
+    pub provider: flyco_core::CloudProviderKind,
     /// Base URL of the control plane, e.g. `https://flyco.dev/`.
     pub control_plane_url: String,
     /// The session's `fd_` daemon token.
@@ -209,6 +219,7 @@ impl fmt::Debug for DaemonBootstrap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DaemonBootstrap")
             .field("session", &self.session)
+            .field("provider", &self.provider)
             .field("control_plane_url", &self.control_plane_url)
             .field("permission_mode", &self.permission_mode)
             .field("auth", &self.auth)
@@ -473,6 +484,7 @@ mod tests {
     fn a_bootstrap_never_debug_prints_the_credentials_it_carries() {
         let bootstrap = DaemonBootstrap {
             session: SessionId::generate(),
+            provider: flyco_core::CloudProviderKind::Azure,
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_a-live-credential".to_owned(),
             permission_mode: flyco_core::PermissionMode::Default,

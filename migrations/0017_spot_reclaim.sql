@@ -1,0 +1,21 @@
+-- Why a session lost the machine it was running on.
+--
+-- `state = 'interrupted'` says a session is off its compute and says
+-- nothing about whether anybody has to do something about it. Spot is
+-- flyco's default capacity, so the common answer is "the provider took it
+-- back and flyco is already putting the session on the same disk again",
+-- and the UI has two different things to render for the two halves of
+-- that: `Interrupted · spot reclaimed` while the machine is gone, and
+-- `Migrating` while the replacement is being started (docs/ux.md §6, §9.2).
+--
+-- The column outlives the `interrupted` state on purpose. Recovering runs
+-- through `provisioning`, which is the same state a brand-new session sits
+-- in, and this is the only thing that tells those two apart. It is cleared
+-- when the session's daemon reaches the control plane again — the moment
+-- the session is genuinely back — and by a resume, which is the user
+-- deciding to start the machine themselves.
+--
+-- Nullable with no default: a session that has never lost a machine has no
+-- reason, and a placeholder would be an explanation for something that did
+-- not happen.
+ALTER TABLE sessions ADD COLUMN interrupted_reason TEXT;

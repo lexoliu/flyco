@@ -69,6 +69,17 @@ export type TranscriptItem =
       kind: "provisioning";
       key: string;
       steps: ProvisioningStep[];
+      /**
+       * Whether this timeline is flyco putting the session back on a
+       * machine it lost, rather than building its first one.
+       *
+       * A session is reclaimed and recovered any number of times, so the
+       * stages arrive in *episodes*: a second `reserving` after a `ready`
+       * is a new machine being started, not a duplicate of the first. Each
+       * episode is its own timeline, in the place in the transcript where
+       * it happened, and every one after the first is a migration.
+       */
+      recovery: boolean;
     }
   | {
       /**
@@ -132,19 +143,39 @@ function startTurn(items: TranscriptItem[], turnId: string, atUnix: number): Tur
 }
 
 /**
- * The timeline the provisioning stages accumulate into.
+ * The timeline one stage belongs to.
  *
- * One item, not one per stage: the five milestones are a single thing the
- * user reads top to bottom while a machine is built, and splitting them
- * across the transcript would interleave them with whatever else arrived.
+ * One item per *episode*, not one per stage and not one per session. The
+ * milestones of a single build are one thing the user reads top to bottom,
+ * so splitting them across the transcript would interleave them with
+ * whatever else arrived. But a session on spot capacity is reclaimed and
+ * recovered any number of times, and each recovery is its own build in its
+ * own place in the conversation — so a stage that the open timeline has
+ * already been through starts a new one, and every timeline after the first
+ * is a migration.
  */
-function provisioningTimeline(items: TranscriptItem[]): Provisioning {
+function provisioningTimeline(items: TranscriptItem[], stage: ProvisioningStage): Provisioning {
+  let open: Provisioning | undefined;
+  let episodes = 0;
   for (const item of items) {
     if (item.kind === "provisioning") {
-      return item;
+      open = item;
+      episodes += 1;
     }
   }
-  const timeline: Provisioning = { kind: "provisioning", key: "provisioning", steps: [] };
+  // Only `reserving` opens an episode, and only when the timeline in front
+  // of it has already been through one. Every other repeat is a stage the
+  // at-least-once relay delivered twice, which the caller drops.
+  const starts = stage === "reserving" && open?.steps.some((step) => step.stage === stage) === true;
+  if (open !== undefined && !starts) {
+    return open;
+  }
+  const timeline: Provisioning = {
+    kind: "provisioning",
+    key: `provisioning-${episodes}`,
+    steps: [],
+    recovery: episodes > 0,
+  };
   items.push(timeline);
   return timeline;
 }
@@ -267,7 +298,7 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
         break;
       }
       case "provisioning_stage": {
-        const timeline = provisioningTimeline(items);
+        const timeline = provisioningTimeline(items, event.stage);
         // The stage carries its own time: it is when the milestone was
         // reached, which is not when the room recorded the frame — the
         // queue and the daemon are both minutes away from the room.

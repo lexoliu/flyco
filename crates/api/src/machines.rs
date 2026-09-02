@@ -120,6 +120,12 @@ impl MachineRow {
         }
     }
 
+    /// The provider-native type this machine is running.
+    #[must_use]
+    pub fn machine_type(&self) -> String {
+        self.machine_type.clone()
+    }
+
     /// What was asked for, as a driver takes it.
     #[must_use]
     pub fn spec(&self) -> MachineSpec {
@@ -882,6 +888,57 @@ pub async fn record(
     .execute()
     .await?;
     Ok(())
+}
+
+/// Starts a machine a provider stopped, on the disk it kept.
+///
+/// The queue's own lifecycle call, and unlike [`run`] it is not scoped to a
+/// user: a recovery is performed by a consumer nobody is watching, on a
+/// session whose ownership was established when the job was enqueued.
+///
+/// Nothing about the machine's identity is rewritten — not the type, not
+/// the disk, not the provider-native names — because none of it changed.
+/// What is written back is what a start actually decides: the state, and
+/// the address, which several providers hand out afresh because a stopped
+/// instance releases its ephemeral one. The compute meter restarts from
+/// here, and the storage meter is deliberately left alone: the disk was
+/// kept and therefore billed throughout, which is exactly what the user is
+/// paying for while a session is off its machine.
+///
+/// # Errors
+///
+/// Returns [`ApiError::MachineNotReady`] if the row names no
+/// provider-native machine to start, or [`ApiError`] if the provider
+/// refuses or the write fails.
+pub async fn restart(
+    db: &Db,
+    provisioner: &mut impl provisioning::Provisioner,
+    account: &provisioning::LinkedAccount,
+    row: &MachineRow,
+) -> Result<flyco_provider::Machine, flyco_provider::ProviderError> {
+    let machine = row.as_provider_machine().map_err(|_| {
+        flyco_provider::ProviderError::Malformed(
+            "this machine has no provider-native name to start",
+        )
+    })?;
+    let started = provisioner.restart(account, &machine).await?;
+
+    let now = now_unix();
+    sql!(
+        db,
+        "UPDATE machines SET state = {started.state}, native_id = {started.native_id.clone()}, \
+         address = {started.address.clone()}, compute_meter_started_at_unix = {now}, \
+         compute_metered_at_unix = {now} WHERE id = {row.id}"
+    )
+    .execute()
+    .await
+    .map_err(|error| {
+        flyco_provider::ProviderError::Rejected(format!(
+            "the restarted machine could not be recorded: {error}"
+        ))
+    })?;
+
+    Ok(started)
 }
 
 /// Puts a session's existing machine row back into `provisioning` so the

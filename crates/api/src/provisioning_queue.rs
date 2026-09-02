@@ -37,9 +37,10 @@
 
 use core::time::Duration;
 
+use askama::Template;
 use flyco_core::{
-    BranchName, ClientEvent, HarnessKind, MachineId, MachineOrigin, PermissionMode,
-    ProvisioningStage, RepoSlug, SessionId, SessionState, UserId,
+    BranchName, ClientEvent, ControlToDaemon, HarnessKind, MachineId, MachineOrigin,
+    PermissionMode, ProvisioningStage, RepoSlug, SessionId, SessionState, UserId,
 };
 use flyco_provider::{DaemonBootstrap, GitIdentity, ProviderError, ProvisionRequest, RepoCheckout};
 use serde::{Deserialize, Serialize};
@@ -56,7 +57,7 @@ use crate::machines::MachineRow;
 use crate::provisioning::Provisioner;
 use crate::rooms::Rooms;
 use crate::vendors::Vendors;
-use crate::{daemon_tokens, harness_accounts, machines, provisioning, sessions, users};
+use crate::{budgets, daemon_tokens, harness_accounts, machines, provisioning, sessions, users};
 
 /// How many times one machine is asked for before the session is failed.
 ///
@@ -69,39 +70,131 @@ pub const MAX_ATTEMPTS: u32 = 3;
 /// How long a retried job waits before it is delivered again.
 const RETRY_DELAY: Duration = Duration::from_secs(30);
 
-/// One provisioning job, as the queue carries it.
+/// One job on the provisioning queue.
 ///
 /// The machine id is carried rather than looked up, and that is what makes a
 /// redelivery safe: every provider-native resource name is derived from it,
 /// so two deliveries of one job address one machine. A job naming a machine
 /// the session no longer has is a job from a superseded attempt, and is
 /// dropped.
+///
+/// Two variants, because there are two ways a session gets onto compute and
+/// they are not the same operation. A [`Provision`](Self::Provision) builds
+/// a machine that does not exist. A [`Recover`](Self::Recover) starts one
+/// that does — the disk is still there, with the checkout and the caches on
+/// it, and the whole point is to keep it — so it must never take the path
+/// that asks a provider for capacity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProvisioningJob {
-    /// The session whose machine this builds.
-    pub session: SessionId,
-    /// The reserved `machines` row it fills in.
-    pub machine: MachineId,
-    /// Which attempt this is, counting from one.
-    pub attempt: u32,
+#[serde(tag = "job", rename_all = "snake_case")]
+pub enum ProvisioningJob {
+    /// Build a session's machine.
+    Provision {
+        /// The session whose machine this builds.
+        session: SessionId,
+        /// The reserved `machines` row it fills in.
+        machine: MachineId,
+        /// Which attempt this is, counting from one.
+        attempt: u32,
+    },
+    /// Put a session back on the machine a provider reclaimed.
+    ///
+    /// Enqueued when the session's own daemon reports a spot notice, with a
+    /// delivery delay covering the seconds the provider said were left: the
+    /// machine is still running for that long, and a start issued against a
+    /// running instance is not a restart.
+    ///
+    /// It **starts the same machine on the same disk** and never provisions
+    /// a second one. Every provider flyco puts spot capacity on is
+    /// configured to stop rather than delete — Azure deallocates, an AWS
+    /// persistent spot request stops, Compute Engine is created with
+    /// `instanceTerminationAction: STOP` — so the disk that survived is the
+    /// session's working tree, exactly as its agent left it.
+    Recover {
+        /// The session being put back.
+        session: SessionId,
+        /// The machine to start again, on its own disk.
+        machine: MachineId,
+        /// Which attempt this is, counting from one.
+        attempt: u32,
+        /// When the provider announced the reclamation.
+        ///
+        /// Carried rather than read from the clock so the ledger entry this
+        /// job writes is the same entry on every redelivery: an
+        /// at-least-once queue delivers a recovery twice, and the second
+        /// delivery must not bill the replacement a second time.
+        reclaimed_at_unix: u64,
+    },
 }
 
 impl ProvisioningJob {
     /// The first attempt at a session's machine.
     #[must_use]
     pub const fn first(session: SessionId, machine: MachineId) -> Self {
-        Self {
+        Self::Provision {
             session,
             machine,
             attempt: 1,
         }
     }
 
-    /// The same machine, asked for once more.
+    /// The first attempt at putting a reclaimed session back.
+    #[must_use]
+    pub const fn recovery(session: SessionId, machine: MachineId, reclaimed_at_unix: u64) -> Self {
+        Self::Recover {
+            session,
+            machine,
+            attempt: 1,
+            reclaimed_at_unix,
+        }
+    }
+
+    /// The session this job is for.
+    #[must_use]
+    pub const fn session(&self) -> SessionId {
+        match self {
+            Self::Provision { session, .. } | Self::Recover { session, .. } => *session,
+        }
+    }
+
+    /// The machine row this job is allowed to act on.
+    #[must_use]
+    pub const fn machine(&self) -> MachineId {
+        match self {
+            Self::Provision { machine, .. } | Self::Recover { machine, .. } => *machine,
+        }
+    }
+
+    /// Which attempt this delivery is, counting from one.
+    #[must_use]
+    pub const fn attempt(&self) -> u32 {
+        match self {
+            Self::Provision { attempt, .. } | Self::Recover { attempt, .. } => *attempt,
+        }
+    }
+
+    /// The same job, asked for once more.
     const fn again(self) -> Self {
-        Self {
-            attempt: self.attempt.saturating_add(1),
-            ..self
+        match self {
+            Self::Provision {
+                session,
+                machine,
+                attempt,
+            } => Self::Provision {
+                session,
+                machine,
+                attempt: attempt.saturating_add(1),
+            },
+            Self::Recover {
+                session,
+                machine,
+                attempt,
+                reclaimed_at_unix,
+            } => Self::Recover {
+                session,
+                machine,
+                attempt: attempt.saturating_add(1),
+                reclaimed_at_unix,
+            },
         }
     }
 }
@@ -116,10 +209,44 @@ impl ProvisioningJob {
 pub async fn enqueue(queue: &Queue, job: ProvisioningJob) -> Result<(), ApiError> {
     queue.send_json(&job).await?;
     tracing::info!(
-        session = %job.session,
-        machine = %job.machine,
-        attempt = job.attempt,
+        session = %job.session(),
+        machine = %job.machine(),
+        attempt = job.attempt(),
         "queued a provisioning job"
+    );
+    Ok(())
+}
+
+/// Puts a job on the queue for a machine that is still, briefly, running.
+///
+/// The delay is the provider's own countdown: the machine holds its disk
+/// for that long, and a start issued against a running instance is not a
+/// restart. Cloudflare Queues delivers on or after the delay rather than
+/// exactly at it, which is the right direction to be wrong in — a
+/// recovery that runs a few seconds late finds a stopped machine, and one
+/// that ran early would find a live one.
+///
+/// # Errors
+///
+/// Returns [`ApiError::Queue`] if the queue refuses the message, which
+/// leaves the session interrupted with nothing coming to recover it — so
+/// the caller must treat it as a failure rather than as a delay.
+pub async fn enqueue_after(
+    queue: &Queue,
+    job: ProvisioningJob,
+    delay: Duration,
+) -> Result<(), ApiError> {
+    let body = serde_json::to_vec(&job).map_err(|error| ApiError::Queue(error.into()))?;
+    queue
+        .send_with(&body, SendOptions::new().with_delay(delay))
+        .await
+        .map_err(ApiError::Queue)?;
+    tracing::info!(
+        session = %job.session(),
+        machine = %job.machine(),
+        attempt = job.attempt(),
+        delay_secs = delay.as_secs(),
+        "queued a recovery for after the provider takes the machine"
     );
     Ok(())
 }
@@ -180,7 +307,7 @@ pub async fn consume(
                 Settled::Done => QueueMessageDisposition::Ack,
                 Settled::Redeliver(error) => {
                     tracing::error!(
-                        session = %message.body.session,
+                        session = %message.body.session(),
                         %error,
                         "holding a provisioning job for redelivery: nothing was decided"
                     );
@@ -205,19 +332,43 @@ async fn perform(
     clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
     job: ProvisioningJob,
 ) -> Settled {
-    match claim(db, job).await {
-        Ok(None) => Settled::Done,
-        Ok(Some(claimed)) => match build(db, config, rooms, clients, &claimed).await {
-            Ok(()) => Settled::Done,
-            Err(Provisioned::Failed(reason)) => {
-                match sessions::fail(db, job.session, &reason).await {
-                    Ok(()) => Settled::Done,
-                    Err(error) => Settled::Redeliver(error),
-                }
-            }
-            Err(Provisioned::Retry(reason)) => retry(db, queue, job, &reason).await,
+    let outcome = match job {
+        ProvisioningJob::Provision { .. } => match claim(db, job).await {
+            Ok(None) => return Settled::Done,
+            Ok(Some(claimed)) => build(db, config, rooms, clients, &claimed).await,
+            Err(error) => return Settled::Redeliver(error),
         },
-        Err(error) => Settled::Redeliver(error),
+        ProvisioningJob::Recover {
+            session,
+            machine,
+            reclaimed_at_unix,
+            ..
+        } => match recover(
+            db,
+            config,
+            rooms,
+            clients,
+            session,
+            machine,
+            reclaimed_at_unix,
+        )
+        .await
+        {
+            Ok(Recovered::Done) => return Settled::Done,
+            Ok(Recovered::Ran) => Ok(()),
+            Err(failure) => Err(failure),
+        },
+    };
+
+    match outcome {
+        Ok(()) => Settled::Done,
+        Err(Provisioned::Failed(reason)) => {
+            match sessions::fail(db, job.session(), &reason).await {
+                Ok(()) => Settled::Done,
+                Err(error) => Settled::Redeliver(error),
+            }
+        }
+        Err(Provisioned::Retry(reason)) => retry(db, queue, job, &reason).await,
     }
 }
 
@@ -242,35 +393,31 @@ struct Claim {
 /// the machine already exists — and the message is acknowledged rather than
 /// redelivered into the same answer.
 async fn claim(db: &Db, job: ProvisioningJob) -> Result<Option<Claim>, ApiError> {
-    let Some(target) = sessions::provisioning_target(db, job.session).await? else {
-        tracing::info!(session = %job.session, "dropping a job for a session that no longer exists");
+    let session = job.session();
+    let Some(target) = sessions::provisioning_target(db, session).await? else {
+        tracing::info!(%session, "dropping a job for a session that no longer exists");
         return Ok(None);
     };
     if target.state != SessionState::Provisioning {
         tracing::info!(
-            session = %job.session,
+            %session,
             state = ?target.state,
             "dropping a job for a session that is no longer waiting for a machine"
         );
         return Ok(None);
     }
 
-    let Some(machine) = machines::for_session(db, job.session).await? else {
+    let Some(machine) = machines::for_session(db, session).await? else {
         // Creation reserves the row before it enqueues, so there is no
         // ordering in which this is a race. It is a session that was written
         // by something other than `POST /v1/sessions`.
-        sessions::fail(
-            db,
-            job.session,
-            "this session has no machine row to fill in",
-        )
-        .await?;
+        sessions::fail(db, session, "this session has no machine row to fill in").await?;
         return Ok(None);
     };
-    if machine.id != job.machine {
+    if machine.id != job.machine() {
         tracing::info!(
-            session = %job.session,
-            job = %job.machine,
+            %session,
+            job = %job.machine(),
             machine = %machine.id,
             "dropping a job superseded by a later attempt"
         );
@@ -278,7 +425,7 @@ async fn claim(db: &Db, job: ProvisioningJob) -> Result<Option<Claim>, ApiError>
     }
     if machine.is_provisioned() {
         tracing::info!(
-            session = %job.session,
+            %session,
             machine = %machine.id,
             "this session's machine already exists; the job was delivered twice"
         );
@@ -286,7 +433,7 @@ async fn claim(db: &Db, job: ProvisioningJob) -> Result<Option<Claim>, ApiError>
     }
 
     Ok(Some(Claim {
-        session: job.session,
+        session,
         user: target.user_id,
         harness: target.harness,
         repo: target.repo,
@@ -386,6 +533,150 @@ async fn build(
     Ok(())
 }
 
+/// What the agent is told once its session is running again.
+///
+/// The only thing the agent is ever told about a reclamation, and it
+/// arrives *afterwards*: the thirty seconds of the notice were spent by
+/// flyco, and an LLM asked to take part in them would still have been
+/// thinking when the machine went. A rendered template rather than an
+/// assembled string, like every other sentence flyco says to an agent —
+/// the wording is the contract, and a dropped field should be a compile
+/// error rather than a notice with a hole in it.
+#[derive(Debug, Template)]
+#[template(path = "spot/machine_replaced.txt", escape = "none")]
+struct MachineReplaced {
+    /// The provider-native type the session is running on now.
+    machine_type: String,
+}
+
+/// Whether a recovery had anything to do.
+enum Recovered {
+    /// It ran: the machine was started again.
+    Ran,
+    /// There was nothing to recover — the session is gone, archived, or
+    /// already back on a machine — and the message is spent.
+    Done,
+}
+
+/// Puts a reclaimed session back on the machine it was taken off.
+///
+/// Everything here follows from one fact: **the disk was never released.**
+/// Every provider flyco puts spot capacity on stops the machine instead of
+/// deleting it, so recovering is a `start` against the same machine row and
+/// the same provider-native resources — not a provision, not a new disk,
+/// and not a working-tree patch, because the working tree never went
+/// anywhere.
+///
+/// The steps, in order:
+///
+/// 1. The session moves back to `provisioning`, keeping the reason it lost
+///    its machine — which is what the UI renders as `Migrating` rather than
+///    as an ordinary provision (docs/ux.md §6, §9.2).
+/// 2. `reserving` and `booting` are announced as they happen, so the
+///    timeline in the transcript says what the wait is being spent on.
+/// 3. The provider starts the machine. `flycod` comes back with it: its
+///    unit is enabled on the image, so the boot that follows a start runs
+///    the daemon against the configuration already on the disk, and the
+///    daemon asks the control plane which harness conversation to continue.
+/// 4. The ledger records the replacement, and the agent is told — once,
+///    afterwards, as an ordinary message in the conversation.
+///
+/// `installing` is deliberately not announced: nothing is installed. The
+/// image on the disk already has `flycod` on it, and claiming otherwise
+/// would put a step in the user's timeline that never happens.
+async fn recover(
+    db: &Db,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
+    session: SessionId,
+    machine: MachineId,
+    reclaimed_at_unix: u64,
+) -> Result<Recovered, Provisioned> {
+    let Some(target) = sessions::provisioning_target(db, session)
+        .await
+        .map_err(Provisioned::from)?
+    else {
+        tracing::info!(%session, "dropping a recovery for a session that no longer exists");
+        return Ok(Recovered::Done);
+    };
+    if !target.state.holds_environment() {
+        tracing::info!(
+            %session,
+            state = ?target.state,
+            "dropping a recovery for a session that no longer holds a machine"
+        );
+        return Ok(Recovered::Done);
+    }
+
+    let Some(row) = machines::for_session(db, session)
+        .await
+        .map_err(Provisioned::from)?
+    else {
+        return Err(Provisioned::Failed(
+            "this session has no machine row to recover".to_owned(),
+        ));
+    };
+    if row.id != machine {
+        tracing::info!(
+            %session,
+            job = %machine,
+            machine = %row.id,
+            "dropping a recovery superseded by a later machine"
+        );
+        return Ok(Recovered::Done);
+    }
+
+    sessions::recovering(db, session)
+        .await
+        .map_err(Provisioned::from)?;
+    announce(rooms, session, ProvisioningStage::Reserving).await;
+
+    let account = provisioning::account(db, config, target.user_id, row.provider_account_id)
+        .await
+        .map_err(Provisioned::from)?;
+    let started = machines::restart(db, clients.provisioner, &account, &row)
+        .await
+        .map_err(|error| classify(&error))?;
+    announce(rooms, session, ProvisioningStage::Booting).await;
+
+    // The gap is what the user is being asked to pay for twice, so it is
+    // named in the ledger rather than folded into the next metering window.
+    budgets::record_replacement(db, session, machine, reclaimed_at_unix, &row.machine_type())
+        .await
+        .map_err(Provisioned::from)?;
+
+    // Last, and only after the machine is on its way back: the agent is
+    // told in the conversation, and the room holds the message until the
+    // daemon on the restarted machine comes to take it.
+    let notice = MachineReplaced {
+        machine_type: row.machine_type(),
+    }
+    .render()
+    .map_err(|error| Provisioned::Failed(format!("the reclaim notice did not render: {error}")))?;
+    if let Err(error) = rooms
+        .command(
+            session,
+            &ControlToDaemon::UserMessage {
+                text: notice.trim_end().to_owned(),
+            },
+        )
+        .await
+    {
+        // The machine is coming back either way; losing the sentence that
+        // explains it is not worth failing the session over.
+        tracing::warn!(%session, %error, "the reclaim notice did not reach the session room");
+    }
+
+    tracing::info!(
+        %session,
+        machine = %row.id,
+        state = ?started.state,
+        "restarted a reclaimed session's machine on its own disk"
+    );
+    Ok(Recovered::Ran)
+}
+
 /// Builds everything the machine's `flycod` needs to come up already paired
 /// with its session.
 ///
@@ -414,6 +705,10 @@ async fn bootstrap(
 
     Ok(DaemonBootstrap {
         session: claim.session,
+        // Which endpoint the daemon watches for an eviction notice follows
+        // from whose machine it is on, and nothing on the machine can tell
+        // it that.
+        provider: claim.machine.spec().provider,
         control_plane_url: config.control_plane_url(),
         daemon_token: token.token,
         // Auto is the product default. Flyco's managed deny rules still bind
@@ -542,10 +837,10 @@ fn classify(error: &ProviderError) -> Provisioned {
 
 /// Asks for the same machine once more, or gives up and says why.
 async fn retry(db: &Db, queue: &Queue, job: ProvisioningJob, reason: &str) -> Settled {
-    if job.attempt >= MAX_ATTEMPTS {
+    if job.attempt() >= MAX_ATTEMPTS {
         let exhausted =
             format!("gave up after {MAX_ATTEMPTS} attempts to reach the provider: {reason}");
-        return match sessions::fail(db, job.session, &exhausted).await {
+        return match sessions::fail(db, job.session(), &exhausted).await {
             Ok(()) => Settled::Done,
             Err(error) => Settled::Redeliver(error),
         };
@@ -553,8 +848,8 @@ async fn retry(db: &Db, queue: &Queue, job: ProvisioningJob, reason: &str) -> Se
 
     let next = job.again();
     tracing::warn!(
-        session = %job.session,
-        attempt = next.attempt,
+        session = %job.session(),
+        attempt = next.attempt(),
         %reason,
         "retrying a provision that could not reach the provider"
     );

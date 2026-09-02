@@ -1,0 +1,3 @@
+[flyco machine notice] The machine was reclaimed and restarted on {{ machine_type }}; continue.
+
+Flyco handled the reclamation while you were interrupted: the turn was stopped, the transcript was saved, and the disk was kept — the checkout and its caches are exactly as you left them. Everything you had *running* is gone, so start whatever you still need before you carry on.

@@ -126,6 +126,7 @@ export default function Transcript(props: TranscriptProps) {
                 {(timeline) => (
                   <ProvisioningTimeline
                     steps={timeline().steps}
+                    recovery={timeline().recovery}
                     repo={props.repo}
                     provider={props.provider}
                     now={props.now}
@@ -213,14 +214,21 @@ function ToolRow(props: { tool: ToolCall }) {
  */
 function ProvisioningTimeline(props: {
   steps: ProvisioningStep[];
+  recovery: boolean;
   repo: string;
   provider: string | null;
   now: number;
 }) {
   const done = () => props.steps.some((step) => step.stage === "ready");
+  const label = () => (props.recovery ? "Migrating" : "Provisioning");
 
   return (
-    <div class={styles.timeline} aria-label="Provisioning">
+    <div class={styles.timeline} aria-label={label()}>
+      <Show when={props.recovery}>
+        <p class={styles.timelineHeading}>
+          Migrating · the machine was reclaimed and is being restarted on its own disk
+        </p>
+      </Show>
       <For each={props.steps}>
         {(step, index) => {
           const next = () => props.steps[index() + 1];

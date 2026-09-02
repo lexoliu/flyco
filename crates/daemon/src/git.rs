@@ -55,6 +55,20 @@ pub const TOKEN_VAR: &str = "FLYCO_GIT_TOKEN";
 const CREDENTIAL_HELPER: &str = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \
      \"$FLYCO_GIT_TOKEN\"; }; f";
 
+/// Whether `workdir` already holds a git checkout.
+///
+/// What tells a machine's first boot from its next one. A session VM whose
+/// compute was reclaimed keeps its disk — every provider flyco puts spot
+/// capacity on stops the machine rather than deleting it — so the daemon
+/// that comes up after the restart finds the repository, the agent's
+/// uncommitted work, and every cache exactly where they were. Cloning over
+/// that is not possible (git refuses a non-empty destination) and would not
+/// be wanted if it were: the working tree is the thing the reclamation was
+/// careful to keep.
+pub async fn has_checkout(workdir: &Path) -> bool {
+    tokio::fs::metadata(workdir.join(".git")).await.is_ok()
+}
+
 /// Clones a session's repository into `workdir`.
 ///
 /// The branch is checked out by name rather than fetched and switched to:
@@ -522,6 +536,28 @@ mod tests {
             .output()
             .expect("read HEAD");
         assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "dev");
+    }
+
+    #[tokio::test]
+    async fn a_disk_that_already_holds_the_checkout_is_recognised_as_one() {
+        // The question a daemon asks on a machine whose compute was
+        // reclaimed and given back: the disk came through, so there is
+        // nothing to clone and the uncommitted work on it must not be
+        // cloned over.
+        let scratch = Scratch::new();
+        let remote = origin(&scratch, "main");
+        let workdir = scratch.child("work");
+        assert!(!super::has_checkout(&workdir).await);
+
+        clone_from(&remote, &repo_config("main"), &workdir)
+            .await
+            .expect("clone");
+        assert!(super::has_checkout(&workdir).await);
+
+        // And cloning over it is not a thing that could quietly work.
+        clone_from(&remote, &repo_config("main"), &workdir)
+            .await
+            .expect_err("git refuses a destination that is not empty");
     }
 
     #[tokio::test]

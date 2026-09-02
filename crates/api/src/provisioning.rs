@@ -601,6 +601,20 @@ pub trait Provisioner {
         account: &LinkedAccount,
         request: &ProvisionRequest,
     ) -> impl Future<Output = Result<Machine, ProviderError>>;
+
+    /// Puts an existing machine back on compute, on the disk it kept.
+    ///
+    /// What recovering from a spot reclamation is, in one call: the
+    /// provider stopped the machine and kept its disk, and this starts the
+    /// same machine again. It is on this trait rather than reached through
+    /// [`operate`] directly for the same reason [`provision`](Self::provision)
+    /// is — the queue consumer must be drivable without a cloud account, and
+    /// a recovery is a step a test has to be able to observe.
+    fn restart(
+        &mut self,
+        account: &LinkedAccount,
+        machine: &Machine,
+    ) -> impl Future<Output = Result<Machine, ProviderError>>;
 }
 
 /// The provisioner the deployed control plane uses: the real drivers, over
@@ -643,6 +657,14 @@ impl Provisioner for CloudProvisioner {
                 reason: "flyco has no GCP driver yet",
             }),
         }
+    }
+
+    async fn restart(
+        &mut self,
+        account: &LinkedAccount,
+        machine: &Machine,
+    ) -> Result<Machine, ProviderError> {
+        operate(account, machine, Operation::Start).await
     }
 }
 

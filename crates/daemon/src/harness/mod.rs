@@ -179,6 +179,25 @@ pub trait HarnessSession: Send + Sync {
     /// Returns [`Self::Error`] if the session has already stopped.
     fn interrupt(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
+    /// Waits until everything the harness has handed this daemon has been
+    /// written through.
+    ///
+    /// Exists for the thirty seconds between a spot notice and the machine
+    /// disappearing (see [`crate::spot`]). A transcript batch is only
+    /// resumable once the *control plane* holds it, and the driver task
+    /// that performs those writes is the same task that reads the harness's
+    /// output — so a command that makes the round trip through it resolves
+    /// only after every batch queued ahead of it has landed. That is the
+    /// whole guarantee, stated plainly: not "the harness has stopped
+    /// producing", which nothing can promise, but "everything it has
+    /// produced so far is somewhere the next machine can read it".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the session has already stopped, which
+    /// means nothing is left to flush.
+    fn flush(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
     /// Compacts the session context through the harness's native mechanism.
     ///
     /// # Errors

@@ -73,9 +73,10 @@ pub use providers::{
 pub use push::{PushKeys, PushSubscription, PushSubscriptionView, VapidPublicKey};
 pub use repo::{BranchName, BranchNameError, RepoSlug, RepoStatus};
 pub use session::{
-    ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, MAX_SESSION_TITLE_CHARS,
-    MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS, SendMessage, SessionDetail, SessionState,
-    SessionSummary, SessionTransitionError, TurnPage, TurnSummary, UpdateSession, excerpt,
+    ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, HarnessSessionView,
+    InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS,
+    SendMessage, SessionDetail, SessionState, SessionSummary, SessionTransitionError, TurnPage,
+    TurnSummary, UpdateSession, excerpt,
 };
 pub use skills::{SkillScope, SkillView};
 pub use usage::{
@@ -84,7 +85,7 @@ pub use usage::{
 };
 pub use wire::{
     ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-    ProvisioningStage, ReportProvisioningStage,
+    ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
 };
 
 /// Version of the daemon⇄control-plane wire protocol.

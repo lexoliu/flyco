@@ -19,8 +19,11 @@ use crate::git::FakeWorkdir;
 use crate::harness::SessionOutput;
 use crate::harness::claude::protocol::SessionKey;
 use crate::harness::claude::store::{StoreError, TranscriptStore};
+use crate::spot::{FakeEviction, SpotNotice};
 use crate::terminal::FakeTerminal;
-use crate::testing::{Call, ControlPlane, Directive, FakeSession, Greeting, Reply, Room, Seen};
+use crate::testing::{
+    Call, ControlPlane, Directive, FakeDisk, FakeSession, Greeting, Reply, Room, Seen,
+};
 
 /// A daemon token shaped the way the control plane mints them.
 const TOKEN: &str = "fd_a-daemon-token";
@@ -35,6 +38,9 @@ struct RecordingApi {
     approvals: mpsc::UnboundedSender<ApprovalPayload>,
     observations: mpsc::UnboundedSender<HarnessObservation>,
     notifications: mpsc::UnboundedSender<bool>,
+    /// The one channel every double in a test records into, so an ordering
+    /// across the harness, the control plane and the disk is assertable.
+    calls: mpsc::UnboundedSender<Call>,
     id: ApprovalId,
 }
 
@@ -104,9 +110,32 @@ impl ControlApi for RecordingApi {
 
     fn record_harness_session(
         &self,
-        _harness_session_id: &str,
+        harness_session_id: &str,
     ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
-        core::future::ready(Ok(()))
+        core::future::ready(
+            self.calls
+                .send(Call::HarnessSessionRecorded(harness_session_id.to_owned()))
+                .map_err(|error| ControlApiError::Transport(error.to_string())),
+        )
+    }
+
+    fn report_spot_notice(
+        &self,
+        seconds_remaining: u32,
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        core::future::ready(
+            self.calls
+                .send(Call::SpotNoticeReported(seconds_remaining))
+                .map_err(|error| ControlApiError::Transport(error.to_string())),
+        )
+    }
+
+    fn harness_session_id(
+        &self,
+    ) -> impl core::future::Future<Output = Result<Option<String>, ControlApiError>> + Send {
+        // The relay never asks: the id is resolved once, before the harness
+        // is started, by `flycod run` itself.
+        core::future::ready(Ok(None))
     }
 
     fn put_workdir_patch(
@@ -143,6 +172,9 @@ struct Harness {
     terminal_writes: mpsc::UnboundedReceiver<String>,
     terminal_inject: mpsc::Sender<String>,
     repo_inject: mpsc::UnboundedSender<String>,
+    /// Makes the fake metadata endpoint announce a reclamation. Taken once:
+    /// a provider announces one machine's reclamation exactly once.
+    evict: Option<tokio::sync::oneshot::Sender<SpotNotice>>,
     run: tokio::task::JoinHandle<Result<(), WireError>>,
     /// Whether the agent-ready stage is still to come.
     ///
@@ -165,6 +197,7 @@ impl Harness {
             .expect("a loopback relay endpoint");
 
         let (fake, calls) = FakeSession::new();
+        let recorder = fake.recorder();
         let (sender, receiver) = mpsc::channel(outputs);
         let (approval_sender, approvals) = mpsc::unbounded_channel();
         let (observation_sender, observations) = mpsc::unbounded_channel();
@@ -174,8 +207,12 @@ impl Harness {
             approvals: approval_sender,
             observations: observation_sender,
             notifications: notification_sender,
+            calls: recorder.clone(),
             id: approval_id,
         };
+        let (watcher, evict) = FakeEviction::pair();
+        let (notices, spot) = mpsc::channel(1);
+        crate::spot::spawn(watcher, notices);
 
         let (terminal, terminal_writes, terminal_inject, terminal_out) = FakeTerminal::pair();
         let (workdir, repo_inject, repo_status) = FakeWorkdir::pair();
@@ -188,6 +225,8 @@ impl Harness {
             terminal_out,
             workdir,
             repo_status,
+            disk: FakeDisk::new(recorder),
+            spot,
             machine: crate::testing::session_machine(),
             machine_origin: MachineOrigin::Auto,
         }));
@@ -204,9 +243,24 @@ impl Harness {
             terminal_writes,
             terminal_inject,
             repo_inject,
+            evict: Some(evict),
             run,
             expect_ready: greeting == Greeting::Welcome,
         }
+    }
+
+    /// Makes the provider announce this machine's reclamation.
+    ///
+    /// The notice travels the whole way a real one does — through the
+    /// watcher's own task and the channel the relay selects on — so what
+    /// the test drives is the daemon's reaction rather than a function call
+    /// into the middle of it.
+    fn evict(&mut self, seconds_remaining: u32) {
+        self.evict
+            .take()
+            .expect("a machine is reclaimed once")
+            .send(SpotNotice { seconds_remaining })
+            .expect("the watcher is live");
     }
 
     /// Waits for the room to see this daemon's `Hello`.
@@ -284,7 +338,9 @@ impl Harness {
         self.command(ControlToDaemon::Archive {
             preserve_workdir: false,
         });
-        assert_eq!(self.next_call().await, Call::Shutdown);
+        // Every double records into one channel, so anything the test left
+        // undrained is still in front of the shutdown.
+        while self.next_call().await != Call::Shutdown {}
         tokio::time::timeout(Duration::from_secs(5), self.run)
             .await
             .expect("the run ended")
@@ -682,6 +738,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
     let endpoint = Endpoint::from_base(&base, session, TOKEN.to_owned()).expect("a relay endpoint");
 
     let (fake, _calls) = FakeSession::new();
+    let recorder = fake.recorder();
     let (outputs, receiver) = mpsc::channel(1);
     let (approvals, _) = mpsc::unbounded_channel();
     let (observations, _) = mpsc::unbounded_channel();
@@ -690,6 +747,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         approvals,
         observations,
         notifications,
+        calls: recorder.clone(),
         id: ApprovalId::generate(),
     };
     let (terminal, _, _, terminal_out) = FakeTerminal::pair();
@@ -703,6 +761,8 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         terminal_out,
         workdir,
         repo_status,
+        disk: FakeDisk::new(recorder),
+        spot: crate::spot::nothing_to_watch(),
         machine: crate::testing::session_machine(),
         machine_origin: MachineOrigin::Auto,
     }));
@@ -808,6 +868,125 @@ async fn archiving_shuts_the_harness_down_and_ends_the_run() {
             event: HarnessEvent::TurnCompleted { .. }
         }
     ));
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+// ── Spot reclamation ──
+
+#[tokio::test]
+async fn a_reclaimed_machine_stops_the_turn_flushes_syncs_and_then_reports() {
+    // The order is the feature: the harness stops writing before the
+    // transcript is flushed, the transcript is in the control plane before
+    // the disk is synced, and both are done before anything says so — a
+    // notice sent first would start a countdown against a session whose
+    // last minute of work was still in a page cache.
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+    harness
+        .emit(SessionOutput::Started {
+            session_id: "harness-native-thread".to_owned(),
+        })
+        .await;
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::Started {
+            harness_session_id: "harness-native-thread".to_owned(),
+        }
+    );
+    // Filed once by the collector on the way past, before any notice.
+    assert_eq!(
+        harness.next_call().await,
+        Call::HarnessSessionRecorded("harness-native-thread".to_owned())
+    );
+
+    harness.evict(30);
+
+    assert_eq!(harness.next_call().await, Call::Interrupt);
+    assert_eq!(harness.next_call().await, Call::Flush);
+    assert_eq!(
+        harness.next_call().await,
+        Call::HarnessSessionRecorded("harness-native-thread".to_owned()),
+        "the id a resume needs is re-filed and awaited, so the daemon knows it landed"
+    );
+    assert_eq!(harness.next_call().await, Call::Synced);
+    assert_eq!(harness.next_call().await, Call::SpotNoticeReported(30));
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::SpotNotice {
+            seconds_remaining: 30
+        },
+        "the countdown reaches the browsers last, once the work is safe"
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn nothing_opens_a_turn_between_the_notice_and_the_machine_going() {
+    // A user message that arrives in the window is not lost — the room
+    // keeps it in its mailbox and hands it to the daemon on the
+    // replacement machine — but starting a turn here would be work the
+    // flushed transcript has no record of.
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+    harness.evict(30);
+
+    assert_eq!(harness.next_call().await, Call::Interrupt);
+    assert_eq!(harness.next_call().await, Call::Flush);
+    assert_eq!(harness.next_call().await, Call::Synced);
+    assert_eq!(harness.next_call().await, Call::SpotNoticeReported(30));
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::SpotNotice {
+            seconds_remaining: 30
+        }
+    );
+
+    harness.command(ControlToDaemon::UserMessage {
+        text: "carry on".to_owned(),
+    });
+    harness.command(ControlToDaemon::Compact);
+    // The socket stays open, so the daemon is still there to answer — and
+    // what it does with both is nothing. A terminal keystroke proves the
+    // relay is still pumping rather than merely silent.
+    harness.command(ControlToDaemon::TerminalInput {
+        data: "ls\n".to_owned(),
+    });
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), harness.terminal_writes.recv())
+            .await
+            .expect("the relay is still pumping")
+            .expect("the terminal is live"),
+        "ls\n"
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_reclamation_pushes_what_the_room_has_not_seen_yet() {
+    // The room's stored tail is what a browser replays, and the frames
+    // still in the relay's queue when the notice arrives are the last
+    // minute of the session. They go out before the notice does.
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+    harness
+        .emit(SessionOutput::Event { event: delta("a") })
+        .await;
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness { event: delta("a") }
+    );
+
+    harness.evict(30);
+    assert_eq!(harness.next_call().await, Call::Interrupt);
+
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::SpotNotice {
+            seconds_remaining: 30
+        }
+    );
     harness.archive().await.expect("the run ended cleanly");
 }
 
@@ -1038,6 +1217,33 @@ mod rest_client {
     }
 
     #[tokio::test]
+    async fn a_spot_notice_is_posted_to_the_session_that_is_losing_its_machine() {
+        let session = SessionId::generate();
+        let mut plane = ControlPlane::start(vec![Reply::no_content()]).await;
+        let api = api(&plane.base, session);
+
+        api.report_spot_notice(30).await.expect("report");
+
+        let request = plane.next().await.expect("the control plane was called");
+        assert_eq!(request.method, "POST");
+        assert_eq!(
+            request.target,
+            format!("/v1/sessions/{session}/spot-notice")
+        );
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some("Bearer fd_a-daemon-token")
+        );
+        assert_eq!(
+            serde_json::from_slice::<flyco_core::ReportSpotNotice>(&request.body)
+                .expect("the report"),
+            flyco_core::ReportSpotNotice {
+                seconds_remaining: 30
+            }
+        );
+    }
+
+    #[tokio::test]
     async fn a_transcript_batch_is_put_at_its_sequence_number() {
         let session = SessionId::generate();
         let mut plane = ControlPlane::start(vec![Reply::no_content()]).await;
@@ -1173,6 +1379,22 @@ mod remote_store {
             _harness_session_id: &str,
         ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
             core::future::ready(Ok(()))
+        }
+
+        fn report_spot_notice(
+            &self,
+            _seconds_remaining: u32,
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Err(ControlApiError::Transport(
+                "the transcript store reports no spot notices".to_owned(),
+            )))
+        }
+
+        fn harness_session_id(
+            &self,
+        ) -> impl core::future::Future<Output = Result<Option<String>, ControlApiError>> + Send
+        {
+            core::future::ready(Ok(None))
         }
 
         fn put_transcript_batch(

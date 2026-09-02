@@ -129,6 +129,25 @@ pub struct ReportProvisioningStage {
     pub stage: ProvisioningStage,
 }
 
+/// Request body of `POST /v1/sessions/{id}/spot-notice`.
+///
+/// The relay frame beside it ([`DaemonToControl::SpotNotice`]) is what puts
+/// the countdown in front of the user; this is what makes the reclamation
+/// *durable*. They are two routes for one fact because a session room is a
+/// Durable Object, and a Durable Object can reach neither D1 nor the
+/// provisioning queue — so the half that marks the session interrupted and
+/// queues its replacement has to arrive at the Worker, over HTTP, from the
+/// only process that knows: the daemon on the machine being taken away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ReportSpotNotice {
+    /// Seconds until reclamation, as the provider announced them.
+    ///
+    /// What the recovery is scheduled against: the machine is still up for
+    /// this long, and a replacement started before it goes would find the
+    /// disk still attached to a running instance.
+    pub seconds_remaining: u32,
+}
+
 /// The user's decision on an approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -481,7 +500,7 @@ impl ClientEvent {
 mod tests {
     use super::{
         ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-        ProvisioningStage,
+        ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
     };
     use crate::budget::BudgetSignal;
     use crate::harness::{ContextWindow, HarnessEvent, UsageReport};
@@ -698,6 +717,25 @@ mod tests {
         assert_eq!(json.matches("\"type\"").count(), 2);
         assert!(json.contains(r#""type":"harness""#));
         assert!(json.contains(r#""event":{"type":"assistant_delta""#));
+    }
+
+    #[test]
+    fn the_daemons_two_reports_survive_the_wire() {
+        // The pair the machine files over REST rather than over the relay,
+        // because both outlive the socket they would otherwise ride.
+        round_trip(&ReportProvisioningStage {
+            stage: ProvisioningStage::Cloning,
+        });
+        round_trip(&ReportSpotNotice {
+            seconds_remaining: 30,
+        });
+        assert_eq!(
+            serde_json::to_string(&ReportSpotNotice {
+                seconds_remaining: 120,
+            })
+            .expect("serialize"),
+            r#"{"seconds_remaining":120}"#
+        );
     }
 
     #[test]

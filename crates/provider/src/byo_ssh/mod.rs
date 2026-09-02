@@ -263,6 +263,7 @@ mod tests {
     fn bootstrap() -> DaemonBootstrap {
         DaemonBootstrap {
             session: SessionId::generate(),
+            provider: flyco_core::CloudProviderKind::ByoSsh,
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_token".to_owned(),
             permission_mode: PermissionMode::Default,

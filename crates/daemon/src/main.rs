@@ -125,7 +125,7 @@ async fn run(cli: Cli) -> Result<(), Failure> {
         }
         Command::Mcp { config } => serve_mcp(DaemonConfig::load(&config)?).await,
         Command::Run { config } => {
-            let config = DaemonConfig::load(&config)?;
+            let mut config = DaemonConfig::load(&config)?;
             tracing::info!(
                 session = %config.session,
                 harness = ?config.harness,
@@ -143,11 +143,53 @@ async fn run(cli: Cli) -> Result<(), Failure> {
                     control_plane.daemon_token.clone(),
                 )
             });
+            if let Some(api) = api.as_ref() {
+                config.resume_session_id = Box::pin(conversation_to_continue(&config, api)).await;
+            }
             Box::pin(check_out(&config, api.as_ref())).await?;
             match config.harness {
                 HarnessKind::ClaudeCode => Box::pin(drive_claude_code(config)).await,
                 HarnessKind::Codex => Box::pin(drive_codex(config)).await,
             }
+        }
+    }
+}
+
+/// Which harness conversation this daemon must continue.
+///
+/// The control plane is asked rather than the configuration file trusted,
+/// because the file is not current and cannot be: it was written when the
+/// machine was *created*, and the machine that recovers from a spot
+/// reclamation is the same machine, booting the same disk and therefore the
+/// same file. The control plane recorded the harness's identity the moment
+/// the previous daemon announced it, so its answer is the conversation the
+/// user is watching.
+///
+/// A control plane that cannot be reached leaves the configured value in
+/// place. That is the honest fallback rather than a papered-over failure:
+/// on a first boot it is `None` and a fresh session is right, and on a
+/// rebuilt machine the provisioner wrote the id into the file itself.
+async fn conversation_to_continue(config: &DaemonConfig, api: &HttpControlApi) -> Option<String> {
+    match api.harness_session_id().await {
+        Ok(Some(recorded)) => {
+            if config.resume_session_id.as_deref() != Some(recorded.as_str()) {
+                tracing::info!(
+                    session = %recorded,
+                    "continuing the harness conversation the control plane recorded"
+                );
+            }
+            Some(recorded)
+        }
+        Ok(None) => {
+            tracing::info!("this session has no harness conversation yet; starting one");
+            config.resume_session_id.clone()
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "could not read the harness conversation to continue; using the configured one"
+            );
+            config.resume_session_id.clone()
         }
     }
 }
@@ -176,6 +218,18 @@ async fn check_out(config: &DaemonConfig, api: Option<&HttpControlApi>) -> Resul
         );
         return Ok(());
     };
+
+    if flyco_daemon::git::has_checkout(&config.workdir).await {
+        // The machine is booting a disk it already worked on: its compute
+        // was reclaimed and given back, and the checkout — with whatever
+        // the agent had not committed — survived exactly as it was. There
+        // is nothing to clone and nothing to replay onto it.
+        tracing::info!(
+            workdir = %config.workdir.display(),
+            "the session's checkout is already on this disk; keeping it as it is"
+        );
+        return Ok(());
+    }
 
     if let Some(api) = api {
         // A stage that does not reach the room costs the user a line of the
@@ -263,6 +317,11 @@ async fn drive_claude_code(config: DaemonConfig) -> Result<(), Failure> {
         terminal_out,
         workdir,
         repo_status,
+        disk: flyco_daemon::spot::HostDisk,
+        // Watched from here rather than from inside the relay: which
+        // endpoint carries a notice is a fact about the machine, and the
+        // relay's business is the session on it.
+        spot: flyco_daemon::spot::watch(config.spot_provider),
         machine: config.machine.clone(),
         machine_origin: config.machine_origin,
     }))
@@ -316,6 +375,11 @@ async fn report<S: HarnessSession + 'static>(
         terminal_out,
         workdir,
         repo_status,
+        disk: flyco_daemon::spot::HostDisk,
+        // Watched from here rather than from inside the relay: which
+        // endpoint carries a notice is a fact about the machine, and the
+        // relay's business is the session on it.
+        spot: flyco_daemon::spot::watch(config.spot_provider),
         machine: config.machine.clone(),
         machine_origin: config.machine_origin,
     }))

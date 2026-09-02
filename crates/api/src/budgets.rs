@@ -200,6 +200,52 @@ async fn record_at(
     Ok(())
 }
 
+/// Records that a reclaimed machine was replaced by a restart of itself.
+///
+/// A zero-amount entry, and the zero is the honest number: the machine that
+/// comes back is the machine that went, on the same disk at the same price,
+/// so nothing is charged *for the replacement*. What the ledger gains is
+/// the line that explains the shape of the bill around it — the compute
+/// meter stopped and restarted while the storage meter never paused,
+/// because the disk was kept and billed throughout the gap. Without it the
+/// user reads a session that quietly stopped consuming compute for four
+/// minutes and has nothing to attribute it to.
+///
+/// Keyed on the machine and the instant the provider announced the
+/// reclamation, so an at-least-once queue delivering the same recovery
+/// twice writes one line, and a session reclaimed twice writes two.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the session has no budget, or the ledger cannot
+/// be written.
+pub async fn record_replacement(
+    db: &Db,
+    session: SessionId,
+    machine: flyco_core::MachineId,
+    reclaimed_at_unix: u64,
+    machine_type: &str,
+) -> Result<(), ApiError> {
+    let budget: BudgetId = sql!(db, "SELECT budget_id FROM sessions WHERE id = {session}")
+        .fetch_scalar_optional()
+        .await?
+        .ok_or(ApiError::SessionNotFound)?;
+    let detail = format!(
+        "spot capacity on {machine_type} was reclaimed at {reclaimed_at_unix}; machine {machine} restarted on the same disk"
+    );
+    let key = format!("spot-recovery:{machine}:{reclaimed_at_unix}");
+    record_at(
+        db,
+        budget,
+        SpendKind::Compute,
+        Usd::ZERO,
+        &detail,
+        reclaimed_at_unix,
+        Some(&key),
+    )
+    .await
+}
+
 /// Reads every undelivered threshold in durable creation order.
 ///
 /// # Errors
