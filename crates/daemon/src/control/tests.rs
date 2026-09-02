@@ -5,7 +5,7 @@ use core::time::Duration;
 use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
-    HarnessObservation, SessionId, UsageReport, Usd, WIRE_PROTOCOL_VERSION,
+    HarnessObservation, ProvisioningStage, SessionId, UsageReport, Usd, WIRE_PROTOCOL_VERSION,
 };
 use tokio::sync::mpsc;
 
@@ -132,6 +132,13 @@ struct Harness {
     terminal_inject: mpsc::Sender<String>,
     repo_inject: mpsc::UnboundedSender<String>,
     run: tokio::task::JoinHandle<Result<(), WireError>>,
+    /// Whether the agent-ready stage is still to come.
+    ///
+    /// It is announced once a room has *welcomed* the daemon, and never
+    /// again after that, so [`Harness::handshake`] expects it on the first
+    /// greeting a welcoming room answers and never on a re-greeting or on
+    /// a room that refuses the handshake outright.
+    expect_ready: bool,
 }
 
 impl Harness {
@@ -184,10 +191,16 @@ impl Harness {
             terminal_inject,
             repo_inject,
             run,
+            expect_ready: greeting == Greeting::Welcome,
         }
     }
 
     /// Waits for the room to see this daemon's `Hello`.
+    ///
+    /// On the first connection the greeting is followed by the last stage
+    /// of the provisioning timeline (docs/ux.md §9.2): the harness is up
+    /// and the room has welcomed the socket, which is the whole meaning of
+    /// "the agent is ready". A reconnect does not repeat it.
     async fn handshake(&mut self) -> Option<String> {
         let Some(Seen::Connected(authorization)) = self.room.next().await else {
             panic!("the daemon did not connect");
@@ -199,6 +212,16 @@ impl Harness {
                 session: self.session,
             }
         );
+        if self.expect_ready {
+            self.expect_ready = false;
+            let DaemonToControl::ProvisioningStage {
+                stage: ProvisioningStage::Ready,
+                ..
+            } = self.room.next_frame().await
+            else {
+                panic!("the first connection did not announce that the agent is ready");
+            };
+        }
         authorization
     }
 
@@ -458,6 +481,39 @@ async fn user_messages_interrupts_and_compaction_reach_the_harness() {
 
     harness.command(ControlToDaemon::Compact);
     assert_eq!(harness.next_call().await, Call::Compact);
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn the_agent_ready_stage_is_announced_once_and_not_on_every_reconnect() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+
+    // The first connection carries it; `handshake` asserts the frame and
+    // its stage.
+    harness.handshake().await;
+
+    harness
+        .room
+        .directives
+        .send(Directive::Close)
+        .expect("the room is live");
+    assert_eq!(harness.room.next().await, Some(Seen::Disconnected));
+    harness.handshake().await;
+
+    // A reconnect is not a second provision, so the next frame the room
+    // sees is the session's own traffic rather than another timeline entry.
+    harness
+        .emit(SessionOutput::Event {
+            event: delta("back"),
+        })
+        .await;
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness {
+            event: delta("back")
+        }
+    );
 
     harness.archive().await.expect("the run ended cleanly");
 }

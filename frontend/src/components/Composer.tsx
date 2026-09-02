@@ -14,6 +14,7 @@
 import { For, Show, createMemo, createResource, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
 import { ArrowUp, Cpu, FolderGit2, Plus, Server, Wallet } from "lucide-solid";
+import ComposerShell from "./ComposerShell";
 import Popover from "./Popover";
 import Logomark, { HARNESS_MARK, PROVIDER_MARK } from "./Logomark";
 import ProblemNotice from "./ProblemNotice";
@@ -163,54 +164,47 @@ export default function Composer(props: ComposerProps) {
   }
 
   return (
-    <div>
-      <div class={styles.composer}>
-        <textarea
-          class={styles.prompt}
-          placeholder="Describe a task"
-          aria-label="Describe a task"
-          value={prompt()}
-          rows="3"
-          onInput={(event) => setPrompt(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            // ⌘/Ctrl+Enter sends; plain Enter is a newline, because a
-            // prompt is prose and prose has paragraphs.
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-        />
-        <div class={styles.controls}>
-          <div class={styles.chips}>
-            <HarnessChip harness={harness()} linked={readiness.harness().length > 0} />
-            <ComputeChip
-              linked={readiness.compute().length > 0}
-              automatic={automatic()}
-              entry={chosen()}
-              catalog={catalog() ?? []}
-              chosenKey={chosenKey()}
-              spot={spot()}
-              onChoose={setChosenKey}
-              onSpot={setSpot}
-            />
-            <RepoChip slug={repo()} onChoose={chooseRepo} />
-            <BudgetChip dollars={budget()} onChange={setBudget} />
-          </div>
-          <button
-            type="button"
-            class={styles.send}
-            disabled={blocker() !== null || sending()}
-            title={blocker() ?? "Start session"}
-            aria-label={blocker() ?? "Start session"}
-            onClick={() => void send()}
-          >
-            <ArrowUp size={16} aria-hidden="true" />
-          </button>
+    <ComposerShell
+      value={prompt()}
+      onInput={setPrompt}
+      onSubmit={() => void send()}
+      placeholder="Describe a task"
+      label="Describe a task"
+      // ⌘/Ctrl+Enter sends; plain Enter is a newline, because a prompt is
+      // prose and prose has paragraphs.
+      submitOn="mod-enter"
+      controls={
+        <div class={styles.chips}>
+          <HarnessChip harness={harness()} linked={readiness.harness().length > 0} />
+          <ComputeChip
+            linked={readiness.compute().length > 0}
+            automatic={automatic()}
+            entry={chosen()}
+            catalog={catalog() ?? []}
+            chosenKey={chosenKey()}
+            spot={spot()}
+            onChoose={setChosenKey}
+            onSpot={setSpot}
+          />
+          <RepoChip slug={repo()} onChoose={chooseRepo} />
+          <BudgetChip dollars={budget()} onChange={setBudget} />
         </div>
-      </div>
+      }
+      action={
+        <button
+          type="button"
+          class={styles.send}
+          disabled={blocker() !== null || sending()}
+          title={blocker() ?? "Start session"}
+          aria-label={blocker() ?? "Start session"}
+          onClick={() => void send()}
+        >
+          <ArrowUp size={16} aria-hidden="true" />
+        </button>
+      }
+    >
       <ProblemNotice error={error()} />
-    </div>
+    </ComposerShell>
   );
 }
 

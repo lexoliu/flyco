@@ -1,0 +1,172 @@
+/*
+ * Assistant prose. The transcript is a reading surface, so this is the one
+ * place in the app with real vertical rhythm — but it stays on the 14px
+ * base and the neutral palette, and no heading in a message is allowed to
+ * outweigh the page's own.
+ */
+.markdown {
+  font-size: var(--text-md);
+  line-height: var(--line-normal);
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown table {
+  margin: 0 0 var(--space-3);
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  line-height: var(--line-tight);
+}
+
+.markdown h1,
+.markdown h2 {
+  font-size: var(--text-lg);
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: var(--space-5);
+}
+
+.markdown li {
+  margin-bottom: var(--space-1);
+}
+
+.markdown a {
+  color: var(--color-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--color-border-strong);
+}
+
+.markdown a:hover {
+  text-decoration-color: currentcolor;
+}
+
+.markdown blockquote {
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.markdown hr {
+  height: 0;
+  margin: var(--space-4) 0;
+  border: 0;
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.markdown img {
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+}
+
+/* Inline code: marked by shape, not by a box that competes with a block. */
+.markdown :not(pre) > code {
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+.codeBlock {
+  position: relative;
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  overflow-x: auto;
+  background: var(--color-surface-sunken);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--line-normal);
+}
+
+.codeBlock code {
+  font: inherit;
+}
+
+/*
+ * The copy button rides in the block's top-right corner and is invisible
+ * until the block is hovered or the button itself is focused, so a page of
+ * code blocks is not a page of buttons. Keyboard users reach it because
+ * `:focus-within` shows it before it can be pressed.
+ */
+.copy {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  padding: 2px var(--space-2);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition-fast), color var(--transition-fast);
+}
+
+.codeBlock:hover .copy,
+.copy:focus-visible {
+  opacity: 1;
+}
+
+.copy:hover {
+  color: var(--color-text);
+}
+
+.copy:active {
+  transform: scale(0.96);
+}
+
+.markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--text-sm);
+}
+
+.markdown th,
+.markdown td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--border-width) solid var(--color-border);
+  text-align: left;
+}
+
+.markdown th {
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .copy {
+    transition: none;
+  }
+
+  .copy:active {
+    transform: none;
+  }
+}

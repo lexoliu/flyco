@@ -1,0 +1,251 @@
+/*
+ * One row, wrapping to three on a narrow screen: what the session is, what
+ * it is doing, and what can be done to it. Nothing here is a card — the
+ * header is chrome, and chrome carries no accent colour (docs/ux.md §2).
+ */
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding-bottom: var(--space-4);
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+
+.identity {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-width: 0;
+  flex: 1 1 260px;
+}
+
+/*
+ * The title is a button because it does something when clicked, and looks
+ * like a heading because that is what it is. Only the hover underline
+ * admits it is editable, which keeps the row quiet until someone reaches
+ * for it.
+ */
+.title {
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-text);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  line-height: var(--line-tight);
+  text-align: left;
+  cursor: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: var(--border-width) solid transparent;
+}
+
+.title:hover {
+  border-bottom-color: var(--color-border-strong);
+}
+
+.titleInput {
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: none;
+  border-bottom: var(--border-width) solid var(--color-border-strong);
+  background: none;
+  color: var(--color-text);
+  font-family: inherit;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  line-height: var(--line-tight);
+}
+
+.titleInput:focus {
+  outline: none;
+}
+
+.repo {
+  flex: none;
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.readouts {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.statusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--color-neutral-dot);
+}
+
+.status[data-tone="working"] .statusDot {
+  background: var(--color-success);
+}
+
+.status[data-tone="attention"] .statusDot {
+  background: var(--color-warning);
+}
+
+.status[data-tone="failed"] .statusDot {
+  background: var(--color-danger);
+}
+
+.status[data-tone="quiet"] .statusDot {
+  background: var(--color-border-strong);
+}
+
+/* Status dots breathe while something is running, and only then. */
+.breathing .statusDot {
+  animation: breathe 2s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.statusDetail {
+  color: var(--color-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Only ever visible while the relay is not carrying events, so it is
+ * allowed to be the loud thing in the row: it is explaining why nothing is
+ * moving.
+ */
+.connection {
+  color: var(--color-warning);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.machine {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+
+.action:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.iconAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.iconAction:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.menu {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  min-width: 200px;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--text-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menuItem:hover:not(:disabled) {
+  background: var(--color-surface-sunken);
+}
+
+.menuItem:disabled {
+  color: var(--color-text-faint);
+  cursor: not-allowed;
+}
+
+.menuFooter {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border-top: var(--border-width) solid var(--color-border);
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .breathing .statusDot {
+    animation: none;
+  }
+}

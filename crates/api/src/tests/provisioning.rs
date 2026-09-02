@@ -33,7 +33,7 @@ use crate::provisioning::{LinkedAccount, Provisioner};
 use crate::provisioning_queue::{self, MAX_ATTEMPTS, ProvisioningJob};
 use crate::testing::{
     HARNESS_TOKEN, machine_choice, migrated_router_on, seed_harness_account, seed_provider_account,
-    seed_user, test_config,
+    seed_user, test_config, test_rooms,
 };
 use crate::{machines, session, sessions};
 
@@ -207,7 +207,7 @@ async fn run_queue(
     provisioner: &mut RecordedHost,
 ) -> QueueBatchDisposition {
     let batch = drain(queue).await;
-    provisioning_queue::consume(db, &test_config(), queue, provisioner, batch).await
+    provisioning_queue::consume(db, &test_config(), queue, &test_rooms(), provisioner, batch).await
 }
 
 /// Every job the queue holds, delivered or not.
@@ -243,7 +243,15 @@ async fn run_job_twice(
     job: ProvisioningJob,
 ) {
     for _ in 0..2 {
-        provisioning_queue::consume(db, &test_config(), queue, provisioner, batch(job)).await;
+        provisioning_queue::consume(
+            db,
+            &test_config(),
+            queue,
+            &test_rooms(),
+            provisioner,
+            batch(job),
+        )
+        .await;
     }
 }
 
@@ -449,7 +457,15 @@ async fn an_unreachable_host_is_retried_a_bounded_number_of_times(
 
     for attempt in 1..=MAX_ATTEMPTS {
         assert_eq!(job.attempt, attempt);
-        provisioning_queue::consume(&db, &test_config(), &queue, &mut host, batch(job)).await;
+        provisioning_queue::consume(
+            &db,
+            &test_config(),
+            &queue,
+            &test_rooms(),
+            &mut host,
+            batch(job),
+        )
+        .await;
 
         if attempt == MAX_ATTEMPTS {
             break;
@@ -512,8 +528,15 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         .assert_status(200);
 
     let mut host = RecordedHost::healthy();
-    let disposition =
-        provisioning_queue::consume(&db, &test_config(), &queue, &mut host, original).await;
+    let disposition = provisioning_queue::consume(
+        &db,
+        &test_config(),
+        &queue,
+        &test_rooms(),
+        &mut host,
+        original,
+    )
+    .await;
     assert!(matches!(disposition, QueueBatchDisposition::PerMessage(_)));
     assert_eq!(
         host.provisions, 0,
@@ -543,8 +566,15 @@ async fn an_archived_session_comes_back_through_the_same_queue(
 
     // Re-run it through the consumer to prove the resumed job is the same
     // path, not a second implementation of provisioning.
-    let disposition =
-        provisioning_queue::consume(&db, &test_config(), &queue, &mut host, queued).await;
+    let disposition = provisioning_queue::consume(
+        &db,
+        &test_config(),
+        &queue,
+        &test_rooms(),
+        &mut host,
+        queued,
+    )
+    .await;
     assert!(matches!(
         disposition,
         QueueBatchDisposition::PerMessage(ref decisions)
@@ -624,8 +654,15 @@ async fn a_job_for_a_session_that_is_gone_is_dropped(db: Db, queue: Queue) {
 
     // Acknowledged, not retried: redelivering a job whose session no longer
     // exists would only produce the same answer for ever.
-    let disposition =
-        provisioning_queue::consume(&db, &test_config(), &queue, &mut host, batch(orphan)).await;
+    let disposition = provisioning_queue::consume(
+        &db,
+        &test_config(),
+        &queue,
+        &test_rooms(),
+        &mut host,
+        batch(orphan),
+    )
+    .await;
     assert!(matches!(
         disposition,
         QueueBatchDisposition::PerMessage(ref decisions)

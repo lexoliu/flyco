@@ -151,10 +151,28 @@ describe("route smoke tests", () => {
     expect(await findByRole("heading", { level: 1, name: "Connect compute" })).toBeInTheDocument();
   });
 
-  it("renders /sessions/:id as the session shell", () => {
-    const { getByText } = renderAt("/sessions/abc-123");
-    expect(getByText("abc-123")).toBeInTheDocument();
-    expect(getByText("Compact context")).toBeInTheDocument();
+  it("renders /sessions/:id as a header, a transcript and a composer", async () => {
+    const { findByText, getByLabelText } = renderAt("/sessions/abc-123");
+
+    // The title, not the id: a session is identified by what it is for.
+    expect(await findByText("Audit the relay for dropped frames")).toBeInTheDocument();
+    expect(getByLabelText("Message the agent")).toBeInTheDocument();
+    // A session with no events yet says what to do about it rather than
+    // showing an empty box.
+    expect(
+      await findByText("Nothing has happened yet. Send a message to get the agent started."),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the session's side panels behind the collapsed drawer", async () => {
+    const { findByText, queryByLabelText, getByLabelText } = renderAt("/sessions/abc-123");
+    await findByText("Audit the relay for dropped frames");
+
+    // docs/ux.md §9.4: the drawer starts closed, so the transcript gets
+    // the width and the terminal is one click away rather than always on.
+    expect(queryByLabelText("Session panels")).not.toBeInTheDocument();
+    getByLabelText("Show the panel").click();
+    expect(getByLabelText("Session panels")).toBeInTheDocument();
   });
 
   it("renders /settings, redirecting to Agents", async () => {

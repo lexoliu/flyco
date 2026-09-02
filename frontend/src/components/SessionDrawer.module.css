@@ -1,0 +1,131 @@
+/*
+ * The drawer is a column beside the transcript, not a modal over it: the
+ * conversation stays readable while the terminal is open, which is the
+ * whole reason to open a terminal.
+ *
+ * Collapsed, it is one 32px handle. Open, it takes a fixed share of the
+ * page and the transcript column narrows to suit.
+ */
+.drawer {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  flex: none;
+  position: sticky;
+  top: var(--space-4);
+  max-height: calc(100dvh - var(--space-8));
+}
+
+.drawerOpen {
+  width: min(420px, 40vw);
+}
+
+.handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.handle:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex: 1;
+  min-width: 0;
+  max-height: calc(100dvh - var(--space-8));
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  animation: slide var(--transition-panel);
+}
+
+.tabs {
+  display: flex;
+  gap: var(--space-1);
+  flex: none;
+  overflow-x: auto;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.tab:hover {
+  color: var(--color-text);
+}
+
+.tabActive {
+  background: var(--color-surface-sunken);
+  border-color: var(--color-border);
+  color: var(--color-text);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+@keyframes slide {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/*
+ * On a narrow screen there is no room for two columns, so the drawer stops
+ * being one: it drops under the transcript at full width.
+ */
+@media (max-width: 900px) {
+  .drawer {
+    position: static;
+    width: 100%;
+    max-height: none;
+  }
+
+  .drawerOpen {
+    width: 100%;
+  }
+
+  .panel {
+    max-height: 70dvh;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel {
+    animation: none;
+  }
+}

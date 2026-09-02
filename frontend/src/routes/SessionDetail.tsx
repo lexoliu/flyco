@@ -1,179 +1,192 @@
+/**
+ * The session (docs/ux.md §9).
+ *
+ * Three parts and nothing else: a header saying what this session is and
+ * how it is doing, a transcript of everything that has happened, and a
+ * composer to say the next thing. Everything occasional — the terminal, the
+ * working tree, the machine, the `.env` — is in a drawer that starts
+ * closed, so the conversation gets the width.
+ *
+ * The page holds no state the relay already has. Status, transcript,
+ * approvals, usage and the provisioning timeline are all folded from one
+ * event list (src/lib/transcript.ts, src/lib/status.ts), so two things on
+ * screen can never disagree about what happened.
+ */
 import { useParams } from "@solidjs/router";
-import { For, Match, Show, Switch, createMemo, createResource, createSignal, onCleanup } from "solid-js";
-import BudgetBar from "../components/BudgetBar";
-import UsageMeter from "../components/UsageMeter";
-import ApprovalsPanel from "../components/ApprovalsPanel";
+import { Show, createMemo, createResource, createSignal, onCleanup } from "solid-js";
+import { AlertTriangle } from "lucide-solid";
 import ProblemNotice from "../components/ProblemNotice";
-import TerminalPanel from "../components/terminal/TerminalPanel";
-import MachinePanel from "../components/MachinePanel";
-import RepoStatusPanel from "../components/RepoStatusPanel";
-import EnvEditor from "../components/EnvEditor";
-import { archiveSession, compactSession, getSession, decideApproval, interruptSession, sendMessage } from "../api/client";
+import SessionComposer, { type SessionCommand } from "../components/SessionComposer";
+import SessionDrawer from "../components/SessionDrawer";
+import SessionHeader from "../components/SessionHeader";
+import Transcript from "../components/Transcript";
+import {
+  archiveSession,
+  compactSession,
+  decideApproval,
+  getSession,
+  getSessionMachine,
+  interruptSession,
+  sendMessage,
+  startSessionMachine,
+  stopSessionMachine,
+  updateSession,
+} from "../api/client";
 import { ApiProblem } from "../api/problem";
-import { createSessionRelay, type ConnectionState } from "../api/relay";
-import { foldTranscript, type TranscriptItem } from "../lib/transcript";
-import { foldApprovals } from "../lib/approvals";
+import { createSessionRelay } from "../api/relay";
+import { PROVIDER_LABEL } from "../lib/providers";
 import { usdMicrosToDollars } from "../lib/money";
+import { deriveStatus, liveSignalsFrom } from "../lib/status";
+import { foldTranscript, pendingApprovals } from "../lib/transcript";
 import styles from "./SessionDetail.module.css";
 
-/** One transcript row. A plain switch, not nested `<Show>`s, so the union narrows without casts. */
-function TranscriptRow(props: { item: TranscriptItem }) {
-  return (
-    <Switch>
-      <Match when={props.item.kind === "user_message" && props.item}>
-        {(item) => <p class={styles.userMessage}>{item().text}</p>}
-      </Match>
-      <Match when={props.item.kind === "notice" && props.item}>
-        {(item) => <p class={styles.notice}>{item().text}</p>}
-      </Match>
-      <Match when={props.item.kind === "turn" && props.item}>
-        {(item) => (
-          <div class={styles.turn} data-status={item().status}>
-            <Show when={item().text !== ""}>
-              <p class={styles.assistantText}>{item().text}</p>
-            </Show>
-            <For each={item().tools}>
-              {(tool) => (
-                <details class={styles.toolRow}>
-                  <summary>
-                    {tool.tool}
-                    <span class={styles.toolStatus} data-ok={tool.ok === null ? "pending" : tool.ok}>
-                      {tool.ok === null ? "running" : tool.ok ? "done" : "failed"}
-                    </span>
-                  </summary>
-                  <pre class={styles.toolInput}>{JSON.stringify(tool.input, null, 2)}</pre>
-                </details>
-              )}
-            </For>
-            <Show when={item().status === "failed"}>
-              <p class={styles.turnError}>{item().error}</p>
-            </Show>
-          </div>
-        )}
-      </Match>
-    </Switch>
-  );
-}
-
-const CONNECTION_LABEL: Record<ConnectionState, string> = {
-  connecting: "Connecting…",
-  live: "Live",
-  reconnecting: "Reconnecting…",
-  closed: "Closed",
-};
-
 /**
- * The session view: budget/usage meters seeded from `GET /v1/sessions/{id}`
- * then kept current from the relay's own `usage`/`session_state_changed`
- * events, a folded transcript, approvals, and the terminal pane. See
- * docs/ARCHITECTURE.md's "Session relay" section for the protocol this
- * wires to (`src/api/relay.ts`).
+ * How often the clock the page renders against advances.
+ *
+ * The provisioning timeline counts the stage it is waiting on, and the
+ * status pill counts how long a machine has been building. One second is
+ * the smallest unit either of them prints.
  */
+const TICK_MS = 1000;
+
 export default function SessionDetail() {
   const params = useParams<{ id: string }>();
-  const [session, { refetch: refetchSession }] = createResource(() => params.id, getSession);
+  const [session, { refetch: refetchSession, mutate: mutateSession }] = createResource(
+    () => params.id,
+    getSession,
+  );
+  const [machine, { refetch: refetchMachine }] = createResource(
+    () => params.id,
+    getSessionMachine,
+  );
 
   const relay = createSessionRelay(params.id);
   onCleanup(() => relay.dispose());
 
+  const [now, setNow] = createSignal(Date.now());
+  const ticker = setInterval(() => setNow(Date.now()), TICK_MS);
+  onCleanup(() => clearInterval(ticker));
+
   const transcript = createMemo(() => foldTranscript(relay.events()));
-  const approvals = createMemo(() => foldApprovals(relay.events()));
+  const waiting = createMemo(() => pendingApprovals(transcript()));
+  const signals = createMemo(() => liveSignalsFrom(relay.events()));
+
+  const status = createMemo(() => {
+    const current = session();
+    if (current === undefined) {
+      // Nothing is known yet; the pill says so rather than guessing at a
+      // lifecycle the request has not answered with.
+      return { status: "idle", label: "Loading", tone: "quiet", breathing: false } as const;
+    }
+    return deriveStatus(current, now(), signals());
+  });
+
   const latestUsage = createMemo(() => {
     const events = relay.events();
     for (let i = events.length - 1; i >= 0; i -= 1) {
-      const event = events[i];
-      if (event !== undefined && event.type === "usage") {
-        return event.usage;
+      const entry = events[i];
+      if (entry !== undefined && entry.event.type === "usage") {
+        return entry.event.usage;
       }
     }
     return null;
   });
 
-  const [messageText, setMessageText] = createSignal("");
-  const [sendError, setSendError] = createSignal<unknown>(null);
-  const [decideError, setDecideError] = createSignal<unknown>(null);
-  const [sending, setSending] = createSignal(false);
-  const [interrupting, setInterrupting] = createSignal(false);
-  const [compacting, setCompacting] = createSignal(false);
-  const [archiving, setArchiving] = createSignal(false);
-  const [archiveError, setArchiveError] = createSignal<unknown>(null);
-  const [pendingDirtySummary, setPendingDirtySummary] = createSignal<string | null>(null);
+  /** Who the machine came from, for the timeline's `Reserving on …` line. */
+  const providerLabel = createMemo(() => {
+    const view = machine();
+    return view === undefined ? null : PROVIDER_LABEL[view.spec.provider];
+  });
 
   const liveRepoSummary = createMemo(() => {
     const events = relay.events();
     for (let i = events.length - 1; i >= 0; i -= 1) {
-      const event = events[i];
-      if (event !== undefined && event.type === "repo_dirty") {
-        return event.summary;
+      const entry = events[i];
+      if (entry !== undefined && entry.event.type === "repo_dirty") {
+        return entry.event.summary;
       }
     }
     return null;
   });
 
+  const [error, setError] = createSignal<unknown>(null);
+  const [deciding, setDeciding] = createSignal(false);
+  const [archiving, setArchiving] = createSignal(false);
+  const [pendingDirtySummary, setPendingDirtySummary] = createSignal<string | null>(null);
+  const [panelRequest, setPanelRequest] = createSignal<{ panel: "machine" | "env"; at: number }>();
+
   /**
-   * The relay socket is preferred whenever it's live — lower latency, and
-   * the echo comes back as a `ClientEvent` on the same connection. While
-   * it isn't (paused session, stopped machine, still reconnecting), these
-   * fall back to the REST handlers so a message or interrupt is still
-   * recorded rather than silently dropped. See the module doc comment on
-   * `sendMessage`/`interruptSession` in `src/api/client.ts`.
+   * Prefers the relay socket whenever it is live — lower latency, and the
+   * echo comes back as an event on the same connection — and falls back to
+   * the REST handler while it is not (a paused session, a stopped machine,
+   * a reconnect in progress), so a message is recorded rather than
+   * silently dropped. See `sendMessage`/`interruptSession` in
+   * src/api/client.ts.
    */
-  async function submitMessage(): Promise<void> {
-    const text = messageText().trim();
-    if (text === "" || sending()) {
-      return;
-    }
-    setSendError(null);
-    setSending(true);
+  async function overRelay(
+    live: () => void,
+    rest: () => Promise<void>,
+  ): Promise<void> {
+    setError(null);
     try {
       if (relay.state() === "live") {
-        relay.send({ type: "user_message", text });
+        live();
       } else {
-        await sendMessage(params.id, text);
+        await rest();
       }
-      setMessageText("");
-    } catch (err) {
-      setSendError(err);
-    } finally {
-      setSending(false);
+    } catch (failure) {
+      setError(failure);
     }
   }
 
-  async function onInterrupt(): Promise<void> {
-    if (interrupting()) {
-      return;
-    }
-    setSendError(null);
-    setInterrupting(true);
-    try {
-      if (relay.state() === "live") {
-        relay.send({ type: "interrupt" });
-      } else {
-        await interruptSession(params.id);
-      }
-    } catch (err) {
-      setSendError(err);
-    } finally {
-      setInterrupting(false);
+  function onSend(text: string): void {
+    void overRelay(
+      () => relay.send({ type: "user_message", text }),
+      () => sendMessage(params.id, text),
+    );
+  }
+
+  function onStop(): void {
+    void overRelay(
+      () => relay.send({ type: "interrupt" }),
+      () => interruptSession(params.id),
+    );
+  }
+
+  function onCommand(command: SessionCommand): void {
+    switch (command) {
+      case "compact":
+        void overRelay(
+          () => relay.send({ type: "compact" }),
+          () => compactSession(params.id),
+        );
+        break;
+      case "archive":
+        void onArchive(false);
+        break;
+      case "resize":
+        // Resizing is a choice among machine types, and the machine tab is
+        // where those are listed; sending the user there beats a second
+        // picker that would have to duplicate it.
+        setPanelRequest({ panel: "machine", at: Date.now() });
+        break;
     }
   }
 
-  async function onCompact(): Promise<void> {
-    if (compacting()) {
-      return;
+  async function onRename(title: string): Promise<void> {
+    setError(null);
+    const previous = session();
+    // Shown immediately, because a rename the user typed should not wait a
+    // round trip to appear; a refused rename puts the old title back.
+    if (previous !== undefined) {
+      mutateSession({ ...previous, title });
     }
-    setSendError(null);
-    setCompacting(true);
     try {
-      if (relay.state() === "live") {
-        relay.send({ type: "compact" });
-      } else {
-        await compactSession(params.id);
-      }
-    } catch (err) {
-      setSendError(err);
-    } finally {
-      setCompacting(false);
+      const updated = await updateSession(params.id, title);
+      mutateSession(updated);
+    } catch (failure) {
+      setError(failure);
+      mutateSession(previous);
     }
   }
 
@@ -181,17 +194,21 @@ export default function SessionDetail() {
     if (archiving()) {
       return;
     }
-    setArchiveError(null);
+    setError(null);
     setArchiving(true);
     try {
       await archiveSession(params.id, { discardUncommitted });
       setPendingDirtySummary(null);
       await refetchSession();
-    } catch (err) {
-      if (!discardUncommitted && err instanceof ApiProblem && err.type.endsWith("/dirty-archive")) {
-        setPendingDirtySummary(err.detail);
+    } catch (failure) {
+      if (
+        !discardUncommitted &&
+        failure instanceof ApiProblem &&
+        failure.type.endsWith("/dirty-archive")
+      ) {
+        setPendingDirtySummary(failure.detail);
       } else {
-        setArchiveError(err);
+        setError(failure);
       }
     } finally {
       setArchiving(false);
@@ -199,68 +216,91 @@ export default function SessionDetail() {
   }
 
   async function onDecide(id: string, decision: "approved" | "denied"): Promise<void> {
-    setDecideError(null);
+    setError(null);
+    setDeciding(true);
     try {
       await decideApproval(id, decision);
-    } catch (err) {
-      setDecideError(err);
+    } catch (failure) {
+      setError(failure);
+    } finally {
+      setDeciding(false);
+    }
+  }
+
+  async function onMachine(action: "start" | "stop"): Promise<void> {
+    setError(null);
+    try {
+      await (action === "start"
+        ? startSessionMachine(params.id)
+        : stopSessionMachine(params.id));
+      await refetchMachine();
+    } catch (failure) {
+      setError(failure);
     }
   }
 
   const budgetSpentUsd = () => {
     const usage = latestUsage();
-    const budget = session()?.budget;
     if (usage?.estimated_cost !== null && usage?.estimated_cost !== undefined) {
       return usdMicrosToDollars(usage.estimated_cost);
     }
-    return budget !== undefined ? usdMicrosToDollars(budget.spent) : undefined;
+    const budget = session()?.budget;
+    return budget === undefined ? undefined : usdMicrosToDollars(budget.spent);
   };
   const budgetLimitUsd = () => {
     const budget = session()?.budget;
-    return budget !== undefined ? usdMicrosToDollars(budget.limit) : undefined;
+    return budget === undefined ? undefined : usdMicrosToDollars(budget.limit);
   };
 
   return (
     <section class={styles.page}>
-      <header class={styles.header}>
-        {/* The title until the session answers; the id is not a name. */}
-        <h1 class={styles.title}>{session()?.title ?? params.id}</h1>
-        <div class={styles.headerActions}>
-          <span class={styles.connection} data-state={relay.state()}>
-            <span class={styles.connectionDot} />
-            {CONNECTION_LABEL[relay.state()]}
-          </span>
-          <Show when={session()?.state !== "archived"}>
-            <button
-              type="button"
-              class={styles.interruptButton}
-              disabled={archiving()}
-              onClick={() => void onArchive(false)}
-            >
-              {archiving() ? "Archiving…" : "Archive"}
-            </button>
-          </Show>
-        </div>
-      </header>
+      <SessionHeader
+        session={session()}
+        sessionId={params.id}
+        status={status()}
+        connection={relay.state()}
+        machine={machine()}
+        budgetSpentUsd={budgetSpentUsd()}
+        budgetLimitUsd={budgetLimitUsd()}
+        contextUsed={latestUsage()?.context?.used_tokens}
+        contextSize={latestUsage()?.context?.size_tokens}
+        onRename={(title) => void onRename(title)}
+        onArchive={() => void onArchive(false)}
+        archiving={archiving()}
+        onStartMachine={() => void onMachine("start")}
+        onStopMachine={() => void onMachine("stop")}
+        onOpenPanel={(panel) => setPanelRequest({ panel, at: Date.now() })}
+      />
 
       <ProblemNotice error={session.error} />
-      <ProblemNotice error={archiveError()} />
+      <ProblemNotice error={error()} />
+
+      <Show when={session()?.failure}>
+        {(failure) => <p class={styles.failure}>{failure()}</p>}
+      </Show>
+
       <Show when={pendingDirtySummary()}>
         {(summary) => (
-          <div class={styles.archiveConfirm} role="alertdialog" aria-labelledby="archive-dirty-title">
-            <h2 id="archive-dirty-title">Uncommitted changes</h2>
-            <p>
+          <div class={styles.archiveConfirm} role="alertdialog" aria-labelledby="archive-dirty">
+            <h2 id="archive-dirty" class={styles.archiveTitle}>
+              Uncommitted changes
+            </h2>
+            <p class={styles.archiveBody}>
               Archiving releases the disk without keeping this work. Commit it first, or discard it
               to archive anyway.
             </p>
             <pre class={styles.archiveSummary}>{summary()}</pre>
-            <div class={styles.composerActions}>
-              <button type="button" class={styles.sendButton} onClick={() => setPendingDirtySummary(null)}>
+            <div class={styles.archiveActions}>
+              <button
+                type="button"
+                class={styles.keep}
+                onClick={() => setPendingDirtySummary(null)}
+              >
                 Keep session
               </button>
               <button
                 type="button"
-                class={styles.interruptButton}
+                class={styles.discard}
                 disabled={archiving()}
                 onClick={() => void onArchive(true)}
               >
@@ -271,101 +311,59 @@ export default function SessionDetail() {
         )}
       </Show>
 
-      <div class={styles.meters}>
-        <BudgetBar label="Budget" spentUsd={budgetSpentUsd()} limitUsd={budgetLimitUsd()} />
-        <UsageMeter
-          label="Context window"
-          used={latestUsage()?.context?.used_tokens}
-          total={latestUsage()?.context?.size_tokens}
-          unit="tokens"
-        />
-        <div class={styles.tokenReadout}>
-          <span>LLM usage</span>
-          <Show when={latestUsage()} fallback={<span class={styles.muted}>Not loaded yet</span>}>
-            {(usage) => (
-              <span>
-                {usage().input_tokens.toLocaleString()} in / {usage().output_tokens.toLocaleString()} out
-              </span>
-            )}
-          </Show>
-        </div>
-      </div>
-
       <div class={styles.body}>
-        <div class={styles.transcriptColumn}>
-          <ul class={styles.transcript} aria-label="Transcript">
-            <Show
-              when={transcript().length > 0}
-              fallback={<li class={styles.empty}>No turns yet. Send the first message to get started.</li>}
-            >
-              <For each={transcript()}>
-                {(item) => (
-                  <li class={styles.transcriptItem} data-kind={item.kind}>
-                    <TranscriptRow item={item} />
-                  </li>
-                )}
-              </For>
-            </Show>
-          </ul>
+        <div class={styles.column}>
+          {/*
+            The banner is sticky so an approval raised a hundred rows ago is
+            still one click away, and amber because it is the one thing on
+            the page holding everything else up.
+          */}
+          <Show when={waiting().length > 0}>
+            <p class={styles.approvalBanner}>
+              <AlertTriangle size={14} aria-hidden="true" />
+              {waiting().length === 1
+                ? "The agent is waiting on your decision."
+                : `The agent is waiting on ${waiting().length} decisions.`}
+            </p>
+          </Show>
 
-          <ProblemNotice error={sendError()} />
-          <form
-            class={styles.composer}
-            onSubmit={(event) => {
-              event.preventDefault();
-              void submitMessage();
-            }}
+          <Show
+            when={transcript().length > 0}
+            fallback={
+              <p class={styles.empty}>
+                Nothing has happened yet. Send a message to get the agent started.
+              </p>
+            }
           >
-            <textarea
-              class={styles.composerInput}
-              placeholder="Message the session…"
-              value={messageText()}
-              disabled={sending()}
-              onInput={(event) => setMessageText(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void submitMessage();
-                }
+            <Transcript
+              items={transcript()}
+              repo={session()?.repo ?? "the repository"}
+              provider={providerLabel()}
+              onDecide={(id, decision) => {
+                void onDecide(id, decision).then(() => refetchSession());
               }}
+              deciding={deciding()}
+              now={now()}
             />
-            <div class={styles.composerActions}>
-              <button
-                type="button"
-                class={styles.compactButton}
-                disabled={compacting()}
-                onClick={() => void onCompact()}
-              >
-                {compacting() ? "Compacting…" : "Compact context"}
-              </button>
-              <button
-                type="button"
-                class={styles.interruptButton}
-                disabled={interrupting()}
-                onClick={() => void onInterrupt()}
-              >
-                {interrupting() ? "Interrupting…" : "Interrupt"}
-              </button>
-              <button type="submit" class={styles.sendButton} disabled={sending()}>
-                {sending() ? "Sending…" : "Send"}
-              </button>
-            </div>
-          </form>
+          </Show>
+
+          <div class={styles.composer}>
+            <SessionComposer
+              turnInFlight={signals().turnInFlight === true}
+              disabled={session()?.state === "archived"}
+              onSend={onSend}
+              onStop={onStop}
+              onCommand={onCommand}
+            />
+          </div>
         </div>
 
-        <aside class={styles.side}>
-          <ProblemNotice error={decideError()} />
-          <ApprovalsPanel
-            approvals={approvals()}
-            onDecide={(id, decision) => {
-              void onDecide(id, decision).then(() => refetchSession());
-            }}
-          />
-          <MachinePanel sessionId={params.id} />
-          <RepoStatusPanel sessionId={params.id} liveSummary={liveRepoSummary()} />
-          <TerminalPanel sessionId={params.id} relay={relay} />
-          <EnvEditor sessionId={params.id} />
-        </aside>
+        <SessionDrawer
+          sessionId={params.id}
+          relay={relay}
+          liveRepoSummary={liveRepoSummary()}
+          openPanel={panelRequest()}
+        />
       </div>
     </section>
   );

@@ -10,7 +10,7 @@
 //! A room is addressed by its session id, so `session:{id}` and the room
 //! are the same identity and no mapping table exists to go stale.
 
-use flyco_core::{ControlToDaemon, RepoStatus, SessionId};
+use flyco_core::{ClientEvent, ControlToDaemon, RepoStatus, SessionId};
 use skyzen::extract::Extractor;
 use skyzen::{Body, Method, Request, StatusCode};
 
@@ -133,6 +133,33 @@ impl Rooms {
         } else {
             Err(ApiError::Room(format!(
                 "the room refused a command with HTTP {status}"
+            )))
+        }
+    }
+
+    /// Records a control-plane event on a session's stream and shows it to
+    /// every browser watching.
+    ///
+    /// [`Self::command`] is for facts the daemon has to act on; this is for
+    /// facts only the user needs to see, and the provisioning timeline is
+    /// the one that needs it — the queue knows a machine was reserved
+    /// minutes before any daemon exists to report it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Room`] if the room could not be reached or
+    /// refused the event.
+    pub async fn broadcast(&self, session: SessionId, event: &ClientEvent) -> Result<(), ApiError> {
+        let body = serde_json::to_vec(event)
+            .map_err(|_| ApiError::CorruptRecord("a room event failed to encode"))?;
+        let (status, _) = self
+            .call(session, Verb::Post, "/internal/broadcast", Some(body))
+            .await?;
+        if status.is_success() {
+            Ok(())
+        } else {
+            Err(ApiError::Room(format!(
+                "the room refused an event with HTTP {status}"
             )))
         }
     }
