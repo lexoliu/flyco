@@ -1,0 +1,3 @@
+Pending the user's approval. {{ machine_type }} {{ minimum }}, so flyco does not move a session onto it on an agent's say-so.
+
+The request is now an approval card in front of the user, quoting that charge and the reason you gave. If they approve it the machine is resized and restarted for you and you will get a notice saying so; if they do not, nothing happens. Carry on with what can be done on {{ current_type }} in the meantime rather than waiting.

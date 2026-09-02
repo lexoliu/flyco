@@ -23,11 +23,16 @@
 //! - [`terminal`] — a PTY-backed `fish` shell relayed to the browser.
 //! - [`git`] — `git status --short` polling, dirty-tree keep-awake, and
 //!   workdir snapshots for automatic archive.
+//! - [`mcp`] — the local stdio MCP server, which is the *only* sanctioned
+//!   way an agent acts on its own session: what machine it is on, what the
+//!   budget has left, and moving to another machine.
+//! - [`notice`] — every sentence flyco says to the agent, compiled from a
+//!   template rather than assembled from strings.
 //!
 //! `flycod run` picks between [`control`] and [`repl`] on whether the
 //! configuration names a control plane, and logs which it chose.
-//!
-//! The local MCP server lands in a later milestone.
+//! `flycod mcp` is a second process, launched by the harness rather than by
+//! the machine, speaking MCP over its own stdio.
 //!
 //! [`flyco_api`]: https://github.com/lexoliu/flyco/tree/main/crates/api
 
@@ -35,6 +40,8 @@ pub mod config;
 pub mod control;
 pub mod git;
 pub mod harness;
+pub mod mcp;
+pub mod notice;
 pub mod repl;
 pub mod terminal;
 

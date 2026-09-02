@@ -281,6 +281,31 @@ pub const AUTO_MIN_VCPUS: u32 = 4;
 pub const AUTO_MIN_MEMORY_MIB: u64 = 16 * 1024;
 
 impl MachineCatalogEntry {
+    /// The floor the provider bills the moment a machine of this type boots,
+    /// when it imposes one.
+    ///
+    /// Reads through the pricing sum so no caller has to match on it to ask
+    /// the one question that decides whether a resize needs the user: an EC2
+    /// Mac bills a full day under the Apple licence, and hardware the user
+    /// owns bills nothing at all.
+    #[must_use]
+    pub const fn billing_minimum(&self) -> Option<BillingMinimum> {
+        match self.pricing {
+            MachinePricing::UserOwned => None,
+            MachinePricing::Metered { minimum, .. } => minimum,
+        }
+    }
+
+    /// Whether starting this type commits the user to a minimum charge.
+    ///
+    /// The gate on the agent's own resize: moving to a license-bound type
+    /// spends the user's money before anything runs, so it is raised as an
+    /// approval rather than performed (docs/ux.md §9.5).
+    #[must_use]
+    pub const fn is_license_bound(&self) -> bool {
+        self.billing_minimum().is_some()
+    }
+
     /// Whether flyco may pick this entry without being asked to.
     ///
     /// Linux, provisionable through a linked account, and at least
@@ -325,6 +350,91 @@ pub fn auto_linux_choice(
                 .hourly(spot)
                 .map_or((0_u8, Usd::ZERO), |hourly| (1_u8, hourly))
         })
+}
+
+/// The machine a session is on, as the agent driving it is told about it.
+///
+/// Not the whole [`MachineCatalogEntry`]: the agent is deciding whether to
+/// keep working here, and five facts answer that — what the machine is
+/// called, what an hour of it costs, whether the capacity is interruptible,
+/// how big it is, and whether starting it already committed the user to a
+/// licence minimum. The account, the region, the family and the storage
+/// tiers answer a different question (where flyco would provision *another*
+/// machine) and stay in the catalog.
+///
+/// The same value travels three ways and means one thing in all of them: in
+/// the bootstrap a machine boots with, in the `[machine]` table of the
+/// daemon's configuration, and in what the agent's `machine_status` tool
+/// reads back. Absent facts are absent from the serialized document rather
+/// than spelled `null`, because one of those three is TOML and TOML has no
+/// null to spell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SessionMachine {
+    /// Provider-native machine type name.
+    pub machine_type: String,
+    /// What one hour of it costs, when flyco meters it at all.
+    ///
+    /// The rate for the capacity actually held — spot when
+    /// [`spot`](Self::spot) is true and the type has a spot price. Absent on
+    /// hardware the user owns, where quoting `$0.00` would tell a budget the
+    /// session can run forever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hourly: Option<Usd>,
+    /// Whether the machine holds interruptible capacity.
+    pub spot: bool,
+    /// How big it is, when the provider publishes a size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<MachineCapacity>,
+    /// The floor the provider billed the moment it booted, when the type
+    /// carries one.
+    ///
+    /// Present on exactly the license-bound types. An agent reading it knows
+    /// the machine has already cost [`BillingMinimum::charge`] whatever it
+    /// does next — and that moving *to* such a type is the user's decision
+    /// rather than its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum: Option<BillingMinimum>,
+}
+
+impl SessionMachine {
+    /// Reads the five facts off a curated catalog entry.
+    ///
+    /// `spot` is what the machine actually holds rather than what was asked
+    /// for, because that is what the price follows.
+    #[must_use]
+    pub fn of(entry: &MachineCatalogEntry, spot: bool) -> Self {
+        Self {
+            machine_type: entry.machine_type.clone(),
+            hourly: entry.pricing.hourly(spot),
+            spot,
+            capacity: entry.capacity.clone(),
+            minimum: entry.billing_minimum(),
+        }
+    }
+
+    /// Whether being on this machine already committed the user to a
+    /// minimum charge.
+    #[must_use]
+    pub const fn is_license_bound(&self) -> bool {
+        self.minimum.is_some()
+    }
+}
+
+/// What `GET /v1/sessions/{id}/agent/machine` tells a session's daemon.
+///
+/// The machine and *who chose it*, because the second changes what the agent
+/// may do with the first: a machine the user picked is a decision flyco must
+/// not quietly undo (docs/ux.md §9.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct AgentMachineView {
+    /// Whether flyco or the user chose the machine this session runs on.
+    pub origin: crate::session::MachineOrigin,
+    /// The machine, as the agent is told about it.
+    pub machine: SessionMachine,
+    /// Where it is in its lifecycle.
+    pub state: MachineState,
+    /// Provider-native region it runs in.
+    pub region: String,
 }
 
 /// Everything needed to provision a machine for a session.

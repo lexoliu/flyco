@@ -9,11 +9,15 @@ use flyco_daemon::config::{ControlPlaneConfig, DaemonConfig, EXAMPLE};
 use flyco_daemon::control::{
     ControlApi, Endpoint, HttpControlApi, RemoteTranscriptStore, SessionRelay, wire,
 };
+use flyco_daemon::git::GitWorkdir;
 use flyco_daemon::harness::claude::ClaudeCodeHarness;
 use flyco_daemon::harness::claude::store::{JsonlTranscriptStore, TranscriptStore};
 use flyco_daemon::harness::codex::CodexHarness;
 use flyco_daemon::harness::{Harness as _, HarnessSession, StartRequest, Started};
+use flyco_daemon::mcp::FlycoTools;
 use flyco_daemon::repl;
+use rmcp::ServiceExt as _;
+use rmcp::transport::stdio;
 use tokio::io::AsyncWriteExt as _;
 use tracing_subscriber::EnvFilter;
 
@@ -29,6 +33,16 @@ struct Cli {
 enum Command {
     /// Run the daemon: start the harness and drive it.
     Run {
+        /// Path to the TOML configuration.
+        #[arg(long, value_name = "PATH")]
+        config: PathBuf,
+    },
+    /// Serve flyco's tools to the harness over stdio (MCP).
+    ///
+    /// Launched by the coding harness, not by the machine: it is a second
+    /// process beside `flycod run`, sharing only the configuration file and
+    /// the session's daemon token.
+    Mcp {
         /// Path to the TOML configuration.
         #[arg(long, value_name = "PATH")]
         config: PathBuf,
@@ -56,6 +70,22 @@ enum Failure {
     Git(#[from] flyco_daemon::git::GitError),
     #[error("could not write to stdout")]
     Stdout(#[source] std::io::Error),
+    /// `flycod mcp` was pointed at a configuration with no control plane.
+    #[error(
+        "`flycod mcp` needs a [control_plane] in its config: every tool it serves \
+         reads or changes this session in the control plane"
+    )]
+    NoControlPlane,
+    /// The MCP client never completed the handshake.
+    ///
+    /// Boxed because the SDK's initialization error carries the whole
+    /// handshake, which is several hundred bytes and would make every
+    /// `Result` in this binary that size.
+    #[error("the harness did not initialize flyco's MCP server")]
+    Mcp(#[source] Box<rmcp::service::ServerInitializeError>),
+    /// The MCP server stopped on an error rather than on a closed pipe.
+    #[error("flyco's MCP server stopped")]
+    McpStopped(#[source] tokio::task::JoinError),
 }
 
 #[tokio::main]
@@ -93,6 +123,7 @@ async fn run(cli: Cli) -> Result<(), Failure> {
                 .map_err(Failure::Stdout)?;
             stdout.flush().await.map_err(Failure::Stdout)
         }
+        Command::Mcp { config } => serve_mcp(DaemonConfig::load(&config)?).await,
         Command::Run { config } => {
             let config = DaemonConfig::load(&config)?;
             tracing::info!(
@@ -161,6 +192,37 @@ async fn check_out(config: &DaemonConfig, api: Option<&HttpControlApi>) -> Resul
     Ok(())
 }
 
+/// Serves flyco's tools to the harness until it closes the pipe.
+///
+/// Everything this answers comes from the control plane, so a configuration
+/// without one has nothing to serve: on a developer machine the REPL is how
+/// a session is driven, and there is no session in a control plane for the
+/// tools to act on. Refusing here says so once, rather than answering every
+/// tool call with the same failure.
+async fn serve_mcp(config: DaemonConfig) -> Result<(), Failure> {
+    let Some(control_plane) = config.control_plane.clone() else {
+        return Err(Failure::NoControlPlane);
+    };
+    let api = HttpControlApi::new(
+        control_plane.url,
+        config.session,
+        control_plane.daemon_token,
+    );
+    let tools = FlycoTools::new(
+        api,
+        GitWorkdir::new(config.workdir.clone()),
+        config.machine_origin,
+    );
+
+    tracing::info!(session = %config.session, "serving flyco's MCP tools over stdio");
+    let service = tools
+        .serve(stdio())
+        .await
+        .map_err(|error| Failure::Mcp(Box::new(error)))?;
+    service.waiting().await.map_err(Failure::McpStopped)?;
+    Ok(())
+}
+
 /// Drives a Claude Code session, reporting to a control plane if the
 /// configuration names one and to the terminal otherwise.
 ///
@@ -192,7 +254,7 @@ async fn drive_claude_code(config: DaemonConfig) -> Result<(), Failure> {
     let (terminal, terminal_out) =
         flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
     let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
-    wire::run(SessionRelay {
+    Box::pin(wire::run(SessionRelay {
         endpoint,
         session: started.session,
         outputs: started.outputs,
@@ -201,7 +263,9 @@ async fn drive_claude_code(config: DaemonConfig) -> Result<(), Failure> {
         terminal_out,
         workdir,
         repo_status,
-    })
+        machine: config.machine.clone(),
+        machine_origin: config.machine_origin,
+    }))
     .await?;
     Ok(())
 }
@@ -243,7 +307,7 @@ async fn report<S: HarnessSession + 'static>(
     let (terminal, terminal_out) =
         flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
     let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
-    wire::run(SessionRelay {
+    Box::pin(wire::run(SessionRelay {
         endpoint,
         session: started.session,
         outputs: started.outputs,
@@ -252,7 +316,9 @@ async fn report<S: HarnessSession + 'static>(
         terminal_out,
         workdir,
         repo_status,
-    })
+        machine: config.machine.clone(),
+        machine_origin: config.machine_origin,
+    }))
     .await?;
     Ok(())
 }

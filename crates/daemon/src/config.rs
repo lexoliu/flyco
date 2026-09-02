@@ -6,7 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
-use flyco_core::{BranchName, DAEMON_TOKEN_PREFIX, HarnessKind, RepoSlug, SessionId};
+use flyco_core::{
+    BranchName, DAEMON_TOKEN_PREFIX, HarnessKind, MachineOrigin, RepoSlug, SessionId,
+    SessionMachine,
+};
 use serde::Deserialize;
 use url::Url;
 
@@ -382,6 +385,21 @@ pub struct DaemonConfig {
     pub harness: HarnessKind,
     /// Directory the agent works in.
     pub workdir: PathBuf,
+    /// Whether flyco or the user chose the machine this session runs on.
+    ///
+    /// What the notice injected at session start turns on: a machine the
+    /// user picked is a decision the agent must not quietly undo, and it is
+    /// told so in as many words (docs/ux.md §9.5). A fact about the session
+    /// rather than about the machine, so it outlives every resize.
+    pub machine_origin: MachineOrigin,
+    /// The machine this daemon booted on, as the agent is told about it.
+    ///
+    /// The boot-time description. It is what the session-start notice
+    /// states, and it is *not* kept current here: a resize restarts the
+    /// machine without rewriting this file, and the live answer comes from
+    /// `GET /v1/sessions/{id}/agent/machine`, which is what the agent's
+    /// `machine_status` tool reads.
+    pub machine: SessionMachine,
     /// Root of the local append-only transcript store.
     ///
     /// Used only when there is no [`control_plane`](Self::control_plane):

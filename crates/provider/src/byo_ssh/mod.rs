@@ -108,10 +108,11 @@ pub enum ContainerJob {
         /// What its `flycod` needs to phone home.
         ///
         /// Boxed because it is much the largest thing any variant of this
-        /// enum carries — three credentials, a repository and a commit
-        /// identity — and every other variant is a container name. Without
-        /// the indirection each `Stop` on a queue would be padded out to the
-        /// size of a `Create`.
+        /// enum carries — three credentials, a repository, a commit
+        /// identity and the machine the session is on — and every other
+        /// variant is a container name. Without the indirection each `Stop`
+        /// on a queue would be padded out to the size of a `Create`. The
+        /// JSON is unchanged: a `Box` serializes as what it holds.
         bootstrap: Box<DaemonBootstrap>,
     },
     /// Stop the container, keeping its writable layer.
@@ -268,6 +269,8 @@ mod tests {
             permission_mode: PermissionMode::Default,
             claude_auth: ClaudeCredential::Inherit,
             repo: crate::testing::checkout(),
+            machine_origin: flyco_core::MachineOrigin::Auto,
+            machine: crate::testing::session_machine(),
             resume_session_id: None,
         }
     }
@@ -284,7 +287,7 @@ mod tests {
     }
 
     fn provision(machine_type: &str) -> MachineOperation {
-        MachineOperation::Provision(ProvisionRequest {
+        MachineOperation::Provision(Box::new(ProvisionRequest {
             machine: MachineId::generate(),
             spec: MachineSpec {
                 provider: CloudProviderKind::ByoSsh,
@@ -294,7 +297,7 @@ mod tests {
                 disk_gib: 0,
             },
             bootstrap: bootstrap(),
-        })
+        }))
     }
 
     #[test]

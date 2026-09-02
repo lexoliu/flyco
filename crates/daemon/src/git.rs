@@ -52,8 +52,7 @@ pub const TOKEN_VAR: &str = "FLYCO_GIT_TOKEN";
 /// environment rather than baked in here, so this string is safe to log,
 /// print, or write to a config file — which is precisely why it is the thing
 /// git sees.
-const CREDENTIAL_HELPER: &str =
-    "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \
+const CREDENTIAL_HELPER: &str = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \
      \"$FLYCO_GIT_TOKEN\"; }; f";
 
 /// Clones a session's repository into `workdir`.
@@ -91,11 +90,7 @@ pub async fn clone_into(repo: &RepoConfig, workdir: &Path) -> Result<(), GitErro
 /// # Errors
 ///
 /// Returns [`GitError`] exactly as [`clone_into`] does.
-pub async fn clone_from(
-    remote: &str,
-    repo: &RepoConfig,
-    workdir: &Path,
-) -> Result<(), GitError> {
+pub async fn clone_from(remote: &str, repo: &RepoConfig, workdir: &Path) -> Result<(), GitError> {
     // `--` before the positional arguments, and `--branch=` rather than a
     // separate value: a branch name is user input, and neither it nor a
     // remote URL may be read as an option. `BranchName` already refuses a
@@ -114,7 +109,11 @@ pub async fn clone_from(
     )
     .await?;
 
-    git(workdir, &["config", "user.name", repo.identity.name.as_str()]).await?;
+    git(
+        workdir,
+        &["config", "user.name", repo.identity.name.as_str()],
+    )
+    .await?;
     git(
         workdir,
         &["config", "user.email", repo.identity.email.as_str()],
@@ -238,7 +237,18 @@ impl GitWorkdir {
         (Self::new(path), rx)
     }
 
-    async fn status_of(&self) -> Result<String, GitError> {
+    /// `git status --short`, read once.
+    ///
+    /// What the [watcher](WorkingTree::next_status) polls, and what a
+    /// one-shot caller asks for instead of subscribing: the MCP server is a
+    /// process that answers one tool call and exits, and it has to know
+    /// whether a resize would take uncommitted work with it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GitError`] if git could not be run or the directory is not
+    /// a checkout.
+    pub async fn read_status(&self) -> Result<String, GitError> {
         let output = git(&self.path, &["status", "--short"]).await?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
@@ -248,7 +258,7 @@ impl WorkingTree for GitWorkdir {
     async fn next_status(&mut self) -> Option<String> {
         loop {
             self.interval.tick().await;
-            match self.status_of().await {
+            match self.read_status().await {
                 Ok(summary) if self.last.as_ref() != Some(&summary) => {
                     self.last = Some(summary.clone());
                     return Some(summary);

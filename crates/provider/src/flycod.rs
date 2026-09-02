@@ -18,7 +18,8 @@
 
 use core::fmt;
 
-use flyco_core::{BranchName, HarnessKind, PermissionMode, RepoSlug, SessionId};
+use flyco_core::machine::SessionMachine;
+use flyco_core::{BranchName, HarnessKind, MachineOrigin, PermissionMode, RepoSlug, SessionId};
 use serde::Serialize;
 
 use crate::{DaemonBootstrap, GitIdentity};
@@ -200,10 +201,12 @@ struct Document<'a> {
     harness: HarnessKind,
     workdir: &'static str,
     transcript_dir: &'static str,
+    machine_origin: MachineOrigin,
     #[serde(skip_serializing_if = "Option::is_none")]
     resume_session_id: Option<&'a str>,
     control_plane: ControlPlane<'a>,
     repo: Repo<'a>,
+    machine: &'a SessionMachine,
     #[serde(skip_serializing_if = "Option::is_none")]
     claude: Option<Claude<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -280,6 +283,7 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
         harness: bootstrap.harness,
         workdir: WORKDIR,
         transcript_dir: TRANSCRIPT_DIR,
+        machine_origin: bootstrap.machine_origin,
         resume_session_id: bootstrap.resume_session_id.as_deref(),
         control_plane: ControlPlane {
             url: &bootstrap.control_plane_url,
@@ -291,6 +295,7 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
             token: &bootstrap.repo.token,
             identity: &bootstrap.repo.identity,
         },
+        machine: &bootstrap.machine,
         claude,
         sidecar,
         codex,
@@ -301,7 +306,7 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
 
 #[cfg(test)]
 mod tests {
-    use flyco_core::{HarnessKind, PermissionMode, SessionId};
+    use flyco_core::{HarnessKind, MachineOrigin, PermissionMode, SessionId};
 
     use super::{CLAUDE_CONFIG_DIR, CODEX_HOME, ClaudeCredential, render};
     use crate::DaemonBootstrap;
@@ -316,6 +321,8 @@ mod tests {
             permission_mode: PermissionMode::Default,
             claude_auth,
             repo: checkout(),
+            machine_origin: MachineOrigin::Auto,
+            machine: crate::testing::session_machine(),
             resume_session_id: None,
         }
     }
@@ -390,6 +397,37 @@ mod tests {
         assert!(rendered.contains(CODEX_HOME));
         assert!(!rendered.contains("[claude]"));
         assert!(!rendered.contains("[sidecar]"));
+    }
+
+    #[test]
+    fn the_machine_the_agent_is_told_about_is_written_with_who_chose_it() {
+        let mut chosen = bootstrap(ClaudeCredential::Inherit);
+        chosen.machine_origin = MachineOrigin::User;
+        chosen.machine.minimum = Some(flyco_core::BillingMinimum::new(
+            24,
+            flyco_core::Usd::from_cents(65),
+        ));
+        let rendered = render(&chosen).expect("render");
+
+        assert!(rendered.contains("machine_origin = \"user\""));
+        assert!(rendered.contains("[machine]"));
+        assert!(rendered.contains("machine_type = \"Standard_D4s_v6\""));
+        assert!(rendered.contains("[machine.minimum]"));
+        assert!(rendered.contains("hours = 24"));
+    }
+
+    #[test]
+    fn a_machine_with_nothing_to_omit_writes_no_empty_facts() {
+        // TOML has no null: an absent capacity or minimum has to be an
+        // absent key, and a `None` reaching the serializer is a render
+        // failure rather than a document the daemon would reject.
+        let mut unknown = bootstrap(ClaudeCredential::Inherit);
+        unknown.machine.capacity = None;
+        unknown.machine.hourly = None;
+        let rendered = render(&unknown).expect("render");
+
+        assert!(!rendered.contains("capacity"));
+        assert!(!rendered.contains("hourly"));
     }
 
     #[test]

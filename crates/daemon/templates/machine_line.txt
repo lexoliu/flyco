@@ -1,0 +1,1 @@
+{{ line.machine_type }}{% if let Some(capacity) = line.capacity %} · {{ capacity }}{% endif %} · {{ line.price }}{% if line.spot %} · spot{% endif %}{% if let Some(minimum) = line.minimum %} · {{ minimum }}{% endif %}

@@ -1,0 +1,6 @@
+{% if restarted -%}
+[flyco machine notice] The machine restarted and this session is now on {% include "machine_line.txt" %}.
+Everything you had running is gone — servers, watchers, background builds, anything started in the terminal. The disk was kept, so the checkout and its caches are exactly as you left them. Start whatever you still need before you carry on.
+{%- else -%}
+[flyco machine notice] This session is now on {% include "machine_line.txt" %}. Nothing was restarted, so what you had running is still running.
+{%- endif %}

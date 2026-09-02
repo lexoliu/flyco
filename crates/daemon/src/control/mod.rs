@@ -20,6 +20,8 @@ pub mod wire;
 #[cfg(test)]
 mod tests;
 
-pub use rest::{ControlApi, ControlApiError, HttpControlApi, TranscriptRead};
+pub use rest::{
+    AgentApi, ApprovalRaiser, ControlApi, ControlApiError, HttpControlApi, TranscriptRead,
+};
 pub use store::RemoteTranscriptStore;
 pub use wire::{Endpoint, SessionRelay, WireError};

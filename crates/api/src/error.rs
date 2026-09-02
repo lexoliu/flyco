@@ -193,6 +193,40 @@ pub enum ApiError {
     #[error("this session has no machine", status = StatusCode::NOT_FOUND)]
     MachineNotFound,
 
+    /// The named type is not in the curated catalog this session can move to.
+    ///
+    /// A resize keeps the disk, so it stays inside the account and region the
+    /// machine already lives in; a type outside that list is not a machine
+    /// flyco can turn this one into. The agent sees the same curated list its
+    /// `machine_resize` tool describes, so naming something else is a mistake
+    /// worth saying out loud rather than a request to search harder.
+    #[error(
+        "`{0}` is not one of the machine types this session can be resized to",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    MachineTypeNotOffered(String),
+
+    /// The agent asked to move onto a type that bills a minimum on boot.
+    ///
+    /// Never performed on the agent's own authority: an EC2 Mac bills a full
+    /// day under the Apple licence the moment it starts, so the move is the
+    /// user's decision. The daemon raises an
+    /// [`ApprovalPayload::MachineResizeLicenseBound`] instead, and the
+    /// control plane performs the resize when the user approves it.
+    ///
+    /// [`ApprovalPayload::MachineResizeLicenseBound`]: flyco_core::ApprovalPayload::MachineResizeLicenseBound
+    #[error(
+        "`{machine_type}` bills a {hours}-hour minimum the moment it boots; \
+         raise an approval for it instead of resizing",
+        status = StatusCode::CONFLICT
+    )]
+    LicenseBoundResizeNeedsApproval {
+        /// The type that was asked for.
+        machine_type: String,
+        /// Hours the provider bills however briefly it runs.
+        hours: u32,
+    },
+
     /// Unlinking would strand machines still running on the account.
     #[error(
         "{sessions} session(s) still run on this account; archive them before unlinking",
@@ -547,6 +581,8 @@ impl ApiError {
             Self::ClaudeOauthRejected { .. } => "claude-oauth-rejected",
             Self::Anthropic(_) => "anthropic-unavailable",
             Self::MachineNotFound => "machine-not-found",
+            Self::MachineTypeNotOffered(_) => "machine-type-not-offered",
+            Self::LicenseBoundResizeNeedsApproval { .. } => "license-bound-resize-needs-approval",
             Self::MachineNotReady => "machine-not-ready",
             Self::Provisioning(_) => "provisioning-failed",
             Self::MachineUnavailable(_) => "machine-unavailable",

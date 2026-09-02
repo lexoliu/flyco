@@ -2710,6 +2710,252 @@
         }
       }
     },
+    "/v1/sessions/{id}/agent/budget": {
+      "get": {
+        "summary": "Tells a session's agent what it has spent and what is left.",
+        "description": "Tells a session's agent what it has spent and what is left.",
+        "operationId": "flyco_api::app::get_agent_budget",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Budget accounting as the API serves it.\n\nEvery field is derived from replaying the spend ledger through\n[`BudgetState`], so the API can never disagree with the engine.",
+                  "required": [
+                    "limit",
+                    "spent",
+                    "remaining",
+                    "stage"
+                  ],
+                  "properties": {
+                    "limit": {
+                      "$ref": "#/components/schemas/Usd",
+                      "description": "The spending limit."
+                    },
+                    "remaining": {
+                      "$ref": "#/components/schemas/Usd",
+                      "description": "Left to spend; zero once exhausted."
+                    },
+                    "spent": {
+                      "$ref": "#/components/schemas/Usd",
+                      "description": "Spent so far."
+                    },
+                    "stage": {
+                      "$ref": "#/components/schemas/BudgetStage",
+                      "description": "How far through the budget the session is."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/agent/machine": {
+      "get": {
+        "summary": "Tells a session's agent which machine it is on and who chose it.",
+        "description": "Tells a session's agent which machine it is on and who chose it.",
+        "operationId": "flyco_api::app::get_agent_machine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "What `GET /v1/sessions/{id}/agent/machine` tells a session's daemon.\n\nThe machine and *who chose it*, because the second changes what the agent\nmay do with the first: a machine the user picked is a decision flyco must\nnot quietly undo (docs/ux.md §9.5).",
+                  "required": [
+                    "origin",
+                    "machine",
+                    "state",
+                    "region"
+                  ],
+                  "properties": {
+                    "machine": {
+                      "$ref": "#/components/schemas/SessionMachine",
+                      "description": "The machine, as the agent is told about it."
+                    },
+                    "origin": {
+                      "$ref": "#/components/schemas/MachineOrigin",
+                      "description": "Whether flyco or the user chose the machine this session runs on."
+                    },
+                    "region": {
+                      "type": "string",
+                      "description": "Provider-native region it runs in."
+                    },
+                    "state": {
+                      "$ref": "#/components/schemas/MachineState",
+                      "description": "Where it is in its lifecycle."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/agent/machine/catalog": {
+      "get": {
+        "summary": "Lists the machine types this session can be resized to, with prices.",
+        "description": "Lists the machine types this session can be resized to, with prices.\n\nThe curated catalog of docs/ux.md §7.6, narrowed to the account and\nregion the session's disk already lives in — the two a resize cannot\ncross. The agent reads exactly the list the user's own slider shows.",
+        "operationId": "flyco_api::app::get_agent_machine_catalog",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "One entry in the machine catalog the agent sees when deciding whether\nto keep, upgrade, or downgrade its machine.",
+                    "required": [
+                      "provider",
+                      "region",
+                      "machine_type",
+                      "os",
+                      "pricing"
+                    ],
+                    "properties": {
+                      "account": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/Uuid",
+                            "description": "Which linked account offers it.\n\nA driver cannot know this — it holds credentials, not the row they\nwere unsealed from — so it is stamped by the control plane as it\nmerges each account's catalog. Without it a caller could not turn a\nchoice from the merged list back into a request, which names the\naccount it provisions through."
+                          }
+                        ]
+                      },
+                      "capacity": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/MachineCapacity",
+                            "description": "How big it is, when the provider publishes a size.\n\nA cloud SKU always does. A host the user registered over SSH has\nwhatever hardware it has, and flyco does not learn that until a\ndaemon runs on it and says so — inventing a size here would be a\nnumber the agent could plan against and be wrong about."
+                          }
+                        ]
+                      },
+                      "lineage": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/MachineLineage",
+                            "description": "Where it sits in the provider's line-up, when the provider says.\n\nAbsent for the same reason [`Self::capacity`] is: a host the user\nregistered is whatever hardware it is, and flyco has not looked."
+                          }
+                        ]
+                      },
+                      "machine_type": {
+                        "type": "string",
+                        "description": "Provider-native machine type name (e.g. `Standard_B2ats_v2`)."
+                      },
+                      "os": {
+                        "$ref": "#/components/schemas/OsFamily",
+                        "description": "Operating system family."
+                      },
+                      "pricing": {
+                        "$ref": "#/components/schemas/MachinePricing",
+                        "description": "What it costs to run for an hour."
+                      },
+                      "provider": {
+                        "$ref": "#/components/schemas/CloudProviderKind",
+                        "description": "Which provider offers it."
+                      },
+                      "region": {
+                        "type": "string",
+                        "description": "Provider-native region this entry is offered in.\n\nA catalog spans every region an account may deploy into, so an entry\nwithout one would not say where the machine it describes can be\ncreated. A registered SSH host names itself here: it is its own\nregion, and there is nowhere else to put it."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/agent/machine/resize": {
+      "post": {
+        "summary": "Moves the session onto another machine type, on the agent's own say-so.",
+        "description": "Moves the session onto another machine type, on the agent's own say-so.\n\nRefused for a type that bills a minimum the moment it boots: that is the\nuser's money committed before anything runs, so the daemon raises an\napproval instead and the resize happens when the user decides.",
+        "operationId": "flyco_api::app::agent_resize_machine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions/{id}/machine/resize`.\n\nThe disk survives a resize; only compute is replaced. The provider and\nregion are not part of this, because moving a machine between them would\nmean a new disk, which is a new session's problem rather than a resize.",
+                "required": [
+                  "machine_type"
+                ],
+                "properties": {
+                  "machine_type": {
+                    "type": "string",
+                    "description": "Provider-native machine type to move to, from the catalog."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/approvals": {
       "post": {
         "summary": "Raises an approval against the daemon's own session.",
@@ -2813,6 +3059,36 @@
                       "replace": {
                         "type": "string",
                         "description": "Replacement text."
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "description": "Move the session onto a machine type that bills a minimum the moment\nit boots.\n\nRaised instead of performing the resize, because a license-bound type\nspends the user's money before anything runs on it: an EC2 Mac bills\na full day under the Apple licence whether the agent uses it for\ntwenty hours or for one minute. The minimum travels with the request\nso the approval card can quote the charge the user is agreeing to,\nrather than recomputing it from a catalog that may have moved\n(docs/ux.md §7.7, §9.5).",
+                    "required": [
+                      "machine_type",
+                      "minimum",
+                      "reason",
+                      "kind"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "machine_resize_license_bound"
+                        ]
+                      },
+                      "machine_type": {
+                        "type": "string",
+                        "description": "Provider-native machine type the agent wants to move to."
+                      },
+                      "minimum": {
+                        "$ref": "#/components/schemas/BillingMinimum",
+                        "description": "What booting it costs before it does any work."
+                      },
+                      "reason": {
+                        "type": "string",
+                        "description": "Why the agent says the session needs this machine."
                       }
                     }
                   },
@@ -4474,6 +4750,34 @@
   },
   "components": {
     "schemas": {
+      "AgentMachineView": {
+        "type": "object",
+        "description": "What `GET /v1/sessions/{id}/agent/machine` tells a session's daemon.\n\nThe machine and *who chose it*, because the second changes what the agent\nmay do with the first: a machine the user picked is a decision flyco must\nnot quietly undo (docs/ux.md §9.5).",
+        "required": [
+          "origin",
+          "machine",
+          "state",
+          "region"
+        ],
+        "properties": {
+          "machine": {
+            "$ref": "#/components/schemas/SessionMachine",
+            "description": "The machine, as the agent is told about it."
+          },
+          "origin": {
+            "$ref": "#/components/schemas/MachineOrigin",
+            "description": "Whether flyco or the user chose the machine this session runs on."
+          },
+          "region": {
+            "type": "string",
+            "description": "Provider-native region it runs in."
+          },
+          "state": {
+            "$ref": "#/components/schemas/MachineState",
+            "description": "Where it is in its lifecycle."
+          }
+        }
+      },
       "AgentsDocument": {
         "type": "object",
         "description": "Response of `GET`/`PUT /v1/agents-md`.",
@@ -4648,6 +4952,36 @@
               "replace": {
                 "type": "string",
                 "description": "Replacement text."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Move the session onto a machine type that bills a minimum the moment\nit boots.\n\nRaised instead of performing the resize, because a license-bound type\nspends the user's money before anything runs on it: an EC2 Mac bills\na full day under the Apple licence whether the agent uses it for\ntwenty hours or for one minute. The minimum travels with the request\nso the approval card can quote the charge the user is agreeing to,\nrather than recomputing it from a catalog that may have moved\n(docs/ux.md §7.7, §9.5).",
+            "required": [
+              "machine_type",
+              "minimum",
+              "reason",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "machine_resize_license_bound"
+                ]
+              },
+              "machine_type": {
+                "type": "string",
+                "description": "Provider-native machine type the agent wants to move to."
+              },
+              "minimum": {
+                "$ref": "#/components/schemas/BillingMinimum",
+                "description": "What booting it costs before it does any work."
+              },
+              "reason": {
+                "type": "string",
+                "description": "Why the agent says the session needs this machine."
               }
             }
           },
@@ -6811,6 +7145,57 @@
           }
         ],
         "description": "A single session, with its budget."
+      },
+      "SessionMachine": {
+        "type": "object",
+        "description": "The machine a session is on, as the agent driving it is told about it.\n\nNot the whole [`MachineCatalogEntry`]: the agent is deciding whether to\nkeep working here, and five facts answer that — what the machine is\ncalled, what an hour of it costs, whether the capacity is interruptible,\nhow big it is, and whether starting it already committed the user to a\nlicence minimum. The account, the region, the family and the storage\ntiers answer a different question (where flyco would provision *another*\nmachine) and stay in the catalog.\n\nThe same value travels three ways and means one thing in all of them: in\nthe bootstrap a machine boots with, in the `[machine]` table of the\ndaemon's configuration, and in what the agent's `machine_status` tool\nreads back. Absent facts are absent from the serialized document rather\nthan spelled `null`, because one of those three is TOML and TOML has no\nnull to spell.",
+        "required": [
+          "machine_type",
+          "spot"
+        ],
+        "properties": {
+          "capacity": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MachineCapacity",
+                "description": "How big it is, when the provider publishes a size."
+              }
+            ]
+          },
+          "hourly": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Usd",
+                "description": "What one hour of it costs, when flyco meters it at all.\n\nThe rate for the capacity actually held — spot when\n[`spot`](Self::spot) is true and the type has a spot price. Absent on\nhardware the user owns, where quoting `$0.00` would tell a budget the\nsession can run forever."
+              }
+            ]
+          },
+          "machine_type": {
+            "type": "string",
+            "description": "Provider-native machine type name."
+          },
+          "minimum": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BillingMinimum",
+                "description": "The floor the provider billed the moment it booted, when the type\ncarries one.\n\nPresent on exactly the license-bound types. An agent reading it knows\nthe machine has already cost [`BillingMinimum::charge`] whatever it\ndoes next — and that moving *to* such a type is the user's decision\nrather than its own."
+              }
+            ]
+          },
+          "spot": {
+            "type": "boolean",
+            "description": "Whether the machine holds interruptible capacity."
+          }
+        }
       },
       "SessionState": {
         "type": "string",

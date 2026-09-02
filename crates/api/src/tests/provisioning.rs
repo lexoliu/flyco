@@ -1025,3 +1025,304 @@ async fn a_session_with_no_linked_harness_account_still_gets_a_machine(
         ClaudeCredential::Inherit
     );
 }
+
+// ── What the agent is told, and what it is allowed to change ──
+//
+// The daemon-scoped `agent/*` routes are what flycod's local MCP server is
+// made of (docs/ux.md §9.5, issue #65). They are exercised here rather than
+// beside the other machine routes because they need a session that has
+// actually been provisioned: a machine row with a price and a size on it,
+// and a daemon token that proves which session is asking.
+
+/// Mints the `fd_` token a session's daemon authenticates with.
+async fn pair(client: &TestClient<Router>, caller: &Caller, session: SessionId) -> String {
+    let response = client
+        .post(&format!("/v1/sessions/{session}/daemon-token"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    response.assert_status(200);
+    response.json::<flyco_core::DaemonToken>().token
+}
+
+/// Opens a session, builds its machine, and pairs a daemon with it.
+async fn provisioned(
+    client: &TestClient<Router>,
+    caller: &Caller,
+    db: &Db,
+    queue: &Queue,
+) -> (SessionId, String) {
+    let session = open(client, caller).await.summary.id;
+    let mut host = RecordedHost::healthy();
+    run_queue(db, queue, &mut host).await;
+    let token = pair(client, caller, session).await;
+    (session, token)
+}
+
+#[skyzen::test]
+async fn the_bootstrap_tells_the_daemon_which_machine_and_who_chose_it(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    // `open` names a machine, which is what makes the choice the user's.
+    open(&client, &caller).await;
+    let mut host = RecordedHost::healthy();
+    run_queue(&db, &queue, &mut host).await;
+
+    let bootstrap = host.bootstrap.expect("the driver was handed a bootstrap");
+    assert_eq!(bootstrap.machine_origin, flyco_core::MachineOrigin::User);
+    assert_eq!(
+        bootstrap.machine.machine_type,
+        machine_choice(caller.account).machine_type
+    );
+    // A registered host is hardware the user already owns: flyco meters
+    // nothing on it and has never measured it, so it quotes neither a price
+    // nor a size rather than quoting zero.
+    assert_eq!(bootstrap.machine.hourly, None);
+    assert_eq!(bootstrap.machine.capacity, None);
+    assert!(!bootstrap.machine.is_license_bound());
+}
+
+#[skyzen::test]
+async fn the_agent_reads_its_machine_and_who_chose_it(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, daemon) = provisioned(&client, &caller, &db, &queue).await;
+
+    let response = client
+        .get(&format!("/v1/sessions/{session}/agent/machine"))
+        .bearer(&daemon)
+        .send()
+        .await;
+    response.assert_status(200);
+
+    let view: flyco_core::AgentMachineView = response.json();
+    assert_eq!(view.origin, flyco_core::MachineOrigin::User);
+    assert_eq!(view.state, MachineState::Running);
+    assert_eq!(
+        view.machine.machine_type,
+        machine_choice(caller.account).machine_type
+    );
+}
+
+#[skyzen::test]
+async fn the_agents_machine_routes_refuse_a_credential_that_is_not_its_own(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, _) = provisioned(&client, &caller, &db, &queue).await;
+
+    // A session token opens the user's own routes and none of the daemon's:
+    // the agent is never handed a credential that could reach another
+    // session, and the middleware is what makes that true.
+    client
+        .get(&format!("/v1/sessions/{session}/agent/machine"))
+        .bearer(&caller.token)
+        .send()
+        .await
+        .assert_status(401);
+}
+
+#[skyzen::test]
+async fn the_agent_sees_only_the_types_its_session_can_become(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, daemon) = provisioned(&client, &caller, &db, &queue).await;
+
+    let response = client
+        .get(&format!("/v1/sessions/{session}/agent/machine/catalog"))
+        .bearer(&daemon)
+        .send()
+        .await;
+    response.assert_status(200);
+
+    // A registered host offers exactly itself: it is the hardware it is, and
+    // the curated catalog says so rather than inventing sizes to move
+    // between.
+    let catalog: Vec<flyco_core::MachineCatalogEntry> = response.json();
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog[0].account, Some(caller.account));
+    assert!(matches!(
+        catalog[0].pricing,
+        flyco_core::MachinePricing::UserOwned
+    ));
+}
+
+#[skyzen::test]
+async fn an_agent_may_not_resize_to_a_type_its_session_is_not_offered(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, daemon) = provisioned(&client, &caller, &db, &queue).await;
+
+    let response = client
+        .post(&format!("/v1/sessions/{session}/agent/machine/resize"))
+        .bearer(&daemon)
+        .json(&flyco_core::ResizeMachine {
+            machine_type: "mac2.metal".to_owned(),
+        })
+        .send()
+        .await;
+    response.assert_status(422);
+
+    let problem: Problem = response.json();
+    assert!(problem.kind.ends_with("machine-type-not-offered"));
+    assert!(problem.detail.contains("mac2.metal"));
+}
+
+#[skyzen::test]
+async fn approving_a_license_bound_resize_is_what_moves_the_machine(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, _) = provisioned(&client, &caller, &db, &queue).await;
+
+    // The approval the daemon raises instead of resizing, recorded the same
+    // way the daemon's own `POST /v1/sessions/{id}/approvals` records it.
+    let approval = crate::approvals::raise(
+        &db,
+        session,
+        &flyco_core::ApprovalPayload::MachineResizeLicenseBound {
+            machine_type: "mac2.metal".to_owned(),
+            minimum: flyco_core::BillingMinimum::new(24, Usd::from_cents(65)),
+            reason: "the build needs a signed macOS toolchain".to_owned(),
+        },
+    )
+    .await
+    .expect("raise the approval");
+
+    let response = client
+        .post(&format!("/v1/approvals/{approval}/decision"))
+        .bearer(&caller.token)
+        .json(&flyco_core::DecideApproval {
+            decision: flyco_core::ApprovalDecision::Approved,
+        })
+        .send()
+        .await;
+
+    // Approving *is* the resize: the control plane acts on the machine
+    // rather than handing the decision back to the agent. This session runs
+    // on hardware the user registered, which cannot become a Mac, so what
+    // comes back is the refusal that proves the attempt was made — a
+    // decision that changed nothing would have answered 200.
+    response.assert_status(422);
+    let problem: Problem = response.json();
+    assert!(problem.kind.ends_with("machine-type-not-offered"));
+
+    // And the decision itself stands: the user did allow it.
+    let approvals = crate::approvals::list(&db, caller.user, Some(session), None)
+        .await
+        .expect("list approvals");
+    assert_eq!(approvals[0].state, flyco_core::ApprovalState::Approved);
+}
+
+#[skyzen::test]
+async fn denying_a_license_bound_resize_leaves_the_machine_alone(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, _) = provisioned(&client, &caller, &db, &queue).await;
+
+    let approval = crate::approvals::raise(
+        &db,
+        session,
+        &flyco_core::ApprovalPayload::MachineResizeLicenseBound {
+            machine_type: "mac2.metal".to_owned(),
+            minimum: flyco_core::BillingMinimum::new(24, Usd::from_cents(65)),
+            reason: "the build needs a signed macOS toolchain".to_owned(),
+        },
+    )
+    .await
+    .expect("raise the approval");
+
+    let response = client
+        .post(&format!("/v1/approvals/{approval}/decision"))
+        .bearer(&caller.token)
+        .json(&flyco_core::DecideApproval {
+            decision: flyco_core::ApprovalDecision::Denied,
+        })
+        .send()
+        .await;
+    response.assert_status(200);
+
+    let machine = machines::for_session(&db, session)
+        .await
+        .expect("read the machine")
+        .expect("the session has one");
+    assert_eq!(machine.state, MachineState::Running);
+    assert_eq!(
+        machine.session_machine().machine_type,
+        machine_choice(caller.account).machine_type
+    );
+}
+
+#[skyzen::test]
+async fn a_users_own_resize_is_not_gated_on_a_licence(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, _) = provisioned(&client, &caller, &db, &queue).await;
+
+    // The user's route reaches the same catalog check and the same refusal
+    // for a type this session cannot become — the licence gate is the one
+    // difference between it and the agent's, and it does not apply here
+    // because a person decided.
+    let response = client
+        .post(&format!("/v1/sessions/{session}/machine/resize"))
+        .bearer(&caller.token)
+        .json(&flyco_core::ResizeMachine {
+            machine_type: "mac2.metal".to_owned(),
+        })
+        .send()
+        .await;
+    response.assert_status(422);
+    assert!(
+        response
+            .json::<Problem>()
+            .kind
+            .ends_with("machine-type-not-offered")
+    );
+}

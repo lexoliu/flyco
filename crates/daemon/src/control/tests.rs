@@ -5,11 +5,14 @@ use core::time::Duration;
 use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
-    HarnessObservation, ProvisioningStage, SessionId, UsageReport, Usd, WIRE_PROTOCOL_VERSION,
+    HarnessObservation, MachineOrigin, ProvisioningStage, SessionId, UsageReport, Usd,
+    WIRE_PROTOCOL_VERSION,
 };
 use tokio::sync::mpsc;
 
-use crate::control::rest::{ControlApi, ControlApiError, HttpControlApi, TranscriptRead};
+use crate::control::rest::{
+    ApprovalRaiser, ControlApi, ControlApiError, HttpControlApi, TranscriptRead,
+};
 use crate::control::store::{RemoteTranscriptStore, stream_key};
 use crate::control::wire::{self, Endpoint, QUEUE_DEPTH, SessionRelay, WireError};
 use crate::git::FakeWorkdir;
@@ -35,7 +38,7 @@ struct RecordingApi {
     id: ApprovalId,
 }
 
-impl ControlApi for RecordingApi {
+impl ApprovalRaiser for RecordingApi {
     fn raise_approval(
         &self,
         payload: ApprovalPayload,
@@ -46,7 +49,9 @@ impl ControlApi for RecordingApi {
             .map_err(|error| ControlApiError::Transport(error.to_string()));
         core::future::ready(recorded.map(|()| self.id))
     }
+}
 
+impl ControlApi for RecordingApi {
     fn put_transcript_batch(
         &self,
         _stream: &str,
@@ -183,6 +188,8 @@ impl Harness {
             terminal_out,
             workdir,
             repo_status,
+            machine: crate::testing::session_machine(),
+            machine_origin: MachineOrigin::Auto,
         }));
 
         Self {
@@ -478,9 +485,19 @@ async fn user_messages_interrupts_and_compaction_reach_the_harness() {
     harness.command(ControlToDaemon::UserMessage {
         text: "what does this crate do?".to_owned(),
     });
+    // The first message carries the machine notice in front of it; every
+    // message after it is the user's words alone.
+    let Call::UserMessage(opening) = harness.next_call().await else {
+        panic!("a user message must reach the harness as one");
+    };
+    assert!(opening.ends_with("what does this crate do?"));
+
+    harness.command(ControlToDaemon::UserMessage {
+        text: "and what does it depend on?".to_owned(),
+    });
     assert_eq!(
         harness.next_call().await,
-        Call::UserMessage("what does this crate do?".to_owned())
+        Call::UserMessage("and what does it depend on?".to_owned())
     );
 
     harness.command(ControlToDaemon::Interrupt);
@@ -488,6 +505,70 @@ async fn user_messages_interrupts_and_compaction_reach_the_harness() {
 
     harness.command(ControlToDaemon::Compact);
     assert_eq!(harness.next_call().await, Call::Compact);
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn the_agent_is_told_what_machine_it_is_on_before_it_is_given_any_work() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::UserMessage {
+        text: "port the build to arm64".to_owned(),
+    });
+
+    let Call::UserMessage(opening) = harness.next_call().await else {
+        panic!("a user message must reach the harness as one");
+    };
+    // Ahead of the work, because a machine the agent learns about afterwards
+    // is one it may already have resized away from.
+    assert!(opening.starts_with("[flyco machine notice] This session runs on Standard_D4s_v6"));
+    assert!(opening.contains("$0.19/hr · spot"));
+    assert!(opening.ends_with("port the build to arm64"));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_resize_tells_the_agent_the_machine_restarted_and_the_disk_did_not() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::MachineChanged {
+        machine_type: "Standard_D8s_v6".to_owned(),
+        hourly: Some(Usd::from_cents(38)),
+        spot: true,
+        restarted: true,
+    });
+
+    let Call::UserMessage(notice) = harness.next_call().await else {
+        panic!("a machine change reaches the agent as a message");
+    };
+    assert!(notice.starts_with("[flyco machine notice] The machine restarted"));
+    assert!(notice.contains("Standard_D8s_v6 · $0.38/hr · spot"));
+    assert!(notice.contains("Everything you had running is gone"));
+    assert!(notice.contains("The disk was kept"));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_decision_on_an_approval_the_harness_never_raised_is_not_fatal() {
+    // The daemon's own MCP server raises one for a license-bound resize, and
+    // the control plane performs that itself; the decision still reaches
+    // every daemon because the room echoes it to whoever is connected.
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::ApprovalDecision {
+        id: ApprovalId::generate(),
+        decision: ApprovalDecision::Approved,
+    });
+
+    // The session keeps working, which is what "not fatal" means here.
+    harness.command(ControlToDaemon::Interrupt);
+    assert_eq!(harness.next_call().await, Call::Interrupt);
 
     harness.archive().await.expect("the run ended cleanly");
 }
@@ -622,6 +703,8 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         terminal_out,
         workdir,
         repo_status,
+        machine: crate::testing::session_machine(),
+        machine_origin: MachineOrigin::Auto,
     }));
 
     // One more than the queue holds, plus the one the collector is carrying.
@@ -916,7 +999,7 @@ async fn a_usage_limit_with_a_reset_time_auto_continues() {
 // ── The REST client, against a real HTTP server ──
 
 mod rest_client {
-    use super::{ControlApi, ControlPlane, HttpControlApi, Reply, TOKEN};
+    use super::{ApprovalRaiser as _, ControlApi, ControlPlane, HttpControlApi, Reply, TOKEN};
     use crate::control::rest::{ControlApiError, TranscriptRead};
     use flyco_core::wire::ApprovalPayload;
     use flyco_core::{ApprovalId, SessionId};
@@ -1026,7 +1109,7 @@ mod rest_client {
 
 mod remote_store {
     use super::{RemoteTranscriptStore, SessionKey, StoreError, TranscriptStore, stream_key};
-    use crate::control::rest::{ControlApi, ControlApiError, TranscriptRead};
+    use crate::control::rest::{ApprovalRaiser, ControlApi, ControlApiError, TranscriptRead};
     use flyco_core::wire::ApprovalPayload;
     use flyco_core::{ApprovalId, HarnessObservation};
     use serde_json::{Value, json};
@@ -1051,7 +1134,7 @@ mod remote_store {
         wrote: Sender<Wrote>,
     }
 
-    impl ControlApi for Held {
+    impl ApprovalRaiser for Held {
         fn raise_approval(
             &self,
             _payload: ApprovalPayload,
@@ -1061,7 +1144,9 @@ mod remote_store {
                 "the transcript store never raises approvals".to_owned(),
             )))
         }
+    }
 
+    impl ControlApi for Held {
         fn record_observation(
             &self,
             _observation: HarnessObservation,

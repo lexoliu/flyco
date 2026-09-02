@@ -38,8 +38,8 @@
 use core::time::Duration;
 
 use flyco_core::{
-    BranchName, ClientEvent, HarnessKind, MachineId, PermissionMode, ProvisioningStage, RepoSlug,
-    SessionId, SessionState, UserId,
+    BranchName, ClientEvent, HarnessKind, MachineId, MachineOrigin, PermissionMode,
+    ProvisioningStage, RepoSlug, SessionId, SessionState, UserId,
 };
 use flyco_provider::{DaemonBootstrap, GitIdentity, ProviderError, ProvisionRequest, RepoCheckout};
 use serde::{Deserialize, Serialize};
@@ -231,6 +231,7 @@ struct Claim {
     /// session opened before flyco recorded branches; [`checkout`] resolves
     /// the repository's default and writes it back.
     branch: Option<BranchName>,
+    machine_origin: MachineOrigin,
     machine: MachineRow,
 }
 
@@ -290,6 +291,7 @@ async fn claim(db: &Db, job: ProvisioningJob) -> Result<Option<Claim>, ApiError>
         harness: target.harness,
         repo: target.repo,
         branch: target.branch,
+        machine_origin: target.machine_origin,
         machine,
     }))
 }
@@ -333,7 +335,7 @@ async fn build(
         .await
         .map_err(|error| classify(&error))?;
 
-    let bootstrap = bootstrap(db, config, clients, claim).await?;
+    let bootstrap = bootstrap(db, config, clients, claim, &entry, spec.spot).await?;
     announce(rooms, claim.session, ProvisioningStage::Reserving).await;
     let machine = clients
         .provisioner
@@ -350,7 +352,10 @@ async fn build(
     // The provider handed back a machine, so it exists and is powering on.
     announce(rooms, claim.session, ProvisioningStage::Booting).await;
 
-    let hourly = entry.pricing.hourly(machine.capacity_mode.is_spot());
+    // What the machine turned out to be, priced at the capacity it actually
+    // holds — which is what the budget meters and what the agent's
+    // `machine_status` reads back.
+    let built = flyco_core::SessionMachine::of(&entry, machine.capacity_mode.is_spot());
     let storage_hourly = match &entry.pricing {
         flyco_core::MachinePricing::UserOwned => None,
         flyco_core::MachinePricing::Metered { .. } => Some(
@@ -365,7 +370,7 @@ async fn build(
                 })?,
         ),
     };
-    machines::record(db, &machine, hourly, storage_hourly).await?;
+    machines::record(db, &machine, &built, storage_hourly).await?;
     // Recorded, so the machine is durably flyco's; what happens on it next
     // is its bootstrap fetching and running the `flycod` installer. That is
     // the last stage the control plane can see — everything after it is
@@ -393,6 +398,8 @@ async fn bootstrap(
     config: &ApiConfig,
     clients: &Clients<'_, impl Provisioner, impl ClaudeOauth, impl GithubOauth>,
     claim: &Claim,
+    entry: &flyco_core::MachineCatalogEntry,
+    spot: bool,
 ) -> Result<DaemonBootstrap, Provisioned> {
     let token = daemon_tokens::issue(db, claim.user, claim.session)
         .await
@@ -416,6 +423,13 @@ async fn bootstrap(
         permission_mode: PermissionMode::Auto,
         claude_auth,
         repo,
+        machine_origin: claim.machine_origin,
+        // The capacity mode asked for, because the document is written
+        // *into* the provision call and nothing has answered it yet. A
+        // provider that cannot honour spot answers with on-demand, and the
+        // live `GET /v1/sessions/{id}/agent/machine` the agent's
+        // `machine_status` reads is what says which it got.
+        machine: flyco_core::SessionMachine::of(entry, spot),
         resume_session_id: sessions::harness_session_id(db, claim.session)
             .await
             .map_err(Provisioned::from)?,

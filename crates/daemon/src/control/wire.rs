@@ -40,9 +40,11 @@
 use core::time::Duration;
 use std::collections::BTreeMap;
 
+use askama::Template as _;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
-    HarnessObservation, ProvisioningStage, RateLimitObservation, SessionId, WIRE_PROTOCOL_VERSION,
+    HarnessObservation, ProvisioningStage, RateLimitObservation, SessionId, SessionMachine,
+    WIRE_PROTOCOL_VERSION,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
 use rand::Rng as _;
@@ -55,6 +57,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use crate::control::rest::{ControlApi, ControlApiError};
 use crate::git::{GitError, WorkingTree};
 use crate::harness::{HarnessSession, SessionOutput, ToolApproval};
+use crate::notice::{MachineChanged, MachineLine, OpeningMessage, SessionStart};
 use crate::terminal::{TerminalError, TerminalSession};
 
 /// How many frames may wait for a socket that is not there.
@@ -122,6 +125,19 @@ pub enum WireError {
     /// The session checkout could not be read or snapshotted.
     #[error(transparent)]
     Git(#[from] GitError),
+    /// A notice the agent has to read could not be rendered.
+    ///
+    /// This daemon's own bug rather than anything the control plane did:
+    /// the templates are compiled in. Fatal, because the notices are how an
+    /// agent learns its machine restarted — a session that silently stopped
+    /// saying so would look fine and behave wrongly.
+    #[error("a flyco notice could not be rendered: {0}")]
+    Notice(String),
+}
+
+/// A template that would not render, which is a bug in this binary.
+fn notice_failed(error: &askama::Error) -> WireError {
+    WireError::Notice(error.to_string())
 }
 
 /// The socket type a connected daemon holds.
@@ -443,6 +459,13 @@ struct Connection<S, T, A, W> {
     continue_at: Option<tokio::time::Instant>,
     /// REST-assigned approval id → harness-native id.
     approvals: BTreeMap<ApprovalId, ApprovalId>,
+    /// The machine notice waiting to ride on the session's first message.
+    ///
+    /// Taken once. Everything after the first message is a conversation the
+    /// agent is already in, and repeating what machine it is on would be
+    /// noise it has to read every turn — `machine_status` is there for when
+    /// it wants to know.
+    opening: Option<String>,
 }
 
 /// Why one connection ended.
@@ -580,6 +603,16 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
                 if self.refuse_while_paused("a user message") {
                     return Ok(Ended::Disconnected);
                 }
+                // The opening notice rides on the first message rather than
+                // arriving as one of its own: the agent must know what
+                // machine it is on before it starts working, and a message
+                // carrying only that would open a turn about nothing.
+                let text = match self.opening.take() {
+                    Some(notice) => OpeningMessage { notice, text }
+                        .render()
+                        .map_err(|error| notice_failed(&error))?,
+                    None => text,
+                };
                 self.session
                     .send_user_message(text)
                     .await
@@ -599,10 +632,17 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
                 self.terminal.write(&data)?;
             }
             ControlToDaemon::ApprovalDecision { id, decision } => {
-                let harness_id = self
-                    .approvals
-                    .remove(&id)
-                    .ok_or_else(|| WireError::Harness(format!("no pending approval {id}")))?;
+                let Some(harness_id) = self.approvals.remove(&id) else {
+                    // Not every approval is a harness tool call waiting on a
+                    // permission. The daemon's own MCP server raises one for
+                    // a license-bound resize, and the control plane performs
+                    // *that* itself; the decision still reaches every daemon
+                    // because the room echoes it. Nothing here is blocked on
+                    // it, so it is noted rather than treated as a protocol
+                    // violation.
+                    tracing::debug!(%id, ?decision, "a decided approval was not a harness tool call");
+                    return Ok(Ended::Disconnected);
+                };
                 let answer = match decision {
                     ApprovalDecision::Approved => ToolApproval::Allow {
                         id: harness_id,
@@ -619,6 +659,33 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
                     .map_err(harness)?;
             }
             ControlToDaemon::Budget { signal } => self.budget(signal).await?,
+            ControlToDaemon::MachineChanged {
+                machine_type,
+                hourly,
+                spot,
+                restarted,
+            } => {
+                // Told rather than discovered: a resize restarts the machine
+                // and kills this process, so the daemon reading this is a
+                // new one whose configuration still describes the machine
+                // the session booted on. The size and any licence minimum
+                // are deliberately not on the wire — the notice says what
+                // the machine is now and what the restart cost, and
+                // `machine_status` is where the full description is read
+                // from, live.
+                let notice = MachineChanged {
+                    line: MachineLine::of(&SessionMachine {
+                        machine_type,
+                        hourly,
+                        spot,
+                        capacity: None,
+                        minimum: None,
+                    }),
+                    restarted,
+                };
+                self.tell_the_agent(&notice.render().map_err(|error| notice_failed(&error))?)
+                    .await?;
+            }
             ControlToDaemon::Archive { preserve_workdir } => {
                 if preserve_workdir && let Some(patch) = self.workdir.snapshot().await? {
                     self.api.put_workdir_patch(patch).await?;
@@ -629,6 +696,25 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree> Conne
             }
         }
         Ok(Ended::Disconnected)
+    }
+
+    /// Puts a flyco notice into the conversation.
+    ///
+    /// A user message is the only channel a harness offers for "something
+    /// happened that you need to know about", so every notice flyco injects
+    /// goes in as one, marked with its `[flyco … notice]` prefix so the
+    /// model can tell it from the person. A paused session is told nothing:
+    /// it is not accepting work, and a notice would be an instruction it
+    /// cannot act on.
+    async fn tell_the_agent(&self, notice: &str) -> Result<(), WireError> {
+        if self.paused {
+            tracing::warn!("not telling a paused session about a change it cannot act on");
+            return Ok(());
+        }
+        self.session
+            .send_user_message(notice.trim_end().to_owned())
+            .await
+            .map_err(harness)
     }
 
     /// Tells the agent it may not stop while the tree is dirty.
@@ -717,6 +803,10 @@ pub struct SessionRelay<S, A, T, W> {
     pub workdir: W,
     /// `git status --short` summaries as they change.
     pub repo_status: mpsc::UnboundedReceiver<String>,
+    /// The machine this session opened on, as the agent is told about it.
+    pub machine: flyco_core::SessionMachine,
+    /// Whether flyco or the user chose that machine.
+    pub machine_origin: flyco_core::MachineOrigin,
 }
 
 impl<S, A, T, W> core::fmt::Debug for SessionRelay<S, A, T, W> {
@@ -745,6 +835,13 @@ where
     let (sender, mut queue) = mpsc::channel(QUEUE_DEPTH);
     let collector = tokio::spawn(collect(relay.outputs, sender, relay.api.clone()));
 
+    // Rendered before the first frame moves, so a session that cannot state
+    // what machine it is on fails here rather than running an agent that was
+    // never told (docs/ux.md §9.5).
+    let opening = SessionStart::new(&relay.machine, relay.machine_origin)
+        .render()
+        .map_err(|error| notice_failed(&error))?;
+
     let mut connection = Connection {
         session: relay.session,
         terminal: relay.terminal,
@@ -759,6 +856,7 @@ where
         repo_watch_alive: true,
         continue_at: None,
         approvals: BTreeMap::new(),
+        opening: Some(opening),
     };
     let mut attempt = 0_u32;
     let mut in_flight = None;

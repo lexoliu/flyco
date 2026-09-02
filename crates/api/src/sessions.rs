@@ -344,6 +344,12 @@ pub struct ProvisioningTarget {
     /// resolves the repository's default branch from GitHub and writes it
     /// back, so it is `None` at most once per session.
     pub branch: Option<BranchName>,
+    /// Whether flyco or the user chose the machine being built.
+    ///
+    /// Carried into the daemon's bootstrap so the agent can be told, and
+    /// told what it means: a machine the user picked is not one to trade
+    /// away for a faster build (docs/ux.md §9.5).
+    pub machine_origin: MachineOrigin,
     /// Where the session is in its lifecycle right now.
     pub state: SessionState,
 }
@@ -362,7 +368,8 @@ pub async fn provisioning_target(
 ) -> Result<Option<ProvisioningTarget>, ApiError> {
     Ok(sql!(
         db,
-        "SELECT user_id, harness, repo, branch, state FROM sessions WHERE id = {id}"
+        "SELECT user_id, harness, repo, branch, machine_origin, state \
+         FROM sessions WHERE id = {id}"
     )
     .fetch_optional()
     .await?)
@@ -386,6 +393,44 @@ pub async fn record_branch(db: &Db, id: SessionId, branch: &BranchName) -> Resul
         .execute()
         .await?;
     Ok(())
+}
+
+/// Reads whose session this is.
+///
+/// The daemon-scoped routes' one lookup: an `fd_` token proves which
+/// *session* is calling and nothing about a user, while everything the
+/// daemon then asks for — the account a machine was provisioned through,
+/// that account's catalog — is scoped to the owner. Deriving it here rather
+/// than trusting a caller is what keeps a daemon token from reaching another
+/// user's clouds.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is gone, or
+/// [`ApiError`] if the database fails.
+pub async fn owner(db: &Db, id: SessionId) -> Result<UserId, ApiError> {
+    Ok(provisioning_target(db, id)
+        .await?
+        .ok_or(ApiError::SessionNotFound)?
+        .user_id)
+}
+
+/// Reads whether flyco or the user chose this session's machine.
+///
+/// A session fact rather than a machine one, which is why it is read here
+/// and not off the `machines` row: it says who made the decision that put
+/// this session on a machine at all, and it survives every resize the
+/// session goes through.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is gone, or
+/// [`ApiError`] if the database fails.
+pub async fn machine_origin(db: &Db, id: SessionId) -> Result<MachineOrigin, ApiError> {
+    Ok(provisioning_target(db, id)
+        .await?
+        .ok_or(ApiError::SessionNotFound)?
+        .machine_origin)
 }
 
 /// Records that provisioning gave up, and why.

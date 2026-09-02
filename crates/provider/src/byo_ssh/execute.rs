@@ -240,7 +240,7 @@ impl<R: CommandRunner> CloudProvider for SshExecutor<R> {
     }
 
     async fn provision(&mut self, request: &ProvisionRequest) -> Result<Machine, ProviderError> {
-        self.perform(&MachineOperation::Provision(request.clone()))
+        self.perform(&MachineOperation::Provision(Box::new(request.clone())))
             .await?;
         Ok(Machine {
             id: request.machine,
@@ -478,6 +478,8 @@ mod tests {
                 permission_mode: PermissionMode::Default,
                 claude_auth: ClaudeCredential::Inherit,
                 repo: crate::testing::checkout(),
+                machine_origin: flyco_core::MachineOrigin::Auto,
+                machine: crate::testing::session_machine(),
                 resume_session_id: None,
             },
         }
@@ -508,7 +510,7 @@ mod tests {
         let request = request(MachineId::generate());
         let script = render(
             &ByoSsh::new(HOST)
-                .plan(&MachineOperation::Provision(request))
+                .plan(&MachineOperation::Provision(Box::new(request)))
                 .expect("plan"),
         )
         .expect("render");

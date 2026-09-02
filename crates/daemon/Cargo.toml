@@ -20,9 +20,11 @@ tracing.workspace = true
 uuid.workspace = true
 zenwave = { workspace = true, features = ["hyper-rustls"] }
 
+askama.workspace = true
 clap.workspace = true
 futures-util.workspace = true
 portable-pty.workspace = true
+rmcp.workspace = true
 rand.workspace = true
 rust-embed.workspace = true
 tokio.workspace = true
@@ -35,8 +37,10 @@ url.workspace = true
 tokio-tungstenite = { workspace = true, features = ["handshake"] }
 # `tests/provisioned_config.rs` pins the configuration a provisioner writes
 # against the loader that reads it. The `ssh` feature stays off: the daemon
-# needs the renderer, not an SSH client.
-flyco-provider.workspace = true
+# needs the renderer, not an SSH client. `testing` publishes the bootstrap
+# fixtures every driver's own tests are written against, so the machine a
+# test bootstrap describes is described in exactly one place.
+flyco-provider = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true
