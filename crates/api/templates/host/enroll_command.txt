@@ -1,0 +1,1 @@
+curl -fsSL {{ origin }}install/flycod.sh | sudo sh -s -- host enroll {{ token }}

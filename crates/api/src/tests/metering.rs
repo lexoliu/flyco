@@ -29,7 +29,7 @@ async fn scheduled_metering_records_compute_and_storage_once_and_pauses(_ctx: Te
         session,
         account,
         &MachineSpec {
-            provider: CloudProviderKind::ByoSsh,
+            provider: CloudProviderKind::Host,
             machine_type: "build.lexo.cool".to_owned(),
             region: "build.lexo.cool".to_owned(),
             spot: false,

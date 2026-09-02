@@ -301,6 +301,80 @@ pub enum ApiError {
         reason: String,
     },
 
+    /// The host does not exist, or belongs to somebody else. The two are
+    /// deliberately indistinguishable.
+    #[error("host not found", status = StatusCode::NOT_FOUND)]
+    HostNotFound,
+
+    /// The host was drained and its token revoked; it is finished with.
+    #[error(
+        "this host has been removed; enroll the machine again to use it",
+        status = StatusCode::CONFLICT
+    )]
+    HostRemoved,
+
+    /// The machine is not connected, so nothing can be run on it.
+    ///
+    /// Flyco never dials a host — the machine holds the socket — so a host
+    /// that is not connected is not one to retry against from here: the
+    /// answer is to start `flycod host` on it.
+    #[error(
+        "this host is not connected; start flycod on the machine and try again",
+        status = StatusCode::CONFLICT
+    )]
+    HostOffline,
+
+    /// Removing the host would stop sessions that are still running on it.
+    #[error(
+        "{sessions} session(s) still run on this host; pass force to stop them",
+        status = StatusCode::CONFLICT
+    )]
+    HostHasActiveSessions {
+        /// How many machines are still live there.
+        sessions: u64,
+    },
+
+    /// The label is empty or longer than a list can render.
+    #[error(
+        "a host label must be between 1 and {max} characters",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    InvalidHostLabel {
+        /// The longest label a host may carry.
+        max: usize,
+    },
+
+    /// A host account was offered to `POST /v1/providers`.
+    ///
+    /// A host is linked by *enrolling the machine*, which is what mints its
+    /// token and proves it exists. Accepting a host id here would create an
+    /// account naming a machine that can never answer.
+    #[error(
+        "a machine you own is linked by enrolling it, not by linking credentials",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    HostNotLinkable,
+
+    /// The enrollment token does not exist, or belongs to somebody else.
+    #[error("enrollment token not found", status = StatusCode::NOT_FOUND)]
+    EnrollmentTokenNotFound,
+
+    /// The presented enrollment token is unknown, expired, or already spent.
+    ///
+    /// Deliberately one variant for all three: an enrollment token is
+    /// single-use and ten minutes long, the machine presenting it can act on
+    /// exactly one answer — ask for another — and telling the three apart
+    /// would be a free oracle for anyone guessing tokens.
+    #[error(
+        "this enrollment token is expired or already spent; mint another",
+        status = StatusCode::GONE
+    )]
+    EnrollmentTokenExpired,
+
+    /// The presented credential is not this host's live token.
+    #[error("the presented host credential is not valid", status = StatusCode::UNAUTHORIZED)]
+    InvalidHostCredential,
+
     /// No daemon has reported this session's working tree yet.
     ///
     /// Distinct from "the tree is clean": nothing has looked. Answering
@@ -663,6 +737,15 @@ impl ApiError {
             Self::ProviderInUse { .. } => "provider-in-use",
             Self::ProviderUnsupported { .. } => "provider-unsupported",
             Self::ProviderRejectedCredentials { .. } => "provider-rejected-credentials",
+            Self::HostNotFound => "host-not-found",
+            Self::HostRemoved => "host-removed",
+            Self::HostOffline => "host-offline",
+            Self::HostHasActiveSessions { .. } => "host-has-active-sessions",
+            Self::InvalidHostLabel { .. } => "invalid-host-label",
+            Self::HostNotLinkable => "host-not-linkable",
+            Self::EnrollmentTokenNotFound => "enrollment-token-not-found",
+            Self::EnrollmentTokenExpired => "enrollment-token-expired",
+            Self::InvalidHostCredential => "invalid-host-credential",
             Self::RepoStatusUnknown => "repo-status-unknown",
             Self::DirtyArchive { .. } => "dirty-archive",
             Self::SessionNotActive { .. } => "session-not-active",
@@ -702,9 +785,9 @@ impl ApiError {
     pub(crate) const fn challenge(&self) -> Option<Challenge> {
         match self {
             Self::MissingCredential => Some(Challenge::Bearer),
-            Self::InvalidCredential | Self::InvalidDaemonCredential => {
-                Some(Challenge::InvalidToken)
-            }
+            Self::InvalidCredential
+            | Self::InvalidDaemonCredential
+            | Self::InvalidHostCredential => Some(Challenge::InvalidToken),
             _ => None,
         }
     }

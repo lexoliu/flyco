@@ -10,7 +10,7 @@
 //! forward and a refusal are told apart. So the sockets are flyco's and
 //! everything behind them is skyzen's.
 
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, RwLock};
 
 use flyco_core::{
@@ -18,8 +18,7 @@ use flyco_core::{
     SessionId, WIRE_PROTOCOL_VERSION, wire::ApprovalPayload,
 };
 use skyzen::durable::{
-    DurableConnections, DurableConnectionsInner, DurableContext, DurableObject as _,
-    DurableObjectError, DurableObjectId, WebSocketConnection, WebSocketConnectionInner,
+    DurableConnections, DurableContext, DurableObject as _, DurableObjectId, WebSocketConnection,
     WebSocketEvent,
 };
 use skyzen::http_kit::ws::WebSocketMessage;
@@ -31,129 +30,7 @@ use crate::room::{
     EventPage, HEADER_INTERNAL, HEADER_ROLE, HEADER_SESSION, INTERNAL, ROLE_CLIENT, ROLE_DAEMON,
     SessionRoom, StoredEvent,
 };
-
-// ── A connection registry that records what the room sent ──
-
-/// One thing the room did to a socket.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Sent {
-    /// A text frame, with the tag of the socket it went to.
-    Text {
-        /// Role tag of the receiving socket.
-        to: String,
-        /// The frame.
-        text: String,
-    },
-    /// A close, with the tag of the socket it went to.
-    Closed {
-        /// Role tag of the receiving socket.
-        to: String,
-        /// Close code.
-        code: u16,
-    },
-}
-
-/// A fake hibernating socket.
-///
-/// Sends go out on a channel — append-only, drained at the end of a test,
-/// no shared mutable state. The attachment is the one thing that must be
-/// *read back* (it is how the room remembers a daemon was greeted), and the
-/// `WebSocketConnectionInner` trait takes `&self` and is `Send + Sync`, so
-/// interior mutability behind a lock is structurally required rather than
-/// chosen.
-#[derive(Debug, Clone)]
-struct FakeSocket {
-    tags: Vec<String>,
-    sent: Sender<Sent>,
-    attachment: Arc<RwLock<Option<Vec<u8>>>>,
-}
-
-impl FakeSocket {
-    fn tag(&self) -> String {
-        self.tags
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "untagged".to_owned())
-    }
-}
-
-impl WebSocketConnectionInner for FakeSocket {
-    fn send_text(&self, text: &str) -> Result<(), DurableObjectError> {
-        self.sent
-            .send(Sent::Text {
-                to: self.tag(),
-                text: text.to_owned(),
-            })
-            .map_err(|error| DurableObjectError::WebSocket(error.to_string()))
-    }
-
-    fn send_binary(&self, _data: &[u8]) -> Result<(), DurableObjectError> {
-        Err(DurableObjectError::WebSocket(
-            "the flyco relay never sends binary frames".to_owned(),
-        ))
-    }
-
-    fn close(&self, code: u16, _reason: &str) -> Result<(), DurableObjectError> {
-        self.sent
-            .send(Sent::Closed {
-                to: self.tag(),
-                code,
-            })
-            .map_err(|error| DurableObjectError::WebSocket(error.to_string()))
-    }
-
-    fn tags(&self) -> Result<Vec<String>, DurableObjectError> {
-        Ok(self.tags.clone())
-    }
-
-    fn get_attachment_raw(&self) -> Result<Option<Vec<u8>>, DurableObjectError> {
-        Ok(self.attachment.read().expect("attachment lock").clone())
-    }
-
-    fn set_attachment_raw(&self, data: &[u8]) -> Result<(), DurableObjectError> {
-        *self.attachment.write().expect("attachment lock") = Some(data.to_vec());
-        Ok(())
-    }
-}
-
-/// The sockets attached to one room.
-#[derive(Debug, Clone, Default)]
-struct FakeConnections {
-    sockets: Vec<FakeSocket>,
-}
-
-impl DurableConnectionsInner for FakeConnections {
-    fn all(&self) -> Result<Vec<WebSocketConnection>, DurableObjectError> {
-        Ok(self
-            .sockets
-            .iter()
-            .cloned()
-            .map(|socket| WebSocketConnection::new(Box::new(socket)))
-            .collect())
-    }
-
-    fn by_tag(&self, tag: &str) -> Result<Vec<WebSocketConnection>, DurableObjectError> {
-        Ok(self
-            .sockets
-            .iter()
-            .filter(|socket| socket.tags.iter().any(|value| value == tag))
-            .cloned()
-            .map(|socket| WebSocketConnection::new(Box::new(socket)))
-            .collect())
-    }
-
-    fn set_auto_response(&self, _request: &str, _response: &str) -> Result<(), DurableObjectError> {
-        Ok(())
-    }
-
-    fn clear_auto_response(&self) -> Result<(), DurableObjectError> {
-        Ok(())
-    }
-
-    fn clone_box(&self) -> Box<dyn DurableConnectionsInner> {
-        Box::new(self.clone())
-    }
-}
+use crate::tests::sockets::{FakeConnections, FakeSocket, Sent};
 
 // ── The harness ──
 

@@ -205,7 +205,7 @@ mod worker {
     use super::{accrue, deliver};
     use crate::app;
     use crate::config::{ApiConfig, binding};
-    use crate::rooms::Rooms;
+    use crate::rooms::{HostRooms, Rooms};
 
     #[skyzen::scheduled]
     async fn budget_meter(
@@ -224,14 +224,19 @@ mod worker {
         let config = ApiConfig::from_worker_env(&env)
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         let db = Db::new(d1);
-        let rooms = Rooms::from_worker_env(env);
+        // One environment, two namespaces: archiving a session releases its
+        // machine, and a machine the user owns is released by asking the
+        // machine.
+        let wasm = skyzen::runtime::wasm::WasmEnv::new(env);
+        let rooms = Rooms::from_wasm_env(wasm.clone());
+        let hosts = HostRooms::from_wasm_env(wasm);
         accrue(&db, at_unix)
             .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         deliver(&db, &rooms)
             .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
-        app::archive_idle(&db, &config, &rooms, at_unix)
+        app::archive_idle(&db, &config, &rooms, &hosts, at_unix)
             .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))
     }

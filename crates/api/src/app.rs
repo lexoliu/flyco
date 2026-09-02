@@ -30,13 +30,13 @@ use crate::provisioning_queue::{self, ProvisioningJob};
 use crate::relay::{RelayTicket, TicketQuery};
 use crate::respond::{Accepted, Created, NoContent};
 use crate::room::EventPage;
-use crate::rooms::Rooms;
+use crate::rooms::{HostRooms, Rooms};
 use crate::vendors::Vendors;
 use crate::{
     agents_md, api_keys, approvals, claude_oauth, codex_oauth, daemon_tokens, env,
-    harness_accounts, machines, mcp, memory, oauth, observations, problem, provider_accounts,
-    provisioning, push, relay, releases, repos, responses, sessions, skills, transcripts, turns,
-    users, webhooks, workdirs,
+    harness_accounts, hosts, machines, mcp, memory, oauth, observations, problem,
+    provider_accounts, provisioning, push, relay, releases, repos, responses, sessions, skills,
+    transcripts, turns, users, webhooks, workdirs,
 };
 
 /// Health probe response.
@@ -426,6 +426,7 @@ async fn archive_session(
     Query(query): Query<ArchiveQuery>,
     params: Params,
     rooms: Rooms,
+    hosts: HostRooms,
     db: Db,
 ) -> Outcome<Json<SessionDetail>> {
     end_session(
@@ -433,6 +434,7 @@ async fn archive_session(
         &config,
         &params,
         &rooms,
+        &hosts,
         &db,
         ArchiveKind::Manual {
             discard_uncommitted: query.discard_uncommitted,
@@ -455,11 +457,14 @@ async fn end_session(
     config: &ApiConfig,
     params: &Params,
     rooms: &Rooms,
+    hosts: &HostRooms,
     db: &Db,
     kind: ArchiveKind,
 ) -> Result<Json<SessionDetail>, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
-    archive(db, config, rooms, user, id, kind).await.map(Json)
+    archive(db, config, rooms, hosts, user, id, kind)
+        .await
+        .map(Json)
 }
 
 /// Archives one session.
@@ -474,6 +479,7 @@ pub(crate) async fn archive(
     db: &Db,
     config: &ApiConfig,
     rooms: &Rooms,
+    hosts: &HostRooms,
     user: UserId,
     id: SessionId,
     kind: ArchiveKind,
@@ -499,7 +505,7 @@ pub(crate) async fn archive(
     rooms
         .command(id, &ControlToDaemon::Archive { preserve_workdir })
         .await?;
-    machines::destroy_for_archive(db, config, user, id).await?;
+    machines::destroy_for_archive(db, config, hosts, user, id).await?;
     sessions::transition(db, user, id, SessionState::Archived).await
 }
 
@@ -533,6 +539,7 @@ pub async fn archive_idle(
     db: &Db,
     config: &ApiConfig,
     rooms: &Rooms,
+    hosts: &HostRooms,
     at_unix: u64,
 ) -> Result<(), ApiError> {
     for idle in sessions::idle_since(db, at_unix).await? {
@@ -540,6 +547,7 @@ pub async fn archive_idle(
             db,
             config,
             rooms,
+            hosts,
             idle.user_id,
             idle.id,
             ArchiveKind::Automatic,
@@ -598,9 +606,10 @@ async fn decide_approval(
     params: Params,
     Json(request): Json<DecideApproval>,
     rooms: Rooms,
+    hosts: HostRooms,
     db: Db,
 ) -> Outcome<Json<ApprovalView>> {
-    settle_approval(&user, &params, request, &config, &rooms, &db)
+    settle_approval(&user, &params, request, &config, &rooms, &hosts, &db)
         .await
         .into()
 }
@@ -611,6 +620,7 @@ async fn settle_approval(
     request: DecideApproval,
     config: &ApiConfig,
     rooms: &Rooms,
+    hosts: &HostRooms,
     db: &Db,
 ) -> Result<Json<ApprovalView>, ApiError> {
     let id = path_id::<ApprovalId>(params, "id")?;
@@ -638,7 +648,16 @@ async fn settle_approval(
         tracing::warn!(%error, session = %decided.session, "a decided approval did not reach its room");
     }
 
-    perform_approved(&decided, request.decision, user.id, config, rooms, db).await?;
+    perform_approved(
+        &decided,
+        request.decision,
+        user.id,
+        config,
+        rooms,
+        hosts,
+        db,
+    )
+    .await?;
 
     tracing::info!(decision = ?request.decision, "decided an approval");
     Ok(Json(decided))
@@ -661,6 +680,7 @@ async fn perform_approved(
     user: UserId,
     config: &ApiConfig,
     rooms: &Rooms,
+    hosts: &HostRooms,
     db: &Db,
 ) -> Result<(), ApiError> {
     if decision != ApprovalDecision::Approved {
@@ -674,7 +694,16 @@ async fn perform_approved(
         machine_type,
         "the user approved a license-bound resize; moving the machine"
     );
-    machines::resize(db, config, rooms, user, approval.session, machine_type).await
+    machines::resize(
+        db,
+        config,
+        rooms,
+        hosts,
+        user,
+        approval.session,
+        machine_type,
+    )
+    .await
 }
 
 // ── Pairing a session with its daemon ──
@@ -747,6 +776,30 @@ async fn join_as_daemon(
 ) -> Result<Response, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
     relay::open_daemon(rooms, db, id, headers.bearer()).await
+}
+
+/// Joins a host's room as the machine itself.
+///
+/// Authenticated by the host's own `fh_` token rather than by a user
+/// credential, exactly as a session daemon's relay is, so it sits outside
+/// [`RequireAuth`].
+async fn open_host_relay(
+    params: Params,
+    headers: Headers,
+    rooms: HostRooms,
+    db: Db,
+) -> Outcome<Response> {
+    join_as_host(&params, &headers, &rooms, &db).await.into()
+}
+
+async fn join_as_host(
+    params: &Params,
+    headers: &Headers,
+    rooms: &HostRooms,
+    db: &Db,
+) -> Result<Response, ApiError> {
+    let id = path_id::<flyco_core::HostId>(params, "id")?;
+    relay::open_host(rooms, db, id, headers.bearer()).await
 }
 
 /// Joins a session's room as a browser, redeeming a relay ticket.
@@ -1500,9 +1553,10 @@ async fn agent_resize_machine(
     State(config): State<ApiConfig>,
     Json(request): Json<ResizeMachine>,
     rooms: Rooms,
+    hosts: HostRooms,
     db: Db,
 ) -> Outcome<Accepted> {
-    run_agent_resize(session.0, &request, &config, &rooms, &db)
+    run_agent_resize(session.0, &request, &config, &rooms, &hosts, &db)
         .await
         .into()
 }
@@ -1512,10 +1566,20 @@ async fn run_agent_resize(
     request: &ResizeMachine,
     config: &ApiConfig,
     rooms: &Rooms,
+    hosts: &HostRooms,
     db: &Db,
 ) -> Result<Accepted, ApiError> {
     let user = sessions::owner(db, session).await?;
-    machines::resize_for_agent(db, config, rooms, user, session, &request.machine_type).await?;
+    machines::resize_for_agent(
+        db,
+        config,
+        rooms,
+        hosts,
+        user,
+        session,
+        &request.machine_type,
+    )
+    .await?;
     Ok(Accepted)
 }
 
@@ -1549,6 +1613,7 @@ fn public_routes() -> Vec<RouteNode> {
     .into_route_nodes();
     nodes.extend(push::public_routes());
     nodes.extend(webhooks::routes());
+    nodes.extend(hosts::public_routes());
     nodes
 }
 
@@ -1564,11 +1629,22 @@ fn relay_routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/sessions/{id}/relay/daemon".at(open_daemon_relay),
         "/v1/sessions/{id}/relay/client".at(open_client_relay),
+        "/v1/hosts/{id}/relay".at(open_host_relay),
     ))
     .into_route_nodes()
 }
 
 /// Routes a session's own daemon calls, authenticated by its `fd_` token.
+/// Routes an enrolled machine calls with its own `fh_` token.
+///
+/// Beside [`daemon_routes`] rather than inside it: an `fd_` token resolves
+/// to a session and an `fh_` token to a machine, and neither may ever be
+/// widened into the other. Each route here checks the presented token
+/// against the host in its own path.
+fn host_routes() -> Vec<RouteNode> {
+    hosts::host_routes()
+}
+
 fn daemon_routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/sessions/{id}/approvals".post(raise_approval),
@@ -1643,6 +1719,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
     nodes.extend(claude_oauth::routes());
     nodes.extend(codex_oauth::routes());
     nodes.extend(harness_accounts::routes());
+    nodes.extend(hosts::routes());
     nodes.extend(machines::routes());
     nodes.extend(mcp::routes());
     nodes.extend(memory::routes());
@@ -1662,6 +1739,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
 fn routes() -> Route {
     let mut nodes = public_routes();
     nodes.extend(relay_routes());
+    nodes.extend(host_routes());
     nodes.extend(daemon_routes());
     nodes.extend(authenticated_routes());
     Route::new(nodes)
@@ -1687,7 +1765,9 @@ fn frontend() -> EmbeddedStaticDir {
 /// binary do not share rooms.
 #[cfg(not(target_arch = "wasm32"))]
 fn with_rooms(route: Route) -> Route {
-    route.with(State(crate::rooms::NativeRooms::new()))
+    route
+        .with(State(crate::rooms::NativeRooms::new()))
+        .with(State(crate::rooms::NativeHostRooms::new()))
 }
 
 /// See the native counterpart above.

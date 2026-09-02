@@ -7,36 +7,14 @@
 //! resize sees. Both would be easy to hardcode and quietly wrong afterwards.
 
 use flyco_core::{
-    AwsIamPolicy, LinkProvider, MachineCatalogEntry, MachinePricing, ProviderCredentials,
+    AwsIamPolicy, HostId, LinkProvider, MachineCatalogEntry, MachinePricing, Problem,
+    ProviderCredentials,
 };
-use skyzen::routing::Router;
 use skyzen_services::{Db, Kv};
-use skyzen_test::{TestClient, TestContext};
+use skyzen_test::TestContext;
 
 use crate::session;
-use crate::testing::{migrated_router, seed_user};
-
-/// Registers the SSH host flyco develops against — a real machine the user
-/// owns, which is the one catalog entry that carries neither a price nor a
-/// size.
-async fn link_host(client: &TestClient<Router>, token: &str) {
-    client
-        .post("/v1/providers")
-        .bearer(token)
-        .json(&LinkProvider {
-            label: "the build host".to_owned(),
-            credentials: ProviderCredentials::ByoSsh {
-                host: "build.lexo.cool".to_owned(),
-                port: 22,
-                user: "flyco".to_owned(),
-                private_key: "-----BEGIN OPENSSH PRIVATE KEY-----".to_owned(),
-                host_fingerprint: "SHA256:qWyVLPxNBRr7Nnkm1xTQKMDcXwHFsSFRnLW6iNfPmcQ".to_owned(),
-            },
-        })
-        .send()
-        .await
-        .assert_status(201);
-}
+use crate::testing::{SSH_HOST, host_facts, migrated_router, seed_provider_account, seed_user};
 
 #[skyzen::test]
 async fn the_iam_policy_is_not_public(ctx: TestContext, db: Db) {
@@ -85,7 +63,7 @@ async fn curation_never_drops_the_machine_the_user_already_owns(ctx: TestContext
     let client = ctx.client(migrated_router(&db).await);
     let user = seed_user(&db).await;
     let token = session::issue(&kv, user.id).await.expect("issue a session");
-    link_host(&client, &token).await;
+    seed_provider_account(&db, user.id).await;
 
     let response = client
         .get("/v1/machines/catalog")
@@ -95,12 +73,41 @@ async fn curation_never_drops_the_machine_the_user_already_owns(ctx: TestContext
     response.assert_status(200);
     let catalog: Vec<MachineCatalogEntry> = response.json();
 
-    // Neither a price nor a size to rank it by, and it survives anyway:
-    // curation removes machines that are known to be worse, and an unknown
-    // is not a known-worse.
+    // No price to rank it by, and it survives anyway: curation removes
+    // machines that are known to be worse, and a machine flyco does not
+    // meter is not a known-worse. Its size and its architecture are the
+    // machine's own report rather than anything flyco invented.
     assert_eq!(catalog.len(), 1);
-    assert_eq!(catalog[0].machine_type, "build.lexo.cool");
+    assert_eq!(catalog[0].machine_type, SSH_HOST);
     assert_eq!(catalog[0].pricing, MachinePricing::UserOwned);
-    assert!(catalog[0].capacity.is_none());
-    assert!(catalog[0].lineage.is_none());
+    assert_eq!(catalog[0].capacity, Some(host_facts().capacity()));
+    assert_eq!(catalog[0].lineage, Some(host_facts().lineage()));
+}
+
+#[skyzen::test]
+async fn a_machine_you_own_cannot_be_linked_as_a_credential(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+
+    // Naming a host id here would create an account pointing at a machine
+    // nobody enrolled, which could never answer. A host is linked by
+    // enrolling it, and by nothing else.
+    let response = client
+        .post("/v1/providers")
+        .bearer(&token)
+        .json(&LinkProvider {
+            label: "the build host".to_owned(),
+            credentials: ProviderCredentials::Host {
+                host: HostId::generate(),
+            },
+        })
+        .send()
+        .await;
+
+    response.assert_status(422);
+    assert_eq!(
+        response.json::<Problem>().kind,
+        "https://flyco.dev/problems/host-not-linkable"
+    );
 }

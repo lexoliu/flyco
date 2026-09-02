@@ -144,10 +144,10 @@ pub fn watch(provider: Option<CloudProviderKind>) -> Notices {
         Some(CloudProviderKind::Azure) => spawn(azure::ScheduledEvents::live(), notices),
         Some(CloudProviderKind::Aws) => spawn(aws::InstanceAction::live(), notices),
         Some(CloudProviderKind::Gcp) => spawn(gcp::Preempted::live(), notices),
-        // A container on hardware the user registered is started and
-        // stopped by its owner: there is no metadata endpoint, and nothing
-        // to poll for a notice that cannot arrive.
-        Some(CloudProviderKind::ByoSsh) | None => {
+        // A container on hardware the user owns is started and stopped by
+        // its owner: there is no metadata endpoint, and nothing to poll for
+        // a notice that cannot arrive.
+        Some(CloudProviderKind::Host) | None => {
             tracing::info!("this machine holds capacity nobody can reclaim; watching no endpoint");
             drop(notices);
         }
@@ -338,7 +338,7 @@ mod tests {
     async fn a_machine_nobody_can_reclaim_watches_nothing() {
         // The receiver is closed rather than idle, so the relay can tell
         // "no watcher" from "no notice yet" and stop selecting on it.
-        for provider in [None, Some(CloudProviderKind::ByoSsh)] {
+        for provider in [None, Some(CloudProviderKind::Host)] {
             let mut notices = watch(provider);
             assert_eq!(notices.recv().await, None);
         }

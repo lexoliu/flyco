@@ -65,7 +65,7 @@ const CHOICES: Choice[] = [
     mark: GOOGLE_CLOUD_MARK,
   },
   {
-    kind: "byo_ssh",
+    kind: "host",
     title: "Your own machine",
     line: "Enroll a Linux machine you own with one command.",
     mark: null,
@@ -146,7 +146,7 @@ export default function ComputeChooser(props: ComputeChooserProps) {
               {(choice) => (
                 <li>
                   <Show
-                    when={choice.kind !== "byo_ssh"}
+                    when={choice.kind !== "host"}
                     fallback={
                       <a
                         class={`${styles.choice} ${styles.choiceMuted}`}

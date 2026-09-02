@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::id::ProviderAccountId;
+use crate::id::{HostId, ProviderAccountId};
 use crate::machine::CloudProviderKind;
 use crate::money::Usd;
 
@@ -76,25 +76,19 @@ pub enum ProviderCredentials {
         /// The whole service-account key document.
         service_account_json: String,
     },
-    /// A Linux host the user already owns, reached over SSH and sandboxed
-    /// with Podman.
-    ByoSsh {
-        /// Hostname or address to dial.
-        host: String,
-        /// SSH port.
-        port: u16,
-        /// Login user, which must be able to run Podman.
-        user: String,
-        /// PEM-encoded private key flyco authenticates with.
-        private_key: String,
-        /// The host key flyco must see, as `ssh-keygen -lf` prints it:
-        /// `SHA256:` followed by unpadded base64.
-        ///
-        /// Required rather than optional, and there is no trust-on-first-use
-        /// path: linking this account is the moment flyco starts handing the
-        /// host live session credentials, and an unverified host key means
-        /// handing them to whoever answers on that address.
-        host_fingerprint: String,
+    /// A Linux machine the user owns, enrolled with the control plane.
+    ///
+    /// The one variant that holds no secret, because there is none to hold:
+    /// a host authenticates *itself* with the token it was issued at
+    /// enrollment, and the control plane never dials it. What this names is
+    /// which machine the account provisions onto — see [`crate::host`].
+    ///
+    /// An account of this kind is created by enrolling a machine, never by
+    /// `POST /v1/providers`: a host id nobody enrolled would name a machine
+    /// that cannot answer.
+    Host {
+        /// The enrolled machine this account provisions onto.
+        host: HostId,
     },
 }
 
@@ -106,7 +100,7 @@ impl ProviderCredentials {
             Self::Azure { .. } => CloudProviderKind::Azure,
             Self::Aws { .. } => CloudProviderKind::Aws,
             Self::Gcp { .. } => CloudProviderKind::Gcp,
-            Self::ByoSsh { .. } => CloudProviderKind::ByoSsh,
+            Self::Host { .. } => CloudProviderKind::Host,
         }
     }
 }
@@ -185,6 +179,7 @@ pub struct ProviderBonusHint {
 #[cfg(test)]
 mod tests {
     use super::{LinkProvider, ProviderCredentials};
+    use crate::id::HostId;
     use crate::machine::CloudProviderKind;
 
     #[test]
@@ -200,15 +195,10 @@ mod tests {
                 CloudProviderKind::Aws,
             ),
             (
-                ProviderCredentials::ByoSsh {
-                    host: "build.lexo.cool".to_owned(),
-                    port: 22,
-                    user: "flyco".to_owned(),
-                    private_key: "-----BEGIN OPENSSH PRIVATE KEY-----".to_owned(),
-                    host_fingerprint: "SHA256:qWyVLPxNBRr7Nnkm1xTQKMDcXwHFsSFRnLW6iNfPmcQ"
-                        .to_owned(),
+                ProviderCredentials::Host {
+                    host: HostId::from_uuid(uuid::Uuid::from_u128(9)),
                 },
-                CloudProviderKind::ByoSsh,
+                CloudProviderKind::Host,
             ),
         ] {
             assert_eq!(credentials.kind(), kind);

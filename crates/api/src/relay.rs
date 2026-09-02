@@ -31,16 +31,18 @@
 //! the browser's authentication mechanism, which is a product decision and
 //! not something a version bump should make on its own.
 
-use flyco_core::{CurrentUser, SessionId};
+use flyco_core::{CurrentUser, HostId, SessionId};
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
 use skyzen_services::{Db, Kv};
 
 use crate::crypto::{prefixed_token, token_hash};
 use crate::error::ApiError;
+#[cfg(target_arch = "wasm32")]
+use crate::host_room::ROLE_HOST;
 use crate::room::Role;
-use crate::rooms::Rooms;
-use crate::{clock, daemon_tokens, expiring, sessions};
+use crate::rooms::{HostRooms, Rooms};
+use crate::{clock, daemon_tokens, expiring, hosts, sessions};
 
 /// Marks a relay ticket, so a leaked one is recognisable.
 pub const TICKET_PREFIX: &str = "frt_";
@@ -175,6 +177,61 @@ pub async fn open_daemon(
     join(rooms, session, Role::Daemon).await
 }
 
+/// Authenticates an enrolled machine's relay upgrade and hands it to its
+/// room.
+///
+/// The same shape as the daemon's, and for the same reason: a machine is a
+/// native HTTP client, so it presents `Authorization: Bearer fh_…` on the
+/// handshake and the token is checked against the host id in the path.
+///
+/// Nothing durable happens here. A session goes live when its daemon
+/// greets the control plane, and a *host* goes online when its room can see
+/// the socket — which is a fact only the Durable Object holds and which the
+/// next read of the host writes down (see [`crate::hosts::refresh`]).
+///
+/// # Errors
+///
+/// Returns [`ApiError::InvalidHostCredential`] if the token is not this
+/// host's, [`ApiError::HostRemoved`] for a machine that has been drained,
+/// or [`ApiError::RelayUnavailable`] on a build with no rooms.
+pub async fn open_host(
+    rooms: &HostRooms,
+    db: &Db,
+    host: HostId,
+    presented: Option<&str>,
+) -> Result<skyzen::Response, ApiError> {
+    let presented = presented.ok_or(ApiError::MissingCredential)?;
+    if !hosts::authenticates(db, host, presented).await? {
+        return Err(ApiError::InvalidHostCredential);
+    }
+
+    // A machine that opens its socket is online, and this is the only hop
+    // where the control plane can write that down: the `Hello` on the socket
+    // itself reaches a Durable Object, which cannot touch D1. The reverse —
+    // a socket that dropped — is learned from the room on the next read.
+    hosts::arrived(db, host).await?;
+
+    tracing::info!(%host, "a machine joined its host room");
+    join_host(rooms, host).await
+}
+
+/// Forwards an authenticated upgrade into the host's room.
+#[cfg(target_arch = "wasm32")]
+async fn join_host(rooms: &HostRooms, host: HostId) -> Result<skyzen::Response, ApiError> {
+    rooms.upgrade(host, ROLE_HOST).await
+}
+
+/// See [`join`]: native builds authenticate the upgrade and then refuse it.
+#[cfg(not(target_arch = "wasm32"))]
+fn join_host(
+    _rooms: &HostRooms,
+    _host: HostId,
+) -> impl core::future::Future<Output = Result<skyzen::Response, ApiError>> + Send {
+    core::future::ready(Err(ApiError::RelayUnavailable(
+        "a native control plane does not forward relay upgrades into a host room",
+    )))
+}
+
 /// Redeems a browser's ticket and hands its upgrade to the room.
 ///
 /// # Errors
@@ -197,7 +254,7 @@ pub async fn open_client(
 /// Forwards an authenticated upgrade into the session's room.
 #[cfg(target_arch = "wasm32")]
 async fn join(rooms: &Rooms, session: SessionId, role: Role) -> Result<skyzen::Response, ApiError> {
-    rooms.upgrade(session, role).await
+    rooms.upgrade(session, role.tag()).await
 }
 
 /// Native builds authenticate the upgrade and then refuse it.

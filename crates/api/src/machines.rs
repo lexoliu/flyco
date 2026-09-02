@@ -29,7 +29,7 @@ use crate::extract::path_id;
 use crate::problem::Outcome;
 use crate::provisioning;
 use crate::respond::Accepted;
-use crate::rooms::Rooms;
+use crate::rooms::{HostRooms, Rooms};
 use crate::sessions;
 
 /// The columns every read on this path projects.
@@ -69,7 +69,16 @@ pub struct MachineRow {
     minimum_hours: Option<u32>,
     minimum_charge_micros: Option<Usd>,
     /// The provider's own name for it, once there is one to name.
+    ///
+    /// The container name on a machine the user owns, and the instance or
+    /// resource id everywhere else.
     pub native_id: Option<String>,
+    /// The Podman volume holding the session's checkout, on a host.
+    ///
+    /// `NULL` for every cloud machine, whose disk is part of the instance
+    /// [`native_id`](Self::native_id) already names, and written when the
+    /// host reports the container it actually created.
+    pub volume_name: Option<String>,
     address: Option<String>,
     created_at_unix: u64,
 }
@@ -126,6 +135,12 @@ impl MachineRow {
         self.machine_type.clone()
     }
 
+    /// The session this machine serves. A machine serves exactly one.
+    #[must_use]
+    pub const fn session(&self) -> SessionId {
+        self.session_id
+    }
+
     /// What was asked for, as a driver takes it.
     #[must_use]
     pub fn spec(&self) -> MachineSpec {
@@ -178,6 +193,7 @@ impl MachineRow {
 async fn run(
     db: &Db,
     config: &ApiConfig,
+    hosts: &HostRooms,
     user: UserId,
     session: SessionId,
     operation: provisioning::Operation<'_>,
@@ -186,7 +202,11 @@ async fn run(
     let machine = row.as_provider_machine()?;
     let account = provisioning::account(db, config, user, row.provider_account_id).await?;
 
-    let updated = provisioning::operate(&account, &machine, operation)
+    // A machine the user owns is acted on by asking the machine, so a host
+    // that is not connected is a refusal the caller can act on — start the
+    // daemon — rather than a provider failure they cannot.
+    provisioning::require_host_online(hosts, &account).await?;
+    let updated = provisioning::operate(hosts, &account, &machine, operation)
         .await
         .map_err(|error| ApiError::Provisioning(error.to_string()))?;
 
@@ -272,13 +292,14 @@ pub(crate) async fn resize(
     db: &Db,
     config: &ApiConfig,
     rooms: &Rooms,
+    hosts: &HostRooms,
     user: UserId,
     session: SessionId,
     machine_type: &str,
 ) -> Result<(), ApiError> {
     let row = load(db, user, session).await?;
     let entry = offered(db, config, user, &row, machine_type).await?;
-    apply(db, config, rooms, user, session, &row, &entry).await
+    apply(db, config, rooms, hosts, user, session, &row, &entry).await
 }
 
 /// The agent's resize, refused when it would spend money on its own.
@@ -302,6 +323,7 @@ pub(crate) async fn resize_for_agent(
     db: &Db,
     config: &ApiConfig,
     rooms: &Rooms,
+    hosts: &HostRooms,
     user: UserId,
     session: SessionId,
     machine_type: &str,
@@ -309,7 +331,7 @@ pub(crate) async fn resize_for_agent(
     let row = load(db, user, session).await?;
     let entry = offered(db, config, user, &row, machine_type).await?;
     on_the_agents_authority(&entry)?;
-    apply(db, config, rooms, user, session, &row, &entry).await
+    apply(db, config, rooms, hosts, user, session, &row, &entry).await
 }
 
 /// Whether an agent may move onto this type without asking.
@@ -333,10 +355,19 @@ fn on_the_agents_authority(entry: &MachineCatalogEntry) -> Result<(), ApiError> 
 /// left at what the old type cost: every budget signal after this is
 /// computed from it, and a session billed at its previous rate would pause
 /// at the wrong moment.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a resize reaches both room namespaces — the session's, to tell the \
+              agent, and the host's, because a machine somebody owns is changed by \
+              asking the machine — as well as the row it is changing and the entry \
+              it is changing to. Bundling them would hide which of them a resize \
+              actually touches"
+)]
 async fn apply(
     db: &Db,
     config: &ApiConfig,
     rooms: &Rooms,
+    hosts: &HostRooms,
     user: UserId,
     session: SessionId,
     row: &MachineRow,
@@ -345,6 +376,7 @@ async fn apply(
     let updated = run(
         db,
         config,
+        hosts,
         user,
         session,
         provisioning::Operation::Resize {
@@ -447,6 +479,7 @@ async fn announce_machine_change(rooms: &Rooms, session: SessionId, built: &Sess
 pub async fn destroy_for_archive(
     db: &Db,
     config: &ApiConfig,
+    hosts: &HostRooms,
     user: UserId,
     session: SessionId,
 ) -> Result<(), ApiError> {
@@ -458,7 +491,8 @@ pub async fn destroy_for_archive(
     if row.native_id.is_some() {
         let machine = row.as_provider_machine()?;
         let account = provisioning::account(db, config, user, row.provider_account_id).await?;
-        provisioning::operate(&account, &machine, provisioning::Operation::Destroy)
+        provisioning::require_host_online(hosts, &account).await?;
+        provisioning::operate(hosts, &account, &machine, provisioning::Operation::Destroy)
             .await
             .map_err(|error| ApiError::Provisioning(error.to_string()))?;
     }
@@ -485,8 +519,8 @@ async fn load(db: &Db, user: UserId, session: SessionId) -> Result<MachineRow, A
         db,
         "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
          disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, \
-         vcpus, memory_mib, minimum_hours, minimum_charge_micros, native_id, address, \
-         created_at_unix \
+         vcpus, memory_mib, minimum_hours, minimum_charge_micros, native_id, volume_name, \
+         address, created_at_unix \
          FROM machines \
          WHERE session_id = (SELECT id FROM sessions WHERE id = {session} AND user_id = {user})"
     )
@@ -703,9 +737,10 @@ async fn resize_session_machine(
     params: Params,
     Json(request): Json<ResizeMachine>,
     rooms: Rooms,
+    hosts: HostRooms,
     db: Db,
 ) -> Outcome<Accepted> {
-    user_resize(&db, &config, &rooms, user.id, &params, &request)
+    user_resize(&db, &config, &rooms, &hosts, user.id, &params, &request)
         .await
         .into()
 }
@@ -714,12 +749,22 @@ async fn user_resize(
     db: &Db,
     config: &ApiConfig,
     rooms: &Rooms,
+    hosts: &HostRooms,
     user: UserId,
     params: &Params,
     request: &ResizeMachine,
 ) -> Result<Accepted, ApiError> {
     let session: SessionId = path_id(params, "id")?;
-    resize(db, config, rooms, user, session, &request.machine_type).await?;
+    resize(
+        db,
+        config,
+        rooms,
+        hosts,
+        user,
+        session,
+        &request.machine_type,
+    )
+    .await?;
     Ok(Accepted)
 }
 
@@ -732,11 +777,13 @@ async fn stop_session_machine(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
     params: Params,
+    hosts: HostRooms,
     db: Db,
 ) -> Outcome<Accepted> {
     lifecycle(
         &db,
         &config,
+        &hosts,
         user.id,
         &params,
         provisioning::Operation::Stop,
@@ -749,12 +796,13 @@ async fn stop_session_machine(
 async fn lifecycle(
     db: &Db,
     config: &ApiConfig,
+    hosts: &HostRooms,
     user: UserId,
     params: &Params,
     operation: provisioning::Operation<'_>,
 ) -> Result<Accepted, ApiError> {
     let session: SessionId = path_id(params, "id")?;
-    run(db, config, user, session, operation).await?;
+    run(db, config, hosts, user, session, operation).await?;
     Ok(Accepted)
 }
 
@@ -764,11 +812,13 @@ async fn start_session_machine(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
     params: Params,
+    hosts: HostRooms,
     db: Db,
 ) -> Outcome<Accepted> {
     lifecycle(
         &db,
         &config,
+        &hosts,
         user.id,
         &params,
         provisioning::Operation::Start,
@@ -839,12 +889,108 @@ pub async fn for_session(db: &Db, session: SessionId) -> Result<Option<MachineRo
         db,
         "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
          disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, \
-         vcpus, memory_mib, minimum_hours, minimum_charge_micros, native_id, address, \
-         created_at_unix \
+         vcpus, memory_mib, minimum_hours, minimum_charge_micros, native_id, volume_name, \
+         address, created_at_unix \
          FROM machines WHERE session_id = {session}"
     )
     .fetch_optional()
     .await?)
+}
+
+/// Reads one machine row by its own id, without scoping it to an owner.
+///
+/// The host's read: a container job names the machine it acted on, and the
+/// host presenting the result proved which host it is with its own token —
+/// so the scope check is the account comparison the caller makes, not a
+/// user id the machine does not have.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn find(db: &Db, machine: MachineId) -> Result<Option<MachineRow>, ApiError> {
+    Ok(sql!(
+        db,
+        "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
+         disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, \
+         vcpus, memory_mib, minimum_hours, minimum_charge_micros, native_id, volume_name, \
+         address, created_at_unix \
+         FROM machines WHERE id = {machine}"
+    )
+    .fetch_optional()
+    .await?)
+}
+
+/// Every machine still holding resources on one linked account.
+///
+/// What a host removal counts before it refuses, and what it stops when the
+/// caller insists.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn live_on_account(
+    db: &Db,
+    account: ProviderAccountId,
+) -> Result<Vec<MachineRow>, ApiError> {
+    let destroyed = MachineState::Destroyed;
+    Ok(sql!(
+        db,
+        "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
+         disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, \
+         vcpus, memory_mib, minimum_hours, minimum_charge_micros, native_id, volume_name, \
+         address, created_at_unix \
+         FROM machines WHERE provider_account_id = {account} AND state != {destroyed} \
+         ORDER BY created_at_unix"
+    )
+    .fetch_all()
+    .await?)
+}
+
+/// Records the container and volume a host actually created.
+///
+/// The completion of a host provision, and the exact counterpart of
+/// [`record`] for a cloud driver's answer: what the machine now *is* comes
+/// from the machine rather than from what was asked for, because these two
+/// names are what every later stop, start and removal has to address.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn record_container(
+    db: &Db,
+    machine: MachineId,
+    container: &str,
+    volume: &str,
+) -> Result<(), ApiError> {
+    let running = MachineState::Running;
+    sql!(
+        db,
+        "UPDATE machines SET state = {running}, native_id = {container}, \
+         volume_name = {volume} WHERE id = {machine}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
+/// Records that a machine's compute is gone and its disk is not.
+///
+/// What draining a host leaves behind: the container is stopped and its
+/// volume kept, which is exactly [`MachineState::Deallocated`].
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn deallocate(db: &Db, machine: MachineId) -> Result<(), ApiError> {
+    let deallocated = MachineState::Deallocated;
+    sql!(
+        db,
+        "UPDATE machines SET state = {deallocated}, compute_metered_at_unix = {now_unix()} \
+         WHERE id = {machine}"
+    )
+    .execute()
+    .await?;
+    Ok(())
 }
 
 /// Records what the provider actually built.

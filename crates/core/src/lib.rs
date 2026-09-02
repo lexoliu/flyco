@@ -17,6 +17,7 @@ pub mod catalog;
 pub mod env;
 pub mod github;
 pub mod harness;
+pub mod host;
 pub mod id;
 pub mod machine;
 pub mod mcp;
@@ -52,10 +53,15 @@ pub use harness::{
     HarnessFeature, HarnessKind, LinkHarnessAccount, PermissionMode, UsageReport, availability,
     matrix,
 };
+pub use host::{
+    ENROLLMENT_TOKEN_TTL_SECONDS, EnrollHost, EnrolledHost, Enrollment, EnrollmentToken,
+    HOST_TOKEN_PREFIX, HostFacts, HostState, HostView, JobOutcome, MAX_HOST_LABEL_CHARS,
+    ReportJobResult, UpdateHost,
+};
 pub use id::{
     ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, ClaudeOauthAttemptId, CodexOauthAttemptId,
-    HarnessAccountId, HarnessObservationId, Id, MachineId, McpServerId, MemoryNodeId,
-    ProviderAccountId, PushSubscriptionId, SessionId, SkillId, SpendEventId, UserId,
+    EnrollmentTokenId, HarnessAccountId, HarnessObservationId, HostId, Id, MachineId, McpServerId,
+    MemoryNodeId, ProviderAccountId, PushSubscriptionId, SessionId, SkillId, SpendEventId, UserId,
 };
 pub use machine::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, CloudProviderKind,

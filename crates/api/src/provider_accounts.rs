@@ -70,10 +70,18 @@ async fn list_providers(
 }
 
 async fn list(db: &Db, user: UserId) -> Result<Vec<ProviderAccountView>, ApiError> {
+    // A drained host keeps its account row, because the machines that ran
+    // there still point at it — but it is not an account anybody can
+    // provision through any more, so it is not one to list.
+    let removed = flyco_core::HostState::Removed;
     let rows: Vec<AccountRow> = sql!(
         db,
-        "SELECT id, kind, label, linked_at_unix FROM provider_accounts \
-         WHERE user_id = {user} ORDER BY linked_at_unix DESC, id"
+        "SELECT provider_accounts.id, kind, provider_accounts.label, linked_at_unix \
+         FROM provider_accounts \
+         LEFT JOIN hosts ON hosts.id = provider_accounts.host_id \
+         WHERE provider_accounts.user_id = {user} \
+         AND (host_id IS NULL OR hosts.state != {removed}) \
+         ORDER BY linked_at_unix DESC, provider_accounts.id"
     )
     .fetch_all()
     .await?;
@@ -117,10 +125,8 @@ async fn link_provider(
 /// is only knowable by trying, and a link-time simulation would be a second,
 /// weaker opinion about a question the first provision answers exactly.
 ///
-/// A registered SSH host cannot be reached from the Worker at all (it has no
-/// sockets, and the executor is native-only), so its credentials are checked
-/// structurally here and verified in full, host key included, by the first
-/// job that dials it.
+/// A machine the user owns is not linkable here at all: it is enrolled, and
+/// enrolling is what proves it exists.
 async fn verify(credentials: &ProviderCredentials) -> Result<(), ApiError> {
     match credentials {
         // Azure is checked by [`provision_azure_workspace`] instead, which
@@ -128,26 +134,12 @@ async fn verify(credentials: &ProviderCredentials) -> Result<(), ApiError> {
         // secret is right, and creating the resource group proves the
         // principal is scoped widely enough to be useful.
         ProviderCredentials::Azure { .. } => Ok(()),
-        ProviderCredentials::ByoSsh {
-            host,
-            user,
-            private_key,
-            host_fingerprint,
-            ..
-        } => {
-            if host.trim().is_empty()
-                || user.trim().is_empty()
-                || private_key.trim().is_empty()
-                || !host_fingerprint.starts_with("SHA256:")
-            {
-                return Err(ApiError::ProviderRejectedCredentials {
-                    reason: "host, user, private key and a SHA256: host fingerprint are all \
-                             required"
-                        .to_owned(),
-                });
-            }
-            Ok(())
-        }
+        // A machine somebody owns is linked by *enrolling* it, which is
+        // what mints its token and proves it answers. There is nothing to
+        // check here because there is nothing a caller could present: the
+        // host id in these credentials is written by
+        // `POST /v1/hosts/enroll`, never by a request to this route.
+        ProviderCredentials::Host { .. } => Err(ApiError::HostNotLinkable),
         ProviderCredentials::Aws {
             access_key_id,
             secret_access_key,
@@ -237,10 +229,52 @@ async fn link(
 ) -> Result<ProviderAccountView, ApiError> {
     verify(&request.credentials).await?;
     let resource_group = provision_azure_workspace(&request.credentials).await?;
+    create_with(
+        db,
+        config,
+        user,
+        request.label,
+        &request.credentials,
+        resource_group,
+        None,
+    )
+    .await
+}
 
-    let kind = request.credentials.kind();
+/// Writes the account row a set of credentials opens.
+///
+/// Shared with host enrollment, which links an account of its own without
+/// going anywhere near `POST /v1/providers`: a machine the user owns has to
+/// be a provider account, or the compute chip, the curated catalog, session
+/// creation and the usage panel would each need a special case for it.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the credentials cannot be sealed or the write
+/// fails.
+pub(crate) async fn create(
+    db: &Db,
+    config: &ApiConfig,
+    user: UserId,
+    label: String,
+    credentials: &ProviderCredentials,
+    host: Option<flyco_core::HostId>,
+) -> Result<ProviderAccountView, ApiError> {
+    create_with(db, config, user, label, credentials, None, host).await
+}
+
+async fn create_with(
+    db: &Db,
+    config: &ApiConfig,
+    user: UserId,
+    label: String,
+    credentials: &ProviderCredentials,
+    resource_group: Option<String>,
+    host: Option<flyco_core::HostId>,
+) -> Result<ProviderAccountView, ApiError> {
+    let kind = credentials.kind();
     let sealed = config.token_cipher().seal(
-        &serde_json::to_string(&request.credentials)
+        &serde_json::to_string(credentials)
             .map_err(|_| ApiError::CorruptRecord("credentials could not be encoded"))?,
     )?;
 
@@ -249,19 +283,19 @@ async fn link(
     sql!(
         db,
         "INSERT INTO provider_accounts \
-         (id, user_id, kind, label, credentials_enc, resource_group, linked_at_unix) \
-         VALUES ({id}, {user}, {kind}, {request.label.clone()}, {sealed}, {resource_group}, \
+         (id, user_id, kind, label, credentials_enc, resource_group, host_id, linked_at_unix) \
+         VALUES ({id}, {user}, {kind}, {label.clone()}, {sealed}, {resource_group}, {host}, \
                  {linked_at})"
     )
     .execute()
     .await?;
 
-    tracing::info!(?kind, "linked a cloud provider account");
+    tracing::info!(?kind, "linked a provider account");
 
     Ok(ProviderAccountView {
         id,
         kind,
-        label: request.label,
+        label,
         linked_at_unix: linked_at,
     })
 }
@@ -370,10 +404,10 @@ async fn provider_quickstart(
 /// on the same invoice — so every row here was read from the account it
 /// describes, over the window it names.
 ///
-/// Not every linked account produces a row. A registered SSH host is
-/// hardware the user already owns and already pays for: flyco meters
-/// nothing there and says nothing, rather than reporting a `$0.00` that
-/// would read as "this costs nothing".
+/// Not every linked account produces a row. A machine the user owns is
+/// hardware they already pay for: flyco meters nothing there and says
+/// nothing, rather than reporting a `$0.00` that would read as "this costs
+/// nothing".
 #[skyzen::openapi]
 async fn cloud_usage(
     State(user): State<CurrentUser>,

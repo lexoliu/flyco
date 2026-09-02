@@ -391,6 +391,179 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/hosts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lists the caller's enrolled machines.
+         * @description Lists the caller's enrolled machines.
+         */
+        get: operations["flyco_api::hosts::list_hosts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/hosts/enroll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Registers a machine, spending the enrollment token it presents.
+         * @description Registers a machine, spending the enrollment token it presents.
+         *
+         *     Public, because the machine holds no user credential: the enrollment
+         *     token *is* the credential, it is single-use, and it names the user who
+         *     minted it.
+         */
+        post: operations["flyco_api::hosts::enroll_host"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/hosts/enrollment-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mints an enrollment token and the one command that spends it.
+         * @description Mints an enrollment token and the one command that spends it.
+         */
+        post: operations["flyco_api::hosts::mint_enrollment_token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/hosts/enrollment-tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reports whether the machine a token was minted for has arrived.
+         * @description Reports whether the machine a token was minted for has arrived.
+         */
+        get: operations["flyco_api::hosts::get_enrollment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/hosts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Describes one of the caller's enrolled machines.
+         * @description Describes one of the caller's enrolled machines.
+         */
+        get: operations["flyco_api::hosts::get_host"];
+        put?: never;
+        post?: never;
+        /**
+         * Drains a host, stops what runs on it, and revokes its token.
+         * @description Drains a host, stops what runs on it, and revokes its token.
+         */
+        delete: operations["flyco_api::hosts::delete_host"];
+        options?: never;
+        head?: never;
+        /**
+         * Renames one of the caller's enrolled machines.
+         * @description Renames one of the caller's enrolled machines.
+         */
+        patch: operations["flyco_api::hosts::update_host"];
+        trace?: never;
+    };
+    "/v1/hosts/{id}/job-results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Records what a host made of a container job it was sent.
+         * @description Records what a host made of a container job it was sent.
+         *
+         *     Authenticated by the host's own `fh_` token rather than by a user
+         *     credential, exactly as a session daemon's routes are by its `fd_` token:
+         *     it resolves to *this machine* and to nothing else.
+         */
+        post: operations["flyco_api::hosts::report_job_result"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/hosts/{id}/relay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** app::open_host_relay */
+        get: operations["app::open_host_relay"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/hosts/{id}/token/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mints a new token for one of the caller's machines, revoking the old one.
+         * @description Mints a new token for one of the caller's machines, revoking the old one.
+         */
+        post: operations["flyco_api::hosts::rotate_host_token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/machines/catalog": {
         parameters: {
             query?: never;
@@ -1618,10 +1791,10 @@ export interface paths {
          *     on the same invoice — so every row here was read from the account it
          *     describes, over the window it names.
          *
-         *     Not every linked account produces a row. A registered SSH host is
-         *     hardware the user already owns and already pays for: flyco meters
-         *     nothing there and says nothing, rather than reporting a `$0.00` that
-         *     would read as "this costs nothing".
+         *     Not every linked account produces a row. A machine the user owns is
+         *     hardware they already pay for: flyco meters nothing there and says
+         *     nothing, rather than reporting a `$0.00` that would read as "this costs
+         *     nothing".
          */
         get: operations["flyco_api::provider_accounts::cloud_usage"];
         put?: never;
@@ -1968,7 +2141,7 @@ export interface components {
          * @description A supported compute provider.
          * @enum {string}
          */
-        CloudProviderKind: "azure" | "aws" | "gcp" | "byo_ssh";
+        CloudProviderKind: "azure" | "aws" | "gcp" | "host";
         /** @description Narrows the cloud usage panel to one provider. */
         CloudUsageFilter: {
             provider?: null | components["schemas"]["CloudProviderKind"];
@@ -2198,6 +2371,69 @@ export interface components {
              */
             spot?: boolean | null;
         };
+        /**
+         * @description Request body of `POST /v1/hosts/enroll`.
+         *
+         *     Presented by `flycod host enroll` on the machine itself. It carries no
+         *     user credential — the enrollment token *is* the credential, and it is
+         *     bound to the user who minted it.
+         */
+        EnrollHost: {
+            /** @description What the machine is, as it measured itself. */
+            facts: components["schemas"]["HostFacts"];
+            /** @description The single-use enrollment token, `fh_…`. */
+            token: string;
+        };
+        /**
+         * @description Answer of `POST /v1/hosts/enroll` and of `POST
+         *     /v1/hosts/{id}/token/rotate`.
+         *
+         *     The long-lived credential the host keeps root-only on disk, returned
+         *     exactly once. Rotating mints another and revokes this one, which is how
+         *     a host that leaked its token is recovered without re-enrolling it.
+         */
+        EnrolledHost: {
+            /** @description The host that now exists. */
+            host_id: components["schemas"]["Uuid"];
+            /** @description Its token, `fh_…`. The only copy that will ever exist. */
+            host_token: string;
+        };
+        /**
+         * @description Answer of `GET /v1/hosts/enrollment-tokens/{id}`.
+         *
+         *     What the wizard polls: either nothing has happened yet, or the machine
+         *     arrived and this is it.
+         */
+        Enrollment: {
+            /** @enum {string} */
+            status: "pending";
+        } | {
+            /** @description The machine that arrived. */
+            host: components["schemas"]["HostView"];
+            /** @enum {string} */
+            status: "enrolled";
+        };
+        /**
+         * @description Answer of `POST /v1/hosts/enrollment-tokens`.
+         *
+         *     The token is returned exactly once and stored only as a hash. The
+         *     command is rendered by the control plane rather than assembled by the
+         *     wizard, because it names *this deployment's* origin: a command built in
+         *     the browser would point wherever the page happened to be served from.
+         */
+        EnrollmentToken: {
+            /** @description The one line to run on the machine, ready to copy. */
+            command: string;
+            /**
+             * Format: int64
+             * @description When it stops being accepted, seconds since the Unix epoch.
+             */
+            expires_at_unix: number;
+            /** @description Identifier the wizard polls while it waits for the machine. */
+            id: components["schemas"]["Uuid"];
+            /** @description The single-use token, `fh_…`. */
+            token: string;
+        };
         /** @description Response of `GET`/`PUT /v1/sessions/{id}/env`. */
         EnvDocument: {
             /** @description Every variable the session runs with, in the order it is stored. */
@@ -2388,6 +2624,85 @@ export interface components {
             wire_protocol_version: number;
         };
         /**
+         * @description What a host says about itself when it greets the control plane.
+         *
+         *     Reported by the machine rather than configured by the user, and
+         *     refreshed on every `Hello`: a host that gained memory, filled its disk,
+         *     or was upgraded to another Podman is a different machine to schedule
+         *     onto, and flyco has no other way to learn it.
+         */
+        HostFacts: {
+            /** @description The instruction set it runs. */
+            architecture: components["schemas"]["CpuArchitecture"];
+            /**
+             * Format: int32
+             * @description Free space in GiB where Podman keeps its containers and volumes.
+             *
+             *     Free rather than total, because it is the number that decides
+             *     whether another session fits.
+             */
+            disk_free_gib: number;
+            /**
+             * @description The machine's hostname.
+             *
+             *     Also how the host names itself in the machine catalog: it is its own
+             *     region and its own machine type, and there is nothing else to call
+             *     it that a person would recognise.
+             */
+            hostname: string;
+            /** @description Kernel release, as `uname -r` prints it. */
+            kernel: string;
+            /**
+             * Format: int64
+             * @description Total memory in MiB.
+             */
+            memory_mib: number;
+            /** @description Podman's own version string, e.g. `5.4.0`. */
+            podman_version: string;
+            /**
+             * Format: int32
+             * @description Virtual CPU count, as the kernel reports it.
+             */
+            vcpus: number;
+        };
+        /**
+         * @description Where a host is in its life.
+         * @enum {string}
+         */
+        HostState: "online" | "offline" | "draining" | "removed";
+        /**
+         * @description One row of `GET /v1/hosts`, and the body of `GET /v1/hosts/{id}`.
+         *
+         *     Carries no credential: a host's token is minted once, stored hashed, and
+         *     never read back, exactly like a daemon token.
+         */
+        HostView: {
+            /**
+             * Format: int64
+             * @description When it was enrolled, seconds since the Unix epoch.
+             */
+            created_at_unix: number;
+            /**
+             * @description What it last said about itself.
+             *
+             *     Absent only between the row being written and the host's first
+             *     `Hello`, which is a window the enrollment route does not leave open —
+             *     enrolling carries the facts.
+             */
+            facts: components["schemas"]["HostFacts"];
+            /** @description Identifier every route and every container job names it by. */
+            id: components["schemas"]["Uuid"];
+            /** @description What the user calls it. Opens as the hostname it enrolled with. */
+            label: string;
+            /**
+             * Format: int64
+             * @description When its daemon was last heard from, seconds since the Unix epoch.
+             */
+            last_seen_unix?: number | null;
+            /** @description Where it is in its life. */
+            state: components["schemas"]["HostState"];
+        };
+        /**
          * @description Why a session lost the machine it was running on.
          *
          *     Recorded beside [`SessionState::Interrupted`] rather than folded into
@@ -2403,6 +2718,29 @@ export interface components {
          * @enum {string}
          */
         InterruptedReason: "spot_reclaimed";
+        /**
+         * @description What came of one container job on a host.
+         *
+         *     A sum rather than a status and a nullable pair, because "the container
+         *     is up and here is what it is called" and "podman refused" are different
+         *     answers and only one of them names a container.
+         */
+        JobOutcome: {
+            /** @description Name of the container Podman created. */
+            container: string;
+            /** @enum {string} */
+            outcome: "running";
+            /** @description Name of the volume holding the session's work. */
+            volume: string;
+        } | {
+            /** @enum {string} */
+            outcome: "done";
+        } | {
+            /** @description The failure, as the host saw it. */
+            message: string;
+            /** @enum {string} */
+            outcome: "failed";
+        };
         /** @description Request to link a Claude Code or Codex account. */
         LinkHarnessAccount: {
             /** @description Authentication material, tagged with the mode that consumes it. */
@@ -2849,29 +3187,10 @@ export interface components {
             /** @description The whole service-account key document. */
             service_account_json: string;
         } | {
-            /** @description Hostname or address to dial. */
-            host: string;
-            /**
-             * @description The host key flyco must see, as `ssh-keygen -lf` prints it:
-             *     `SHA256:` followed by unpadded base64.
-             *
-             *     Required rather than optional, and there is no trust-on-first-use
-             *     path: linking this account is the moment flyco starts handing the
-             *     host live session credentials, and an unverified host key means
-             *     handing them to whoever answers on that address.
-             */
-            host_fingerprint: string;
+            /** @description The enrolled machine this account provisions onto. */
+            host: components["schemas"]["Uuid"];
             /** @enum {string} */
-            kind: "byo_ssh";
-            /**
-             * Format: int32
-             * @description SSH port.
-             */
-            port: number;
-            /** @description PEM-encoded private key flyco authenticates with. */
-            private_key: string;
-            /** @description Login user, which must be able to run Podman. */
-            user: string;
+            kind: "host";
         };
         /**
          * @description How far a session's machine has got towards running an agent.
@@ -2976,6 +3295,14 @@ export interface components {
              */
             ticket: string;
         };
+        /** @description Narrows a host removal. */
+        RemoveQuery: {
+            /**
+             * @description Required while sessions are still running on the machine: the caller
+             *     has seen the refusal and wants their containers stopped anyway.
+             */
+            force?: boolean;
+        };
         /** @description Narrows the repository picker. */
         RepoQuery: {
             /**
@@ -3016,6 +3343,26 @@ export interface components {
             pushed_at_unix?: number | null;
             /** @description `owner/name`, which is what `POST /v1/sessions` takes. */
             slug: components["schemas"]["RepoSlug"];
+        };
+        /**
+         * @description Request body of `POST /v1/hosts/{id}/job-results`.
+         *
+         *     The durable half of `HostToControl::JobResult`. The relay frame beside
+         *     it is what lets the host's room forget a job it was holding; this is what
+         *     completes the machine row — and it has to be a REST call rather than a
+         *     room frame because a Durable Object can reach neither D1 nor the
+         *     provisioning queue, exactly as [`crate::wire::ReportSpotNotice`]
+         *     documents for a session's daemon.
+         */
+        ReportJobResult: {
+            /**
+             * @description The machine the job acted on, which is also the job's identity: one
+             *     container job is one machine, and every Podman name in it is derived
+             *     from this id.
+             */
+            job_id: components["schemas"]["Uuid"];
+            /** @description What came of it. */
+            outcome: components["schemas"]["JobOutcome"];
         };
         /**
          * @description Request body of `POST /v1/sessions/{id}/provisioning-stage`.
@@ -3326,6 +3673,11 @@ export interface components {
         UpdateEnv: {
             /** @description The complete new set of variables; this replaces the document. */
             entries: components["schemas"]["EnvEntry"][];
+        };
+        /** @description Request body of `PATCH /v1/hosts/{id}`. */
+        UpdateHost: {
+            /** @description What to call it from now on. */
+            label: string;
         };
         /**
          * @description Request body of `PATCH /v1/me`.
@@ -4141,6 +4493,353 @@ export interface operations {
                          * @description Wire protocol version this control plane speaks to daemons.
                          */
                         wire_protocol_version: number;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::hosts::list_hosts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When it was enrolled, seconds since the Unix epoch.
+                         */
+                        created_at_unix: number;
+                        /**
+                         * @description What it last said about itself.
+                         *
+                         *     Absent only between the row being written and the host's first
+                         *     `Hello`, which is a window the enrollment route does not leave open —
+                         *     enrolling carries the facts.
+                         */
+                        facts: components["schemas"]["HostFacts"];
+                        /** @description Identifier every route and every container job names it by. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description What the user calls it. Opens as the hostname it enrolled with. */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When its daemon was last heard from, seconds since the Unix epoch.
+                         */
+                        last_seen_unix?: number | null;
+                        /** @description Where it is in its life. */
+                        state: components["schemas"]["HostState"];
+                    }[];
+                };
+            };
+        };
+    };
+    "flyco_api::hosts::enroll_host": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description What the machine is, as it measured itself. */
+                    facts: components["schemas"]["HostFacts"];
+                    /** @description The single-use enrollment token, `fh_…`. */
+                    token: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The host that now exists. */
+                        host_id: components["schemas"]["Uuid"];
+                        /** @description Its token, `fh_…`. The only copy that will ever exist. */
+                        host_token: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::hosts::mint_enrollment_token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The one line to run on the machine, ready to copy. */
+                        command: string;
+                        /**
+                         * Format: int64
+                         * @description When it stops being accepted, seconds since the Unix epoch.
+                         */
+                        expires_at_unix: number;
+                        /** @description Identifier the wizard polls while it waits for the machine. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description The single-use token, `fh_…`. */
+                        token: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::hosts::get_enrollment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status: "pending";
+                    } | {
+                        /** @description The machine that arrived. */
+                        host: components["schemas"]["HostView"];
+                        /** @enum {string} */
+                        status: "enrolled";
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::hosts::get_host": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When it was enrolled, seconds since the Unix epoch.
+                         */
+                        created_at_unix: number;
+                        /**
+                         * @description What it last said about itself.
+                         *
+                         *     Absent only between the row being written and the host's first
+                         *     `Hello`, which is a window the enrollment route does not leave open —
+                         *     enrolling carries the facts.
+                         */
+                        facts: components["schemas"]["HostFacts"];
+                        /** @description Identifier every route and every container job names it by. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description What the user calls it. Opens as the hostname it enrolled with. */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When its daemon was last heard from, seconds since the Unix epoch.
+                         */
+                        last_seen_unix?: number | null;
+                        /** @description Where it is in its life. */
+                        state: components["schemas"]["HostState"];
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::hosts::delete_host": {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::hosts::update_host": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description What to call it from now on. */
+                    label: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When it was enrolled, seconds since the Unix epoch.
+                         */
+                        created_at_unix: number;
+                        /**
+                         * @description What it last said about itself.
+                         *
+                         *     Absent only between the row being written and the host's first
+                         *     `Hello`, which is a window the enrollment route does not leave open —
+                         *     enrolling carries the facts.
+                         */
+                        facts: components["schemas"]["HostFacts"];
+                        /** @description Identifier every route and every container job names it by. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description What the user calls it. Opens as the hostname it enrolled with. */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When its daemon was last heard from, seconds since the Unix epoch.
+                         */
+                        last_seen_unix?: number | null;
+                        /** @description Where it is in its life. */
+                        state: components["schemas"]["HostState"];
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::hosts::report_job_result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description The machine the job acted on, which is also the job's identity: one
+                     *     container job is one machine, and every Podman name in it is derived
+                     *     from this id.
+                     */
+                    job_id: components["schemas"]["Uuid"];
+                    /** @description What came of it. */
+                    outcome: components["schemas"]["JobOutcome"];
+                };
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "app::open_host_relay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::hosts::rotate_host_token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The host that now exists. */
+                        host_id: components["schemas"]["Uuid"];
+                        /** @description Its token, `fh_…`. The only copy that will ever exist. */
+                        host_token: string;
                     };
                 };
             };

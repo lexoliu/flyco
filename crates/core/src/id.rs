@@ -171,6 +171,12 @@ pub struct ClaudeOauthAttemptEntity(());
 /// Marker for in-flight Codex device-code sign-in identifiers.
 #[derive(Debug)]
 pub struct CodexOauthAttemptEntity(());
+/// Marker for enrolled host identifiers.
+#[derive(Debug)]
+pub struct HostEntity(());
+/// Marker for host enrollment token identifiers.
+#[derive(Debug)]
+pub struct EnrollmentTokenEntity(());
 
 /// Identifies a flyco user.
 pub type UserId = Id<UserEntity>;
@@ -206,6 +212,10 @@ pub type HarnessObservationId = Id<HarnessObservationEntity>;
 pub type ClaudeOauthAttemptId = Id<ClaudeOauthAttemptEntity>;
 /// Identifies one browser's in-flight Codex device-code sign-in.
 pub type CodexOauthAttemptId = Id<CodexOauthAttemptEntity>;
+/// Identifies a Linux machine the user enrolled.
+pub type HostId = Id<HostEntity>;
+/// Identifies one minted host enrollment token.
+pub type EnrollmentTokenId = Id<EnrollmentTokenEntity>;
 
 #[cfg(test)]
 mod tests {

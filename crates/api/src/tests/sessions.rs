@@ -554,6 +554,7 @@ async fn an_idle_session_is_archived_automatically(ctx: TestContext, kv: Kv, db:
         &db,
         &testing::test_config(),
         &rooms,
+        &testing::test_host_rooms(),
         crate::clock::now_unix(),
     )
     .await

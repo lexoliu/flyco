@@ -912,7 +912,7 @@ mod worker {
     use crate::config::{ApiConfig, binding};
     use crate::github::GithubClient;
     use crate::provisioning::CloudProvisioner;
-    use crate::rooms::Rooms;
+    use crate::rooms::{HostRooms, Rooms};
     use crate::vendors::Vendors;
 
     #[skyzen::queue]
@@ -942,14 +942,18 @@ mod worker {
             }
         };
 
-        let rooms = Rooms::from_worker_env(env);
+        // One environment, two namespaces: a session's room takes the
+        // provisioning timeline, and a host's room takes the container job
+        // that *is* the machine.
+        let wasm = skyzen::runtime::wasm::WasmEnv::new(env);
+        let rooms = Rooms::from_wasm_env(wasm.clone());
         consume(
             &db,
             &config,
             &queue,
             &rooms,
             &mut Clients {
-                provisioner: &mut CloudProvisioner,
+                provisioner: &mut CloudProvisioner::new(HostRooms::from_wasm_env(wasm)),
                 vendors: &Vendors::default(),
                 github: &GithubClient::default(),
             },

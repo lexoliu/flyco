@@ -13,8 +13,8 @@
 //! than drifting quietly.
 
 use flyco_core::{
-    ApprovalState, BudgetSignal, CloudProviderKind, HarnessKind, MachineOrigin, MachineState,
-    SessionActivity, SkillScope, SpendKind,
+    ApprovalState, BudgetSignal, CloudProviderKind, HarnessKind, HostState, MachineOrigin,
+    MachineState, SessionActivity, SkillScope, SpendKind,
 };
 use skyzen_services::sql::ColumnEnum;
 
@@ -33,6 +33,7 @@ const CONSTRAINED: &[(&str, &str, &[&str])] = &[
     ("machines", "provider", CloudProviderKind::TOKENS),
     ("machines", "state", MachineState::TOKENS),
     ("budget_signals", "signal", BudgetSignal::TOKENS),
+    ("hosts", "state", HostState::TOKENS),
 ];
 
 /// One `CHECK (<column> IN ('a', 'b'))` found in a migration.
@@ -49,20 +50,46 @@ struct Constraint {
 /// than a SQL parser: the migrations are the only input, one `CREATE TABLE`
 /// per line-block with one column per line, and a parser would be a second
 /// dialect to keep correct.
+///
+/// It does follow the one thing that would otherwise make it read a schema
+/// nobody has: SQLite cannot drop a `CHECK`, so changing one means building
+/// the table again beside the old, copying the rows, dropping the original
+/// and renaming — and a scanner that ignored the drop and the rename would
+/// report both the constraint that exists and the one that was replaced.
 fn constraints() -> Vec<Constraint> {
     let mut found = Vec::new();
     let mut table = String::new();
 
     for line in MIGRATIONS.iter().flat_map(|sql| sql.lines()) {
         let trimmed = line.trim();
+        // A dropped table takes its constraints with it.
+        if let Some(rest) = trimmed.strip_prefix("DROP TABLE ") {
+            let dropped = rest.trim().trim_end_matches(';').trim().to_owned();
+            found.retain(|constraint: &Constraint| constraint.table != dropped);
+            continue;
+        }
         // An `ALTER TABLE … ADD COLUMN` names its table too, and a column
-        // added later is as constrained as one declared at the start.
+        // added later is as constrained as one declared at the start. A
+        // rename carries every constraint of the old name to the new one,
+        // which is how a rebuilt table ends up owning them.
         if let Some(rest) = trimmed.strip_prefix("ALTER TABLE ") {
-            table = rest
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .to_owned();
+            let mut words = rest.split_whitespace();
+            let named = words.next().unwrap_or_default().to_owned();
+            if (words.next(), words.next()) == (Some("RENAME"), Some("TO")) {
+                let renamed = words
+                    .next()
+                    .unwrap_or_default()
+                    .trim_end_matches(';')
+                    .to_owned();
+                for constraint in &mut found {
+                    if constraint.table == named {
+                        constraint.table.clone_from(&renamed);
+                    }
+                }
+                table = renamed;
+                continue;
+            }
+            table = named;
         }
         if let Some(rest) = trimmed.strip_prefix("CREATE TABLE ") {
             table = rest

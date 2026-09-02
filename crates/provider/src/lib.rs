@@ -1,9 +1,10 @@
 //! Cloud provider abstraction for flyco.
 //!
-//! Every implementation is an HTTP client over the provider's public API
-//! ([`http`], backed by zenwave natively and the Worker's `fetch` on wasm32), never a native SDK — the same code runs
-//! in the Cloudflare Worker (wasm32) and in tests: [`byo_ssh`], [`azure`],
-//! [`aws`] and [`gcp`].
+//! Every cloud implementation is an HTTP client over the provider's public
+//! API ([`http`], backed by zenwave natively and the Worker's `fetch` on
+//! wasm32), never a native SDK — the same code runs in the Cloudflare Worker
+//! (wasm32) and in tests: [`azure`], [`aws`] and [`gcp`]. Beside them is
+//! [`host`], the machine the user owns, which is not a cloud at all.
 //!
 //! Where two drivers need the same decision they share it rather than each
 //! having one: [`cloud_init`] is the document every provisioned machine
@@ -15,22 +16,21 @@
 //! All three cloud drivers are reachable from the Worker because every step
 //! of them is an HTTPS call — an AWS signature and a Google assertion are
 //! both computed in-process rather than by an SDK, which is what keeps it so.
-//! byo-ssh is not: SSH is a TCP transport and a Worker has no sockets. The
-//! two shapes are told apart in the type system rather than by a runtime
-//! check —
+//! A machine the user owns is not reachable at all: flyco never opens a
+//! connection to it. The two shapes are told apart in the type system rather
+//! than by a runtime check —
 //!
 //! * [`azure::AzureProvider`], [`aws::AwsProvider`] and [`gcp::GcpProvider`]
 //!   speak only HTTPS, so they implement [`CloudProvider`] on every target —
 //!   the Worker included.
-//! * [`byo_ssh::ByoSsh`] compiles everywhere but implements **no** provider
-//!   trait. It *plans*: it turns a machine operation into a
-//!   [`byo_ssh::ContainerJob`], a serializable description of the container
-//!   lifecycle work, which the control plane enqueues.
-//! * `byo_ssh::SshExecutor` exists only behind the native `ssh` feature and
-//!   is what implements [`CloudProvider`] for byo-ssh, by performing a
-//!   `ContainerJob` over a real SSH connection.
+//! * [`host::Host`] compiles everywhere and implements **no** provider
+//!   trait. It *plans*: it turns a [`MachineOperation`] into a
+//!   [`host::ContainerJob`], a serializable description of the container
+//!   lifecycle work, which the control plane sends down that host's own
+//!   outbound socket for `flycod host` to perform.
 //!
-//! So a Worker build cannot accidentally call SSH code: there is none in it.
+//! So a Worker build contains no code that dials anybody's machine: there is
+//! none in the crate.
 //!
 //! # Why the trait takes `&mut self`
 //!
@@ -43,12 +43,12 @@
 
 pub mod aws;
 pub mod azure;
-pub mod byo_ssh;
 pub mod clock;
 pub mod cloud_init;
 pub mod datetime;
 pub mod flycod;
 pub mod gcp;
+pub mod host;
 pub mod http;
 pub mod naming;
 pub mod polling;
@@ -90,8 +90,8 @@ impl CapacityMode {
 pub struct Machine {
     /// Flyco's identifier for the machine.
     pub id: MachineId,
-    /// Provider-native resource identifier (instance id, VM resource id,
-    /// or container id for byo-ssh).
+    /// Provider-native resource identifier: an instance id, a VM resource
+    /// id, or the container name on a machine the user owns.
     pub native_id: String,
     /// Provider-native region the machine lives in.
     ///
@@ -268,14 +268,14 @@ pub struct ProvisionRequest {
 /// Named as data rather than as a method call because it is what the control
 /// plane puts on a queue: a Worker decides *what* should happen, and the
 /// executor that can actually reach the provider decides *when*. It is also
-/// what [`byo_ssh::ByoSsh::plan`] turns into container work without
+/// what [`host::Host::plan`] turns into container work without
 /// performing any of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum MachineOperation {
     /// Bring a new machine into existence.
     ///
-    /// Boxed for the reason [`byo_ssh::ContainerJob::Create`] is: a
+    /// Boxed for the reason [`host::ContainerJob::Create`] is: a
     /// provisioning request carries the whole daemon bootstrap — three
     /// credentials, a repository, a commit identity and the machine the
     /// session is on — while every other operation here is a machine and a

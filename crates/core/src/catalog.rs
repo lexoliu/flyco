@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn hardware_the_user_owns_is_never_dropped_and_sorts_first() {
         let owned = MachineCatalogEntry {
-            provider: CloudProviderKind::ByoSsh,
+            provider: CloudProviderKind::Host,
             account: Some(account(3)),
             region: "build.lexo.cool".to_owned(),
             machine_type: "build.lexo.cool".to_owned(),

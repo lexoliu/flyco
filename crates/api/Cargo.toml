@@ -14,7 +14,6 @@ crate-type = ["cdylib", "rlib"]
 # `sql` carries the column mapping of the stored domain types; see that
 # crate's manifest for why it is a feature rather than always on.
 flyco-core = { workspace = true, features = ["sql"] }
-# Default features only: the `ssh` executor must never reach the Worker build.
 flyco-provider.workspace = true
 skyzen.workspace = true
 skyzen-services.workspace = true
@@ -53,10 +52,6 @@ wasm-bindgen = "=0.2.120"
 # (which lives in `skyzen-test`) and a local SQLite file, so both crates are
 # real dependencies of the native build — and of the native build only.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# `ssh` only off the Worker. A registered host is reached over TCP, which the
-# Worker has none of, so `SshExecutor` exists exactly where a connection can be
-# opened — and the Worker's dependency graph still contains no SSH client.
-flyco-provider = { workspace = true, features = ["ssh"] }
 skyzen-services = { workspace = true, features = [
     "sqlite",
     "runtime-async-std-rustls",

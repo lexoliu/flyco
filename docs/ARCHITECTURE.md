@@ -15,7 +15,7 @@ The Worker is wasm32: no processes, no listening sockets, no tokio. Anything lon
 |---|---|---|
 | `flyco-core` | wasm32 + native | Domain types, DTOs, wire protocol, budget engine. Pure logic, no I/O. |
 | `flyco-api` | Cloudflare Workers | Control plane. |
-| `flyco-provider` | wasm32 + native | `CloudProvider` trait + implementations (byo-ssh, Azure, AWS, GCP) over signed HTTP via zenwave. |
+| `flyco-provider` | wasm32 + native | `CloudProvider` trait + implementations (Azure, AWS, GCP) over signed HTTP via zenwave, and the container-job planner for a machine the user owns. |
 | `flyco-daemon` | Linux VMs (native) | `flycod`: harness drivers, terminal, local MCP server, enforcement. |
 
 `frontend/` is the SolidJS PWA (Bun + Vite), embedded into the Worker via `EmbeddedStaticDir`.
@@ -52,7 +52,7 @@ Creation then writes the session, its budget, and an empty `machines` row, and e
 
 `POST /v1/sessions/{id}/resume` is the same path. It moves the session back to `provisioning`, resets its existing machine row, and enqueues a job naming that same machine — there is one implementation of provisioning and this is not a second one. **Archived is therefore not terminal in `flyco_core::session`**, and that is the History feature rather than a loophole: archiving releases the execution environment and keeps the turns precisely so the session can come back.
 
-byo-ssh is provisioned by the native half of the driver, which is why `flyco-api` enables `flyco-provider/ssh` for non-wasm targets only: SSH is a TCP transport and the Worker has no sockets, so the Worker's consumer refuses a registered host by name rather than failing at a layer that would read as the host being down.
+A session on a machine the user owns is provisioned by *asking the machine*: the queue plans a `ContainerJob` and posts it to that host's Durable Object, which forwards it down the socket the machine itself holds open. The Worker never dials anybody's hardware, because it has no sockets to dial with — see "Hosts" below.
 
 ## Spot reclamation
 
@@ -201,18 +201,31 @@ Of the three cloud drivers this is the one closest in shape to Azure's: every mu
 
 **A machine type has no price.** Google publishes a rate per vCPU-hour and per GiB-hour, per family, per region, per market, so `pricing` folds the Cloud Billing SKU catalog into a `(family, market)` rate table and multiplies by each type's own shape. The family is not in any structured field — it is the first family-shaped word of the description (`E2 Instance Core`, but also `N1 Predefined Instance Core` and `Spot Preemptible E2 Instance Core`), so "the word before the marker" is wrong and the code looks for `letters-then-digits`. Prices are `units` + `nanos`, which converts to microdollars exactly rather than through a float. **A catalog entry names the zone, not the region**: a machine type offered in one zone of a region is routinely absent from another.
 
-**Metered spend is `None`, and that is a fact rather than a gap.** Google publishes no spend-to-date API: billing data reaches a project through a BigQuery export the *user* configures, and a project-scoped service account cannot read a billing account's running total at all. So a GCP account contributes no row to the cloud usage panel, for a different reason than byo-ssh and with the same answer — silence rather than a `$0.00` that would read as "this costs nothing".
+**Metered spend is `None`, and that is a fact rather than a gap.** Google publishes no spend-to-date API: billing data reaches a project through a BigQuery export the *user* configures, and a project-scoped service account cannot read a billing account's running total at all. So a GCP account contributes no row to the cloud usage panel, for a different reason than a machine the user owns and with the same answer — silence rather than a `$0.00` that would read as "this costs nothing".
 
-### byo-ssh, and the plan/execute split
+## Hosts: a machine the user owns
 
-byo-ssh is the provider that needs no cloud account, so it exists first: everything downstream of provisioning is exercisable against a laptop. A "machine" is a **Podman container** on the registered host — created from the flyco image, handed the session's `flycod` config through an env-file on the remote shell's stdin (never a command-line argument, which a `ps` would show), stopped to deallocate, removed to destroy. `resize` is `ProviderError::Unsupported`, never a silent no-op: the host has the hardware it has, and a caller that believed a resize happened would bill and schedule against a machine that did not change. `catalog()` reports one entry — the host itself — with `MachinePricing::UserOwned` and no capacity, because flyco does not know either number and inventing a `$0.00` would tell a budget the session can run forever. For the same reason it contributes **no row** to the cloud usage panel: the user already owns the hardware and already pays for it, flyco meters nothing, and an unmetered provider says nothing rather than reporting a zero. An account whose meter cannot be read at all is skipped with a warning, exactly as in the machine catalog — one expired credential must not hide every other account's spend.
+The control plane runs on Cloudflare Workers, which have no TCP sockets, so flyco can never open a connection to somebody's machine. A host is therefore **enrolled rather than dialled** — the shape GitHub's self-hosted runners and Tailscale nodes have, and the only shape a Worker can drive (docs/host-enrollment.md).
 
-SSH is a TCP transport and the Worker has no sockets, so the driver is in two halves, and the split is enforced by the crate graph rather than by convention:
+```
+browser ── REST ──▶ Worker ──▶ HostRoom (DO) ◀── outbound WS ── flycod host ── podman ── session container
+```
 
-- `byo_ssh::ByoSsh` compiles on wasm32, performs no I/O, and *plans*: it turns a `MachineOperation` into a serializable `ContainerJob` that the control plane enqueues.
-- `byo_ssh::SshExecutor` exists only behind the native `ssh` feature (russh) and is the only thing that implements `CloudProvider` for byo-ssh. A Worker build contains no SSH client because the feature that provides one is not enabled for it.
+**Enrollment.** `POST /v1/hosts/enrollment-tokens` mints a single-use `fh_` token, ten minutes long, stored hashed like every other flyco credential, and renders the one line the wizard shows — from a template, against *this deployment's* origin, because a command assembled in the browser would point wherever the page happened to be served from. The machine runs it, `POST /v1/hosts/enroll` spends the token and creates two rows: the host, and a **provider account of kind `host`** carrying its id. That second row is what keeps a machine somebody owns from being a special case anywhere else — the compute chip, the curated catalog, session creation and the usage panel all speak `provider_accounts`.
 
-The feature is off by default and CI enables it explicitly (`--features flyco-provider/ssh`) so the executor is still linted and tested. Host keys are pinned: `ProviderCredentials::ByoSsh` carries a required `host_fingerprint` and there is no trust-on-first-use path, because linking the account is the moment flyco starts handing that address live session credentials.
+**Its catalog is one entry: itself**, priced `UserOwned`, sized and architected from the facts the machine reported. Offered only while the host is online: an offline machine is not a cheaper machine, it is one that cannot be started, and putting it on the slider would be a choice that fails the moment it is taken.
+
+**Provisioning is a container job.** `flyco_provider::host::Host` compiles on wasm32, performs no I/O, and *plans*: it turns a `MachineOperation` into a serializable `ContainerJob` — create (with a Podman volume for the checkout), stop, start, remove — which the Worker posts to the host's room. `resize` is `ProviderError::Unsupported`, never a silent no-op: the machine has the hardware it has. The rendered `podman` script lives beside the planner (`host::script`), with every interpolated value shell-quoted, because that text is the contract with Podman and `flycod host` runs exactly what it produces.
+
+**The room is the authority on liveness; D1 is the authority on identity.** A Durable Object can reach neither D1 nor KV, so the split is not a preference:
+
+- The machine's `Hello { facts }` reaches its room, which records the facts and hands over whatever the mailbox is holding. The Worker sees the *upgrade* that carries that socket, and that is where `hosts.state` is written `online`.
+- Every read of a host asks its room whether the socket is still there and writes back what it learned, so a machine that was unplugged reads `offline` on the next look — without a cron, a heartbeat route, or a second copy of the facts.
+- `HostToControl::JobResult` reaches the room, which forgets the job it was holding. The *durable* half — the container and volume names on the machine row — arrives at the Worker over REST as a `ReportJobResult`, authenticated by the host's own token. Two routes for one fact, exactly as a session daemon's spot notice travels twice and for the same reason.
+
+**The mailbox.** A container job is written to the room's own SQLite before anything tries to deliver it, and stays there until the machine answers it: a `Run` lost while a machine reboots is a session that never gets its container, or a container nobody ever removes. Delivery is therefore at-least-once, which is what a job is written to survive — creating one removes any container of that name first, and stopping a stopped container is what `podman` does anyway.
+
+**Removal drains.** `DELETE /v1/hosts/{id}` refuses while sessions are still running there unless `force`; forced, it stops each container **keeping its volume** — the session's work is still on hardware the user owns — marks those machines deallocated, revokes the token, and tells the room, so the unit on the machine stops rather than reconnecting for ever against a credential that will never work again.
 
 ## Version pins and platform notes (skyzen 0.2)
 
