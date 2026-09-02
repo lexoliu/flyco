@@ -8,12 +8,13 @@
 //! [`ProviderAccountView`](flyco_core::ProviderAccountView) has no field
 //! that could hold one.
 
+use askama::Template;
 use flyco_core::{
-    CloudProviderKind, CloudUsageView, CurrentUser, LinkProvider, ProviderAccountId,
+    AwsIamPolicy, CloudProviderKind, CloudUsageView, CurrentUser, LinkProvider, ProviderAccountId,
     ProviderAccountView, ProviderBonusHint, ProviderCredentials, QuickstartAnswers, UserId,
 };
-use flyco_provider::azure::auth::{ServicePrincipal, TokenCache};
-use flyco_provider::{SystemClock, ZenwaveTransport};
+use flyco_provider::aws::iam;
+use flyco_provider::azure::RESOURCE_GROUP;
 use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
@@ -101,8 +102,11 @@ async fn link_provider(
 /// provider is asked for the cheapest call that exercises the whole
 /// credential and creates nothing:
 ///
-/// * **Azure** — an access token, which is what the whole service-principal
-///   triple is for.
+/// * **Azure** — nothing here. Linking an Azure subscription creates the
+///   resource group flyco owns inside it, and that write is a stronger check
+///   than any read: a token proves the client secret is right, while the
+///   `PUT` proves the principal is also scoped widely enough to be useful.
+///   See [`provision_azure_workspace`].
 /// * **AWS** — `sts:GetCallerIdentity`, which no IAM policy can deny, costs
 ///   nothing, and answers with the account the key opens.
 /// * **GCP** — a token mint, which is the whole credential: a service
@@ -119,27 +123,11 @@ async fn link_provider(
 /// job that dials it.
 async fn verify(credentials: &ProviderCredentials) -> Result<(), ApiError> {
     match credentials {
-        ProviderCredentials::Azure {
-            tenant_id,
-            client_id,
-            client_secret,
-            subscription_id,
-            ..
-        } => {
-            let mut tokens = TokenCache::new(ServicePrincipal {
-                tenant_id: tenant_id.clone(),
-                client_id: client_id.clone(),
-                client_secret: client_secret.clone(),
-                subscription_id: subscription_id.clone(),
-            });
-            tokens
-                .access_token(&ZenwaveTransport::new(), &SystemClock::default())
-                .await
-                .map(|_| ())
-                .map_err(|error| ApiError::ProviderRejectedCredentials {
-                    reason: error.to_string(),
-                })
-        }
+        // Azure is checked by [`provision_azure_workspace`] instead, which
+        // has to run anyway and proves strictly more: a token proves the
+        // secret is right, and creating the resource group proves the
+        // principal is scoped widely enough to be useful.
+        ProviderCredentials::Azure { .. } => Ok(()),
         ProviderCredentials::ByoSsh {
             host,
             user,
@@ -197,6 +185,50 @@ async fn verify(credentials: &ProviderCredentials) -> Result<(), ApiError> {
     }
 }
 
+/// Creates the resource group flyco owns inside a freshly linked Azure
+/// subscription.
+///
+/// The user never names one. The service principal the wizard mints is
+/// `Contributor` on the whole subscription, which is exactly the scope a
+/// resource-group creation needs, so flyco makes the group itself — and the
+/// `PUT` doubles as the credential check, because it exercises the token
+/// *and* the role assignment rather than only the secret.
+///
+/// Answers with the group's name, which is stored on the account so a
+/// subscription linked today keeps the group it owns if flyco's default name
+/// ever changes.
+async fn provision_azure_workspace(
+    credentials: &ProviderCredentials,
+) -> Result<Option<String>, ApiError> {
+    let ProviderCredentials::Azure {
+        tenant_id,
+        client_id,
+        client_secret,
+        subscription_id,
+        admin_ssh_public_key,
+    } = credentials
+    else {
+        return Ok(None);
+    };
+
+    let region = crate::provisioning::azure_driver(
+        tenant_id,
+        client_id,
+        client_secret,
+        subscription_id,
+        RESOURCE_GROUP,
+        admin_ssh_public_key,
+    )
+    .ensure_resource_group()
+    .await
+    .map_err(|error| ApiError::ProviderRejectedCredentials {
+        reason: error.to_string(),
+    })?;
+
+    tracing::info!(group = RESOURCE_GROUP, %region, "prepared an Azure subscription");
+    Ok(Some(RESOURCE_GROUP.to_owned()))
+}
+
 async fn link(
     db: &Db,
     config: &ApiConfig,
@@ -204,6 +236,7 @@ async fn link(
     request: LinkProvider,
 ) -> Result<ProviderAccountView, ApiError> {
     verify(&request.credentials).await?;
+    let resource_group = provision_azure_workspace(&request.credentials).await?;
 
     let kind = request.credentials.kind();
     let sealed = config.token_cipher().seal(
@@ -216,8 +249,9 @@ async fn link(
     sql!(
         db,
         "INSERT INTO provider_accounts \
-         (id, user_id, kind, label, credentials_enc, linked_at_unix) \
-         VALUES ({id}, {user}, {kind}, {request.label.clone()}, {sealed}, {linked_at})"
+         (id, user_id, kind, label, credentials_enc, resource_group, linked_at_unix) \
+         VALUES ({id}, {user}, {kind}, {request.label.clone()}, {sealed}, {resource_group}, \
+                 {linked_at})"
     )
     .execute()
     .await?;
@@ -281,6 +315,40 @@ async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, Api
     .await?;
 
     Ok(NoContent)
+}
+
+/// The minimal IAM policy, as a document ready to paste into IAM.
+///
+/// A compiled template over `flyco_provider::aws::iam::actions()`, which is
+/// itself derived from the driver's own call sites, so the policy the wizard
+/// shows cannot drift from the permissions the driver needs — see that
+/// module for the test that holds it to them.
+#[derive(Debug, Template)]
+#[template(path = "aws/iam_policy.json", escape = "none")]
+struct IamPolicyDocument {
+    /// Every action to grant, `service:Action`, sorted.
+    actions: Vec<String>,
+}
+
+/// Shows the least privilege an AWS access key needs to run flyco sessions.
+///
+/// Served rather than checked into the frontend because it is a fact about
+/// this build of the driver: a copy in a template somewhere else would be
+/// right on the day it was written and quietly wrong afterwards.
+#[skyzen::openapi]
+async fn aws_iam_policy(State(_user): State<CurrentUser>) -> Outcome<Json<AwsIamPolicy>> {
+    iam_policy().map(Json).into()
+}
+
+fn iam_policy() -> Result<AwsIamPolicy, ApiError> {
+    let actions = iam::actions();
+    let document = IamPolicyDocument {
+        actions: actions.clone(),
+    }
+    .render()
+    .map_err(|_| ApiError::CorruptRecord("the AWS IAM policy template did not render"))?;
+
+    Ok(AwsIamPolicy { document, actions })
 }
 
 /// Suggests free-credit programmes the caller qualifies for.
@@ -360,6 +428,7 @@ async fn usage(
 pub fn routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/providers".at(list_providers).post(link_provider),
+        "/v1/providers/aws/iam-policy".at(aws_iam_policy),
         "/v1/providers/quickstart".post(provider_quickstart),
         "/v1/providers/{id}".delete(unlink_provider),
         "/v1/usage/cloud".at(cloud_usage),

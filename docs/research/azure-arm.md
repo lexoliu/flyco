@@ -175,15 +175,25 @@ Microsoft.Resources/subscriptions/resourceGroups/read ← CANNOT create the RG
 So **Virtual Machine Contributor alone is insufficient** for a driver that provisions its own
 VNet / public IP / NSG. Two workable shapes:
 
-- **`Contributor` scoped to one resource group** — simplest, and `notActions` still blocks all
-  `Microsoft.Authorization/*/Write`, so the SP cannot grant itself more **[E]**. Recommended.
+- **`Contributor` scoped to the subscription** — what flyco ships. This is what
+  `az ad sp create-for-rbac --role Contributor --scopes /subscriptions/$(az account show --query
+  id -o tsv)` produces, which is one command a user can run without first inventing a resource
+  group and typing its name into a form. `notActions` still blocks all
+  `Microsoft.Authorization/*/Write`, so the SP cannot grant itself more **[E]**.
+- **`Contributor` scoped to one resource group** — tighter, and it costs the user a second
+  command plus a name flyco then has to be told. Supported by the driver (the group name is
+  recorded on the account) but not what the wizard mints.
 - **`Virtual Machine Contributor` + `Network Contributor`**, both scoped to the same RG.
   `Network Contributor` = `Microsoft.Network/*` **[E]**. Use this if you want the SP unable to
   touch storage/keyvault/etc.
 
 **Important [E/D]:** *no* RG-scoped role can create the resource group itself — that write happens
-at subscription scope. **Create the RG once, out of band**, and the driver's steady-state call
-sequence has no RG `PUT` in it. Corollary **[D]**: async-operation status URLs are not scoped to
+at subscription scope. That is precisely why flyco takes subscription scope: the control plane
+creates the group named `flyco` itself, once, when the account is linked
+(`AzureProvider::ensure_resource_group`), and the driver's steady-state call sequence still has no
+RG `PUT` in it. The `PUT` doubles as the credential check at link time, because it exercises the
+token *and* the role assignment where a token mint would only have exercised the secret.
+Corollary **[D]**: async-operation status URLs are not scoped to
 the resource, so the SP needs its permission at **resource-group** level, not resource level, or it
 can start operations but not poll them
 (https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/async-operations#permission-for-tracking-async-status).
@@ -213,7 +223,7 @@ the PIP, NIC and VM are per-session):
 
 | # | Resource | Depends on | Parallel? |
 |---|---|---|---|
-| 1 | resource group | — | one-time, out of band |
+| 1 | resource group | — | one-time, at link time |
 | 2 | virtual network (subnet **inline**, not a separate PUT) | RG | one-time |
 | 3 | network security group (SSH rule) | RG | ← these three |
 | 4 | public IP address | RG | ← can go in |
@@ -247,9 +257,10 @@ already `Registered` on this subscription — no `providers/register` call neede
 
 ### 2.4 Full JSON bodies
 
-Substitute: `SUB` = subscription id, `RG` = `flyco-rg`, `LOC` = `westus2`, `N` = session name.
+Substitute: `SUB` = subscription id, `RG` = `flyco` (the group flyco creates and owns; see
+`flyco_provider::azure::RESOURCE_GROUP`), `LOC` = `westus2`, `N` = session name.
 
-#### (1) Resource group — one-time, needs subscription-scope write
+#### (1) Resource group — one-time at link time, needs subscription-scope write
 
 ```
 PUT https://management.azure.com/subscriptions/{SUB}/resourcegroups/{RG}?api-version=2023-07-01
@@ -975,8 +986,9 @@ Also **[E]**: `spendingLimit: "On"`. When the student credit runs out the subscr
     `allowedToCreateApps` is `false` in *both* of the user's tenants, and the user holds no
     directory role, so `az ad sp create-for-rbac` will be denied. The client-credentials design is
     sound but needs either the **Application Developer** role from an rit.edu tenant admin or a
-    fresh personal tenant. Once unblocked, scope **`Contributor`** (or
-    `Virtual Machine Contributor` + `Network Contributor`) to one pre-created resource group —
-    `Virtual Machine Contributor` alone cannot PUT a VNet, public IP, or NSG, and no RG-scoped role
-    can create the RG itself. Grant at RG scope, not resource scope, or the SP can start async
-    operations but cannot poll them.
+    fresh personal tenant. Once unblocked, scope **`Contributor`** to the **subscription**, which
+    is what the wizard's single `az ad sp create-for-rbac` command does and what lets flyco create
+    the `flyco` resource group itself at link time. `Virtual Machine Contributor` alone cannot PUT
+    a VNet, public IP, or NSG, and no RG-scoped role can create the RG itself — which is the whole
+    reason the scope is the subscription rather than a group. Whatever the scope, grant at RG level
+    or wider, not resource level, or the SP can start async operations but cannot poll them.

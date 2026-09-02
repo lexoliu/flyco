@@ -12,7 +12,7 @@ use flyco_core::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, CloudProviderKind, CurrentUser, DEFAULT_DISK_GIB,
     MachineCatalogEntry, MachineChoice, MachineDefault, MachineId, MachineSpec, MachineState,
     MachineView, OsFamily, ProviderAccountId, ResizeMachine, SessionId, Usd, UserId,
-    auto_linux_choice,
+    auto_linux_choice, curate,
 };
 use serde::Deserialize;
 use skyzen::extract::Query;
@@ -256,7 +256,15 @@ async fn get_catalog(
         .into()
 }
 
-/// Merges every linked account's catalog into one document.
+/// Merges every linked account's catalog into one curated document.
+///
+/// Curated by [`curate`], which is the whole of docs/ux.md §7.6: newest
+/// generation of each family, then the strict Pareto frontier on price
+/// against capacity, then ordered by price. Every reader of the catalog goes
+/// through here — the chip's slider, `GET /v1/machines/default`, and the
+/// resize the agent asks for — so the user and the agent are choosing from
+/// the same short list rather than from two different views of one cloud's
+/// thousands of redundant rows.
 ///
 /// What each provider returns is already narrowed to what that account can
 /// actually deploy — for Azure that means SKU restrictions, quota *and* the
@@ -294,7 +302,12 @@ pub(crate) async fn catalog(
             .is_none_or(|region| entry.region.eq_ignore_ascii_case(region))
             && filter.os.is_none_or(|os| entry.os == os)
     });
-    Ok(entries)
+
+    // Curation is applied after filtering, not before: a frontier computed
+    // over every region and then narrowed to one would hide types that are
+    // on the frontier *of that region*, which is the only frontier a user
+    // choosing a region can act on.
+    Ok(curate(entries))
 }
 
 /// Whether a caller who names no machine wants interruptible capacity.

@@ -20,6 +20,7 @@
 //! so an operation that reached `DONE` and carries an error is a failure, and
 //! reading the status alone would call it a success.
 
+use flyco_core::machine::{CpuArchitecture, MachineLineage};
 use serde::{Deserialize, Serialize};
 
 use crate::ProviderError;
@@ -494,6 +495,14 @@ pub struct MachineType {
     /// Memory in MiB, which is what the API states it in.
     #[serde(rename = "memoryMb", default)]
     pub memory_mb: u64,
+    /// The instruction set, as Compute Engine states it: `X86_64`, `ARM64`,
+    /// or `ARCHITECTURE_UNSPECIFIED`.
+    ///
+    /// Read rather than parsed out of the name, for the reason every other
+    /// driver reads it: `t2a` is Arm and `t2d` is x86, and pairing either
+    /// with the other's image fails at launch.
+    #[serde(default)]
+    pub architecture: Option<String>,
     /// Present only on a type that is on its way out.
     #[serde(default)]
     pub deprecated: Option<Deprecation>,
@@ -527,6 +536,48 @@ impl MachineType {
     #[must_use]
     pub fn family(&self) -> Option<&str> {
         self.name.split_once('-').map(|(family, _)| family)
+    }
+
+    /// The instruction set this type runs.
+    ///
+    /// `None` for `ARCHITECTURE_UNSPECIFIED` and for a type the API
+    /// described without the field: both mean Compute Engine did not say,
+    /// and a boot image cannot be chosen for a machine whose instruction set
+    /// nobody stated.
+    #[must_use]
+    pub fn cpu_architecture(&self) -> Option<CpuArchitecture> {
+        match self.architecture.as_deref()? {
+            "X86_64" => Some(CpuArchitecture::X8664),
+            "ARM64" => Some(CpuArchitecture::Arm64),
+            _ => None,
+        }
+    }
+
+    /// Where this type sits in Compute Engine's line-up.
+    ///
+    /// A name is `<series>-<shape>[-<size>]`: `e2-standard-2`,
+    /// `c3d-highmem-4`, `f1-micro`, `e2-custom-4-8192`. The series carries
+    /// the generation (`e2` is the second `e`), and the shape is what makes
+    /// two types of one series different machines rather than two sizes of
+    /// one — so the family key is the series' letters plus the shape, and
+    /// the purely numeric segments, which are the size, are dropped.
+    #[must_use]
+    pub fn lineage(&self) -> Option<MachineLineage> {
+        let (series, rest) = self.name.split_once('-')?;
+        let parsed = crate::naming::series(series)?;
+        let shape: Vec<&str> = rest
+            .split('-')
+            .filter(|segment| !segment.chars().all(|c| c.is_ascii_digit()))
+            .collect();
+        if shape.is_empty() {
+            return None;
+        }
+
+        Some(MachineLineage {
+            architecture: self.cpu_architecture()?,
+            family: format!("{}-{}", parsed.family, shape.join("-")),
+            generation: parsed.generation,
+        })
     }
 }
 
@@ -564,7 +615,10 @@ pub struct Quota {
 
 #[cfg(test)]
 mod tests {
-    use super::{ErrorBody, MachineTypePage, Operation, OperationStatus, region_of, zone_url};
+    use super::{
+        CpuArchitecture, ErrorBody, MachineType, MachineTypePage, Operation, OperationStatus,
+        region_of, zone_url,
+    };
     use crate::http::HttpResponse;
 
     fn operation(fixture: &str) -> Operation {
@@ -674,5 +728,77 @@ mod tests {
         // API, so offering it would put an uncreatable machine on the menu.
         assert!(of("n1-standard-1").is_offerable());
         assert!(!of("f1-micro").is_offerable());
+    }
+
+    /// A machine type built by hand, for names the fixture has no example
+    /// of. The lineage reads only the name and the architecture.
+    fn named(name: &str, architecture: &str) -> MachineType {
+        MachineType {
+            name: name.to_owned(),
+            guest_cpus: 4,
+            memory_mb: 16_384,
+            architecture: Some(architecture.to_owned()),
+            deprecated: None,
+        }
+    }
+
+    #[test]
+    fn a_lineage_is_the_series_letters_plus_the_shape() {
+        let lineage = |name: &str| named(name, "X86_64").lineage().expect("a lineage");
+
+        assert_eq!(lineage("e2-standard-2").family, "e-standard");
+        assert_eq!(lineage("e2-standard-2").generation, Some(2));
+        // The size is dropped and the shape is kept: `n2-standard` and
+        // `n2-highmem` are different machines, `n2-standard-2` and
+        // `n2-standard-16` are two sizes of one.
+        assert_eq!(lineage("n2-standard-16").family, "n-standard");
+        assert_eq!(lineage("n2-highmem-16").family, "n-highmem");
+        // The series qualifier names the silicon and stays in the key.
+        assert_eq!(lineage("n2d-standard-2").family, "nd-standard");
+        assert_eq!(lineage("c3d-highmem-4").family, "cd-highmem");
+        // A shape with no size at all, and a custom shape with two.
+        assert_eq!(lineage("f1-micro").family, "f-micro");
+        assert_eq!(lineage("e2-custom-4-8192").family, "e-custom");
+    }
+
+    #[test]
+    fn generations_of_one_shape_share_a_family_key() {
+        let n1 = named("n1-standard-4", "X86_64").lineage().expect("lineage");
+        let n2 = named("n2-standard-4", "X86_64").lineage().expect("lineage");
+        assert_eq!(n1.family, n2.family);
+        assert_eq!((n1.generation, n2.generation), (Some(1), Some(2)));
+    }
+
+    #[test]
+    fn the_architecture_is_read_and_never_guessed_from_the_name() {
+        assert_eq!(
+            named("t2a-standard-4", "ARM64").cpu_architecture(),
+            Some(CpuArchitecture::Arm64)
+        );
+        assert_eq!(
+            named("t2d-standard-4", "X86_64").cpu_architecture(),
+            Some(CpuArchitecture::X8664)
+        );
+    }
+
+    #[test]
+    fn a_type_compute_engine_did_not_place_has_no_lineage() {
+        // `ARCHITECTURE_UNSPECIFIED` and a missing field are the same claim:
+        // Google did not say, so flyco does not either.
+        assert!(
+            named("e2-standard-2", "ARCHITECTURE_UNSPECIFIED")
+                .lineage()
+                .is_none()
+        );
+        assert!(
+            MachineType {
+                architecture: None,
+                ..named("e2-standard-2", "X86_64")
+            }
+            .lineage()
+            .is_none()
+        );
+        // A name with no shape at all is not a machine type name.
+        assert!(named("e2", "X86_64").lineage().is_none());
     }
 }

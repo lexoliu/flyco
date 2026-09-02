@@ -13,6 +13,7 @@ pub mod agents;
 pub mod approval;
 pub mod auth;
 pub mod budget;
+pub mod catalog;
 pub mod env;
 pub mod github;
 pub mod harness;
@@ -41,6 +42,7 @@ pub use auth::{
 pub use budget::{
     BudgetConfig, BudgetSignal, BudgetStage, BudgetState, BudgetView, SpendEvent, SpendKind,
 };
+pub use catalog::curate;
 pub use env::{EnvDocument, EnvEntry, NETWORK_CONTROL_WARNING, UpdateEnv};
 pub use github::RepoSummary;
 pub use harness::{
@@ -54,16 +56,18 @@ pub use id::{
     PushSubscriptionId, SessionId, SkillId, SpendEventId, UserId,
 };
 pub use machine::{
-    AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, CloudProviderKind, MachineCapacity, MachineCatalogEntry,
-    MachineDefault, MachinePricing, MachineSpec, MachineState, MachineView, OsFamily,
-    ResizeMachine, StoragePriceTier, StoragePricing, auto_linux_choice,
+    AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, BillingMinimum, CloudProviderKind, CpuArchitecture,
+    MachineCapacity, MachineCatalogEntry, MachineDefault, MachineLineage, MachinePricing,
+    MachineSpec, MachineState, MachineView, OsFamily, ResizeMachine, StoragePriceTier,
+    StoragePricing, auto_linux_choice,
 };
 pub use mcp::{HeaderEntry, McpServerConfig, McpServerView, UpsertMcpServer};
 pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};
 pub use money::Usd;
 pub use problem::Problem;
 pub use providers::{
-    LinkProvider, ProviderAccountView, ProviderBonusHint, ProviderCredentials, QuickstartAnswers,
+    AwsIamPolicy, LinkProvider, ProviderAccountView, ProviderBonusHint, ProviderCredentials,
+    QuickstartAnswers,
 };
 pub use push::{PushKeys, PushSubscription, PushSubscriptionView, VapidPublicKey};
 pub use repo::{RepoSlug, RepoStatus};

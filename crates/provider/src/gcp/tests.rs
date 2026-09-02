@@ -37,7 +37,7 @@ use flyco_core::{HarnessKind, MachineId, PermissionMode, SessionId};
 use serde_json::Value;
 
 use super::{
-    ExclusionReason, GcpProvider, GcpWorkspace, IMAGE_FAMILY, SPOT_UNSUPPORTED_CODES, names,
+    ExclusionReason, GcpProvider, GcpWorkspace, IMAGE_FAMILY_X86_64, SPOT_UNSUPPORTED_CODES, names,
 };
 use crate::clock::{ManualClock, ManualWallClock};
 use crate::cloud_init::CONFIG_PATH;
@@ -431,7 +431,7 @@ async fn the_instance_body_is_the_measured_shape() {
         names::boot_disk(machine)
     );
     assert_eq!(disk["initializeParams"]["diskSizeGb"], 30);
-    assert_eq!(disk["initializeParams"]["sourceImage"], IMAGE_FAMILY);
+    assert_eq!(disk["initializeParams"]["sourceImage"], IMAGE_FAMILY_X86_64);
     assert!(
         disk["initializeParams"]["diskType"]
             .as_str()
@@ -907,7 +907,7 @@ async fn the_catalog_offers_only_what_passes_both_gates_and_has_a_price() {
         flyco_core::MachinePricing::Metered {
             on_demand_hourly: flyco_core::Usd::from_micros(2 * 21_811 + 8 * 2_923),
             spot_hourly: Some(flyco_core::Usd::from_micros(2 * 6_543 + 8 * 877)),
-            minimum_billing_hours: None,
+            minimum: None,
             storage: flyco_core::StoragePricing::PerGibHourly {
                 rate: flyco_core::Usd::from_micros(137),
             },

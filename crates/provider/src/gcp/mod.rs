@@ -67,8 +67,8 @@ mod tests;
 
 use flyco_core::MachineId;
 use flyco_core::machine::{
-    CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
-    MachineState, OsFamily, StoragePricing,
+    CloudProviderKind, CpuArchitecture, MachineCapacity, MachineCatalogEntry, MachinePricing,
+    MachineSpec, MachineState, OsFamily, StoragePricing,
 };
 
 use crate::clock::{MonotonicClock, SystemClock, SystemTimer, SystemWallClock, Timer, WallClock};
@@ -112,8 +112,26 @@ pub const DEFAULT_NETWORK: &str = "global/networks/default";
 /// Canonical's republications instead of pinning one build — the same
 /// property the AWS driver gets from an SSM parameter, and here it costs no
 /// extra call at all.
-pub const IMAGE_FAMILY: &str =
+pub const IMAGE_FAMILY_X86_64: &str =
     "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64";
+
+/// The Arm64 build of the same release.
+///
+/// Chosen from the machine type's own `architecture` field, never from its
+/// name and never assumed: `t2a` and the whole `c4a`/`c4d` line are Arm, and
+/// booting one from the amd64 family fails at insert time. A single image
+/// constant would have made every Arm type in the catalog unprovisionable.
+pub const IMAGE_FAMILY_ARM64: &str =
+    "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-arm64";
+
+/// The image family a machine type boots from.
+#[must_use]
+pub const fn image_family(architecture: CpuArchitecture) -> &'static str {
+    match architecture {
+        CpuArchitecture::X8664 => IMAGE_FAMILY_X86_64,
+        CpuArchitecture::Arm64 => IMAGE_FAMILY_ARM64,
+    }
+}
 
 /// Storage tier of the boot disk.
 pub const BOOT_DISK_TYPE: &str = "pd-balanced";
@@ -485,7 +503,14 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
     fn instance_body(
         &self,
         request: &ProvisionRequest,
+        machine_type: &compute::MachineType,
     ) -> Result<compute::Instance, ProviderError> {
+        let architecture = machine_type
+            .cpu_architecture()
+            .ok_or(ProviderError::Malformed(
+                "Compute Engine reported a machine type with no instruction set, so no image \
+                 can be chosen",
+            ))?;
         let id = request.machine;
         let zone = &request.spec.region;
         let config = flycod::render(&request.bootstrap)
@@ -511,7 +536,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
                 initialize_params: compute::DiskParams {
                     disk_name: names::boot_disk(id),
                     disk_size_gb: request.spec.disk_gib,
-                    source_image: IMAGE_FAMILY.to_owned(),
+                    source_image: image_family(architecture).to_owned(),
                     disk_type: compute::zone_url(
                         self.project(),
                         zone,
@@ -679,6 +704,10 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
             return Err(ExclusionReason::Unreadable);
         }
         let family = machine_type.family().ok_or(ExclusionReason::Unreadable)?;
+        // A type whose instruction set or series Compute Engine did not
+        // state is one flyco can neither place in the line-up nor pick an
+        // image for, so it is left off the menu with a reason.
+        let lineage = machine_type.lineage().ok_or(ExclusionReason::Unreadable)?;
 
         let hourly = |market| {
             rates
@@ -705,12 +734,13 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
                 vcpus: machine_type.guest_cpus,
                 memory_mib: machine_type.memory_mb,
             }),
+            lineage: Some(lineage),
             pricing: MachinePricing::Metered {
                 on_demand_hourly,
                 spot_hourly: spot.is_ok().then(|| hourly(Market::Spot)).flatten(),
                 // Compute Engine bills by the second past a one-minute
                 // floor, with no per-type minimum of any kind.
-                minimum_billing_hours: None,
+                minimum: None,
                 storage: StoragePricing::PerGibHourly { rate: storage_rate },
             },
         })
@@ -786,7 +816,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
         };
         let (found, quotas) = self.deployable_type(zone, machine_type, requested).await?;
 
-        let body = self.instance_body(request)?;
+        let body = self.instance_body(request, &found)?;
         let capacity_mode = self
             .create_instance(zone, body, found.guest_cpus, &quotas)
             .await?;

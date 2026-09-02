@@ -33,6 +33,58 @@ pub enum OsFamily {
     Windows,
 }
 
+/// The instruction set a machine type runs.
+///
+/// An independent dimension of the catalog rather than a property to rank:
+/// an arm64 type is not a cheaper or dearer version of an x86-64 one, it is
+/// a different machine, and a build that needs one is not served by the
+/// other. Curation therefore never compares across it (see
+/// [`crate::catalog`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+pub enum CpuArchitecture {
+    /// 64-bit x86. Spelled as every provider spells it, which is not what
+    /// `rename_all` would produce from a camel-case variant.
+    #[serde(rename = "x86_64")]
+    X8664,
+    /// 64-bit Arm.
+    #[serde(rename = "arm64")]
+    Arm64,
+}
+
+/// Where a machine type sits in its provider's own line-up.
+///
+/// The three facts curation needs, and none of which a frontend should ever
+/// recover by parsing a type name: which instruction set it runs, which
+/// family of the provider's line-up it belongs to, and which generation of
+/// that family it is. Every driver derives them from the metadata its own
+/// API publishes — Azure's quota family, EC2's `DescribeInstanceTypes`,
+/// Compute Engine's `architecture` field and series name — so a provider
+/// that renames its types breaks one driver rather than the whole product.
+///
+/// Absent from an entry describing hardware the user owns: flyco has not
+/// inspected that machine, and inventing a family for it would be a claim
+/// the catalog cannot support.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct MachineLineage {
+    /// The instruction set it runs.
+    pub architecture: CpuArchitecture,
+    /// Provider-native family key, with the generation removed.
+    ///
+    /// Two types share a family when the provider sells them as the same
+    /// machine in different generations: `Standard_D4s_v5` and
+    /// `Standard_D4s_v6`, `m6g.xlarge` and `m7g.xlarge`. The string is a
+    /// key rather than a label — its shape is the driver's business, and
+    /// nothing outside the driver that produced it may parse it.
+    pub family: String,
+    /// Which generation of that family it is, when the provider numbers
+    /// them.
+    ///
+    /// Absent where a family carries no version in the provider's own
+    /// metadata, which makes it a family of one rather than an old
+    /// generation to hide.
+    pub generation: Option<u32>,
+}
+
 /// How much compute a catalog entry offers.
 ///
 /// Absent from an entry the provider does not publish a size for — see
@@ -87,6 +139,34 @@ impl StoragePricing {
     }
 }
 
+/// A provider's floor on what starting a machine costs at all.
+///
+/// Both halves travel together because only one of them answers the question
+/// a user is actually asking. `24` hours is a fact about a licence;
+/// `$14.98` is what pressing the button costs, and it is the number that has
+/// to be on screen before send is enabled. Deriving the second from the
+/// first at every call site would be one multiplication written four times,
+/// and a catalog whose price and minimum could disagree would be worse than
+/// one that quoted neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct BillingMinimum {
+    /// Hours the provider bills however briefly the machine runs.
+    pub hours: u32,
+    /// What those hours cost at the on-demand rate.
+    pub charge: Usd,
+}
+
+impl BillingMinimum {
+    /// The floor `hours` of `on_demand_hourly` adds up to.
+    #[must_use]
+    pub fn new(hours: u32, on_demand_hourly: Usd) -> Self {
+        Self {
+            hours,
+            charge: Usd::from_micros(on_demand_hourly.micros().saturating_mul(u64::from(hours))),
+        }
+    }
+}
+
 /// What an hour on a machine costs.
 ///
 /// A sum rather than an amount with a nullable field, because "the provider
@@ -103,10 +183,11 @@ pub enum MachinePricing {
         on_demand_hourly: Usd,
         /// Spot price per hour, when the type is available as spot.
         spot_hourly: Option<Usd>,
-        /// Minimum billing commitment in hours, when the provider imposes
-        /// one (e.g. EC2 Mac dedicated hosts bill a 24-hour minimum under
-        /// the Apple license). The agent sees this before choosing.
-        minimum_billing_hours: Option<u32>,
+        /// The floor the provider bills the moment the machine boots, when
+        /// it imposes one (e.g. EC2 Mac dedicated hosts bill 24 hours under
+        /// the Apple licence). The agent and the user both see this before
+        /// choosing.
+        minimum: Option<BillingMinimum>,
         /// Persistent-disk pricing published by the provider.
         storage: StoragePricing,
     },
@@ -175,6 +256,11 @@ pub struct MachineCatalogEntry {
     /// daemon runs on it and says so — inventing a size here would be a
     /// number the agent could plan against and be wrong about.
     pub capacity: Option<MachineCapacity>,
+    /// Where it sits in the provider's line-up, when the provider says.
+    ///
+    /// Absent for the same reason [`Self::capacity`] is: a host the user
+    /// registered is whatever hardware it is, and flyco has not looked.
+    pub lineage: Option<MachineLineage>,
     /// What it costs to run for an hour.
     pub pricing: MachinePricing,
 }
@@ -333,8 +419,9 @@ pub struct ResizeMachine {
 #[cfg(test)]
 mod tests {
     use super::{
-        AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, CloudProviderKind, MachineCapacity,
-        MachineCatalogEntry, MachinePricing, OsFamily, StoragePricing, auto_linux_choice,
+        AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, BillingMinimum, CloudProviderKind, CpuArchitecture,
+        MachineCapacity, MachineCatalogEntry, MachineLineage, MachinePricing, OsFamily,
+        StoragePricing, auto_linux_choice,
     };
     use crate::id::ProviderAccountId;
     use crate::money::Usd;
@@ -345,7 +432,7 @@ mod tests {
         let pricing = MachinePricing::Metered {
             on_demand_hourly: Usd::from_micros(8_400),
             spot_hourly: Some(Usd::from_micros(7_560)),
-            minimum_billing_hours: None,
+            minimum: None,
             storage: StoragePricing::PerGibHourly {
                 rate: Usd::from_micros(100),
             },
@@ -360,7 +447,7 @@ mod tests {
         let pricing = MachinePricing::Metered {
             on_demand_hourly: Usd::from_micros(8_400),
             spot_hourly: None,
-            minimum_billing_hours: Some(24),
+            minimum: Some(BillingMinimum::new(24, Usd::from_micros(8_400))),
             storage: StoragePricing::PerGibHourly {
                 rate: Usd::from_micros(100),
             },
@@ -389,10 +476,15 @@ mod tests {
                 vcpus: 2,
                 memory_mib: 1_024,
             }),
+            lineage: Some(MachineLineage {
+                architecture: CpuArchitecture::Arm64,
+                family: "bps".to_owned(),
+                generation: Some(2),
+            }),
             pricing: MachinePricing::Metered {
                 on_demand_hourly: Usd::from_micros(8_400),
                 spot_hourly: None,
-                minimum_billing_hours: None,
+                minimum: None,
                 storage: StoragePricing::PerGibHourly {
                     rate: Usd::from_micros(100),
                 },
@@ -419,11 +511,16 @@ mod tests {
                 vcpus: AUTO_MIN_VCPUS,
                 memory_mib: AUTO_MIN_MEMORY_MIB,
             }),
+            lineage: Some(MachineLineage {
+                architecture: CpuArchitecture::X8664,
+                family: "m".to_owned(),
+                generation: Some(7),
+            }),
             pricing: hourly.map_or(MachinePricing::UserOwned, |on_demand_hourly| {
                 MachinePricing::Metered {
                     on_demand_hourly,
                     spot_hourly: Some(Usd::from_micros(on_demand_hourly.micros() / 2)),
-                    minimum_billing_hours: None,
+                    minimum: None,
                     storage: StoragePricing::PerGibHourly {
                         rate: Usd::from_micros(1),
                     },

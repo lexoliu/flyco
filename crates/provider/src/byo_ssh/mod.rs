@@ -189,6 +189,10 @@ impl ByoSsh {
             machine_type: self.address.clone(),
             os: OsFamily::Linux,
             capacity: None,
+            // For the same reason the capacity is absent: flyco has not
+            // looked at this machine, and a family it invented would be a
+            // claim curation would then act on.
+            lineage: None,
             pricing: MachinePricing::UserOwned,
         }]
     }

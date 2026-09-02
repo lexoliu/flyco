@@ -238,6 +238,12 @@ provider catalog:
 The default machine is the cheapest Linux entry of the curated catalog.
 The agent's `machine_resize` tool sees the same curated list.
 
+### 7.7 Choosing a machine by hand
+
+The compute chip's popover is a **tiered slider**, not a table. Its detents are the curated catalog of the selected account and region ordered by price; the thumb snaps to a detent and the label above it reads `Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr`. The leftmost position is `Auto`. `Auto` is the cheapest curated Linux type with at least 4 vCPU and 16 GiB; the label says so. An `Advanced ›` disclosure above the slider reveals account, region, architecture (x86-64 / arm64), OS family, and spot. Choosing any detent other than `Auto` sets `machine_origin: user`; the chip then reads `Chosen by you`.
+
+License-bound types (macOS on EC2 Mac, and any type with a billing minimum) render with an amber badge on their detent and a sentence under the slider: "Starts a 24-hour minimum charge of $X the moment it boots." The sentence must be visible before send is enabled.
+
 ## 8. Connect an agent
 
 `/connect/harness` is two cards: Claude Code and Codex. Each expands in
@@ -316,6 +322,10 @@ A right-side drawer, collapsed by default, with tabs `Terminal`, `Files`,
 `Machine`, `Env`. `Terminal` is the existing xterm panel. `Machine` shows
 spec, hourly, storage hourly, state, and the start/stop/resize controls.
 `Env` is the existing editor. Keyboard: `⌘.` toggles the drawer.
+
+### 9.5 Machine changes during a session
+
+When the agent resizes, the transcript shows a notice: `Switched to Standard_D8s_v6 · restarted the machine · disk kept`. When the agent asks to move to a license-bound type, the request is an approval card, not a silent resize, and the card quotes the minimum charge. The agent is told (issue #65) whether the machine was chosen by the user and to be conservative about switching it.
 
 ## 10. Settings
 

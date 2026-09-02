@@ -69,6 +69,7 @@
 
 pub mod costs;
 pub mod ec2;
+pub mod iam;
 pub mod identity;
 pub mod image;
 pub mod pricing;
@@ -81,8 +82,8 @@ pub mod sigv4;
 mod tests;
 
 use flyco_core::machine::{
-    CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
-    MachineState, OsFamily, StoragePricing,
+    BillingMinimum, CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachineLineage,
+    MachinePricing, MachineSpec, MachineState, OsFamily, StoragePricing,
 };
 use flyco_core::{CloudSpend, MachineId};
 use serde::Serialize;
@@ -1173,6 +1174,15 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
             return Err(ExclusionReason::Unreadable);
         }
 
+        // Both halves of the lineage are required rather than optional: a
+        // type whose instruction set EC2 did not state is one no AMI can be
+        // chosen for, and a name that does not parse as a series is a name
+        // this driver cannot place in the line-up. Either way the honest
+        // answer is to leave it off the menu with a reason, not to guess.
+        let architecture = info.cpu_architecture().ok_or(ExclusionReason::Unreadable)?;
+        let series = crate::naming::series(name.split_once('.').map_or(name, |(head, _)| head))
+            .ok_or(ExclusionReason::Unreadable)?;
+
         let published = priced
             .iter()
             .find(|(priced_name, _)| priced_name == name)
@@ -1191,6 +1201,11 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
                 vcpus: info.vcpu_info.default_vcpus,
                 memory_mib: info.memory_info.size_in_mib,
             }),
+            lineage: Some(MachineLineage {
+                architecture,
+                family: series.family,
+                generation: series.generation,
+            }),
             pricing: MachinePricing::Metered {
                 on_demand_hourly,
                 spot_hourly: spot.is_ok().then_some(published.spot).flatten(),
@@ -1198,9 +1213,9 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
                 // floor, with one exception: a Mac runs on a dedicated host
                 // that Apple's licence requires be allocated for 24 hours,
                 // so an hour of it is billed as a day.
-                minimum_billing_hours: quotas
+                minimum: quotas
                     .needs_dedicated_host(name)
-                    .then_some(MAC_MINIMUM_BILLING_HOURS),
+                    .then(|| BillingMinimum::new(MAC_MINIMUM_BILLING_HOURS, on_demand_hourly)),
                 storage: StoragePricing::PerGibHourly { rate: storage_rate },
             },
         })
@@ -1238,7 +1253,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
     /// Returns [`ProviderError`] if STS refuses the credentials.
     pub async fn caller_identity(&mut self) -> Result<identity::CallerIdentity, ProviderError> {
         let request = HttpRequest::new(Method::Post, identity::ENDPOINT).form_body(&[
-            ("Action", "GetCallerIdentity"),
+            ("Action", identity::ACTION),
             ("Version", identity::API_VERSION),
         ]);
         let signed = sigv4::sign(

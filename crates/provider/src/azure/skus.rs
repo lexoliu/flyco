@@ -30,6 +30,7 @@
 //! by the subscription's own policy, which neither list mentions. See
 //! [`super::policy`].
 
+use flyco_core::machine::{CpuArchitecture, MachineLineage};
 use serde::Deserialize;
 
 use crate::{CapacityMode, ProviderError};
@@ -127,24 +128,63 @@ pub struct RestrictionInfo {
     pub zones: Vec<String>,
 }
 
-/// The instruction set a SKU runs, which decides the OS image.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CpuArchitecture {
-    /// 64-bit x86.
-    X64,
-    /// 64-bit Arm.
-    Arm64,
+/// Reads an architecture out of the `CpuArchitectureType` capability.
+///
+/// Azure spells the two values `x64` and `Arm64`; the rest of flyco spells
+/// them `x86_64` and `arm64`, because that is what EC2, Compute Engine and
+/// every user spell them. The translation lives here, at the boundary, and
+/// nothing downstream carries an Azure-shaped enum.
+#[must_use]
+pub fn parse_architecture(value: &str) -> Option<CpuArchitecture> {
+    match value {
+        "x64" => Some(CpuArchitecture::X8664),
+        "Arm64" => Some(CpuArchitecture::Arm64),
+        _ => None,
+    }
 }
 
-impl CpuArchitecture {
-    /// Reads an architecture from the capability's value.
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "x64" => Some(Self::X64),
-            "Arm64" => Some(Self::Arm64),
-            _ => None,
-        }
+/// The prefix Azure puts on every quota family name.
+pub const FAMILY_PREFIX: &str = "standard";
+
+/// The suffix Azure puts on every quota family name.
+pub const FAMILY_SUFFIX: &str = "Family";
+
+/// Splits a quota family into a generation-free key and its version.
+///
+/// The quota family — `standardDSv6Family`, `standardBasv2Family`,
+/// `standardNCFamily` — is Azure's own statement of which line-up a SKU
+/// belongs to, matched case-insensitively against the usage list, and a far
+/// better source than the SKU name: the name encodes size and features
+/// alongside the family, and the field does not.
+///
+/// The key is lowercased because Azure is not internally consistent about
+/// the capitalisation (`standardDSv5Family` and `StandardDsv7Family` appear
+/// on one subscription), and two spellings of one family would look like two
+/// families and hide neither's older generation.
+#[must_use]
+pub fn parse_family(family: &str) -> (String, Option<u32>) {
+    let without_prefix = family
+        .strip_prefix(FAMILY_PREFIX)
+        .or_else(|| family.strip_prefix("Standard"))
+        .unwrap_or(family);
+    let trimmed = without_prefix
+        .strip_suffix(FAMILY_SUFFIX)
+        .unwrap_or(without_prefix);
+
+    // The version is a trailing `v<digits>`; anything else is part of the
+    // family's own name, as `standardNCFamily` is.
+    let digits: String = trimmed
+        .chars()
+        .rev()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    let head = &trimmed[..trimmed.len() - digits.len()];
+    match (digits.is_empty(), head.strip_suffix(['v', 'V'])) {
+        (false, Some(key)) => (
+            key.to_ascii_lowercase(),
+            digits.chars().rev().collect::<String>().parse().ok(),
+        ),
+        _ => (trimmed.to_ascii_lowercase(), None),
     }
 }
 
@@ -192,7 +232,22 @@ impl Sku {
     #[must_use]
     pub fn architecture(&self) -> Option<CpuArchitecture> {
         self.capability(CPU_ARCHITECTURE)
-            .and_then(CpuArchitecture::parse)
+            .and_then(parse_architecture)
+    }
+
+    /// Where this SKU sits in Azure's line-up, from its quota family.
+    ///
+    /// `None` when ARM published no family or no architecture for it, which
+    /// makes it a SKU flyco cannot place *and* cannot choose an image for —
+    /// see [`super::AzureProvider::entry_for`], which excludes it.
+    #[must_use]
+    pub fn lineage(&self) -> Option<MachineLineage> {
+        let (family, generation) = parse_family(self.family.as_ref()?);
+        Some(MachineLineage {
+            architecture: self.architecture()?,
+            family,
+            generation,
+        })
     }
 
     /// Virtual CPU count.
@@ -388,7 +443,7 @@ impl Quotas {
 
 #[cfg(test)]
 mod tests {
-    use super::{Availability, CpuArchitecture, Quotas, Sku, SkuPage, UsagePage};
+    use super::{Availability, CpuArchitecture, Quotas, Sku, SkuPage, UsagePage, parse_family};
     use crate::{CapacityMode, ProviderError};
 
     /// The SKU list of `northcentralus`, one of the regions the reference
@@ -434,10 +489,59 @@ mod tests {
             sku.availability("northcentralus"),
             Availability::Unrestricted
         );
-        assert_eq!(sku.architecture(), Some(CpuArchitecture::X64));
+        assert_eq!(sku.architecture(), Some(CpuArchitecture::X8664));
         assert_eq!(sku.vcpus(), Some(2));
         assert_eq!(sku.memory_mib(), Some(4_096));
         assert_eq!(sku.family.as_deref(), Some("StandardDalsv6Family"));
+    }
+
+    #[test]
+    fn a_quota_family_splits_into_a_key_and_a_version() {
+        // The real spellings, from two subscriptions' SKU lists.
+        assert_eq!(
+            parse_family("StandardDalsv6Family"),
+            ("dals".to_owned(), Some(6))
+        );
+        assert_eq!(
+            parse_family("standardDADSv5Family"),
+            ("dads".to_owned(), Some(5))
+        );
+        assert_eq!(
+            parse_family("standardBasv2Family"),
+            ("bas".to_owned(), Some(2))
+        );
+        // Case is normalised: one subscription spells one family two ways,
+        // and two spellings would look like two families.
+        assert_eq!(
+            parse_family("standardDSv5Family").0,
+            parse_family("StandardDsv5Family").0
+        );
+        // A family Azure never versioned is a family of one.
+        assert_eq!(parse_family("standardNCFamily"), ("nc".to_owned(), None));
+        // A trailing number that is not a version stays in the key.
+        assert_eq!(
+            parse_family("standardND96Family"),
+            ("nd96".to_owned(), None)
+        );
+    }
+
+    #[test]
+    fn a_lineage_pairs_the_family_with_the_instruction_set() {
+        let lineage = sku("Standard_D2als_v6").lineage().expect("a lineage");
+        assert_eq!(lineage.architecture, CpuArchitecture::X8664);
+        assert_eq!(lineage.family, "dals");
+        assert_eq!(lineage.generation, Some(6));
+        assert_eq!(
+            arm64_sku().lineage().expect("a lineage").architecture,
+            CpuArchitecture::Arm64
+        );
+    }
+
+    #[test]
+    fn a_sku_arm_published_no_family_for_has_no_lineage() {
+        let mut unplaced = sku("Standard_D2als_v6");
+        unplaced.family = None;
+        assert!(unplaced.lineage().is_none());
     }
 
     #[test]

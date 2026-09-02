@@ -11,9 +11,12 @@
 //! are **workspace** infrastructure: one set per region, created once and
 //! reused. Per session it is three `PUT`s, three round trips deep — public
 //! IP, then network interface, then virtual machine. The resource group is
-//! *not* created here: no resource-group-scoped role can create the group it
-//! is scoped to, so it is made out of band and the driver's steady state has
-//! no group `PUT` in it.
+//! not among them: it is created once, when the account is linked, by
+//! [`AzureProvider::ensure_resource_group`], so the driver's steady state
+//! has no group `PUT` in it. That is possible because the service principal
+//! the wizard mints is `Contributor` on the whole subscription — a
+//! resource-group-scoped role could not create the group it is scoped to,
+//! which is why the user used to have to make one by hand.
 //!
 //! The network security group is not optional. Basic public IPs were retired
 //! on 2025-09-30, Standard ones are closed to inbound traffic by default, and
@@ -70,8 +73,8 @@ pub mod skus;
 mod tests;
 
 use flyco_core::machine::{
-    CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
-    MachineState, OsFamily, StoragePricing,
+    CloudProviderKind, CpuArchitecture, MachineCapacity, MachineCatalogEntry, MachinePricing,
+    MachineSpec, MachineState, OsFamily, StoragePricing,
 };
 use flyco_core::{CloudSpend, MachineId};
 
@@ -88,7 +91,7 @@ use auth::{ServicePrincipal, TokenCache};
 use costs::{CostQuery, CostResult};
 use policy::{AssignmentPage, RegionPolicy};
 use pricing::PriceCatalog;
-use skus::{Availability, CpuArchitecture, Quotas, Sku, SkuPage, UsagePage};
+use skus::{Availability, Quotas, Sku, SkuPage, UsagePage};
 
 /// Driver name, as it appears in [`ProviderError::Unsupported`].
 pub const PROVIDER: &str = "azure";
@@ -103,6 +106,17 @@ pub const PROVIDER: &str = "azure";
 /// consulted — the policy's own list is the catalog's region set, which is
 /// the only answer that cannot be wrong for somebody else's account.
 pub const DEFAULT_CANDIDATE_REGIONS: [&str; 3] = ["eastus", "westeurope", "southeastasia"];
+
+/// The resource group flyco creates and owns in every linked subscription.
+///
+/// Not a user input. The service principal the wizard mints is
+/// `Contributor` on the subscription, which is the scope a resource-group
+/// creation needs, so flyco makes the group itself the moment the account is
+/// linked — see [`AzureProvider::ensure_resource_group`]. Its name is
+/// recorded on the account rather than assumed at read time, so a
+/// subscription linked under one name keeps the group it actually owns if
+/// this constant ever changes.
+pub const RESOURCE_GROUP: &str = "flyco";
 
 /// Address space of a workspace virtual network.
 pub const VNET_ADDRESS_SPACE: &str = "10.42.0.0/16";
@@ -251,11 +265,12 @@ pub struct RegionReport {
 /// credentials.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
-    /// The pre-created resource group the service principal is scoped to.
+    /// The resource group every flyco resource in this subscription lives
+    /// in.
     ///
-    /// Created out of band: creating a resource group is a subscription-scope
-    /// write, and a principal scoped to one group cannot make the group it is
-    /// scoped to.
+    /// [`RESOURCE_GROUP`] for an account linked through the wizard, which
+    /// creates it. Carried here rather than assumed so an account linked
+    /// under a different name still resolves to the group it owns.
     pub resource_group: String,
     /// The OpenSSH public key the machine's break-glass login is created
     /// with.
@@ -585,6 +600,75 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         Ok(policy)
     }
 
+    /// The region this subscription deploys to when nobody names one.
+    ///
+    /// The first region its own policy allows, or the first candidate when
+    /// it restricts none. "Default" in the only sense a subscription has
+    /// one: Azure publishes no such field, and the first region flyco would
+    /// actually deploy into is the honest answer to "where does this
+    /// account live".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError::Unavailable`] when the subscription's policy
+    /// allows no region at all, which is an account no machine can be
+    /// created in and a fact the user has to act on.
+    pub async fn default_region(&mut self) -> Result<String, ProviderError> {
+        self.catalog_regions()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| ProviderError::Unavailable {
+                machine_type: "any".to_owned(),
+                region: "any".to_owned(),
+                reason: "this subscription's policy allows no region flyco can deploy into"
+                    .to_owned(),
+            })
+    }
+
+    /// Creates the resource group flyco owns in this subscription.
+    ///
+    /// Called once, when the account is linked, and never during
+    /// provisioning: the service principal the wizard mints is
+    /// `Contributor` on the whole subscription, so flyco can make the group
+    /// itself rather than asking a user to name one they created by hand.
+    /// The `PUT` is create-or-update, so linking the same subscription twice
+    /// is a no-op rather than a conflict.
+    ///
+    /// Answers with the region the group's record was placed in, which is
+    /// only where the record lives — machines inside it are created in
+    /// whatever region a session asks for.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the subscription refuses the write,
+    /// which is what an under-scoped service principal looks like.
+    pub async fn ensure_resource_group(&mut self) -> Result<String, ProviderError> {
+        let location = self.default_region().await?;
+        let url = arm::subscription_url(
+            self.subscription(),
+            &format!("resourcegroups/{}", self.workspace.resource_group),
+            api_version::RESOURCE_GROUPS,
+        );
+        let body = bodies::ResourceGroup {
+            location: location.clone(),
+        };
+
+        let response = self
+            .send(HttpRequest::new(Method::Put, url).json_body(&body)?)
+            .await?;
+        if !response.is_success() {
+            return Err(refusal(&response));
+        }
+
+        tracing::info!(
+            group = %self.workspace.resource_group,
+            %location,
+            "created or refreshed the resource group flyco owns"
+        );
+        Ok(location)
+    }
+
     /// The regions a catalog covers.
     ///
     /// The subscription's policy is the source of truth; a caller's own list
@@ -716,7 +800,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         let region = &request.spec.region;
         let image_sku = match sku.architecture() {
             Some(CpuArchitecture::Arm64) => IMAGE_SKU_ARM64,
-            Some(CpuArchitecture::X64) => IMAGE_SKU_X64,
+            Some(CpuArchitecture::X8664) => IMAGE_SKU_X64,
             None => {
                 return Err(ProviderError::Malformed(
                     "an Azure VM SKU reported no CPU architecture, so no image can be chosen",
@@ -1021,6 +1105,10 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             .vcpus()
             .zip(sku.memory_mib())
             .ok_or(ExclusionReason::Unreadable)?;
+        // A SKU without a quota family or an architecture is one flyco can
+        // neither place in the line-up nor pick an image for, so it is left
+        // off the menu with a reason rather than guessed at.
+        let lineage = sku.lineage().ok_or(ExclusionReason::Unreadable)?;
         let published = priced
             .iter()
             .find(|(name, _)| *name == sku.name)
@@ -1036,13 +1124,14 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             machine_type: sku.name.clone(),
             os: OsFamily::Linux,
             capacity: Some(MachineCapacity { vcpus, memory_mib }),
+            lineage: Some(lineage),
             pricing: MachinePricing::Metered {
                 on_demand_hourly,
                 spot_hourly: spot.is_ok().then_some(published.spot).flatten(),
-                // Azure bills by the second with no floor; the flag exists
+                // Azure bills by the second with no floor; the field exists
                 // for providers that impose one, such as EC2 Mac's 24-hour
-                // Apple-license minimum.
-                minimum_billing_hours: None,
+                // Apple-licence minimum.
+                minimum: None,
                 storage: storage.clone(),
             },
         })

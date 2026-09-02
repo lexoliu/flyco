@@ -22,7 +22,7 @@ use crate::rooms::{NativeRooms, Rooms};
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 12] = [
+pub const MIGRATIONS: [&str; 13] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -35,6 +35,7 @@ pub const MIGRATIONS: [&str; 12] = [
     include_str!("../../../migrations/0010_harness_session.sql"),
     include_str!("../../../migrations/0012_harness_credentials.sql"),
     include_str!("../../../migrations/0013_session_title.sql"),
+    include_str!("../../../migrations/0014_provider_workspace.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.

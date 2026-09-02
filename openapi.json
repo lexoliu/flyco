@@ -998,6 +998,17 @@
                           }
                         ]
                       },
+                      "lineage": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/MachineLineage",
+                            "description": "Where it sits in the provider's line-up, when the provider says.\n\nAbsent for the same reason [`Self::capacity`] is: a host the user\nregistered is whatever hardware it is, and flyco has not looked."
+                          }
+                        ]
+                      },
                       "machine_type": {
                         "type": "string",
                         "description": "Provider-native machine type name (e.g. `Standard_B2ats_v2`)."
@@ -2010,6 +2021,43 @@
                       "format": "int64",
                       "description": "When it was linked, seconds since the Unix epoch.",
                       "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers/aws/iam-policy": {
+      "get": {
+        "summary": "Shows the least privilege an AWS access key needs to run flyco sessions.",
+        "description": "Shows the least privilege an AWS access key needs to run flyco sessions.\n\nServed rather than checked into the frontend because it is a fact about\nthis build of the driver: a copy in a template somewhere else would be\nright on the day it was written and quietly wrong afterwards.",
+        "operationId": "flyco_api::provider_accounts::aws_iam_policy",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Answer of `GET /v1/providers/aws/iam-policy`.\n\nThe wizard shows the user the policy they are about to attach to an IAM\nuser, and a policy that is not the truth is worse than none: too narrow\nand the first provision fails with an `UnauthorizedOperation` nobody can\nact on, too wide and flyco asked for rights it never uses. So the\ndocument is rendered from the driver's own call sites rather than written\nout by hand somewhere — see `flyco_provider::aws::iam`.",
+                  "required": [
+                    "document",
+                    "actions"
+                  ],
+                  "properties": {
+                    "actions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Every action the document grants, `service:Action`, sorted.\n\nBeside the document rather than only inside it, so a caller can list\nor count the permissions without parsing JSON back out of a string."
+                    },
+                    "document": {
+                      "type": "string",
+                      "description": "The policy document, exactly as it is to be pasted into IAM."
                     }
                   }
                 }
@@ -4548,6 +4596,47 @@
           "not_applicable"
         ]
       },
+      "AwsIamPolicy": {
+        "type": "object",
+        "description": "Answer of `GET /v1/providers/aws/iam-policy`.\n\nThe wizard shows the user the policy they are about to attach to an IAM\nuser, and a policy that is not the truth is worse than none: too narrow\nand the first provision fails with an `UnauthorizedOperation` nobody can\nact on, too wide and flyco asked for rights it never uses. So the\ndocument is rendered from the driver's own call sites rather than written\nout by hand somewhere — see `flyco_provider::aws::iam`.",
+        "required": [
+          "document",
+          "actions"
+        ],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every action the document grants, `service:Action`, sorted.\n\nBeside the document rather than only inside it, so a caller can list\nor count the permissions without parsing JSON back out of a string."
+          },
+          "document": {
+            "type": "string",
+            "description": "The policy document, exactly as it is to be pasted into IAM."
+          }
+        }
+      },
+      "BillingMinimum": {
+        "type": "object",
+        "description": "A provider's floor on what starting a machine costs at all.\n\nBoth halves travel together because only one of them answers the question\na user is actually asking. `24` hours is a fact about a licence;\n`$14.98` is what pressing the button costs, and it is the number that has\nto be on screen before send is enabled. Deriving the second from the\nfirst at every call site would be one multiplication written four times,\nand a catalog whose price and minimum could disagree would be worse than\none that quoted neither.",
+        "required": [
+          "hours",
+          "charge"
+        ],
+        "properties": {
+          "charge": {
+            "$ref": "#/components/schemas/Usd",
+            "description": "What those hours cost at the on-demand rate."
+          },
+          "hours": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Hours the provider bills however briefly the machine runs.",
+            "minimum": 0
+          }
+        }
+      },
       "BudgetStage": {
         "type": "string",
         "description": "How far through the budget the session is. Monotonically increasing.",
@@ -4772,6 +4861,14 @@
             "minimum": 0
           }
         }
+      },
+      "CpuArchitecture": {
+        "type": "string",
+        "description": "The instruction set a machine type runs.\n\nAn independent dimension of the catalog rather than a property to rank:\nan arm64 type is not a cheaper or dearer version of an x86-64 one, it is\na different machine, and a build that needs one is not served by the\nother. Curation therefore never compares across it (see\n[`crate::catalog`]).",
+        "enum": [
+          "x86_64",
+          "arm64"
+        ]
       },
       "CreateApiKey": {
         "type": "object",
@@ -5459,6 +5556,17 @@
               }
             ]
           },
+          "lineage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MachineLineage",
+                "description": "Where it sits in the provider's line-up, when the provider says.\n\nAbsent for the same reason [`Self::capacity`] is: a host the user\nregistered is whatever hardware it is, and flyco has not looked."
+              }
+            ]
+          },
           "machine_type": {
             "type": "string",
             "description": "Provider-native machine type name (e.g. `Standard_B2ats_v2`)."
@@ -5532,6 +5640,33 @@
           }
         }
       },
+      "MachineLineage": {
+        "type": "object",
+        "description": "Where a machine type sits in its provider's own line-up.\n\nThe three facts curation needs, and none of which a frontend should ever\nrecover by parsing a type name: which instruction set it runs, which\nfamily of the provider's line-up it belongs to, and which generation of\nthat family it is. Every driver derives them from the metadata its own\nAPI publishes — Azure's quota family, EC2's `DescribeInstanceTypes`,\nCompute Engine's `architecture` field and series name — so a provider\nthat renames its types breaks one driver rather than the whole product.\n\nAbsent from an entry describing hardware the user owns: flyco has not\ninspected that machine, and inventing a family for it would be a claim\nthe catalog cannot support.",
+        "required": [
+          "architecture",
+          "family"
+        ],
+        "properties": {
+          "architecture": {
+            "$ref": "#/components/schemas/CpuArchitecture",
+            "description": "The instruction set it runs."
+          },
+          "family": {
+            "type": "string",
+            "description": "Provider-native family key, with the generation removed.\n\nTwo types share a family when the provider sells them as the same\nmachine in different generations: `Standard_D4s_v5` and\n`Standard_D4s_v6`, `m6g.xlarge` and `m7g.xlarge`. The string is a\nkey rather than a label — its shape is the driver's business, and\nnothing outside the driver that produced it may parse it."
+          },
+          "generation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Which generation of that family it is, when the provider numbers\nthem.\n\nAbsent where a family carries no version in the provider's own\nmetadata, which makes it a family of one rather than an old\ngeneration to hide.",
+            "minimum": 0
+          }
+        }
+      },
       "MachineOrigin": {
         "type": "string",
         "description": "How the machine a session runs on was chosen.\n\nPersisted because the two are not interchangeable afterwards: a machine\nthe user picked is a decision flyco must not quietly undo, while an\nautomatic one is flyco's own guess and is free to be revisited.",
@@ -5557,14 +5692,16 @@
                   "metered"
                 ]
               },
-              "minimum_billing_hours": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "int32",
-                "description": "Minimum billing commitment in hours, when the provider imposes\none (e.g. EC2 Mac dedicated hosts bill a 24-hour minimum under\nthe Apple license). The agent sees this before choosing.",
-                "minimum": 0
+              "minimum": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BillingMinimum",
+                    "description": "The floor the provider bills the moment the machine boots, when\nit imposes one (e.g. EC2 Mac dedicated hosts bill 24 hours under\nthe Apple licence). The agent and the user both see this before\nchoosing."
+                  }
+                ]
               },
               "on_demand_hourly": {
                 "$ref": "#/components/schemas/Usd",
@@ -6009,20 +6146,19 @@
         "oneOf": [
           {
             "type": "object",
-            "description": "An Azure service principal with rights over one resource group.",
+            "description": "An Azure service principal, `Contributor` on a whole subscription.\n\nSubscription scope rather than resource-group scope, because that is\nwhat `az ad sp create-for-rbac --role Contributor --scopes\n/subscriptions/…` produces and what lets flyco create the resource\ngroup it owns instead of asking the user to make one and name it.",
             "required": [
               "tenant_id",
               "client_id",
               "client_secret",
               "subscription_id",
-              "resource_group",
               "admin_ssh_public_key",
               "kind"
             ],
             "properties": {
               "admin_ssh_public_key": {
                 "type": "string",
-                "description": "The `OpenSSH` public key a machine's break-glass login is created\nwith.\n\nAzure refuses to create a Linux machine with neither a password\nnor a key and flyco sets no passwords, so one is required. It is\nthe *user's* key: flyco never holds a private key for a machine\nit provisions."
+                "description": "The `OpenSSH` public key a machine's break-glass login is created\nwith.\n\nAzure refuses to create a Linux machine with neither a password\nnor a key and flyco sets no passwords, so one is required. It is\nthe *user's* key: the wizard generates the pair in their browser,\noffers them the private half once, and sends only this. Flyco\nnever holds a private key for a machine it provisions."
               },
               "client_id": {
                 "type": "string",
@@ -6037,10 +6173,6 @@
                 "enum": [
                   "azure"
                 ]
-              },
-              "resource_group": {
-                "type": "string",
-                "description": "The resource group flyco creates everything inside, which must\nalready exist.\n\nCreating a resource group is a subscription-scope write and no\nresource-group-scoped role can create the group it is scoped to,\nso the group is made out of band and named here. Scope the\nprincipal `Contributor` on it — `Virtual Machine Contributor`\nalone cannot create a virtual network, a public IP or a security\ngroup."
               },
               "subscription_id": {
                 "type": "string",
