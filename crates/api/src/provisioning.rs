@@ -36,6 +36,14 @@ pub struct LinkedAccount {
     pub id: ProviderAccountId,
     /// The unsealed credentials.
     credentials: ProviderCredentials,
+    /// The Azure resource group flyco created in this subscription when the
+    /// account was linked, and `None` for every other provider.
+    ///
+    /// Beside the credentials rather than inside them: it is a resource
+    /// flyco owns, not a secret the user typed, and reading it needs no
+    /// unsealing. An Azure account without one is a row no driver can be
+    /// built from — see [`LinkedAccount::azure_workspace`].
+    resource_group: Option<String>,
 }
 
 impl core::fmt::Debug for LinkedAccount {
@@ -63,6 +71,23 @@ impl LinkedAccount {
     #[must_use]
     pub const fn credentials(&self) -> &ProviderCredentials {
         &self.credentials
+    }
+
+    /// The resource group an Azure driver for this account must use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError::Malformed`] for an Azure row with no group
+    /// recorded, which is an account linked before flyco created the group
+    /// itself. Guessing a name here would point the driver at whatever
+    /// resources happen to answer to it in somebody's subscription, so the
+    /// account is refused and relinked instead.
+    fn azure_workspace(&self) -> Result<&str, ProviderError> {
+        self.resource_group
+            .as_deref()
+            .ok_or(ProviderError::Malformed(
+                "this Azure account has no resource group recorded; relink it",
+            ))
     }
 }
 
@@ -130,6 +155,7 @@ pub(crate) fn gcp_driver(service_account_json: &str) -> Result<GcpProvider, Prov
 struct SealedRow {
     id: ProviderAccountId,
     credentials_enc: String,
+    resource_group: Option<String>,
 }
 
 /// Loads the caller's linked accounts, optionally narrowed to one provider.
@@ -149,7 +175,7 @@ pub async fn accounts_for(
     // both callers rather than assembling SQL per request.
     let rows: Vec<SealedRow> = sql!(
         db,
-        "SELECT id, credentials_enc FROM provider_accounts \
+        "SELECT id, credentials_enc, resource_group FROM provider_accounts \
          WHERE user_id = {user} AND ({kind} IS NULL OR kind = {kind}) \
          ORDER BY linked_at_unix"
     )
@@ -166,6 +192,7 @@ pub async fn accounts_for(
             Ok(LinkedAccount {
                 id: row.id,
                 credentials,
+                resource_group: row.resource_group,
             })
         })
         .collect()
@@ -185,7 +212,7 @@ pub async fn account(
 ) -> Result<LinkedAccount, ApiError> {
     let row: SealedRow = sql!(
         db,
-        "SELECT id, credentials_enc FROM provider_accounts \
+        "SELECT id, credentials_enc, resource_group FROM provider_accounts \
          WHERE id = {id} AND user_id = {user}"
     )
     .fetch_optional()
@@ -197,7 +224,11 @@ pub async fn account(
             ApiError::CorruptRecord("provider_accounts.credentials_enc is not credentials")
         })?;
 
-    Ok(LinkedAccount { id, credentials })
+    Ok(LinkedAccount {
+        id,
+        credentials,
+        resource_group: row.resource_group,
+    })
 }
 
 /// Reads what an account can actually deploy today.
@@ -230,7 +261,6 @@ async fn catalog_of(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>,
             client_id,
             client_secret,
             subscription_id,
-            resource_group,
             admin_ssh_public_key,
         } => {
             azure_driver(
@@ -238,7 +268,7 @@ async fn catalog_of(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>,
                 client_id,
                 client_secret,
                 subscription_id,
-                resource_group,
+                account.azure_workspace()?,
                 admin_ssh_public_key,
             )
             .catalog()
@@ -296,14 +326,13 @@ pub async fn cloud_usage(
             client_id,
             client_secret,
             subscription_id,
-            resource_group,
             admin_ssh_public_key,
         } => azure_driver(
             tenant_id,
             client_id,
             client_secret,
             subscription_id,
-            resource_group,
+            account.azure_workspace()?,
             admin_ssh_public_key,
         )
         .billing_period_cost(now_unix)
@@ -356,7 +385,6 @@ pub async fn operate(
             client_id,
             client_secret,
             subscription_id,
-            resource_group,
             admin_ssh_public_key,
         } => {
             operation
@@ -366,7 +394,7 @@ pub async fn operate(
                         client_id,
                         client_secret,
                         subscription_id,
-                        resource_group,
+                        account.azure_workspace()?,
                         admin_ssh_public_key,
                     ),
                     machine,
@@ -466,29 +494,34 @@ impl Operation<'_> {
 
 /// The Azure driver an account opens, when it is an Azure account.
 ///
-/// A thin destructuring over [`azure_driver`], so a caller holding whole
-/// credentials does not repeat which six fields matter.
-fn azure_driver_for(credentials: &ProviderCredentials) -> Option<AzureProvider> {
+/// A thin destructuring over [`azure_driver`], so a caller holding a whole
+/// account does not repeat which fields matter. `Ok(None)` means "not an
+/// Azure account"; an error means it is one and cannot be opened.
+///
+/// # Errors
+///
+/// Returns [`ProviderError::Malformed`] for an Azure account with no
+/// resource group recorded — see [`LinkedAccount::azure_workspace`].
+fn azure_driver_for(account: &LinkedAccount) -> Result<Option<AzureProvider>, ProviderError> {
     let ProviderCredentials::Azure {
         tenant_id,
         client_id,
         client_secret,
         subscription_id,
-        resource_group,
         admin_ssh_public_key,
-    } = credentials
+    } = account.credentials()
     else {
-        return None;
+        return Ok(None);
     };
 
-    Some(azure_driver(
+    Ok(Some(azure_driver(
         tenant_id,
         client_id,
         client_secret,
         subscription_id,
-        resource_group,
+        account.azure_workspace()?,
         admin_ssh_public_key,
-    ))
+    )))
 }
 
 /// Confirms an account can actually deploy the machine a session asked for,
@@ -516,7 +549,7 @@ pub async fn deployable(
     account: &LinkedAccount,
     spec: &MachineSpec,
 ) -> Result<MachineCatalogEntry, ProviderError> {
-    if let Some(mut azure) = azure_driver_for(account.credentials()) {
+    if let Some(mut azure) = azure_driver_for(account)? {
         let report = azure.region_report(&spec.region).await?;
         return report
             .offered
@@ -581,7 +614,7 @@ impl Provisioner for CloudProvisioner {
         account: &LinkedAccount,
         request: &ProvisionRequest,
     ) -> Result<Machine, ProviderError> {
-        if let Some(mut azure) = azure_driver_for(account.credentials()) {
+        if let Some(mut azure) = azure_driver_for(account)? {
             return azure.provision(request).await;
         }
 

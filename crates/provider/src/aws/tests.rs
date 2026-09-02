@@ -1252,7 +1252,7 @@ async fn the_catalog_offers_only_what_passes_all_three_gates() {
             // The cheapest zone, because a launch that names none lands
             // wherever there is capacity and is billed at that zone's rate.
             spot_hourly: Some(flyco_core::Usd::from_micros(4_860)),
-            minimum_billing_hours: None,
+            minimum: None,
             storage: flyco_core::StoragePricing::PerGibHourly {
                 rate: flyco_core::Usd::from_micros(110),
             },
@@ -1280,7 +1280,10 @@ async fn an_ec2_mac_says_it_bills_a_day_at_a_time() {
             // dedicated host, so an hour of this is billed as a day — and a
             // budget told the hourly rate alone would be wrong by about
             // sixteen dollars.
-            minimum_billing_hours: Some(24),
+            minimum: Some(flyco_core::BillingMinimum::new(
+                24,
+                flyco_core::Usd::from_micros(650_000)
+            )),
             storage: flyco_core::StoragePricing::PerGibHourly {
                 rate: flyco_core::Usd::from_micros(110),
             },
@@ -1482,7 +1485,7 @@ async fn live_provision_and_destroy() {
             !matches!(
                 entry.pricing,
                 flyco_core::MachinePricing::Metered {
-                    minimum_billing_hours: Some(_),
+                    minimum: Some(_),
                     ..
                 }
             )

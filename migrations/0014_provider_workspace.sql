@@ -1,0 +1,18 @@
+-- What flyco created inside a linked cloud account when it linked it.
+--
+-- `resource_group` is Azure's, and only Azure's: the wizard now mints a
+-- subscription-scoped `Contributor` service principal, so flyco creates the
+-- resource group it owns itself instead of asking the user to make one by
+-- hand and type its name into a credential form. The name is recorded rather
+-- than assumed at read time, so an account linked under one name keeps the
+-- group it actually owns if flyco's default ever changes.
+--
+-- A column beside the credential rather than a field inside it, because it is
+-- not a credential: it is a resource, it is not secret, and it is written by
+-- flyco rather than supplied by the user. The credential blob stays exactly
+-- as write-only as it was.
+--
+-- NULL for every other provider, and for an Azure account linked before this
+-- migration — a row the control plane refuses to build a driver from rather
+-- than guessing a group name that may belong to somebody else's resources.
+ALTER TABLE provider_accounts ADD COLUMN resource_group TEXT;

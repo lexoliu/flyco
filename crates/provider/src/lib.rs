@@ -50,6 +50,7 @@ pub mod datetime;
 pub mod flycod;
 pub mod gcp;
 pub mod http;
+pub mod naming;
 pub mod polling;
 
 use core::fmt;

@@ -193,7 +193,7 @@ async fn start_session(
     let choice = match request.machine {
         Some(choice) => choice,
         None => {
-            machines::automatic(db, config, user.id, request.spot)
+            machines::automatic(db, config, user.id, request.spot, None)
                 .await?
                 .choice
         }

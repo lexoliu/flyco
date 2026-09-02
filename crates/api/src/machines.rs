@@ -12,7 +12,7 @@ use flyco_core::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, CloudProviderKind, CurrentUser, DEFAULT_DISK_GIB,
     MachineCatalogEntry, MachineChoice, MachineDefault, MachineId, MachineSpec, MachineState,
     MachineView, OsFamily, ProviderAccountId, ResizeMachine, SessionId, Usd, UserId,
-    auto_linux_choice,
+    auto_linux_choice, curate,
 };
 use serde::Deserialize;
 use skyzen::extract::Query;
@@ -236,6 +236,13 @@ async fn load(db: &Db, user: UserId, session: SessionId) -> Result<MachineRow, A
 pub struct CatalogFilter {
     /// Only machines from this provider.
     pub provider: Option<CloudProviderKind>,
+    /// Only machines this linked account can deploy.
+    ///
+    /// Narrower than [`Self::provider`], and a different question: a user
+    /// with two Azure subscriptions is choosing between two bills, and a
+    /// card that spoke for both of them would name a machine the account it
+    /// sits on cannot create.
+    pub account: Option<ProviderAccountId>,
     /// Only machines in this provider-native region.
     pub region: Option<String>,
     /// Only machines running this operating system family.
@@ -256,7 +263,15 @@ async fn get_catalog(
         .into()
 }
 
-/// Merges every linked account's catalog into one document.
+/// Merges every linked account's catalog into one curated document.
+///
+/// Curated by [`curate`], which is the whole of docs/ux.md §7.6: newest
+/// generation of each family, then the strict Pareto frontier on price
+/// against capacity, then ordered by price. Every reader of the catalog goes
+/// through here — the chip's slider, `GET /v1/machines/default`, and the
+/// resize the agent asks for — so the user and the agent are choosing from
+/// the same short list rather than from two different views of one cloud's
+/// thousands of redundant rows.
 ///
 /// What each provider returns is already narrowed to what that account can
 /// actually deploy — for Azure that means SKU restrictions, quota *and* the
@@ -271,7 +286,11 @@ pub(crate) async fn catalog(
     user: UserId,
     filter: &CatalogFilter,
 ) -> Result<Vec<MachineCatalogEntry>, ApiError> {
-    let accounts = provisioning::accounts_for(db, config, user, filter.provider).await?;
+    let mut accounts = provisioning::accounts_for(db, config, user, filter.provider).await?;
+    // Narrowed before the reads rather than after: asking a provider for a
+    // catalog nobody will look at is a round trip and, on a large
+    // subscription, several.
+    accounts.retain(|account| filter.account.is_none_or(|wanted| account.id == wanted));
 
     let mut entries = Vec::new();
     for account in accounts {
@@ -294,7 +313,12 @@ pub(crate) async fn catalog(
             .is_none_or(|region| entry.region.eq_ignore_ascii_case(region))
             && filter.os.is_none_or(|os| entry.os == os)
     });
-    Ok(entries)
+
+    // Curation is applied after filtering, not before: a frontier computed
+    // over every region and then narrowed to one would hide types that are
+    // on the frontier *of that region*, which is the only frontier a user
+    // choosing a region can act on.
+    Ok(curate(entries))
 }
 
 /// Whether a caller who names no machine wants interruptible capacity.
@@ -303,6 +327,12 @@ pub struct DefaultMachineQuery {
     /// Whether to price and pick against spot capacity. Spot is the default
     /// because it is cheaper and flyco handles eviction.
     pub spot: Option<bool>,
+    /// Answer for this linked account alone.
+    ///
+    /// What a compute card asks: "if this were the only account, what would
+    /// flyco run on?" Absent, the answer is drawn from every linked account,
+    /// which is what the composer's chip shows.
+    pub account: Option<ProviderAccountId>,
 }
 
 /// Describes the machine flyco would provision if the caller named none.
@@ -318,10 +348,16 @@ async fn get_default_machine(
     Query(query): Query<DefaultMachineQuery>,
     db: Db,
 ) -> Outcome<Json<MachineDefault>> {
-    automatic(&db, &config, user.id, query.spot.unwrap_or(true))
-        .await
-        .map(Json)
-        .into()
+    automatic(
+        &db,
+        &config,
+        user.id,
+        query.spot.unwrap_or(true),
+        query.account,
+    )
+    .await
+    .map(Json)
+    .into()
 }
 
 /// Picks the machine flyco provisions when the caller names none.
@@ -335,6 +371,7 @@ pub(crate) async fn automatic(
     config: &ApiConfig,
     user: UserId,
     spot: bool,
+    account: Option<ProviderAccountId>,
 ) -> Result<MachineDefault, ApiError> {
     let entries = catalog(
         db,
@@ -342,6 +379,7 @@ pub(crate) async fn automatic(
         user,
         &CatalogFilter {
             provider: None,
+            account,
             region: None,
             os: Some(OsFamily::Linux),
         },

@@ -18,6 +18,7 @@
 //! terminal state is what is trusted, never a read-back of the attribute
 //! that was set.
 
+use flyco_core::machine::CpuArchitecture;
 use serde::{Deserialize, Serialize};
 
 use crate::ProviderError;
@@ -1106,6 +1107,29 @@ impl InstanceTypeInfo {
             .iter()
             .map(String::as_str)
             .find(|architecture| matches!(*architecture, "x86_64" | "arm64"))
+    }
+
+    /// The instruction set the *machine* runs, Macs included.
+    ///
+    /// Wider than [`Self::architecture`] on purpose. That one answers "which
+    /// Ubuntu AMI does this take", so it recognises only the two names
+    /// Canonical publishes for. This one answers "is this an Arm box or an
+    /// x86 one", which is a question `arm64_mac` has a perfectly good answer
+    /// to — and a catalog that could not say would have to drop every Mac,
+    /// which is the one type the 24-hour billing minimum exists for.
+    #[must_use]
+    pub fn cpu_architecture(&self) -> Option<CpuArchitecture> {
+        self.processor_info
+            .supported_architectures
+            .item
+            .iter()
+            .find_map(|architecture| {
+                match architecture.trim_end_matches(super::MAC_ARCHITECTURE_SUFFIX) {
+                    "x86_64" => Some(CpuArchitecture::X8664),
+                    "arm64" => Some(CpuArchitecture::Arm64),
+                    _ => None,
+                }
+            })
     }
 }
 

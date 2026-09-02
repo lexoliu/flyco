@@ -25,6 +25,19 @@
 
 use serde::Serialize;
 
+/// The body of the resource-group `PUT` flyco makes when an account is
+/// linked.
+///
+/// A resource group is a name and a region and nothing else, which is why
+/// the `PUT` is idempotent: sent twice against the same subscription it
+/// answers `200` and changes nothing.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResourceGroup {
+    /// Where the group's own record lives. It does not constrain where the
+    /// machines inside it may be created.
+    pub location: String,
+}
+
 /// A reference to another ARM resource, which is always by full id.
 #[derive(Debug, Clone, Serialize)]
 pub struct ResourceRef {

@@ -22,7 +22,12 @@ use crate::money::Usd;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderCredentials {
-    /// An Azure service principal with rights over one resource group.
+    /// An Azure service principal, `Contributor` on a whole subscription.
+    ///
+    /// Subscription scope rather than resource-group scope, because that is
+    /// what `az ad sp create-for-rbac --role Contributor --scopes
+    /// /subscriptions/…` produces and what lets flyco create the resource
+    /// group it owns instead of asking the user to make one and name it.
     Azure {
         /// Directory (tenant) the service principal belongs to.
         tenant_id: String,
@@ -32,23 +37,14 @@ pub enum ProviderCredentials {
         client_secret: String,
         /// Subscription machines are provisioned into.
         subscription_id: String,
-        /// The resource group flyco creates everything inside, which must
-        /// already exist.
-        ///
-        /// Creating a resource group is a subscription-scope write and no
-        /// resource-group-scoped role can create the group it is scoped to,
-        /// so the group is made out of band and named here. Scope the
-        /// principal `Contributor` on it — `Virtual Machine Contributor`
-        /// alone cannot create a virtual network, a public IP or a security
-        /// group.
-        resource_group: String,
         /// The `OpenSSH` public key a machine's break-glass login is created
         /// with.
         ///
         /// Azure refuses to create a Linux machine with neither a password
         /// nor a key and flyco sets no passwords, so one is required. It is
-        /// the *user's* key: flyco never holds a private key for a machine
-        /// it provisions.
+        /// the *user's* key: the wizard generates the pair in their browser,
+        /// offers them the private half once, and sends only this. Flyco
+        /// never holds a private key for a machine it provisions.
         admin_ssh_public_key: String,
     },
     /// An AWS IAM access key.
@@ -138,6 +134,25 @@ pub struct ProviderAccountView {
     pub linked_at_unix: u64,
 }
 
+/// Answer of `GET /v1/providers/aws/iam-policy`.
+///
+/// The wizard shows the user the policy they are about to attach to an IAM
+/// user, and a policy that is not the truth is worse than none: too narrow
+/// and the first provision fails with an `UnauthorizedOperation` nobody can
+/// act on, too wide and flyco asked for rights it never uses. So the
+/// document is rendered from the driver's own call sites rather than written
+/// out by hand somewhere — see `flyco_provider::aws::iam`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AwsIamPolicy {
+    /// The policy document, exactly as it is to be pasted into IAM.
+    pub document: String,
+    /// Every action the document grants, `service:Action`, sorted.
+    ///
+    /// Beside the document rather than only inside it, so a caller can list
+    /// or count the permissions without parsing JSON back out of a string.
+    pub actions: Vec<String>,
+}
+
 /// Request body of `POST /v1/providers/quickstart`.
 ///
 /// Two questions, because two questions are what separate the free-credit
@@ -209,7 +224,6 @@ mod tests {
                 client_id: "client".to_owned(),
                 client_secret: "secret".to_owned(),
                 subscription_id: "subscription".to_owned(),
-                resource_group: "flyco-rg".to_owned(),
                 admin_ssh_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA lexo@flyco".to_owned(),
             },
         };

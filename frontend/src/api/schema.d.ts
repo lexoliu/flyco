@@ -531,6 +531,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/providers/aws/iam-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Shows the least privilege an AWS access key needs to run flyco sessions.
+         * @description Shows the least privilege an AWS access key needs to run flyco sessions.
+         *
+         *     Served rather than checked into the frontend because it is a fact about
+         *     this build of the driver: a copy in a template somewhere else would be
+         *     right on the day it was written and quietly wrong afterwards.
+         */
+        get: operations["flyco_api::provider_accounts::aws_iam_policy"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/providers/quickstart": {
         parameters: {
             query?: never;
@@ -1516,6 +1540,47 @@ export interface components {
          */
         Availability: "supported" | "harness_limitation" | "planned" | "disabled" | "takeover" | "phase2" | "not_applicable";
         /**
+         * @description Answer of `GET /v1/providers/aws/iam-policy`.
+         *
+         *     The wizard shows the user the policy they are about to attach to an IAM
+         *     user, and a policy that is not the truth is worse than none: too narrow
+         *     and the first provision fails with an `UnauthorizedOperation` nobody can
+         *     act on, too wide and flyco asked for rights it never uses. So the
+         *     document is rendered from the driver's own call sites rather than written
+         *     out by hand somewhere — see `flyco_provider::aws::iam`.
+         */
+        AwsIamPolicy: {
+            /**
+             * @description Every action the document grants, `service:Action`, sorted.
+             *
+             *     Beside the document rather than only inside it, so a caller can list
+             *     or count the permissions without parsing JSON back out of a string.
+             */
+            actions: string[];
+            /** @description The policy document, exactly as it is to be pasted into IAM. */
+            document: string;
+        };
+        /**
+         * @description A provider's floor on what starting a machine costs at all.
+         *
+         *     Both halves travel together because only one of them answers the question
+         *     a user is actually asking. `24` hours is a fact about a licence;
+         *     `$14.98` is what pressing the button costs, and it is the number that has
+         *     to be on screen before send is enabled. Deriving the second from the
+         *     first at every call site would be one multiplication written four times,
+         *     and a catalog whose price and minimum could disagree would be worse than
+         *     one that quoted neither.
+         */
+        BillingMinimum: {
+            /** @description What those hours cost at the on-demand rate. */
+            charge: components["schemas"]["Usd"];
+            /**
+             * Format: int32
+             * @description Hours the provider bills however briefly the machine runs.
+             */
+            hours: number;
+        };
+        /**
          * @description How far through the budget the session is. Monotonically increasing.
          * @enum {string}
          */
@@ -1550,6 +1615,7 @@ export interface components {
          *     because a user with one linked provider should not have to name it.
          */
         CatalogFilter: {
+            account?: null | components["schemas"]["Uuid"];
             os?: null | components["schemas"]["OsFamily"];
             provider?: null | components["schemas"]["CloudProviderKind"];
             /** @description Only machines in this provider-native region. */
@@ -1632,6 +1698,17 @@ export interface components {
              */
             used_tokens: number;
         };
+        /**
+         * @description The instruction set a machine type runs.
+         *
+         *     An independent dimension of the catalog rather than a property to rank:
+         *     an arm64 type is not a cheaper or dearer version of an x86-64 one, it is
+         *     a different machine, and a build that needs one is not served by the
+         *     other. Curation therefore never compares across it (see
+         *     [`crate::catalog`]).
+         * @enum {string}
+         */
+        CpuArchitecture: "x86_64" | "arm64";
         /** @description Request body of `POST /v1/api-keys`. */
         CreateApiKey: {
             /**
@@ -1736,6 +1813,7 @@ export interface components {
         };
         /** @description Whether a caller who names no machine wants interruptible capacity. */
         DefaultMachineQuery: {
+            account?: null | components["schemas"]["Uuid"];
             /**
              * @description Whether to price and pick against spot capacity. Spot is the default
              *     because it is cheaper and flyco handles eviction.
@@ -1971,6 +2049,7 @@ export interface components {
         MachineCatalogEntry: {
             account?: null | components["schemas"]["Uuid"];
             capacity?: null | components["schemas"]["MachineCapacity"];
+            lineage?: null | components["schemas"]["MachineLineage"];
             /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
             machine_type: string;
             /** @description Operating system family. */
@@ -2040,6 +2119,45 @@ export interface components {
             entry: components["schemas"]["MachineCatalogEntry"];
         };
         /**
+         * @description Where a machine type sits in its provider's own line-up.
+         *
+         *     The three facts curation needs, and none of which a frontend should ever
+         *     recover by parsing a type name: which instruction set it runs, which
+         *     family of the provider's line-up it belongs to, and which generation of
+         *     that family it is. Every driver derives them from the metadata its own
+         *     API publishes — Azure's quota family, EC2's `DescribeInstanceTypes`,
+         *     Compute Engine's `architecture` field and series name — so a provider
+         *     that renames its types breaks one driver rather than the whole product.
+         *
+         *     Absent from an entry describing hardware the user owns: flyco has not
+         *     inspected that machine, and inventing a family for it would be a claim
+         *     the catalog cannot support.
+         */
+        MachineLineage: {
+            /** @description The instruction set it runs. */
+            architecture: components["schemas"]["CpuArchitecture"];
+            /**
+             * @description Provider-native family key, with the generation removed.
+             *
+             *     Two types share a family when the provider sells them as the same
+             *     machine in different generations: `Standard_D4s_v5` and
+             *     `Standard_D4s_v6`, `m6g.xlarge` and `m7g.xlarge`. The string is a
+             *     key rather than a label — its shape is the driver's business, and
+             *     nothing outside the driver that produced it may parse it.
+             */
+            family: string;
+            /**
+             * Format: int32
+             * @description Which generation of that family it is, when the provider numbers
+             *     them.
+             *
+             *     Absent where a family carries no version in the provider's own
+             *     metadata, which makes it a family of one rather than an old
+             *     generation to hide.
+             */
+            generation?: number | null;
+        };
+        /**
          * @description How the machine a session runs on was chosen.
          *
          *     Persisted because the two are not interchangeable afterwards: a machine
@@ -2060,13 +2178,7 @@ export interface components {
         MachinePricing: {
             /** @enum {string} */
             kind: "metered";
-            /**
-             * Format: int32
-             * @description Minimum billing commitment in hours, when the provider imposes
-             *     one (e.g. EC2 Mac dedicated hosts bill a 24-hour minimum under
-             *     the Apple license). The agent sees this before choosing.
-             */
-            minimum_billing_hours?: number | null;
+            minimum?: null | components["schemas"]["BillingMinimum"];
             /** @description On-demand price per hour. */
             on_demand_hourly: components["schemas"]["Usd"];
             spot_hourly?: null | components["schemas"]["Usd"];
@@ -2261,8 +2373,9 @@ export interface components {
              *
              *     Azure refuses to create a Linux machine with neither a password
              *     nor a key and flyco sets no passwords, so one is required. It is
-             *     the *user's* key: flyco never holds a private key for a machine
-             *     it provisions.
+             *     the *user's* key: the wizard generates the pair in their browser,
+             *     offers them the private half once, and sends only this. Flyco
+             *     never holds a private key for a machine it provisions.
              */
             admin_ssh_public_key: string;
             /** @description Application (client) id of the service principal. */
@@ -2271,18 +2384,6 @@ export interface components {
             client_secret: string;
             /** @enum {string} */
             kind: "azure";
-            /**
-             * @description The resource group flyco creates everything inside, which must
-             *     already exist.
-             *
-             *     Creating a resource group is a subscription-scope write and no
-             *     resource-group-scoped role can create the group it is scoped to,
-             *     so the group is made out of band and named here. Scope the
-             *     principal `Contributor` on it — `Virtual Machine Contributor`
-             *     alone cannot create a virtual network, a public IP or a security
-             *     group.
-             */
-            resource_group: string;
             /** @description Subscription machines are provisioned into. */
             subscription_id: string;
             /** @description Directory (tenant) the service principal belongs to. */
@@ -3380,6 +3481,7 @@ export interface operations {
     "flyco_api::machines::get_catalog": {
         parameters: {
             query?: {
+                account?: null | components["schemas"]["Uuid"];
                 os?: null | components["schemas"]["OsFamily"];
                 provider?: null | components["schemas"]["CloudProviderKind"];
                 region?: string | null;
@@ -3399,6 +3501,7 @@ export interface operations {
                     "application/json": {
                         account?: null | components["schemas"]["Uuid"];
                         capacity?: null | components["schemas"]["MachineCapacity"];
+                        lineage?: null | components["schemas"]["MachineLineage"];
                         /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
                         machine_type: string;
                         /** @description Operating system family. */
@@ -3424,6 +3527,7 @@ export interface operations {
     "flyco_api::machines::get_default_machine": {
         parameters: {
             query?: {
+                account?: null | components["schemas"]["Uuid"];
                 spot?: boolean | null;
             };
             header?: never;
@@ -3963,6 +4067,36 @@ export interface operations {
                          * @description When it was linked, seconds since the Unix epoch.
                          */
                         linked_at_unix: number;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_accounts::aws_iam_policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * @description Every action the document grants, `service:Action`, sorted.
+                         *
+                         *     Beside the document rather than only inside it, so a caller can list
+                         *     or count the permissions without parsing JSON back out of a string.
+                         */
+                        actions: string[];
+                        /** @description The policy document, exactly as it is to be pasted into IAM. */
+                        document: string;
                     };
                 };
             };

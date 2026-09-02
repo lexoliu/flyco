@@ -18,6 +18,12 @@ use serde::Deserialize;
 /// Signing name of the Security Token Service.
 pub const SERVICE: &str = "sts";
 
+/// The one operation this module calls.
+///
+/// Named rather than written at the call site so
+/// [`crate::aws::iam`] can grant it without a second copy of the string.
+pub const ACTION: &str = "GetCallerIdentity";
+
 /// The API version this call pins.
 pub const API_VERSION: &str = "2011-06-15";
 

@@ -1165,7 +1165,7 @@ async fn the_catalog_offers_only_what_passes_all_three_gates() {
         flyco_core::MachinePricing::Metered {
             on_demand_hourly: flyco_core::Usd::from_micros(76_400),
             spot_hourly: Some(flyco_core::Usd::from_micros(14_126)),
-            minimum_billing_hours: None,
+            minimum: None,
             storage: flyco_core::StoragePricing::CapacityTiers {
                 tiers: vec![
                     flyco_core::StoragePriceTier {

@@ -1,0 +1,15 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "FlycoSessionMachines",
+      "Effect": "Allow",
+      "Action": [
+{%- for action in actions %}
+        "{{ action }}"{% if !loop.last %},{% endif %}
+{%- endfor %}
+      ],
+      "Resource": "*"
+    }
+  ]
+}

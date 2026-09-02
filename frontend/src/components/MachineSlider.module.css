@@ -1,0 +1,157 @@
+/*
+ * The tiered slider of docs/ux.md §7.7.
+ *
+ * The reading sits above the track, because the label is what the user is
+ * looking at while the thumb moves; the ticks sit under it as a map of where
+ * the detents are. Amber is the only colour here, and it appears on exactly
+ * one thing: a detent whose provider bills a minimum the moment it boots.
+ */
+.slider {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* ── The reading ─────────────────────────────────────────────────────── */
+
+.reading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.machine {
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  white-space: nowrap;
+}
+
+/* ── The track ───────────────────────────────────────────────────────── */
+
+.track {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.range {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--color-primary);
+}
+
+/* The global focus ring is a rectangle; the track is a pill, so it gets the
+   matching radius and a little more room to breathe. */
+.range:focus-visible {
+  border-radius: var(--radius-full);
+  outline-offset: 5px;
+}
+
+/* Ticks are decoration over a real range input, so they are laid out in
+   their own row and never intercept a pointer that belongs to the thumb. */
+.ticks {
+  position: relative;
+  height: 6px;
+  pointer-events: none;
+}
+
+.tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 5px;
+  margin-left: -0.5px;
+  background: var(--color-border-strong);
+}
+
+.tickBound {
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: var(--radius-full);
+  background: var(--color-warning);
+}
+
+.tickActive {
+  height: 6px;
+  background: var(--color-text);
+}
+
+.ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+
+/* ── Everything the choice implies ───────────────────────────────────── */
+
+.warning {
+  display: flex;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  font-size: var(--text-sm);
+}
+
+.empty {
+  margin: 0;
+  padding: var(--space-3);
+  border: var(--border-width) dashed var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* ── Advanced ────────────────────────────────────────────────────────── */
+
+.filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-3);
+}
+
+.filter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  min-width: 0;
+}
+
+.filter select {
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-text);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+  max-width: 100%;
+}
+
+.toggleRow {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}

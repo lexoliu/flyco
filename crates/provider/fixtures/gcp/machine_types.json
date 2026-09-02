@@ -10,7 +10,8 @@
       "guestCpus": 2,
       "memoryMb": 8192,
       "zone": "us-central1-a",
-      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/e2-standard-2"
+      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/e2-standard-2",
+      "architecture": "X86_64"
     },
     {
       "kind": "compute#machineType",
@@ -20,7 +21,8 @@
       "guestCpus": 2,
       "memoryMb": 4096,
       "zone": "us-central1-a",
-      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/e2-medium"
+      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/e2-medium",
+      "architecture": "X86_64"
     },
     {
       "kind": "compute#machineType",
@@ -30,7 +32,8 @@
       "guestCpus": 32,
       "memoryMb": 131072,
       "zone": "us-central1-a",
-      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/e2-standard-32"
+      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/e2-standard-32",
+      "architecture": "X86_64"
     },
     {
       "kind": "compute#machineType",
@@ -43,7 +46,8 @@
       "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/n1-standard-1",
       "deprecated": {
         "state": "DEPRECATED"
-      }
+      },
+      "architecture": "X86_64"
     },
     {
       "kind": "compute#machineType",
@@ -56,7 +60,8 @@
       "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/f1-micro",
       "deprecated": {
         "state": "OBSOLETE"
-      }
+      },
+      "architecture": "X86_64"
     },
     {
       "kind": "compute#machineType",
@@ -66,7 +71,8 @@
       "guestCpus": 2,
       "memoryMb": 8192,
       "zone": "us-central1-a",
-      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/n2-standard-2"
+      "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes/n2-standard-2",
+      "architecture": "X86_64"
     }
   ],
   "selfLink": "https://compute.googleapis.com/compute/v1/projects/flyco-sessions/zones/us-central1-a/machineTypes"

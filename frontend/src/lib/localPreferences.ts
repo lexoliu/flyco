@@ -1,6 +1,7 @@
 /**
- * The two things this browser remembers on its own: which repositories the
- * user reaches for, and whether they have seen the welcome.
+ * The three things this browser remembers on its own: which repositories the
+ * user reaches for, whether they want interruptible capacity, and whether
+ * they have seen the welcome.
  *
  * Neither is worth a round trip and neither matters if it is lost, which is
  * exactly the shape `localStorage` is for. Every access is guarded: private
@@ -12,6 +13,7 @@
 
 const RECENT_REPOS_KEY = "flyco.recent_repos";
 const WELCOME_KEY = "flyco.welcome_dismissed";
+const SPOT_KEY = "flyco.spot";
 
 /** How many repositories the picker offers before the search results. */
 export const MAX_RECENT_REPOS = 5;
@@ -64,6 +66,23 @@ export function rememberRepo(slug: string): string[] {
   );
   write(RECENT_REPOS_KEY, JSON.stringify(next));
   return next;
+}
+
+/**
+ * Whether new sessions ask for interruptible capacity.
+ *
+ * On unless this browser has been told otherwise: spot is cheaper, flyco
+ * handles eviction, and a preference nobody has expressed should be the one
+ * that costs less. Stored rather than sent, because it is a default for the
+ * next session rather than a fact about any session that exists.
+ */
+export function spotPreference(): boolean {
+  return read(SPOT_KEY) !== "off";
+}
+
+/** Records whether new sessions should ask for spot capacity. */
+export function setSpotPreference(spot: boolean): void {
+  write(SPOT_KEY, spot ? "on" : "off");
 }
 
 /** Whether the user has already dismissed or finished the welcome. */
