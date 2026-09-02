@@ -1,18 +1,33 @@
-//! Time-to-live that belongs to flyco rather than to the store.
+//! Time-to-live that belongs to flyco *and* to the store.
 //!
-//! `Kv::put_with_ttl` exists, and both backends flyco runs on implement it —
-//! but a deadline enforced by the store is a deadline flyco cannot state.
-//! Cloudflare KV's expiry has a sixty-second floor, which is exactly the
-//! life of a relay ticket, and eviction is the platform's schedule rather
-//! than a promise about the next read. So every entry carries its own
-//! deadline and a read past it is indistinguishable from a miss. Native
-//! expiry would be an optimisation on top of that, never the rule.
+//! Every entry carries its own deadline, and a read past it is
+//! indistinguishable from a miss — that is the deadline flyco states, and it
+//! holds on any backend, whatever the store's own expiry can express.
+//!
+//! The store's expiry is set as well, because a logical deadline alone
+//! removes nothing: single-use OAuth `state` entries would sit in the
+//! namespace forever after the ten minutes they are readable for. Cloudflare
+//! KV refuses an `expirationTtl` below sixty seconds, so a shorter life is
+//! stored under [`STORE_TTL_FLOOR`] and the read-side check is what actually
+//! enforces it. The two together mean an entry is unreadable at its real
+//! deadline and gone from the store shortly after.
+
+use core::time::Duration;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use skyzen_services::{Kv, KvError};
 
 use crate::clock::now_unix;
+
+/// The shortest expiry a store is asked for.
+///
+/// Cloudflare KV rejects anything below a minute, and a relay ticket lives
+/// for exactly that. Clamping here rather than trusting each backend's own
+/// rounding keeps one rule for every store flyco can run on: the entry is
+/// readable for its logical life and physically present for at least a
+/// minute.
+const STORE_TTL_FLOOR: Duration = Duration::from_secs(60);
 
 /// A stored value together with the moment it stops counting.
 #[derive(Debug, Serialize, serde::Deserialize)]
@@ -21,6 +36,12 @@ struct Expiring<T> {
     expires_at_unix: u64,
     /// The payload.
     value: T,
+}
+
+/// How long the store is asked to keep an entry whose logical life is
+/// `ttl_seconds`.
+fn store_ttl(ttl_seconds: u64) -> Duration {
+    Duration::from_secs(ttl_seconds).max(STORE_TTL_FLOOR)
 }
 
 /// Stores `value` under `key`, expiring `ttl_seconds` from now.
@@ -33,14 +54,12 @@ pub async fn put<T>(kv: &Kv, key: &str, value: &T, ttl_seconds: u64) -> Result<(
 where
     T: Serialize + Sync,
 {
-    kv.put_json(
-        key,
-        &Expiring {
-            expires_at_unix: now_unix().saturating_add(ttl_seconds),
-            value,
-        },
-    )
-    .await
+    let bytes = serde_json::to_vec(&Expiring {
+        expires_at_unix: now_unix().saturating_add(ttl_seconds),
+        value,
+    })?;
+
+    kv.put_with_ttl(key, &bytes, store_ttl(ttl_seconds)).await
 }
 
 /// Reads `key`, treating an expired entry as absent.
@@ -83,10 +102,83 @@ where
 
 #[cfg(test)]
 mod tests {
+    use core::future::{Future, ready};
+    use core::time::Duration;
+    use std::sync::mpsc::{Receiver, Sender, channel};
+
     use skyzen_services::Kv;
+    use skyzen_services::kv::{KeyValueStore, KvError, KvListOptions, KvListResult};
     use skyzen_test::mock::InMemoryKv;
 
-    use super::{get, put, take};
+    use super::{STORE_TTL_FLOOR, get, put, store_ttl, take};
+
+    /// An [`InMemoryKv`] that reports the expiry every write asked for.
+    ///
+    /// The mock honours a TTL but keeps no way to read one back, and "the
+    /// entry is still there" cannot tell a sixty-second expiry from no
+    /// expiry at all — which is exactly the bug this module had. So each
+    /// write announces itself down a channel the test owns: `Some(ttl)` for
+    /// an expiring write, `None` for one that would live forever.
+    #[derive(Debug, Clone)]
+    struct RecordingKv {
+        inner: InMemoryKv,
+        writes: Sender<Option<Duration>>,
+    }
+
+    impl RecordingKv {
+        /// The store, plus the end of the channel its writes arrive on.
+        fn recording_store() -> (Kv, Receiver<Option<Duration>>) {
+            let (writes, recorded) = channel();
+            (
+                Kv::new(Self {
+                    inner: InMemoryKv::new(),
+                    writes,
+                }),
+                recorded,
+            )
+        }
+
+        fn record(&self, ttl: Option<Duration>) {
+            self.writes
+                .send(ttl)
+                .expect("the test still holds the receiver");
+        }
+    }
+
+    impl KeyValueStore for RecordingKv {
+        fn get(&self, key: &str) -> impl Future<Output = Result<Option<Vec<u8>>, KvError>> + Send {
+            self.inner.get(key)
+        }
+
+        fn put(&self, key: &str, value: &[u8]) -> impl Future<Output = Result<(), KvError>> + Send {
+            self.record(None);
+            self.inner.put(key, value)
+        }
+
+        fn put_with_ttl(
+            &self,
+            key: &str,
+            value: &[u8],
+            ttl: Duration,
+        ) -> impl Future<Output = Result<(), KvError>> + Send {
+            self.record(Some(ttl));
+            self.inner.put_with_ttl(key, value, ttl)
+        }
+
+        fn delete(&self, key: &str) -> impl Future<Output = Result<(), KvError>> + Send {
+            self.inner.delete(key)
+        }
+
+        fn list(
+            &self,
+            options: KvListOptions,
+        ) -> impl Future<Output = Result<KvListResult, KvError>> + Send {
+            let _ = options;
+            ready(Err(KvError::Unsupported(
+                "the expiry tests never list the store",
+            )))
+        }
+    }
 
     fn store() -> Kv {
         Kv::new(InMemoryKv::new())
@@ -119,5 +211,46 @@ mod tests {
             Some("v")
         );
         assert!(take::<String>(&kv, "k").await.expect("take").is_none());
+    }
+
+    #[skyzen::test]
+    async fn a_put_asks_the_store_to_expire_the_entry_too() {
+        let (kv, recorded) = RecordingKv::recording_store();
+        put(&kv, "auth:oauth-state:s", &(), 600).await.expect("put");
+
+        assert_eq!(
+            recorded.try_recv().expect("one write"),
+            Some(Duration::from_secs(600)),
+            "a logical deadline the store is never told about is a key that lives forever"
+        );
+    }
+
+    #[skyzen::test]
+    async fn a_life_shorter_than_the_stores_floor_is_stored_at_the_floor() {
+        let (kv, recorded) = RecordingKv::recording_store();
+        put(&kv, "relay:ticket", &(), 5).await.expect("put");
+
+        assert_eq!(
+            recorded.try_recv().expect("one write"),
+            Some(STORE_TTL_FLOOR)
+        );
+    }
+
+    #[test]
+    fn the_floor_only_ever_lengthens_a_life() {
+        assert_eq!(store_ttl(0), STORE_TTL_FLOOR);
+        assert_eq!(store_ttl(60), STORE_TTL_FLOOR);
+        assert_eq!(store_ttl(600), Duration::from_secs(600));
+    }
+
+    #[skyzen::test]
+    async fn an_entry_the_store_still_holds_is_a_miss_once_its_own_deadline_passes() {
+        let kv = store();
+        // Under the floor the store keeps this for a minute, so the logical
+        // check is the only thing that makes it a miss.
+        put(&kv, "k", &"v".to_owned(), 0).await.expect("put");
+
+        assert!(kv.get("k").await.expect("raw get").is_some());
+        assert!(get::<String>(&kv, "k").await.expect("get").is_none());
     }
 }

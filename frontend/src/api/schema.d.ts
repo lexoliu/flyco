@@ -3278,7 +3278,7 @@ export interface components {
          *     the document beside `type`, `title`, `status` and `detail`.
          *
          *     One struct rather than a map of `serde_json::Value`: which members exist
-         *     is a fact about this API, the generated OpenAPI document states each of
+         *     is a fact about this API, the generated `OpenAPI` document states each of
          *     them with its type, and a member that is dropped or renamed fails the
          *     build instead of quietly disappearing from the wire.
          *
