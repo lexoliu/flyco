@@ -233,11 +233,20 @@ on the host, the host connects outbound and registers itself, and flyco
 schedules session containers onto it. This is the same shape as GitHub
 self-hosted runners and Tailscale.
 
-The wizard shows: one command with a copy button, a live "waiting for the
-machine…" state, then the compute card once the host has enrolled. Until
-the enrollment backend ships (tracked as its own issue), the card is not
-offered in the hosted app; the option is listed with the sentence "Enroll
-a Linux machine you own with one command" and links to the issue.
+The wizard shows: one command with a copy button, the sentence that the
+machine has to be Linux with Podman (the installer installs Podman when it
+is absent), how long the command has left, and a live "Waiting for the
+machine…" state polling `GET /v1/hosts/enrollment-tokens/{id}`. A command
+nobody ran in ten minutes reads "The command expired" and offers `Mint a
+new command`. Once the host has enrolled the wizard shows its compute
+card: hostname, architecture, vCPUs, memory, free disk, and an online dot.
+There is no credential step, because there is no credential — the machine
+authenticates itself.
+
+The compute card for a host states `your hardware` where a cloud account
+states a price, and carries `Rename` and `Remove`. A removal the control
+plane refuses with `host-has-active-sessions` names how many sessions are
+still running there and offers `Remove anyway`, which passes `force`.
 
 ### 7.6 Catalog curation
 

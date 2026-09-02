@@ -26,8 +26,9 @@ export default function ConnectCompute() {
       <header class={styles.heading}>
         <h1>Connect compute</h1>
         <p class={styles.lede}>
-          Sessions run on a machine in your own cloud account, so you keep the bill, the region and
-          the data. Flyco takes spot capacity by default and handles eviction.
+          Sessions run on a machine in your own cloud account, or on a machine you own outright, so
+          you keep the bill, the region and the data. Flyco takes spot capacity by default and
+          handles eviction.
         </p>
       </header>
 

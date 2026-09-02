@@ -43,6 +43,11 @@ export type ProviderCredentials = Schemas["ProviderCredentials"];
 export type ProviderBonusHint = Schemas["ProviderBonusHint"];
 export type AwsIamPolicy = Schemas["AwsIamPolicy"];
 export type CloudProviderKind = Schemas["CloudProviderKind"];
+export type HostView = Schemas["HostView"];
+export type HostFacts = Schemas["HostFacts"];
+export type HostState = Schemas["HostState"];
+export type EnrollmentToken = Schemas["EnrollmentToken"];
+export type Enrollment = Schemas["Enrollment"];
 export type ApiKeySummary = Schemas["ApiKeySummary"];
 export type CreatedApiKey = Schemas["CreatedApiKey"];
 export type AuthorizeUrl = Schemas["AuthorizeUrl"];
@@ -476,6 +481,67 @@ export function getAwsIamPolicy(): Promise<
   JsonResponse<"flyco_api::provider_accounts::aws_iam_policy", 200>
 > {
   return requestJson("GET", "/v1/providers/aws/iam-policy");
+}
+
+// --- /v1/hosts -------------------------------------------------------------------
+
+/**
+ * Mints the one line the user runs on the machine they own.
+ *
+ * The command comes back rendered rather than assembled here: it names the
+ * origin of *this* deployment, and a command built in the browser would
+ * point at wherever the page happened to be served from.
+ */
+export function mintEnrollmentToken(): Promise<
+  JsonResponse<"flyco_api::hosts::mint_enrollment_token", 201>
+> {
+  return requestJson("POST", "/v1/hosts/enrollment-tokens");
+}
+
+/**
+ * Asks once whether the machine has arrived.
+ *
+ * `pending` until some machine spends the token, then `enrolled` carrying
+ * the host it created — the whole of what the wizard waits on.
+ */
+export function getEnrollment(
+  id: EnrollmentToken["id"],
+): Promise<JsonResponse<"flyco_api::hosts::get_enrollment", 200>> {
+  return requestJson("GET", `/v1/hosts/enrollment-tokens/${id}`);
+}
+
+/** The caller's enrolled machines, each refreshed from its own room. */
+export function listHosts(): Promise<JsonResponse<"flyco_api::hosts::list_hosts", 200>> {
+  return requestJson("GET", "/v1/hosts");
+}
+
+/** One machine, with the state and facts its room last reported. */
+export function getHost(
+  id: HostView["id"],
+): Promise<JsonResponse<"flyco_api::hosts::get_host", 200>> {
+  return requestJson("GET", `/v1/hosts/${id}`);
+}
+
+/** Renames a machine. It opens as the hostname it enrolled with. */
+export function renameHost(
+  id: HostView["id"],
+  label: string,
+): Promise<JsonResponse<"flyco_api::hosts::update_host", 200>> {
+  const body: JsonBody<"flyco_api::hosts::update_host"> = { label };
+  return requestJson("PATCH", `/v1/hosts/${id}`, { json: body });
+}
+
+/**
+ * Drains a machine and revokes its token.
+ *
+ * Refused as `host-has-active-sessions` while sessions are still running
+ * there; `force` stops their containers and keeps the volumes, so the work
+ * is still on the disk the user owns.
+ */
+export function removeHost(id: HostView["id"], options: { force?: boolean } = {}): Promise<void> {
+  return requestVoid("DELETE", `/v1/hosts/${id}`, {
+    query: { force: options.force === true ? true : null },
+  });
 }
 
 // --- /v1/api-keys ---------------------------------------------------------------

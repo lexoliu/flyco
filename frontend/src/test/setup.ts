@@ -78,6 +78,10 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+/** The one line the host wizard shows, as the control plane renders it. */
+export const HOST_ENROLL_COMMAND =
+  "curl -fsSL https://dev.flyco.dev/install/flycod.sh | sudo sh -s -- host enroll fh_2Qv8xLmR4pT7nWzKcYbA";
+
 const NOT_IMPLEMENTED = () =>
   problemResponse(501, "https://flyco.dev/problems/not-implemented", "Not implemented");
 
@@ -122,6 +126,30 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
   }
   if (method === "GET" && path === "/v1/providers") {
     return Promise.resolve(jsonResponse([]));
+  }
+  if (method === "GET" && path === "/v1/hosts") {
+    return Promise.resolve(jsonResponse([]));
+  }
+  if (method === "POST" && path === "/v1/hosts/enrollment-tokens") {
+    return Promise.resolve(
+      jsonResponse(
+        {
+          id: "3f2b1c9d-6a4e-4d8b-9f21-7c5a0e3b8d14",
+          token: "fh_2Qv8xLmR4pT7nWzKcYbA",
+          // Ten minutes out from whatever "now" the run happens at, so the
+          // command is live rather than stale the moment it renders.
+          expires_at_unix: Math.floor(Date.now() / 1000) + 600,
+          command: HOST_ENROLL_COMMAND,
+        },
+        201,
+      ),
+    );
+  }
+  // The default is a machine nobody has run the command on yet, so a wizard
+  // that opens and waits is the ordinary case; a test that wants the other
+  // outcome routes this path itself.
+  if (method === "GET" && /^\/v1\/hosts\/enrollment-tokens\/[^/]+$/.test(path)) {
+    return Promise.resolve(jsonResponse({ status: "pending" }));
   }
   if (method === "GET" && path === "/v1/api-keys") {
     return Promise.resolve(jsonResponse([]));

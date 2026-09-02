@@ -35,6 +35,7 @@ import { cx } from "../lib/cx";
 import {
   ARCHITECTURE_LABEL,
   OS_LABEL,
+  autoSentence,
   billingMinimum,
   billingMinimumSentence,
   detentLabel,
@@ -44,9 +45,6 @@ import styles from "./MachineSlider.module.css";
 
 /** The leftmost detent, which is flyco keeping the choice. */
 const AUTO_NAME = "Auto";
-
-/** What flyco picks when it keeps the choice, in the words docs/ux.md §7.7 asks for. */
-const AUTO_RULE = "The cheapest curated Linux type with at least 4 vCPU and 16 GiB.";
 
 /** The value of "no filter" in a `<select>`, which cannot hold null. */
 const ANY = "";
@@ -170,9 +168,19 @@ export default function MachineSlider(props: MachineSliderProps) {
     return entry === undefined ? AUTO_NAME : detentLabel(entry, props.spot);
   });
 
+  /**
+   * What `Auto` resolved to, said as a sentence.
+   *
+   * Read off the machine flyco would actually provision rather than stated
+   * as a constant: hardware the user enrolled has no price to be cheapest
+   * at, so the rule about being cheapest would be a claim about a decision
+   * that was never made.
+   */
+  const rule = createMemo(() => autoSentence(props.automatic?.entry));
+
   /** The same thing said in full, for a reader who cannot see the track. */
   const spoken = createMemo(() =>
-    selected() === undefined ? `${AUTO_NAME}. ${AUTO_RULE}` : reading(),
+    selected() === undefined ? `${AUTO_NAME}. ${rule()}` : reading(),
   );
 
   /** Whether the chosen machine starts billing the moment it boots. */
@@ -190,7 +198,7 @@ export default function MachineSlider(props: MachineSliderProps) {
    */
   const note = createMemo(() => {
     const entry = selected();
-    return entry === undefined ? AUTO_RULE : billingMinimumSentence(entry);
+    return entry === undefined ? rule() : billingMinimumSentence(entry);
   });
 
   function move(next: number): void {

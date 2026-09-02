@@ -16,6 +16,7 @@ import ToolsSection from "../routes/settings/ToolsSection";
 import InstructionsSection from "../routes/settings/InstructionsSection";
 import AccountSection from "../routes/settings/AccountSection";
 import NotFound from "../routes/NotFound";
+import { HOST_ENROLL_COMMAND } from "./setup";
 import { consumePostLoginPath } from "../lib/postLoginPath";
 import { clearSessionToken, setSessionToken } from "../lib/session";
 import { dismissWelcome } from "../lib/localPreferences";
@@ -174,6 +175,20 @@ describe("route smoke tests", () => {
     expect(await findByRole("heading", { level: 1, name: "Connect compute" })).toBeInTheDocument();
   });
 
+  it("runs the host wizard on /connect/compute, command and all", async () => {
+    const { findByRole, findByText, getByRole, getByText } = renderAt("/connect/compute");
+    await findByRole("heading", { level: 1, name: "Connect compute" });
+
+    getByRole("button", { name: /Your own machine/ }).click();
+
+    // The command comes from the control plane, which is the only thing
+    // that knows this deployment's own origin.
+    expect(await findByText(HOST_ENROLL_COMMAND)).toBeInTheDocument();
+    expect(getByRole("button", { name: "Copy command" })).toBeInTheDocument();
+    expect(getByText(/needs Podman/)).toBeInTheDocument();
+    expect(getByRole("status")).toHaveTextContent("Waiting for the machine…");
+  });
+
   it("renders /sessions/:id as a header, a transcript and a composer", async () => {
     const { findByText, getByLabelText } = renderAt("/sessions/abc-123");
 
@@ -226,6 +241,65 @@ describe("route smoke tests", () => {
     const { findByRole, getByRole } = renderAt("/settings/compute");
     expect(await findByRole("heading", { level: 2, name: "Compute" })).toBeInTheDocument();
     expect(getByRole("link", { name: "Add compute" })).toBeInTheDocument();
+  });
+
+  it("lists a machine the user owns beside the cloud accounts", async () => {
+    // A host is a provider account like any other, so it is one more card in
+    // the same run rather than a section of its own — and the facts on it
+    // come from `GET /v1/hosts`, which is where a host's state lives.
+    const base = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      if (url.pathname === "/v1/hosts") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                id: "8d1a6f30-4b7c-4e21-b0f5-9c2d6a7e4b11",
+                label: "mercury",
+                state: "online",
+                facts: {
+                  architecture: "x86_64",
+                  vcpus: 16,
+                  memory_mib: 65_536,
+                  disk_free_gib: 812,
+                  podman_version: "5.4.0",
+                  kernel: "6.8.0-45-generic",
+                  hostname: "mercury",
+                },
+                last_seen_unix: 1_790_000_600,
+                created_at_unix: 1_789_991_000,
+              },
+            ]),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
+      }
+      if (url.pathname === "/v1/providers") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                id: "5a2c8e11-9b3d-4f60-8a71-2c4e6d8b0f39",
+                kind: "host",
+                label: "mercury",
+                linked_at_unix: 1_789_991_000,
+              },
+            ]),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
+      }
+      return base?.(input, init) ?? Promise.reject(new Error("no fixture"));
+    });
+
+    const { findByText, getByText, getByRole } = renderAt("/settings/compute");
+
+    expect(await findByText("mercury")).toBeInTheDocument();
+    expect(getByText("Online")).toBeInTheDocument();
+    expect(getByText("your hardware")).toBeInTheDocument();
+    expect(getByRole("button", { name: "Rename" })).toBeInTheDocument();
+    expect(getByRole("button", { name: "Remove" })).toBeInTheDocument();
   });
 
   it("renders /settings/tools with the skill drop zone", async () => {

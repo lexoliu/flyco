@@ -8,18 +8,18 @@
  * copy is a second set of wizards to keep in step with three providers'
  * consoles.
  *
- * The fourth card is listed but not linkable. The control plane runs on
- * Cloudflare Workers and has no TCP sockets, so it cannot dial a machine the
- * user owns: that machine is *enrolled* rather than dialled, and until the
- * enrollment backend ships the honest thing to show is the sentence and the
- * issue, not a form that would strand a session.
+ * The fourth card is the one that takes no credential. The control plane
+ * runs on Cloudflare Workers and has no TCP sockets, so it cannot dial a
+ * machine the user owns: that machine is *enrolled* rather than dialled, and
+ * its wizard is one command and a wait rather than a form.
  */
 import { For, Match, Show, Switch, createMemo, createResource, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
-import { ArrowLeft, ChevronRight, ExternalLink, Server } from "lucide-solid";
+import { ArrowLeft, ChevronRight, Server } from "lucide-solid";
 import ComputeCard from "../ComputeCard";
 import Logomark, { AWS_MARK, AZURE_MARK, GOOGLE_CLOUD_MARK, type Mark } from "../Logomark";
 import { useReadiness } from "../Readiness";
+import HostWizard from "./HostWizard";
 import {
   linkProvider,
   listCloudUsage,
@@ -33,9 +33,6 @@ import AzureWizard from "../../routes/connect/AzureWizard";
 import BonusProgrammes from "../../routes/connect/BonusProgrammes";
 import GcpWizard from "../../routes/connect/GcpWizard";
 import styles from "../../routes/connect/Connect.module.css";
-
-/** Where host enrollment is being designed. */
-export const ENROLLMENT_ISSUE = "https://github.com/lexoliu/flyco/issues/64";
 
 /** One card in the chooser: what it is, and the one line describing it. */
 interface Choice {
@@ -123,6 +120,25 @@ export default function ComputeChooser(props: ComputeChooserProps) {
     setSpotPreference(next);
   }
 
+  /**
+   * Opens one provider's wizard.
+   *
+   * A machine the user owns skips the bonus questions: there is no free
+   * credit for hardware somebody already bought, and asking whether they
+   * are new to their own computer is a question with no answer.
+   */
+  function choose(kind: CloudProviderKind): void {
+    setError(null);
+    setStage({ at: kind === "host" ? "credentials" : "bonus", kind });
+  }
+
+  /** A machine arrived: readiness has a new compute account to learn about. */
+  async function enrolled(): Promise<void> {
+    await readiness.refresh();
+    void refetchUsage();
+    props.onLinked?.();
+  }
+
   return (
     <div class={styles.chooserRoot}>
       <Show when={linked()}>
@@ -145,43 +161,23 @@ export default function ComputeChooser(props: ComputeChooserProps) {
             <For each={CHOICES}>
               {(choice) => (
                 <li>
-                  <Show
-                    when={choice.kind !== "host"}
-                    fallback={
-                      <a
-                        class={`${styles.choice} ${styles.choiceMuted}`}
-                        href={ENROLLMENT_ISSUE}
-                        target="_blank"
-                        rel="noreferrer noopener"
+                  <button type="button" class={styles.choice} onClick={() => choose(choice.kind)}>
+                    <span class={styles.choiceMark}>
+                      <Show
+                        when={choice.mark}
+                        /* A machine the user owns has no vendor behind it,
+                           so it gets the generic server glyph. */
+                        fallback={<Server size={18} aria-hidden="true" />}
                       >
-                        <span class={styles.choiceMark}>
-                          <Server size={18} aria-hidden="true" />
-                        </span>
-                        <span class={styles.choiceText}>
-                          <span class={styles.choiceTitle}>{choice.title}</span>
-                          <span class={styles.choiceLine}>{choice.line}</span>
-                        </span>
-                        <ExternalLink size={15} aria-hidden="true" class={styles.choiceGlyph ?? ""} />
-                      </a>
-                    }
-                  >
-                    <button
-                      type="button"
-                      class={styles.choice}
-                      onClick={() => setStage({ at: "bonus", kind: choice.kind })}
-                    >
-                      <span class={styles.choiceMark}>
-                        <Show when={choice.mark}>
-                          {(mark) => <Logomark mark={mark()} size={18} />}
-                        </Show>
-                      </span>
-                      <span class={styles.choiceText}>
-                        <span class={styles.choiceTitle}>{choice.title}</span>
-                        <span class={styles.choiceLine}>{choice.line}</span>
-                      </span>
-                      <ChevronRight size={15} aria-hidden="true" class={styles.choiceGlyph ?? ""} />
-                    </button>
-                  </Show>
+                        {(mark) => <Logomark mark={mark()} size={18} />}
+                      </Show>
+                    </span>
+                    <span class={styles.choiceText}>
+                      <span class={styles.choiceTitle}>{choice.title}</span>
+                      <span class={styles.choiceLine}>{choice.line}</span>
+                    </span>
+                    <ChevronRight size={15} aria-hidden="true" class={styles.choiceGlyph ?? ""} />
+                  </button>
                 </li>
               )}
             </For>
@@ -220,6 +216,9 @@ export default function ComputeChooser(props: ComputeChooserProps) {
                 </Match>
                 <Match when={wizard().at === "credentials" && wizard().kind === "gcp"}>
                   <GcpWizard onLink={link} linking={linking()} error={error()} />
+                </Match>
+                <Match when={wizard().at === "credentials" && wizard().kind === "host"}>
+                  <HostWizard onEnrolled={() => void enrolled()} />
                 </Match>
               </Switch>
             </div>

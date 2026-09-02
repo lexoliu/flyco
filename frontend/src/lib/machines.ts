@@ -93,6 +93,29 @@ export function billingMinimumSentence(entry: MachineCatalogEntry): string | nul
     : `Starts a ${minimum.hours}-hour minimum charge of ${formatUsd(minimum.charge)} the moment it boots.`;
 }
 
+/** Whether an entry is hardware the user already owns and already pays for. */
+export function isUserOwned(entry: MachineCatalogEntry | undefined): boolean {
+  return entry?.pricing.kind === "user_owned";
+}
+
+/**
+ * What the leftmost detent picked, in one sentence.
+ *
+ * The rule docs/ux.md §7.7 states — the cheapest curated Linux type with at
+ * least 4 vCPU and 16 GiB — describes a choice made across prices. A machine
+ * the user enrolled has no price to be cheapest at, so when that is what
+ * `Auto` resolved to the sentence names the machine rather than quoting a
+ * rule that did not decide anything.
+ *
+ * It follows the word `Auto` where the slider speaks it, so it opens as a
+ * sentence of its own rather than as a clause.
+ */
+export function autoSentence(entry: MachineCatalogEntry | undefined): string {
+  return isUserOwned(entry) && entry !== undefined
+    ? `${entry.machine_type} — the machine you enrolled, which flyco meters no spend on.`
+    : "The cheapest curated Linux type with at least 4 vCPU and 16 GiB.";
+}
+
 /** How an architecture is written where a person reads it. */
 export const ARCHITECTURE_LABEL: Record<
   NonNullable<MachineCatalogEntry["lineage"]>["architecture"],
