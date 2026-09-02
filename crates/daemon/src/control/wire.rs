@@ -377,6 +377,7 @@ async fn collect<A: ControlApi>(
             }
             SessionOutput::Event { event } => {
                 match &event {
+                    HarnessEvent::TurnStarted { .. } => api.notify_turn_started().await?,
                     HarnessEvent::TurnCompleted { .. } => api.notify_turn_completed().await?,
                     HarnessEvent::TurnFailed { .. } => api.notify_turn_failed().await?,
                     _ => {}

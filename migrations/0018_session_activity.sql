@@ -1,0 +1,23 @@
+-- What a session is doing, as against where its machine is.
+--
+-- `state` is a lifecycle enum and answers nothing a person asks: an
+-- `active` session may be thinking, waiting for a decision, or sitting idle
+-- since yesterday, and docs/ux.md §6 gives those three different statuses.
+-- The facts behind them — a turn in flight, a turn that ended with nothing
+-- said back — live in the session's room, which no list query can reach, so
+-- the control plane records the conversation's position here as the turn
+-- events arrive.
+--
+-- A pending approval is deliberately *not* stored here. The `approvals`
+-- table already owns that fact; a copy on this row would be a second answer
+-- free to disagree with it. It is applied where a session is read instead,
+-- which is also why deciding an approval needs no compensating write: the
+-- row already holds the position the turn left it in.
+--
+-- `idle` is the honest default for every row written before this migration
+-- and for every session that has never run a turn: nothing is in flight and
+-- nobody is blocked. The CHECK lists exactly the tokens
+-- flyco_core::SessionActivity serializes to, so the schema and the domain
+-- model cannot drift apart.
+ALTER TABLE sessions ADD COLUMN activity TEXT NOT NULL DEFAULT 'idle'
+    CHECK (activity IN ('working', 'needs_input', 'idle'));

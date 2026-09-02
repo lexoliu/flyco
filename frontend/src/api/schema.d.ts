@@ -1476,6 +1476,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/turn-started": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Records that this session's harness began a turn.
+         * @description Records that this session's harness began a turn.
+         *
+         *     The mirror of [`notify_turn_completed`], and the reason the home list can
+         *     say `Working` at all: a turn starting is announced on the relay, and a
+         *     Durable Object cannot reach D1, so the durable half of the fact needs a
+         *     route of its own (docs/ux.md §6).
+         *
+         *     No notification goes out for it. A turn starting is the user's own
+         *     message being answered — they are looking at it — and a push for every
+         *     turn would be noise.
+         */
+        post: operations["flyco_api::app::notify_turn_started"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/turns": {
         parameters: {
             query?: never;
@@ -3041,6 +3070,31 @@ export interface components {
              */
             text: string;
         };
+        /**
+         * @description What a session is doing right now, as the home list reads it.
+         *
+         *     [`SessionState`] says where the machine is; this says whose move it is.
+         *     An `active` session may be thinking, waiting for a decision, or sitting
+         *     idle since yesterday, and docs/ux.md §6 gives those three different
+         *     statuses — so the fact is recorded rather than guessed from a lifecycle
+         *     enum that cannot tell them apart.
+         *
+         *     Maintained by the control plane from the turn events the session's
+         *     daemon reports (`turn-started`, `turn-completed`, `turn-failed`) and
+         *     from the messages the user sends, which is the whole of the
+         *     conversation's position. A *pending approval* is deliberately not
+         *     written here: the `approvals` table already owns that fact, and a copy
+         *     on the session row would be a second answer free to disagree with it.
+         *     It is applied on the way out instead, by
+         *     [`with_pending_approval`](Self::with_pending_approval).
+         *
+         *     Meaningless for a session that is not [`Active`](SessionState::Active):
+         *     archiving, pausing and interruption leave it exactly as it was, so a
+         *     session that comes back reads as whatever it was doing when it went, and
+         *     the UI ignores it for every other state.
+         * @enum {string}
+         */
+        SessionActivity: "working" | "needs_input" | "idle";
         /** @description A single session, with its budget. */
         SessionDetail: components["schemas"]["SessionSummary"] & {
             /** @description Budget accounting as of this request. */
@@ -3089,6 +3143,20 @@ export interface components {
         SessionState: "provisioning" | "active" | "paused" | "interrupted" | "archived" | "failed";
         /** @description A session in a list. */
         SessionSummary: {
+            /**
+             * @description What it is doing, for an [`Active`](SessionState::Active) session.
+             *
+             *     What lets the home list say `Working` and `Needs input` rather than
+             *     reading every running session as `Idle`: the facts behind those two
+             *     live in the relay and in the `approvals` table, and this is the
+             *     control plane's own answer, carried on the row the list is built
+             *     from (docs/ux.md §6).
+             *
+             *     Meaningless for every other state, and the UI ignores it there — a
+             *     session keeps the activity it had when it was paused, interrupted or
+             *     archived rather than being reset to a position it was never in.
+             */
+            activity: components["schemas"]["SessionActivity"];
             branch?: null | components["schemas"]["BranchName"];
             /**
              * Format: int64
@@ -4871,6 +4939,20 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /**
+                         * @description What it is doing, for an [`Active`](SessionState::Active) session.
+                         *
+                         *     What lets the home list say `Working` and `Needs input` rather than
+                         *     reading every running session as `Idle`: the facts behind those two
+                         *     live in the relay and in the `approvals` table, and this is the
+                         *     control plane's own answer, carried on the row the list is built
+                         *     from (docs/ux.md §6).
+                         *
+                         *     Meaningless for every other state, and the UI ignores it there — a
+                         *     session keeps the activity it had when it was paused, interrupted or
+                         *     archived rather than being reset to a position it was never in.
+                         */
+                        activity: components["schemas"]["SessionActivity"];
                         branch?: null | components["schemas"]["BranchName"];
                         /**
                          * Format: int64
@@ -5998,6 +6080,26 @@ export interface operations {
         };
     };
     "flyco_api::app::notify_turn_failed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::notify_turn_started": {
         parameters: {
             query?: never;
             header?: never;

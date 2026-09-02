@@ -64,6 +64,7 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::app::interrupt_session",
     "flyco_api::app::notify_turn_completed",
     "flyco_api::app::notify_turn_failed",
+    "flyco_api::app::notify_turn_started",
     "flyco_api::app::put_harness_session",
     "flyco_api::app::put_workdir_patch",
     "flyco_api::app::record_harness_observation",

@@ -14,7 +14,7 @@
 
 use flyco_core::{
     ApprovalState, BudgetSignal, CloudProviderKind, HarnessKind, MachineOrigin, MachineState,
-    SkillScope, SpendKind,
+    SessionActivity, SkillScope, SpendKind,
 };
 use skyzen_services::sql::ColumnEnum;
 
@@ -24,6 +24,7 @@ use crate::testing::MIGRATIONS;
 const CONSTRAINED: &[(&str, &str, &[&str])] = &[
     ("sessions", "harness", HarnessKind::TOKENS),
     ("sessions", "machine_origin", MachineOrigin::TOKENS),
+    ("sessions", "activity", SessionActivity::TOKENS),
     ("spend_events", "kind", SpendKind::TOKENS),
     ("approvals", "state", ApprovalState::TOKENS),
     ("provider_accounts", "kind", CloudProviderKind::TOKENS),

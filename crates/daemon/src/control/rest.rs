@@ -174,6 +174,14 @@ pub trait ControlApi: ApprovalRaiser {
         observation: HarnessObservation,
     ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 
+    /// Announces that a turn began, so the control plane can record the
+    /// session as working.
+    ///
+    /// The turn's start rides the relay too, but a Durable Object cannot
+    /// reach the database the session list is built from — so the fact the
+    /// list needs comes over REST, exactly as the turn's end does.
+    fn notify_turn_started(&self) -> impl Future<Output = Result<(), ControlApiError>> + Send;
+
     /// Announces that a turn completed so the owner can be notified.
     fn notify_turn_completed(&self) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 
@@ -467,6 +475,10 @@ impl ControlApi for HttpControlApi {
 
         debug_assert!(response.status().is_success());
         Ok(())
+    }
+
+    async fn notify_turn_started(&self) -> Result<(), ControlApiError> {
+        self.post_empty("turn-started").await
     }
 
     async fn notify_turn_completed(&self) -> Result<(), ControlApiError> {

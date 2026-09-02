@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { SessionState } from "../api/client";
+import type { SessionActivity, SessionState } from "../api/client";
 import type { TimedEvent } from "../api/relay";
 import type { ClientEvent } from "../api/wire";
-import { STATUS_ORDER, deriveStatus, elapsedSince, liveSignalsFrom } from "./status";
+import {
+  GROUP_LABEL,
+  STATUS_ORDER,
+  type SessionStatus,
+  deriveStatus,
+  elapsedSince,
+  liveSignalsFrom,
+} from "./status";
 
 /** A fixed instant, so nothing here depends on when the suite runs. */
 const NOW_UNIX = 1_800_000_000;
@@ -34,9 +41,9 @@ describe("deriveStatus", () => {
     expect(view.breathing).toBe(true);
   });
 
-  it("reads an active session with no live signals as idle", () => {
-    // Telling `Working` from `Needs input` needs relay events the session
-    // list does not have; `Idle` is the honest answer until it does.
+  it("reads an active session that says nothing about itself as idle", () => {
+    // A summary from a control plane older than `activity`, and the honest
+    // answer for one that has never run a turn.
     expect(deriveStatus(session("active"), NOW).status).toBe("idle");
     expect(deriveStatus(session("active"), NOW).label).toBe("Idle");
   });
@@ -113,6 +120,81 @@ describe("deriveStatus", () => {
     ];
     for (const state of states) {
       expect(STATUS_ORDER).toContain(deriveStatus(session(state), NOW).status);
+    }
+  });
+});
+
+describe("deriveStatus, from the summary's activity", () => {
+  /** An active session the control plane has recorded an activity for. */
+  function doing(activity: SessionActivity) {
+    return { ...session("active"), activity };
+  }
+
+  it("says Working for a session with a turn in flight", () => {
+    // The whole point of the field: the home list has no relay, and every
+    // running session used to read as `Idle` there.
+    const view = deriveStatus(doing("working"), NOW);
+    expect(view.status).toBe("working");
+    expect(view.label).toBe("Working");
+    expect(view.tone).toBe("working");
+    expect(view.breathing).toBe(true);
+  });
+
+  it("says Needs input for a session waiting on its user", () => {
+    const view = deriveStatus(doing("needs_input"), NOW);
+    expect(view.status).toBe("needs_input");
+    expect(view.label).toBe("Needs input");
+    expect(view.tone).toBe("attention");
+    expect(view.breathing).toBe(false);
+  });
+
+  it("says Idle for a session that is running nothing", () => {
+    expect(deriveStatus(doing("idle"), NOW).status).toBe("idle");
+  });
+
+  it("lets a live turn override a summary that has not caught up", () => {
+    // The relay carries the newer fact: a turn that started a moment ago is
+    // on the socket before the row it was written to is read again.
+    expect(deriveStatus(doing("idle"), NOW, { turnInFlight: true }).status).toBe("working");
+    expect(deriveStatus(doing("needs_input"), NOW, { turnInFlight: true }).status).toBe("working");
+  });
+
+  it("lets a live approval override a summary that says the agent is working", () => {
+    expect(deriveStatus(doing("working"), NOW, { awaitingUser: true }).status).toBe("needs_input");
+  });
+
+  it("keeps the summary's answer while the relay has said nothing", () => {
+    // An open socket that has replayed nothing yet reports both signals
+    // false; that is silence, not a contradiction.
+    const silent = { turnInFlight: false, awaitingUser: false };
+    expect(deriveStatus(doing("working"), NOW, silent).status).toBe("working");
+    expect(deriveStatus(doing("needs_input"), NOW, silent).status).toBe("needs_input");
+  });
+
+  it("ignores the activity of a session that is not running", () => {
+    // A session keeps the activity it had when it was paused, interrupted
+    // or archived; what the user reads there is why it stopped.
+    for (const state of ["paused", "interrupted", "archived", "failed"] as const) {
+      const view = deriveStatus({ ...session(state), activity: "working" }, NOW);
+      expect(view.status).toBe(state);
+    }
+    expect(deriveStatus({ ...session("provisioning"), activity: "working" }, NOW).status).toBe(
+      "provisioning",
+    );
+  });
+});
+
+describe("STATUS_ORDER", () => {
+  it("puts what needs the user first, then what is running, then what is at rest", () => {
+    // docs/ux.md §5: `Needs input` → `Working` → `Idle` → the rest.
+    expect(STATUS_ORDER.slice(0, 3)).toEqual(["needs_input", "working", "idle"]);
+    expect(STATUS_ORDER[STATUS_ORDER.length - 1]).toBe("archived");
+  });
+
+  it("names every status exactly once", () => {
+    expect(new Set(STATUS_ORDER).size).toBe(STATUS_ORDER.length);
+    for (const status of Object.keys(GROUP_LABEL) as SessionStatus[]) {
+      expect(STATUS_ORDER).toContain(status);
     }
   });
 });

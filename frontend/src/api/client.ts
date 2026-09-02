@@ -51,6 +51,7 @@ export type BranchSummary = Schemas["BranchSummary"];
 export type BranchPage = Schemas["BranchPage"];
 export type HarnessKind = Schemas["HarnessKind"];
 export type SessionState = Schemas["SessionState"];
+export type SessionActivity = Schemas["SessionActivity"];
 export type InterruptedReason = Schemas["InterruptedReason"];
 export type MachineCatalogEntry = Schemas["MachineCatalogEntry"];
 export type MachineDefault = Schemas["MachineDefault"];
