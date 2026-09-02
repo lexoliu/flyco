@@ -8,12 +8,14 @@
 //! either credential into a [`flyco_core::CurrentUser`].
 
 pub mod agents_md;
+pub mod anthropic;
 pub mod api_keys;
 pub mod app;
 pub mod approvals;
 pub mod authenticator;
 pub mod bonuses;
 pub mod budgets;
+pub mod claude_oauth;
 pub mod clock;
 pub mod config;
 pub mod crypto;

@@ -165,6 +165,9 @@ pub struct PushSubscriptionEntity(());
 /// Marker for harness usage observation identifiers.
 #[derive(Debug)]
 pub struct HarnessObservationEntity(());
+/// Marker for in-flight Claude OAuth sign-in identifiers.
+#[derive(Debug)]
+pub struct ClaudeOauthAttemptEntity(());
 
 /// Identifies a flyco user.
 pub type UserId = Id<UserEntity>;
@@ -196,6 +199,8 @@ pub type McpServerId = Id<McpServerEntity>;
 pub type PushSubscriptionId = Id<PushSubscriptionEntity>;
 /// Identifies one thing flyco observed about a harness account's usage.
 pub type HarnessObservationId = Id<HarnessObservationEntity>;
+/// Identifies one browser's in-flight Claude OAuth sign-in.
+pub type ClaudeOauthAttemptId = Id<ClaudeOauthAttemptEntity>;
 
 #[cfg(test)]
 mod tests {

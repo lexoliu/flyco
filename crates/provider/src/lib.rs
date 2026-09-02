@@ -375,8 +375,15 @@ pub trait CloudProvider {
     fn destroy(&mut self, machine: &Machine) -> impl Future<Output = Result<(), ProviderError>>;
 }
 
-#[cfg(test)]
-mod testing;
+/// Recorded HTTP exchanges and a timer that never waits, so anything built
+/// on [`HttpTransport`] can be tested without a cloud account.
+///
+/// Behind a feature rather than always on: it is test scaffolding, and the
+/// Worker build must not carry it. The control plane enables it as a
+/// dev-dependency, because the Anthropic OAuth client it runs is an
+/// [`HttpTransport`] caller like every driver here.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 #[cfg(test)]
 mod tests {

@@ -47,6 +47,11 @@ zenwave = { workspace = true, features = ["hyper-rustls"] }
 default = []
 # Native execution of byo-ssh container jobs. See `byo_ssh::execute`.
 ssh = ["dep:russh", "dep:shell-escape"]
+# Publishes `testing`: the recorded transport and the recording timer this
+# crate's own tests are written against. Enabled by dependents that test an
+# `HttpTransport` caller of their own — the control plane's Anthropic OAuth
+# client — and never by a deployed build.
+testing = []
 # Enables the one test that talks to a real Azure subscription and creates
 # billable resources. Off by default, never enabled in CI, and the test is
 # `#[ignore]`d on top — see `azure::tests` for what it needs.

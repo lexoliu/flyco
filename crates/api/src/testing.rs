@@ -11,9 +11,13 @@ use skyzen::sql;
 use skyzen_services::{Db, Queue};
 use skyzen_test::mock::InMemoryQueue;
 
+use crate::anthropic::{
+    Account, AnthropicError, ClaudeClient, ClaudeOauth, TokenRequest, TokenSet,
+};
 use crate::app::router;
-use crate::config::ApiConfig;
+use crate::config::{ApiConfig, ApiSettings};
 use crate::github::{GithubClient, GithubError, GithubOauth, GithubToken, GithubUser};
+use crate::harness_accounts::StoredCredential;
 use crate::rooms::{NativeRooms, Rooms};
 
 /// The schema every database-backed test starts from, in the order
@@ -71,18 +75,26 @@ pub const OTHER_LOGIN: &str = "octocat";
 /// GitHub's numeric id for [`OTHER_LOGIN`].
 pub const OTHER_GITHUB_ID: i64 = 8_484;
 
+/// Client id the test configuration presents to Anthropic.
+pub const CLAUDE_CLIENT_ID: &str = "flyco-test-claude-client";
+
+/// The bindings the test configuration is read from.
+pub fn test_settings() -> ApiSettings {
+    ApiSettings {
+        github_client_id: CLIENT_ID.to_owned(),
+        github_client_secret: CLIENT_SECRET.to_owned(),
+        claude_oauth_client_id: CLAUDE_CLIENT_ID.to_owned(),
+        redirect_uri: REDIRECT_URI.to_owned(),
+        encryption_key_hex: ENCRYPTION_KEY_HEX.to_owned(),
+        vapid_private_key: VAPID_PRIVATE_KEY.to_owned(),
+        vapid_subject: VAPID_SUBJECT.to_owned(),
+        github_webhook_secret: GITHUB_WEBHOOK_SECRET.to_owned(),
+    }
+}
+
 /// A configuration built from the constants above.
 pub fn test_config() -> ApiConfig {
-    ApiConfig::new(
-        CLIENT_ID.to_owned(),
-        CLIENT_SECRET.to_owned(),
-        REDIRECT_URI,
-        ENCRYPTION_KEY_HEX,
-        VAPID_PRIVATE_KEY,
-        VAPID_SUBJECT,
-        GITHUB_WEBHOOK_SECRET.to_owned(),
-    )
-    .expect("the test configuration is valid")
+    ApiConfig::new(test_settings()).expect("the test configuration is valid")
 }
 
 /// Session rooms backed by skyzen's in-process simulator.
@@ -150,10 +162,122 @@ impl GithubOauth for TestGithub {
     }
 }
 
-/// The full control-plane router, wired to [`TestGithub`], `db`, and the
-/// provisioning queue its session routes produce to.
+/// The only authorization code [`TestClaude`] will redeem.
+pub const CLAUDE_CODE: &str = "ac_a-pasted-authorization-code";
+
+/// The access token a redeemed code yields.
+pub const CLAUDE_ACCESS_TOKEN: &str = "sk-ant-oat01-exchanged";
+
+/// The refresh token a redeemed code yields.
+pub const CLAUDE_REFRESH_TOKEN: &str = "sk-ant-ort01-exchanged";
+
+/// The access token a refresh yields, so a rotation is visible.
+pub const CLAUDE_RENEWED_ACCESS_TOKEN: &str = "sk-ant-oat01-renewed";
+
+/// The refresh token a refresh yields; grants rotate both halves.
+pub const CLAUDE_RENEWED_REFRESH_TOKEN: &str = "sk-ant-ort01-renewed";
+
+/// How long Anthropic says an issued access token lasts, in seconds.
+pub const CLAUDE_TOKEN_LIFETIME: u64 = 8 * 60 * 60;
+
+/// The address [`TestClaude`] reports, which becomes the account's label.
+pub const CLAUDE_ACCOUNT_EMAIL: &str = "me@lexo.cool";
+
+/// A [`ClaudeOauth`] that answers without a network.
+///
+/// It asserts what it was given rather than recording it: the client id and
+/// the redirect URI are fixed by the deployment, and a PKCE flow that
+/// exchanged a code without its verifier would be the bug worth catching.
+/// What actually goes on the wire is pinned separately, against recorded
+/// exchanges, in [`crate::anthropic`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TestClaude;
+
+impl TestClaude {
+    /// The grant a fresh exchange hands back.
+    fn issued() -> TokenSet {
+        TokenSet {
+            access_token: CLAUDE_ACCESS_TOKEN.to_owned(),
+            refresh_token: CLAUDE_REFRESH_TOKEN.to_owned(),
+            expires_in: CLAUDE_TOKEN_LIFETIME,
+            account: Some(Account {
+                email_address: Some(CLAUDE_ACCOUNT_EMAIL.to_owned()),
+            }),
+        }
+    }
+
+    /// The grant a refresh hands back.
+    fn renewed() -> TokenSet {
+        TokenSet {
+            access_token: CLAUDE_RENEWED_ACCESS_TOKEN.to_owned(),
+            refresh_token: CLAUDE_RENEWED_REFRESH_TOKEN.to_owned(),
+            expires_in: CLAUDE_TOKEN_LIFETIME,
+            account: Some(Account {
+                email_address: Some(CLAUDE_ACCOUNT_EMAIL.to_owned()),
+            }),
+        }
+    }
+
+    /// Anthropic's own answer to a code or refresh token it will not take.
+    fn refused() -> AnthropicError {
+        AnthropicError::Rejected {
+            code: "invalid_grant".to_owned(),
+            description: "The authorization code is invalid or has expired.".to_owned(),
+        }
+    }
+}
+
+impl ClaudeOauth for TestClaude {
+    fn exchange(
+        &self,
+        request: TokenRequest<'_>,
+    ) -> impl Future<Output = Result<TokenSet, AnthropicError>> + Send {
+        ready(match request {
+            TokenRequest::AuthorizationCode {
+                code,
+                state,
+                client_id,
+                redirect_uri,
+                code_verifier,
+            } => {
+                assert_eq!(client_id, CLAUDE_CLIENT_ID);
+                assert_eq!(redirect_uri, crate::anthropic::REDIRECT_URI);
+                assert!(!state.is_empty(), "the exchange carries the minted state");
+                assert!(
+                    !code_verifier.is_empty(),
+                    "the exchange carries the PKCE verifier the challenge was made from"
+                );
+                if code == CLAUDE_CODE {
+                    Ok(Self::issued())
+                } else {
+                    Err(Self::refused())
+                }
+            }
+            TokenRequest::RefreshToken {
+                refresh_token,
+                client_id,
+            } => {
+                assert_eq!(client_id, CLAUDE_CLIENT_ID);
+                if refresh_token == CLAUDE_REFRESH_TOKEN {
+                    Ok(Self::renewed())
+                } else {
+                    Err(Self::refused())
+                }
+            }
+        })
+    }
+}
+
+/// The full control-plane router, wired to [`TestGithub`], [`TestClaude`],
+/// `db`, and the provisioning queue its session routes produce to.
 pub fn test_router(db: Db, queue: Queue) -> Router {
-    router(test_config(), GithubClient::Fake(TestGithub), db, queue)
+    router(
+        test_config(),
+        GithubClient::Fake(TestGithub),
+        ClaudeClient::Fake(TestClaude),
+        db,
+        queue,
+    )
 }
 
 /// A migrated database plus the router that talks to it.
@@ -325,28 +449,59 @@ pub const HARNESS_TOKEN: &str = "sk-ant-oat01-a-linked-account";
 
 /// Links a harness account, sealed the way the authenticated link route does.
 pub async fn seed_harness_account(db: &Db, user: UserId, harness: HarnessKind) -> HarnessAccountId {
-    let id = HarnessAccountId::generate();
     let credential = match harness {
-        HarnessKind::ClaudeCode => flyco_provider::ClaudeCredential::OauthToken {
+        HarnessKind::ClaudeCode => StoredCredential::OauthToken {
             token: HARNESS_TOKEN.to_owned(),
         },
-        HarnessKind::Codex => flyco_provider::ClaudeCredential::ApiKey {
+        HarnessKind::Codex => StoredCredential::ApiKey {
             key: HARNESS_TOKEN.to_owned(),
         },
     };
-    let encoded = serde_json::to_string(&credential).expect("encode a harness credential");
+    seed_credential(db, user, harness, &credential).await
+}
+
+/// Links a Claude account holding an OAuth grant that expires at
+/// `expires_at_unix`, for the paths that refresh one before using it.
+pub async fn seed_claude_oauth_account(
+    db: &Db,
+    user: UserId,
+    expires_at_unix: u64,
+) -> HarnessAccountId {
+    seed_credential(
+        db,
+        user,
+        HarnessKind::ClaudeCode,
+        &StoredCredential::ClaudeOauth {
+            access_token: CLAUDE_ACCESS_TOKEN.to_owned(),
+            refresh_token: CLAUDE_REFRESH_TOKEN.to_owned(),
+            expires_at_unix,
+        },
+    )
+    .await
+}
+
+/// Writes one sealed credential as a linked account.
+async fn seed_credential(
+    db: &Db,
+    user: UserId,
+    harness: HarnessKind,
+    credential: &StoredCredential,
+) -> HarnessAccountId {
+    let id = HarnessAccountId::generate();
+    let encoded = serde_json::to_string(credential).expect("encode a harness credential");
     let sealed = test_config()
         .token_cipher()
         .seal(&encoded)
         .expect("seal a harness credential");
     let label = "lexo@lexo.cool".to_owned();
     let linked_at = 1_787_000_000_u64;
+    let expires_at = credential.expires_at_unix();
 
     sql!(
         db,
         "INSERT INTO harness_accounts \
-         (id, user_id, harness, label, credential_enc, linked_at_unix) \
-         VALUES ({id}, {user}, {harness}, {label}, {sealed}, {linked_at})"
+         (id, user_id, harness, label, credential_enc, linked_at_unix, expires_at_unix) \
+         VALUES ({id}, {user}, {harness}, {label}, {sealed}, {linked_at}, {expires_at})"
     )
     .execute()
     .await

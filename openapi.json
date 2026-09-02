@@ -697,6 +697,121 @@
         }
       }
     },
+    "/v1/harness-accounts/claude/oauth/complete": {
+      "post": {
+        "summary": "`POST /v1/harness-accounts/claude/oauth/complete` — links the account.",
+        "description": "`POST /v1/harness-accounts/claude/oauth/complete` — links the account.",
+        "operationId": "flyco_api::claude_oauth::complete",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/harness-accounts/claude/oauth/complete`.",
+                "required": [
+                  "attempt_id",
+                  "code"
+                ],
+                "properties": {
+                  "attempt_id": {
+                    "$ref": "#/components/schemas/Uuid",
+                    "description": "The attempt this code belongs to, from [`ClaudeOauthStart`]."
+                  },
+                  "code": {
+                    "type": "string",
+                    "description": "What Anthropic showed the user, which is `CODE#STATE` — the bare\ncode alone is accepted too, because a user who selects only the\nfirst half of it has still supplied everything the exchange needs."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "A Claude or Codex account the user has linked, as `GET\n/v1/harness-accounts` lists it.\n\nNo representation of an account carries its credential; the sealed value\nleaves the control plane only when it is provisioned onto a session machine.",
+                  "required": [
+                    "id",
+                    "harness",
+                    "label",
+                    "linked_at_unix"
+                  ],
+                  "properties": {
+                    "expires_at_unix": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "format": "int64",
+                      "description": "When the stored credential expires, when the vendor states a\nlifetime.",
+                      "minimum": 0
+                    },
+                    "harness": {
+                      "$ref": "#/components/schemas/HarnessKind",
+                      "description": "Which harness this account drives."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "Account name as the vendor reports it, so the user can tell two\nlinked accounts apart."
+                    },
+                    "linked_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was linked, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/harness-accounts/claude/oauth/start": {
+      "post": {
+        "summary": "`POST /v1/harness-accounts/claude/oauth/start` — begins a Claude sign-in.",
+        "description": "`POST /v1/harness-accounts/claude/oauth/start` — begins a Claude sign-in.",
+        "operationId": "flyco_api::claude_oauth::start",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Response of `POST /v1/harness-accounts/claude/oauth/start`.\n\nThe PKCE verifier never appears here: it stays in the control plane's\nkey-value store for the ten minutes the attempt lives, and the browser\ncarries only the opaque attempt id that names it.",
+                  "required": [
+                    "attempt_id",
+                    "authorize_url"
+                  ],
+                  "properties": {
+                    "attempt_id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Names the verifier and `state` the completion must be redeemed\nagainst."
+                    },
+                    "authorize_url": {
+                      "type": "string",
+                      "description": "Fully-formed `https://claude.ai/oauth/authorize` URL to open."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/harness-accounts/{id}": {
       "delete": {
         "summary": "Unlinks one account owned by the caller.",
@@ -4525,6 +4640,24 @@
           }
         }
       },
+      "ClaudeOauthStart": {
+        "type": "object",
+        "description": "Response of `POST /v1/harness-accounts/claude/oauth/start`.\n\nThe PKCE verifier never appears here: it stays in the control plane's\nkey-value store for the ten minutes the attempt lives, and the browser\ncarries only the opaque attempt id that names it.",
+        "required": [
+          "attempt_id",
+          "authorize_url"
+        ],
+        "properties": {
+          "attempt_id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "Names the verifier and `state` the completion must be redeemed\nagainst."
+          },
+          "authorize_url": {
+            "type": "string",
+            "description": "Fully-formed `https://claude.ai/oauth/authorize` URL to open."
+          }
+        }
+      },
       "CloudProviderKind": {
         "type": "string",
         "description": "A supported compute provider.",
@@ -4597,6 +4730,24 @@
           "spent": {
             "$ref": "#/components/schemas/Usd",
             "description": "Spend the provider has metered so far this period."
+          }
+        }
+      },
+      "CompleteClaudeOauth": {
+        "type": "object",
+        "description": "Request body of `POST /v1/harness-accounts/claude/oauth/complete`.",
+        "required": [
+          "attempt_id",
+          "code"
+        ],
+        "properties": {
+          "attempt_id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "The attempt this code belongs to, from [`ClaudeOauthStart`]."
+          },
+          "code": {
+            "type": "string",
+            "description": "What Anthropic showed the user, which is `CODE#STATE` — the bare\ncode alone is accepted too, because a user who selects only the\nfirst half of it has still supplied everything the exchange needs."
           }
         }
       },
@@ -5015,6 +5166,38 @@
                 "enum": [
                   "codex_api_key"
                 ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A Claude subscription obtained through the OAuth code flow.\n\nThe pair the flow yields rather than a single token: the access\ntoken is what a session's machine runs the agent under, and the\nrefresh token is what keeps a linked account working past the\naccess token's lifetime without the user pasting anything again.",
+            "required": [
+              "access_token",
+              "refresh_token",
+              "expires_at_unix",
+              "kind"
+            ],
+            "properties": {
+              "access_token": {
+                "type": "string",
+                "description": "Value for `CLAUDE_CODE_OAUTH_TOKEN`, until it expires."
+              },
+              "expires_at_unix": {
+                "type": "integer",
+                "format": "int64",
+                "description": "When the access token stops working, seconds since the Unix\nepoch.",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "claude_oauth"
+                ]
+              },
+              "refresh_token": {
+                "type": "string",
+                "description": "Redeemed for a new pair once the access token is near its end."
               }
             }
           }

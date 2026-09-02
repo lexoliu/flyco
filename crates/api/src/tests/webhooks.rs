@@ -15,10 +15,13 @@ use skyzen_services::{Db, Queue};
 use skyzen_test::mock::InMemoryQueue;
 use skyzen_test::{TestClient, TestContext};
 
+use crate::anthropic::ClaudeClient;
 use crate::app::router;
 use crate::github::GithubClient;
 use crate::room::EventPage;
-use crate::testing::{GITHUB_WEBHOOK_SECRET, TestGithub, migrate, seed_user, test_config};
+use crate::testing::{
+    GITHUB_WEBHOOK_SECRET, TestClaude, TestGithub, migrate, seed_user, test_config,
+};
 use crate::webhooks::{EVENT_HEADER, SIGNATURE_HEADER};
 
 /// The secret a configured deployment shares with GitHub.
@@ -43,6 +46,7 @@ async fn configured_router(db: &Db) -> Router {
     router(
         test_config(),
         GithubClient::Fake(TestGithub),
+        ClaudeClient::Fake(TestClaude),
         db.clone(),
         Queue::new(InMemoryQueue::new()),
     )
