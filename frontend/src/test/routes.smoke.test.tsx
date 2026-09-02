@@ -4,7 +4,10 @@ import { MemoryRouter, Navigate, Route, createMemoryHistory } from "@solidjs/rou
 import AppShell from "../components/AppShell";
 import Login from "../routes/Login";
 import AuthComplete from "../routes/AuthComplete";
-import Sessions from "../routes/Sessions";
+import Home from "../routes/Home";
+import Welcome from "../routes/Welcome";
+import ConnectHarness from "../routes/connect/ConnectHarness";
+import ConnectCompute from "../routes/connect/ConnectCompute";
 import SessionDetail from "../routes/SessionDetail";
 import SettingsLayout from "../routes/settings/SettingsLayout";
 import McpServersTab from "../routes/settings/McpServersTab";
@@ -19,6 +22,7 @@ import NotificationsTab from "../routes/settings/NotificationsTab";
 import NotFound from "../routes/NotFound";
 import { consumePostLoginPath } from "../lib/postLoginPath";
 import { clearSessionToken, setSessionToken } from "../lib/session";
+import { dismissWelcome } from "../lib/localPreferences";
 
 /**
  * Renders the same route tree as src/main.tsx, starting at a given path.
@@ -29,10 +33,15 @@ import { clearSessionToken, setSessionToken } from "../lib/session";
  * prop only ever takes effect once per file. A dedicated in-memory history
  * per render keeps each test's navigation fully isolated.
  */
-function renderAt(url: string, signedIn = true) {
+function renderAt(url: string, signedIn = true, seenWelcome = true) {
   clearSessionToken();
   if (signedIn) {
     setSessionToken("fs_route_test");
+  }
+  // Every route test but the welcome one starts from a browser that has
+  // already been through the first run; otherwise `/` redirects there.
+  if (seenWelcome) {
+    dismissWelcome();
   }
   const history = createMemoryHistory();
   history.set({ value: url, replace: true, scroll: false });
@@ -40,7 +49,10 @@ function renderAt(url: string, signedIn = true) {
     <MemoryRouter history={history} root={AppShell}>
       <Route path="/login" component={Login} />
       <Route path="/auth/complete" component={AuthComplete} />
-      <Route path="/" component={Sessions} />
+      <Route path="/" component={Home} />
+      <Route path="/welcome" component={Welcome} />
+      <Route path="/connect/harness" component={ConnectHarness} />
+      <Route path="/connect/compute" component={ConnectCompute} />
       <Route path="/sessions/:id" component={SessionDetail} />
       <Route path="/settings" component={SettingsLayout}>
         <Route path="/" component={() => <Navigate href="/settings/mcp" />} />
@@ -69,7 +81,7 @@ describe("route smoke tests", () => {
     const { findByText, queryByRole } = renderAt("/", false);
 
     expect(await findByText("Sign in with GitHub")).toBeInTheDocument();
-    expect(queryByRole("heading", { level: 1, name: "Sessions" })).not.toBeInTheDocument();
+    expect(queryByRole("heading", { level: 1 })?.textContent).not.toContain("What should we build");
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -81,9 +93,9 @@ describe("route smoke tests", () => {
   });
 
   it("redirects a signed-in visitor away from /login", async () => {
-    const { findByRole } = renderAt("/login");
+    const { findByText } = renderAt("/login");
 
-    expect(await findByRole("heading", { level: 1, name: "Sessions" })).toBeInTheDocument();
+    expect(await findByText("Welcome back, octocat")).toBeInTheDocument();
   });
 
   it("clears a rejected session and returns to sign-in", async () => {
@@ -109,12 +121,42 @@ describe("route smoke tests", () => {
     expect(getByRole("alert")).toBeInTheDocument();
   });
 
-  it("renders / as the sessions list with its empty state", async () => {
-    const { getByRole, findByText } = renderAt("/");
-    expect(getByRole("heading", { level: 1, name: "Sessions" })).toBeInTheDocument();
+  it("renders / as the composer over an empty session list", async () => {
+    const { getByLabelText, findByText } = renderAt("/");
+    expect(getByLabelText("Describe a task")).toBeInTheDocument();
     expect(
-      await findByText("No sessions yet. Start one to put an agent to work in a repo."),
+      await findByText("No sessions yet. Describe a task above to start one."),
     ).toBeInTheDocument();
+  });
+
+  it("refuses to send until every prerequisite is present", async () => {
+    const { findByRole } = renderAt("/");
+    // Nothing is linked in the fixture, so the button says which of the
+    // three prerequisites is missing rather than failing on submit.
+    expect(await findByRole("button", { name: "Connect an agent first" })).toBeDisabled();
+  });
+
+  it("sends a first visitor with nothing linked to the welcome flow", async () => {
+    const { findByRole } = renderAt("/", true, false);
+    expect(await findByRole("heading", { level: 1, name: "Meet flyco" })).toBeInTheDocument();
+  });
+
+  it("renders /welcome as the three-screen card", async () => {
+    const { findByRole, getByRole } = renderAt("/welcome");
+    expect(await findByRole("heading", { level: 1, name: "Meet flyco" })).toBeInTheDocument();
+    expect(getByRole("button", { name: "Next" })).toBeInTheDocument();
+  });
+
+  it("renders /connect/harness as a working link page", async () => {
+    const { findByRole } = renderAt("/connect/harness");
+    expect(
+      await findByRole("heading", { level: 1, name: "Connect an agent" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders /connect/compute as a working link page", async () => {
+    const { findByRole } = renderAt("/connect/compute");
+    expect(await findByRole("heading", { level: 1, name: "Connect compute" })).toBeInTheDocument();
   });
 
   it("renders /sessions/:id as the session shell", () => {

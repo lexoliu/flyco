@@ -1,0 +1,155 @@
+/**
+ * The status a person reads off a session row.
+ *
+ * `SessionState` is a lifecycle enum — where the machine is — and it is not
+ * what a user wants to know. "Active" answers nothing: an active session may
+ * be thinking, waiting for an approval, or sitting idle since yesterday.
+ * docs/ux.md §6 defines the eight statuses the UI actually shows, and this
+ * module is the single derivation of them, so a row, a group heading and a
+ * session header can never disagree.
+ *
+ * **What is deliberately not here yet.** Telling `Working` from `Needs
+ * input` needs the session's live relay events — whether a turn is in
+ * flight, whether an approval is pending — and those are not on
+ * `SessionSummary`. Until the session page lands them (issue #62), an
+ * `active` session reads as `Idle`, which is the honest answer for a list
+ * built from summaries alone. The refinement is an extra argument to
+ * {@link deriveStatus}, not a second derivation somewhere else.
+ */
+import type { SessionState, SessionSummary } from "../api/client";
+
+/** What a session looks like to the person who opened it. */
+export type SessionStatus =
+  | "provisioning"
+  | "working"
+  | "needs_input"
+  | "idle"
+  | "paused"
+  | "interrupted"
+  | "failed"
+  | "archived";
+
+/** How a status is coloured; see docs/ux.md §6. */
+export type StatusTone = "neutral" | "working" | "attention" | "failed" | "quiet";
+
+/** Everything a row needs to render one status. */
+export interface StatusView {
+  /** The derived status. */
+  status: SessionStatus;
+  /** The word shown beside the dot. */
+  label: string;
+  /** Which colour the dot takes. */
+  tone: StatusTone;
+  /** Whether the dot breathes, because something is genuinely happening. */
+  breathing: boolean;
+  /** The clause after the label, e.g. `2m` or `budget exhausted`. */
+  detail?: string;
+}
+
+/** What the live relay knows that a summary cannot. */
+export interface LiveSignals {
+  /** Whether a turn is running right now. */
+  turnInFlight?: boolean;
+  /** Whether the agent is blocked on a decision from the user. */
+  awaitingUser?: boolean;
+}
+
+const BASE: Record<Exclude<SessionState, "active">, StatusView> = {
+  provisioning: {
+    status: "provisioning",
+    label: "Provisioning",
+    tone: "neutral",
+    breathing: true,
+  },
+  paused: {
+    status: "paused",
+    label: "Paused",
+    tone: "quiet",
+    breathing: false,
+    detail: "budget exhausted",
+  },
+  interrupted: {
+    status: "interrupted",
+    label: "Interrupted",
+    tone: "quiet",
+    breathing: false,
+    detail: "spot reclaimed",
+  },
+  failed: { status: "failed", label: "Failed", tone: "failed", breathing: false },
+  archived: { status: "archived", label: "Archived", tone: "quiet", breathing: false },
+};
+
+/**
+ * The status of one session.
+ *
+ * `now` is passed in rather than read from the clock so that a list renders
+ * every row against one instant, and so that this is testable.
+ */
+export function deriveStatus(
+  session: Pick<SessionSummary, "state" | "created_at_unix" | "last_active_unix">,
+  now: number,
+  live: LiveSignals = {},
+): StatusView {
+  if (session.state === "provisioning") {
+    return { ...BASE.provisioning, detail: elapsedSince(session.created_at_unix, now) };
+  }
+  if (session.state !== "active") {
+    return BASE[session.state];
+  }
+  if (live.turnInFlight === true) {
+    return { status: "working", label: "Working", tone: "working", breathing: true };
+  }
+  if (live.awaitingUser === true) {
+    return { status: "needs_input", label: "Needs input", tone: "attention", breathing: false };
+  }
+  return { status: "idle", label: "Idle", tone: "quiet", breathing: false };
+}
+
+/**
+ * Order the home page groups sessions in: what needs the user, then what is
+ * running, then everything at rest. Archived is a tab of its own and is
+ * therefore last.
+ */
+export const STATUS_ORDER: readonly SessionStatus[] = [
+  "needs_input",
+  "failed",
+  "working",
+  "provisioning",
+  "idle",
+  "paused",
+  "interrupted",
+  "archived",
+];
+
+/** The heading a group of sessions sits under. */
+export const GROUP_LABEL: Record<SessionStatus, string> = {
+  needs_input: "Needs input",
+  failed: "Failed",
+  working: "Working",
+  provisioning: "Provisioning",
+  idle: "Idle",
+  paused: "Paused",
+  interrupted: "Interrupted",
+  archived: "Archived",
+};
+
+/** Whether a status belongs on the archived tab rather than the main list. */
+export function isArchived(status: SessionStatus): boolean {
+  return status === "archived";
+}
+
+/**
+ * How long something has been going on, as a status detail: `12s`, `4m`,
+ * `2h`. Coarse on purpose — a provisioning machine takes minutes and a
+ * second-by-second counter would be motion without information.
+ */
+export function elapsedSince(sinceUnix: number, now: number): string {
+  const seconds = Math.max(0, Math.floor(now / 1000) - sinceUnix);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  if (seconds < 3600) {
+    return `${Math.floor(seconds / 60)}m`;
+  }
+  return `${Math.floor(seconds / 3600)}h`;
+}

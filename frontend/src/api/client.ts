@@ -49,6 +49,9 @@ export type RepoSummary = Schemas["RepoSummary"];
 export type HarnessKind = Schemas["HarnessKind"];
 export type SessionState = Schemas["SessionState"];
 export type MachineCatalogEntry = Schemas["MachineCatalogEntry"];
+export type MachineDefault = Schemas["MachineDefault"];
+export type MachineChoice = Schemas["MachineChoice"];
+export type MachineOrigin = Schemas["MachineOrigin"];
 export type MachineView = Schemas["MachineView"];
 export type MachineSpec = Schemas["MachineSpec"];
 export type MachineState = Schemas["MachineState"];
@@ -206,6 +209,15 @@ export function getSession(id: string): Promise<JsonResponse<"flyco_api::app::ge
   return requestJson("GET", `/v1/sessions/${id}`);
 }
 
+/** Renames a session. The title is what every list row is identified by. */
+export function updateSession(
+  id: string,
+  title: string,
+): Promise<JsonResponse<"flyco_api::app::update_session", 200>> {
+  const body: JsonBody<"flyco_api::app::update_session"> = { title };
+  return requestJson("PATCH", `/v1/sessions/${id}`, { json: body });
+}
+
 export function archiveSession(
   id: string,
   options: { discardUncommitted?: boolean } = {},
@@ -307,6 +319,16 @@ export function getMachineCatalog(filter?: {
   return requestJson("GET", "/v1/machines/catalog", {
     query: { provider: filter?.provider, os: filter?.os, region: filter?.region },
   });
+}
+
+/**
+ * The machine flyco would provision right now, and the catalog entry behind
+ * it — what the compute chip shows before anyone commits to a session.
+ */
+export function getDefaultMachine(
+  spot: boolean,
+): Promise<JsonResponse<"flyco_api::machines::get_default_machine", 200>> {
+  return requestJson("GET", "/v1/machines/default", { query: { spot } });
 }
 
 // --- /v1/approvals ----------------------------------------------------------

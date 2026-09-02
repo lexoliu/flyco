@@ -43,9 +43,25 @@ export interface Readiness {
 
 const ReadinessContext = createContext<Readiness>();
 
-export function ReadinessProvider(props: { children: JSX.Element }) {
-  const [harness, harnessActions] = createResource(listHarnessAccounts);
-  const [compute, computeActions] = createResource(listProviders);
+export interface ReadinessProviderProps {
+  /**
+   * Whether the caller holds a credential these two reads need.
+   *
+   * Both routes are authenticated, so a signed-out shell must not ask for
+   * them: the request would 401, the client would clear the token that is
+   * already gone, and the sign-in page would have fired two failing
+   * requests to render itself. Passing the condition in — rather than
+   * reading the session here — keeps the shell the one place that decides
+   * who is signed in.
+   */
+  enabled: () => boolean;
+  children: JSX.Element;
+}
+
+export function ReadinessProvider(props: ReadinessProviderProps) {
+  const when = () => (props.enabled() ? true : undefined);
+  const [harness, harnessActions] = createResource(when, listHarnessAccounts);
+  const [compute, computeActions] = createResource(when, listProviders);
 
   const value: Readiness = {
     harness: () => harness() ?? [],

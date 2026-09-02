@@ -69,7 +69,7 @@ export default function AppShell(props: { children?: JSX.Element }) {
   return (
     <Show when={location.pathname !== "/login" || !signedIn()} fallback={<Navigate href="/" />}>
       <Show when={isBareRoute() || signedIn()} fallback={<Navigate href={loginHref()} />}>
-        <ReadinessProvider>
+        <ReadinessProvider enabled={signedIn}>
           <div class={styles.shell}>
             <UpdatePrompt />
             <Show when={!isBareRoute()}>
