@@ -6,8 +6,9 @@
 //! no business knowing.
 
 use flyco_core::{
-    ARCHIVE_AFTER_IDLE_SECS, BudgetConfig, BudgetId, HarnessKind, MAX_SESSION_TITLE_CHARS,
-    MachineOrigin, RepoSlug, SessionDetail, SessionId, SessionState, SessionSummary, UserId,
+    ARCHIVE_AFTER_IDLE_SECS, BranchName, BudgetConfig, BudgetId, HarnessKind,
+    MAX_SESSION_TITLE_CHARS, MachineOrigin, RepoSlug, SessionDetail, SessionId, SessionState,
+    SessionSummary, UserId,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -23,6 +24,7 @@ struct SessionRow {
     title: String,
     harness: HarnessKind,
     repo: RepoSlug,
+    branch: Option<BranchName>,
     state: SessionState,
     machine_origin: MachineOrigin,
     budget_id: BudgetId,
@@ -38,6 +40,7 @@ impl From<SessionRow> for SessionSummary {
             title: row.title,
             harness: row.harness,
             repo: row.repo,
+            branch: row.branch,
             state: row.state,
             machine_origin: row.machine_origin,
             created_at_unix: row.created_at_unix,
@@ -97,6 +100,9 @@ pub struct Opening<'a> {
     pub harness: HarnessKind,
     /// Repository it works in.
     pub repo: &'a RepoSlug,
+    /// Branch it works on — the one the caller named, or the repository's
+    /// default as GitHub reported it while the session was being created.
+    pub branch: &'a BranchName,
     /// Whether flyco or the caller chose the machine.
     pub machine_origin: MachineOrigin,
     /// What it may spend.
@@ -133,6 +139,7 @@ pub async fn create(db: &Db, cap: u32, opening: Opening<'_>) -> Result<SessionDe
         title,
         harness,
         repo,
+        branch,
         machine_origin,
         ..
     } = opening;
@@ -140,9 +147,9 @@ pub async fn create(db: &Db, cap: u32, opening: Opening<'_>) -> Result<SessionDe
     sql!(
         db,
         "INSERT INTO sessions \
-         (id, user_id, title, harness, repo, state, machine_origin, budget_id, \
+         (id, user_id, title, harness, repo, branch, state, machine_origin, budget_id, \
           created_at_unix, last_active_unix) \
-         VALUES ({id}, {user}, {title}, {harness}, {repo}, \
+         VALUES ({id}, {user}, {title}, {harness}, {repo}, {branch}, \
                  {SessionState::Provisioning}, {machine_origin}, {budget_id}, {now}, {now})"
     )
     .execute()
@@ -198,8 +205,8 @@ pub async fn rename(
 pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError> {
     let rows: Vec<SessionRow> = sql!(
         db,
-        "SELECT id, title, harness, repo, state, machine_origin, budget_id, failure_reason, \
-         created_at_unix, last_active_unix \
+        "SELECT id, title, harness, repo, branch, state, machine_origin, budget_id, \
+         failure_reason, created_at_unix, last_active_unix \
          FROM sessions WHERE user_id = {user} ORDER BY created_at_unix DESC, id DESC"
     )
     .fetch_all()
@@ -303,8 +310,8 @@ pub async fn require_active(db: &Db, user: UserId, id: SessionId) -> Result<(), 
 async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiError> {
     sql!(
         db,
-        "SELECT id, title, harness, repo, state, machine_origin, budget_id, failure_reason, \
-         created_at_unix, last_active_unix \
+        "SELECT id, title, harness, repo, branch, state, machine_origin, budget_id, \
+         failure_reason, created_at_unix, last_active_unix \
          FROM sessions WHERE id = {id} AND user_id = {user}"
     )
     .fetch_optional()
@@ -324,10 +331,19 @@ async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiErr
 /// building a machine for.
 #[derive(Debug, Clone, skyzen::FromRow)]
 pub struct ProvisioningTarget {
-    /// Whose session it is, which is whose harness account funds it.
+    /// Whose session it is, which is whose harness account funds it, and
+    /// whose GitHub authorization its checkout is made with.
     pub user_id: UserId,
     /// Which harness the machine's daemon will drive.
     pub harness: HarnessKind,
+    /// The repository the machine checks out.
+    pub repo: RepoSlug,
+    /// The branch it checks out.
+    ///
+    /// `None` for a session opened before flyco recorded one; the queue
+    /// resolves the repository's default branch from GitHub and writes it
+    /// back, so it is `None` at most once per session.
+    pub branch: Option<BranchName>,
     /// Where the session is in its lifecycle right now.
     pub state: SessionState,
 }
@@ -346,10 +362,30 @@ pub async fn provisioning_target(
 ) -> Result<Option<ProvisioningTarget>, ApiError> {
     Ok(sql!(
         db,
-        "SELECT user_id, harness, state FROM sessions WHERE id = {id}"
+        "SELECT user_id, harness, repo, branch, state FROM sessions WHERE id = {id}"
     )
     .fetch_optional()
     .await?)
+}
+
+/// Records the branch a session works on.
+///
+/// Written by `POST /v1/sessions` through [`create`] for every session
+/// opened since flyco recorded branches, and by the provisioning queue for
+/// the ones opened before it — which resolve the repository's default branch
+/// from GitHub the first time they are put on a machine. Recording it there
+/// rather than resolving it again on every provision is what makes a
+/// session's branch stable: a repository whose default moves must not move
+/// a session that has already been built on the old one.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the write fails.
+pub async fn record_branch(db: &Db, id: SessionId, branch: &BranchName) -> Result<(), ApiError> {
+    sql!(db, "UPDATE sessions SET branch = {branch} WHERE id = {id}")
+        .execute()
+        .await?;
+    Ok(())
 }
 
 /// Records that provisioning gave up, and why.

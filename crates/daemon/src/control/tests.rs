@@ -116,6 +116,13 @@ impl ControlApi for RecordingApi {
     ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send {
         core::future::ready(Ok(None))
     }
+
+    fn report_stage(
+        &self,
+        _stage: ProvisioningStage,
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        core::future::ready(Ok(()))
+    }
 }
 
 /// Everything a relay test drives.
@@ -1114,6 +1121,15 @@ mod remote_store {
         ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send
         {
             core::future::ready(Ok(None))
+        }
+
+        fn report_stage(
+            &self,
+            _stage: flyco_core::ProvisioningStage,
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Err(ControlApiError::Transport(
+                "the transcript store announces no provisioning stages".to_owned(),
+            )))
         }
 
         fn get_transcript(

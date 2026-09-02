@@ -38,10 +38,10 @@
 use core::time::Duration;
 
 use flyco_core::{
-    ClientEvent, HarnessKind, MachineId, PermissionMode, ProvisioningStage, SessionId,
-    SessionState, UserId,
+    BranchName, ClientEvent, HarnessKind, MachineId, PermissionMode, ProvisioningStage, RepoSlug,
+    SessionId, SessionState, UserId,
 };
-use flyco_provider::{DaemonBootstrap, ProviderError, ProvisionRequest};
+use flyco_provider::{DaemonBootstrap, GitIdentity, ProviderError, ProvisionRequest, RepoCheckout};
 use serde::{Deserialize, Serialize};
 use skyzen_services::queue::{
     QueueBatch, QueueBatchDisposition, QueueMessageDisposition, QueueRetry, SendOptions,
@@ -52,10 +52,11 @@ use crate::anthropic::ClaudeOauth;
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
+use crate::github::{GithubOauth, REPO_SCOPE};
 use crate::machines::MachineRow;
 use crate::provisioning::Provisioner;
 use crate::rooms::Rooms;
-use crate::{daemon_tokens, harness_accounts, machines, provisioning, sessions};
+use crate::{daemon_tokens, harness_accounts, machines, provisioning, sessions, users};
 
 /// How many times one machine is asked for before the session is failed.
 ///
@@ -134,6 +135,27 @@ enum Settled {
     Redeliver(ApiError),
 }
 
+/// The three services a provisioning job reaches outside its own database.
+///
+/// One argument rather than three, because they arrive and travel together
+/// through every step of a job: the provider builds the machine, Anthropic
+/// keeps the harness credential fresh, and GitHub says who the user is, what
+/// their token may do, and where the repository's default branch points. A
+/// call site that swapped two of them would still compile.
+#[derive(Debug)]
+pub struct Clients<'a, P: Provisioner, C: ClaudeOauth, G: GithubOauth> {
+    /// Builds the machine.
+    ///
+    /// `&mut` because a driver is stateful: it caches an access token it
+    /// must be able to replace.
+    pub provisioner: &'a mut P,
+    /// Refreshes a Claude OAuth grant that is near its end.
+    pub claude: &'a C,
+    /// Reads the user's account, what their token may do, and the
+    /// repository's default branch.
+    pub github: &'a G,
+}
+
 /// Performs a batch of provisioning jobs.
 ///
 /// The dual-target half of the consumer: the exported Cloudflare `queue`
@@ -148,14 +170,13 @@ pub async fn consume(
     config: &ApiConfig,
     queue: &Queue,
     rooms: &Rooms,
-    provisioner: &mut impl Provisioner,
-    claude: &impl ClaudeOauth,
+    clients: &mut Clients<'_, impl Provisioner, impl ClaudeOauth, impl GithubOauth>,
     batch: QueueBatch<ProvisioningJob>,
 ) -> QueueBatchDisposition {
     let mut decisions = Vec::with_capacity(batch.messages.len());
     for message in batch.messages {
         decisions.push(
-            match perform(db, config, queue, rooms, provisioner, claude, message.body).await {
+            match perform(db, config, queue, rooms, clients, message.body).await {
                 Settled::Done => QueueMessageDisposition::Ack,
                 Settled::Redeliver(error) => {
                     tracing::error!(
@@ -181,13 +202,12 @@ async fn perform(
     config: &ApiConfig,
     queue: &Queue,
     rooms: &Rooms,
-    provisioner: &mut impl Provisioner,
-    claude: &impl ClaudeOauth,
+    clients: &mut Clients<'_, impl Provisioner, impl ClaudeOauth, impl GithubOauth>,
     job: ProvisioningJob,
 ) -> Settled {
     match claim(db, job).await {
         Ok(None) => Settled::Done,
-        Ok(Some(claimed)) => match build(db, config, rooms, provisioner, claude, &claimed).await {
+        Ok(Some(claimed)) => match build(db, config, rooms, clients, &claimed).await {
             Ok(()) => Settled::Done,
             Err(Provisioned::Failed(reason)) => {
                 match sessions::fail(db, job.session, &reason).await {
@@ -206,6 +226,11 @@ struct Claim {
     session: SessionId,
     user: UserId,
     harness: HarnessKind,
+    repo: RepoSlug,
+    /// The branch, when the session already records one. `None` is a
+    /// session opened before flyco recorded branches; [`checkout`] resolves
+    /// the repository's default and writes it back.
+    branch: Option<BranchName>,
     machine: MachineRow,
 }
 
@@ -263,6 +288,8 @@ async fn claim(db: &Db, job: ProvisioningJob) -> Result<Option<Claim>, ApiError>
         session: job.session,
         user: target.user_id,
         harness: target.harness,
+        repo: target.repo,
+        branch: target.branch,
         machine,
     }))
 }
@@ -290,8 +317,7 @@ async fn build(
     db: &Db,
     config: &ApiConfig,
     rooms: &Rooms,
-    provisioner: &mut impl Provisioner,
-    claude: &impl ClaudeOauth,
+    clients: &mut Clients<'_, impl Provisioner, impl ClaudeOauth, impl GithubOauth>,
     claim: &Claim,
 ) -> Result<(), Provisioned> {
     let account = provisioning::account(db, config, claim.user, claim.machine.provider_account_id)
@@ -307,9 +333,10 @@ async fn build(
         .await
         .map_err(|error| classify(&error))?;
 
-    let bootstrap = bootstrap(db, config, claude, claim).await?;
+    let bootstrap = bootstrap(db, config, clients, claim).await?;
     announce(rooms, claim.session, ProvisioningStage::Reserving).await;
-    let machine = provisioner
+    let machine = clients
+        .provisioner
         .provision(
             &account,
             &ProvisionRequest {
@@ -364,7 +391,7 @@ async fn build(
 async fn bootstrap(
     db: &Db,
     config: &ApiConfig,
-    claude: &impl ClaudeOauth,
+    clients: &Clients<'_, impl Provisioner, impl ClaudeOauth, impl GithubOauth>,
     claim: &Claim,
 ) -> Result<DaemonBootstrap, Provisioned> {
     let token = daemon_tokens::issue(db, claim.user, claim.session)
@@ -372,9 +399,11 @@ async fn bootstrap(
         .map_err(Provisioned::from)?;
     // Refreshes a Claude OAuth grant that is near its end, so the machine
     // this boots is handed a token good for longer than the provision.
-    let claude_auth = harness_accounts::credential(db, config, claude, claim.user, claim.harness)
-        .await
-        .map_err(Provisioned::from)?;
+    let claude_auth =
+        harness_accounts::credential(db, config, clients.claude, claim.user, claim.harness)
+            .await
+            .map_err(Provisioned::from)?;
+    let repo = checkout(db, config, clients.github, claim).await?;
 
     Ok(DaemonBootstrap {
         session: claim.session,
@@ -386,9 +415,79 @@ async fn bootstrap(
         // still reaches the approval UI.
         permission_mode: PermissionMode::Auto,
         claude_auth,
+        repo,
         resume_session_id: sessions::harness_session_id(db, claim.session)
             .await
             .map_err(Provisioned::from)?,
+    })
+}
+
+/// Builds the checkout the machine comes up holding.
+///
+/// Flyco's GitHub integration behaves *as the user* (docs/proposal.md), so
+/// this is the user's own OAuth token and the user's own commit identity —
+/// not a bot's. Three things happen here, and each is a session failure if
+/// it does not:
+///
+/// * The stored token is opened and its scopes are read. A token that does
+///   not grant `repo` cannot clone a private repository or push anything, so
+///   the session fails *here* with
+///   [`ApiError::GithubTokenInsufficient`](crate::error::ApiError::GithubTokenInsufficient)
+///   — which tells the user to sign in again — rather than five minutes
+///   later on a machine, with a git error about authentication.
+/// * The commit identity is read from the same response, so a machine's
+///   commits carry the user's name rather than `flyco@<hostname>`.
+/// * A session that records no branch — one opened before flyco recorded
+///   any — has the repository's default resolved and *written back*, so the
+///   answer is stable for every later provision of that session.
+async fn checkout(
+    db: &Db,
+    config: &ApiConfig,
+    github: &impl GithubOauth,
+    claim: &Claim,
+) -> Result<RepoCheckout, Provisioned> {
+    let token = users::github_token(db, config, claim.user)
+        .await
+        .map_err(Provisioned::from)?;
+    let identity = github
+        .current_user(&token)
+        .await
+        .map_err(|error| Provisioned::from(ApiError::from(error)))?;
+    if !identity.grants_repo_scope() {
+        return Err(Provisioned::from(ApiError::GithubTokenInsufficient {
+            scope: REPO_SCOPE,
+            repo: claim.repo.clone(),
+        }));
+    }
+
+    let branch = if let Some(branch) = claim.branch.clone() {
+        branch
+    } else {
+        let default_branch = github
+            .get_repo(&token, &claim.repo)
+            .await
+            .map_err(|error| Provisioned::from(ApiError::from(error)))?
+            .default_branch;
+        sessions::record_branch(db, claim.session, &default_branch)
+            .await
+            .map_err(Provisioned::from)?;
+        tracing::info!(
+            session = %claim.session,
+            repo = %claim.repo,
+            branch = %default_branch,
+            "recorded the default branch for a session opened before flyco tracked one"
+        );
+        default_branch
+    };
+
+    Ok(RepoCheckout {
+        slug: claim.repo.clone(),
+        branch,
+        token: token.access_token,
+        identity: GitIdentity {
+            name: identity.user.commit_name().to_owned(),
+            email: identity.user.commit_email(),
+        },
     })
 }
 
@@ -492,9 +591,10 @@ mod worker {
     // from here. `#[skyzen::main]` gets this for free in the crate root.
     use skyzen::wasm_bindgen_futures;
 
-    use super::{ProvisioningJob, consume};
+    use super::{Clients, ProvisioningJob, consume};
     use crate::anthropic::ClaudeClient;
     use crate::config::{ApiConfig, binding};
+    use crate::github::GithubClient;
     use crate::provisioning::CloudProvisioner;
     use crate::rooms::Rooms;
 
@@ -531,8 +631,11 @@ mod worker {
             &config,
             &queue,
             &rooms,
-            &mut CloudProvisioner,
-            &ClaudeClient::default(),
+            &mut Clients {
+                provisioner: &mut CloudProvisioner,
+                claude: &ClaudeClient::default(),
+                github: &GithubClient::default(),
+            },
             batch,
         )
         .await

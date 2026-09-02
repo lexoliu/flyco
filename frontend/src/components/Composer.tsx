@@ -13,7 +13,15 @@
  */
 import { For, Show, createMemo, createResource, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
-import { AlertTriangle, ArrowUp, FolderGit2, Plus, Server, Wallet } from "lucide-solid";
+import {
+  AlertTriangle,
+  ArrowUp,
+  FolderGit2,
+  GitBranch,
+  Plus,
+  Server,
+  Wallet,
+} from "lucide-solid";
 import ComposerShell from "./ComposerShell";
 import MachineSlider from "./MachineSlider";
 import Popover from "./Popover";
@@ -23,6 +31,7 @@ import { useReadiness } from "./Readiness";
 import {
   getDefaultMachine,
   getMachineCatalog,
+  listBranches,
   listRepos,
   type HarnessKind,
   type MachineCatalogEntry,
@@ -63,6 +72,11 @@ export default function Composer(props: ComposerProps) {
 
   const [prompt, setPrompt] = createSignal("");
   const [repo, setRepo] = createSignal<string | null>(recentRepos()[0] ?? null);
+  // `null` is "whatever this repository's default branch is", which the
+  // control plane resolves and records. Storing the choice rather than the
+  // resolved name is what keeps the two from disagreeing when the repository
+  // changes under it.
+  const [branch, setBranch] = createSignal<string | null>(null);
   const [budget, setBudget] = createSignal(DEFAULT_BUDGET);
   const [spot, setSpot] = createSignal(spotPreference());
   const [chosenKey, setChosenKey] = createSignal<string | null>(null);
@@ -130,6 +144,11 @@ export default function Composer(props: ComposerProps) {
 
   function chooseRepo(slug: string): void {
     setRepo(slug);
+    // A branch belongs to a repository. Carrying `dev` across to a
+    // repository that has no `dev` would fail the clone minutes later, on a
+    // machine, with a git error — so the choice is dropped and the new
+    // repository's default takes over.
+    setBranch(null);
     rememberRepo(slug);
   }
 
@@ -149,9 +168,14 @@ export default function Composer(props: ComposerProps) {
     try {
       const entry = chosen();
       const account = entry?.account;
+      const chosenBranch = branch();
       await props.onSend({
         prompt: prompt().trim(),
         repo: slug,
+        // Sent only when the user picked one: omitted, the control plane
+        // reads the repository's default from GitHub and records *that*, so
+        // the branch a session is on is never this browser's guess.
+        ...(chosenBranch === null ? {} : { branch: chosenBranch }),
         harness: harness(),
         budgetLimitDollars: budget(),
         // An explicit machine is only sent when the user picked one: that
@@ -200,6 +224,7 @@ export default function Composer(props: ComposerProps) {
             onSpot={chooseSpot}
           />
           <RepoChip slug={repo()} onChoose={chooseRepo} />
+          <BranchChip slug={repo()} branch={branch()} onChoose={setBranch} />
           <BudgetChip dollars={budget()} onChange={setBudget} />
         </div>
       }
@@ -443,6 +468,107 @@ function RepoChip(props: { slug: string | null; onChoose: (slug: string) => void
         </div>
       )}
     </Popover>
+  );
+}
+
+/**
+ * Which branch the agent starts from (docs/ux.md §9.1).
+ *
+ * Beside the repository chip because it is the same decision continued: a
+ * repository without a branch is not somewhere an agent can be put to work.
+ * The list is only fetched when the popover opens — the chip reads the
+ * repository's default until then, and most sessions never change it.
+ */
+function BranchChip(props: {
+  slug: string | null;
+  branch: string | null;
+  onChoose: (branch: string | null) => void;
+}) {
+  const [browsed, setBrowsed] = createSignal(false);
+
+  // Keyed on the repository *and* on the chip having been opened at least
+  // once, so browsing one repository's branches is not a request made for
+  // every repository the user clicks past on the way to it.
+  const [page] = createResource(
+    () => (browsed() && props.slug !== null ? props.slug : undefined),
+    (slug: string) => listBranches(slug),
+  );
+
+  /** The branch a session would start on right now. */
+  const effective = createMemo(
+    () => props.branch ?? page()?.branches.find((candidate) => candidate.is_default)?.name ?? null,
+  );
+
+  return (
+    <Show
+      when={props.slug !== null}
+      fallback={
+        <span class={cx(styles.chip, styles.chipMissing)} aria-disabled="true">
+          <GitBranch size={13} aria-hidden="true" />
+          <span class={styles.chipLabel}>Branch</span>
+        </span>
+      }
+    >
+      <Popover
+        label="Branch"
+        trigger={(attrs) => (
+          <button
+            id={attrs.id}
+            onClick={() => {
+              setBrowsed(true);
+              attrs.onClick();
+            }}
+            aria-expanded={attrs.expanded()}
+            aria-haspopup="dialog"
+            type="button"
+            class={styles.chip}
+          >
+            <GitBranch size={13} aria-hidden="true" />
+            <span class={styles.chipLabel}>{effective() ?? "Default branch"}</span>
+          </button>
+        )}
+      >
+        {(close) => (
+          <div class={styles.popover}>
+            <Show when={page.loading}>
+              <p class={styles.note}>Reading branches…</p>
+            </Show>
+            <Show when={page()}>
+              {(loaded) => (
+                <ul class={styles.options}>
+                  <For each={loaded().branches}>
+                    {(candidate) => (
+                      <li>
+                        <button
+                          type="button"
+                          class={cx(
+                            styles.option,
+                            effective() === candidate.name && styles.optionChosen,
+                          )}
+                          onClick={() => {
+                            // Choosing the default is choosing *the default*,
+                            // not pinning today's name: a repository that
+                            // renames it should carry the session with it.
+                            props.onChoose(candidate.is_default ? null : candidate.name);
+                            close();
+                          }}
+                        >
+                          {candidate.name}
+                          <Show when={candidate.is_default}>
+                            <span class={styles.optionMeta}>default</span>
+                          </Show>
+                        </button>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              )}
+            </Show>
+            <ProblemNotice error={page.error} />
+          </div>
+        )}
+      </Popover>
+    </Show>
   );
 }
 

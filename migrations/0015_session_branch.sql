@@ -1,0 +1,16 @@
+-- The branch a session works on.
+--
+-- A session has always named a repository and never a branch, which left
+-- the one question every reader downstream had to guess at: the machine's
+-- `flycod` needs a ref to clone, the header wants to render `repo · branch`
+-- (docs/ux.md §9.1), and neither could be answered from the row.
+--
+-- Nullable, and deliberately without a default. `POST /v1/sessions` records
+-- either the branch the caller named or the repository's default branch read
+-- from GitHub at creation, so every session opened from here on has one. A
+-- session opened before this migration genuinely has no recorded branch, and
+-- `'main'` would be a claim about somebody's repository that flyco cannot
+-- support — so those rows say NULL, the header shows the repository alone,
+-- and the provisioning queue resolves the default branch from GitHub and
+-- writes it back the first time such a session is put on a machine.
+ALTER TABLE sessions ADD COLUMN branch TEXT;

@@ -32,12 +32,17 @@ use skyzen_test::{TestClient, TestContext};
 use crate::provisioning::{LinkedAccount, Provisioner};
 use crate::provisioning_queue::{self, MAX_ATTEMPTS, ProvisioningJob};
 use crate::testing::{
-    HARNESS_TOKEN, TestClaude, machine_choice, migrated_router_on, seed_harness_account,
+    GITHUB_ACCESS_TOKEN, GITHUB_COMMIT_EMAIL, GITHUB_NAME, HARNESS_TOKEN, TEST_DEFAULT_BRANCH,
+    TestClaude, TestGithub, machine_choice, migrated_router_on, seed_harness_account,
     seed_provider_account, seed_user, test_config, test_rooms,
 };
 use crate::{machines, session, sessions};
 
 const REPO: &str = "lexoliu/flyco";
+
+/// A branch a session names for itself, distinct from the repository's
+/// default — so a test that mixed the two up would fail rather than pass.
+const NAMED_BRANCH: &str = "feat/issue-73-repo-clone";
 
 /// The opening instruction every test session is created with.
 const PROMPT: &str = "audit the relay for dropped frames";
@@ -154,6 +159,7 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
+            branch: None,
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
@@ -206,17 +212,39 @@ async fn run_queue(
     queue: &Queue,
     provisioner: &mut RecordedHost,
 ) -> QueueBatchDisposition {
+    run_queue_as(db, queue, provisioner, TestGithub::default()).await
+}
+
+/// The same, against a GitHub that says something else about the caller's
+/// stored token.
+async fn run_queue_as(
+    db: &Db,
+    queue: &Queue,
+    provisioner: &mut RecordedHost,
+    github: TestGithub,
+) -> QueueBatchDisposition {
     let batch = drain(queue).await;
     provisioning_queue::consume(
         db,
         &test_config(),
         queue,
         &test_rooms(),
-        provisioner,
-        &TestClaude,
+        &mut clients(provisioner, &github),
         batch,
     )
     .await
+}
+
+/// The services one job reaches, wired to the fakes.
+fn clients<'a>(
+    provisioner: &'a mut RecordedHost,
+    github: &'a TestGithub,
+) -> provisioning_queue::Clients<'a, RecordedHost, TestClaude, TestGithub> {
+    provisioning_queue::Clients {
+        provisioner,
+        claude: &TestClaude,
+        github,
+    }
 }
 
 /// Every job the queue holds, delivered or not.
@@ -257,8 +285,7 @@ async fn run_job_twice(
             &test_config(),
             queue,
             &test_rooms(),
-            provisioner,
-            &TestClaude,
+            &mut clients(provisioner, &TestGithub::default()),
             batch(job),
         )
         .await;
@@ -288,6 +315,7 @@ async fn a_machine_the_account_cannot_deploy_is_refused_where_it_was_chosen(
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
+            branch: None,
             budget_limit: Usd::from_dollars(10),
             machine: Some(choice),
             spot: true,
@@ -472,8 +500,7 @@ async fn an_unreachable_host_is_retried_a_bounded_number_of_times(
             &test_config(),
             &queue,
             &test_rooms(),
-            &mut host,
-            &TestClaude,
+            &mut clients(&mut host, &TestGithub::default()),
             batch(job),
         )
         .await;
@@ -544,8 +571,7 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         &test_config(),
         &queue,
         &test_rooms(),
-        &mut host,
-        &TestClaude,
+        &mut clients(&mut host, &TestGithub::default()),
         original,
     )
     .await;
@@ -583,8 +609,7 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         &test_config(),
         &queue,
         &test_rooms(),
-        &mut host,
-        &TestClaude,
+        &mut clients(&mut host, &TestGithub::default()),
         queued,
     )
     .await;
@@ -672,8 +697,7 @@ async fn a_job_for_a_session_that_is_gone_is_dropped(db: Db, queue: Queue) {
         &test_config(),
         &queue,
         &test_rooms(),
-        &mut host,
-        &TestClaude,
+        &mut clients(&mut host, &TestGithub::default()),
         batch(orphan),
     )
     .await;
@@ -730,6 +754,249 @@ async fn a_machine_boots_already_holding_its_session_credentials(
     assert_eq!(
         bootstrap.resume_session_id, None,
         "a first machine has no harness conversation to continue"
+    );
+}
+
+#[skyzen::test]
+async fn a_machine_boots_knowing_what_to_check_out_and_who_to_commit_as(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    open(&client, &caller).await;
+    let mut host = RecordedHost::healthy();
+    run_queue(&db, &queue, &mut host).await;
+
+    let repo = host
+        .bootstrap
+        .expect("the driver was handed a bootstrap")
+        .repo;
+    assert_eq!(repo.slug.to_string(), REPO);
+    assert_eq!(
+        repo.branch.to_string(),
+        TEST_DEFAULT_BRANCH,
+        "a session that named no branch works on the repository's default"
+    );
+    // Behaving as the user, not as a bot: the machine holds the caller's own
+    // GitHub token, unsealed on the way through, and commits under the
+    // caller's own identity.
+    assert_eq!(repo.token, GITHUB_ACCESS_TOKEN);
+    assert_eq!(repo.identity.name, GITHUB_NAME);
+    assert_eq!(repo.identity.email, GITHUB_COMMIT_EMAIL);
+}
+
+#[skyzen::test]
+async fn a_session_carries_the_branch_it_was_opened_on(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    let response = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .json(&CreateSession {
+            prompt: PROMPT.to_owned(),
+            harness: HarnessKind::ClaudeCode,
+            repo: REPO.to_owned(),
+            branch: Some(NAMED_BRANCH.to_owned()),
+            budget_limit: Usd::from_dollars(10),
+            machine: Some(machine_choice(caller.account)),
+            spot: true,
+        })
+        .send()
+        .await;
+    response.assert_status(201);
+    let session: SessionDetail = response.json();
+    assert_eq!(
+        session
+            .summary
+            .branch
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some(NAMED_BRANCH),
+        "the branch is recorded where the caller named it"
+    );
+
+    let mut host = RecordedHost::healthy();
+    run_queue(&db, &queue, &mut host).await;
+    assert_eq!(
+        host.bootstrap
+            .expect("the driver was handed a bootstrap")
+            .repo
+            .branch
+            .to_string(),
+        NAMED_BRANCH,
+        "and it is the branch the machine is told to check out"
+    );
+}
+
+#[skyzen::test]
+async fn a_branch_git_would_refuse_is_refused_where_it_was_typed(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    let response = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .json(&CreateSession {
+            prompt: PROMPT.to_owned(),
+            harness: HarnessKind::ClaudeCode,
+            repo: REPO.to_owned(),
+            branch: Some("not a branch".to_owned()),
+            budget_limit: Usd::from_dollars(10),
+            machine: Some(machine_choice(caller.account)),
+            spot: true,
+        })
+        .send()
+        .await;
+
+    response.assert_status(422);
+    assert_eq!(
+        response.json::<Problem>().kind,
+        "https://flyco.dev/problems/invalid-branch"
+    );
+    assert!(
+        drain(&queue).await.messages.is_empty(),
+        "nothing was queued for a session that was never opened"
+    );
+}
+
+#[skyzen::test]
+async fn a_token_without_the_repo_scope_cannot_open_a_session(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    // The user signed flyco in before it asked for `repo`, or narrowed the
+    // authorization afterwards. Either way the only fix is signing in again,
+    // and they are told so in the moment they pressed send.
+    crate::testing::migrate(&db).await;
+    let router = crate::testing::test_router_with_github(
+        db.clone(),
+        queue.clone(),
+        TestGithub::without_repo_scope(),
+    );
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    let response = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .json(&CreateSession {
+            prompt: PROMPT.to_owned(),
+            harness: HarnessKind::ClaudeCode,
+            repo: REPO.to_owned(),
+            branch: None,
+            budget_limit: Usd::from_dollars(10),
+            machine: Some(machine_choice(caller.account)),
+            spot: true,
+        })
+        .send()
+        .await;
+
+    response.assert_status(403);
+    let problem: Problem = response.json();
+    assert_eq!(
+        problem.kind,
+        "https://flyco.dev/problems/github-token-insufficient"
+    );
+    assert!(
+        problem.detail.contains("repo") && problem.detail.contains("sign in"),
+        "the refusal names the scope and what to do about it: {}",
+        problem.detail
+    );
+}
+
+#[skyzen::test]
+async fn a_stored_token_that_lost_the_repo_scope_fails_the_session_visibly(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    // The same refusal on the resume path, where nobody is watching a form:
+    // the session was opened while the token was still good, and the machine
+    // is built later. It must fail loudly rather than provision a machine
+    // whose clone cannot authenticate.
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    let session = open(&client, &caller).await.summary.id;
+    let mut host = RecordedHost::healthy();
+    run_queue_as(&db, &queue, &mut host, TestGithub::without_repo_scope()).await;
+
+    assert_eq!(
+        host.provisions, 0,
+        "no machine is built for a checkout that could not be authenticated"
+    );
+    let failed = read(&client, &caller, session).await;
+    assert_eq!(failed.summary.state, SessionState::Failed);
+    let reason = failed.failure.expect("a failed session says why");
+    assert!(
+        reason.contains("repo") && reason.contains("sign in"),
+        "the session names the missing scope and the fix: {reason}"
+    );
+}
+
+#[skyzen::test]
+async fn a_session_opened_before_flyco_tracked_branches_resolves_one_once(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    // Migration 0015 leaves those rows NULL rather than claiming `main`.
+    // The queue resolves the repository's default branch from GitHub and
+    // writes it back, so the answer is settled once and stays stable even if
+    // the repository's default moves later.
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    let session = open(&client, &caller).await.summary.id;
+    sql!(db, "UPDATE sessions SET branch = NULL WHERE id = {session}")
+        .execute()
+        .await
+        .expect("age the row back to before branches were recorded");
+
+    let mut host = RecordedHost::healthy();
+    run_queue(&db, &queue, &mut host).await;
+
+    assert_eq!(
+        host.bootstrap
+            .expect("the driver was handed a bootstrap")
+            .repo
+            .branch
+            .to_string(),
+        TEST_DEFAULT_BRANCH
+    );
+    let stored: Option<String> = sql!(db, "SELECT branch FROM sessions WHERE id = {session}")
+        .fetch_scalar_optional()
+        .await
+        .expect("read the row back");
+    assert_eq!(
+        stored.as_deref(),
+        Some(TEST_DEFAULT_BRANCH),
+        "the resolved branch is written back rather than resolved again next time"
     );
 }
 

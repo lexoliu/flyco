@@ -10,7 +10,7 @@ use crate::budget::BudgetView;
 use crate::harness::{HarnessKind, UsageReport};
 use crate::id::{ProviderAccountId, SessionId};
 use crate::money::Usd;
-use crate::repo::RepoSlug;
+use crate::repo::{BranchName, RepoSlug};
 
 /// Lifecycle state of a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
@@ -226,6 +226,16 @@ pub struct CreateSession {
     /// untrusted input; the control plane parses it into a
     /// [`RepoSlug`](crate::repo::RepoSlug) and rejects anything else.
     pub repo: String,
+    /// Branch to check out. Untyped for the same reason as
+    /// [`repo`](Self::repo): the control plane parses it into a
+    /// [`BranchName`](crate::repo::BranchName) and refuses anything git
+    /// would.
+    ///
+    /// Omitted, the control plane asks GitHub for the repository's default
+    /// branch and records *that*, so a session always names the branch it
+    /// works on rather than leaving every later reader to guess.
+    #[serde(default)]
+    pub branch: Option<String>,
     /// Spending limit for the whole session.
     pub budget_limit: Usd,
     /// The machine to provision for it.
@@ -261,6 +271,14 @@ pub struct SessionSummary {
     pub harness: HarnessKind,
     /// Repository it works in.
     pub repo: RepoSlug,
+    /// Branch it works on, which the header renders as `repo · branch`
+    /// (docs/ux.md §9.1).
+    ///
+    /// `None` only for a session opened before flyco recorded a branch at
+    /// all. A placeholder would be a claim about somebody's checkout that
+    /// flyco cannot support, so the header shows the repository alone for
+    /// those and every session opened since names its branch.
+    pub branch: Option<BranchName>,
     /// Where it is in its lifecycle.
     pub state: SessionState,
     /// When it was created, seconds since the Unix epoch.
@@ -365,6 +383,20 @@ mod tests {
         .expect("deserialize");
         assert!(request.machine.is_none());
         assert!(request.spot);
+        assert!(
+            request.branch.is_none(),
+            "a request that names no branch takes the repository's default"
+        );
+    }
+
+    #[test]
+    fn a_named_branch_survives_deserialization() {
+        let request: CreateSession = serde_json::from_str(
+            r#"{"prompt":"add a test","harness":"claude_code","repo":"lexoliu/flyco",
+                "branch":"dev","budget_limit":10000000}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(request.branch.as_deref(), Some("dev"));
     }
 
     #[test]

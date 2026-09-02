@@ -90,17 +90,25 @@ pub enum ProvisioningStage {
     Installing,
     /// The session's repository is being checked out.
     ///
-    /// Nothing emits this yet: flyco does not put a checkout on a machine —
-    /// the bootstrap installs `flycod` and nothing clones a repository into
-    /// [`WORKDIR`]. The stage is defined here because the timeline is one
-    /// ordered protocol rather than five independent ones, and the daemon
-    /// will announce it from the same place it announces
-    /// [`Ready`](Self::Ready) once the checkout lands.
-    ///
-    /// [`WORKDIR`]: https://github.com/lexoliu/flyco/blob/main/crates/provider/src/flycod.rs
+    /// Announced by the daemon over `POST
+    /// /v1/sessions/{id}/provisioning-stage` rather than over the relay,
+    /// because it happens *before* the harness exists: the checkout is what
+    /// the harness is started in, and the relay socket is not opened until
+    /// there is a session behind it.
     Cloning,
     /// The daemon is connected and the harness is accepting work.
     Ready,
+}
+
+/// Request body of `POST /v1/sessions/{id}/provisioning-stage`.
+///
+/// The daemon names the milestone; the control plane times it, exactly as it
+/// times the stages its own provisioning queue announces. A daemon whose
+/// clock is wrong would otherwise put its line of the timeline in 1970.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ReportProvisioningStage {
+    /// The milestone the machine has reached.
+    pub stage: ProvisioningStage,
 }
 
 /// The user's decision on an approval.

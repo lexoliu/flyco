@@ -72,6 +72,13 @@
   white-space: nowrap;
 }
 
+/* The branch reads as part of the same phrase as the repository, one step
+   quieter — it is the qualifier, not a second fact. */
+.branch {
+  margin-left: 0.35em;
+  color: var(--color-text-faint);
+}
+
 .readouts {
   display: flex;
   align-items: center;

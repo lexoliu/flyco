@@ -17,6 +17,38 @@ use core::cell::RefCell;
 
 use crate::clock::Timer;
 use crate::http::{HttpError, HttpRequest, HttpResponse, HttpTransport};
+use crate::{GitIdentity, RepoCheckout};
+
+/// The GitHub token every fixture bootstrap carries.
+///
+/// Named rather than inlined because what the driver tests assert about it
+/// is that it is *absent*: it must not appear in a rendered cloud-init
+/// document's logs, in a `Debug` rendering, or anywhere but the config the
+/// machine reads.
+pub const GITHUB_TOKEN: &str = "gho_a-user-access-token";
+
+/// The repository every fixture bootstrap checks out.
+///
+/// One fixture rather than one per driver: the drivers all embed the same
+/// rendered configuration, and five copies of this would be five places to
+/// forget when a field is added to [`RepoCheckout`].
+///
+/// # Panics
+///
+/// Panics if the constants above stop being a valid slug and branch, which
+/// would be this fixture being wrong rather than anything under test.
+#[must_use]
+pub fn checkout() -> RepoCheckout {
+    RepoCheckout {
+        slug: "lexoliu/flyco".parse().expect("a valid repository slug"),
+        branch: "dev".parse().expect("a valid branch name"),
+        token: GITHUB_TOKEN.to_owned(),
+        identity: GitIdentity {
+            name: "lexoliu".to_owned(),
+            email: "4242+lexoliu@users.noreply.github.com".to_owned(),
+        },
+    }
+}
 
 /// A transport that answers from a script and records what it was asked.
 ///

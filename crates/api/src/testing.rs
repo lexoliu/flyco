@@ -22,7 +22,7 @@ use crate::rooms::{NativeRooms, Rooms};
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 13] = [
+pub const MIGRATIONS: [&str; 14] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -36,6 +36,7 @@ pub const MIGRATIONS: [&str; 13] = [
     include_str!("../../../migrations/0012_harness_credentials.sql"),
     include_str!("../../../migrations/0013_session_title.sql"),
     include_str!("../../../migrations/0014_provider_workspace.sql"),
+    include_str!("../../../migrations/0015_session_branch.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -108,9 +109,82 @@ pub fn test_rooms() -> Rooms {
     Rooms::from_native(NativeRooms::new())
 }
 
+/// The display name [`TestGithub`] reports, which is what a session's
+/// commits are authored under.
+pub const GITHUB_NAME: &str = "Lexo Liu";
+
+/// The address a session's commits are authored under, derived from
+/// [`GITHUB_ID`] and [`GITHUB_LOGIN`] the way GitHub itself derives it.
+pub const GITHUB_COMMIT_EMAIL: &str = "4242+lexoliu@users.noreply.github.com";
+
+/// The repository every test session works in.
+pub const TEST_REPO: &str = "lexoliu/flyco";
+
+/// Its default branch, which is what a session that names none records.
+pub const TEST_DEFAULT_BRANCH: &str = "dev";
+
+/// What [`TestGithub`] reports as the default branch of any *other*
+/// repository, so a test that opens a session somewhere else still records
+/// a branch — and a test that confused the two would see it.
+pub const OTHER_DEFAULT_BRANCH: &str = "main";
+
+/// Branches [`TestGithub`] reports for [`TEST_REPO`], in GitHub's own
+/// alphabetical order — so a picker that failed to hoist the default branch
+/// would visibly open on the wrong one.
+pub const TEST_BRANCHES: [&str; 3] = ["add-tests", "dev", "release-1.0"];
+
 /// A [`GithubOauth`] that answers without a network.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct TestGithub;
+///
+/// The scopes it reports are a field rather than a constant: whether a
+/// stored token grants `repo` is what decides between a session that opens
+/// and one that tells the user to sign in again, and both answers need
+/// exercising.
+#[derive(Debug, Clone, Copy)]
+pub struct TestGithub {
+    /// What GitHub says this token was granted, as `X-OAuth-Scopes` would
+    /// report it. `None` stands in for a response with no such header.
+    pub scopes: Option<&'static [&'static str]>,
+}
+
+impl Default for TestGithub {
+    /// A token authorized the way flyco's own sign-in asks for.
+    fn default() -> Self {
+        Self {
+            scopes: Some(&["repo"]),
+        }
+    }
+}
+
+impl TestGithub {
+    /// A token from a sign-in that predates flyco asking for `repo`.
+    #[must_use]
+    pub const fn without_repo_scope() -> Self {
+        Self {
+            scopes: Some(&["read:user"]),
+        }
+    }
+
+    /// The two repositories the picker sees, so a filter has something to
+    /// exclude.
+    fn repos() -> Vec<flyco_core::RepoSummary> {
+        vec![
+            flyco_core::RepoSummary {
+                slug: TEST_REPO.parse().expect("a valid slug"),
+                private: true,
+                default_branch: TEST_DEFAULT_BRANCH.parse().expect("a valid branch"),
+                description: Some("agentic coding on the web".to_owned()),
+                pushed_at_unix: Some(1_787_000_000),
+            },
+            flyco_core::RepoSummary {
+                slug: "zen-rs/skyzen".parse().expect("a valid slug"),
+                private: false,
+                default_branch: "main".parse().expect("a valid branch"),
+                description: None,
+                pushed_at_unix: None,
+            },
+        ]
+    }
+}
 
 impl GithubOauth for TestGithub {
     fn exchange_code(
@@ -128,37 +202,69 @@ impl GithubOauth for TestGithub {
         }))
     }
 
-    /// Two repositories, so a filter has something to exclude.
     fn list_repos(
         &self,
         _token: &GithubToken,
     ) -> impl Future<Output = Result<Vec<flyco_core::RepoSummary>, GithubError>> + Send {
-        ready(Ok(vec![
-            flyco_core::RepoSummary {
-                slug: "lexoliu/flyco".parse().expect("a valid slug"),
-                private: true,
-                default_branch: "dev".to_owned(),
-                description: Some("agentic coding on the web".to_owned()),
-                pushed_at_unix: Some(1_787_000_000),
-            },
-            flyco_core::RepoSummary {
-                slug: "zen-rs/skyzen".parse().expect("a valid slug"),
+        ready(Ok(Self::repos()))
+    }
+
+    /// Answers for any repository, not only the two the picker lists.
+    ///
+    /// That is GitHub's own shape: `GET /user/repos` is the caller's own
+    /// list, while `GET /repos/{slug}` answers for anything the token can
+    /// see. A fake that 404'd outside its fixture list would refuse every
+    /// test that opens a session on a repository of its own naming.
+    fn get_repo(
+        &self,
+        _token: &GithubToken,
+        slug: &flyco_core::RepoSlug,
+    ) -> impl Future<Output = Result<flyco_core::RepoSummary, GithubError>> + Send {
+        ready(Ok(Self::repos()
+            .into_iter()
+            .find(|repo| &repo.slug == slug)
+            .unwrap_or_else(|| flyco_core::RepoSummary {
+                slug: slug.clone(),
                 private: false,
-                default_branch: "main".to_owned(),
+                default_branch: OTHER_DEFAULT_BRANCH.parse().expect("a valid branch"),
                 description: None,
                 pushed_at_unix: None,
+            })))
+    }
+
+    fn list_branches(
+        &self,
+        _token: &GithubToken,
+        _slug: &flyco_core::RepoSlug,
+        page: u32,
+    ) -> impl Future<Output = Result<crate::github::BranchListing, GithubError>> + Send {
+        ready(Ok(crate::github::BranchListing {
+            names: if page == 1 {
+                TEST_BRANCHES
+                    .iter()
+                    .map(|name| name.parse().expect("a valid branch"))
+                    .collect()
+            } else {
+                Vec::new()
             },
-        ]))
+            has_more: false,
+        }))
     }
 
     fn current_user(
         &self,
         token: &GithubToken,
-    ) -> impl Future<Output = Result<GithubUser, GithubError>> + Send {
+    ) -> impl Future<Output = Result<crate::github::GithubIdentity, GithubError>> + Send {
         assert_eq!(token.access_token, GITHUB_ACCESS_TOKEN);
-        ready(Ok(GithubUser {
-            id: GITHUB_ID,
-            login: GITHUB_LOGIN.to_owned(),
+        ready(Ok(crate::github::GithubIdentity {
+            user: GithubUser {
+                id: GITHUB_ID,
+                login: GITHUB_LOGIN.to_owned(),
+                name: Some(GITHUB_NAME.to_owned()),
+            },
+            scopes: self
+                .scopes
+                .map(|scopes| scopes.iter().map(|scope| (*scope).to_owned()).collect()),
         }))
     }
 }
@@ -272,9 +378,14 @@ impl ClaudeOauth for TestClaude {
 /// The full control-plane router, wired to [`TestGithub`], [`TestClaude`],
 /// `db`, and the provisioning queue its session routes produce to.
 pub fn test_router(db: Db, queue: Queue) -> Router {
+    test_router_with_github(db, queue, TestGithub::default())
+}
+
+/// The same router, against a GitHub whose token says something else.
+pub fn test_router_with_github(db: Db, queue: Queue, github: TestGithub) -> Router {
     router(
         test_config(),
-        GithubClient::Fake(TestGithub),
+        GithubClient::Fake(github),
         ClaudeClient::Fake(TestClaude),
         db,
         queue,
@@ -351,7 +462,8 @@ pub async fn seed_session(db: &Db, user: &CurrentUser) -> flyco_core::SessionId 
             user: user.id,
             title: SEEDED_TITLE,
             harness: flyco_core::HarnessKind::ClaudeCode,
-            repo: &"lexoliu/flyco".parse().expect("a valid repo slug"),
+            repo: &TEST_REPO.parse().expect("a valid repo slug"),
+            branch: &TEST_DEFAULT_BRANCH.parse().expect("a valid branch"),
             machine_origin: flyco_core::MachineOrigin::Auto,
             budget: flyco_core::BudgetConfig::new(flyco_core::Usd::from_dollars(10))
                 .expect("a valid budget"),
@@ -377,6 +489,7 @@ async fn seed_account(db: &Db, github_id: i64, login: &str) -> CurrentUser {
         &GithubUser {
             id: github_id,
             login: login.to_owned(),
+            name: Some(GITHUB_NAME.to_owned()),
         },
         &sealed,
     )

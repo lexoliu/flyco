@@ -48,6 +48,7 @@ async fn open_session(client: &TestClient<Router>, caller: &Caller, repo: &str) 
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: repo.to_owned(),
+            branch: None,
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
@@ -104,6 +105,43 @@ async fn a_daemon_token_is_minted_once_and_scoped_to_its_session(ctx: TestContex
         refused.json::<Problem>().kind,
         problem_kind("invalid-daemon-credential")
     );
+}
+
+#[skyzen::test]
+async fn a_daemon_announces_the_stage_that_cannot_ride_the_relay(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // The checkout happens before the harness exists, and therefore before
+    // there is a relay socket to send a frame down. `Cloning` is the one
+    // stage of the timeline that has to be a REST call (docs/ux.md §9.2).
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+    let token = pair(&client, &caller, session).await;
+
+    client
+        .post(&format!("/v1/sessions/{session}/provisioning-stage"))
+        .bearer(&token)
+        .json(&flyco_core::ReportProvisioningStage {
+            stage: flyco_core::ProvisioningStage::Cloning,
+        })
+        .send()
+        .await
+        .assert_status(204);
+
+    // A user's own credential is not a daemon's, on this route as on every
+    // other one under the daemon middleware.
+    client
+        .post(&format!("/v1/sessions/{session}/provisioning-stage"))
+        .bearer(&caller.token)
+        .json(&flyco_core::ReportProvisioningStage {
+            stage: flyco_core::ProvisioningStage::Cloning,
+        })
+        .send()
+        .await
+        .assert_status(401);
 }
 
 #[skyzen::test]

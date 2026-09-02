@@ -7,7 +7,7 @@
 
 use core::future::Future;
 
-use flyco_core::RepoSummary;
+use flyco_core::{BranchName, RepoSlug, RepoSummary};
 
 use serde::{Deserialize, Serialize};
 #[cfg(target_arch = "wasm32")]
@@ -31,8 +31,25 @@ const USER_URL: &str = "https://api.github.com/user";
 /// GitHub rejects API requests without a `User-Agent`.
 const USER_AGENT: &str = "flyco-control-plane";
 
+/// How many branches one page of the branch picker holds.
+///
+/// GitHub's own maximum, so a repository with fewer than a hundred branches
+/// — which is nearly all of them — is one request and one page.
+const BRANCHES_PER_PAGE: u32 = 100;
+
+/// Header GitHub reports an OAuth token's granted scopes in.
+const SCOPES_HEADER: &str = "x-oauth-scopes";
+
 /// OAuth scopes flyco needs: session VMs clone and push the user's repos.
 pub const SCOPE: &str = "repo";
+
+/// The single scope a session's machine cannot work without.
+///
+/// `repo` is what lets a clone reach a *private* repository and what lets a
+/// push land, and it is the whole of what [`SCOPE`] asks for — so a stored
+/// token that does not carry it is one flyco cannot open a session with, no
+/// matter how recently it was minted.
+pub const REPO_SCOPE: &str = "repo";
 
 /// A GitHub account, as flyco stores it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -42,6 +59,102 @@ pub struct GithubUser {
     pub id: i64,
     /// The account's current login.
     pub login: String,
+    /// The account's display name, when it has one.
+    ///
+    /// Read rather than stored: it is used for one thing — the `user.name`
+    /// a session's commits are authored under — and a copy in D1 would be
+    /// the stale one the day somebody renames themselves.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl GithubUser {
+    /// Who commits from this account are authored as.
+    ///
+    /// The display name when GitHub has one and the login otherwise, which
+    /// is exactly what GitHub itself falls back to.
+    #[must_use]
+    pub fn commit_name(&self) -> &str {
+        self.name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(&self.login)
+    }
+
+    /// The address commits from this account are authored under.
+    ///
+    /// GitHub's own `id+login@users.noreply.github.com` form: it attributes
+    /// the commit to the account without publishing a private address flyco
+    /// has no business putting in a public history.
+    #[must_use]
+    pub fn commit_email(&self) -> String {
+        format!("{}+{}@users.noreply.github.com", self.id, self.login)
+    }
+}
+
+/// A GitHub account together with what its token is allowed to do.
+///
+/// The two arrive in one response — `GET /user` answers with the account and
+/// reports the token's scopes in a header — and flyco needs both at exactly
+/// the same moments, so they are not two calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubIdentity {
+    /// The account the token belongs to.
+    pub user: GithubUser,
+    /// Scopes GitHub says the token was granted.
+    ///
+    /// `None` when GitHub sent no [`SCOPES_HEADER`] at all, which means the
+    /// credential is not an OAuth token and flyco cannot establish what it
+    /// may do. Treated as insufficient rather than as unlimited: guessing
+    /// in the permissive direction is how a session gets provisioned and
+    /// then fails its clone five minutes later.
+    pub scopes: Option<Vec<String>>,
+}
+
+impl GithubIdentity {
+    /// Whether this token can read and push the user's private
+    /// repositories.
+    #[must_use]
+    pub fn grants_repo_scope(&self) -> bool {
+        self.scopes.as_ref().is_some_and(|scopes| {
+            scopes
+                .iter()
+                .any(|scope| scope.trim().eq_ignore_ascii_case(REPO_SCOPE))
+        })
+    }
+}
+
+/// Splits GitHub's comma-separated `X-OAuth-Scopes` header.
+fn parse_scopes(header: &str) -> Vec<String> {
+    header
+        .split(',')
+        .map(str::trim)
+        .filter(|scope| !scope.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// One page of a repository's branches, as GitHub serves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchListing {
+    /// The branch names on this page, in GitHub's own order.
+    pub names: Vec<BranchName>,
+    /// Whether a further page exists.
+    ///
+    /// Derived from the page being full rather than from GitHub's `Link`
+    /// header: a full last page costs one extra empty request, and parsing
+    /// `Link` costs a parser for a header format used exactly here.
+    pub has_more: bool,
+}
+
+/// The URL of a repository's own record.
+fn repo_url(slug: &RepoSlug) -> String {
+    format!("https://api.github.com/repos/{slug}")
+}
+
+/// The URL of one page of a repository's branches.
+fn branches_url(slug: &RepoSlug, page: u32) -> String {
+    format!("https://api.github.com/repos/{slug}/branches?per_page={BRANCHES_PER_PAGE}&page={page}")
 }
 
 /// A user-scoped GitHub access token.
@@ -120,7 +233,7 @@ pub trait GithubOauth: Send + Sync + Clone + 'static {
         redirect_uri: &str,
     ) -> impl Future<Output = Result<GithubToken, GithubError>> + Send;
 
-    /// Reads the account a token belongs to.
+    /// Reads the account a token belongs to, and what the token may do.
     ///
     /// # Errors
     ///
@@ -128,7 +241,7 @@ pub trait GithubOauth: Send + Sync + Clone + 'static {
     fn current_user(
         &self,
         token: &GithubToken,
-    ) -> impl Future<Output = Result<GithubUser, GithubError>> + Send;
+    ) -> impl Future<Output = Result<GithubIdentity, GithubError>> + Send;
 
     /// Lists the repositories a token can see, most recently pushed first.
     ///
@@ -139,6 +252,33 @@ pub trait GithubOauth: Send + Sync + Clone + 'static {
         &self,
         token: &GithubToken,
     ) -> impl Future<Output = Result<Vec<RepoSummary>, GithubError>> + Send;
+
+    /// Reads one repository, which is where its default branch comes from.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GithubError`] if the request fails, the token is invalid,
+    /// or the repository is not one this token can see.
+    fn get_repo(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+    ) -> impl Future<Output = Result<RepoSummary, GithubError>> + Send;
+
+    /// Lists one page of a repository's branches.
+    ///
+    /// Pages count from one, as GitHub's own do.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GithubError`] if the request fails, the token is invalid,
+    /// or the repository is not one this token can see.
+    fn list_branches(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+        page: u32,
+    ) -> impl Future<Output = Result<BranchListing, GithubError>> + Send;
 }
 
 /// One repository as GitHub's REST API reports it.
@@ -154,6 +294,28 @@ struct GithubRepo {
     pushed_at: Option<String>,
 }
 
+/// One branch as GitHub's REST API reports it.
+#[derive(Debug, Deserialize)]
+struct GithubBranch {
+    name: String,
+}
+
+/// Turns a page of GitHub branches into the names flyco can act on.
+///
+/// A name flyco's own [`BranchName`] refuses is skipped rather than passed
+/// through: it could not be checked out, so offering it in a picker would be
+/// offering a session that fails.
+fn branch_listing(branches: Vec<GithubBranch>) -> BranchListing {
+    let has_more = u32::try_from(branches.len()).is_ok_and(|len| len >= BRANCHES_PER_PAGE);
+    BranchListing {
+        names: branches
+            .into_iter()
+            .filter_map(|branch| branch.name.parse().ok())
+            .collect(),
+        has_more,
+    }
+}
+
 impl GithubRepo {
     /// Converts to the picker's shape, dropping anything flyco cannot name.
     ///
@@ -164,7 +326,7 @@ impl GithubRepo {
         Some(RepoSummary {
             slug: self.full_name.parse().ok()?,
             private: self.private,
-            default_branch: self.default_branch,
+            default_branch: self.default_branch.parse().ok()?,
             description: self.description,
             pushed_at_unix: self.pushed_at.as_deref().and_then(parse_rfc3339_seconds),
         })
@@ -239,7 +401,7 @@ impl Default for GithubClient {
 
 /// Forwards to whichever client this is.
 ///
-/// Written out rather than macro-generated: three methods is less code than
+/// Written out rather than macro-generated: five methods is less code than
 /// the macro that would write them.
 impl GithubOauth for GithubClient {
     async fn exchange_code(
@@ -264,7 +426,7 @@ impl GithubOauth for GithubClient {
         }
     }
 
-    async fn current_user(&self, token: &GithubToken) -> Result<GithubUser, GithubError> {
+    async fn current_user(&self, token: &GithubToken) -> Result<GithubIdentity, GithubError> {
         match self {
             Self::Live(client) => client.current_user(token).await,
             #[cfg(test)]
@@ -277,6 +439,31 @@ impl GithubOauth for GithubClient {
             Self::Live(client) => client.list_repos(token).await,
             #[cfg(test)]
             Self::Fake(client) => client.list_repos(token).await,
+        }
+    }
+
+    async fn get_repo(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+    ) -> Result<RepoSummary, GithubError> {
+        match self {
+            Self::Live(client) => client.get_repo(token, slug).await,
+            #[cfg(test)]
+            Self::Fake(client) => client.get_repo(token, slug).await,
+        }
+    }
+
+    async fn list_branches(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+        page: u32,
+    ) -> Result<BranchListing, GithubError> {
+        match self {
+            Self::Live(client) => client.list_branches(token, slug, page).await,
+            #[cfg(test)]
+            Self::Fake(client) => client.list_branches(token, slug, page).await,
         }
     }
 }
@@ -311,6 +498,26 @@ async fn json_body<T: serde::de::DeserializeOwned>(response: Response) -> Result
     response.into_json::<T>().await.map_err(transport)
 }
 
+/// One authenticated `GET` against `api.github.com`.
+///
+/// Four call sites want the same three headers and the same bearer, and a
+/// fifth copy of them is a fifth place to forget the `User-Agent` GitHub
+/// rejects a request without.
+#[cfg(not(target_arch = "wasm32"))]
+async fn authorized_get(url: &str, token: &GithubToken) -> Result<Response, GithubError> {
+    let mut client = zenwave::client();
+    client
+        .get(url)
+        .map_err(transport)?
+        .header("Accept", "application/vnd.github+json")
+        .map_err(transport)?
+        .header("User-Agent", USER_AGENT)
+        .map_err(transport)?
+        .bearer_auth(token.access_token.clone())
+        .await
+        .map_err(transport)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 impl GithubOauth for ZenwaveGithub {
     async fn exchange_code(
@@ -341,40 +548,50 @@ impl GithubOauth for ZenwaveGithub {
         token_response(json_body::<TokenResponse>(response).await?)
     }
 
-    async fn current_user(&self, token: &GithubToken) -> Result<GithubUser, GithubError> {
-        let mut client = zenwave::client();
-        let response = client
-            .get(USER_URL)
-            .map_err(transport)?
-            .header("Accept", "application/vnd.github+json")
-            .map_err(transport)?
-            .header("User-Agent", USER_AGENT)
-            .map_err(transport)?
-            .bearer_auth(token.access_token.clone())
-            .await
-            .map_err(transport)?;
+    async fn current_user(&self, token: &GithubToken) -> Result<GithubIdentity, GithubError> {
+        let response = authorized_get(USER_URL, token).await?;
+        // Read before the body is consumed: what the token may do is in a
+        // header, and `into_json` takes the whole response.
+        let scopes = response
+            .headers()
+            .get(SCOPES_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(parse_scopes);
 
-        json_body::<GithubUser>(response).await
+        Ok(GithubIdentity {
+            user: json_body::<GithubUser>(response).await?,
+            scopes,
+        })
     }
 
     async fn list_repos(&self, token: &GithubToken) -> Result<Vec<RepoSummary>, GithubError> {
-        let mut client = zenwave::client();
-        let response = client
-            .get(REPOS_URL)
-            .map_err(transport)?
-            .header("Accept", "application/vnd.github+json")
-            .map_err(transport)?
-            .header("User-Agent", USER_AGENT)
-            .map_err(transport)?
-            .bearer_auth(token.access_token.clone())
-            .await
-            .map_err(transport)?;
-
-        let repos = json_body::<Vec<GithubRepo>>(response).await?;
+        let repos = json_body::<Vec<GithubRepo>>(authorized_get(REPOS_URL, token).await?).await?;
         Ok(repos
             .into_iter()
             .filter_map(GithubRepo::into_summary)
             .collect())
+    }
+
+    async fn get_repo(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+    ) -> Result<RepoSummary, GithubError> {
+        let repo = json_body::<GithubRepo>(authorized_get(&repo_url(slug), token).await?).await?;
+        repo.into_summary()
+            .ok_or_else(|| GithubError::Transport(format!("GitHub described {slug} unusably")))
+    }
+
+    async fn list_branches(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+        page: u32,
+    ) -> Result<BranchListing, GithubError> {
+        let branches =
+            json_body::<Vec<GithubBranch>>(authorized_get(&branches_url(slug, page), token).await?)
+                .await?;
+        Ok(branch_listing(branches))
     }
 }
 
@@ -428,6 +645,32 @@ async fn worker_fetch(
         .map_err(transport)
 }
 
+/// One authenticated `GET` against `api.github.com`, through the Worker's
+/// own `fetch`.
+///
+/// The counterpart of the native [`authorized_get`], and here for the same
+/// reason: four call sites, one set of headers.
+#[cfg(target_arch = "wasm32")]
+async fn worker_authorized_get(
+    url: &str,
+    token: &GithubToken,
+) -> Result<skyzen_cloudflare::worker::Response, GithubError> {
+    let authorization = format!("Bearer {}", token.access_token);
+    let request = skyzen_cloudflare::bare_request(
+        skyzen_cloudflare::worker::Method::Get,
+        url,
+        &[
+            ("Accept", "application/vnd.github+json"),
+            ("User-Agent", USER_AGENT),
+            ("Authorization", authorization.as_str()),
+        ],
+        None,
+    )
+    .map_err(transport)?;
+
+    worker_fetch(request).await
+}
+
 #[cfg(target_arch = "wasm32")]
 impl GithubOauth for WorkerGithub {
     async fn exchange_code(
@@ -454,48 +697,168 @@ impl GithubOauth for WorkerGithub {
         token_response(worker_json_body::<TokenResponse>(response).await?)
     }
 
-    async fn current_user(&self, token: &GithubToken) -> Result<GithubUser, GithubError> {
-        let authorization = format!("Bearer {}", token.access_token);
-        let request = skyzen_cloudflare::bare_request(
-            skyzen_cloudflare::worker::Method::Get,
-            USER_URL,
-            &[
-                ("Accept", "application/vnd.github+json"),
-                ("User-Agent", USER_AGENT),
-                ("Authorization", authorization.as_str()),
-            ],
-            None,
-        )
-        .map_err(transport)?;
+    async fn current_user(&self, token: &GithubToken) -> Result<GithubIdentity, GithubError> {
+        let response = worker_authorized_get(USER_URL, token).await?;
+        // Read before the body is consumed, exactly as natively: what the
+        // token may do is a header, and reading the JSON takes the response.
+        let scopes = response
+            .headers()
+            .get(SCOPES_HEADER)
+            .ok()
+            .flatten()
+            .map(|value| parse_scopes(&value));
 
-        worker_json_body::<GithubUser>(worker_fetch(request).await?).await
+        Ok(GithubIdentity {
+            user: worker_json_body::<GithubUser>(response).await?,
+            scopes,
+        })
     }
 
     async fn list_repos(&self, token: &GithubToken) -> Result<Vec<RepoSummary>, GithubError> {
-        let authorization = format!("Bearer {}", token.access_token);
-        let request = skyzen_cloudflare::bare_request(
-            skyzen_cloudflare::worker::Method::Get,
-            REPOS_URL,
-            &[
-                ("Accept", "application/vnd.github+json"),
-                ("User-Agent", USER_AGENT),
-                ("Authorization", authorization.as_str()),
-            ],
-            None,
-        )
-        .map_err(transport)?;
-
-        let repos = worker_json_body::<Vec<GithubRepo>>(worker_fetch(request).await?).await?;
+        let repos =
+            worker_json_body::<Vec<GithubRepo>>(worker_authorized_get(REPOS_URL, token).await?)
+                .await?;
         Ok(repos
             .into_iter()
             .filter_map(GithubRepo::into_summary)
             .collect())
     }
+
+    async fn get_repo(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+    ) -> Result<RepoSummary, GithubError> {
+        let repo =
+            worker_json_body::<GithubRepo>(worker_authorized_get(&repo_url(slug), token).await?)
+                .await?;
+        repo.into_summary()
+            .ok_or_else(|| GithubError::Transport(format!("GitHub described {slug} unusably")))
+    }
+
+    async fn list_branches(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+        page: u32,
+    ) -> Result<BranchListing, GithubError> {
+        let branches = worker_json_body::<Vec<GithubBranch>>(
+            worker_authorized_get(&branches_url(slug, page), token).await?,
+        )
+        .await?;
+        Ok(branch_listing(branches))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{GithubError, GithubOauthError, GithubToken, TokenResponse, token_response};
+    use super::{
+        BRANCHES_PER_PAGE, GithubBranch, GithubError, GithubIdentity, GithubOauthError,
+        GithubToken, GithubUser, TokenResponse, branch_listing, branches_url, parse_scopes,
+        repo_url, token_response,
+    };
+
+    fn identity(scopes: Option<Vec<String>>) -> GithubIdentity {
+        GithubIdentity {
+            user: GithubUser {
+                id: 4_242,
+                login: "lexoliu".to_owned(),
+                name: Some("Lexo Liu".to_owned()),
+            },
+            scopes,
+        }
+    }
+
+    #[test]
+    fn a_commit_identity_prefers_the_display_name_and_the_noreply_address() {
+        let user = identity(None).user;
+        assert_eq!(user.commit_name(), "Lexo Liu");
+        assert_eq!(user.commit_email(), "4242+lexoliu@users.noreply.github.com");
+    }
+
+    #[test]
+    fn an_account_with_no_display_name_commits_under_its_login() {
+        let mut user = identity(None).user;
+        user.name = None;
+        assert_eq!(user.commit_name(), "lexoliu");
+        user.name = Some("   ".to_owned());
+        assert_eq!(
+            user.commit_name(),
+            "lexoliu",
+            "a blank display name is not a name"
+        );
+    }
+
+    #[test]
+    fn the_scopes_header_is_read_the_way_github_writes_it() {
+        assert_eq!(
+            parse_scopes("repo, read:org, "),
+            vec!["repo".to_owned(), "read:org".to_owned()]
+        );
+        assert!(parse_scopes("").is_empty());
+    }
+
+    #[test]
+    fn only_a_token_that_says_repo_can_open_a_session() {
+        assert!(identity(Some(vec!["repo".to_owned()])).grants_repo_scope());
+        assert!(
+            identity(Some(vec!["read:org".to_owned(), "Repo".to_owned()])).grants_repo_scope(),
+            "GitHub's scope names are not case-sensitive"
+        );
+        assert!(
+            !identity(Some(vec!["public_repo".to_owned()])).grants_repo_scope(),
+            "`public_repo` cannot reach a private repository, which is what a session needs"
+        );
+        assert!(!identity(Some(Vec::new())).grants_repo_scope());
+        assert!(
+            !identity(None).grants_repo_scope(),
+            "a credential whose scopes GitHub did not report is one flyco cannot vouch for"
+        );
+    }
+
+    #[test]
+    fn a_full_page_of_branches_promises_another_one() {
+        let full: Vec<GithubBranch> = (0..BRANCHES_PER_PAGE)
+            .map(|index| GithubBranch {
+                name: format!("feat/{index}"),
+            })
+            .collect();
+        assert!(branch_listing(full).has_more);
+
+        let short = vec![GithubBranch {
+            name: "main".to_owned(),
+        }];
+        let listing = branch_listing(short);
+        assert!(!listing.has_more);
+        assert_eq!(listing.names.len(), 1);
+    }
+
+    #[test]
+    fn a_branch_flyco_could_not_check_out_is_not_offered() {
+        let listing = branch_listing(vec![
+            GithubBranch {
+                name: "main".to_owned(),
+            },
+            GithubBranch {
+                name: "broken branch".to_owned(),
+            },
+        ]);
+        assert_eq!(listing.names.len(), 1);
+        assert_eq!(listing.names[0].as_str(), "main");
+    }
+
+    #[test]
+    fn the_repository_urls_address_githubs_own_routes() {
+        let slug: flyco_core::RepoSlug = "lexoliu/flyco".parse().expect("a valid slug");
+        assert_eq!(
+            repo_url(&slug),
+            "https://api.github.com/repos/lexoliu/flyco"
+        );
+        assert_eq!(
+            branches_url(&slug, 2),
+            "https://api.github.com/repos/lexoliu/flyco/branches?per_page=100&page=2"
+        );
+    }
 
     #[test]
     fn a_token_response_yields_the_token() {

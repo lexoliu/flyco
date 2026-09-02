@@ -1,10 +1,28 @@
-//! The session checkout's working tree, as `git status --short` reports it.
+//! The session checkout: putting it on the machine, and watching it.
 //!
-//! Dirtiness is load-bearing: an agent may not stop while the tree is
-//! dirty (unless the compute budget is exhausted), a manual archive of a
-//! dirty tree requires confirmation and discards the work, and an automatic
-//! archive snapshots the uncommitted changes before the disk is released.
+//! [`clone_into`] is what makes a session VM more than an empty directory —
+//! the agent's whole job is the repository, so the checkout has to exist
+//! before the harness is started in it.
+//!
+//! After that, dirtiness is load-bearing: an agent may not stop while the
+//! tree is dirty (unless the compute budget is exhausted), a manual archive
+//! of a dirty tree requires confirmation and discards the work, and an
+//! automatic archive snapshots the uncommitted changes before the disk is
+//! released.
+//!
+//! # Where the GitHub token lives
+//!
+//! Nowhere on disk, and in no log line. `git clone` over HTTPS needs a
+//! credential, and every obvious way of supplying one leaves it somewhere it
+//! outlives the clone: in the remote URL it writes into `.git/config`, in a
+//! `~/.git-credentials` file, in the process listing of the machine the
+//! agent itself has a shell on. So the token is passed to the child process
+//! as an *environment variable* and read back out of the environment by
+//! [`CREDENTIAL_HELPER`], a one-line shell helper installed with `-c` for
+//! the duration of that one command. Nothing it writes contains the token,
+//! and nothing that survives the command can produce it.
 
+use std::ffi::OsStr;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -14,8 +32,132 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Interval};
 
+use crate::config::RepoConfig;
+
 /// How often a live checkout is polled.
 pub const POLL: Duration = Duration::from_secs(5);
+
+/// Environment variable the credential helper reads the token out of.
+pub const TOKEN_VAR: &str = "FLYCO_GIT_TOKEN";
+
+/// The credential helper git runs when a remote asks who is calling.
+///
+/// Git appends the operation (`get`, `store`, `erase`) to a `!`-prefixed
+/// helper and runs the result through `sh`, so `$1` is the operation and
+/// only `get` answers: flyco has nothing to store and nothing to erase,
+/// because there is no store.
+///
+/// `x-access-token` is the username GitHub documents for a token presented
+/// over HTTPS basic auth; the token is the password, and it is read from the
+/// environment rather than baked in here, so this string is safe to log,
+/// print, or write to a config file — which is precisely why it is the thing
+/// git sees.
+const CREDENTIAL_HELPER: &str =
+    "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \
+     \"$FLYCO_GIT_TOKEN\"; }; f";
+
+/// Clones a session's repository into `workdir`.
+///
+/// The branch is checked out by name rather than fetched and switched to:
+/// a session names one branch for its whole life, and a clone that pulled
+/// every branch would spend a session VM's first minute on history nothing
+/// is going to read.
+///
+/// The commit identity is written into the checkout's own `.git/config`
+/// rather than a global one, so it applies to this repository and says who
+/// the session is on behalf of.
+///
+/// # Errors
+///
+/// Returns [`GitError`] if git could not be started or refused — an
+/// unreachable remote, a token the repository does not admit, a branch that
+/// does not exist, or a workdir that already holds something. Every one of
+/// those is a session failure rather than something to work around, and the
+/// error carries git's own words so the user is told which.
+pub async fn clone_into(repo: &RepoConfig, workdir: &Path) -> Result<(), GitError> {
+    let remote = repo.remote_url();
+    tracing::info!(
+        slug = %repo.slug,
+        branch = %repo.branch,
+        workdir = %workdir.display(),
+        "cloning the session's repository"
+    );
+    clone_from(&remote, repo, workdir).await
+}
+
+/// Clones `remote` — the URL split out from [`clone_into`] so a test can
+/// point it at a bare repository on disk instead of at `github.com`.
+///
+/// # Errors
+///
+/// Returns [`GitError`] exactly as [`clone_into`] does.
+pub async fn clone_from(
+    remote: &str,
+    repo: &RepoConfig,
+    workdir: &Path,
+) -> Result<(), GitError> {
+    // `--` before the positional arguments, and `--branch=` rather than a
+    // separate value: a branch name is user input, and neither it nor a
+    // remote URL may be read as an option. `BranchName` already refuses a
+    // leading dash; this is the second lock on the same door.
+    let branch = format!("--branch={}", repo.branch);
+    authenticated(
+        repo,
+        &[
+            OsStr::new("clone"),
+            OsStr::new(&branch),
+            OsStr::new("--"),
+            OsStr::new(remote),
+            workdir.as_os_str(),
+        ],
+        Path::new("."),
+    )
+    .await?;
+
+    git(workdir, &["config", "user.name", repo.identity.name.as_str()]).await?;
+    git(
+        workdir,
+        &["config", "user.email", repo.identity.email.as_str()],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Runs one git command that may have to authenticate to GitHub.
+///
+/// The token reaches git through [`TOKEN_VAR`] and [`CREDENTIAL_HELPER`] and
+/// through nothing else. `credential.helper=` (empty) first, because git
+/// *appends* helpers: without the reset, a helper configured system-wide on
+/// the machine would be consulted before flyco's and could answer with
+/// somebody else's credential.
+///
+/// `GIT_TERMINAL_PROMPT=0` turns a credential git cannot satisfy into an
+/// immediate failure rather than a process waiting on a terminal no session
+/// VM has.
+async fn authenticated(
+    repo: &RepoConfig,
+    args: &[&OsStr],
+    current_dir: &Path,
+) -> Result<std::process::Output, GitError> {
+    let command = args
+        .first()
+        .and_then(|arg| arg.to_str())
+        .unwrap_or("git")
+        .to_owned();
+    let output = Command::new("git")
+        .current_dir(current_dir)
+        .arg("-c")
+        .arg("credential.helper=")
+        .arg("-c")
+        .arg(format!("credential.helper={CREDENTIAL_HELPER}"))
+        .args(args)
+        .env(TOKEN_VAR, &repo.token)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .await
+        .map_err(GitError::Spawn)?;
+    finished(command, output)
+}
 
 /// The working tree of a session checkout.
 pub trait WorkingTree: Send {
@@ -239,8 +381,20 @@ fn finished(
 
 #[cfg(test)]
 mod tests {
-    use super::{GitWorkdir, WorkingTree};
+    use super::{GitWorkdir, WorkingTree, clone_from};
+    use crate::config::{GitIdentity, RepoConfig};
     use uuid::Uuid;
+
+    /// The token every clone test authenticates with.
+    ///
+    /// A test's origin is a bare repository on disk, which needs no
+    /// credential — so a token that reaches git at all would be one flyco
+    /// leaked. That is exactly what these tests look for.
+    const TOKEN: &str = "gho_a-token-that-must-not-escape";
+
+    /// The identity a cloned checkout must be configured to commit as.
+    const COMMIT_NAME: &str = "lexoliu";
+    const COMMIT_EMAIL: &str = "4242+lexoliu@users.noreply.github.com";
 
     struct Scratch(std::path::PathBuf);
 
@@ -249,6 +403,11 @@ mod tests {
             let path = std::env::temp_dir().join(format!("flyco-git-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&path).expect("scratch checkout");
             Self(path)
+        }
+
+        /// A path inside the scratch directory that does not exist yet.
+        fn child(&self, name: &str) -> std::path::PathBuf {
+            self.0.join(name)
         }
     }
 
@@ -278,6 +437,197 @@ mod tests {
         std::fs::write(path.join("README.md"), "flyco\n").expect("write");
         git(path, &["add", "README.md"]);
         git(path, &["commit", "-m", "init"]);
+    }
+
+    /// A repository to clone from, on disk, with one commit on `branch`.
+    ///
+    /// A bare clone of a scratch checkout rather than a fixture directory
+    /// committed into this repository: nothing here touches the network, and
+    /// a bare repository is what a real origin is.
+    fn origin(scratch: &Scratch, branch: &str) -> String {
+        let source = scratch.child("source");
+        std::fs::create_dir_all(&source).expect("source checkout");
+        init(&source);
+        git(&source, &["branch", "-M", branch]);
+
+        let bare = scratch.child("origin.git");
+        git(
+            &scratch.0,
+            &[
+                "clone",
+                "--bare",
+                source.to_str().expect("a UTF-8 path"),
+                bare.to_str().expect("a UTF-8 path"),
+            ],
+        );
+        bare.to_str().expect("a UTF-8 path").to_owned()
+    }
+
+    fn repo_config(branch: &str) -> RepoConfig {
+        RepoConfig {
+            slug: "lexoliu/flyco".parse().expect("a valid slug"),
+            branch: branch.parse().expect("a valid branch"),
+            token: TOKEN.to_owned(),
+            identity: GitIdentity {
+                name: COMMIT_NAME.to_owned(),
+                email: COMMIT_EMAIL.to_owned(),
+            },
+        }
+    }
+
+    /// Every regular file under `root`, `.git` included.
+    fn files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut found = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).expect("read a directory") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    found.push(path);
+                }
+            }
+        }
+        found
+    }
+
+    #[tokio::test]
+    async fn a_clone_lands_the_named_branch_in_the_workdir() {
+        let scratch = Scratch::new();
+        let remote = origin(&scratch, "dev");
+        let workdir = scratch.child("work");
+
+        clone_from(&remote, &repo_config("dev"), &workdir)
+            .await
+            .expect("the clone succeeds against a bare repository on disk");
+
+        assert!(
+            workdir.join("README.md").is_file(),
+            "the checkout holds the repository's content"
+        );
+        let head = std::process::Command::new("git")
+            .current_dir(&workdir)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .expect("read HEAD");
+        assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "dev");
+    }
+
+    #[tokio::test]
+    async fn a_clone_configures_the_identity_its_commits_are_authored_as() {
+        let scratch = Scratch::new();
+        let remote = origin(&scratch, "main");
+        let workdir = scratch.child("work");
+
+        clone_from(&remote, &repo_config("main"), &workdir)
+            .await
+            .expect("clone");
+
+        for (key, expected) in [("user.name", COMMIT_NAME), ("user.email", COMMIT_EMAIL)] {
+            let value = std::process::Command::new("git")
+                .current_dir(&workdir)
+                .args(["config", "--local", key])
+                .output()
+                .expect("read a config value");
+            assert_eq!(String::from_utf8_lossy(&value.stdout).trim(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_github_token_reaches_no_file_the_clone_leaves_behind() {
+        // The whole point of the credential helper: the token is handed to
+        // one child process through its environment and is readable nowhere
+        // afterwards — not in the remote URL, not in .git/config, not in a
+        // credential store, not in the packed refs.
+        let scratch = Scratch::new();
+        let remote = origin(&scratch, "main");
+        let workdir = scratch.child("work");
+
+        clone_from(&remote, &repo_config("main"), &workdir)
+            .await
+            .expect("clone");
+
+        for path in files(&workdir) {
+            let bytes = std::fs::read(&path).expect("read a file the clone wrote");
+            assert!(
+                !String::from_utf8_lossy(&bytes).contains(TOKEN),
+                "{} holds the GitHub token",
+                path.display()
+            );
+        }
+
+        let url = std::process::Command::new("git")
+            .current_dir(&workdir)
+            .args(["remote", "get-url", "origin"])
+            .output()
+            .expect("read the remote URL");
+        assert!(!String::from_utf8_lossy(&url.stdout).contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn the_github_token_never_survives_a_debug_rendering() {
+        let config = repo_config("main");
+        let debugged = format!("{config:?}");
+        assert!(!debugged.contains(TOKEN));
+        // Still enough to identify the checkout in a log line.
+        assert!(debugged.contains("lexoliu/flyco"));
+        assert!(debugged.contains("main"));
+    }
+
+    #[tokio::test]
+    async fn a_branch_the_origin_does_not_have_fails_with_gits_own_words() {
+        let scratch = Scratch::new();
+        let remote = origin(&scratch, "main");
+        let workdir = scratch.child("work");
+
+        let error = clone_from(&remote, &repo_config("nope"), &workdir)
+            .await
+            .expect_err("a missing branch is a session failure, not an empty checkout");
+
+        let reported = error.to_string();
+        assert!(
+            reported.contains("nope"),
+            "the failure names the branch that is missing: {reported}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resumed_machine_clones_and_then_replays_its_stored_patch() {
+        // What a resume onto a new machine actually is: a fresh clone at the
+        // session's branch, plus the snapshot an automatic archive took of
+        // the work that was never committed.
+        let scratch = Scratch::new();
+        let remote = origin(&scratch, "main");
+
+        let first = scratch.child("first");
+        clone_from(&remote, &repo_config("main"), &first)
+            .await
+            .expect("the original machine's clone");
+        std::fs::write(first.join("draft.txt"), "half a refactor\n").expect("write");
+        let patch = GitWorkdir::new(first.clone())
+            .snapshot()
+            .await
+            .expect("snapshot")
+            .expect("a dirty tree produces a patch");
+
+        let second = scratch.child("second");
+        clone_from(&remote, &repo_config("main"), &second)
+            .await
+            .expect("the new machine's clone");
+        assert!(
+            !second.join("draft.txt").exists(),
+            "a fresh clone starts from the branch, not from the last machine"
+        );
+
+        GitWorkdir::new(second.clone())
+            .apply(&patch)
+            .await
+            .expect("the stored patch applies onto the fresh clone");
+        assert_eq!(
+            std::fs::read_to_string(second.join("draft.txt")).expect("read the replayed file"),
+            "half a refactor\n"
+        );
     }
 
     #[tokio::test]

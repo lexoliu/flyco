@@ -5,7 +5,7 @@
 //! describe themselves only in the log: the response says the status and
 //! nothing that would leak internals.
 
-use flyco_core::{ApprovalState, Problem, SessionState};
+use flyco_core::{ApprovalState, Problem, RepoSlug, SessionState};
 use skyzen::{Response, StatusCode};
 use skyzen_services::queue::QueueError;
 use skyzen_services::{DbError, KvError, StorageError};
@@ -318,6 +318,36 @@ pub enum ApiError {
     )]
     InvalidRepo(String),
 
+    /// The submitted branch is not a name git would accept.
+    #[error("`{name}` is not a branch name: {reason}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    InvalidBranch {
+        /// What was submitted.
+        name: String,
+        /// Which of `git check-ref-format`'s rules it breaks.
+        reason: String,
+    },
+
+    /// The caller's stored GitHub token does not grant the `repo` scope a
+    /// session's checkout needs.
+    ///
+    /// Its own variant rather than a `403` from GitHub, because the fix is
+    /// specific and nothing else can produce it: the user signed flyco in
+    /// before it asked for `repo`, or narrowed the authorization afterwards,
+    /// and signing in again is the only thing that widens it. A session that
+    /// failed with a bare "GitHub said 403" would leave them re-running the
+    /// provision instead.
+    #[error(
+        "flyco's stored GitHub authorization does not grant the `{scope}` scope it needs to \
+         check out {repo}; sign in with GitHub again to grant it",
+        status = StatusCode::FORBIDDEN
+    )]
+    GithubTokenInsufficient {
+        /// The scope the stored token is missing.
+        scope: &'static str,
+        /// The repository that cannot be reached without it.
+        repo: RepoSlug,
+    },
+
     /// An environment variable name is not one a shell can export.
     #[error(
         "`{0}` is not an environment variable name: use letters, digits and `_`, not starting with a digit",
@@ -531,6 +561,8 @@ impl ApiError {
             Self::InvalidTransition { .. } => "invalid-session-transition",
             Self::ApprovalAlreadyDecided { .. } => "approval-already-decided",
             Self::InvalidRepo(_) => "invalid-repo",
+            Self::InvalidBranch { .. } => "invalid-branch",
+            Self::GithubTokenInsufficient { .. } => "github-token-insufficient",
             Self::InvalidEnvKey(_) => "invalid-env-key",
             Self::InvalidTitle { .. } => "invalid-title",
             Self::InvalidBudget => "invalid-budget",

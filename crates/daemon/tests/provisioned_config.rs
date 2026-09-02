@@ -18,10 +18,14 @@ use flyco_daemon::config::{ClaudeAuth, CodexAuth, DaemonConfig};
 use flyco_provider::flycod::{
     self, CLAUDE_CONFIG_DIR, CLAUDE_PROJECT_DIR_NAME, CODEX_HOME, WORKDIR,
 };
-use flyco_provider::{ClaudeCredential, DaemonBootstrap};
+use flyco_provider::{ClaudeCredential, DaemonBootstrap, GitIdentity, RepoCheckout};
 
 const CONTROL_PLANE: &str = "https://flyco.dev/";
 const DAEMON_TOKEN: &str = "fd_a-token-from-the-control-plane";
+const REPO: &str = "lexoliu/flyco";
+const BRANCH: &str = "dev";
+const GITHUB_TOKEN: &str = "gho_a-user-access-token";
+const COMMIT_EMAIL: &str = "4242+lexoliu@users.noreply.github.com";
 
 fn bootstrap(claude_auth: ClaudeCredential) -> DaemonBootstrap {
     DaemonBootstrap {
@@ -31,6 +35,15 @@ fn bootstrap(claude_auth: ClaudeCredential) -> DaemonBootstrap {
         harness: HarnessKind::ClaudeCode,
         permission_mode: PermissionMode::Auto,
         claude_auth,
+        repo: RepoCheckout {
+            slug: REPO.parse().expect("a valid repository slug"),
+            branch: BRANCH.parse().expect("a valid branch name"),
+            token: GITHUB_TOKEN.to_owned(),
+            identity: GitIdentity {
+                name: "lexoliu".to_owned(),
+                email: COMMIT_EMAIL.to_owned(),
+            },
+        },
         resume_session_id: None,
     }
 }
@@ -69,6 +82,31 @@ fn it_carries_the_control_plane_and_a_token_the_daemon_will_accept() {
     control_plane
         .validate()
         .expect("the provisioner writes a `fd_` daemon token");
+}
+
+#[test]
+fn it_carries_the_repository_the_machine_has_to_check_out() {
+    // The one field on this path that a machine cannot recover for itself:
+    // an agent in an empty /srv/flyco/work has no way to find out which
+    // repository it was opened for.
+    let config = parse(&bootstrap(ClaudeCredential::Inherit));
+
+    let repo = config
+        .repo
+        .expect("a provisioned machine always knows what to check out");
+    assert_eq!(repo.slug.to_string(), REPO);
+    assert_eq!(repo.branch.to_string(), BRANCH);
+    assert_eq!(repo.token, GITHUB_TOKEN);
+    assert_eq!(repo.identity.email, COMMIT_EMAIL);
+    assert_eq!(repo.remote_url(), "https://github.com/lexoliu/flyco.git");
+    assert!(
+        !repo.remote_url().contains(GITHUB_TOKEN),
+        "the token must never be written into a URL git records on disk"
+    );
+    assert!(
+        !format!("{repo:?}").contains(GITHUB_TOKEN),
+        "the token must never survive a Debug rendering"
+    );
 }
 
 #[test]

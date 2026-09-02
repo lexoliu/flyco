@@ -20,6 +20,9 @@ use crate::{app, approvals, budgets, session, sessions, testing};
 
 const REPO: &str = "lexoliu/flyco";
 
+/// The branch a session works on when it names one itself.
+const BRANCH: &str = "dev";
+
 /// The opening instruction every test session is created with.
 const PROMPT: &str = "audit the relay for dropped frames";
 
@@ -52,6 +55,7 @@ fn open(caller: &Caller, repo: &str, dollars: u64) -> CreateSession {
         prompt: PROMPT.to_owned(),
         harness: HarnessKind::ClaudeCode,
         repo: repo.to_owned(),
+        branch: None,
         budget_limit: Usd::from_dollars(dollars),
         machine: Some(machine_choice(caller.account)),
         spot: true,
@@ -117,6 +121,7 @@ async fn omitting_the_machine_lets_flyco_pick_one(ctx: TestContext, kv: Kv, db: 
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
+            branch: None,
             budget_limit: Usd::from_dollars(10),
             machine: None,
             spot: true,
@@ -343,6 +348,7 @@ async fn flyco_cannot_choose_a_machine_without_a_deployable_linux_type(
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
+            branch: None,
             budget_limit: Usd::from_dollars(10),
             machine: None,
             spot: true,
@@ -955,6 +961,7 @@ async fn ownership_is_answered_per_user(db: Db) {
             title: "check ownership",
             harness: HarnessKind::Codex,
             repo: &REPO.parse().expect("valid repo"),
+            branch: &BRANCH.parse().expect("valid branch"),
             machine_origin: flyco_core::MachineOrigin::Auto,
             budget: flyco_core::BudgetConfig::new(Usd::from_dollars(1)).expect("non-zero"),
         },
