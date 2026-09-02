@@ -747,9 +747,31 @@ pub enum ApiError {
     #[error("required service `{0}` is not configured")]
     ServiceMissing(&'static str),
 
-    /// GitHub could not be reached, or refused the request.
+    /// GitHub refused the authorization code the browser came back with.
+    ///
+    /// The caller's failure rather than flyco's — a code that was mistyped,
+    /// replayed, or left to expire — so it says exactly what GitHub said,
+    /// which is the only text that tells the user to start the sign-in
+    /// again rather than to wait for an outage to pass.
+    #[error("{0}", status = StatusCode::BAD_REQUEST)]
+    GithubCodeRejected(String),
+
+    /// GitHub answered one of flyco's calls with a status it cannot use.
+    ///
+    /// Still a `502` — flyco cannot serve the request — but the status and
+    /// the call are facts about GitHub, not flyco internals, and they are
+    /// the difference between "sign-in is broken" and "your token no longer
+    /// grants what the repository picker reads".
+    #[error("{0}", status = StatusCode::BAD_GATEWAY)]
+    GithubStatus(String),
+
+    /// GitHub could not be reached at all.
+    ///
+    /// The one GitHub failure that stays opaque: its message is whatever
+    /// the HTTP client or the deserializer said, which is flyco's own
+    /// plumbing. [`problem`](Self::problem) logs it in full.
     #[error("GitHub call failed: {0}", status = StatusCode::BAD_GATEWAY)]
-    Github(#[from] GithubError),
+    Github(GithubError),
 
     /// Anthropic could not be reached, or answered with something flyco
     /// cannot interpret.
@@ -800,6 +822,25 @@ impl From<AnthropicError> for ApiError {
                 reason: rejected.to_string(),
             },
             unavailable => Self::Anthropic(unavailable),
+        }
+    }
+}
+
+/// Sorts a GitHub failure into what the caller can act on and what only the
+/// operator can.
+///
+/// The whole of the fix for a sign-in that says nothing: a rejected code is
+/// a `400` quoting GitHub's own reason, a refused status is a `502` naming
+/// the call and the status, and only a transport failure — whose text is
+/// flyco's own plumbing — stays the opaque one.
+impl From<GithubError> for ApiError {
+    fn from(error: GithubError) -> Self {
+        match error {
+            rejected @ GithubError::Rejected { .. } => {
+                Self::GithubCodeRejected(rejected.to_string())
+            }
+            refused @ GithubError::Status { .. } => Self::GithubStatus(refused.to_string()),
+            unreachable => Self::Github(unreachable),
         }
     }
 }
@@ -911,6 +952,8 @@ impl ApiError {
             Self::InvalidDaemonCredential => "invalid-daemon-credential",
             Self::RelayUnavailable(_) => "relay-unavailable",
             Self::Room(_) => "session-room-unavailable",
+            Self::GithubCodeRejected(_) => "github-code-rejected",
+            Self::GithubStatus(_) => "github-status",
             Self::Github(_) => "github-unavailable",
             Self::CorruptRecord(_)
             | Self::ServiceMissing(_)
@@ -936,12 +979,15 @@ impl ApiError {
     /// Whether this failure's explanation must stay in the log.
     ///
     /// Anything that broke on flyco's side describes itself only to the
-    /// operator. The one exception is a deliberate, documented refusal —
-    /// [`RelayUnavailable`](Self::RelayUnavailable) — where the whole point
-    /// of the status code is to tell the caller which capability this build
-    /// does not have.
+    /// operator. The exceptions are the refusals whose whole point is to
+    /// name something the caller could not otherwise know:
+    /// [`RelayUnavailable`](Self::RelayUnavailable) says which capability
+    /// this build does not have, and [`GithubStatus`](Self::GithubStatus)
+    /// says which call GitHub refused and with what — neither of which is
+    /// a flyco internal, and both of which are the difference between a
+    /// user who can act and one staring at a bare `502`.
     fn is_opaque(&self) -> bool {
-        !matches!(self, Self::RelayUnavailable(_))
+        !matches!(self, Self::RelayUnavailable(_) | Self::GithubStatus(_))
             && skyzen::HttpError::status(self).is_server_error()
     }
 
@@ -995,6 +1041,7 @@ impl ApiError {
 #[cfg(test)]
 mod tests {
     use super::ApiError;
+    use crate::github::{GithubCall, GithubError};
 
     #[test]
     fn a_client_error_explains_itself() {
@@ -1037,6 +1084,58 @@ mod tests {
                 .get("active_sessions")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_rejected_authorization_code_quotes_githubs_own_reason() {
+        let problem = ApiError::from(GithubError::Rejected {
+            code: "bad_verification_code".to_owned(),
+            description: "The code passed is incorrect or expired.".to_owned(),
+        })
+        .problem();
+
+        assert_eq!(problem.status, 400);
+        assert_eq!(
+            problem.kind,
+            "https://flyco.dev/problems/github-code-rejected"
+        );
+        assert_eq!(
+            problem.detail,
+            "GitHub rejected the authorization code: bad_verification_code (The code passed is \
+             incorrect or expired.)"
+        );
+    }
+
+    #[test]
+    fn a_status_github_refused_with_names_the_call_it_refused() {
+        let problem = ApiError::from(GithubError::Status {
+            call: GithubCall::UserProfile,
+            status: 401,
+        })
+        .problem();
+
+        assert_eq!(problem.status, 502);
+        assert_eq!(problem.kind, "https://flyco.dev/problems/github-status");
+        assert_eq!(
+            problem.detail, "GitHub answered HTTP 401 to the account profile request",
+            "a 5xx that is GitHub's own answer is stated, not blanked"
+        );
+    }
+
+    #[test]
+    fn a_github_transport_failure_keeps_its_internals_in_the_log() {
+        let problem = ApiError::from(GithubError::Transport {
+            call: GithubCall::TokenExchange,
+            message: "dns error: failed to lookup github.com".to_owned(),
+        })
+        .problem();
+
+        assert_eq!(problem.status, 502);
+        assert_eq!(
+            problem.kind,
+            "https://flyco.dev/problems/github-unavailable"
+        );
+        assert!(!problem.detail.contains("dns error"));
     }
 
     #[test]

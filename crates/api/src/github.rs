@@ -195,12 +195,58 @@ struct ExchangeRequest<'a> {
     redirect_uri: &'a str,
 }
 
+/// Which of flyco's calls to GitHub a failure came out of.
+///
+/// Carried by every failure that is a *call* going wrong, because "GitHub
+/// said 401" is only actionable once the reader knows whether the 401 was
+/// the sign-in exchanging a code or a repository picker reading a listing.
+/// The [`Display`](core::fmt::Display) form is prose, since it is read in a
+/// sentence: "GitHub answered HTTP 401 to the account profile request".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GithubCall {
+    /// `POST /login/oauth/access_token` — the sign-in's code exchange.
+    TokenExchange,
+    /// `GET /user` — who a token belongs to, and what it may do.
+    UserProfile,
+    /// `GET /user/repos` — the picker's list of the caller's repositories.
+    Repositories,
+    /// `GET /repos/{slug}` — one repository, which is where a default
+    /// branch comes from.
+    Repository,
+    /// `GET /repos/{slug}/branches` — one page of a repository's branches.
+    Branches,
+}
+
+impl core::fmt::Display for GithubCall {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::TokenExchange => "authorization code exchange",
+            Self::UserProfile => "account profile",
+            Self::Repositories => "repository list",
+            Self::Repository => "repository lookup",
+            Self::Branches => "branch list",
+        })
+    }
+}
+
 /// Why a call to GitHub did not produce what the control plane needed.
+///
+/// Three failures rather than one, because they are three different things
+/// to tell the user: a rejected authorization code is theirs to fix, a
+/// status GitHub answered with is a fact about GitHub, and a transport
+/// failure is the only one whose text is flyco's own internals. See
+/// [`From<GithubError> for ApiError`](crate::error::ApiError) for the
+/// problem documents they become.
 #[derive(Debug, thiserror::Error)]
 pub enum GithubError {
     /// The request never completed, or the response was not the expected JSON.
-    #[error("GitHub request failed: {0}")]
-    Transport(String),
+    #[error("the {call} request to GitHub failed: {message}")]
+    Transport {
+        /// The call that never got an answer flyco could read.
+        call: GithubCall,
+        /// What the HTTP client or the deserializer said.
+        message: String,
+    },
     /// GitHub answered the code exchange with an OAuth error document.
     #[error("GitHub rejected the authorization code: {code} ({description})")]
     Rejected {
@@ -210,8 +256,13 @@ pub enum GithubError {
         description: String,
     },
     /// GitHub answered with a non-success status.
-    #[error("GitHub responded with HTTP {0}")]
-    Status(u16),
+    #[error("GitHub answered HTTP {status} to the {call} request")]
+    Status {
+        /// The call GitHub refused.
+        call: GithubCall,
+        /// The status it refused with.
+        status: u16,
+    },
 }
 
 /// The two GitHub calls the OAuth callback makes.
@@ -482,20 +533,33 @@ impl ZenwaveGithub {
     }
 }
 
-fn transport(error: impl core::fmt::Display) -> GithubError {
-    GithubError::Transport(error.to_string())
+/// The `map_err` a call site hands its transport failures to.
+///
+/// Returns the closure rather than the error so every `?` on the way to one
+/// GitHub endpoint names its call once: `.map_err(transport(call))`.
+fn transport<E: core::fmt::Display>(call: GithubCall) -> impl Fn(E) -> GithubError {
+    move |error| GithubError::Transport {
+        call,
+        message: error.to_string(),
+    }
 }
 
 /// Reads a native JSON body, but only after the status line says the call
 /// worked — otherwise a GitHub outage page would surface as a deserialization
 /// error.
 #[cfg(not(target_arch = "wasm32"))]
-async fn json_body<T: serde::de::DeserializeOwned>(response: Response) -> Result<T, GithubError> {
+async fn json_body<T: serde::de::DeserializeOwned>(
+    call: GithubCall,
+    response: Response,
+) -> Result<T, GithubError> {
     let status = response.status();
     if !status.is_success() {
-        return Err(GithubError::Status(status.as_u16()));
+        return Err(GithubError::Status {
+            call,
+            status: status.as_u16(),
+        });
     }
-    response.into_json::<T>().await.map_err(transport)
+    response.into_json::<T>().await.map_err(transport(call))
 }
 
 /// One authenticated `GET` against `api.github.com`.
@@ -504,18 +568,22 @@ async fn json_body<T: serde::de::DeserializeOwned>(response: Response) -> Result
 /// fifth copy of them is a fifth place to forget the `User-Agent` GitHub
 /// rejects a request without.
 #[cfg(not(target_arch = "wasm32"))]
-async fn authorized_get(url: &str, token: &GithubToken) -> Result<Response, GithubError> {
+async fn authorized_get(
+    call: GithubCall,
+    url: &str,
+    token: &GithubToken,
+) -> Result<Response, GithubError> {
     let mut client = zenwave::client();
     client
         .get(url)
-        .map_err(transport)?
+        .map_err(transport(call))?
         .header("Accept", "application/vnd.github+json")
-        .map_err(transport)?
+        .map_err(transport(call))?
         .header("User-Agent", USER_AGENT)
-        .map_err(transport)?
+        .map_err(transport(call))?
         .bearer_auth(token.access_token.clone())
         .await
-        .map_err(transport)
+        .map_err(transport(call))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -527,29 +595,31 @@ impl GithubOauth for ZenwaveGithub {
         code: &str,
         redirect_uri: &str,
     ) -> Result<GithubToken, GithubError> {
+        let call = GithubCall::TokenExchange;
         let mut client = zenwave::client();
         let response = client
             .post(ACCESS_TOKEN_URL)
-            .map_err(transport)?
+            .map_err(transport(call))?
             .header("Accept", "application/json")
-            .map_err(transport)?
+            .map_err(transport(call))?
             .header("User-Agent", USER_AGENT)
-            .map_err(transport)?
+            .map_err(transport(call))?
             .json_body(&ExchangeRequest {
                 client_id,
                 client_secret,
                 code,
                 redirect_uri,
             })
-            .map_err(transport)?
+            .map_err(transport(call))?
             .await
-            .map_err(transport)?;
+            .map_err(transport(call))?;
 
-        token_response(json_body::<TokenResponse>(response).await?)
+        token_response(json_body::<TokenResponse>(call, response).await?)
     }
 
     async fn current_user(&self, token: &GithubToken) -> Result<GithubIdentity, GithubError> {
-        let response = authorized_get(USER_URL, token).await?;
+        let call = GithubCall::UserProfile;
+        let response = authorized_get(call, USER_URL, token).await?;
         // Read before the body is consumed: what the token may do is in a
         // header, and `into_json` takes the whole response.
         let scopes = response
@@ -559,13 +629,16 @@ impl GithubOauth for ZenwaveGithub {
             .map(parse_scopes);
 
         Ok(GithubIdentity {
-            user: json_body::<GithubUser>(response).await?,
+            user: json_body::<GithubUser>(call, response).await?,
             scopes,
         })
     }
 
     async fn list_repos(&self, token: &GithubToken) -> Result<Vec<RepoSummary>, GithubError> {
-        let repos = json_body::<Vec<GithubRepo>>(authorized_get(REPOS_URL, token).await?).await?;
+        let call = GithubCall::Repositories;
+        let repos =
+            json_body::<Vec<GithubRepo>>(call, authorized_get(call, REPOS_URL, token).await?)
+                .await?;
         Ok(repos
             .into_iter()
             .filter_map(GithubRepo::into_summary)
@@ -577,9 +650,11 @@ impl GithubOauth for ZenwaveGithub {
         token: &GithubToken,
         slug: &RepoSlug,
     ) -> Result<RepoSummary, GithubError> {
-        let repo = json_body::<GithubRepo>(authorized_get(&repo_url(slug), token).await?).await?;
-        repo.into_summary()
-            .ok_or_else(|| GithubError::Transport(format!("GitHub described {slug} unusably")))
+        let call = GithubCall::Repository;
+        let repo =
+            json_body::<GithubRepo>(call, authorized_get(call, &repo_url(slug), token).await?)
+                .await?;
+        repo.into_summary().ok_or_else(|| unusable_repo(slug))
     }
 
     async fn list_branches(
@@ -588,10 +663,26 @@ impl GithubOauth for ZenwaveGithub {
         slug: &RepoSlug,
         page: u32,
     ) -> Result<BranchListing, GithubError> {
-        let branches =
-            json_body::<Vec<GithubBranch>>(authorized_get(&branches_url(slug, page), token).await?)
-                .await?;
+        let call = GithubCall::Branches;
+        let branches = json_body::<Vec<GithubBranch>>(
+            call,
+            authorized_get(call, &branches_url(slug, page), token).await?,
+        )
+        .await?;
         Ok(branch_listing(branches))
+    }
+}
+
+/// A repository GitHub described in terms flyco cannot act on.
+///
+/// A transport failure rather than a status: the call succeeded, and what
+/// went wrong is that the document does not answer the question — which is
+/// the same "flyco could not read GitHub's answer" the deserializer
+/// produces, and equally none of the caller's business.
+fn unusable_repo(slug: &RepoSlug) -> GithubError {
+    GithubError::Transport {
+        call: GithubCall::Repository,
+        message: format!("GitHub described {slug} unusably"),
     }
 }
 
@@ -625,24 +716,30 @@ impl WorkerGithub {
 /// Reads a Worker JSON body after validating the HTTP status.
 #[cfg(target_arch = "wasm32")]
 async fn worker_json_body<T: serde::de::DeserializeOwned>(
+    call: GithubCall,
     mut response: skyzen_cloudflare::worker::Response,
 ) -> Result<T, GithubError> {
     let status = response.status_code();
     if !(200..300).contains(&status) {
-        return Err(GithubError::Status(status));
+        return Err(GithubError::Status { call, status });
     }
-    response.json::<T>().into_send().await.map_err(transport)
+    response
+        .json::<T>()
+        .into_send()
+        .await
+        .map_err(transport(call))
 }
 
 #[cfg(target_arch = "wasm32")]
 async fn worker_fetch(
+    call: GithubCall,
     request: skyzen_cloudflare::worker::Request,
 ) -> Result<skyzen_cloudflare::worker::Response, GithubError> {
     skyzen_cloudflare::worker::Fetch::Request(request)
         .send()
         .into_send()
         .await
-        .map_err(transport)
+        .map_err(transport(call))
 }
 
 /// One authenticated `GET` against `api.github.com`, through the Worker's
@@ -652,6 +749,7 @@ async fn worker_fetch(
 /// reason: four call sites, one set of headers.
 #[cfg(target_arch = "wasm32")]
 async fn worker_authorized_get(
+    call: GithubCall,
     url: &str,
     token: &GithubToken,
 ) -> Result<skyzen_cloudflare::worker::Response, GithubError> {
@@ -666,9 +764,9 @@ async fn worker_authorized_get(
         ],
         None,
     )
-    .map_err(transport)?;
+    .map_err(transport(call))?;
 
-    worker_fetch(request).await
+    worker_fetch(call, request).await
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -680,6 +778,7 @@ impl GithubOauth for WorkerGithub {
         code: &str,
         redirect_uri: &str,
     ) -> Result<GithubToken, GithubError> {
+        let call = GithubCall::TokenExchange;
         let request = skyzen_cloudflare::json_request(
             skyzen_cloudflare::worker::Method::Post,
             ACCESS_TOKEN_URL,
@@ -691,14 +790,15 @@ impl GithubOauth for WorkerGithub {
             },
             &[("Accept", "application/json"), ("User-Agent", USER_AGENT)],
         )
-        .map_err(transport)?;
-        let response = worker_fetch(request).await?;
+        .map_err(transport(call))?;
+        let response = worker_fetch(call, request).await?;
 
-        token_response(worker_json_body::<TokenResponse>(response).await?)
+        token_response(worker_json_body::<TokenResponse>(call, response).await?)
     }
 
     async fn current_user(&self, token: &GithubToken) -> Result<GithubIdentity, GithubError> {
-        let response = worker_authorized_get(USER_URL, token).await?;
+        let call = GithubCall::UserProfile;
+        let response = worker_authorized_get(call, USER_URL, token).await?;
         // Read before the body is consumed, exactly as natively: what the
         // token may do is a header, and reading the JSON takes the response.
         let scopes = response
@@ -709,15 +809,18 @@ impl GithubOauth for WorkerGithub {
             .map(|value| parse_scopes(&value));
 
         Ok(GithubIdentity {
-            user: worker_json_body::<GithubUser>(response).await?,
+            user: worker_json_body::<GithubUser>(call, response).await?,
             scopes,
         })
     }
 
     async fn list_repos(&self, token: &GithubToken) -> Result<Vec<RepoSummary>, GithubError> {
-        let repos =
-            worker_json_body::<Vec<GithubRepo>>(worker_authorized_get(REPOS_URL, token).await?)
-                .await?;
+        let call = GithubCall::Repositories;
+        let repos = worker_json_body::<Vec<GithubRepo>>(
+            call,
+            worker_authorized_get(call, REPOS_URL, token).await?,
+        )
+        .await?;
         Ok(repos
             .into_iter()
             .filter_map(GithubRepo::into_summary)
@@ -729,11 +832,13 @@ impl GithubOauth for WorkerGithub {
         token: &GithubToken,
         slug: &RepoSlug,
     ) -> Result<RepoSummary, GithubError> {
-        let repo =
-            worker_json_body::<GithubRepo>(worker_authorized_get(&repo_url(slug), token).await?)
-                .await?;
-        repo.into_summary()
-            .ok_or_else(|| GithubError::Transport(format!("GitHub described {slug} unusably")))
+        let call = GithubCall::Repository;
+        let repo = worker_json_body::<GithubRepo>(
+            call,
+            worker_authorized_get(call, &repo_url(slug), token).await?,
+        )
+        .await?;
+        repo.into_summary().ok_or_else(|| unusable_repo(slug))
     }
 
     async fn list_branches(
@@ -742,8 +847,10 @@ impl GithubOauth for WorkerGithub {
         slug: &RepoSlug,
         page: u32,
     ) -> Result<BranchListing, GithubError> {
+        let call = GithubCall::Branches;
         let branches = worker_json_body::<Vec<GithubBranch>>(
-            worker_authorized_get(&branches_url(slug, page), token).await?,
+            call,
+            worker_authorized_get(call, &branches_url(slug, page), token).await?,
         )
         .await?;
         Ok(branch_listing(branches))
@@ -753,9 +860,9 @@ impl GithubOauth for WorkerGithub {
 #[cfg(test)]
 mod tests {
     use super::{
-        BRANCHES_PER_PAGE, GithubBranch, GithubError, GithubIdentity, GithubOauthError,
+        BRANCHES_PER_PAGE, GithubBranch, GithubCall, GithubError, GithubIdentity, GithubOauthError,
         GithubToken, GithubUser, TokenResponse, branch_listing, branches_url, parse_scopes,
-        repo_url, token_response,
+        repo_url, token_response, transport, unusable_repo,
     };
 
     fn identity(scopes: Option<Vec<String>>) -> GithubIdentity {
@@ -883,6 +990,59 @@ mod tests {
             GithubError::Rejected { code, description }
                 if code == "bad_verification_code"
                     && description == "The code passed is incorrect or expired."
+        ));
+    }
+
+    #[test]
+    fn every_call_names_itself_the_way_a_sentence_reads_it() {
+        for (call, prose) in [
+            (GithubCall::TokenExchange, "authorization code exchange"),
+            (GithubCall::UserProfile, "account profile"),
+            (GithubCall::Repositories, "repository list"),
+            (GithubCall::Repository, "repository lookup"),
+            (GithubCall::Branches, "branch list"),
+        ] {
+            assert_eq!(call.to_string(), prose);
+        }
+    }
+
+    #[test]
+    fn a_refused_status_says_which_call_it_refused() {
+        let error = GithubError::Status {
+            call: GithubCall::UserProfile,
+            status: 401,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "GitHub answered HTTP 401 to the account profile request"
+        );
+    }
+
+    #[test]
+    fn a_transport_failure_carries_the_call_it_belongs_to() {
+        let error = transport(GithubCall::Branches)("connection reset");
+
+        assert!(matches!(
+            &error,
+            GithubError::Transport { call, message }
+                if *call == GithubCall::Branches && message == "connection reset"
+        ));
+        assert_eq!(
+            error.to_string(),
+            "the branch list request to GitHub failed: connection reset"
+        );
+    }
+
+    #[test]
+    fn a_repository_flyco_cannot_read_is_a_transport_failure_of_the_lookup() {
+        let slug: flyco_core::RepoSlug = "lexoliu/flyco".parse().expect("a valid slug");
+
+        assert!(matches!(
+            unusable_repo(&slug),
+            GithubError::Transport { call, message }
+                if call == GithubCall::Repository
+                    && message == "GitHub described lexoliu/flyco unusably"
         ));
     }
 }
