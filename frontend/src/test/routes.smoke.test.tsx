@@ -140,27 +140,21 @@ describe("route smoke tests", () => {
     expect(getByRole("button", { name: "Next" })).toBeInTheDocument();
   });
 
-  it("only lets Next move past a welcome step once that step is done", async () => {
+  it("gates each welcome step on its prerequisite, with nothing to skip", async () => {
     const { findByRole, getByRole, queryByRole } = renderAt("/welcome");
     await findByRole("heading", { level: 1, name: "Meet flyco" });
-    // The introduction asks nothing, so Next is the only way on and Skip
-    // has nothing to skip.
     expect(queryByRole("button", { name: "Skip for now" })).not.toBeInTheDocument();
     getByRole("button", { name: "Next" }).click();
 
-    // Nothing is linked in the fixture: Next says what is missing and is
-    // disabled, and Skip for now is the one honest way forward.
+    // Nothing is linked in the fixture: Next says what is missing, is
+    // disabled, and there is no way around it — a session needs an agent.
     expect(await findByRole("heading", { level: 1, name: "Give it a brain" })).toBeInTheDocument();
     expect(getByRole("button", { name: "Next" })).toBeDisabled();
     expect(getByRole("button", { name: "Next" })).toHaveAttribute(
       "title",
       "Connect Claude Code or Codex to continue",
     );
-    getByRole("button", { name: "Skip for now" }).click();
-    expect(
-      await findByRole("heading", { level: 1, name: "Give it a computer" }),
-    ).toBeInTheDocument();
-    expect(getByRole("button", { name: "Start building" })).toBeDisabled();
+    expect(queryByRole("button", { name: "Skip for now" })).not.toBeInTheDocument();
   });
 
   it("renders /connect/harness as a working link page", async () => {

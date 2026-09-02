@@ -2,13 +2,12 @@
  * `/welcome` — three screens in one card (docs/ux.md §4).
  *
  * Shown after the first sign-in while readiness is incomplete, and never
- * again once it has been dismissed. Every step can be skipped: anything
- * skipped comes back as a readiness card on the home page, which is a
- * better place to be nagged than a wizard nobody can leave.
+ * again once it has been completed. It is a gate, not a tour: a session
+ * cannot exist without an agent and a machine, so each step's `Next` stays
+ * disabled until that step's prerequisite is actually met.
  */
 import { Match, Show, Switch, createMemo, createSignal } from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { Check } from "lucide-solid";
 import Logomark, {
   ANTHROPIC_MARK,
   AWS_MARK,
@@ -44,12 +43,7 @@ export default function Welcome() {
     }
   }
 
-  /**
-   * Whether the current step's own prerequisite is met. `Next` is the
-   * honest way forward only when it is; otherwise the way forward is
-   * `Skip for now`, which says what it does. Two buttons that both move on
-   * regardless would make the choice meaningless.
-   */
+  /** Whether the current step's own prerequisite is met. */
   const satisfied = createMemo(() => {
     switch (step()) {
       case 1:
@@ -103,17 +97,7 @@ export default function Welcome() {
                 Link the agent you already pay for. Flyco never resells tokens — every turn is
                 billed by Anthropic or OpenAI to your own account.
               </p>
-              <Show
-                when={readiness.harness().length === 0}
-                fallback={
-                  <p class={styles.done}>
-                    <Check size={15} aria-hidden="true" />
-                    An agent is linked.
-                  </p>
-                }
-              >
-                <HarnessChooser onLinked={() => void readiness.refresh()} />
-              </Show>
+              <HarnessChooser onLinked={() => void readiness.refresh()} />
             </Match>
 
             <Match when={step() === 2}>
@@ -122,17 +106,7 @@ export default function Welcome() {
                 Sessions run on a machine in your own cloud account, so you keep the bill, the
                 region and the data. Spot capacity by default; flyco handles eviction.
               </p>
-              <Show
-                when={readiness.compute().length === 0}
-                fallback={
-                  <p class={styles.done}>
-                    <Check size={15} aria-hidden="true" />
-                    Compute is linked.
-                  </p>
-                }
-              >
-                <ComputeChooser />
-              </Show>
+              <ComputeChooser />
             </Match>
           </Switch>
         </div>
@@ -141,11 +115,6 @@ export default function Welcome() {
           <Show when={step() > 0}>
             <button type="button" class={styles.back} onClick={() => setStep(step() - 1)}>
               Back
-            </button>
-          </Show>
-          <Show when={step() > 0 && !satisfied()}>
-            <button type="button" class={styles.skip} onClick={advance}>
-              Skip for now
             </button>
           </Show>
           <button

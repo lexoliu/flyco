@@ -75,12 +75,14 @@ Bot style, with `Next` and `Back`:
 1. **Meet flyco.** "Flyco runs the official Claude Code and Codex on a
    computer you own. You bring the agent and the machine; flyco runs the
    session, keeps the budget, and gets out of the way."
-2. **Give it a brain.** The harness chooser from §8, inline. Completing it
-   marks the step done; `Skip for now` is allowed.
-3. **Give it a computer.** The compute chooser from §7, inline. Same rules.
+2. **Give it a brain.** The harness chooser from §8, inline. `Next` stays
+   disabled, with a title naming what is missing, until an agent is linked.
+   There is no skipping: a session cannot exist without one.
+3. **Give it a computer.** The compute chooser from §7, inline. Same rule:
+   `Start building` is disabled until compute is linked.
 
-Finishing lands on `/`. Anything skipped shows as a readiness card at the
-top of the home page (§5) until it is done.
+Finishing lands on `/`. The readiness cards on the home page (§5) exist for
+an account that later unlinks something, not as a way around this flow.
 
 ## 5. Home
 
