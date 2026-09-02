@@ -13,17 +13,11 @@ import Composer from "../components/Composer";
 import ProblemNotice from "../components/ProblemNotice";
 import SessionRow from "../components/SessionRow";
 import { useReadiness } from "../components/Readiness";
-import { getMe, listSessions, type SessionSummary } from "../api/client";
+import { getMe, listSessions } from "../api/client";
 import { requestNewSession, type NewSessionInput } from "../api/sessions";
 import { cx } from "../lib/cx";
 import { welcomeDismissed } from "../lib/localPreferences";
-import {
-  GROUP_LABEL,
-  STATUS_ORDER,
-  deriveStatus,
-  isArchived,
-  type SessionStatus,
-} from "../lib/status";
+import { deriveStatus, groupSessions, isArchived } from "../lib/status";
 import styles from "./Home.module.css";
 
 /**
@@ -65,17 +59,8 @@ export default function Home() {
     matching().filter(({ status }) => isArchived(status) === showArchived()),
   );
 
-  /** The visible sessions, grouped in the order docs/ux.md §5 lists. */
-  const groups = createMemo(() => {
-    const byStatus = new Map<SessionStatus, SessionSummary[]>();
-    for (const { session, status } of visible()) {
-      byStatus.set(status, [...(byStatus.get(status) ?? []), session]);
-    }
-    return STATUS_ORDER.flatMap((status) => {
-      const rows = byStatus.get(status);
-      return rows === undefined ? [] : [{ status, rows }];
-    });
-  });
+  /** The visible sessions, under the headings docs/ux.md §5 divides them by. */
+  const groups = createMemo(() => groupSessions(visible()));
 
   /** Sessions still holding a machine, which is what the cap counts. */
   const live = createMemo(
@@ -197,7 +182,9 @@ export default function Home() {
             <For each={groups()}>
               {(group) => (
                 <div class={styles.group}>
-                  <p class={styles.groupLabel}>{GROUP_LABEL[group.status]}</p>
+                  <Show when={group.heading}>
+                    {(heading) => <p class={styles.groupLabel}>{heading()}</p>}
+                  </Show>
                   <ul class={styles.list}>
                     <For each={group.rows}>
                       {(session) => (

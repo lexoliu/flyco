@@ -1,10 +1,17 @@
 /*
  * The tiered slider of docs/ux.md §7.7.
  *
- * The reading sits above the track, because the label is what the user is
- * looking at while the thumb moves; the ticks sit under it as a map of where
- * the detents are. Amber is the only colour here, and it appears on exactly
- * one thing: a detent whose provider bills a minimum the moment it boots.
+ * The whole control is driven by one number, `--travelled`: the share of the
+ * track the thumb has covered. The thumb is carried that share of the rail's
+ * width, and the reading is carried the same distance and then pulled back by
+ * that share of *its own* width — which centres it over the thumb in the
+ * middle of the track and tucks it inside the ends without measuring a single
+ * element. Both are transforms, so nothing here lays the popover out twice.
+ *
+ * The reading sits above the track because the label is what the user is
+ * looking at while the thumb moves; the dots sit on the rail as the map of
+ * where the thumb can stop. Amber appears on exactly one thing: a machine
+ * whose provider bills a minimum the moment it boots.
  */
 .slider {
   display: flex;
@@ -12,14 +19,40 @@
   gap: var(--space-3);
 }
 
-/* ── The reading ─────────────────────────────────────────────────────── */
+/* ── The control ─────────────────────────────────────────────────────── */
 
-.reading {
+.control {
+  /* The thumb is the one large mark on the track; half of it is the room the
+     rail leaves at either end so a detent at 0% or 100% is still a circle on
+     the track rather than a circle off it. */
+  --thumb: 20px;
+
   display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: var(--space-2);
+  padding-inline: calc(var(--thumb) / 2);
+}
+
+/* ── The reading, which rides above the thumb ────────────────────────── */
+
+.readingRow {
+  position: relative;
+}
+
+.readingTravel {
+  transform: translateX(var(--travelled));
+  transition: transform var(--transition-fast);
+}
+
+/* Shrink-to-fit, so the pull-back below is a share of the label's own width
+   rather than of the whole track; capped at the control's width, so a long
+   reading wraps inside the popover instead of pushing it wider. */
+.reading {
+  display: inline-block;
+  max-width: 100%;
   margin: 0;
+  transform: translateX(calc(-1 * var(--travelled)));
+  transition: transform var(--transition-fast);
 }
 
 .machine {
@@ -32,6 +65,8 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+  margin-left: var(--space-2);
+  vertical-align: middle;
   padding: 0 var(--space-2);
   border-radius: var(--radius-full);
   background: var(--color-warning-soft);
@@ -44,52 +79,104 @@
 /* ── The track ───────────────────────────────────────────────────────── */
 
 .track {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  /* Room for the thumb to overhang the rail without clipping its focus ring. */
+  padding-block: calc(var(--thumb) / 2);
 }
 
-.range {
-  width: 100%;
-  margin: 0;
-  accent-color: var(--color-primary);
-}
-
-/* The global focus ring is a rectangle; the track is a pill, so it gets the
-   matching radius and a little more room to breathe. */
-.range:focus-visible {
-  border-radius: var(--radius-full);
-  outline-offset: 5px;
-}
-
-/* Ticks are decoration over a real range input, so they are laid out in
-   their own row and never intercept a pointer that belongs to the thumb. */
-.ticks {
+.rail {
   position: relative;
   height: 6px;
-  pointer-events: none;
-}
-
-.tick {
-  position: absolute;
-  top: 0;
-  width: 1px;
-  height: 5px;
-  margin-left: -0.5px;
-  background: var(--color-border-strong);
-}
-
-.tickBound {
-  width: 3px;
-  margin-left: -1.5px;
   border-radius: var(--radius-full);
+  background: var(--color-border);
+}
+
+/* One dot per stop, `Auto` included. They are the whole reason the control is
+   drawn rather than left to the user agent: a range input with a step hides
+   the fact that the positions are countable. */
+.dot {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  translate: -50% -50%;
+  border-radius: var(--radius-full);
+  background: var(--color-text-faint);
+}
+
+/* A machine that starts charging the moment it boots says so before the user
+   ever stops on it. */
+.dotBound {
+  width: 7px;
+  height: 7px;
   background: var(--color-warning);
 }
 
-.tickActive {
-  height: 6px;
-  background: var(--color-text);
+/* The dot under the thumb is covered by it; dropping it keeps the ink circle
+   clean rather than showing a rim of dot around the edge. */
+.dotTaken {
+  opacity: 0;
+}
+
+.thumbTravel {
+  position: absolute;
+  inset: 0;
+  transform: translateX(var(--travelled));
+  transition: transform var(--transition-fast);
+  pointer-events: none;
+}
+
+.thumb {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: var(--thumb);
+  height: var(--thumb);
+  translate: -50% -50%;
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  box-shadow: var(--shadow-sm);
+  transition: scale var(--transition-fast);
+}
+
+/* The input is the control; the track above is what it looks like. It is
+   transparent and laid over the rail, stretched half a thumb past each end so
+   that its own thumb — sized to match, and never painted — travels exactly the
+   distance the drawn one does. */
+.range {
+  position: absolute;
+  top: 50%;
+  left: calc(-1 * var(--thumb) / 2);
+  right: calc(-1 * var(--thumb) / 2);
+  height: var(--thumb);
+  margin: 0;
+  padding: 0;
+  transform: translateY(-50%);
+  appearance: none;
+  background: none;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.range::-webkit-slider-thumb {
+  appearance: none;
+  width: var(--thumb);
+  height: var(--thumb);
+}
+
+.range::-moz-range-thumb {
+  width: var(--thumb);
+  height: var(--thumb);
+  border: 0;
+}
+
+/* The ring belongs on the mark the user sees, not on the transparent input. */
+.rail:has(.range:focus-visible) .thumb {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 3px;
+}
+
+.rail:has(.range:active) .thumb {
+  scale: 0.92;
 }
 
 .ends {
@@ -101,14 +188,20 @@
 
 /* ── Everything the choice implies ───────────────────────────────────── */
 
-.warning {
-  display: flex;
+/* Holds its line whether or not it has something to say: a popover anchored
+   to a chip that changes height as the thumb passes a machine is a popover
+   that shrugs. */
+.note {
+  min-height: calc(var(--text-sm) * var(--line-normal));
   margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--color-warning-soft);
-  color: var(--color-warning);
   font-size: var(--text-sm);
+  line-height: var(--line-normal);
+  color: var(--color-text-muted);
+}
+
+.noteBound {
+  color: var(--color-warning);
+  font-weight: var(--weight-medium);
 }
 
 .empty {
@@ -118,6 +211,15 @@
   border-radius: var(--radius-md);
   color: var(--color-text-muted);
   font-size: var(--text-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .readingTravel,
+  .reading,
+  .thumbTravel,
+  .thumb {
+    transition: none;
+  }
 }
 
 /* ── Advanced ────────────────────────────────────────────────────────── */

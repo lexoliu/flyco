@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@solidjs/testing-library";
-import MachineSlider from "./MachineSlider";
+import MachineSlider, { detentForKey } from "./MachineSlider";
 import type { MachineCatalogEntry, MachineDefault, ProviderAccountView } from "../api/client";
 
 const ACCOUNT = "0b4a1f2c-3d5e-4a6b-8c9d-0e1f2a3b4c5d";
@@ -38,6 +38,9 @@ function entry(
 const SMALL = entry("Standard_D4als_v6", 4, 16, 137_000);
 const LARGE = entry("Standard_D8als_v6", 8, 32, 274_000);
 
+const SMALL_KEY = `${ACCOUNT}/eastus/Standard_D4als_v6`;
+const LARGE_KEY = `${ACCOUNT}/eastus/Standard_D8als_v6`;
+
 /** A Mac: another OS, another architecture, and a 24-hour floor. */
 const MAC = entry("mac2-m2.metal", 8, 24, 650_000, {
   os: "mac_os",
@@ -62,11 +65,7 @@ const AUTOMATIC: MachineDefault = {
   entry: SMALL,
 };
 
-function mount(
-  catalog: MachineCatalogEntry[],
-  chosenKey: string | null,
-  onChoose = vi.fn(),
-) {
+function mount(catalog: MachineCatalogEntry[], chosenKey: string | null, onChoose = vi.fn()) {
   const result = render(() => (
     <MachineSlider
       catalog={catalog}
@@ -85,9 +84,10 @@ describe("MachineSlider", () => {
   it("opens on Auto, and says what Auto means", () => {
     const { getByLabelText, getByText } = mount([SMALL, LARGE], null);
 
-    const slider = getByLabelText("Machine");
-    expect(slider).toHaveValue("0");
-    expect(getByText(/Auto — the cheapest Linux type/)).toBeInTheDocument();
+    expect(getByLabelText("Machine")).toHaveValue("0");
+    expect(
+      getByText("The cheapest curated Linux type with at least 4 vCPU and 16 GiB."),
+    ).toBeInTheDocument();
   });
 
   it("gives the detents one position each, above Auto", () => {
@@ -97,8 +97,16 @@ describe("MachineSlider", () => {
     expect(getByText("2 machines")).toBeInTheDocument();
   });
 
+  it("marks every stop the thumb can take, Auto included", () => {
+    // The dots are the reason the control is drawn rather than left to the
+    // user agent: they are what says the positions can be counted.
+    const { container } = mount([SMALL, LARGE], null);
+
+    expect(container.querySelectorAll('[class*="dot"]')).toHaveLength(3);
+  });
+
   it("reads out the machine rather than the index", () => {
-    const { getByLabelText } = mount([SMALL, LARGE], `${ACCOUNT}/eastus/Standard_D8als_v6`);
+    const { getByLabelText } = mount([SMALL, LARGE], LARGE_KEY);
 
     expect(getByLabelText("Machine")).toHaveAttribute(
       "aria-valuetext",
@@ -106,21 +114,63 @@ describe("MachineSlider", () => {
     );
   });
 
+  it("says what Auto is rather than reading out a bare word", () => {
+    const { getByLabelText } = mount([SMALL, LARGE], null);
+
+    expect(getByLabelText("Machine")).toHaveAttribute(
+      "aria-valuetext",
+      "Auto. The cheapest curated Linux type with at least 4 vCPU and 16 GiB.",
+    );
+  });
+
   it("chooses the detent the thumb lands on, and Auto at the left end", () => {
     const { getByLabelText, onChoose } = mount([SMALL, LARGE], null);
     const slider = getByLabelText("Machine");
 
+    fireEvent.input(slider, { target: { value: "1" } });
+    expect(onChoose).toHaveBeenLastCalledWith(SMALL_KEY);
+
     fireEvent.input(slider, { target: { value: "2" } });
-    expect(onChoose).toHaveBeenCalledWith(`${ACCOUNT}/eastus/Standard_D8als_v6`);
+    expect(onChoose).toHaveBeenLastCalledWith(LARGE_KEY);
 
     fireEvent.input(slider, { target: { value: "0" } });
     expect(onChoose).toHaveBeenLastCalledWith(null);
   });
 
+  it("steps one machine at a time under the arrow keys", () => {
+    const fromAuto = mount([SMALL, LARGE], null);
+    fireEvent.keyDown(fromAuto.getByLabelText("Machine"), { key: "ArrowRight" });
+    expect(fromAuto.onChoose).toHaveBeenLastCalledWith(SMALL_KEY);
+
+    const fromSmall = mount([SMALL, LARGE], SMALL_KEY);
+    fireEvent.keyDown(fromSmall.getByLabelText("Machine"), { key: "ArrowUp" });
+    expect(fromSmall.onChoose).toHaveBeenLastCalledWith(LARGE_KEY);
+
+    fireEvent.keyDown(fromSmall.getByLabelText("Machine"), { key: "ArrowLeft" });
+    expect(fromSmall.onChoose).toHaveBeenLastCalledWith(null);
+  });
+
+  it("jumps to Auto and to the largest machine with Home and End", () => {
+    const { getByLabelText, onChoose } = mount([SMALL, LARGE], SMALL_KEY);
+
+    fireEvent.keyDown(getByLabelText("Machine"), { key: "End" });
+    expect(onChoose).toHaveBeenLastCalledWith(LARGE_KEY);
+
+    fireEvent.keyDown(getByLabelText("Machine"), { key: "Home" });
+    expect(onChoose).toHaveBeenLastCalledWith(null);
+  });
+
+  it("leaves keys it does not claim to the browser", () => {
+    const { getByLabelText, onChoose } = mount([SMALL, LARGE], null);
+
+    fireEvent.keyDown(getByLabelText("Machine"), { key: "Tab" });
+    expect(onChoose).not.toHaveBeenCalled();
+  });
+
   it("states the minimum charge of a license-bound machine as money", () => {
     // The Mac is only reachable once the OS filter names macOS: Linux is
     // what flyco picks on its own, so it is what the slider opens on.
-    const { getByLabelText, getByText } = mount(
+    const { container, getByLabelText, getByText } = mount(
       [SMALL, MAC],
       `${ACCOUNT}/eastus/mac2-m2.metal`,
     );
@@ -131,6 +181,8 @@ describe("MachineSlider", () => {
     expect(
       getByText("Starts a 24-hour minimum charge of $15.60 the moment it boots."),
     ).toBeInTheDocument();
+    // …and the detent itself is amber, before anybody stops on it.
+    expect(container.querySelectorAll('[class*="dotBound"]')).toHaveLength(1);
   });
 
   it("says so rather than showing an empty track when a region offers nothing", () => {
@@ -151,5 +203,30 @@ describe("MachineSlider", () => {
     // …and only the Arm one once it is not.
     fireEvent.change(getByLabelText("Architecture"), { target: { value: "arm64" } });
     expect(getByText("1 machine")).toBeInTheDocument();
+  });
+});
+
+describe("detentForKey", () => {
+  it("moves one detent per arrow, on either axis", () => {
+    expect(detentForKey("ArrowRight", 1, 4)).toBe(2);
+    expect(detentForKey("ArrowUp", 1, 4)).toBe(2);
+    expect(detentForKey("ArrowLeft", 1, 4)).toBe(0);
+    expect(detentForKey("ArrowDown", 1, 4)).toBe(0);
+  });
+
+  it("puts the ends of the track on Home and End", () => {
+    expect(detentForKey("Home", 3, 4)).toBe(0);
+    expect(detentForKey("End", 0, 4)).toBe(4);
+  });
+
+  it("stops at Auto and at the largest machine rather than running off", () => {
+    expect(detentForKey("ArrowLeft", 0, 4)).toBe(0);
+    expect(detentForKey("ArrowRight", 4, 4)).toBe(4);
+  });
+
+  it("claims nothing else, so the browser keeps its own keys", () => {
+    for (const key of ["Tab", "Enter", " ", "PageUp", "a"]) {
+      expect(detentForKey(key, 2, 4)).toBeNull();
+    }
   });
 });

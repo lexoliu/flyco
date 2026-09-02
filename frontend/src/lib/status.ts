@@ -245,6 +245,10 @@ export function liveSignalsFrom(events: readonly TimedEvent[]): LiveSignals {
  * idle one is a thread to pick back up. What follows is the machine's own
  * business — a failed provision, a build, a migration, a pause — which the
  * user reads when they go looking rather than first thing.
+ *
+ * It orders statuses, not headings: {@link SESSION_GROUPS} is what the list
+ * is divided by, and this is what decides who leads inside a division that
+ * holds more than one status.
  */
 export const STATUS_ORDER: readonly SessionStatus[] = [
   "needs_input",
@@ -258,18 +262,98 @@ export const STATUS_ORDER: readonly SessionStatus[] = [
   "archived",
 ];
 
-/** The heading a group of sessions sits under. */
-export const GROUP_LABEL: Record<SessionStatus, string> = {
-  needs_input: "Needs input",
-  failed: "Failed",
-  working: "Working",
-  provisioning: "Provisioning",
-  migrating: "Migrating",
-  idle: "Idle",
-  paused: "Paused",
-  interrupted: "Interrupted",
-  archived: "Archived",
-};
+/**
+ * The headings the home list is divided by (docs/ux.md §5).
+ *
+ * Four, not nine. A heading is a division of a list — it earns its line by
+ * telling the user which pile to read next — and `FAILED` over a single row
+ * that already says `Failed` is a heading that divides nothing. So the three
+ * piles a user acts on get their own heading, and everything that is the
+ * machine's own business shares one; the row still carries its own status,
+ * which is where `Failed`, `Provisioning` and `Paused` are read.
+ */
+export type SessionGroup = "needs_input" | "working" | "idle" | "other" | "archived";
+
+/** The order the groups appear in, and the heading each one carries. */
+export const SESSION_GROUPS: readonly { group: SessionGroup; heading: string }[] = [
+  { group: "needs_input", heading: "Needs input" },
+  { group: "working", heading: "Working" },
+  { group: "idle", heading: "Idle" },
+  { group: "other", heading: "Other" },
+  { group: "archived", heading: "Archived" },
+];
+
+/**
+ * Which heading a status is read under.
+ *
+ * The three statuses a user acts on name themselves; archived is a tab of
+ * its own. Everything else — a machine being built or put back, a run that
+ * failed, a session paused or interrupted — is one pile.
+ */
+export function groupOf(status: SessionStatus): SessionGroup {
+  switch (status) {
+    case "needs_input":
+    case "working":
+    case "idle":
+    case "archived":
+      return status;
+    default:
+      return "other";
+  }
+}
+
+/** One heading and the rows under it. */
+export interface SessionGroupView<T> {
+  group: SessionGroup;
+  /**
+   * The heading, or `null` when the whole list is one pile and a heading
+   * would name it rather than divide it.
+   */
+  heading: string | null;
+  rows: T[];
+}
+
+/**
+ * Divides a list of sessions into the headings of docs/ux.md §5.
+ *
+ * Generic over the row, because what a caller carries alongside a status is
+ * its business; all this needs is the status each row reads as. Groups that
+ * hold nothing are left out, rows keep the order they came in except that a
+ * shared heading sorts its statuses by {@link STATUS_ORDER}, and a list with
+ * one group gets no heading at all.
+ */
+export function groupSessions<T>(
+  rows: readonly { status: SessionStatus; session: T }[],
+): SessionGroupView<T>[] {
+  const byGroup = new Map<SessionGroup, { status: SessionStatus; session: T }[]>();
+  for (const row of rows) {
+    const group = groupOf(row.status);
+    const held = byGroup.get(group);
+    if (held === undefined) {
+      byGroup.set(group, [row]);
+    } else {
+      held.push(row);
+    }
+  }
+
+  const groups = SESSION_GROUPS.flatMap(({ group, heading }) => {
+    const held = byGroup.get(group);
+    if (held === undefined) {
+      return [];
+    }
+    // Sorting is only ever felt in `Other`, where several statuses share a
+    // heading and a failure should be read before a pause. `sort` is stable,
+    // so rows of one status keep the order the caller listed them in.
+    const rows = [...held]
+      .sort((left, right) => STATUS_ORDER.indexOf(left.status) - STATUS_ORDER.indexOf(right.status))
+      .map((row) => row.session);
+    return [{ group, heading, rows }];
+  });
+
+  return groups.length === 1
+    ? groups.map((only) => ({ ...only, heading: null }))
+    : groups;
+}
 
 /** Whether a status belongs on the archived tab rather than the main list. */
 export function isArchived(status: SessionStatus): boolean {

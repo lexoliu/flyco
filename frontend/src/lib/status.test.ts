@@ -3,11 +3,13 @@ import type { SessionActivity, SessionState } from "../api/client";
 import type { TimedEvent } from "../api/relay";
 import type { ClientEvent } from "../api/wire";
 import {
-  GROUP_LABEL,
+  SESSION_GROUPS,
   STATUS_ORDER,
   type SessionStatus,
   deriveStatus,
   elapsedSince,
+  groupOf,
+  groupSessions,
   liveSignalsFrom,
 } from "./status";
 
@@ -193,8 +195,120 @@ describe("STATUS_ORDER", () => {
 
   it("names every status exactly once", () => {
     expect(new Set(STATUS_ORDER).size).toBe(STATUS_ORDER.length);
-    for (const status of Object.keys(GROUP_LABEL) as SessionStatus[]) {
+    expect(STATUS_ORDER).toHaveLength(EVERY_STATUS.length);
+    for (const status of EVERY_STATUS) {
       expect(STATUS_ORDER).toContain(status);
+    }
+  });
+});
+
+/** Every status the UI can show, so a sweep cannot quietly miss one. */
+const EVERY_STATUS: readonly SessionStatus[] = [
+  "provisioning",
+  "migrating",
+  "working",
+  "needs_input",
+  "idle",
+  "paused",
+  "interrupted",
+  "failed",
+  "archived",
+];
+
+describe("groupSessions", () => {
+  /** A row is just its name here: the grouping only reads the status. */
+  function row(status: SessionStatus, session: string) {
+    return { status, session };
+  }
+
+  it("divides the list into the four headings docs/ux.md §5 names", () => {
+    const groups = groupSessions([
+      row("idle", "idle"),
+      row("failed", "failed"),
+      row("working", "working"),
+      row("needs_input", "blocked"),
+    ]);
+
+    expect(groups.map((group) => group.heading)).toEqual([
+      "Needs input",
+      "Working",
+      "Idle",
+      "Other",
+    ]);
+    expect(groups.map((group) => group.rows)).toEqual([["blocked"], ["working"], ["idle"], ["failed"]]);
+  });
+
+  it("puts everything that is the machine's own business under one heading", () => {
+    // The bug this fixes: a heading reading FAILED over a single row that
+    // already says Failed. Provisioning, migrating, paused and interrupted
+    // were four more of the same.
+    const groups = groupSessions([
+      row("paused", "paused"),
+      row("provisioning", "building"),
+      row("migrating", "moving"),
+      row("interrupted", "reclaimed"),
+      row("failed", "failed"),
+      row("idle", "idle"),
+    ]);
+
+    expect(groups.map((group) => group.heading)).toEqual(["Idle", "Other"]);
+    // Inside that heading the rows keep STATUS_ORDER, so a failure is read
+    // before a pause rather than in whatever order the API listed them.
+    expect(groups[1]?.rows).toEqual(["failed", "building", "moving", "paused", "reclaimed"]);
+  });
+
+  it("drops the heading when the whole list is one pile", () => {
+    // A heading divides a list. With one group there is nothing to divide,
+    // and each row still says its own status.
+    expect(groupSessions([row("failed", "one"), row("paused", "two")])).toEqual([
+      { group: "other", heading: null, rows: ["one", "two"] },
+    ]);
+    expect(groupSessions([row("idle", "only")])).toEqual([
+      { group: "idle", heading: null, rows: ["only"] },
+    ]);
+  });
+
+  it("leaves out a heading nothing is under", () => {
+    const groups = groupSessions([row("needs_input", "blocked"), row("idle", "idle")]);
+
+    expect(groups.map((group) => group.group)).toEqual(["needs_input", "idle"]);
+  });
+
+  it("keeps the order the caller listed rows in within one status", () => {
+    const groups = groupSessions([row("idle", "first"), row("idle", "second"), row("idle", "third")]);
+
+    expect(groups[0]?.rows).toEqual(["first", "second", "third"]);
+  });
+
+  it("groups nothing into nothing", () => {
+    expect(groupSessions([])).toEqual([]);
+  });
+
+  it("keeps the archived tab a list of its own", () => {
+    expect(groupSessions([row("archived", "old")])).toEqual([
+      { group: "archived", heading: null, rows: ["old"] },
+    ]);
+  });
+});
+
+describe("groupOf", () => {
+  it("gives every status a heading, and only these five", () => {
+    const groups = new Set(SESSION_GROUPS.map(({ group }) => group));
+    for (const status of EVERY_STATUS) {
+      expect(groups).toContain(groupOf(status));
+    }
+  });
+
+  it("lets the three statuses a user acts on name themselves", () => {
+    expect(groupOf("needs_input")).toBe("needs_input");
+    expect(groupOf("working")).toBe("working");
+    expect(groupOf("idle")).toBe("idle");
+    expect(groupOf("archived")).toBe("archived");
+  });
+
+  it("reads everything else as the machine's own business", () => {
+    for (const status of ["failed", "provisioning", "migrating", "paused", "interrupted"] as const) {
+      expect(groupOf(status)).toBe("other");
     }
   });
 });
