@@ -75,7 +75,7 @@ use crate::clock::{MonotonicClock, SystemClock, SystemTimer, SystemWallClock, Ti
 use crate::http::{HttpRequest, HttpResponse, HttpTransport, Method};
 use crate::polling::{MAX_POLL_ATTEMPTS, poll_delay};
 use crate::{
-    CapacityMode, CloudProvider, Machine, ProviderError, ProvisionRequest, ZenwaveTransport,
+    CapacityMode, CloudProvider, LiveTransport, Machine, ProviderError, ProvisionRequest,
     cloud_init, flycod,
 };
 
@@ -271,8 +271,7 @@ impl Default for GcpWorkspace {
 /// which is only reproducible because the signing instant comes from a
 /// [`WallClock`] rather than from the host.
 #[derive(Debug)]
-pub struct GcpProvider<T = ZenwaveTransport, C = SystemClock, K = SystemTimer, W = SystemWallClock>
-{
+pub struct GcpProvider<T = LiveTransport, C = SystemClock, K = SystemTimer, W = SystemWallClock> {
     transport: T,
     clock: C,
     timer: K,
@@ -283,11 +282,11 @@ pub struct GcpProvider<T = ZenwaveTransport, C = SystemClock, K = SystemTimer, W
 }
 
 impl GcpProvider {
-    /// The driver as it is deployed: zenwave, the host clocks, a real timer.
+    /// The driver as it is deployed: the live transport, the host clocks, a real timer.
     #[must_use]
     pub fn new(key: ServiceAccountKey, workspace: GcpWorkspace) -> Self {
         Self::with_parts(
-            ZenwaveTransport::new(),
+            LiveTransport::new(),
             SystemClock::new(),
             SystemTimer::new(),
             SystemWallClock::new(),

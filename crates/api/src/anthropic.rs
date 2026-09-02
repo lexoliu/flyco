@@ -20,7 +20,7 @@ use core::future::Future;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64URL;
 use flyco_provider::http::{HttpRequest, HttpResponse, Method};
-use flyco_provider::{HttpError, HttpTransport, ZenwaveTransport};
+use flyco_provider::{HttpError, HttpTransport, LiveTransport};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use url::Url;
@@ -271,7 +271,7 @@ pub trait ClaudeOauth: Send + Sync + Clone + 'static {
 /// Fetch inside the Worker.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ZenwaveClaude {
-    transport: ZenwaveTransport,
+    transport: LiveTransport,
 }
 
 impl ZenwaveClaude {
@@ -279,7 +279,7 @@ impl ZenwaveClaude {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            transport: ZenwaveTransport::new(),
+            transport: LiveTransport::new(),
         }
     }
 }

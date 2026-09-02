@@ -1,7 +1,7 @@
 //! Cloud provider abstraction for flyco.
 //!
 //! Every implementation is an HTTP client over the provider's public API
-//! ([`http`], backed by [`zenwave`]), never a native SDK — the same code runs
+//! ([`http`], backed by zenwave natively and the Worker's `fetch` on wasm32), never a native SDK — the same code runs
 //! in the Cloudflare Worker (wasm32) and in tests: [`byo_ssh`], [`azure`],
 //! [`aws`] and [`gcp`].
 //!
@@ -61,7 +61,7 @@ use serde::{Deserialize, Serialize};
 
 pub use clock::{MonotonicClock, SystemClock, SystemWallClock, WallClock};
 pub use flycod::ClaudeCredential;
-pub use http::{HttpError, HttpRequest, HttpResponse, HttpTransport, ZenwaveTransport};
+pub use http::{HttpError, HttpRequest, HttpResponse, HttpTransport, LiveTransport};
 
 /// Which capacity market a running machine actually holds.
 ///
