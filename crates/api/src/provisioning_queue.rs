@@ -57,7 +57,9 @@ use crate::machines::MachineRow;
 use crate::provisioning::Provisioner;
 use crate::rooms::Rooms;
 use crate::vendors::Vendors;
-use crate::{budgets, daemon_tokens, harness_accounts, machines, provisioning, sessions, users};
+use crate::{
+    budgets, daemon_tokens, harness_accounts, machines, mcp, provisioning, sessions, users,
+};
 
 /// How many times one machine is asked for before the session is failed.
 ///
@@ -725,6 +727,13 @@ async fn bootstrap(
         // `machine_status` reads is what says which it got.
         machine: flyco_core::SessionMachine::of(entry, spot),
         resume_session_id: sessions::harness_session_id(db, claim.session)
+            .await
+            .map_err(Provisioned::from)?,
+        // The user's whole MCP registry, resolved once here: the machine
+        // writes it into the harness's root-owned configuration, and that
+        // file is the allowlist. A server missing from this list is one the
+        // agent has no way to reach.
+        mcp_servers: mcp::mounts(db, claim.user)
             .await
             .map_err(Provisioned::from)?,
     })

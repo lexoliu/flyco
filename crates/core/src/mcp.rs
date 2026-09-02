@@ -45,6 +45,22 @@ pub enum McpServerConfig {
     },
 }
 
+/// One MCP server as a session machine is handed it.
+///
+/// Narrower than [`McpServerView`] on purpose: an identifier and a
+/// timestamp are facts about the registry, and what a machine's harness
+/// configuration needs is the name it announces the server under and how to
+/// reach it. The same type is what `flycod`'s configuration deserializes,
+/// so the control plane and the daemon cannot disagree about the shape of a
+/// provisioned server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct McpServerMount {
+    /// Name the harness announces the server under.
+    pub name: String,
+    /// How to reach it.
+    pub config: McpServerConfig,
+}
+
 /// Request body of `POST /v1/mcp-servers` and `PATCH /v1/mcp-servers/{id}`.
 ///
 /// A patch carries the whole document rather than a diff: an MCP server's

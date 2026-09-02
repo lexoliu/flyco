@@ -5,12 +5,16 @@
  */
 import { describe, expect, test } from "bun:test";
 
+import type { McpServerStatus, Query } from "@anthropic-ai/claude-agent-sdk";
+
 import type { StartCommand } from "./protocol.ts";
 import {
   environment,
   lines,
   sessionIdFor,
   sessionOptions,
+  settledMount,
+  toMountedServer,
   toWireKey,
   UserMessages,
 } from "./sidecar.ts";
@@ -46,6 +50,15 @@ function start(overrides: Partial<StartCommand> = {}): StartCommand {
     model: null,
     permission_mode: "default",
     resume_session_id: null,
+    mcp_servers: {
+      flyco: {
+        type: "stdio",
+        command: "/usr/local/bin/flycod",
+        args: ["mcp", "--config", "/tmp/flycod-dev/flycod.toml"],
+        env: {},
+        alwaysLoad: true,
+      },
+    },
     ...overrides,
   };
 }
@@ -213,5 +226,78 @@ describe("session options", () => {
     const options = sessionOptions(start({ permission_mode: "acceptEdits" }), "id", callbacks);
     expect(options.permissionMode).toBe("acceptEdits");
     expect(options.cwd).toBe("/tmp/flycod-dev/work");
+  });
+
+  test("the session's MCP servers are exactly the ones flycod named", () => {
+    const options = sessionOptions(start(), "id", callbacks);
+    expect(Object.keys(options.mcpServers ?? {})).toEqual(["flyco"]);
+    // Without this the CLI would also load the project's own .mcp.json,
+    // the user settings and the plugin scopes — which is where a server the
+    // agent wrote for itself would come from.
+    expect(options.strictMcpConfig).toBe(true);
+  });
+});
+
+describe("the mount the CLI reports", () => {
+  /** A CLI that answers with the given statuses, one call at a time. */
+  function cli(answers: McpServerStatus[][]): Pick<Query, "mcpServerStatus"> {
+    let call = 0;
+    return {
+      mcpServerStatus: () => {
+        const answer = answers[Math.min(call, answers.length - 1)] ?? [];
+        call += 1;
+        return Promise.resolve(answer);
+      },
+    };
+  }
+
+  const flyco: McpServerStatus = {
+    name: "flyco",
+    status: "connected",
+    tools: [{ name: "machine_status" }, { name: "budget_status" }, { name: "machine_resize" }],
+  };
+
+  test("a connected server carries the tool names flycod checks", () => {
+    expect(toMountedServer(flyco)).toEqual({
+      name: "flyco",
+      status: "connected",
+      state: "connected",
+      tools: ["machine_status", "budget_status", "machine_resize"],
+    });
+  });
+
+  test("only `pending` is a server still on its way somewhere", () => {
+    expect(toMountedServer({ name: "a", status: "pending" }).state).toBe("pending");
+    for (const status of ["failed", "needs-auth", "disabled"] as const) {
+      expect(toMountedServer({ name: "a", status }).state).toBe("failed");
+    }
+  });
+
+  test("it waits out a server that is still connecting", async () => {
+    const slept: number[] = [];
+    const mounted = await settledMount(
+      cli([[{ name: "flyco", status: "pending" }], [flyco]]),
+      () => 0,
+      (ms) => {
+        slept.push(ms);
+        return Promise.resolve();
+      },
+    );
+    expect(slept.length).toBe(1);
+    expect(mounted).toEqual([toMountedServer(flyco)]);
+  });
+
+  test("a server that never settles is reported as it stands rather than waited on forever", async () => {
+    let clock = 0;
+    const mounted = await settledMount(
+      cli([[{ name: "flyco", status: "pending" }]]),
+      () => (clock += 60_000),
+      () => Promise.resolve(),
+    );
+    // The deadline is past on the first look, so flycod gets the pending
+    // report and refuses the session in the CLI's own words.
+    expect(mounted).toEqual([
+      { name: "flyco", status: "pending", state: "pending", tools: [] },
+    ]);
   });
 });

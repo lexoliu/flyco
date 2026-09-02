@@ -15,6 +15,7 @@ use flyco_daemon::harness::claude::store::{JsonlTranscriptStore, TranscriptStore
 use flyco_daemon::harness::codex::CodexHarness;
 use flyco_daemon::harness::{Harness as _, HarnessSession, StartRequest, Started};
 use flyco_daemon::mcp::FlycoTools;
+use flyco_daemon::mount::{FlycoServer, Mount};
 use flyco_daemon::repl;
 use rmcp::ServiceExt as _;
 use rmcp::transport::stdio;
@@ -34,6 +35,10 @@ enum Command {
     /// Run the daemon: start the harness and drive it.
     Run {
         /// Path to the TOML configuration.
+        ///
+        /// Kept after loading rather than dropped: it is what the harness
+        /// is told to pass to the `flycod mcp` it launches, so the second
+        /// process reads the same session and the same daemon token.
         #[arg(long, value_name = "PATH")]
         config: PathBuf,
     },
@@ -68,6 +73,8 @@ enum Failure {
     Terminal(#[from] flyco_daemon::terminal::TerminalError),
     #[error(transparent)]
     Git(#[from] flyco_daemon::git::GitError),
+    #[error(transparent)]
+    Mount(#[from] flyco_daemon::mount::MountError),
     #[error("could not write to stdout")]
     Stdout(#[source] std::io::Error),
     /// `flycod mcp` was pointed at a configuration with no control plane.
@@ -124,8 +131,8 @@ async fn run(cli: Cli) -> Result<(), Failure> {
             stdout.flush().await.map_err(Failure::Stdout)
         }
         Command::Mcp { config } => serve_mcp(DaemonConfig::load(&config)?).await,
-        Command::Run { config } => {
-            let mut config = DaemonConfig::load(&config)?;
+        Command::Run { config: path } => {
+            let mut config = DaemonConfig::load(&path)?;
             tracing::info!(
                 session = %config.session,
                 harness = ?config.harness,
@@ -147,9 +154,17 @@ async fn run(cli: Cli) -> Result<(), Failure> {
                 config.resume_session_id = Box::pin(conversation_to_continue(&config, api)).await;
             }
             Box::pin(check_out(&config, api.as_ref())).await?;
+            // Every server this session may reach: flyco's own, launched as
+            // a second `flycod mcp` against this same file, and the ones
+            // the user registered. Built once here because both harnesses
+            // are given the identical set.
+            let mount = Mount::new(
+                FlycoServer::of(&path)?,
+                core::mem::take(&mut config.mcp_servers),
+            );
             match config.harness {
-                HarnessKind::ClaudeCode => Box::pin(drive_claude_code(config)).await,
-                HarnessKind::Codex => Box::pin(drive_codex(config)).await,
+                HarnessKind::ClaudeCode => Box::pin(drive_claude_code(config, mount)).await,
+                HarnessKind::Codex => Box::pin(drive_codex(config, mount)).await,
             }
         }
     }
@@ -284,14 +299,14 @@ async fn serve_mcp(config: DaemonConfig) -> Result<(), Failure> {
 /// a control plane keeps its transcript there, which is what lets it resume
 /// onto another machine. Which one a run took is logged, because "why is
 /// nothing reaching the browser" has exactly one cheap answer.
-async fn drive_claude_code(config: DaemonConfig) -> Result<(), Failure> {
+async fn drive_claude_code(config: DaemonConfig, mount: Mount) -> Result<(), Failure> {
     let Some(control_plane) = config.control_plane.clone() else {
         tracing::info!(
             "no [control_plane] in the config: driving this session from stdin. \
              Transcripts stay in `transcript_dir` and no browser can reach the session."
         );
         let store = JsonlTranscriptStore::new(config.transcript_dir.clone());
-        let started = start(&config, store).await?;
+        let started = start(&config, mount, store).await?;
         repl::run(started.session, started.outputs).await?;
         return Ok(());
     };
@@ -304,7 +319,7 @@ async fn drive_claude_code(config: DaemonConfig) -> Result<(), Failure> {
     let api = HttpControlApi::new(url.clone(), config.session, daemon_token.clone());
     let endpoint = Endpoint::from_base(&url, config.session, daemon_token)?;
 
-    let started = start(&config, RemoteTranscriptStore::new(api.clone())).await?;
+    let started = start(&config, mount, RemoteTranscriptStore::new(api.clone())).await?;
     let (terminal, terminal_out) =
         flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
     let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
@@ -331,8 +346,8 @@ async fn drive_claude_code(config: DaemonConfig) -> Result<(), Failure> {
 
 /// Drives a Codex session, reporting to a control plane if the
 /// configuration names one and to the terminal otherwise.
-async fn drive_codex(config: DaemonConfig) -> Result<(), Failure> {
-    let harness = CodexHarness::new(config.codex().clone());
+async fn drive_codex(config: DaemonConfig, mount: Mount) -> Result<(), Failure> {
+    let harness = CodexHarness::new(config.codex().clone(), mount);
     let started = harness
         .start(StartRequest {
             workdir: config.workdir.clone(),
@@ -409,9 +424,15 @@ async fn apply_stored_patch(
 /// Launches the Claude Code harness against a transcript store.
 async fn start<S: TranscriptStore>(
     config: &DaemonConfig,
+    mount: Mount,
     store: S,
 ) -> Result<Started<impl flyco_daemon::harness::HarnessSession + use<S>>, Failure> {
-    let harness = ClaudeCodeHarness::new(config.claude().clone(), config.sidecar().clone(), store);
+    let harness = ClaudeCodeHarness::new(
+        config.claude().clone(),
+        config.sidecar().clone(),
+        mount,
+        store,
+    );
     Ok(harness
         .start(StartRequest {
             workdir: config.workdir.clone(),

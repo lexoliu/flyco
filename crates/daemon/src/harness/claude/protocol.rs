@@ -13,11 +13,14 @@
 //!
 //! [`sidecar/protocol.ts`]: https://github.com/lexoliu/flyco/blob/main/crates/daemon/sidecar/protocol.ts
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use flyco_core::ApprovalId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub use crate::mount::{ClaudeMcpServer, MountedServer};
 
 /// Identifies one outstanding [`StoreOp`] round trip.
 ///
@@ -88,6 +91,15 @@ pub enum SidecarCommand {
         permission_mode: PermissionMode,
         /// Harness-native session id to resume, for cross-host History.
         resume_session_id: Option<String>,
+        /// Every MCP server this session may reach, keyed by the name the
+        /// harness announces it under.
+        ///
+        /// Passed even on a machine whose `managed-mcp.json` already
+        /// declares the same set, and the two jobs are different: the
+        /// managed file makes the set *exclusive*, this makes it *present*.
+        /// A developer's flycod is not root and writes no managed file, and
+        /// its session still gets flyco's tools.
+        mcp_servers: BTreeMap<String, ClaudeMcpServer>,
     },
     /// Push one user message into the streaming-input generator.
     UserMessage {
@@ -213,6 +225,17 @@ pub enum SidecarEvent {
         /// The capability tokens, as the CLI names them.
         capabilities: Vec<String>,
     },
+    /// What the CLI actually mounted, from the SDK's `mcpServerStatus()`.
+    ///
+    /// Emitted once, as soon as the CLI has finished its `initialize`
+    /// handshake and before any turn — the earliest moment the answer
+    /// exists. flycod checks it against [`crate::mount::verify`] and fails
+    /// the session if flyco's own server is not there, because an agent
+    /// that cannot read its budget will spend past it.
+    McpServers {
+        /// One entry per server the CLI was told to mount.
+        servers: Vec<MountedServer>,
+    },
     /// One SDK stream message, verbatim. Interpreted in
     /// [`super::normalize`].
     SdkMessage {
@@ -252,6 +275,7 @@ impl SidecarEvent {
             Self::Ready { .. } => "ready",
             Self::Started { .. } => "started",
             Self::Capabilities { .. } => "capabilities",
+            Self::McpServers { .. } => "mcp_servers",
             Self::SdkMessage { .. } => "sdk_message",
             Self::ApprovalRequest { .. } => "approval_request",
             Self::StoreRequest { .. } => "store_request",

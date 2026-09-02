@@ -50,6 +50,15 @@ pub const CLAUDE_PROJECT_DIR_NAME: &str = "flyco-session";
 /// The isolated `CODEX_HOME` an injected Codex credential runs under.
 pub const CODEX_HOME: &str = "/var/lib/flyco/codex";
 
+/// Claude Code's managed-policy directory on Linux, which is root-owned.
+///
+/// `managed-settings.json` and `managed-mcp.json` live here and outrank
+/// every other settings source, which is what makes flyco's MCP allowlist a
+/// fact about the filesystem rather than a request the agent can decline.
+/// An absolute path outside `CLAUDE_CONFIG_DIR` on purpose: an isolated
+/// config tree is the session's, and this is the machine's.
+pub const CLAUDE_MANAGED_DIR: &str = "/etc/claude-code";
+
 /// How the supervised `claude` CLI authenticates on a provisioned machine.
 ///
 /// [`Inherit`](Self::Inherit) is the developer-machine mode and is what a
@@ -210,6 +219,7 @@ struct Claude<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<&'a str>,
     permission_mode: PermissionMode,
+    managed_dir: &'static str,
     auth: Auth<'a>,
 }
 
@@ -300,6 +310,11 @@ struct Document<'a> {
     sidecar: Option<Sidecar>,
     #[serde(skip_serializing_if = "Option::is_none")]
     codex: Option<Codex<'a>>,
+    /// `[[mcp_servers]]`, last because an array of tables closes the
+    /// document: everything after it in TOML would land inside its last
+    /// element.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    mcp_servers: &'a [flyco_core::McpServerMount],
 }
 
 /// Why a configuration could not be rendered.
@@ -381,6 +396,7 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
             Some(Claude {
                 model: None,
                 permission_mode: bootstrap.permission_mode,
+                managed_dir: CLAUDE_MANAGED_DIR,
                 auth: claude_auth(credential),
             }),
             Some(Sidecar {
@@ -423,6 +439,7 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
         claude,
         sidecar,
         codex,
+        mcp_servers: &bootstrap.mcp_servers,
     };
 
     Ok(toml::to_string_pretty(&document)?)
@@ -450,6 +467,7 @@ mod tests {
             machine_origin: MachineOrigin::Auto,
             machine: crate::testing::session_machine(),
             resume_session_id: None,
+            mcp_servers: crate::testing::mcp_servers(),
         }
     }
 

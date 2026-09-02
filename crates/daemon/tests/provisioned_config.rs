@@ -16,7 +16,7 @@
 use flyco_core::{BillingMinimum, HarnessKind, MachineOrigin, PermissionMode, SessionId, Usd};
 use flyco_daemon::config::{ClaudeAuth, CodexAuth, DaemonConfig};
 use flyco_provider::flycod::{
-    self, CLAUDE_CONFIG_DIR, CLAUDE_PROJECT_DIR_NAME, CODEX_HOME, WORKDIR,
+    self, CLAUDE_CONFIG_DIR, CLAUDE_MANAGED_DIR, CLAUDE_PROJECT_DIR_NAME, CODEX_HOME, WORKDIR,
 };
 use flyco_provider::{
     ClaudeCredential, CodexCredential, DaemonBootstrap, GitIdentity, HarnessCredential,
@@ -50,6 +50,7 @@ fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
         machine_origin: MachineOrigin::User,
         machine: flyco_provider::testing::session_machine(),
         resume_session_id: None,
+        mcp_servers: flyco_provider::testing::mcp_servers(),
     }
 }
 
@@ -181,6 +182,37 @@ fn an_injected_claude_credential_arrives_with_its_isolated_config_tree() {
         std::path::PathBuf::from(CLAUDE_CONFIG_DIR)
     );
     assert_eq!(isolation.project_dir_name, CLAUDE_PROJECT_DIR_NAME);
+}
+
+#[test]
+fn it_carries_the_mcp_registry_and_the_directory_that_makes_it_binding() {
+    // Both halves of the takeover, and neither is recoverable on the
+    // machine: the servers are the user's registry, and the managed-policy
+    // directory is what makes that registry an allowlist rather than a
+    // suggestion.
+    let bootstrap = claude(ClaudeCredential::Inherit);
+    let config = parse(&bootstrap);
+
+    assert_eq!(config.mcp_servers, bootstrap.mcp_servers);
+    assert_eq!(
+        config
+            .mcp_servers
+            .iter()
+            .map(|server| server.name.as_str())
+            .collect::<Vec<_>>(),
+        ["deepwiki", "git"]
+    );
+    assert_eq!(
+        config.claude.as_ref().expect("claude").managed_dir,
+        Some(std::path::PathBuf::from(CLAUDE_MANAGED_DIR))
+    );
+
+    // A user with an empty registry still gets flyco's own server, and the
+    // absent table is a document the daemon accepts rather than a required
+    // key nobody could write.
+    let mut none = claude(ClaudeCredential::Inherit);
+    none.mcp_servers.clear();
+    assert!(parse(&none).mcp_servers.is_empty());
 }
 
 #[test]

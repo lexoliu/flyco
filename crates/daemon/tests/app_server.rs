@@ -13,7 +13,20 @@ use flyco_core::HarnessEvent;
 use flyco_daemon::config::{CodexApprovalPolicy, CodexAuth, CodexConfig, CodexSandbox};
 use flyco_daemon::harness::codex::CodexHarness;
 use flyco_daemon::harness::{Harness as _, HarnessSession as _, SessionOutput, StartRequest};
+use flyco_daemon::mount::{FlycoServer, Mount};
 use tokio::sync::mpsc;
+
+/// The MCP servers a test session is given.
+///
+/// Only flyco's own, and it is never launched: the stand-in app-server
+/// reports the mount rather than performing it. What the driver does with
+/// the report is what these tests are about.
+fn mount() -> Mount {
+    Mount::new(
+        FlycoServer::of(Path::new("/etc/flyco/flycod.toml")).expect("this test binary has a path"),
+        Vec::new(),
+    )
+}
 
 struct Scratch(PathBuf);
 
@@ -58,13 +71,16 @@ async fn start(
     flyco_daemon::harness::codex::CodexSession,
     mpsc::Receiver<SessionOutput>,
 ) {
-    let harness = CodexHarness::new(CodexConfig {
-        bin: script("fake-app-server.py"),
-        model: None,
-        approval_policy: CodexApprovalPolicy::OnRequest,
-        sandbox: CodexSandbox::WorkspaceWrite,
-        auth: CodexAuth::Inherit,
-    });
+    let harness = CodexHarness::new(
+        CodexConfig {
+            bin: script("fake-app-server.py"),
+            model: None,
+            approval_policy: CodexApprovalPolicy::OnRequest,
+            sandbox: CodexSandbox::WorkspaceWrite,
+            auth: CodexAuth::Inherit,
+        },
+        mount(),
+    );
     let started = harness
         .start(StartRequest {
             workdir: scratch.join("work"),
@@ -73,6 +89,38 @@ async fn start(
         .await
         .expect("the driver must start against the stand-in app-server");
     (started.session, started.outputs)
+}
+
+#[tokio::test]
+async fn a_thread_that_opened_without_flycos_tools_never_becomes_a_session() {
+    // The scratch's name is what tells the stand-in app-server to report a
+    // flyco server with `machine_status` missing. Unlike the Claude driver,
+    // which learns this after the session is identified, Codex is asked
+    // during the handshake — so the failure is `start` refusing, and no
+    // session exists to fail.
+    let scratch = Scratch::new("unmounted");
+    let harness = CodexHarness::new(
+        CodexConfig {
+            bin: script("fake-app-server.py"),
+            model: None,
+            approval_policy: CodexApprovalPolicy::OnRequest,
+            sandbox: CodexSandbox::WorkspaceWrite,
+            auth: CodexAuth::Inherit,
+        },
+        mount(),
+    );
+    let error = harness
+        .start(StartRequest {
+            workdir: scratch.join("work"),
+            resume_session_id: None,
+        })
+        .await
+        .expect_err("a thread whose agent cannot read its budget must not open");
+    let said = error.to_string();
+    assert!(
+        said.contains("machine_status"),
+        "the refusal must name the missing tool: {said}"
+    );
 }
 
 async fn next(outputs: &mut mpsc::Receiver<SessionOutput>, what: &str) -> SessionOutput {

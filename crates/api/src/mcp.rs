@@ -6,7 +6,8 @@
 //! belongs to the user.
 
 use flyco_core::{
-    CurrentUser, McpServerConfig, McpServerId, McpServerView, UpsertMcpServer, UserId,
+    CurrentUser, McpServerConfig, McpServerId, McpServerMount, McpServerView, UpsertMcpServer,
+    UserId,
 };
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::sql;
@@ -29,6 +30,27 @@ struct McpRow {
     config: McpServerConfig,
     enabled: bool,
     updated_at_unix: u64,
+}
+
+/// The columns a provisioned mount projects.
+///
+/// Deliberately not [`McpRow`]: what a machine is handed is the name and
+/// the transport, and an identifier or a timestamp on a session VM would be
+/// registry bookkeeping the daemon has no use for.
+#[derive(Debug, skyzen::FromRow)]
+struct McpMountRow {
+    name: String,
+    #[row(json)]
+    config: McpServerConfig,
+}
+
+impl From<McpMountRow> for McpServerMount {
+    fn from(row: McpMountRow) -> Self {
+        Self {
+            name: row.name,
+            config: row.config,
+        }
+    }
 }
 
 impl From<McpRow> for McpServerView {
@@ -61,6 +83,24 @@ fn checked_name(name: &str) -> Result<String, ApiError> {
         ));
     }
     Ok(trimmed.to_owned())
+}
+
+/// The servers a session machine is provisioned with.
+///
+/// Only the enabled ones, and only the two fields a harness configuration
+/// needs. This is the *whole* set a session gets: the machine's harness
+/// config is root-owned and its MCP allowlist is enforced there, so an
+/// agent cannot reach a server this query did not return, and one the user
+/// disabled is not one it can turn back on.
+pub(crate) async fn mounts(db: &Db, user: UserId) -> Result<Vec<McpServerMount>, ApiError> {
+    let rows: Vec<McpMountRow> = sql!(
+        db,
+        "SELECT name, config FROM mcp_servers \
+         WHERE user_id = {user} AND enabled = 1 ORDER BY name"
+    )
+    .fetch_all()
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// Lists the caller's registered MCP servers.

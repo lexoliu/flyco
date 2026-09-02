@@ -232,6 +232,8 @@ pub mod method {
     pub const TURN_INTERRUPT: &str = "turn/interrupt";
     /// Compact a thread's conversation context.
     pub const THREAD_COMPACT_START: &str = "thread/compact/start";
+    /// What the app-server actually mounted, and what each server offers.
+    pub const MCP_SERVER_STATUS_LIST: &str = "mcpServerStatus/list";
     /// Server → client: a command wants permission.
     pub const COMMAND_APPROVAL: &str = "item/commandExecution/requestApproval";
     /// Server → client: a file change wants permission.
@@ -300,6 +302,63 @@ pub struct ThreadParams {
     /// Thread to resume. Only on `thread/resume`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
+    /// `config.toml` overrides that apply to this thread and never touch
+    /// the disk.
+    ///
+    /// Flycod sends exactly one thing here, `mcp_servers`, and sends it on
+    /// every session: the root-owned `config.toml` already declares the
+    /// same set on a provisioned machine, and this is what mounts it on a
+    /// machine whose `CODEX_HOME` is a real person's and not flyco's to
+    /// rewrite.
+    pub config: ThreadConfig,
+}
+
+/// The `config.toml` overrides one thread runs under.
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadConfig {
+    /// `[mcp_servers]`, keyed by the id that is also the server's identity.
+    pub mcp_servers: std::collections::BTreeMap<String, crate::mount::CodexMcpServer>,
+}
+
+/// Params for `mcpServerStatus/list`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerStatusParams {
+    /// Report the servers as this thread's runtime sees them.
+    pub thread_id: String,
+    /// `toolsAndAuthOnly`: the tools are what flycod checks the mount
+    /// against, and a server's resource inventory is bytes nobody reads.
+    pub detail: &'static str,
+    /// Continue a previous page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// One row of the `mcpServerStatus/list` result.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerStatus {
+    /// The id the server was configured under, which is its identity.
+    pub name: String,
+    /// `notStarted` | `starting` | `connected` | `authenticationRequired` |
+    /// `failed` | `cancelled` | `disabled`, or absent when the app-server
+    /// has no thread-runtime state for it.
+    #[serde(default)]
+    pub runtime_status: Option<String>,
+    /// The tools it advertises, keyed by name.
+    #[serde(default)]
+    pub tools: std::collections::BTreeMap<String, Value>,
+}
+
+/// The `mcpServerStatus/list` result.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerStatusPage {
+    /// This page's servers.
+    pub data: Vec<McpServerStatus>,
+    /// Present while more pages remain.
+    #[serde(default)]
+    pub next_cursor: Option<String>,
 }
 
 /// A text user-input item for `turn/start`.

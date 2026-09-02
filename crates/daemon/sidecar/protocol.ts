@@ -43,6 +43,53 @@ export const sidecarAuthSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("api_key"), key: z.string() }),
 ]);
 
+/**
+ * One MCP server, in Claude Code's own vocabulary.
+ *
+ * The single place this protocol is not `snake_case`, and for the same
+ * reason `sdk_message` is opaque: the value is the SDK's own
+ * `McpServerConfig`, not a flycod restatement of it, so it travels from
+ * `crates/daemon/src/mount.rs` into `Options.mcpServers` untouched. It is
+ * also, byte for byte, what the machine's root-owned `managed-mcp.json`
+ * declares — one set of servers, described once.
+ *
+ * Nothing here is optional even where the SDK's own type allows it: under
+ * `exactOptionalPropertyTypes` a `string[] | undefined` is not a `string[]`,
+ * and requiring the empty value keeps one spelling for one server on both
+ * sides of the protocol.
+ */
+export const claudeMcpServerSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("stdio"),
+    command: z.string(),
+    args: z.array(z.string()),
+    env: z.record(z.string(), z.string()),
+    alwaysLoad: z.boolean(),
+  }),
+  z.object({
+    type: z.literal("http"),
+    url: z.string(),
+    headers: z.record(z.string(), z.string()),
+  }),
+]);
+
+/**
+ * Where one mounted server has got to.
+ *
+ * `pending` is its own state rather than "not connected": a CLI still
+ * dialling a server has not answered the question yet, and flycod waits it
+ * out instead of refusing the session for being asked early.
+ */
+export const mountStateSchema = z.enum(["connected", "pending", "failed"]);
+
+/** What the CLI reports about one server it was told to mount. */
+export const mountedServerSchema = z.object({
+  name: z.string(),
+  status: z.string(),
+  state: mountStateSchema,
+  tools: z.array(z.string()),
+});
+
 /** The SDK's `SessionKey`, in this protocol's `snake_case`. */
 export const sessionKeySchema = z.object({
   project_key: z.string(),
@@ -69,6 +116,7 @@ export const sidecarCommandSchema = z.discriminatedUnion("type", [
     model: z.string().nullable(),
     permission_mode: permissionModeSchema,
     resume_session_id: z.string().nullable(),
+    mcp_servers: z.record(z.string(), claudeMcpServerSchema),
   }),
   z.object({ type: z.literal("user_message"), text: z.string() }),
   z.object({ type: z.literal("interrupt") }),
@@ -93,6 +141,7 @@ export const sidecarEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("ready"), sdk_version: z.string() }),
   z.object({ type: z.literal("started"), session_id: z.string() }),
   z.object({ type: z.literal("capabilities"), capabilities: z.array(z.string()) }),
+  z.object({ type: z.literal("mcp_servers"), servers: z.array(mountedServerSchema) }),
   z.object({ type: z.literal("sdk_message"), message: jsonValue }),
   z.object({
     type: z.literal("approval_request"),
@@ -113,6 +162,12 @@ export const sidecarEventSchema = z.discriminatedUnion("type", [
 export type PermissionMode = z.infer<typeof permissionModeSchema>;
 /** How the supervised CLI authenticates. */
 export type SidecarAuth = z.infer<typeof sidecarAuthSchema>;
+/** One MCP server, as the SDK's `mcpServers` option takes it. */
+export type ClaudeMcpServer = z.infer<typeof claudeMcpServerSchema>;
+/** Where one mounted MCP server has got to. */
+export type MountState = z.infer<typeof mountStateSchema>;
+/** What the CLI reports about one mounted MCP server. */
+export type MountedServer = z.infer<typeof mountedServerSchema>;
 /** The SDK's `SessionKey`, in this protocol's spelling. */
 export type SessionKey = z.infer<typeof sessionKeySchema>;
 /** One `SessionStore` operation. */

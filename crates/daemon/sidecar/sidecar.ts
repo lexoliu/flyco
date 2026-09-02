@@ -27,6 +27,7 @@ import { dirname, join } from "node:path";
 import {
   query,
   type CanUseTool,
+  type McpServerStatus,
   type Options,
   type PermissionResult,
   type Query,
@@ -39,6 +40,8 @@ import {
 import {
   describeError,
   sidecarCommandSchema,
+  type MountedServer,
+  type MountState,
   type SessionKey,
   type SidecarCommand,
   type SidecarEvent,
@@ -180,6 +183,60 @@ class Parked<Id, Answer> {
   }
 }
 
+/**
+ * Reduces one SDK MCP status to what flycod checks the mount against.
+ *
+ * The three-way reading is made here rather than in Rust because the set of
+ * status strings is the SDK's to extend. Only `pending` is a server still on
+ * its way somewhere; `connected` is the only one whose tool list is a real
+ * answer; and everything else — `failed`, `disabled`, `needs-auth`, whatever
+ * is added next — is a server this session will not get and there is no
+ * point waiting for. The raw word travels alongside so the daemon's refusal
+ * quotes what the CLI actually said.
+ */
+export function toMountedServer(status: McpServerStatus): MountedServer {
+  const state: MountState =
+    status.status === "connected" ? "connected" : status.status === "pending" ? "pending" : "failed";
+  return {
+    name: status.name,
+    status: status.status,
+    state,
+    tools: (status.tools ?? []).map((tool) => tool.name),
+  };
+}
+
+/** How long the sidecar waits for every server to stop dialling. */
+const MOUNT_SETTLE_MS = 10_000;
+
+/** How often it asks again while one is still pending. */
+const MOUNT_POLL_MS = 250;
+
+/**
+ * The mount, once nothing is still dialling.
+ *
+ * MCP startup is not blocking in the CLI, so the first answer after the
+ * `initialize` handshake can legitimately be "still connecting". Waiting is
+ * the difference between reporting the mount and reporting a race; the
+ * deadline is what stops a server that will never come up from holding the
+ * session open forever, and a report that is still pending when it expires
+ * is one flycod refuses on its own terms.
+ */
+export async function settledMount(
+  session: Pick<Query, "mcpServerStatus">,
+  now: () => number = Date.now,
+  sleep: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<MountedServer[]> {
+  const deadline = now() + MOUNT_SETTLE_MS;
+  for (;;) {
+    const servers = (await session.mcpServerStatus()).map(toMountedServer);
+    if (servers.every((server) => server.state !== "pending") || now() >= deadline) {
+      return servers;
+    }
+    await sleep(MOUNT_POLL_MS);
+  }
+}
+
 /** Translates the SDK's `camelCase` session key to this protocol's. */
 export function toWireKey(key: SdkSessionKey): SessionKey {
   return key.subpath === undefined
@@ -245,6 +302,14 @@ export function sessionOptions(
     cwd: command.cwd,
     env: environment(command),
     permissionMode: command.permission_mode,
+    // flyco's own server and the user's registered ones, and nothing the
+    // agent added: `strictMcpConfig` drops the project `.mcp.json`, the
+    // user settings and the plugin scopes the CLI would otherwise
+    // auto-discover. On a provisioned machine the root-owned
+    // `managed-mcp.json` says the same thing at a scope the agent cannot
+    // reach; this is what says it on a machine that has no such file.
+    mcpServers: command.mcp_servers,
+    strictMcpConfig: true,
     ...callbacks,
     // Assistant text reaches flyco only as partial-message deltas, so the
     // normalizer never has to choose between a delta and the complete
@@ -302,6 +367,12 @@ class Session {
     emit({ type: "started", session_id: this.sessionId });
     try {
       await this.session.initializationResult();
+      // The earliest moment the answer exists, and the whole answer: which
+      // servers the CLI mounted, whether it reached them, and what they
+      // advertise. flycod refuses the session if flyco's own is not among
+      // them, so this is emitted before the first turn rather than
+      // discovered from one.
+      emit({ type: "mcp_servers", servers: await settledMount(this.session) });
     } catch (error) {
       // Shutting down rejects every in-flight control request; that is the
       // exit path, not a failure.

@@ -810,6 +810,64 @@ async fn a_machine_boots_already_holding_its_session_credentials(
 }
 
 #[skyzen::test]
+async fn a_machine_boots_holding_the_users_enabled_mcp_registry_and_nothing_else(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    for (name, enabled) in [("git", true), ("retired", false)] {
+        client
+            .post("/v1/mcp-servers")
+            .bearer(&caller.token)
+            .json(&flyco_core::UpsertMcpServer {
+                name: name.to_owned(),
+                config: flyco_core::McpServerConfig::Stdio {
+                    command: "uvx".to_owned(),
+                    args: vec!["mcp-server-git".to_owned()],
+                    env: Vec::new(),
+                },
+                enabled,
+            })
+            .send()
+            .await
+            .assert_status(201);
+    }
+
+    open(&client, &caller).await;
+    let mut host = RecordedHost::healthy();
+    run_queue(&db, &queue, &mut host).await;
+
+    let mounted = host
+        .bootstrap
+        .expect("the driver was handed a bootstrap")
+        .mcp_servers;
+
+    // The list is the allowlist the machine writes into its harness's
+    // root-owned config, so a server the user switched off is not one the
+    // session can reach — there is no second place for it to come from.
+    assert_eq!(
+        mounted
+            .iter()
+            .map(|server| server.name.as_str())
+            .collect::<Vec<_>>(),
+        ["git"]
+    );
+    assert_eq!(
+        mounted[0].config,
+        flyco_core::McpServerConfig::Stdio {
+            command: "uvx".to_owned(),
+            args: vec!["mcp-server-git".to_owned()],
+            env: Vec::new(),
+        }
+    );
+}
+
+#[skyzen::test]
 async fn a_machine_boots_knowing_what_to_check_out_and_who_to_commit_as(
     ctx: TestContext,
     kv: Kv,

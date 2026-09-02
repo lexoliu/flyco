@@ -35,11 +35,13 @@ use tokio::sync::{mpsc, oneshot};
 use self::normalize::{ApprovalParams, Normalizer};
 use self::protocol::{
     ApprovalDecision, ApprovalDecisionBody, ClientCapabilities, ClientInfo, Envelope,
-    InitializeParams, RequestId, ThreadCompactStartParams, ThreadParams, TurnInterruptParams,
-    TurnStartParams, UserInput, method,
+    InitializeParams, McpServerStatusPage, McpServerStatusParams, RequestId,
+    ThreadCompactStartParams, ThreadConfig, ThreadParams, TurnInterruptParams, TurnStartParams,
+    UserInput, method,
 };
 use super::{Harness, HarnessSession, SessionOutput, StartRequest, Started, ToolApproval};
 use crate::config::{CodexAuth, CodexConfig};
+use crate::mount::{Mount, MountError, MountedServer};
 
 /// How long a clean shutdown may take before the child is killed.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
@@ -138,19 +140,25 @@ pub enum CodexError {
     /// The app-server did not exit within [`SHUTDOWN_GRACE`].
     #[error("the app-server did not exit within {}s and was killed", SHUTDOWN_GRACE.as_secs())]
     ShutdownTimedOut,
+    /// flyco's MCP server could not be declared to the app-server, or the
+    /// thread opened without it.
+    #[error(transparent)]
+    Mount(#[from] MountError),
 }
 
 /// A configured, not-yet-started Codex harness.
 #[derive(Debug)]
 pub struct CodexHarness {
     config: CodexConfig,
+    mount: Mount,
 }
 
 impl CodexHarness {
-    /// Builds a harness from its configuration.
+    /// Builds a harness from its configuration and the MCP servers the
+    /// session may reach.
     #[must_use]
-    pub const fn new(config: CodexConfig) -> Self {
-        Self { config }
+    pub const fn new(config: CodexConfig, mount: Mount) -> Self {
+        Self { config, mount }
     }
 }
 
@@ -159,7 +167,7 @@ impl Harness for CodexHarness {
     type Error = CodexError;
 
     async fn start(self, request: StartRequest) -> Result<Started<Self::Session>, CodexError> {
-        prepare_home(&self.config.auth).await?;
+        prepare_home(&self.config.auth, &self.mount).await?;
         tokio::fs::create_dir_all(&request.workdir)
             .await
             .map_err(|source| CodexError::Workdir {
@@ -185,8 +193,15 @@ impl Harness for CodexHarness {
 
         let mut lines = BufReader::new(stdout).lines();
         let mut next_id = 1_u64;
-        let thread_id =
-            handshake(&mut stdin, &mut lines, &mut next_id, &self.config, &request).await?;
+        let thread_id = Box::pin(handshake(
+            &mut stdin,
+            &mut lines,
+            &mut next_id,
+            &self.config,
+            &self.mount,
+            &request,
+        ))
+        .await?;
         let resumed = request.resume_session_id.is_some();
 
         let (commands, inbox) = mpsc::channel(CHANNEL_DEPTH);
@@ -310,8 +325,25 @@ enum DriverCommand {
 }
 
 /// Writes isolated `CODEX_HOME` contents when this session injects credentials.
-async fn prepare_home(auth: &CodexAuth) -> Result<(), CodexError> {
+///
+/// The `config.toml` this writes is the machine's MCP registry as well as
+/// its credential-store setting. Codex has no separate allowlist document —
+/// `[mcp_servers.<id>]` *is* the server's identity — so the complete set
+/// being here, in a directory the agent's user cannot write, is the
+/// allowlist. `--strict-config` refuses any key this daemon did not write,
+/// and under the workspace-write sandbox a project's own `.codex/` is
+/// read-only, so neither route back in is open to the agent.
+///
+/// A session with no isolated home writes nothing: that is the
+/// developer-machine mode, where `CODEX_HOME` is a real person's `~/.codex`
+/// and overwriting it would trample their own configuration. Such a session
+/// still mounts flyco's server, through the `thread/start` config override.
+async fn prepare_home(auth: &CodexAuth, mount: &Mount) -> Result<(), CodexError> {
     let Some(home) = auth.home() else {
+        tracing::warn!(
+            "this Codex session has no isolated CODEX_HOME: its MCP servers are mounted through \
+             `thread/start`, but nothing on this machine stops the agent adding more"
+        );
         return Ok(());
     };
     tokio::fs::create_dir_all(home)
@@ -323,6 +355,7 @@ async fn prepare_home(auth: &CodexAuth) -> Result<(), CodexError> {
 
     let config = CodexHomeFile {
         cli_auth_credentials_store: "file",
+        mcp_servers: mount.codex_servers(),
     };
     let config_toml = toml::to_string_pretty(&config).expect("CodexHomeFile serializes");
     tokio::fs::write(home.join("config.toml"), config_toml)
@@ -398,9 +431,14 @@ fn now_rfc3339() -> String {
         .expect("an OffsetDateTime always formats as RFC 3339")
 }
 
+/// `$CODEX_HOME/config.toml`, as flycod writes it.
+///
+/// Field order is serialization order and TOML puts every scalar before the
+/// first table, so the scalar comes first and `[mcp_servers.*]` last.
 #[derive(Debug, serde::Serialize)]
 struct CodexHomeFile {
     cli_auth_credentials_store: &'static str,
+    mcp_servers: BTreeMap<String, crate::mount::CodexMcpServer>,
 }
 
 /// How `auth.json` says the account is signed in.
@@ -468,6 +506,7 @@ async fn handshake<R>(
     lines: &mut tokio::io::Lines<R>,
     next_id: &mut u64,
     config: &CodexConfig,
+    mount: &Mount,
     request: &StartRequest,
 ) -> Result<String, CodexError>
 where
@@ -507,6 +546,9 @@ where
         sandbox: config.sandbox.as_str().to_owned(),
         model: config.model.clone(),
         thread_id: request.resume_session_id.clone(),
+        config: ThreadConfig {
+            mcp_servers: mount.codex_servers(),
+        },
     };
     let method_name = if request.resume_session_id.is_some() {
         method::THREAD_RESUME
@@ -523,9 +565,115 @@ where
     )
     .await?;
     let result = expect_result(lines, &thread_id, method_name).await?;
-    thread_id_from(&result).ok_or_else(|| CodexError::Protocol {
+    let thread = thread_id_from(&result).ok_or_else(|| CodexError::Protocol {
         detail: "thread/start returned no thread id".to_owned(),
-    })
+    })?;
+
+    // Last, and before a single turn: a thread whose agent cannot call
+    // `budget_status` is one that will spend the user's money with the
+    // meter out of reach, so the session fails here rather than opening.
+    crate::mount::verify(&settled_mount(stdin, lines, next_id, &thread).await?)
+        .map_err(|error| CodexError::Mount(error.into()))?;
+    Ok(thread)
+}
+
+/// How long the driver waits for every MCP server to stop dialling.
+///
+/// Codex does not block `thread/start` on its MCP connections, so the first
+/// answer can legitimately be "still starting"; waiting is the difference
+/// between reporting the mount and reporting a race. The deadline is what
+/// stops a server that will never come up from holding the session open,
+/// and a report still pending when it expires is refused on its own terms.
+const MOUNT_SETTLE: Duration = Duration::from_secs(10);
+
+/// How often it asks again while one is still pending.
+const MOUNT_POLL: Duration = Duration::from_millis(250);
+
+/// What the app-server mounted, once nothing is still dialling.
+async fn settled_mount<R>(
+    stdin: &mut ChildStdin,
+    lines: &mut tokio::io::Lines<R>,
+    next_id: &mut u64,
+    thread: &str,
+) -> Result<Vec<MountedServer>, CodexError>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let deadline = tokio::time::Instant::now() + MOUNT_SETTLE;
+    loop {
+        let servers = mounted_servers(stdin, lines, next_id, thread).await?;
+        if crate::mount::settled(&servers) || tokio::time::Instant::now() >= deadline {
+            return Ok(servers);
+        }
+        tokio::time::sleep(MOUNT_POLL).await;
+    }
+}
+
+/// One complete `mcpServerStatus/list`, following its cursor.
+///
+/// Paged rather than read one page deep: the page size is the app-server's
+/// to choose, and a session refused because flyco's server happened to sort
+/// onto page two would be a bug that only appears once a user registers
+/// enough servers.
+async fn mounted_servers<R>(
+    stdin: &mut ChildStdin,
+    lines: &mut tokio::io::Lines<R>,
+    next_id: &mut u64,
+    thread: &str,
+) -> Result<Vec<MountedServer>, CodexError>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let mut mounted = Vec::new();
+    let mut cursor = None;
+    loop {
+        let id = take_id(next_id);
+        write_envelope(
+            stdin,
+            &Envelope::request(
+                id.clone(),
+                method::MCP_SERVER_STATUS_LIST,
+                serde_json::to_value(McpServerStatusParams {
+                    thread_id: thread.to_owned(),
+                    detail: "toolsAndAuthOnly",
+                    cursor,
+                })
+                .expect("McpServerStatusParams serializes"),
+            ),
+        )
+        .await?;
+        let result = expect_result(lines, &id, method::MCP_SERVER_STATUS_LIST).await?;
+        let page: McpServerStatusPage =
+            serde_json::from_value(result).map_err(|source| CodexError::Protocol {
+                detail: format!("mcpServerStatus/list returned something else: {source}"),
+            })?;
+        mounted.extend(page.data.into_iter().map(|server| {
+            // Absent means the app-server has no runtime state for this
+            // server on this thread, which is exactly a server it has not
+            // started — and is reported in those words.
+            let status = server
+                .runtime_status
+                .unwrap_or_else(|| "notStarted".to_owned());
+            MountedServer {
+                name: server.name,
+                // Only the two states that are still on their way anywhere
+                // are worth waiting on: `authenticationRequired`,
+                // `cancelled` and `disabled` are settled answers, and a
+                // deadline spent on one buys nothing.
+                state: match status.as_str() {
+                    "connected" => crate::mount::MountState::Connected,
+                    "notStarted" | "starting" => crate::mount::MountState::Pending,
+                    _ => crate::mount::MountState::Failed,
+                },
+                status,
+                tools: server.tools.into_keys().collect(),
+            }
+        }));
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            return Ok(mounted);
+        }
+    }
 }
 
 fn path_string(path: &std::path::Path) -> String {
