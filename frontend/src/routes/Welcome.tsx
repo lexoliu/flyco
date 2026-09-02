@@ -6,7 +6,7 @@
  * skipped comes back as a readiness card on the home page, which is a
  * better place to be nagged than a wizard nobody can leave.
  */
-import { Match, Show, Switch, createSignal } from "solid-js";
+import { Match, Show, Switch, createMemo, createSignal } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { Check } from "lucide-solid";
 import Logomark, {
@@ -43,6 +43,26 @@ export default function Welcome() {
       setStep(step() + 1);
     }
   }
+
+  /**
+   * Whether the current step's own prerequisite is met. `Next` is the
+   * honest way forward only when it is; otherwise the way forward is
+   * `Skip for now`, which says what it does. Two buttons that both move on
+   * regardless would make the choice meaningless.
+   */
+  const satisfied = createMemo(() => {
+    switch (step()) {
+      case 1:
+        return readiness.harness().length > 0;
+      case 2:
+        return readiness.compute().length > 0;
+      default:
+        return true;
+    }
+  });
+  const missing = createMemo(() =>
+    step() === 1 ? "Connect Claude Code or Codex to continue" : "Connect compute to continue",
+  );
 
   return (
     <div class={styles.page}>
@@ -123,14 +143,16 @@ export default function Welcome() {
               Back
             </button>
           </Show>
-          <Show when={step() > 0}>
-            <button type="button" class={styles.skip} onClick={finish}>
+          <Show when={step() > 0 && !satisfied()}>
+            <button type="button" class={styles.skip} onClick={advance}>
               Skip for now
             </button>
           </Show>
           <button
             type="button"
             class={cx(styles.next, step() === 0 && styles.nextAlone)}
+            disabled={!satisfied()}
+            title={satisfied() ? undefined : missing()}
             onClick={advance}
           >
             {step() === LAST_STEP ? "Start building" : "Next"}
