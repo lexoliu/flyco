@@ -63,6 +63,10 @@ export default function ToolsSection() {
 
 function McpServers() {
   const [servers, { refetch }] = createResource(listMcpServers);
+  /** The list, or nothing while it is loading or after it failed: a rejected
+   *  resource throws from its accessor, which would unmount the block before
+   *  the notice above it could say why. */
+  const listed = (): McpServerView[] => (servers.error === undefined ? (servers() ?? []) : []);
   const [editing, setEditing] = createSignal<string | null>(null);
   const [adding, setAdding] = createSignal(false);
   const [busy, setBusy] = createSignal<string | null>(null);
@@ -100,9 +104,9 @@ function McpServers() {
       <ProblemNotice error={servers.error ?? error()} />
 
       <Show when={!servers.loading}>
-        <Show when={(servers() ?? []).length > 0}>
+        <Show when={listed().length > 0}>
           <div class={styles.cards}>
-            <For each={servers()}>
+            <For each={listed()}>
               {(server) => (
                 <article class={styles.card}>
                   <div class={styles.cardTop}>
@@ -154,7 +158,7 @@ function McpServers() {
           when={adding()}
           fallback={
             <Show
-              when={(servers() ?? []).length > 0}
+              when={listed().length > 0}
               fallback={
                 <div class={styles.empty}>
                   <p class={styles.emptyLine}>
@@ -196,6 +200,8 @@ function McpServers() {
 
 function Skills() {
   const [skills, { refetch }] = createResource(listSkills);
+  /** See `listed` in the MCP block: never read a rejected resource. */
+  const uploaded = (): SkillView[] => (skills.error === undefined ? (skills() ?? []) : []);
   const [error, setError] = createSignal<unknown>(null);
 
   async function remove(id: string): Promise<void> {
@@ -214,7 +220,7 @@ function Skills() {
       <ProblemNotice error={skills.error ?? error()} />
 
       <Show
-        when={(skills() ?? []).length > 0}
+        when={uploaded().length > 0}
         fallback={
           /* The drop zone is the action; the sentence before it says what a
              skill is, which a first visit has no other way to learn. */
@@ -224,7 +230,7 @@ function Skills() {
         }
       >
         <div class={cx(styles.cards, styles.cardsPaired)}>
-          <For each={skills()}>
+          <For each={uploaded()}>
             {(skill) => <SkillCard skill={skill} onRemove={() => void remove(skill.id)} />}
           </For>
         </div>
