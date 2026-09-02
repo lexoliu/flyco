@@ -18,7 +18,9 @@ say() {
 	printf '%s\n' "$1"
 }
 
-case "$PWD" in
+# `pwd` rather than `$PWD`: the driver changes the child's directory after
+# the fork, and an inherited PWD would still name the test runner's.
+case "$(pwd)" in
 *unmounted*)
 	mounted='{"type":"mcp_servers","servers":[{"name":"flyco","status":"connected","state":"connected","tools":["budget_status","machine_resize"]}]}'
 	;;
