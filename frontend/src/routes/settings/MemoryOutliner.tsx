@@ -313,7 +313,7 @@ function NewNodeInput(props: {
             props.onCancel();
           }
         }}
-        // eslint-disable-next-line
+        // The row appeared because the user asked to type in it.
         autofocus
       />
       <button type="submit" class={styles.pillPrimary}>
