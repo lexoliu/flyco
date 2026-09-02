@@ -18,7 +18,10 @@ use flyco_daemon::config::{ClaudeAuth, CodexAuth, DaemonConfig};
 use flyco_provider::flycod::{
     self, CLAUDE_CONFIG_DIR, CLAUDE_PROJECT_DIR_NAME, CODEX_HOME, WORKDIR,
 };
-use flyco_provider::{ClaudeCredential, DaemonBootstrap, GitIdentity, RepoCheckout};
+use flyco_provider::{
+    ClaudeCredential, CodexCredential, DaemonBootstrap, GitIdentity, HarnessCredential,
+    RepoCheckout,
+};
 
 const CONTROL_PLANE: &str = "https://flyco.dev/";
 const DAEMON_TOKEN: &str = "fd_a-token-from-the-control-plane";
@@ -27,14 +30,13 @@ const BRANCH: &str = "dev";
 const GITHUB_TOKEN: &str = "gho_a-user-access-token";
 const COMMIT_EMAIL: &str = "4242+lexoliu@users.noreply.github.com";
 
-fn bootstrap(claude_auth: ClaudeCredential) -> DaemonBootstrap {
+fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
     DaemonBootstrap {
         session: SessionId::generate(),
         control_plane_url: CONTROL_PLANE.to_owned(),
         daemon_token: DAEMON_TOKEN.to_owned(),
-        harness: HarnessKind::ClaudeCode,
         permission_mode: PermissionMode::Auto,
-        claude_auth,
+        auth,
         repo: RepoCheckout {
             slug: REPO.parse().expect("a valid repository slug"),
             branch: BRANCH.parse().expect("a valid branch name"),
@@ -50,6 +52,14 @@ fn bootstrap(claude_auth: ClaudeCredential) -> DaemonBootstrap {
     }
 }
 
+fn claude(credential: ClaudeCredential) -> DaemonBootstrap {
+    bootstrap(HarnessCredential::ClaudeCode(credential))
+}
+
+fn codex(credential: CodexCredential) -> DaemonBootstrap {
+    bootstrap(HarnessCredential::Codex(credential))
+}
+
 fn parse(bootstrap: &DaemonBootstrap) -> DaemonConfig {
     let rendered = flycod::render(bootstrap).expect("the provisioner renders a configuration");
     toml::from_str(&rendered).unwrap_or_else(|error| {
@@ -59,7 +69,7 @@ fn parse(bootstrap: &DaemonBootstrap) -> DaemonConfig {
 
 #[test]
 fn a_provisioned_configuration_is_one_this_daemon_accepts() {
-    let bootstrap = bootstrap(ClaudeCredential::Inherit);
+    let bootstrap = claude(ClaudeCredential::Inherit);
     let config = parse(&bootstrap);
 
     assert_eq!(config.session, bootstrap.session);
@@ -73,7 +83,7 @@ fn a_provisioned_configuration_is_one_this_daemon_accepts() {
 
 #[test]
 fn it_carries_the_machine_the_agent_is_told_about_and_who_chose_it() {
-    let bootstrap = bootstrap(ClaudeCredential::Inherit);
+    let bootstrap = claude(ClaudeCredential::Inherit);
     let config = parse(&bootstrap);
 
     assert_eq!(config.machine_origin, MachineOrigin::User);
@@ -82,7 +92,7 @@ fn it_carries_the_machine_the_agent_is_told_about_and_who_chose_it() {
 
 #[test]
 fn a_license_bound_machine_arrives_with_the_minimum_it_billed() {
-    let mut bootstrap = bootstrap(ClaudeCredential::Inherit);
+    let mut bootstrap = claude(ClaudeCredential::Inherit);
     bootstrap.machine.machine_type = "mac2.metal".to_owned();
     bootstrap.machine.minimum = Some(BillingMinimum::new(24, Usd::from_cents(65)));
     let config = parse(&bootstrap);
@@ -96,7 +106,7 @@ fn a_license_bound_machine_arrives_with_the_minimum_it_billed() {
 
 #[test]
 fn it_carries_the_control_plane_and_a_token_the_daemon_will_accept() {
-    let bootstrap = bootstrap(ClaudeCredential::Inherit);
+    let bootstrap = claude(ClaudeCredential::Inherit);
     let config = parse(&bootstrap);
 
     let control_plane = config
@@ -114,7 +124,7 @@ fn it_carries_the_repository_the_machine_has_to_check_out() {
     // The one field on this path that a machine cannot recover for itself:
     // an agent in an empty /srv/flyco/work has no way to find out which
     // repository it was opened for.
-    let config = parse(&bootstrap(ClaudeCredential::Inherit));
+    let config = parse(&claude(ClaudeCredential::Inherit));
 
     let repo = config
         .repo
@@ -136,7 +146,7 @@ fn it_carries_the_repository_the_machine_has_to_check_out() {
 
 #[test]
 fn an_injected_claude_credential_arrives_with_its_isolated_config_tree() {
-    let config = parse(&bootstrap(ClaudeCredential::OauthToken {
+    let config = parse(&claude(ClaudeCredential::OauthToken {
         token: "sk-ant-oat01-provisioned".to_owned(),
     }));
 
@@ -154,7 +164,7 @@ fn an_injected_claude_credential_arrives_with_its_isolated_config_tree() {
 
 #[test]
 fn a_resuming_session_carries_its_harness_native_session_id() {
-    let mut bootstrap = bootstrap(ClaudeCredential::Inherit);
+    let mut bootstrap = claude(ClaudeCredential::Inherit);
     bootstrap.resume_session_id = Some("1f6d2c50-8a4b-4a2b-9f6d-2c508a4b4a2b".to_owned());
 
     assert_eq!(
@@ -165,18 +175,41 @@ fn a_resuming_session_carries_its_harness_native_session_id() {
 
 #[test]
 fn a_provisioned_codex_configuration_is_one_this_daemon_accepts() {
-    let mut bootstrap = bootstrap(ClaudeCredential::OauthToken {
-        token: "chatgpt-access".to_owned(),
-    });
-    bootstrap.harness = HarnessKind::Codex;
-    let config = parse(&bootstrap);
+    let config = parse(&codex(CodexCredential::ChatGpt {
+        id_token: "header.payload.signature".to_owned(),
+        access_token: "chatgpt-access".to_owned(),
+        refresh_token: "chatgpt-refresh".to_owned(),
+        account_id: "acc_01JD".to_owned(),
+    }));
 
     assert_eq!(config.harness, HarnessKind::Codex);
     assert!(config.claude.is_none());
-    let CodexAuth::OauthToken { token, isolation } = &config.codex.as_ref().expect("codex").auth
+    let CodexAuth::ChatGpt {
+        id_token,
+        access_token,
+        refresh_token,
+        account_id,
+        isolation,
+    } = &config.codex.as_ref().expect("codex").auth
     else {
-        panic!("an oauth credential must parse back as Codex oauth");
+        panic!("a ChatGPT grant must parse back as one");
     };
-    assert_eq!(token, "chatgpt-access");
+    assert_eq!(id_token, "header.payload.signature");
+    assert_eq!(access_token, "chatgpt-access");
+    assert_eq!(refresh_token, "chatgpt-refresh");
+    assert_eq!(account_id, "acc_01JD");
+    assert_eq!(isolation.home, std::path::PathBuf::from(CODEX_HOME));
+}
+
+#[test]
+fn a_provisioned_codex_api_key_arrives_with_its_isolated_home() {
+    let config = parse(&codex(CodexCredential::ApiKey {
+        key: "sk-proj-provisioned".to_owned(),
+    }));
+
+    let CodexAuth::ApiKey { key, isolation } = &config.codex.as_ref().expect("codex").auth else {
+        panic!("an API key must parse back as one");
+    };
+    assert_eq!(key, "sk-proj-provisioned");
     assert_eq!(isolation.home, std::path::PathBuf::from(CODEX_HOME));
 }

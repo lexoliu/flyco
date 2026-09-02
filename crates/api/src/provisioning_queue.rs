@@ -48,7 +48,6 @@ use skyzen_services::queue::{
 };
 use skyzen_services::{Db, Queue};
 
-use crate::anthropic::ClaudeOauth;
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
@@ -56,6 +55,7 @@ use crate::github::{GithubOauth, REPO_SCOPE};
 use crate::machines::MachineRow;
 use crate::provisioning::Provisioner;
 use crate::rooms::Rooms;
+use crate::vendors::Vendors;
 use crate::{daemon_tokens, harness_accounts, machines, provisioning, sessions, users};
 
 /// How many times one machine is asked for before the session is failed.
@@ -138,19 +138,19 @@ enum Settled {
 /// The three services a provisioning job reaches outside its own database.
 ///
 /// One argument rather than three, because they arrive and travel together
-/// through every step of a job: the provider builds the machine, Anthropic
-/// keeps the harness credential fresh, and GitHub says who the user is, what
-/// their token may do, and where the repository's default branch points. A
-/// call site that swapped two of them would still compile.
+/// through every step of a job: the provider builds the machine, the
+/// harness vendor keeps the credential fresh, and GitHub says who the user
+/// is, what their token may do, and where the repository's default branch
+/// points. A call site that swapped two of them would still compile.
 #[derive(Debug)]
-pub struct Clients<'a, P: Provisioner, C: ClaudeOauth, G: GithubOauth> {
+pub struct Clients<'a, P: Provisioner, G: GithubOauth> {
     /// Builds the machine.
     ///
     /// `&mut` because a driver is stateful: it caches an access token it
     /// must be able to replace.
     pub provisioner: &'a mut P,
-    /// Refreshes a Claude OAuth grant that is near its end.
-    pub claude: &'a C,
+    /// Renews a subscription grant that is near its end, either vendor's.
+    pub vendors: &'a Vendors,
     /// Reads the user's account, what their token may do, and the
     /// repository's default branch.
     pub github: &'a G,
@@ -170,7 +170,7 @@ pub async fn consume(
     config: &ApiConfig,
     queue: &Queue,
     rooms: &Rooms,
-    clients: &mut Clients<'_, impl Provisioner, impl ClaudeOauth, impl GithubOauth>,
+    clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
     batch: QueueBatch<ProvisioningJob>,
 ) -> QueueBatchDisposition {
     let mut decisions = Vec::with_capacity(batch.messages.len());
@@ -202,7 +202,7 @@ async fn perform(
     config: &ApiConfig,
     queue: &Queue,
     rooms: &Rooms,
-    clients: &mut Clients<'_, impl Provisioner, impl ClaudeOauth, impl GithubOauth>,
+    clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
     job: ProvisioningJob,
 ) -> Settled {
     match claim(db, job).await {
@@ -319,7 +319,7 @@ async fn build(
     db: &Db,
     config: &ApiConfig,
     rooms: &Rooms,
-    clients: &mut Clients<'_, impl Provisioner, impl ClaudeOauth, impl GithubOauth>,
+    clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
     claim: &Claim,
 ) -> Result<(), Provisioned> {
     let account = provisioning::account(db, config, claim.user, claim.machine.provider_account_id)
@@ -396,7 +396,7 @@ async fn build(
 async fn bootstrap(
     db: &Db,
     config: &ApiConfig,
-    clients: &Clients<'_, impl Provisioner, impl ClaudeOauth, impl GithubOauth>,
+    clients: &Clients<'_, impl Provisioner, impl GithubOauth>,
     claim: &Claim,
     entry: &flyco_core::MachineCatalogEntry,
     spot: bool,
@@ -404,24 +404,23 @@ async fn bootstrap(
     let token = daemon_tokens::issue(db, claim.user, claim.session)
         .await
         .map_err(Provisioned::from)?;
-    // Refreshes a Claude OAuth grant that is near its end, so the machine
-    // this boots is handed a token good for longer than the provision.
-    let claude_auth =
-        harness_accounts::credential(db, config, clients.claude, claim.user, claim.harness)
-            .await
-            .map_err(Provisioned::from)?;
+    // Refreshes a subscription grant that is near its end, either vendor's,
+    // so the machine this boots is handed a token good for longer than the
+    // provision.
+    let auth = harness_accounts::credential(db, config, clients.vendors, claim.user, claim.harness)
+        .await
+        .map_err(Provisioned::from)?;
     let repo = checkout(db, config, clients.github, claim).await?;
 
     Ok(DaemonBootstrap {
         session: claim.session,
         control_plane_url: config.control_plane_url(),
         daemon_token: token.token,
-        harness: claim.harness,
         // Auto is the product default. Flyco's managed deny rules still bind
         // even in this mode, and anything the classifier does not auto-allow
         // still reaches the approval UI.
         permission_mode: PermissionMode::Auto,
-        claude_auth,
+        auth,
         repo,
         machine_origin: claim.machine_origin,
         // The capacity mode asked for, because the document is written
@@ -606,11 +605,11 @@ mod worker {
     use skyzen::wasm_bindgen_futures;
 
     use super::{Clients, ProvisioningJob, consume};
-    use crate::anthropic::ClaudeClient;
     use crate::config::{ApiConfig, binding};
     use crate::github::GithubClient;
     use crate::provisioning::CloudProvisioner;
     use crate::rooms::Rooms;
+    use crate::vendors::Vendors;
 
     #[skyzen::queue]
     async fn provisioning_jobs(
@@ -647,7 +646,7 @@ mod worker {
             &rooms,
             &mut Clients {
                 provisioner: &mut CloudProvisioner,
-                claude: &ClaudeClient::default(),
+                vendors: &Vendors::default(),
                 github: &GithubClient::default(),
             },
             batch,

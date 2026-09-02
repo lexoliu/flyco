@@ -10,7 +10,7 @@
 use flyco_core::{
     ClaudeOauthStart, CompleteClaudeOauth, CurrentUser, HarnessAccountView, HarnessKind, Problem,
 };
-use flyco_provider::ClaudeCredential;
+use flyco_provider::{ClaudeCredential, HarnessCredential};
 use skyzen::routing::Router;
 use skyzen_services::{Db, Kv};
 use skyzen_test::{TestClient, TestContext};
@@ -20,8 +20,9 @@ use crate::harness_accounts::{self, REFRESH_WINDOW_SECONDS, StoredCredential};
 use crate::session;
 use crate::testing::{
     CLAUDE_ACCESS_TOKEN, CLAUDE_ACCOUNT_EMAIL, CLAUDE_CODE, CLAUDE_REFRESH_TOKEN,
-    CLAUDE_RENEWED_ACCESS_TOKEN, CLAUDE_RENEWED_REFRESH_TOKEN, CLAUDE_TOKEN_LIFETIME, TestClaude,
+    CLAUDE_RENEWED_ACCESS_TOKEN, CLAUDE_RENEWED_REFRESH_TOKEN, CLAUDE_TOKEN_LIFETIME,
     migrated_router, seed_claude_oauth_account, seed_other_user, seed_user, test_config,
+    test_vendors,
 };
 
 const START: &str = "/v1/harness-accounts/claude/oauth/start";
@@ -278,7 +279,7 @@ async fn a_grant_near_its_end_is_renewed_before_a_session_gets_it(_ctx: TestCont
     let credential = harness_accounts::credential(
         &db,
         &test_config(),
-        &TestClaude,
+        &test_vendors(),
         user.id,
         HarnessKind::ClaudeCode,
     )
@@ -287,9 +288,9 @@ async fn a_grant_near_its_end_is_renewed_before_a_session_gets_it(_ctx: TestCont
 
     assert_eq!(
         credential,
-        ClaudeCredential::OauthToken {
+        HarnessCredential::ClaudeCode(ClaudeCredential::OauthToken {
             token: CLAUDE_RENEWED_ACCESS_TOKEN.to_owned()
-        },
+        }),
         "the daemon is handed the token the refresh produced"
     );
 
@@ -333,7 +334,7 @@ async fn a_grant_with_time_left_is_handed_over_untouched(_ctx: TestContext, db: 
     let credential = harness_accounts::credential(
         &db,
         &test_config(),
-        &TestClaude,
+        &test_vendors(),
         user.id,
         HarnessKind::ClaudeCode,
     )
@@ -342,9 +343,9 @@ async fn a_grant_with_time_left_is_handed_over_untouched(_ctx: TestContext, db: 
 
     assert_eq!(
         credential,
-        ClaudeCredential::OauthToken {
+        HarnessCredential::ClaudeCode(ClaudeCredential::OauthToken {
             token: CLAUDE_ACCESS_TOKEN.to_owned()
-        }
+        })
     );
     let stored = harness_accounts::stored(&db, &test_config(), user.id, HarnessKind::ClaudeCode)
         .await
@@ -379,7 +380,7 @@ async fn a_refresh_token_anthropic_will_not_take_fails_loudly(_ctx: TestContext,
     let error = harness_accounts::credential(
         &db,
         &test_config(),
-        &TestClaude,
+        &test_vendors(),
         user.id,
         HarnessKind::ClaudeCode,
     )

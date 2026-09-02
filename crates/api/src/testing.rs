@@ -18,7 +18,11 @@ use crate::app::router;
 use crate::config::{ApiConfig, ApiSettings};
 use crate::github::{GithubClient, GithubError, GithubOauth, GithubToken, GithubUser};
 use crate::harness_accounts::StoredCredential;
+use crate::openai::{
+    self, CodexClient, CodexOauth, DeviceAuth, DeviceCode, DevicePoll, OpenAiError,
+};
 use crate::rooms::{NativeRooms, Rooms};
+use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
@@ -81,12 +85,16 @@ pub const OTHER_GITHUB_ID: i64 = 8_484;
 /// Client id the test configuration presents to Anthropic.
 pub const CLAUDE_CLIENT_ID: &str = "flyco-test-claude-client";
 
+/// Client id the test configuration presents to `OpenAI`.
+pub const CODEX_CLIENT_ID: &str = "app_flyco-test-codex-client";
+
 /// The bindings the test configuration is read from.
 pub fn test_settings() -> ApiSettings {
     ApiSettings {
         github_client_id: CLIENT_ID.to_owned(),
         github_client_secret: CLIENT_SECRET.to_owned(),
         claude_oauth_client_id: CLAUDE_CLIENT_ID.to_owned(),
+        codex_oauth_client_id: CODEX_CLIENT_ID.to_owned(),
         redirect_uri: REDIRECT_URI.to_owned(),
         encryption_key_hex: ENCRYPTION_KEY_HEX.to_owned(),
         vapid_private_key: VAPID_PRIVATE_KEY.to_owned(),
@@ -376,18 +384,229 @@ impl ClaudeOauth for TestClaude {
     }
 }
 
+/// The device authorization [`TestCodex`] creates.
+pub const CODEX_DEVICE_AUTH_ID: &str = "devauth_flyco-test";
+
+/// The one-time code [`TestCodex`] shows the user.
+pub const CODEX_USER_CODE: &str = "FLYC-8QK2";
+
+/// How often [`TestCodex`] says to poll.
+pub const CODEX_POLL_INTERVAL_SECONDS: u64 = 5;
+
+/// The authorization code an approved device authorization yields.
+pub const CODEX_AUTHORIZATION_CODE: &str = "ac_flyco-test-device";
+
+/// The PKCE verifier `OpenAI` hands back with it.
+pub const CODEX_CODE_VERIFIER: &str = "cGtjZS12ZXJpZmllci1mcm9tLW9wZW5haQ";
+
+/// The id token a redeemed code yields. Names the account and workspace.
+pub const CODEX_ID_TOKEN: &str = include_str!("../fixtures/openai/id_token.jwt");
+
+/// The access token a redeemed code yields; its `exp` is
+/// [`CODEX_TOKEN_EXPIRY`].
+pub const CODEX_ACCESS_TOKEN: &str = include_str!("../fixtures/openai/access_token.jwt");
+
+/// The access token a refresh yields, so a rotation is visible.
+pub const CODEX_RENEWED_ACCESS_TOKEN: &str =
+    include_str!("../fixtures/openai/renewed_access_token.jwt");
+
+/// The refresh token a redeemed code yields.
+pub const CODEX_REFRESH_TOKEN: &str = "rt_flyco-test-issued";
+
+/// The refresh token a refresh yields; grants rotate both halves.
+pub const CODEX_RENEWED_REFRESH_TOKEN: &str = "rt_flyco-test-renewed";
+
+/// `exp` of [`CODEX_ACCESS_TOKEN`].
+pub const CODEX_TOKEN_EXPIRY: u64 = 1_787_003_600;
+
+/// `exp` of [`CODEX_RENEWED_ACCESS_TOKEN`].
+pub const CODEX_RENEWED_TOKEN_EXPIRY: u64 = 1_787_007_200;
+
+/// `chatgpt_account_id` of [`CODEX_ID_TOKEN`].
+pub const CODEX_ACCOUNT_ID: &str = "acc_01JD5XKQZ8";
+
+/// The address [`CODEX_ID_TOKEN`] names, which becomes the account's label.
+pub const CODEX_ACCOUNT_EMAIL: &str = "me@lexo.cool";
+
+/// What [`TestCodex`] does when a device authorization is polled.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CodexBehaviour {
+    /// The user has already approved the code.
+    #[default]
+    Approved,
+    /// Nobody has approved the code yet.
+    Pending,
+    /// `OpenAI` will not start a device sign-in for this account.
+    DeviceAuthDisabled,
+    /// `OpenAI` refuses whatever it is handed.
+    Refused,
+}
+
+/// A [`CodexOauth`] that answers without a network.
+///
+/// It asserts the client id rather than recording it, for the reason
+/// [`TestClaude`] does: what actually goes on the wire is pinned separately,
+/// against recorded exchanges, in [`crate::openai`]. What varies here is
+/// only *which* of `OpenAI`'s four answers a test wants.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TestCodex {
+    /// Which answer this client gives.
+    pub behaviour: CodexBehaviour,
+}
+
+impl TestCodex {
+    /// A client whose device authorization is already approved.
+    #[must_use]
+    pub const fn approved() -> Self {
+        Self {
+            behaviour: CodexBehaviour::Approved,
+        }
+    }
+
+    /// A client whose device authorization is still outstanding.
+    #[must_use]
+    pub const fn pending() -> Self {
+        Self {
+            behaviour: CodexBehaviour::Pending,
+        }
+    }
+
+    /// A client whose account has device-code login switched off.
+    #[must_use]
+    pub const fn device_auth_disabled() -> Self {
+        Self {
+            behaviour: CodexBehaviour::DeviceAuthDisabled,
+        }
+    }
+
+    /// A client that refuses every grant.
+    #[must_use]
+    pub const fn refused() -> Self {
+        Self {
+            behaviour: CodexBehaviour::Refused,
+        }
+    }
+
+    /// `OpenAI`'s own answer to a grant it will not take.
+    fn refusal() -> OpenAiError {
+        OpenAiError::Rejected {
+            code: "invalid_grant".to_owned(),
+            description: "The authorization code is invalid or has expired.".to_owned(),
+        }
+    }
+}
+
+impl CodexOauth for TestCodex {
+    fn request_user_code(
+        &self,
+        client_id: &str,
+    ) -> impl Future<Output = Result<DeviceAuth, OpenAiError>> + Send {
+        assert_eq!(client_id, CODEX_CLIENT_ID);
+        ready(match self.behaviour {
+            CodexBehaviour::DeviceAuthDisabled => Err(OpenAiError::DeviceAuthDisabled),
+            _ => Ok(serde_json::from_value(serde_json::json!({
+                "device_auth_id": CODEX_DEVICE_AUTH_ID,
+                "user_code": CODEX_USER_CODE,
+                "interval": CODEX_POLL_INTERVAL_SECONDS.to_string(),
+            }))
+            .expect("the fixture is a device authorization")),
+        })
+    }
+
+    fn poll_device_code(
+        &self,
+        device_auth_id: &str,
+        user_code: &str,
+    ) -> impl Future<Output = Result<DevicePoll, OpenAiError>> + Send {
+        assert_eq!(device_auth_id, CODEX_DEVICE_AUTH_ID);
+        assert_eq!(user_code, CODEX_USER_CODE);
+        ready(match self.behaviour {
+            CodexBehaviour::Pending => Ok(DevicePoll::Pending),
+            CodexBehaviour::Refused => Err(Self::refusal()),
+            CodexBehaviour::DeviceAuthDisabled => Err(OpenAiError::DeviceAuthDisabled),
+            CodexBehaviour::Approved => Ok(DevicePoll::Approved(
+                serde_json::from_value::<DeviceCode>(serde_json::json!({
+                    "authorization_code": CODEX_AUTHORIZATION_CODE,
+                    "code_verifier": CODEX_CODE_VERIFIER,
+                }))
+                .expect("the fixture is a device code"),
+            )),
+        })
+    }
+
+    fn exchange(
+        &self,
+        request: openai::TokenRequest<'_>,
+    ) -> impl Future<Output = Result<openai::TokenSet, OpenAiError>> + Send {
+        if self.behaviour == CodexBehaviour::Refused {
+            return ready(Err(Self::refusal()));
+        }
+        ready(match request {
+            openai::TokenRequest::AuthorizationCode {
+                code,
+                redirect_uri,
+                client_id,
+                code_verifier,
+            } => {
+                assert_eq!(client_id, CODEX_CLIENT_ID);
+                assert_eq!(redirect_uri, openai::REDIRECT_URI);
+                assert_eq!(code_verifier, CODEX_CODE_VERIFIER);
+                if code == CODEX_AUTHORIZATION_CODE {
+                    Ok(openai::TokenSet {
+                        id_token: Some(CODEX_ID_TOKEN.to_owned()),
+                        access_token: Some(CODEX_ACCESS_TOKEN.to_owned()),
+                        refresh_token: Some(CODEX_REFRESH_TOKEN.to_owned()),
+                    })
+                } else {
+                    Err(Self::refusal())
+                }
+            }
+            openai::TokenRequest::RefreshToken {
+                refresh_token,
+                client_id,
+            } => {
+                assert_eq!(client_id, CODEX_CLIENT_ID);
+                if refresh_token == CODEX_REFRESH_TOKEN {
+                    Ok(openai::TokenSet {
+                        id_token: Some(CODEX_ID_TOKEN.to_owned()),
+                        access_token: Some(CODEX_RENEWED_ACCESS_TOKEN.to_owned()),
+                        refresh_token: Some(CODEX_RENEWED_REFRESH_TOKEN.to_owned()),
+                    })
+                } else {
+                    Err(Self::refusal())
+                }
+            }
+        })
+    }
+}
+
+/// The vendor clients every test router carries.
+#[must_use]
+pub fn test_vendors() -> Vendors {
+    Vendors::new(
+        ClaudeClient::Fake(TestClaude),
+        CodexClient::Fake(TestCodex::approved()),
+    )
+}
+
 /// The full control-plane router, wired to [`TestGithub`], [`TestClaude`],
-/// `db`, and the provisioning queue its session routes produce to.
+/// [`TestCodex`], `db`, and the provisioning queue its session routes
+/// produce to.
 pub fn test_router(db: Db, queue: Queue) -> Router {
-    test_router_with_github(db, queue, TestGithub::default())
+    test_router_with(db, queue, TestGithub::default(), test_vendors())
 }
 
 /// The same router, against a GitHub whose token says something else.
 pub fn test_router_with_github(db: Db, queue: Queue, github: TestGithub) -> Router {
+    test_router_with(db, queue, github, test_vendors())
+}
+
+/// The same router, with the GitHub and vendor clients the caller chose.
+pub fn test_router_with(db: Db, queue: Queue, github: TestGithub, vendors: Vendors) -> Router {
     router(
         test_config(),
         GithubClient::Fake(github),
-        ClaudeClient::Fake(TestClaude),
+        vendors,
         db,
         queue,
     )
@@ -589,6 +808,28 @@ pub async fn seed_claude_oauth_account(
         &StoredCredential::ClaudeOauth {
             access_token: CLAUDE_ACCESS_TOKEN.to_owned(),
             refresh_token: CLAUDE_REFRESH_TOKEN.to_owned(),
+            expires_at_unix,
+        },
+    )
+    .await
+}
+
+/// Links a Codex account holding a `ChatGPT` grant that expires at
+/// `expires_at_unix`, for the paths that refresh one before using it.
+pub async fn seed_codex_oauth_account(
+    db: &Db,
+    user: UserId,
+    expires_at_unix: u64,
+) -> HarnessAccountId {
+    seed_credential(
+        db,
+        user,
+        HarnessKind::Codex,
+        &StoredCredential::CodexOauth {
+            id_token: CODEX_ID_TOKEN.to_owned(),
+            access_token: CODEX_ACCESS_TOKEN.to_owned(),
+            refresh_token: CODEX_REFRESH_TOKEN.to_owned(),
+            account_id: CODEX_ACCOUNT_ID.to_owned(),
             expires_at_unix,
         },
     )

@@ -46,14 +46,15 @@ pub use catalog::curate;
 pub use env::{EnvDocument, EnvEntry, NETWORK_CONTROL_WARNING, UpdateEnv};
 pub use github::{BranchPage, BranchSummary, RepoSummary};
 pub use harness::{
-    Availability, ClaudeOauthStart, CompleteClaudeOauth, ContextWindow, Feature,
-    HarnessAccountView, HarnessCredentialInput, HarnessEvent, HarnessFeature, HarnessKind,
-    LinkHarnessAccount, PermissionMode, UsageReport, availability, matrix,
+    Availability, ClaudeOauthStart, CodexOauthPending, CodexOauthStart, CompleteClaudeOauth,
+    ContextWindow, Feature, HarnessAccountView, HarnessCredentialInput, HarnessEvent,
+    HarnessFeature, HarnessKind, LinkHarnessAccount, PermissionMode, UsageReport, availability,
+    matrix,
 };
 pub use id::{
-    ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, ClaudeOauthAttemptId, HarnessAccountId,
-    HarnessObservationId, Id, MachineId, McpServerId, MemoryNodeId, ProviderAccountId,
-    PushSubscriptionId, SessionId, SkillId, SpendEventId, UserId,
+    ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, ClaudeOauthAttemptId, CodexOauthAttemptId,
+    HarnessAccountId, HarnessObservationId, Id, MachineId, McpServerId, MemoryNodeId,
+    ProviderAccountId, PushSubscriptionId, SessionId, SkillId, SpendEventId, UserId,
 };
 pub use machine::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, CloudProviderKind,

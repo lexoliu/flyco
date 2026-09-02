@@ -56,13 +56,11 @@ pub mod polling;
 use core::fmt;
 
 use flyco_core::machine::{MachineCatalogEntry, MachineSpec, MachineState, SessionMachine};
-use flyco_core::{
-    BranchName, HarnessKind, MachineId, MachineOrigin, PermissionMode, RepoSlug, SessionId,
-};
+use flyco_core::{BranchName, MachineId, MachineOrigin, PermissionMode, RepoSlug, SessionId};
 use serde::{Deserialize, Serialize};
 
 pub use clock::{MonotonicClock, SystemClock, SystemWallClock, WallClock};
-pub use flycod::ClaudeCredential;
+pub use flycod::{ClaudeCredential, CodexCredential, HarnessCredential};
 pub use http::{HttpError, HttpRequest, HttpResponse, HttpTransport, LiveTransport};
 
 /// Which capacity market a running machine actually holds.
@@ -168,8 +166,8 @@ impl fmt::Debug for RepoCheckout {
 /// paired with its session.
 ///
 /// Three of these fields are live credentials — the daemon token, the
-/// harness credential inside [`claude_auth`](Self::claude_auth), and the
-/// GitHub token inside [`repo`](Self::repo) — and all three travel inside
+/// harness credential inside [`auth`](Self::auth), and the GitHub token
+/// inside [`repo`](Self::repo) — and all three travel inside
 /// cloud-init documents and container environments, which are exactly the
 /// values a driver is tempted to trace. The hand-written [`fmt::Debug`] is
 /// what keeps them out of a log line.
@@ -181,12 +179,11 @@ pub struct DaemonBootstrap {
     pub control_plane_url: String,
     /// The session's `fd_` daemon token.
     pub daemon_token: String,
-    /// Which harness the daemon drives.
-    pub harness: HarnessKind,
     /// Permission mode the harness runs under.
     pub permission_mode: PermissionMode,
-    /// How the supervised Claude CLI authenticates.
-    pub claude_auth: ClaudeCredential,
+    /// How the supervised harness authenticates, which is also which
+    /// harness the daemon drives.
+    pub auth: HarnessCredential,
     /// The repository to check out before the harness starts.
     pub repo: RepoCheckout,
     /// Whether flyco or the user chose the machine this session runs on.
@@ -213,9 +210,8 @@ impl fmt::Debug for DaemonBootstrap {
         f.debug_struct("DaemonBootstrap")
             .field("session", &self.session)
             .field("control_plane_url", &self.control_plane_url)
-            .field("harness", &self.harness)
             .field("permission_mode", &self.permission_mode)
-            .field("claude_auth", &self.claude_auth)
+            .field("auth", &self.auth)
             .field("repo", &self.repo)
             .field("machine_origin", &self.machine_origin)
             .field("machine", &self.machine)
@@ -479,11 +475,10 @@ mod tests {
             session: SessionId::generate(),
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_a-live-credential".to_owned(),
-            harness: flyco_core::HarnessKind::ClaudeCode,
             permission_mode: flyco_core::PermissionMode::Default,
-            claude_auth: crate::ClaudeCredential::OauthToken {
+            auth: crate::HarnessCredential::ClaudeCode(crate::ClaudeCredential::OauthToken {
                 token: "sk-ant-oat01-live".to_owned(),
-            },
+            }),
             repo: crate::testing::checkout(),
             machine_origin: flyco_core::MachineOrigin::Auto,
             machine: crate::testing::session_machine(),

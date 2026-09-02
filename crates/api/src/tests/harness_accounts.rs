@@ -99,12 +99,12 @@ mod linking {
     use flyco_core::{
         HarnessAccountView, HarnessCredentialInput, HarnessKind, LinkHarnessAccount, Problem,
     };
-    use flyco_provider::ClaudeCredential;
+    use flyco_provider::{CodexCredential, HarnessCredential};
     use skyzen_services::{Db, Kv};
     use skyzen_test::TestContext;
 
     use crate::session;
-    use crate::testing::{TestClaude, migrated_router, seed_user, test_config};
+    use crate::testing::{migrated_router, seed_user, test_config, test_vendors};
 
     fn request(credential: HarnessCredentialInput) -> LinkHarnessAccount {
         LinkHarnessAccount {
@@ -218,7 +218,7 @@ mod linking {
         let stored = crate::harness_accounts::credential(
             &db,
             &test_config(),
-            &TestClaude,
+            &test_vendors(),
             user.id,
             HarnessKind::Codex,
         )
@@ -226,9 +226,9 @@ mod linking {
         .expect("read the replacement");
         assert_eq!(
             stored,
-            ClaudeCredential::ApiKey {
+            HarnessCredential::Codex(CodexCredential::ApiKey {
                 key: "second-key".to_owned()
-            }
+            })
         );
     }
 

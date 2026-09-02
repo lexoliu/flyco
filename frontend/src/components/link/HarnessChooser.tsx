@@ -6,15 +6,27 @@
  * from Settings › Agents' `Relink`, so the flow lives here once and those
  * three places frame it rather than reimplementing it.
  *
- * Claude Code is two steps because Anthropic's flow is two steps: flyco
- * opens the authorize page it was given, and the user brings back the code
- * Anthropic shows them. Everything that was the old credential form — the
- * setup token, the API key — is still there, under `Advanced`, because a
- * person who already has one should not have to run a browser flow to use
- * it.
+ * Both cards are two steps because both vendors' flows are: flyco opens the
+ * page it was given, and the code travels between the two screens. They
+ * travel in opposite directions — Anthropic shows a code the user brings
+ * back, OpenAI takes a code flyco was given — which is why one card ends in
+ * a field and the other ends in a wait.
+ *
+ * Everything that was the old credential form — the setup token, the API
+ * keys — is still there, under `Advanced`, because a person who already has
+ * one should not have to run a browser flow to use it.
  */
-import { For, Match, Show, Switch, createResource, createSignal, type JSX } from "solid-js";
-import { ArrowUpRight } from "lucide-solid";
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createResource,
+  createSignal,
+  onCleanup,
+  type JSX,
+} from "solid-js";
+import { ArrowUpRight, Check, Copy } from "lucide-solid";
 import Logomark, { HARNESS_MARK } from "../Logomark";
 import Disclosure from "../Disclosure";
 import HarnessUsage from "../HarnessUsage";
@@ -24,13 +36,25 @@ import {
   completeClaudeOauth,
   linkHarnessAccount,
   listLlmUsage,
+  pollCodexOauth,
   startClaudeOauth,
+  startCodexOauth,
   type ClaudeOauthStart,
   type HarnessAccountView,
   type HarnessCredentialInput,
   type HarnessKind,
 } from "../../api/client";
 import { parsePastedCode, pastedCodeForExchange } from "../../lib/claudeCode";
+import {
+  CHATGPT_SECURITY_SETTINGS_URL,
+  IDLE,
+  isRunning,
+  nextSignIn,
+  pollDelayMs,
+  type CodexAttempt,
+  type CodexEvent,
+  type CodexSignIn,
+} from "../../lib/codexDevice";
 import { formatDate } from "../../lib/dates";
 import { cx } from "../../lib/cx";
 import styles from "./HarnessChooser.module.css";
@@ -48,7 +72,7 @@ const HARNESSES: readonly { kind: HarnessKind; label: string; runsOn: string }[]
   {
     kind: "codex",
     label: "Codex",
-    runsOn: "Runs on your OpenAI API key. Usage is billed to your own account.",
+    runsOn: "Runs on your ChatGPT subscription. Sign in and flyco never sees your password.",
   },
 ];
 
@@ -340,32 +364,235 @@ function ClaudeConnect(props: Omit<HarnessConnectProps, "harness">) {
   );
 }
 
+/**
+ * Codex's sign-in, which is the device-code flow `codex login
+ * --device-auth` runs.
+ *
+ * OpenAI's browser flow ends at a localhost callback a hosted web app
+ * cannot offer, so the code is the transport: flyco asks OpenAI for one,
+ * shows it, opens the page it is typed on, and then waits — polling the
+ * attempt every `interval_seconds` until it is approved or runs out.
+ *
+ * The waiting is a state machine rather than a spinner (see
+ * `src/lib/codexDevice.ts`), because it has real outcomes the card has to
+ * render: an approval, a code that went stale, and OpenAI refusing to start
+ * a device sign-in at all because the account has the flow switched off —
+ * the one failure the person can fix themselves, so it gets instructions
+ * and a link instead of an error.
+ */
 function CodexConnect(props: Omit<HarnessConnectProps, "harness">) {
+  const [signIn, setSignIn] = createSignal<CodexSignIn>(IDLE);
+  const [copied, setCopied] = createSignal(false);
+  const [error, setError] = createSignal<unknown>(null);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+
+  // A poll already in flight still resolves after the card goes away; the
+  // flag is what stops it writing to a signal nobody is reading.
+  onCleanup(() => {
+    closed = true;
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  });
+
+  function advance(event: CodexEvent): CodexSignIn {
+    const next = nextSignIn(signIn(), event);
+    setSignIn(next);
+    return next;
+  }
+
+  function schedule(state: CodexSignIn, attempt: CodexAttempt): void {
+    const delay = pollDelayMs(state);
+    if (delay === null || closed) {
+      return;
+    }
+    timer = setTimeout(() => void ask(attempt), delay);
+  }
+
+  async function ask(attempt: CodexAttempt): Promise<void> {
+    try {
+      const progress = await pollCodexOauth(attempt.attemptId);
+      if (closed) {
+        return;
+      }
+      if (progress.state === "linked") {
+        advance({ kind: "linked" });
+        await props.onLinked();
+        return;
+      }
+      schedule(advance({ kind: "pending" }), attempt);
+    } catch (err) {
+      if (closed) {
+        return;
+      }
+      setError(err);
+      advance({ kind: "failed", error: err });
+    }
+  }
+
+  async function signInWithChatGpt(): Promise<void> {
+    setError(null);
+    setCopied(false);
+    advance({ kind: "start" });
+    try {
+      const started = await startCodexOauth();
+      const attempt: CodexAttempt = {
+        attemptId: started.attempt_id,
+        userCode: started.user_code,
+        verificationUrl: started.verification_url,
+        intervalSeconds: started.interval_seconds,
+      };
+      const state = advance({ kind: "started", attempt });
+      window.open(attempt.verificationUrl, "_blank", "noopener,noreferrer");
+      schedule(state, attempt);
+    } catch (err) {
+      setError(err);
+      advance({ kind: "failed", error: err });
+    }
+  }
+
+  /** Puts the code on the clipboard, where there is one to put it on. */
+  async function copy(code: string): Promise<void> {
+    await navigator.clipboard?.writeText(code);
+    setCopied(true);
+  }
+
+  const state = () => signIn();
+  const waiting = () => (state().step === "waiting" ? (state() as { attempt: CodexAttempt }) : null);
+  const expired = () => (state().step === "expired" ? (state() as { attempt: CodexAttempt }) : null);
+
   return (
     <div class={styles.flow}>
-      <p class={styles.hint}>
-        Codex signs in with an OpenAI API key.{" "}
-        <a class={styles.link} href={OPENAI_KEYS_URL} target="_blank" rel="noreferrer">
-          Create one on the API keys page
-          <ArrowUpRight size={13} aria-hidden="true" />
-        </a>
-      </p>
-      <CredentialForm
-        fields={[
-          {
-            kind: "codex_api_key",
-            label: "OpenAI API key",
-            hint: (
-              <>
-                Starts with <code>sk-</code>. Flyco encrypts it before storing it.
-              </>
-            ),
-            accountLabel: "OpenAI API key",
-            submitLabel: "Link Codex",
-          },
-        ]}
-        onLinked={props.onLinked}
-      />
+      <ol class={styles.steps}>
+        <li class={cx(styles.step, waiting() === null && styles.stepCurrent)}>
+          <span class={styles.stepMark}>1</span>
+          <div class={styles.stepBody}>
+            <p class={styles.stepTitle}>Sign in with ChatGPT</p>
+            <Show when={waiting() === null}>
+              <p class={styles.hint}>
+                Flyco asks OpenAI for a one-time code and opens OpenAI's own page. Your password
+                never reaches flyco.
+              </p>
+              <button
+                type="button"
+                class={styles.pillPrimary}
+                disabled={isRunning(state())}
+                onClick={() => void signInWithChatGpt()}
+              >
+                {state().step === "starting"
+                  ? "Asking OpenAI…"
+                  : expired() === null
+                    ? "Sign in with ChatGPT"
+                    : "Get a new code"}
+                <ArrowUpRight size={14} aria-hidden="true" />
+              </button>
+            </Show>
+          </div>
+        </li>
+
+        <li class={cx(styles.step, waiting() !== null && styles.stepCurrent)}>
+          <span class={styles.stepMark}>2</span>
+          <div class={styles.stepBody}>
+            <p class={styles.stepTitle}>Enter the code at auth.openai.com</p>
+            <Show when={waiting()}>
+              {(active) => (
+                <>
+                  <div class={styles.codeRow}>
+                    <span class={styles.code} aria-label="One-time code">
+                      {active().attempt.userCode}
+                    </span>
+                    <button
+                      type="button"
+                      class={styles.pill}
+                      onClick={() => void copy(active().attempt.userCode)}
+                    >
+                      {copied() ? (
+                        <Check size={14} aria-hidden="true" />
+                      ) : (
+                        <Copy size={14} aria-hidden="true" />
+                      )}
+                      {copied() ? "Copied" : "Copy code"}
+                    </button>
+                  </div>
+                  <a
+                    class={styles.link}
+                    href={active().attempt.verificationUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open auth.openai.com/codex/device
+                    <ArrowUpRight size={13} aria-hidden="true" />
+                  </a>
+                  <p class={styles.waiting} role="status">
+                    <span class={styles.pulse} aria-hidden="true" />
+                    Waiting for you to approve in the browser…
+                  </p>
+                </>
+              )}
+            </Show>
+            <Show when={expired()}>
+              <p class={styles.hint}>
+                That code expired before it was approved. Get a new one and try again.
+              </p>
+            </Show>
+          </div>
+        </li>
+      </ol>
+
+      <Show when={state().step === "blocked"}>
+        <div class={styles.notice}>
+          <p class={styles.hint}>
+            OpenAI will not start a device sign-in for this account. Turn on{" "}
+            <strong>device code authorization</strong> in your ChatGPT security settings — on a
+            workspace account a workspace admin does it — and try again.
+          </p>
+          <a
+            class={styles.link}
+            href={CHATGPT_SECURITY_SETTINGS_URL}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open ChatGPT security settings
+            <ArrowUpRight size={13} aria-hidden="true" />
+          </a>
+          <button type="button" class={styles.pill} onClick={() => void signInWithChatGpt()}>
+            Try again
+          </button>
+        </div>
+      </Show>
+
+      <Show when={state().step !== "blocked"}>
+        <ProblemNotice error={error()} />
+      </Show>
+
+      <Disclosure summary="Advanced">
+        <p class={styles.hint}>
+          Billed per token by OpenAI rather than by your subscription.{" "}
+          <a class={styles.link} href={OPENAI_KEYS_URL} target="_blank" rel="noreferrer">
+            Create a key on the API keys page
+            <ArrowUpRight size={13} aria-hidden="true" />
+          </a>
+        </p>
+        <CredentialForm
+          fields={[
+            {
+              kind: "codex_api_key",
+              label: "OpenAI API key",
+              hint: (
+                <>
+                  Starts with <code>sk-</code>. Flyco encrypts it before storing it.
+                </>
+              ),
+              accountLabel: "OpenAI API key",
+              submitLabel: "Link with an API key",
+            },
+          ]}
+          onLinked={props.onLinked}
+        />
+      </Disclosure>
+
       <Show when={props.onCancel}>
         {(cancel) => (
           <button type="button" class={styles.quiet} onClick={() => cancel()()}>
@@ -413,7 +640,8 @@ function CredentialForm(props: { fields: readonly CredentialField[]; onLinked: (
       case "codex_api_key":
         return { kind, key: value };
       case "claude_oauth":
-        // Minted by the sign-in flow above, never typed by hand.
+      case "codex_oauth":
+        // Minted by the sign-in flows above, never typed by hand.
         throw new Error("an OAuth grant is not a credential anybody pastes");
     }
   }

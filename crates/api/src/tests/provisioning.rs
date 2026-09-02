@@ -17,8 +17,8 @@ use flyco_core::{
 };
 use flyco_provider::byo_ssh::{ByoSsh, CommandOutcome, CommandRunner, container_name};
 use flyco_provider::{
-    ClaudeCredential, CloudProvider as _, DaemonBootstrap, HttpError, Machine, ProviderError,
-    ProvisionRequest, byo_ssh,
+    ClaudeCredential, CloudProvider as _, DaemonBootstrap, HarnessCredential, HttpError, Machine,
+    ProviderError, ProvisionRequest, byo_ssh,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -33,9 +33,10 @@ use crate::provisioning::{LinkedAccount, Provisioner};
 use crate::provisioning_queue::{self, MAX_ATTEMPTS, ProvisioningJob};
 use crate::testing::{
     GITHUB_ACCESS_TOKEN, GITHUB_COMMIT_EMAIL, GITHUB_NAME, HARNESS_TOKEN, TEST_DEFAULT_BRANCH,
-    TestClaude, TestGithub, machine_choice, migrated_router_on, seed_harness_account,
-    seed_provider_account, seed_user, test_config, test_rooms,
+    TestGithub, machine_choice, migrated_router_on, seed_harness_account, seed_provider_account,
+    seed_user, test_config, test_rooms, test_vendors,
 };
+use crate::vendors::Vendors;
 use crate::{machines, session, sessions};
 
 const REPO: &str = "lexoliu/flyco";
@@ -229,20 +230,25 @@ async fn run_queue_as(
         &test_config(),
         queue,
         &test_rooms(),
-        &mut clients(provisioner, &github),
+        &mut clients(provisioner, &github, &test_vendors()),
         batch,
     )
     .await
 }
 
 /// The services one job reaches, wired to the fakes.
+///
+/// The vendor pair is built per call rather than borrowed from the caller:
+/// nothing in these tests varies it, and a `Vendors` that outlived the call
+/// would need a lifetime the fakes do not have.
 fn clients<'a>(
     provisioner: &'a mut RecordedHost,
     github: &'a TestGithub,
-) -> provisioning_queue::Clients<'a, RecordedHost, TestClaude, TestGithub> {
+    vendors: &'a Vendors,
+) -> provisioning_queue::Clients<'a, RecordedHost, TestGithub> {
     provisioning_queue::Clients {
         provisioner,
-        claude: &TestClaude,
+        vendors,
         github,
     }
 }
@@ -285,7 +291,7 @@ async fn run_job_twice(
             &test_config(),
             queue,
             &test_rooms(),
-            &mut clients(provisioner, &TestGithub::default()),
+            &mut clients(provisioner, &TestGithub::default(), &test_vendors()),
             batch(job),
         )
         .await;
@@ -500,7 +506,7 @@ async fn an_unreachable_host_is_retried_a_bounded_number_of_times(
             &test_config(),
             &queue,
             &test_rooms(),
-            &mut clients(&mut host, &TestGithub::default()),
+            &mut clients(&mut host, &TestGithub::default(), &test_vendors()),
             batch(job),
         )
         .await;
@@ -571,7 +577,7 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         &test_config(),
         &queue,
         &test_rooms(),
-        &mut clients(&mut host, &TestGithub::default()),
+        &mut clients(&mut host, &TestGithub::default(), &test_vendors()),
         original,
     )
     .await;
@@ -609,7 +615,7 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         &test_config(),
         &queue,
         &test_rooms(),
-        &mut clients(&mut host, &TestGithub::default()),
+        &mut clients(&mut host, &TestGithub::default(), &test_vendors()),
         queued,
     )
     .await;
@@ -697,7 +703,7 @@ async fn a_job_for_a_session_that_is_gone_is_dropped(db: Db, queue: Queue) {
         &test_config(),
         &queue,
         &test_rooms(),
-        &mut clients(&mut host, &TestGithub::default()),
+        &mut clients(&mut host, &TestGithub::default(), &test_vendors()),
         batch(orphan),
     )
     .await;
@@ -727,7 +733,7 @@ async fn a_machine_boots_already_holding_its_session_credentials(
 
     let bootstrap = host.bootstrap.expect("the driver was handed a bootstrap");
     assert_eq!(bootstrap.session, session);
-    assert_eq!(bootstrap.harness, HarnessKind::ClaudeCode);
+    assert_eq!(bootstrap.auth.harness(), HarnessKind::ClaudeCode);
     assert_eq!(bootstrap.control_plane_url, "https://flyco.test/");
 
     // The daemon token is this session's, and it is live: the queue minted it
@@ -746,10 +752,10 @@ async fn a_machine_boots_already_holding_its_session_credentials(
     // And the harness credential was unsealed on the way through, so the
     // agent on the machine can sign in.
     assert_eq!(
-        bootstrap.claude_auth,
-        ClaudeCredential::OauthToken {
+        bootstrap.auth,
+        HarnessCredential::ClaudeCode(ClaudeCredential::OauthToken {
             token: HARNESS_TOKEN.to_owned()
-        }
+        })
     );
     assert_eq!(
         bootstrap.resume_session_id, None,
@@ -1021,8 +1027,8 @@ async fn a_session_with_no_linked_harness_account_still_gets_a_machine(
     assert_eq!(
         host.bootstrap
             .expect("the driver was handed a bootstrap")
-            .claude_auth,
-        ClaudeCredential::Inherit
+            .auth,
+        HarnessCredential::ClaudeCode(ClaudeCredential::Inherit)
     );
 }
 

@@ -881,6 +881,143 @@
         }
       }
     },
+    "/v1/harness-accounts/codex/oauth/start": {
+      "post": {
+        "summary": "`POST /v1/harness-accounts/codex/oauth/start` — begins a Codex sign-in.",
+        "description": "`POST /v1/harness-accounts/codex/oauth/start` — begins a Codex sign-in.",
+        "operationId": "flyco_api::codex_oauth::start",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Response of `POST /v1/harness-accounts/codex/oauth/start`.\n\nThe three things `codex login --device-auth` prints, plus the opaque\nattempt id the browser polls against. `OpenAI`'s `device_auth_id` is\ndeliberately not among them: it is the half that redeems the grant, so\nit stays in the control plane's key-value store beside the user who\nstarted the attempt.",
+                  "required": [
+                    "attempt_id",
+                    "user_code",
+                    "verification_url",
+                    "interval_seconds"
+                  ],
+                  "properties": {
+                    "attempt_id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Names the device authorization this sign-in is polled against."
+                    },
+                    "interval_seconds": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "How long to wait between polls, as `OpenAI` states it.",
+                      "minimum": 0
+                    },
+                    "user_code": {
+                      "type": "string",
+                      "description": "The one-time code the user types at\n[`verification_url`](Self::verification_url)."
+                    },
+                    "verification_url": {
+                      "type": "string",
+                      "description": "Where the user approves the code, which is\n`https://auth.openai.com/codex/device`."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/harness-accounts/codex/oauth/{attempt_id}": {
+      "get": {
+        "summary": "`GET /v1/harness-accounts/codex/oauth/{attempt_id}` — polls it once.",
+        "description": "`GET /v1/harness-accounts/codex/oauth/{attempt_id}` — polls it once.",
+        "operationId": "flyco_api::codex_oauth::poll",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Nobody has approved the code yet; ask again after `interval_seconds`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "state"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "pending"
+                          ]
+                        }
+                      }
+                    }
+                  ],
+                  "description": "Body of a `GET /v1/harness-accounts/codex/oauth/{attempt_id}` that found\nthe sign-in still waiting.\n\nAn approved sign-in answers `201` with the linked\n[`HarnessAccountView`] instead, so the two outcomes are told apart by\nthe status code and never by a nullable field."
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "A Claude or Codex account the user has linked, as `GET\n/v1/harness-accounts` lists it.\n\nNo representation of an account carries its credential; the sealed value\nleaves the control plane only when it is provisioned onto a session machine.",
+                  "required": [
+                    "id",
+                    "harness",
+                    "label",
+                    "linked_at_unix"
+                  ],
+                  "properties": {
+                    "expires_at_unix": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "format": "int64",
+                      "description": "When the stored credential expires, when the vendor states a\nlifetime.",
+                      "minimum": 0
+                    },
+                    "harness": {
+                      "$ref": "#/components/schemas/HarnessKind",
+                      "description": "Which harness this account drives."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "Account name as the vendor reports it, so the user can tell two\nlinked accounts apart."
+                    },
+                    "linked_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was linked, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/harness-accounts/{id}": {
       "delete": {
         "summary": "Unlinks one account owned by the caller.",
@@ -5387,6 +5524,55 @@
           }
         }
       },
+      "CodexOauthPending": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "pending"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Body of a `GET /v1/harness-accounts/codex/oauth/{attempt_id}` that found\nthe sign-in still waiting.\n\nAn approved sign-in answers `201` with the linked\n[`HarnessAccountView`] instead, so the two outcomes are told apart by\nthe status code and never by a nullable field."
+      },
+      "CodexOauthStart": {
+        "type": "object",
+        "description": "Response of `POST /v1/harness-accounts/codex/oauth/start`.\n\nThe three things `codex login --device-auth` prints, plus the opaque\nattempt id the browser polls against. `OpenAI`'s `device_auth_id` is\ndeliberately not among them: it is the half that redeems the grant, so\nit stays in the control plane's key-value store beside the user who\nstarted the attempt.",
+        "required": [
+          "attempt_id",
+          "user_code",
+          "verification_url",
+          "interval_seconds"
+        ],
+        "properties": {
+          "attempt_id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "Names the device authorization this sign-in is polled against."
+          },
+          "interval_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long to wait between polls, as `OpenAI` states it.",
+            "minimum": 0
+          },
+          "user_code": {
+            "type": "string",
+            "description": "The one-time code the user types at\n[`verification_url`](Self::verification_url)."
+          },
+          "verification_url": {
+            "type": "string",
+            "description": "Where the user approves the code, which is\n`https://auth.openai.com/codex/device`."
+          }
+        }
+      },
       "CompleteClaudeOauth": {
         "type": "object",
         "description": "Request body of `POST /v1/harness-accounts/claude/oauth/complete`.",
@@ -5878,6 +6064,48 @@
               "refresh_token": {
                 "type": "string",
                 "description": "Redeemed for a new pair once the access token is near its end."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A `ChatGPT` subscription obtained through the Codex device-code flow.\n\nFour values rather than one, because Codex's own `auth.json` is four\nvalues: the id token names the account, the access token runs the\nagent, the refresh token keeps the link alive, and the account id is\nthe workspace every request is billed to.",
+            "required": [
+              "id_token",
+              "access_token",
+              "refresh_token",
+              "account_id",
+              "expires_at_unix",
+              "kind"
+            ],
+            "properties": {
+              "access_token": {
+                "type": "string",
+                "description": "The bearer token Codex runs under, until it expires."
+              },
+              "account_id": {
+                "type": "string",
+                "description": "`chatgpt_account_id`, the workspace the grant belongs to."
+              },
+              "expires_at_unix": {
+                "type": "integer",
+                "format": "int64",
+                "description": "When the access token stops working, seconds since the Unix\nepoch.",
+                "minimum": 0
+              },
+              "id_token": {
+                "type": "string",
+                "description": "The `ChatGPT` id token, a JWT naming the account."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "codex_oauth"
+                ]
+              },
+              "refresh_token": {
+                "type": "string",
+                "description": "Redeemed for a new set once the access token is near its end."
               }
             }
           }

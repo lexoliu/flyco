@@ -16,6 +16,47 @@ import { ReadinessProvider } from "../Readiness";
 const AUTHORIZE_URL =
   "https://claude.ai/oauth/authorize?code=true&client_id=test&state=the-state";
 const ATTEMPT = "11111111-2222-4333-8444-555555555555";
+const DEVICE_URL = "https://auth.openai.com/codex/device";
+const CODEX_ATTEMPT = "99999999-8888-4777-8666-555555555555";
+const SETTINGS_URL = "https://chatgpt.com/#settings/Security";
+
+/** A problem document, in the shape the API answers with. */
+function problem(status: number, slug: string, detail: string): Response {
+  return new Response(
+    JSON.stringify({
+      type: `https://flyco.dev/problems/${slug}`,
+      title: "Conflict",
+      status,
+      detail,
+    }),
+    { status, headers: { "content-type": "application/problem+json" } },
+  );
+}
+
+/**
+ * Answers one path with `respond`, leaving every other route to the
+ * in-memory control plane the test setup installs.
+ */
+function route(matches: (path: string, method: string) => boolean, respond: () => Response): void {
+  const fallback = vi.mocked(fetch).getMockImplementation();
+  if (fallback === undefined) {
+    throw new Error("the test setup installs a fetch mock before every test");
+  }
+  vi.mocked(fetch).mockImplementation((input, init) => {
+    const url = new URL(
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+    );
+    if (matches(url.pathname, (init?.method ?? "GET").toUpperCase())) {
+      return Promise.resolve(respond());
+    }
+    return fallback(input, init);
+  });
+}
+
+/** Matches the poll of a Codex sign-in. */
+function isCodexPoll(path: string, method: string): boolean {
+  return method === "GET" && path === `/v1/harness-accounts/codex/oauth/${CODEX_ATTEMPT}`;
+}
 
 function renderChooser() {
   const onLinked = vi.fn();
@@ -112,16 +153,81 @@ describe("HarnessChooser", () => {
     expect(await findByLabelText("Anthropic API key")).toBeInTheDocument();
   });
 
-  it("links Codex with an OpenAI key and points at where one is made", async () => {
+  it("shows the Codex code, the page it is typed on, and that it is waiting", async () => {
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    const { findByRole, findByText, findByLabelText } = renderChooser();
+
+    fireEvent.click(await findByRole("button", { name: "Connect Codex" }));
+    // The code does not exist until OpenAI has issued one.
+    expect(document.querySelector("[aria-label='One-time code']")).toBeNull();
+
+    fireEvent.click(await findByRole("button", { name: /Sign in with ChatGPT/ }));
+
+    expect(await findByLabelText("One-time code")).toHaveTextContent("FLYC-8QK2");
+    expect(opened).toHaveBeenCalledWith(DEVICE_URL, "_blank", "noopener,noreferrer");
+    expect(await findByRole("link", { name: /Open auth.openai.com\/codex\/device/ })).toHaveAttribute(
+      "href",
+      DEVICE_URL,
+    );
+    expect(await findByText(/Waiting for you to approve in the browser/)).toBeInTheDocument();
+    expect(await findByRole("button", { name: /Copy code/ })).toBeInTheDocument();
+  });
+
+  it("links the account when a poll finds the code approved", async () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
+    route(isCodexPoll, () =>
+      new Response(
+        JSON.stringify({
+          id: "harness-3",
+          harness: "codex",
+          label: "me@lexo.cool",
+          linked_at_unix: 1_787_000_000,
+          expires_at_unix: 1_787_003_600,
+        }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const { findByRole, onLinked } = renderChooser();
+
+    fireEvent.click(await findByRole("button", { name: "Connect Codex" }));
+    fireEvent.click(await findByRole("button", { name: /Sign in with ChatGPT/ }));
+
+    await waitFor(() => expect(onLinked).toHaveBeenCalled(), { timeout: 4000 });
+  });
+
+  it("explains a switched-off device flow and offers to try again", async () => {
+    route(
+      (path, method) => method === "POST" && path === "/v1/harness-accounts/codex/oauth/start",
+      () =>
+        problem(
+          409,
+          "codex-device-auth-disabled",
+          `Turn on device code authorization at ${SETTINGS_URL}`,
+        ),
+    );
+    const { findByRole, findByText } = renderChooser();
+
+    fireEvent.click(await findByRole("button", { name: "Connect Codex" }));
+    fireEvent.click(await findByRole("button", { name: /Sign in with ChatGPT/ }));
+
+    expect(await findByText(/device code authorization/)).toBeInTheDocument();
+    expect(await findByRole("link", { name: /Open ChatGPT security settings/ })).toHaveAttribute(
+      "href",
+      SETTINGS_URL,
+    );
+    expect(await findByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  it("keeps the OpenAI key under Advanced, and points at where one is made", async () => {
     const { findByRole, findByLabelText, onLinked } = renderChooser();
 
     fireEvent.click(await findByRole("button", { name: "Connect Codex" }));
-    expect(await findByRole("link", { name: /Create one on the API keys page/ })).toHaveAttribute(
+    expect(await findByRole("link", { name: /Create a key on the API keys page/ })).toHaveAttribute(
       "href",
       "https://platform.openai.com/api-keys",
     );
 
-    const submit = await findByRole("button", { name: "Link Codex" });
+    const submit = await findByRole("button", { name: "Link with an API key" });
     expect(submit).toBeDisabled();
 
     type(await findByLabelText("OpenAI API key"), "sk-proj-a-real-looking-key");

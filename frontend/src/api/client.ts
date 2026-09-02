@@ -67,6 +67,7 @@ export type OsFamily = Schemas["OsFamily"];
 export type HarnessAccountView = Schemas["HarnessAccountView"];
 export type HarnessCredentialInput = Schemas["HarnessCredentialInput"];
 export type ClaudeOauthStart = Schemas["ClaudeOauthStart"];
+export type CodexOauthStart = Schemas["CodexOauthStart"];
 export type MemoryNode = Schemas["MemoryNode"];
 export type AgentsDocument = Schemas["AgentsDocument"];
 export type PushSubscriptionView = Schemas["PushSubscriptionView"];
@@ -525,6 +526,41 @@ export function completeClaudeOauth(
   input: JsonBody<"flyco_api::claude_oauth::complete">,
 ): Promise<JsonResponse<"flyco_api::claude_oauth::complete", 201>> {
   return requestJson("POST", "/v1/harness-accounts/claude/oauth/complete", { json: input });
+}
+
+/**
+ * Begins the Codex sign-in (docs/ux.md §8.1).
+ *
+ * What comes back is what `codex login --device-auth` prints — a one-time
+ * code, the page to type it on, and how often to ask whether it has been
+ * approved. OpenAI's `device_auth_id`, the half that redeems the grant,
+ * stays in the control plane.
+ */
+export function startCodexOauth(): Promise<JsonResponse<"flyco_api::codex_oauth::start", 200>> {
+  return requestJson("POST", "/v1/harness-accounts/codex/oauth/start");
+}
+
+/** How far one poll of a Codex sign-in got. */
+export type CodexOauthProgress =
+  | { state: "pending" }
+  | { state: "linked"; account: HarnessAccountView };
+
+/**
+ * Asks once whether the user has approved the code yet.
+ *
+ * The two outcomes are told apart by the status code — `200` is still
+ * waiting, `201` created the account — so this reads the status rather than
+ * guessing from the shape of the body.
+ */
+export async function pollCodexOauth(
+  attemptId: CodexOauthStart["attempt_id"],
+): Promise<CodexOauthProgress> {
+  const response = await send("GET", `/v1/harness-accounts/codex/oauth/${attemptId}`);
+  if (response.status === 201) {
+    const account = (await response.json()) as JsonResponse<"flyco_api::codex_oauth::poll", 201>;
+    return { state: "linked", account };
+  }
+  return { state: "pending" };
 }
 
 // --- /v1/memory ----------------------------------------------------------------

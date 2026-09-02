@@ -31,6 +31,13 @@ pub mod var {
     /// a secret, and a deployment presenting its own registered client sets
     /// this one variable.
     pub const CLAUDE_OAUTH_CLIENT_ID: &str = "FLYCO_CLAUDE_OAUTH_CLIENT_ID";
+    /// Codex OAuth client id. Public; lives in `[cloudflare.vars]`.
+    ///
+    /// `OpenAI` issues no client secret for the device flow either — it is
+    /// the same kind of public client — so this is deployment
+    /// configuration rather than a secret, and a deployment presenting its
+    /// own registered client sets this one variable.
+    pub const CODEX_OAUTH_CLIENT_ID: &str = "FLYCO_CODEX_OAUTH_CLIENT_ID";
     /// Absolute URL GitHub redirects back to. Public.
     pub const REDIRECT_URI: &str = "FLYCO_REDIRECT_URI";
     /// AES-256 key for sealing third-party tokens, hex-encoded. Secret.
@@ -98,6 +105,7 @@ pub struct ApiConfig {
     github_client_id: String,
     github_client_secret: String,
     claude_oauth_client_id: String,
+    codex_oauth_client_id: String,
     redirect_uri: Url,
     encryption_key: [u8; KEY_LEN],
     vapid: VapidConfig,
@@ -126,6 +134,7 @@ impl core::fmt::Debug for ApiConfig {
         f.debug_struct("ApiConfig")
             .field("github_client_id", &self.github_client_id)
             .field("claude_oauth_client_id", &self.claude_oauth_client_id)
+            .field("codex_oauth_client_id", &self.codex_oauth_client_id)
             .field("redirect_uri", &self.redirect_uri.as_str())
             .finish_non_exhaustive()
     }
@@ -143,6 +152,8 @@ pub struct ApiSettings {
     pub github_client_secret: String,
     /// [`var::CLAUDE_OAUTH_CLIENT_ID`].
     pub claude_oauth_client_id: String,
+    /// [`var::CODEX_OAUTH_CLIENT_ID`].
+    pub codex_oauth_client_id: String,
     /// [`var::REDIRECT_URI`].
     pub redirect_uri: String,
     /// [`var::ENCRYPTION_KEY`], hex-encoded.
@@ -160,6 +171,7 @@ impl core::fmt::Debug for ApiSettings {
         f.debug_struct("ApiSettings")
             .field("github_client_id", &self.github_client_id)
             .field("claude_oauth_client_id", &self.claude_oauth_client_id)
+            .field("codex_oauth_client_id", &self.codex_oauth_client_id)
             .field("redirect_uri", &self.redirect_uri)
             .finish_non_exhaustive()
     }
@@ -178,6 +190,8 @@ impl ApiConfig {
             reject_empty(var::GITHUB_WEBHOOK_SECRET, settings.github_webhook_secret)?;
         let claude_oauth_client_id =
             reject_empty(var::CLAUDE_OAUTH_CLIENT_ID, settings.claude_oauth_client_id)?;
+        let codex_oauth_client_id =
+            reject_empty(var::CODEX_OAUTH_CLIENT_ID, settings.codex_oauth_client_id)?;
         let redirect_uri =
             Url::parse(&settings.redirect_uri).map_err(|source| ConfigError::NotAUrl {
                 name: var::REDIRECT_URI,
@@ -210,6 +224,7 @@ impl ApiConfig {
             github_client_id: settings.github_client_id,
             github_client_secret: settings.github_client_secret,
             claude_oauth_client_id,
+            codex_oauth_client_id,
             redirect_uri,
             encryption_key,
         })
@@ -256,6 +271,7 @@ impl ApiConfig {
             github_client_id: read(var::GITHUB_CLIENT_ID)?,
             github_client_secret: read(var::GITHUB_CLIENT_SECRET)?,
             claude_oauth_client_id: read(var::CLAUDE_OAUTH_CLIENT_ID)?,
+            codex_oauth_client_id: read(var::CODEX_OAUTH_CLIENT_ID)?,
             redirect_uri: read(var::REDIRECT_URI)?,
             encryption_key_hex: read(var::ENCRYPTION_KEY)?,
             vapid_private_key: read(var::VAPID_PRIVATE_KEY)?,
@@ -293,6 +309,12 @@ impl ApiConfig {
     #[must_use]
     pub fn claude_oauth_client_id(&self) -> &str {
         &self.claude_oauth_client_id
+    }
+
+    /// Codex OAuth client id this deployment presents to `OpenAI`.
+    #[must_use]
+    pub fn codex_oauth_client_id(&self) -> &str {
+        &self.codex_oauth_client_id
     }
 
     /// Absolute URL GitHub redirects the browser back to.
@@ -416,6 +438,19 @@ mod tests {
         assert!(matches!(
             error,
             ConfigError::Missing(var::CLAUDE_OAUTH_CLIENT_ID)
+        ));
+    }
+
+    #[test]
+    fn an_empty_codex_client_id_is_rejected() {
+        let error = ApiConfig::new(super::ApiSettings {
+            codex_oauth_client_id: String::new(),
+            ..test_settings()
+        })
+        .expect_err("a deployment cannot run the Codex flow without a client id");
+        assert!(matches!(
+            error,
+            ConfigError::Missing(var::CODEX_OAUTH_CLIENT_ID)
         ));
     }
 

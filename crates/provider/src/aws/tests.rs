@@ -30,7 +30,7 @@
 //! must still have its default VPC.
 
 use flyco_core::machine::{CloudProviderKind, MachineSpec, MachineState};
-use flyco_core::{HarnessKind, MachineId, PermissionMode, SessionId};
+use flyco_core::{MachineId, PermissionMode, SessionId};
 
 use super::{AwsProvider, AwsWorkspace, ExclusionReason, SPOT_UNSUPPORTED_CODES, names};
 use crate::clock::{ManualClock, ManualWallClock};
@@ -38,8 +38,8 @@ use crate::cloud_init::CONFIG_PATH;
 use crate::http::{HttpRequest, HttpResponse, Method};
 use crate::testing::{RecordedTransport, RecordingTimer};
 use crate::{
-    CapacityMode, ClaudeCredential, CloudProvider, DaemonBootstrap, Machine, ProviderError,
-    ProvisionRequest,
+    CapacityMode, ClaudeCredential, CloudProvider, DaemonBootstrap, HarnessCredential, Machine,
+    ProviderError, ProvisionRequest,
 };
 
 const REGION: &str = "us-west-2";
@@ -166,9 +166,8 @@ fn request_in(
             session: SessionId::generate(),
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_a-live-daemon-token".to_owned(),
-            harness: HarnessKind::ClaudeCode,
             permission_mode: PermissionMode::Default,
-            claude_auth: ClaudeCredential::Inherit,
+            auth: HarnessCredential::ClaudeCode(ClaudeCredential::Inherit),
             repo: crate::testing::checkout(),
             machine_origin: flyco_core::MachineOrigin::Auto,
             machine: crate::testing::session_machine(),

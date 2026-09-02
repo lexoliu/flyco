@@ -126,7 +126,7 @@ fn status_only(response: &mut Response, status: StatusCode) {
 
 /// Restates a wrapped responder's schemas under this wrapper's status.
 #[cfg(feature = "openapi")]
-fn described(
+pub(crate) fn described(
     schemas: Vec<skyzen::openapi::ResponseSchema>,
     status: StatusCode,
     description: &'static str,

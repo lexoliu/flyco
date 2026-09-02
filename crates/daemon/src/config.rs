@@ -145,22 +145,35 @@ pub struct CodexIsolation {
 }
 
 /// How the supervised `codex` CLI authenticates.
+///
+/// The two modes Codex's own `auth.json` has, spelled the way Codex spells
+/// them: an `OPENAI_API_KEY`, or the `ChatGPT` grant `codex login
+/// --device-auth` produces. The `ChatGPT` grant is four values rather than
+/// one because `auth.json` is four values — the access token expires within
+/// the hour, and the control plane, not the daemon, is what renews it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CodexAuth {
     /// Use the host user's existing Codex login.
     Inherit,
-    /// A `ChatGPT` OAuth access token in an isolated `CODEX_HOME`.
-    OauthToken {
-        /// Value written into `auth.json` as `tokens.access_token`.
-        token: String,
-        /// The home directory it applies to.
-        isolation: CodexIsolation,
-    },
     /// An `OpenAI` API key in an isolated `CODEX_HOME`.
     ApiKey {
         /// Value written into `auth.json` as `OPENAI_API_KEY`.
         key: String,
+        /// The home directory it applies to.
+        isolation: CodexIsolation,
+    },
+    /// A `ChatGPT` subscription grant in an isolated `CODEX_HOME`.
+    #[serde(rename = "chatgpt")]
+    ChatGpt {
+        /// Written into `auth.json` as `tokens.id_token`.
+        id_token: String,
+        /// Written into `auth.json` as `tokens.access_token`.
+        access_token: String,
+        /// Written into `auth.json` as `tokens.refresh_token`.
+        refresh_token: String,
+        /// Written into `auth.json` as `tokens.account_id`.
+        account_id: String,
         /// The home directory it applies to.
         isolation: CodexIsolation,
     },
@@ -172,7 +185,7 @@ impl CodexAuth {
     pub fn home(&self) -> Option<&Path> {
         match self {
             Self::Inherit => None,
-            Self::OauthToken { isolation, .. } | Self::ApiKey { isolation, .. } => {
+            Self::ApiKey { isolation, .. } | Self::ChatGpt { isolation, .. } => {
                 Some(isolation.home.as_path())
             }
         }

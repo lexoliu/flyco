@@ -18,9 +18,13 @@ pub mod normalize;
 pub mod protocol;
 
 use std::collections::BTreeMap;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
+
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use flyco_core::ApprovalId;
 use serde_json::Value;
@@ -315,25 +319,68 @@ async fn prepare_home(auth: &CodexAuth) -> Result<(), CodexError> {
 
     let auth_file = match auth {
         CodexAuth::Inherit => return Ok(()),
-        CodexAuth::OauthToken { token, .. } => AuthFile {
-            openai_api_key: None,
-            tokens: Some(AuthTokens {
-                access_token: token.clone(),
-            }),
-        },
         CodexAuth::ApiKey { key, .. } => AuthFile {
+            auth_mode: None,
             openai_api_key: Some(key.clone()),
             tokens: None,
+            last_refresh: None,
+        },
+        CodexAuth::ChatGpt {
+            id_token,
+            access_token,
+            refresh_token,
+            account_id,
+            ..
+        } => AuthFile {
+            auth_mode: Some(AuthMode::Chatgpt),
+            openai_api_key: None,
+            tokens: Some(AuthTokens {
+                id_token: id_token.clone(),
+                access_token: access_token.clone(),
+                refresh_token: refresh_token.clone(),
+                account_id: account_id.clone(),
+            }),
+            // Codex reads this to decide how stale the grant is. The grant
+            // was minted or renewed by the control plane moments ago, on
+            // this machine's own provision, so "now" is the truth.
+            last_refresh: Some(now_rfc3339()),
         },
     };
     let auth_json = serde_json::to_vec_pretty(&auth_file).expect("AuthFile serializes");
-    tokio::fs::write(home.join("auth.json"), auth_json)
+    let path = home.join("auth.json");
+    tokio::fs::write(&path, auth_json)
         .await
         .map_err(|source| CodexError::Home {
-            path: home.join("auth.json"),
+            path: path.clone(),
             source,
         })?;
+    // The daemon is root on a provisioned machine and the agent runs as
+    // somebody else, so this is the file that keeps a `ChatGPT` refresh
+    // token out of the agent's reach — the same takeover rule the rest of
+    // `CODEX_HOME` is written under.
+    tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        .await
+        .map_err(|source| CodexError::Home { path, source })?;
     Ok(())
+}
+
+/// The current instant as Codex writes `last_refresh`: RFC 3339, UTC.
+///
+/// # Panics
+///
+/// Panics if the host clock is set before the Unix epoch, or so far past it
+/// that the timestamp is not a representable date — a broken machine the
+/// daemon must not quietly write a wrong credential file on.
+fn now_rfc3339() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is set before the Unix epoch")
+        .as_secs();
+    let seconds = i64::try_from(seconds).expect("the system clock is within the representable era");
+    OffsetDateTime::from_unix_timestamp(seconds)
+        .expect("a Unix timestamp from the system clock is a representable instant")
+        .format(&Rfc3339)
+        .expect("an OffsetDateTime always formats as RFC 3339")
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -341,17 +388,36 @@ struct CodexHomeFile {
     cli_auth_credentials_store: &'static str,
 }
 
+/// How `auth.json` says the account is signed in.
+///
+/// Only the `ChatGPT` mode is written: an API key is recognised by the
+/// `OPENAI_API_KEY` field alone, which is how Codex has always read one.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum AuthMode {
+    Chatgpt,
+}
+
+/// `$CODEX_HOME/auth.json`, as Codex's own loader reads it.
 #[derive(Debug, serde::Serialize)]
 struct AuthFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auth_mode: Option<AuthMode>,
     #[serde(rename = "OPENAI_API_KEY", skip_serializing_if = "Option::is_none")]
     openai_api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tokens: Option<AuthTokens>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_refresh: Option<String>,
 }
 
+/// The `tokens` object of a `ChatGPT` `auth.json`.
 #[derive(Debug, serde::Serialize)]
 struct AuthTokens {
+    id_token: String,
     access_token: String,
+    refresh_token: String,
+    account_id: String,
 }
 
 fn spawn(config: &CodexConfig, workdir: &std::path::Path) -> Result<Child, CodexError> {

@@ -9,8 +9,9 @@
 //!
 //! # A credential that expires
 //!
-//! Only one stored mode has a lifetime: the OAuth grant. It is refreshed
-//! where it is *used* rather than on a schedule — [`credential`] is the one
+//! Two stored modes have a lifetime, one per vendor: the Claude
+//! subscription grant and the `ChatGPT` grant. Both are refreshed where
+//! they are *used* rather than on a schedule — [`credential`] is the one
 //! place a sealed credential is opened for a session, so a grant near its
 //! end is rotated there, persisted, and handed on. A cron pass would have
 //! to guess which accounts matter; this one refreshes exactly the accounts
@@ -20,21 +21,23 @@ use flyco_core::{
     CurrentUser, HarnessAccountId, HarnessAccountView, HarnessCredentialInput, HarnessKind,
     LinkHarnessAccount, LlmUsageView, UserId,
 };
-use flyco_provider::ClaudeCredential;
+use flyco_provider::{ClaudeCredential, CodexCredential, HarnessCredential};
 use serde::{Deserialize, Serialize};
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
-use crate::anthropic::{ClaudeOauth, TokenRequest, TokenSet};
+use crate::anthropic::{ClaudeOauth as _, TokenRequest, TokenSet};
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::path_id;
 use crate::observations;
+use crate::openai::{self, CodexOauth as _, Grant};
 use crate::problem::Outcome;
 use crate::respond::{Created, NoContent};
+use crate::vendors::Vendors;
 
 /// How close to its end an access token is refreshed before it is used.
 ///
@@ -75,6 +78,24 @@ pub enum StoredCredential {
         /// working, seconds since the Unix epoch.
         expires_at_unix: u64,
     },
+    /// A `ChatGPT` subscription grant from the Codex device-code flow.
+    ///
+    /// Four values rather than two, because Codex's own `auth.json` is four
+    /// values: the daemon writes all of them, and the control plane keeps
+    /// the refresh token that produces the next set.
+    CodexOauth {
+        /// The id token, which names the account and the workspace.
+        id_token: String,
+        /// The bearer token Codex runs under, until it expires.
+        access_token: String,
+        /// Redeemed for the next set.
+        refresh_token: String,
+        /// `chatgpt_account_id`, the workspace the grant belongs to.
+        account_id: String,
+        /// When [`access_token`](Self::CodexOauth::access_token) stops
+        /// working, seconds since the Unix epoch.
+        expires_at_unix: u64,
+    },
 }
 
 impl core::fmt::Debug for StoredCredential {
@@ -83,6 +104,7 @@ impl core::fmt::Debug for StoredCredential {
             Self::OauthToken { .. } => "oauth_token",
             Self::ApiKey { .. } => "api_key",
             Self::ClaudeOauth { .. } => "claude_oauth",
+            Self::CodexOauth { .. } => "codex_oauth",
         };
         f.debug_struct("StoredCredential")
             .field("mode", &mode)
@@ -91,13 +113,47 @@ impl core::fmt::Debug for StoredCredential {
 }
 
 impl StoredCredential {
-    /// The grant a token exchange just produced.
+    /// The grant a Claude token exchange just produced.
     #[must_use]
     pub fn from_tokens(tokens: &TokenSet, now: u64) -> Self {
         Self::ClaudeOauth {
             access_token: tokens.access_token.clone(),
             refresh_token: tokens.refresh_token.clone(),
             expires_at_unix: tokens.expires_at_unix(now),
+        }
+    }
+
+    /// The grant a Codex device sign-in or refresh just produced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] if the grant's tokens do not name the account
+    /// or the moment the access token stops working — flyco stores neither
+    /// a nameless account nor a grant it cannot schedule a renewal for.
+    pub fn from_grant(grant: &Grant) -> Result<Self, ApiError> {
+        Ok(Self::CodexOauth {
+            id_token: grant.id_token.clone(),
+            access_token: grant.access_token.clone(),
+            refresh_token: grant.refresh_token.clone(),
+            account_id: grant.account_id()?,
+            expires_at_unix: grant.expires_at_unix()?,
+        })
+    }
+
+    /// This credential's `ChatGPT` grant, when it is one.
+    fn grant(&self) -> Option<Grant> {
+        match self {
+            Self::OauthToken { .. } | Self::ApiKey { .. } | Self::ClaudeOauth { .. } => None,
+            Self::CodexOauth {
+                id_token,
+                access_token,
+                refresh_token,
+                ..
+            } => Some(Grant {
+                id_token: id_token.clone(),
+                access_token: access_token.clone(),
+                refresh_token: refresh_token.clone(),
+            }),
         }
     }
 
@@ -108,33 +164,69 @@ impl StoredCredential {
             Self::OauthToken { .. } | Self::ApiKey { .. } => None,
             Self::ClaudeOauth {
                 expires_at_unix, ..
+            }
+            | Self::CodexOauth {
+                expires_at_unix, ..
             } => Some(*expires_at_unix),
         }
     }
 
     /// Whether this credential can authenticate `harness`.
     ///
-    /// Codex takes an API key and nothing else: a Claude subscription token
-    /// on a Codex row is a corrupt record, not a mode to try.
+    /// An API key suits either — the column has always held both — but a
+    /// subscription grant belongs to exactly one vendor, and one on the
+    /// other vendor's row is a corrupt record rather than a mode to try.
     const fn suits(&self, harness: HarnessKind) -> bool {
         match (self, harness) {
             (Self::ApiKey { .. }, _)
-            | (Self::OauthToken { .. } | Self::ClaudeOauth { .. }, HarnessKind::ClaudeCode) => true,
-            (Self::OauthToken { .. } | Self::ClaudeOauth { .. }, HarnessKind::Codex) => false,
+            | (Self::OauthToken { .. } | Self::ClaudeOauth { .. }, HarnessKind::ClaudeCode)
+            | (Self::CodexOauth { .. }, HarnessKind::Codex) => true,
+            (Self::OauthToken { .. } | Self::ClaudeOauth { .. }, HarnessKind::Codex)
+            | (Self::CodexOauth { .. }, HarnessKind::ClaudeCode) => false,
         }
     }
 
     /// The credential a machine's `flycod` is provisioned with.
     ///
-    /// An OAuth grant becomes the bearer token the setup-token path already
-    /// hands over, so the daemon has one Claude mode rather than two.
-    fn into_daemon_credential(self) -> ClaudeCredential {
-        match self {
-            Self::OauthToken { token } => ClaudeCredential::OauthToken { token },
-            Self::ApiKey { key } => ClaudeCredential::ApiKey { key },
-            Self::ClaudeOauth { access_token, .. } => ClaudeCredential::OauthToken {
-                token: access_token,
-            },
+    /// A Claude OAuth grant becomes the bearer token the setup-token path
+    /// already hands over, so the daemon has one Claude mode rather than
+    /// two. A `ChatGPT` grant travels whole, because Codex's `auth.json`
+    /// wants all of it.
+    ///
+    /// `harness` decides only the API-key case, which is the one mode both
+    /// harnesses share; every other mode names its own vendor, and
+    /// [`suits`](Self::suits) has already refused the pairs that disagree.
+    fn into_daemon_credential(self, harness: HarnessKind) -> HarnessCredential {
+        match (self, harness) {
+            (Self::OauthToken { token }, _) => {
+                HarnessCredential::ClaudeCode(ClaudeCredential::OauthToken { token })
+            }
+            (Self::ClaudeOauth { access_token, .. }, _) => {
+                HarnessCredential::ClaudeCode(ClaudeCredential::OauthToken {
+                    token: access_token,
+                })
+            }
+            (Self::ApiKey { key }, HarnessKind::ClaudeCode) => {
+                HarnessCredential::ClaudeCode(ClaudeCredential::ApiKey { key })
+            }
+            (Self::ApiKey { key }, HarnessKind::Codex) => {
+                HarnessCredential::Codex(CodexCredential::ApiKey { key })
+            }
+            (
+                Self::CodexOauth {
+                    id_token,
+                    access_token,
+                    refresh_token,
+                    account_id,
+                    ..
+                },
+                _,
+            ) => HarnessCredential::Codex(CodexCredential::ChatGpt {
+                id_token,
+                access_token,
+                refresh_token,
+                account_id,
+            }),
         }
     }
 }
@@ -233,6 +325,31 @@ fn validated(
             StoredCredential::ClaudeOauth {
                 access_token: access_token.trim().to_owned(),
                 refresh_token: refresh_token.trim().to_owned(),
+                expires_at_unix,
+            }
+        }
+        HarnessCredentialInput::CodexOauth {
+            id_token,
+            access_token,
+            refresh_token,
+            account_id,
+            expires_at_unix,
+        } => {
+            if refresh_token.trim().is_empty() {
+                return Err(ApiError::InvalidHarnessCredential(
+                    "an OAuth grant must carry the refresh token that renews it",
+                ));
+            }
+            if account_id.trim().is_empty() {
+                return Err(ApiError::InvalidHarnessCredential(
+                    "a ChatGPT grant must name the workspace it belongs to",
+                ));
+            }
+            StoredCredential::CodexOauth {
+                id_token: id_token.trim().to_owned(),
+                access_token: access_token.trim().to_owned(),
+                refresh_token: refresh_token.trim().to_owned(),
+                account_id: account_id.trim().to_owned(),
                 expires_at_unix,
             }
         }
@@ -361,48 +478,77 @@ pub async fn stored(
 pub async fn credential(
     db: &Db,
     config: &ApiConfig,
-    claude: &impl ClaudeOauth,
+    vendors: &Vendors,
     user: UserId,
     harness: HarnessKind,
-) -> Result<ClaudeCredential, ApiError> {
+) -> Result<HarnessCredential, ApiError> {
     let Some(credential) = stored(db, config, user, harness).await? else {
-        return Ok(ClaudeCredential::Inherit);
+        return Ok(HarnessCredential::inherit(harness));
     };
 
-    let credential = if let StoredCredential::ClaudeOauth {
-        refresh_token,
-        expires_at_unix,
-        ..
-    } = &credential
-        && *expires_at_unix <= now_unix().saturating_add(REFRESH_WINDOW_SECONDS)
-    {
-        renew(db, config, claude, user, refresh_token).await?
+    let credential = if expiring_soon(&credential) {
+        renewed(db, config, vendors, user, harness, &credential).await?
     } else {
         credential
     };
-    Ok(credential.into_daemon_credential())
+    Ok(credential.into_daemon_credential(harness))
 }
 
-/// Redeems a refresh token and writes the pair it yields over the old one.
-async fn renew(
+/// Whether this credential is close enough to its end to renew first.
+fn expiring_soon(credential: &StoredCredential) -> bool {
+    credential
+        .expires_at_unix()
+        .is_some_and(|at| at <= now_unix().saturating_add(REFRESH_WINDOW_SECONDS))
+}
+
+/// Redeems the refresh token of whichever grant this is.
+async fn renewed(
     db: &Db,
     config: &ApiConfig,
-    claude: &impl ClaudeOauth,
+    vendors: &Vendors,
     user: UserId,
-    refresh_token: &str,
+    harness: HarnessKind,
+    credential: &StoredCredential,
 ) -> Result<StoredCredential, ApiError> {
-    let tokens = claude
-        .exchange(TokenRequest::RefreshToken {
-            refresh_token,
-            client_id: config.claude_oauth_client_id(),
-        })
-        .await
-        .map_err(ApiError::from)?;
+    let renewed = match credential {
+        StoredCredential::ClaudeOauth { refresh_token, .. } => {
+            let tokens = vendors
+                .claude
+                .exchange(TokenRequest::RefreshToken {
+                    refresh_token,
+                    client_id: config.claude_oauth_client_id(),
+                })
+                .await
+                .map_err(ApiError::from)?;
+            tracing::info!("refreshed a Claude OAuth grant before using it");
+            StoredCredential::from_tokens(&tokens, now_unix())
+        }
+        StoredCredential::CodexOauth { refresh_token, .. } => {
+            let previous = credential
+                .grant()
+                .ok_or(ApiError::CorruptRecord("a ChatGPT grant lost its tokens"))?;
+            let rotated = vendors
+                .codex
+                .exchange(openai::TokenRequest::RefreshToken {
+                    refresh_token,
+                    client_id: config.codex_oauth_client_id(),
+                })
+                .await
+                .map_err(ApiError::from)?
+                .rotated(&previous);
+            tracing::info!("refreshed a ChatGPT grant before using it");
+            StoredCredential::from_grant(&rotated)?
+        }
+        // Only a grant has an end, and only a grant reaches here.
+        StoredCredential::OauthToken { .. } | StoredCredential::ApiKey { .. } => {
+            return Err(ApiError::CorruptRecord(
+                "a credential with no lifetime was scheduled for renewal",
+            ));
+        }
+    };
 
-    let renewed = StoredCredential::from_tokens(&tokens, now_unix());
     let sealed = seal(config, &renewed)?;
     let expires_at_unix = renewed.expires_at_unix();
-    let harness = HarnessKind::ClaudeCode;
     sql!(
         db,
         "UPDATE harness_accounts \
@@ -412,7 +558,6 @@ async fn renew(
     .execute()
     .await?;
 
-    tracing::info!("refreshed a Claude OAuth grant before using it");
     Ok(renewed)
 }
 

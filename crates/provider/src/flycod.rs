@@ -84,19 +84,98 @@ impl fmt::Debug for ClaudeCredential {
     }
 }
 
-impl ClaudeCredential {
-    /// The isolated config tree this mode runs under, if any.
+/// How the supervised `codex` CLI authenticates on a provisioned machine.
+///
+/// The two ways `codex` itself can be signed in, and nothing else: an
+/// `OPENAI_API_KEY`, or the `ChatGPT` grant `codex login --device-auth`
+/// produces. [`Inherit`](Self::Inherit) is the developer-machine mode, the
+/// same as [`ClaudeCredential::Inherit`].
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum CodexCredential {
+    /// No credential injected.
+    Inherit,
+    /// An `OpenAI` API key.
+    ApiKey {
+        /// Value written into `auth.json` as `OPENAI_API_KEY`.
+        key: String,
+    },
+    /// A `ChatGPT` subscription grant from the device-code flow.
     ///
-    /// Credentials and isolation are one decision in the daemon's model:
-    /// injecting a token into a shared `~/.claude` would trample a real
-    /// login, so every credential-bearing mode carries its own tree.
-    const fn isolation(&self) -> Option<Isolation> {
+    /// All four values, because Codex's own `auth.json` holds all four: the
+    /// access token alone authenticates nothing that outlives an hour, and
+    /// the account id is the workspace every request is billed to.
+    #[serde(rename = "chatgpt")]
+    ChatGpt {
+        /// The id token, a JWT naming the account.
+        id_token: String,
+        /// The bearer token the agent runs under.
+        access_token: String,
+        /// Redeemed by the control plane for the next set.
+        refresh_token: String,
+        /// `chatgpt_account_id`, the workspace the grant belongs to.
+        account_id: String,
+    },
+}
+
+impl fmt::Debug for CodexCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mode = match self {
+            Self::Inherit => "inherit",
+            Self::ApiKey { .. } => "api_key",
+            Self::ChatGpt { .. } => "chatgpt",
+        };
+        f.debug_struct("CodexCredential")
+            .field("mode", &mode)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The credential a provisioned machine's harness runs under.
+///
+/// Tagged by harness rather than carried beside a separate `harness` field:
+/// a Claude token on a Codex machine is not a mode to fall back from, it is
+/// a bootstrap that cannot boot, and this is what makes it unspellable.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "harness", content = "auth", rename_all = "snake_case")]
+pub enum HarnessCredential {
+    /// Claude Code's credential.
+    ClaudeCode(ClaudeCredential),
+    /// Codex's credential.
+    Codex(CodexCredential),
+}
+
+impl fmt::Debug for HarnessCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Inherit => None,
-            Self::OauthToken { .. } | Self::ApiKey { .. } => Some(Isolation {
-                config_dir: CLAUDE_CONFIG_DIR,
-                project_dir_name: CLAUDE_PROJECT_DIR_NAME,
-            }),
+            Self::ClaudeCode(credential) => f
+                .debug_tuple("HarnessCredential::ClaudeCode")
+                .field(credential)
+                .finish(),
+            Self::Codex(credential) => f
+                .debug_tuple("HarnessCredential::Codex")
+                .field(credential)
+                .finish(),
+        }
+    }
+}
+
+impl HarnessCredential {
+    /// Which harness this credential drives.
+    #[must_use]
+    pub const fn harness(&self) -> HarnessKind {
+        match self {
+            Self::ClaudeCode(_) => HarnessKind::ClaudeCode,
+            Self::Codex(_) => HarnessKind::Codex,
+        }
+    }
+
+    /// The credential a machine gets when the user has linked no account.
+    #[must_use]
+    pub const fn inherit(harness: HarnessKind) -> Self {
+        match harness {
+            HarnessKind::ClaudeCode => Self::ClaudeCode(ClaudeCredential::Inherit),
+            HarnessKind::Codex => Self::Codex(CodexCredential::Inherit),
         }
     }
 }
@@ -171,12 +250,16 @@ struct CodexIsolation {
 #[serde(tag = "mode", rename_all = "snake_case")]
 enum CodexAuth<'a> {
     Inherit,
-    OauthToken {
-        token: &'a str,
-        isolation: CodexIsolation,
-    },
     ApiKey {
         key: &'a str,
+        isolation: CodexIsolation,
+    },
+    #[serde(rename = "chatgpt")]
+    ChatGpt {
+        id_token: &'a str,
+        access_token: &'a str,
+        refresh_token: &'a str,
+        account_id: &'a str,
         isolation: CodexIsolation,
     },
 }
@@ -220,6 +303,45 @@ struct Document<'a> {
 #[error("the flycod configuration could not be rendered as TOML: {0}")]
 pub struct RenderError(#[from] toml::ser::Error);
 
+/// The `[claude.auth]` table for one credential.
+///
+/// Credentials and isolation are one decision in the daemon's model:
+/// injecting a token into a shared `~/.claude` would trample a real login,
+/// so every credential-bearing mode carries its own tree and
+/// [`Inherit`](ClaudeCredential::Inherit) carries none.
+fn claude_auth(credential: &ClaudeCredential) -> Auth<'_> {
+    let isolation = Isolation {
+        config_dir: CLAUDE_CONFIG_DIR,
+        project_dir_name: CLAUDE_PROJECT_DIR_NAME,
+    };
+    match credential {
+        ClaudeCredential::Inherit => Auth::Inherit,
+        ClaudeCredential::OauthToken { token } => Auth::OauthToken { token, isolation },
+        ClaudeCredential::ApiKey { key } => Auth::ApiKey { key, isolation },
+    }
+}
+
+/// The `[codex.auth]` table for one credential, under the same rule.
+fn codex_auth(credential: &CodexCredential) -> CodexAuth<'_> {
+    let isolation = CodexIsolation { home: CODEX_HOME };
+    match credential {
+        CodexCredential::Inherit => CodexAuth::Inherit,
+        CodexCredential::ApiKey { key } => CodexAuth::ApiKey { key, isolation },
+        CodexCredential::ChatGpt {
+            id_token,
+            access_token,
+            refresh_token,
+            account_id,
+        } => CodexAuth::ChatGpt {
+            id_token,
+            access_token,
+            refresh_token,
+            account_id,
+            isolation,
+        },
+    }
+}
+
 /// Renders the configuration a machine's `flycod` boots with.
 ///
 /// # Errors
@@ -228,37 +350,12 @@ pub struct RenderError(#[from] toml::ser::Error);
 /// mean this module's own structure is malformed rather than anything the
 /// caller did.
 pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
-    let isolation = bootstrap.claude_auth.isolation();
-    let claude_auth = match (&bootstrap.claude_auth, isolation) {
-        (ClaudeCredential::OauthToken { token }, Some(isolation)) => Auth::OauthToken {
-            token: token.as_str(),
-            isolation,
-        },
-        (ClaudeCredential::ApiKey { key }, Some(isolation)) => Auth::ApiKey {
-            key: key.as_str(),
-            isolation,
-        },
-        _ => Auth::Inherit,
-    };
-    let codex_isolation = CodexIsolation { home: CODEX_HOME };
-    let codex_auth = match &bootstrap.claude_auth {
-        ClaudeCredential::OauthToken { token } => CodexAuth::OauthToken {
-            token: token.as_str(),
-            isolation: codex_isolation,
-        },
-        ClaudeCredential::ApiKey { key } => CodexAuth::ApiKey {
-            key: key.as_str(),
-            isolation: codex_isolation,
-        },
-        ClaudeCredential::Inherit => CodexAuth::Inherit,
-    };
-
-    let (claude, sidecar, codex) = match bootstrap.harness {
-        HarnessKind::ClaudeCode => (
+    let (claude, sidecar, codex) = match &bootstrap.auth {
+        HarnessCredential::ClaudeCode(credential) => (
             Some(Claude {
                 model: None,
                 permission_mode: bootstrap.permission_mode,
-                auth: claude_auth,
+                auth: claude_auth(credential),
             }),
             Some(Sidecar {
                 dir: SIDECAR_DIR,
@@ -266,21 +363,21 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
             }),
             None,
         ),
-        HarnessKind::Codex => (
+        HarnessCredential::Codex(credential) => (
             None,
             None,
             Some(Codex {
                 bin: "codex",
                 approval_policy: "on-request",
                 sandbox: "workspace-write",
-                auth: codex_auth,
+                auth: codex_auth(credential),
             }),
         ),
     };
 
     let document = Document {
         session: bootstrap.session,
-        harness: bootstrap.harness,
+        harness: bootstrap.auth.harness(),
         workdir: WORKDIR,
         transcript_dir: TRANSCRIPT_DIR,
         machine_origin: bootstrap.machine_origin,
@@ -308,18 +405,19 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
 mod tests {
     use flyco_core::{HarnessKind, MachineOrigin, PermissionMode, SessionId};
 
-    use super::{CLAUDE_CONFIG_DIR, CODEX_HOME, ClaudeCredential, render};
+    use super::{
+        CLAUDE_CONFIG_DIR, CODEX_HOME, ClaudeCredential, CodexCredential, HarnessCredential, render,
+    };
     use crate::DaemonBootstrap;
     use crate::testing::{GITHUB_TOKEN, checkout};
 
-    fn bootstrap(claude_auth: ClaudeCredential) -> DaemonBootstrap {
+    fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
         DaemonBootstrap {
             session: SessionId::generate(),
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_token".to_owned(),
-            harness: HarnessKind::ClaudeCode,
             permission_mode: PermissionMode::Default,
-            claude_auth,
+            auth,
             repo: checkout(),
             machine_origin: MachineOrigin::Auto,
             machine: crate::testing::session_machine(),
@@ -327,9 +425,27 @@ mod tests {
         }
     }
 
+    fn claude(credential: ClaudeCredential) -> DaemonBootstrap {
+        bootstrap(HarnessCredential::ClaudeCode(credential))
+    }
+
+    fn codex(credential: CodexCredential) -> DaemonBootstrap {
+        bootstrap(HarnessCredential::Codex(credential))
+    }
+
+    /// The grant the device-code flow hands over, as the daemon receives it.
+    fn chatgpt() -> CodexCredential {
+        CodexCredential::ChatGpt {
+            id_token: "header.payload.signature".to_owned(),
+            access_token: "chatgpt-access".to_owned(),
+            refresh_token: "chatgpt-refresh".to_owned(),
+            account_id: "acc_01JD".to_owned(),
+        }
+    }
+
     #[test]
     fn a_provisioned_config_names_the_control_plane_and_the_token() {
-        let rendered = render(&bootstrap(ClaudeCredential::Inherit)).expect("render");
+        let rendered = render(&claude(ClaudeCredential::Inherit)).expect("render");
         assert!(rendered.contains("[control_plane]"));
         assert!(rendered.contains("url = \"https://flyco.dev/\""));
         assert!(rendered.contains("daemon_token = \"fd_token\""));
@@ -339,7 +455,7 @@ mod tests {
 
     #[test]
     fn an_injected_credential_always_carries_its_own_config_tree() {
-        let rendered = render(&bootstrap(ClaudeCredential::OauthToken {
+        let rendered = render(&claude(ClaudeCredential::OauthToken {
             token: "sk-ant-oat01-x".to_owned(),
         }))
         .expect("render");
@@ -350,15 +466,16 @@ mod tests {
 
     #[test]
     fn a_credential_never_shows_up_in_a_debug_rendering() {
-        let credential = ClaudeCredential::ApiKey {
+        let credential = HarnessCredential::ClaudeCode(ClaudeCredential::ApiKey {
             key: "sk-ant-secret".to_owned(),
-        };
+        });
         assert!(!format!("{credential:?}").contains("sk-ant-secret"));
+        assert!(!format!("{:?}", HarnessCredential::Codex(chatgpt())).contains("chatgpt-refresh"));
     }
 
     #[test]
     fn the_machine_is_told_which_repository_and_branch_to_check_out() {
-        let rendered = render(&bootstrap(ClaudeCredential::Inherit)).expect("render");
+        let rendered = render(&claude(ClaudeCredential::Inherit)).expect("render");
 
         assert!(rendered.contains("[repo]"));
         assert!(rendered.contains("slug = \"lexoliu/flyco\""));
@@ -372,7 +489,7 @@ mod tests {
         // The bootstrap is what a driver traces while it is being debugged,
         // and it now carries a live GitHub token as well as two other
         // credentials. None of the three may survive a `{:?}`.
-        let bootstrap = bootstrap(ClaudeCredential::OauthToken {
+        let bootstrap = claude(ClaudeCredential::OauthToken {
             token: "sk-ant-oat01-x".to_owned(),
         });
         let debugged = format!("{bootstrap:?}");
@@ -386,22 +503,55 @@ mod tests {
 
     #[test]
     fn a_codex_session_writes_the_codex_table_and_not_claude() {
-        let mut bootstrap = bootstrap(ClaudeCredential::OauthToken {
-            token: "chatgpt-access".to_owned(),
-        });
-        bootstrap.harness = HarnessKind::Codex;
-        let rendered = render(&bootstrap).expect("render");
+        let rendered = render(&codex(chatgpt())).expect("render");
 
         assert!(rendered.contains("[codex]"));
+        assert!(rendered.contains("harness = \"codex\""));
         assert!(rendered.contains("approval_policy = \"on-request\""));
         assert!(rendered.contains(CODEX_HOME));
         assert!(!rendered.contains("[claude]"));
         assert!(!rendered.contains("[sidecar]"));
     }
 
+    /// The four values Codex's own `auth.json` is written from.
+    #[test]
+    fn a_chatgpt_grant_carries_every_value_auth_json_needs() {
+        let rendered = render(&codex(chatgpt())).expect("render");
+
+        assert!(rendered.contains("mode = \"chatgpt\""));
+        assert!(rendered.contains("id_token = \"header.payload.signature\""));
+        assert!(rendered.contains("access_token = \"chatgpt-access\""));
+        assert!(rendered.contains("refresh_token = \"chatgpt-refresh\""));
+        assert!(rendered.contains("account_id = \"acc_01JD\""));
+    }
+
+    #[test]
+    fn a_codex_api_key_is_the_other_codex_mode() {
+        let rendered = render(&codex(CodexCredential::ApiKey {
+            key: "sk-proj-openai".to_owned(),
+        }))
+        .expect("render");
+
+        assert!(rendered.contains("mode = \"api_key\""));
+        assert!(rendered.contains("key = \"sk-proj-openai\""));
+        assert!(rendered.contains(CODEX_HOME));
+    }
+
+    #[test]
+    fn a_credential_decides_the_harness_the_daemon_drives() {
+        assert_eq!(
+            HarnessCredential::Codex(CodexCredential::Inherit).harness(),
+            HarnessKind::Codex
+        );
+        assert_eq!(
+            HarnessCredential::inherit(HarnessKind::ClaudeCode).harness(),
+            HarnessKind::ClaudeCode
+        );
+    }
+
     #[test]
     fn the_machine_the_agent_is_told_about_is_written_with_who_chose_it() {
-        let mut chosen = bootstrap(ClaudeCredential::Inherit);
+        let mut chosen = claude(ClaudeCredential::Inherit);
         chosen.machine_origin = MachineOrigin::User;
         chosen.machine.minimum = Some(flyco_core::BillingMinimum::new(
             24,
@@ -421,7 +571,7 @@ mod tests {
         // TOML has no null: an absent capacity or minimum has to be an
         // absent key, and a `None` reaching the serializer is a render
         // failure rather than a document the daemon would reject.
-        let mut unknown = bootstrap(ClaudeCredential::Inherit);
+        let mut unknown = claude(ClaudeCredential::Inherit);
         unknown.machine.capacity = None;
         unknown.machine.hourly = None;
         let rendered = render(&unknown).expect("render");
@@ -432,11 +582,11 @@ mod tests {
 
     #[test]
     fn a_resume_id_is_written_only_when_there_is_one() {
-        let mut with_resume = bootstrap(ClaudeCredential::Inherit);
+        let mut with_resume = claude(ClaudeCredential::Inherit);
         with_resume.resume_session_id = Some("1f6d2c50-8a4b-4a2b-9f6d-2c508a4b4a2b".to_owned());
 
         assert!(
-            !render(&bootstrap(ClaudeCredential::Inherit))
+            !render(&claude(ClaudeCredential::Inherit))
                 .expect("render")
                 .contains("resume_session_id")
         );

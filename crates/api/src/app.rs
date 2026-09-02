@@ -18,7 +18,6 @@ use skyzen::utils::{Bytes, Json, State};
 use skyzen::{HttpError as _, Response};
 use skyzen_services::{Db, Kv, Queue, Storage};
 
-use crate::anthropic::ClaudeClient;
 use crate::authenticator::FlycoAuthenticator;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
@@ -31,10 +30,12 @@ use crate::relay::{RelayTicket, TicketQuery};
 use crate::respond::{Accepted, Created, NoContent};
 use crate::room::EventPage;
 use crate::rooms::Rooms;
+use crate::vendors::Vendors;
 use crate::{
-    agents_md, api_keys, approvals, claude_oauth, daemon_tokens, env, harness_accounts, machines,
-    mcp, memory, oauth, observations, problem, provider_accounts, provisioning, push, relay,
-    releases, repos, responses, sessions, skills, transcripts, turns, users, webhooks, workdirs,
+    agents_md, api_keys, approvals, claude_oauth, codex_oauth, daemon_tokens, env,
+    harness_accounts, machines, mcp, memory, oauth, observations, problem, provider_accounts,
+    provisioning, push, relay, releases, repos, responses, sessions, skills, transcripts, turns,
+    users, webhooks, workdirs,
 };
 
 /// Health probe response.
@@ -1512,6 +1513,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
     nodes.extend(session_routes());
     nodes.extend(agents_md::routes());
     nodes.extend(claude_oauth::routes());
+    nodes.extend(codex_oauth::routes());
     nodes.extend(harness_accounts::routes());
     nodes.extend(machines::routes());
     nodes.extend(mcp::routes());
@@ -1607,11 +1609,11 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
 pub fn router(
     config: ApiConfig,
     github: GithubClient,
-    claude: ClaudeClient,
+    vendors: Vendors,
     db: Db,
     queue: Queue,
 ) -> Router {
-    configured(config, github, claude)
+    configured(config, github, vendors)
         .with(db)
         .with(queue)
         .build()
@@ -1619,24 +1621,34 @@ pub fn router(
 
 /// The router without the database and queue the declared `[[database]]`
 /// and `[[service]]` entries supply.
-fn configured(config: ApiConfig, github: GithubClient, claude: ClaudeClient) -> Route {
+///
+/// The two vendor clients are injected separately as well as together: a
+/// handler that only redeems Anthropic's grant asks for
+/// [`ClaudeClient`], the Codex routes ask for [`CodexClient`], and the one
+/// place that may renew either — the provisioning consumer — asks for
+/// [`Vendors`].
+fn configured(config: ApiConfig, github: GithubClient, vendors: Vendors) -> Route {
     with_error_handling(
         with_rooms(Route::new((routes(), frontend())))
             .with(State(config))
             .with(State(github))
-            .with(State(claude)),
+            .with(State(vendors.claude.clone()))
+            .with(State(vendors.codex.clone()))
+            .with(State(vendors)),
     )
 }
 
 /// Worker path: configuration is read from the request's `env`, not at
 /// isolate startup. See [`crate::middleware::LoadApiConfig`].
 #[cfg(target_arch = "wasm32")]
-fn configured_from_request(github: GithubClient, claude: ClaudeClient) -> Route {
+fn configured_from_request(github: GithubClient, vendors: Vendors) -> Route {
     with_error_handling(
         with_rooms(Route::new((routes(), frontend())))
             .with(crate::middleware::LoadApiConfig)
             .with(State(github))
-            .with(State(claude)),
+            .with(State(vendors.claude.clone()))
+            .with(State(vendors.codex.clone()))
+            .with(State(vendors)),
     )
 }
 
@@ -1677,11 +1689,11 @@ pub fn router_from_environment() -> Router {
     {
         let config = ApiConfig::from_environment()
             .unwrap_or_else(|error| panic!("flyco control plane is misconfigured: {error}"));
-        configured(config, GithubClient::default(), ClaudeClient::default()).build()
+        configured(config, GithubClient::default(), Vendors::default()).build()
     }
     #[cfg(target_arch = "wasm32")]
     {
-        configured_from_request(GithubClient::default(), ClaudeClient::default()).build()
+        configured_from_request(GithubClient::default(), Vendors::default()).build()
     }
 }
 
