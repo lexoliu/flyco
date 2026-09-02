@@ -9,6 +9,7 @@
  */
 import { Show } from "solid-js";
 import CopyButton from "./CopyButton";
+import { cx } from "../lib/cx";
 import styles from "./CommandBlock.module.css";
 
 export interface CommandBlockProps {
@@ -18,13 +19,22 @@ export interface CommandBlockProps {
   label?: string | undefined;
   /** A caption above the block, when the text needs naming. */
   caption?: string | undefined;
+  /**
+   * Whether a long line wraps rather than scrolling out of sight.
+   *
+   * Off by default, because a script written in lines is easier to read as
+   * the lines it was written in. On where the text is one long line the
+   * reader has to see all of — an installer command piped into `sudo sh`
+   * above all, which nobody should run half-read.
+   */
+  wrap?: boolean | undefined;
 }
 
 export default function CommandBlock(props: CommandBlockProps) {
   return (
     <div class={styles.block}>
       <Show when={props.caption}>{(caption) => <p class={styles.caption}>{caption()}</p>}</Show>
-      <pre class={styles.text}>{props.value}</pre>
+      <pre class={cx(styles.text, props.wrap === true && styles.wrap)}>{props.value}</pre>
       <div class={styles.actions}>
         <CopyButton value={props.value} label={props.label} class={styles.copy} />
       </div>

@@ -90,10 +90,14 @@ eviction watcher is disabled.
 ## UI
 
 The `Your own machine` card in the compute chooser (docs/ux.md §7.5)
-becomes linkable: it shows the one-line command with a copy button, the
-live "Waiting for the machine…" state, and then the compute card
-(hostname, architecture, vCPUs, memory, online dot). Settings › Compute
-lists hosts beside cloud accounts with `Remove`.
+becomes linkable: it shows the one-line command with a copy button, how
+long that command has left, the live "Waiting for the machine…" state, and
+then the compute card (hostname, architecture, vCPUs, memory, free disk,
+online dot). It skips the bonus-programme questions every cloud wizard
+opens with — there is no free credit for hardware somebody already bought.
+Settings › Compute lists hosts beside cloud accounts in the same run of
+cards, with `Rename` and `Remove`; a removal refused because sessions are
+still running names the count and offers `Remove anyway`.
 
 ## Order of work
 
@@ -103,6 +107,9 @@ lists hosts beside cloud accounts with `Remove`.
    provider account, provisioning dispatch to a host.
 3. `flycod host`: enroll, run loop, local Podman executor, facts.
 4. Installer `host` subcommand and Podman bootstrap.
-5. Frontend wizard and settings card.
+5. ~~Frontend wizard and settings card.~~ Done: the chooser's fourth card
+   opens `components/link/HostWizard.tsx`, the enrollment poll is the state
+   machine in `lib/hostEnrollment.ts`, and `components/HostCard.tsx` fills
+   the compute card's shared frame with what the machine reported.
 6. ~~Delete the SSH executor and its `ssh` feature.~~ Done with step 2:
    nothing that dials a machine survived the move to `flyco_provider::host`.

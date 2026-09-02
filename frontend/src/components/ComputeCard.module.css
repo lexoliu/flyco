@@ -35,10 +35,12 @@
 .identity {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
 .title {
+  min-width: 0;
   font-weight: var(--weight-medium);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -50,24 +52,154 @@
   color: var(--color-text-muted);
 }
 
-.unlink {
+/* Status and controls sit together at the end of the header, so a card
+   with both keeps one edge rather than two competing right margins. */
+.headerEnd {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   margin-left: auto;
+  flex: none;
+}
+
+.action,
+.danger {
   flex: none;
   padding: var(--space-1) var(--space-3);
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-full);
   background: transparent;
-  color: var(--color-danger);
+  color: var(--color-text);
   font-size: var(--text-sm);
+  white-space: nowrap;
   transition: border-color var(--transition-fast);
 }
 
-.unlink:hover {
+.danger {
+  color: var(--color-danger);
+}
+
+.action:hover {
+  border-color: var(--color-border-strong);
+}
+
+.danger:hover {
   border-color: var(--color-danger);
 }
 
-.unlink:active {
+.action:active,
+.danger:active {
   transform: translateY(1px);
+}
+
+.action:disabled,
+.danger:disabled {
+  opacity: 0.35;
+}
+
+/* ── A machine the user owns ─────────────────────────────────────────── */
+
+/* The one place colour is allowed on this card: whether the machine is
+   reachable is the fact a person is looking for. */
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  padding: 2px var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--color-neutral-dot);
+}
+
+/* A live machine breathes; a machine that is not there does not. */
+.dot[data-state="online"] {
+  background: var(--color-success);
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+.dot[data-state="draining"] {
+  background: var(--color-warning);
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot[data-state="online"] {
+    animation: none;
+  }
+}
+
+.rename {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.renameInput {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: var(--space-1) var(--space-2);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.renameInput:focus {
+  outline: none;
+  border-color: var(--color-focus-ring);
+}
+
+/* What a refused removal says, before it is offered again with force. */
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+
+.confirmLine {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  max-width: 62ch;
+}
+
+.confirmActions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.error {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-danger);
 }
 
 /* ── The three facts ─────────────────────────────────────────────────── */

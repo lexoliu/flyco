@@ -1,5 +1,14 @@
+/*
+ * The text and the button that copies it are one object, laid out as two
+ * columns rather than one with the button floated over it. A single-line
+ * command — the whole of a host's enrollment line — scrolls sideways, and a
+ * button sitting on top of a scrolling region is a button sitting on top of
+ * the characters the reader is trying to read.
+ */
 .block {
-  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface-sunken);
@@ -7,6 +16,7 @@
 }
 
 .caption {
+  grid-column: 1 / -1;
   margin: 0;
   padding: var(--space-2) var(--space-3) 0;
   font-size: var(--text-xs);
@@ -16,9 +26,9 @@
 }
 
 .text {
+  grid-column: 1;
   margin: 0;
   padding: var(--space-3);
-  padding-right: calc(var(--space-3) + 5rem);
   overflow-x: auto;
   font-family: var(--font-mono);
   font-size: var(--text-sm);
@@ -27,10 +37,15 @@
   tab-size: 2;
 }
 
+/* A line the reader has to see all of, rather than one they scroll. */
+.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .actions {
-  position: absolute;
-  top: var(--space-2);
-  right: var(--space-2);
+  grid-column: 2;
+  padding: var(--space-2) var(--space-2) var(--space-2) 0;
 }
 
 .copy {

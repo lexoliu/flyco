@@ -65,12 +65,45 @@ const AUTOMATIC: MachineDefault = {
   entry: SMALL,
 };
 
-function mount(catalog: MachineCatalogEntry[], chosenKey: string | null, onChoose = vi.fn()) {
+/** The single catalog entry an enrolled machine contributes. */
+const HOST_ACCOUNT = "6c1d9e77-1c2b-4c7f-9c65-3a8b1f2d4e60";
+const HOST: MachineCatalogEntry = {
+  provider: "host",
+  account: HOST_ACCOUNT,
+  // A host is its own region and its own machine type: there is nothing
+  // else to call it that a person would recognise.
+  region: "mercury",
+  machine_type: "mercury",
+  os: "linux",
+  capacity: { vcpus: 16, memory_mib: 64 * 1024 },
+  lineage: null,
+  pricing: { kind: "user_owned" },
+};
+
+const HOST_KEY = `${HOST_ACCOUNT}/mercury/mercury`;
+
+const HOST_AUTOMATIC: MachineDefault = {
+  choice: {
+    provider_account: HOST_ACCOUNT,
+    machine_type: "mercury",
+    region: "mercury",
+    spot: false,
+    disk_gib: 64,
+  },
+  entry: HOST,
+};
+
+function mount(
+  catalog: MachineCatalogEntry[],
+  chosenKey: string | null,
+  onChoose = vi.fn(),
+  automatic: MachineDefault = AUTOMATIC,
+) {
   const result = render(() => (
     <MachineSlider
       catalog={catalog}
       accounts={ACCOUNTS}
-      automatic={AUTOMATIC}
+      automatic={automatic}
       spot={false}
       chosenKey={chosenKey}
       onChoose={onChoose}
@@ -190,6 +223,35 @@ describe("MachineSlider", () => {
 
     expect(queryByLabelText("Machine")).toBeNull();
     expect(getByText(/offers no machine in eastus/)).toBeInTheDocument();
+  });
+
+  it("lets Auto land on a machine the user owns when that is the only compute", () => {
+    // A host arrives through the curated catalog as one ordinary entry, so
+    // the slider needs no case for it: Auto resolves to it and the detent is
+    // there beside it. What the line under the track must not do is quote the
+    // rule about being cheapest, because hardware somebody owns has no price
+    // to be cheapest at.
+    const { getByLabelText, getByText } = mount([HOST], null, vi.fn(), HOST_AUTOMATIC);
+
+    expect(getByLabelText("Machine")).toHaveValue("0");
+    expect(getByLabelText("Machine")).toHaveAttribute("max", "1");
+    expect(getByText("1 machine")).toBeInTheDocument();
+    expect(
+      getByText("mercury — the machine you enrolled, which flyco meters no spend on."),
+    ).toBeInTheDocument();
+    expect(getByLabelText("Machine")).toHaveAttribute(
+      "aria-valuetext",
+      "Auto. mercury — the machine you enrolled, which flyco meters no spend on.",
+    );
+  });
+
+  it("prices a hand-picked host as the hardware it is", () => {
+    const { getByLabelText } = mount([HOST], HOST_KEY, vi.fn(), HOST_AUTOMATIC);
+
+    expect(getByLabelText("Machine")).toHaveAttribute(
+      "aria-valuetext",
+      "mercury · 16 vCPU / 64 GiB · your hardware",
+    );
   });
 
   it("never mixes architectures into one set of detents", () => {
