@@ -1,13 +1,16 @@
 //! What actually puts a session on a machine, end to end.
 //!
-//! Driven against the byo-ssh driver, which is the one flyco can exercise
-//! without a cloud account: a "machine" is a podman container on a
-//! registered host, and the only thing standing between this test and a real
-//! one is the SSH connection. That connection is where the driver's own
-//! tests already cut — [`CommandRunner`] exists so the rendered scripts are
-//! assertable — so the provisioner below is the *real* `SshExecutor` over a
-//! runner that answers instead of dialling. No cloud call, no cloud
-//! resource, no credentials that could be live.
+//! Driven against an enrolled host, which is the machine flyco can exercise
+//! without a cloud account: a "machine" is a podman container on hardware
+//! the user owns, and the only thing standing between this test and a real
+//! one is the socket that machine holds. The provisioner below plans with
+//! the *real* [`Host`] planner and answers where the room would be, so every
+//! container name, every bootstrap and every retry decision is the deployed
+//! one. No cloud call, no cloud resource, no credentials that could be live.
+//!
+//! What the room itself does with a job — holding it for a machine that is
+//! away, and the `JobResult` that completes the row — is
+//! [`crate::tests::hosts`].
 
 use core::future::Future;
 
@@ -15,10 +18,10 @@ use flyco_core::{
     CreateSession, HarnessKind, MachineId, MachineState, Problem, ProviderAccountId,
     ProviderCredentials, SessionDetail, SessionId, SessionState, Usd, UserId,
 };
-use flyco_provider::byo_ssh::{ByoSsh, CommandOutcome, CommandRunner, container_name};
+use flyco_provider::host::container_name;
 use flyco_provider::{
-    ClaudeCredential, CloudProvider as _, DaemonBootstrap, HarnessCredential, HttpError, Machine,
-    ProviderError, ProvisionRequest, byo_ssh,
+    ClaudeCredential, DaemonBootstrap, HarnessCredential, HttpError, Machine, MachineOperation,
+    ProviderError, ProvisionRequest,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -51,35 +54,20 @@ const PROMPT: &str = "audit the relay for dropped frames";
 
 // ── The provisioner under test ──
 
-/// What the registered host answers with.
+/// What the machine's room answers with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Answer {
-    /// The podman script ran and exited with this status.
-    Podman { exit_status: u32 },
-    /// The connection itself did not happen, which is the one failure worth
+    /// The room took the job, which is what a connected machine looks like.
+    Takes,
+    /// The room refused it. The machine answered; nothing is going to change
+    /// on a second attempt.
+    Refused,
+    /// The room could not be reached at all, which is the one failure worth
     /// asking again about.
     Unreachable,
 }
 
-/// Runs the driver's own scripts without opening a connection.
-#[derive(Debug, Clone, Copy)]
-struct CannedRunner {
-    exit_status: u32,
-}
-
-impl CommandRunner for CannedRunner {
-    fn run(
-        &mut self,
-        _script: &str,
-    ) -> impl Future<Output = Result<CommandOutcome, ProviderError>> + Send {
-        core::future::ready(Ok(CommandOutcome {
-            exit_status: self.exit_status,
-            output: "podman said something".to_owned(),
-        }))
-    }
-}
-
-/// The real byo-ssh driver, over a recorded connection.
+/// The real planner, over a room that answers instead of holding a socket.
 ///
 /// Counts the provisions it was actually asked for — which is what "a
 /// redelivered job does not provision twice" is an assertion about — and
@@ -93,7 +81,7 @@ struct RecordedHost {
     ///
     /// A recovery is a *start*, never a provision, and the two counters are
     /// separate so a recovery that quietly rebuilt the machine — and with
-    /// it the disk holding the session's work — would fail rather than
+    /// it the volume holding the session's work — would fail rather than
     /// pass.
     restarts: Vec<Machine>,
     bootstrap: Option<DaemonBootstrap>,
@@ -109,35 +97,21 @@ impl RecordedHost {
         }
     }
 
-    /// A host whose podman run succeeds.
+    /// A machine whose room takes what it is sent.
     const fn healthy() -> Self {
-        Self::answering(Answer::Podman { exit_status: 0 })
+        Self::answering(Answer::Takes)
     }
 }
 
 impl Provisioner for RecordedHost {
-    async fn provision(
+    fn provision(
         &mut self,
         account: &LinkedAccount,
         request: &ProvisionRequest,
-    ) -> Result<Machine, ProviderError> {
-        self.provisions = self.provisions.saturating_add(1);
-        self.bootstrap = Some(request.bootstrap.clone());
-
-        let ProviderCredentials::ByoSsh { host, .. } = account.credentials() else {
-            panic!("these tests only link registered SSH hosts");
-        };
-
-        match self.answer {
-            Answer::Podman { exit_status } => {
-                byo_ssh::SshExecutor::new(ByoSsh::new(host.clone()), CannedRunner { exit_status })
-                    .provision(request)
-                    .await
-            }
-            Answer::Unreachable => Err(ProviderError::Transport(HttpError::Transport(
-                "the registered host did not answer".to_owned(),
-            ))),
-        }
+    ) -> impl Future<Output = Result<Machine, ProviderError>> {
+        // Nothing here suspends: planning is pure, and where the deployed
+        // provisioner posts the job to a room this one answers for it.
+        core::future::ready(self.plan(account, request))
     }
 
     fn restart(
@@ -147,7 +121,7 @@ impl Provisioner for RecordedHost {
     ) -> impl Future<Output = Result<Machine, ProviderError>> {
         if self.answer == Answer::Unreachable {
             return core::future::ready(Err(ProviderError::Transport(HttpError::Transport(
-                "the registered host did not answer".to_owned(),
+                "the machine's room did not answer".to_owned(),
             ))));
         }
         self.restarts.push(machine.clone());
@@ -155,6 +129,46 @@ impl Provisioner for RecordedHost {
             state: MachineState::Running,
             ..machine.clone()
         }))
+    }
+}
+
+impl RecordedHost {
+    /// What the deployed provisioner does for a machine somebody owns, minus
+    /// the room it posts to.
+    fn plan(
+        &mut self,
+        account: &LinkedAccount,
+        request: &ProvisionRequest,
+    ) -> Result<Machine, ProviderError> {
+        self.provisions = self.provisions.saturating_add(1);
+        self.bootstrap = Some(request.bootstrap.clone());
+
+        let ProviderCredentials::Host { .. } = account.credentials() else {
+            panic!("these tests only provision onto enrolled machines");
+        };
+        let planner = account
+            .host_planner()
+            .expect("a host account names the machine it provisions onto");
+        // The real planner, so a container name or a refused machine type is
+        // the deployed answer rather than a fixture's opinion.
+        let job = planner.plan(&MachineOperation::Provision(Box::new(request.clone())))?;
+
+        match self.answer {
+            Answer::Takes => Ok(Machine {
+                id: request.machine,
+                native_id: job.container().to_owned(),
+                region: planner.machine_type().to_owned(),
+                state: MachineState::Running,
+                capacity_mode: flyco_provider::CapacityMode::OnDemand,
+                address: Some(planner.machine_type().to_owned()),
+            }),
+            Answer::Refused => Err(ProviderError::Rejected(
+                "this machine refused the container job".to_owned(),
+            )),
+            Answer::Unreachable => Err(ProviderError::Transport(HttpError::Transport(
+                "the machine's room did not answer".to_owned(),
+            ))),
+        }
     }
 }
 
@@ -498,7 +512,7 @@ async fn a_provision_that_fails_leaves_the_session_visibly_failed(
     let client = ctx.client(router);
 
     let session = open(&client, &caller).await.summary.id;
-    let mut host = RecordedHost::answering(Answer::Podman { exit_status: 125 });
+    let mut host = RecordedHost::answering(Answer::Refused);
     run_queue(&db, &queue, &mut host).await;
 
     let failed = read(&client, &caller, session).await;
@@ -509,11 +523,11 @@ async fn a_provision_that_fails_leaves_the_session_visibly_failed(
     );
     let reason = failed.failure.expect("a failed session says why");
     assert!(
-        reason.contains("125"),
-        "the reason is the provider's own: {reason}"
+        reason.contains("refused"),
+        "the reason is the machine's own: {reason}"
     );
 
-    // A podman exit is the host answering, not the connection failing, so
+    // A refusal is the machine answering, not the connection failing, so
     // nothing was queued for another attempt.
     assert!(drain(&queue).await.is_empty());
 
@@ -1191,11 +1205,14 @@ async fn the_bootstrap_tells_the_daemon_which_machine_and_who_chose_it(
         bootstrap.machine.machine_type,
         machine_choice(caller.account).machine_type
     );
-    // A registered host is hardware the user already owns: flyco meters
-    // nothing on it and has never measured it, so it quotes neither a price
-    // nor a size rather than quoting zero.
+    // An enrolled machine is hardware the user already owns: flyco meters
+    // nothing on it, so it quotes no price rather than quoting zero. It does
+    // quote a size, because the machine measured itself and said so.
     assert_eq!(bootstrap.machine.hourly, None);
-    assert_eq!(bootstrap.machine.capacity, None);
+    assert_eq!(
+        bootstrap.machine.capacity,
+        Some(crate::testing::host_facts().capacity())
+    );
     assert!(!bootstrap.machine.is_license_bound());
 }
 

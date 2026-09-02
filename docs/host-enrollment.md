@@ -104,4 +104,5 @@ lists hosts beside cloud accounts with `Remove`.
 3. `flycod host`: enroll, run loop, local Podman executor, facts.
 4. Installer `host` subcommand and Podman bootstrap.
 5. Frontend wizard and settings card.
-6. Delete the SSH executor and its `ssh` feature.
+6. ~~Delete the SSH executor and its `ssh` feature.~~ Done with step 2:
+   nothing that dials a machine survived the move to `flyco_provider::host`.

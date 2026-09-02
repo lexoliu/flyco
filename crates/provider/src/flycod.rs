@@ -1,7 +1,7 @@
 //! The `flycod` configuration a provisioned machine boots with.
 //!
 //! Every provider hands the daemon the same document — Azure writes it into
-//! cloud-init, byo-ssh into the container's environment — so it is rendered
+//! cloud-init, a host into the container's environment — so it is rendered
 //! once, here, and both drivers embed the result.
 //!
 //! It is a serde structure serialized by [`toml`] rather than a template:
@@ -372,7 +372,7 @@ fn codex_auth(credential: &CodexCredential) -> CodexAuth<'_> {
 /// by its owner, and there is no notice to watch for.
 const fn spot_provider(bootstrap: &DaemonBootstrap) -> Option<CloudProviderKind> {
     match bootstrap.provider {
-        CloudProviderKind::ByoSsh => None,
+        CloudProviderKind::Host => None,
         provider @ (CloudProviderKind::Azure | CloudProviderKind::Aws | CloudProviderKind::Gcp) => {
             if bootstrap.machine.spot {
                 Some(provider)
@@ -658,7 +658,7 @@ mod tests {
         );
 
         let mut owned = claude(ClaudeCredential::Inherit);
-        owned.provider = CloudProviderKind::ByoSsh;
+        owned.provider = CloudProviderKind::Host;
         assert!(!render(&owned).expect("render").contains("spot_provider"));
     }
 

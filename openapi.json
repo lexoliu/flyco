@@ -1113,6 +1113,542 @@
         }
       }
     },
+    "/v1/hosts": {
+      "get": {
+        "summary": "Lists the caller's enrolled machines.",
+        "description": "Lists the caller's enrolled machines.",
+        "operationId": "flyco_api::hosts::list_hosts",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "One row of `GET /v1/hosts`, and the body of `GET /v1/hosts/{id}`.\n\nCarries no credential: a host's token is minted once, stored hashed, and\nnever read back, exactly like a daemon token.",
+                    "required": [
+                      "id",
+                      "label",
+                      "state",
+                      "facts",
+                      "created_at_unix"
+                    ],
+                    "properties": {
+                      "created_at_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "When it was enrolled, seconds since the Unix epoch.",
+                        "minimum": 0
+                      },
+                      "facts": {
+                        "$ref": "#/components/schemas/HostFacts",
+                        "description": "What it last said about itself.\n\nAbsent only between the row being written and the host's first\n`Hello`, which is a window the enrollment route does not leave open —\nenrolling carries the facts."
+                      },
+                      "id": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Identifier every route and every container job names it by."
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "What the user calls it. Opens as the hostname it enrolled with."
+                      },
+                      "last_seen_unix": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int64",
+                        "description": "When its daemon was last heard from, seconds since the Unix epoch.",
+                        "minimum": 0
+                      },
+                      "state": {
+                        "$ref": "#/components/schemas/HostState",
+                        "description": "Where it is in its life."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/hosts/enroll": {
+      "post": {
+        "summary": "Registers a machine, spending the enrollment token it presents.",
+        "description": "Registers a machine, spending the enrollment token it presents.\n\nPublic, because the machine holds no user credential: the enrollment\ntoken *is* the credential, it is single-use, and it names the user who\nminted it.",
+        "operationId": "flyco_api::hosts::enroll_host",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/hosts/enroll`.\n\nPresented by `flycod host enroll` on the machine itself. It carries no\nuser credential — the enrollment token *is* the credential, and it is\nbound to the user who minted it.",
+                "required": [
+                  "token",
+                  "facts"
+                ],
+                "properties": {
+                  "facts": {
+                    "$ref": "#/components/schemas/HostFacts",
+                    "description": "What the machine is, as it measured itself."
+                  },
+                  "token": {
+                    "type": "string",
+                    "description": "The single-use enrollment token, `fh_…`."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Answer of `POST /v1/hosts/enroll` and of `POST\n/v1/hosts/{id}/token/rotate`.\n\nThe long-lived credential the host keeps root-only on disk, returned\nexactly once. Rotating mints another and revokes this one, which is how\na host that leaked its token is recovered without re-enrolling it.",
+                  "required": [
+                    "host_id",
+                    "host_token"
+                  ],
+                  "properties": {
+                    "host_id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "The host that now exists."
+                    },
+                    "host_token": {
+                      "type": "string",
+                      "description": "Its token, `fh_…`. The only copy that will ever exist."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/hosts/enrollment-tokens": {
+      "post": {
+        "summary": "Mints an enrollment token and the one command that spends it.",
+        "description": "Mints an enrollment token and the one command that spends it.",
+        "operationId": "flyco_api::hosts::mint_enrollment_token",
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Answer of `POST /v1/hosts/enrollment-tokens`.\n\nThe token is returned exactly once and stored only as a hash. The\ncommand is rendered by the control plane rather than assembled by the\nwizard, because it names *this deployment's* origin: a command built in\nthe browser would point wherever the page happened to be served from.",
+                  "required": [
+                    "id",
+                    "token",
+                    "expires_at_unix",
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "description": "The one line to run on the machine, ready to copy."
+                    },
+                    "expires_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it stops being accepted, seconds since the Unix epoch.",
+                      "minimum": 0
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier the wizard polls while it waits for the machine."
+                    },
+                    "token": {
+                      "type": "string",
+                      "description": "The single-use token, `fh_…`."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/hosts/enrollment-tokens/{id}": {
+      "get": {
+        "summary": "Reports whether the machine a token was minted for has arrived.",
+        "description": "Reports whether the machine a token was minted for has arrived.",
+        "operationId": "flyco_api::hosts::get_enrollment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "description": "The token is live and unspent: no machine has enrolled with it.",
+                      "required": [
+                        "status"
+                      ],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "description": "The token was spent, and this is the host it enrolled.",
+                      "required": [
+                        "host",
+                        "status"
+                      ],
+                      "properties": {
+                        "host": {
+                          "$ref": "#/components/schemas/HostView",
+                          "description": "The machine that arrived."
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "enrolled"
+                          ]
+                        }
+                      }
+                    }
+                  ],
+                  "description": "Answer of `GET /v1/hosts/enrollment-tokens/{id}`.\n\nWhat the wizard polls: either nothing has happened yet, or the machine\narrived and this is it."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/hosts/{id}": {
+      "get": {
+        "summary": "Describes one of the caller's enrolled machines.",
+        "description": "Describes one of the caller's enrolled machines.",
+        "operationId": "flyco_api::hosts::get_host",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One row of `GET /v1/hosts`, and the body of `GET /v1/hosts/{id}`.\n\nCarries no credential: a host's token is minted once, stored hashed, and\nnever read back, exactly like a daemon token.",
+                  "required": [
+                    "id",
+                    "label",
+                    "state",
+                    "facts",
+                    "created_at_unix"
+                  ],
+                  "properties": {
+                    "created_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was enrolled, seconds since the Unix epoch.",
+                      "minimum": 0
+                    },
+                    "facts": {
+                      "$ref": "#/components/schemas/HostFacts",
+                      "description": "What it last said about itself.\n\nAbsent only between the row being written and the host's first\n`Hello`, which is a window the enrollment route does not leave open —\nenrolling carries the facts."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier every route and every container job names it by."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "What the user calls it. Opens as the hostname it enrolled with."
+                    },
+                    "last_seen_unix": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "format": "int64",
+                      "description": "When its daemon was last heard from, seconds since the Unix epoch.",
+                      "minimum": 0
+                    },
+                    "state": {
+                      "$ref": "#/components/schemas/HostState",
+                      "description": "Where it is in its life."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Drains a host, stops what runs on it, and revokes its token.",
+        "description": "Drains a host, stops what runs on it, and revokes its token.",
+        "operationId": "flyco_api::hosts::delete_host",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Required while sessions are still running on the machine: the caller\nhas seen the refusal and wants their containers stopped anyway."
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      },
+      "patch": {
+        "summary": "Renames one of the caller's enrolled machines.",
+        "description": "Renames one of the caller's enrolled machines.",
+        "operationId": "flyco_api::hosts::update_host",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `PATCH /v1/hosts/{id}`.",
+                "required": [
+                  "label"
+                ],
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "description": "What to call it from now on."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One row of `GET /v1/hosts`, and the body of `GET /v1/hosts/{id}`.\n\nCarries no credential: a host's token is minted once, stored hashed, and\nnever read back, exactly like a daemon token.",
+                  "required": [
+                    "id",
+                    "label",
+                    "state",
+                    "facts",
+                    "created_at_unix"
+                  ],
+                  "properties": {
+                    "created_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was enrolled, seconds since the Unix epoch.",
+                      "minimum": 0
+                    },
+                    "facts": {
+                      "$ref": "#/components/schemas/HostFacts",
+                      "description": "What it last said about itself.\n\nAbsent only between the row being written and the host's first\n`Hello`, which is a window the enrollment route does not leave open —\nenrolling carries the facts."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier every route and every container job names it by."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "What the user calls it. Opens as the hostname it enrolled with."
+                    },
+                    "last_seen_unix": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "format": "int64",
+                      "description": "When its daemon was last heard from, seconds since the Unix epoch.",
+                      "minimum": 0
+                    },
+                    "state": {
+                      "$ref": "#/components/schemas/HostState",
+                      "description": "Where it is in its life."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/hosts/{id}/job-results": {
+      "post": {
+        "summary": "Records what a host made of a container job it was sent.",
+        "description": "Records what a host made of a container job it was sent.\n\nAuthenticated by the host's own `fh_` token rather than by a user\ncredential, exactly as a session daemon's routes are by its `fd_` token:\nit resolves to *this machine* and to nothing else.",
+        "operationId": "flyco_api::hosts::report_job_result",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/hosts/{id}/job-results`.\n\nThe durable half of `HostToControl::JobResult`. The relay frame beside\nit is what lets the host's room forget a job it was holding; this is what\ncompletes the machine row — and it has to be a REST call rather than a\nroom frame because a Durable Object can reach neither D1 nor the\nprovisioning queue, exactly as [`crate::wire::ReportSpotNotice`]\ndocuments for a session's daemon.",
+                "required": [
+                  "job_id",
+                  "outcome"
+                ],
+                "properties": {
+                  "job_id": {
+                    "$ref": "#/components/schemas/Uuid",
+                    "description": "The machine the job acted on, which is also the job's identity: one\ncontainer job is one machine, and every Podman name in it is derived\nfrom this id."
+                  },
+                  "outcome": {
+                    "$ref": "#/components/schemas/JobOutcome",
+                    "description": "What came of it."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
+    "/v1/hosts/{id}/relay": {
+      "get": {
+        "summary": "app::open_host_relay",
+        "operationId": "app::open_host_relay",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/v1/hosts/{id}/token/rotate": {
+      "post": {
+        "summary": "Mints a new token for one of the caller's machines, revoking the old one.",
+        "description": "Mints a new token for one of the caller's machines, revoking the old one.",
+        "operationId": "flyco_api::hosts::rotate_host_token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Answer of `POST /v1/hosts/enroll` and of `POST\n/v1/hosts/{id}/token/rotate`.\n\nThe long-lived credential the host keeps root-only on disk, returned\nexactly once. Rotating mints another and revokes this one, which is how\na host that leaked its token is recovered without re-enrolling it.",
+                  "required": [
+                    "host_id",
+                    "host_token"
+                  ],
+                  "properties": {
+                    "host_id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "The host that now exists."
+                    },
+                    "host_token": {
+                      "type": "string",
+                      "description": "Its token, `fh_…`. The only copy that will ever exist."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/machines/catalog": {
       "get": {
         "summary": "Lists the machine types the caller can provision, with their prices.",
@@ -4821,7 +5357,7 @@
     "/v1/usage/cloud": {
       "get": {
         "summary": "Reports metered cloud spend per linked account.",
-        "description": "Reports metered cloud spend per linked account.\n\nThe provider's own meter is the authority — a total flyco assembled from\nits machine records would miss the storage, egress and support charges\non the same invoice — so every row here was read from the account it\ndescribes, over the window it names.\n\nNot every linked account produces a row. A registered SSH host is\nhardware the user already owns and already pays for: flyco meters\nnothing there and says nothing, rather than reporting a `$0.00` that\nwould read as \"this costs nothing\".",
+        "description": "Reports metered cloud spend per linked account.\n\nThe provider's own meter is the authority — a total flyco assembled from\nits machine records would miss the storage, egress and support charges\non the same invoice — so every row here was read from the account it\ndescribes, over the window it names.\n\nNot every linked account produces a row. A machine the user owns is\nhardware they already pay for: flyco meters nothing there and says\nnothing, rather than reporting a `$0.00` that would read as \"this costs\nnothing\".",
         "operationId": "flyco_api::provider_accounts::cloud_usage",
         "parameters": [
           {
@@ -5576,7 +6112,7 @@
           "azure",
           "aws",
           "gcp",
-          "byo_ssh"
+          "host"
         ]
       },
       "CloudUsageFilter": {
@@ -5951,6 +6487,112 @@
               "null"
             ],
             "description": "Whether to price and pick against spot capacity. Spot is the default\nbecause it is cheaper and flyco handles eviction."
+          }
+        }
+      },
+      "EnrollHost": {
+        "type": "object",
+        "description": "Request body of `POST /v1/hosts/enroll`.\n\nPresented by `flycod host enroll` on the machine itself. It carries no\nuser credential — the enrollment token *is* the credential, and it is\nbound to the user who minted it.",
+        "required": [
+          "token",
+          "facts"
+        ],
+        "properties": {
+          "facts": {
+            "$ref": "#/components/schemas/HostFacts",
+            "description": "What the machine is, as it measured itself."
+          },
+          "token": {
+            "type": "string",
+            "description": "The single-use enrollment token, `fh_…`."
+          }
+        }
+      },
+      "EnrolledHost": {
+        "type": "object",
+        "description": "Answer of `POST /v1/hosts/enroll` and of `POST\n/v1/hosts/{id}/token/rotate`.\n\nThe long-lived credential the host keeps root-only on disk, returned\nexactly once. Rotating mints another and revokes this one, which is how\na host that leaked its token is recovered without re-enrolling it.",
+        "required": [
+          "host_id",
+          "host_token"
+        ],
+        "properties": {
+          "host_id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "The host that now exists."
+          },
+          "host_token": {
+            "type": "string",
+            "description": "Its token, `fh_…`. The only copy that will ever exist."
+          }
+        }
+      },
+      "Enrollment": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The token is live and unspent: no machine has enrolled with it.",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The token was spent, and this is the host it enrolled.",
+            "required": [
+              "host",
+              "status"
+            ],
+            "properties": {
+              "host": {
+                "$ref": "#/components/schemas/HostView",
+                "description": "The machine that arrived."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "enrolled"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Answer of `GET /v1/hosts/enrollment-tokens/{id}`.\n\nWhat the wizard polls: either nothing has happened yet, or the machine\narrived and this is it."
+      },
+      "EnrollmentToken": {
+        "type": "object",
+        "description": "Answer of `POST /v1/hosts/enrollment-tokens`.\n\nThe token is returned exactly once and stored only as a hash. The\ncommand is rendered by the control plane rather than assembled by the\nwizard, because it names *this deployment's* origin: a command built in\nthe browser would point wherever the page happened to be served from.",
+        "required": [
+          "id",
+          "token",
+          "expires_at_unix",
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The one line to run on the machine, ready to copy."
+          },
+          "expires_at_unix": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it stops being accepted, seconds since the Unix epoch.",
+            "minimum": 0
+          },
+          "id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "Identifier the wizard polls while it waits for the machine."
+          },
+          "token": {
+            "type": "string",
+            "description": "The single-use token, `fh_…`."
           }
         }
       },
@@ -6350,12 +6992,180 @@
           }
         }
       },
+      "HostFacts": {
+        "type": "object",
+        "description": "What a host says about itself when it greets the control plane.\n\nReported by the machine rather than configured by the user, and\nrefreshed on every `Hello`: a host that gained memory, filled its disk,\nor was upgraded to another Podman is a different machine to schedule\nonto, and flyco has no other way to learn it.",
+        "required": [
+          "architecture",
+          "vcpus",
+          "memory_mib",
+          "disk_free_gib",
+          "podman_version",
+          "kernel",
+          "hostname"
+        ],
+        "properties": {
+          "architecture": {
+            "$ref": "#/components/schemas/CpuArchitecture",
+            "description": "The instruction set it runs."
+          },
+          "disk_free_gib": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Free space in GiB where Podman keeps its containers and volumes.\n\nFree rather than total, because it is the number that decides\nwhether another session fits.",
+            "minimum": 0
+          },
+          "hostname": {
+            "type": "string",
+            "description": "The machine's hostname.\n\nAlso how the host names itself in the machine catalog: it is its own\nregion and its own machine type, and there is nothing else to call\nit that a person would recognise."
+          },
+          "kernel": {
+            "type": "string",
+            "description": "Kernel release, as `uname -r` prints it."
+          },
+          "memory_mib": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total memory in MiB.",
+            "minimum": 0
+          },
+          "podman_version": {
+            "type": "string",
+            "description": "Podman's own version string, e.g. `5.4.0`."
+          },
+          "vcpus": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Virtual CPU count, as the kernel reports it.",
+            "minimum": 0
+          }
+        }
+      },
+      "HostState": {
+        "type": "string",
+        "description": "Where a host is in its life.",
+        "enum": [
+          "online",
+          "offline",
+          "draining",
+          "removed"
+        ]
+      },
+      "HostView": {
+        "type": "object",
+        "description": "One row of `GET /v1/hosts`, and the body of `GET /v1/hosts/{id}`.\n\nCarries no credential: a host's token is minted once, stored hashed, and\nnever read back, exactly like a daemon token.",
+        "required": [
+          "id",
+          "label",
+          "state",
+          "facts",
+          "created_at_unix"
+        ],
+        "properties": {
+          "created_at_unix": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it was enrolled, seconds since the Unix epoch.",
+            "minimum": 0
+          },
+          "facts": {
+            "$ref": "#/components/schemas/HostFacts",
+            "description": "What it last said about itself.\n\nAbsent only between the row being written and the host's first\n`Hello`, which is a window the enrollment route does not leave open —\nenrolling carries the facts."
+          },
+          "id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "Identifier every route and every container job names it by."
+          },
+          "label": {
+            "type": "string",
+            "description": "What the user calls it. Opens as the hostname it enrolled with."
+          },
+          "last_seen_unix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When its daemon was last heard from, seconds since the Unix epoch.",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/HostState",
+            "description": "Where it is in its life."
+          }
+        }
+      },
       "InterruptedReason": {
         "type": "string",
         "description": "Why a session lost the machine it was running on.\n\nRecorded beside [`SessionState::Interrupted`] rather than folded into\nit, because the state says the session is off its compute and this says\nwhat the user is looking at: `Interrupted · spot reclaimed` is a status\nflyco is already recovering from, and a status with no reason would read\nas a session somebody has to rescue by hand (docs/ux.md §6).\n\nKept while flyco puts the session back — the recovery runs through\n[`SessionState::Provisioning`], and the reason is what tells that\nprovisioning apart from a first one, which is the whole of `Migrating` —\nand cleared when the session's daemon reaches the control plane again.",
         "enum": [
           "spot_reclaimed"
         ]
+      },
+      "JobOutcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The session's container is running, under these Podman names.\n\nBoth are reported by the host rather than assumed by the control\nplane, for the same reason a cloud driver's answer is recorded\nrather than the request that produced it: what exists is what has to\nbe stopped and removed later.",
+            "required": [
+              "container",
+              "volume",
+              "outcome"
+            ],
+            "properties": {
+              "container": {
+                "type": "string",
+                "description": "Name of the container Podman created."
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "running"
+                ]
+              },
+              "volume": {
+                "type": "string",
+                "description": "Name of the volume holding the session's work."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The job did what it was asked and named nothing new — a stop, a\nstart, a removal.",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "done"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "It failed, with what Podman said.",
+            "required": [
+              "message",
+              "outcome"
+            ],
+            "properties": {
+              "message": {
+                "type": "string",
+                "description": "The failure, as the host saw it."
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "What came of one container job on a host.\n\nA sum rather than a status and a nullable pair, because \"the container\nis up and here is what it is called\" and \"podman refused\" are different\nanswers and only one of them names a container."
       },
       "LinkHarnessAccount": {
         "type": "object",
@@ -7196,43 +8006,21 @@
           },
           {
             "type": "object",
-            "description": "A Linux host the user already owns, reached over SSH and sandboxed\nwith Podman.",
+            "description": "A Linux machine the user owns, enrolled with the control plane.\n\nThe one variant that holds no secret, because there is none to hold:\na host authenticates *itself* with the token it was issued at\nenrollment, and the control plane never dials it. What this names is\nwhich machine the account provisions onto — see [`crate::host`].\n\nAn account of this kind is created by enrolling a machine, never by\n`POST /v1/providers`: a host id nobody enrolled would name a machine\nthat cannot answer.",
             "required": [
               "host",
-              "port",
-              "user",
-              "private_key",
-              "host_fingerprint",
               "kind"
             ],
             "properties": {
               "host": {
-                "type": "string",
-                "description": "Hostname or address to dial."
-              },
-              "host_fingerprint": {
-                "type": "string",
-                "description": "The host key flyco must see, as `ssh-keygen -lf` prints it:\n`SHA256:` followed by unpadded base64.\n\nRequired rather than optional, and there is no trust-on-first-use\npath: linking this account is the moment flyco starts handing the\nhost live session credentials, and an unverified host key means\nhanding them to whoever answers on that address."
+                "$ref": "#/components/schemas/Uuid",
+                "description": "The enrolled machine this account provisions onto."
               },
               "kind": {
                 "type": "string",
                 "enum": [
-                  "byo_ssh"
+                  "host"
                 ]
-              },
-              "port": {
-                "type": "integer",
-                "format": "int32",
-                "description": "SSH port.",
-                "minimum": 0
-              },
-              "private_key": {
-                "type": "string",
-                "description": "PEM-encoded private key flyco authenticates with."
-              },
-              "user": {
-                "type": "string",
-                "description": "Login user, which must be able to run Podman."
               }
             }
           }
@@ -7373,6 +8161,16 @@
           }
         }
       },
+      "RemoveQuery": {
+        "type": "object",
+        "description": "Narrows a host removal.",
+        "properties": {
+          "force": {
+            "type": "boolean",
+            "description": "Required while sessions are still running on the machine: the caller\nhas seen the refusal and wants their containers stopped anyway."
+          }
+        }
+      },
       "RepoQuery": {
         "type": "object",
         "description": "Narrows the repository picker.",
@@ -7444,6 +8242,24 @@
           "slug": {
             "$ref": "#/components/schemas/RepoSlug",
             "description": "`owner/name`, which is what `POST /v1/sessions` takes."
+          }
+        }
+      },
+      "ReportJobResult": {
+        "type": "object",
+        "description": "Request body of `POST /v1/hosts/{id}/job-results`.\n\nThe durable half of `HostToControl::JobResult`. The relay frame beside\nit is what lets the host's room forget a job it was holding; this is what\ncompletes the machine row — and it has to be a REST call rather than a\nroom frame because a Durable Object can reach neither D1 nor the\nprovisioning queue, exactly as [`crate::wire::ReportSpotNotice`]\ndocuments for a session's daemon.",
+        "required": [
+          "job_id",
+          "outcome"
+        ],
+        "properties": {
+          "job_id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "The machine the job acted on, which is also the job's identity: one\ncontainer job is one machine, and every Podman name in it is derived\nfrom this id."
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/JobOutcome",
+            "description": "What came of it."
           }
         }
       },
@@ -7935,6 +8751,19 @@
               "$ref": "#/components/schemas/EnvEntry"
             },
             "description": "The complete new set of variables; this replaces the document."
+          }
+        }
+      },
+      "UpdateHost": {
+        "type": "object",
+        "description": "Request body of `PATCH /v1/hosts/{id}`.",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What to call it from now on."
           }
         }
       },

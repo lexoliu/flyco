@@ -41,8 +41,9 @@ const COLLECTION_PLACEHOLDER: &str = "Vec";
 ///   session's daemon — carry a status and nothing else.
 /// * `oauth::callback` answers `303`: the body of a redirect is not what the
 ///   caller reads.
-/// * `app::open_daemon_relay` and `app::open_client_relay` answer `101` with
-///   a WebSocket attached, which the response model has no way to describe.
+/// * `app::open_daemon_relay`, `app::open_client_relay` and
+///   `app::open_host_relay` answer `101` with a WebSocket attached, which the
+///   response model has no way to describe.
 /// * `app::get_release_artifact`, `app::put_transcript_batch`,
 ///   `app::get_transcript`, and the workdir patch pair carry raw bytes: a
 ///   release is an executable or checksum, a transcript batch is
@@ -57,6 +58,7 @@ pub const BODILESS: &[&str] = &[
     "app::get_transcript",
     "app::open_client_relay",
     "app::open_daemon_relay",
+    "app::open_host_relay",
     "app::put_transcript_batch",
     "flyco_api::app::agent_resize_machine",
     "flyco_api::app::compact_session",
@@ -73,6 +75,8 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::app::revoke_api_key",
     "flyco_api::app::send_message",
     "flyco_api::harness_accounts::unlink_harness_account",
+    "flyco_api::hosts::delete_host",
+    "flyco_api::hosts::report_job_result",
     "flyco_api::machines::resize_session_machine",
     "flyco_api::machines::start_session_machine",
     "flyco_api::machines::stop_session_machine",

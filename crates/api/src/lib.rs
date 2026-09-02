@@ -27,6 +27,8 @@ pub mod expiring;
 pub mod extract;
 pub mod github;
 pub mod harness_accounts;
+pub mod host_room;
+pub mod hosts;
 pub mod machines;
 pub mod mcp;
 pub mod memory;

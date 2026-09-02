@@ -7,9 +7,9 @@
 //! observation reaches exactly the account of the session that posted it.
 
 use flyco_core::{
-    CloudUsageView, HarnessAccountId, HarnessKind, HarnessObservation, LinkProvider, LlmUsageView,
-    OBSERVATION_WINDOW_SECONDS, Problem, ProviderAccountView, ProviderCredentials,
-    RateLimitObservation, SessionId, Usd, UserId,
+    CloudUsageView, HarnessAccountId, HarnessKind, HarnessObservation, LlmUsageView,
+    OBSERVATION_WINDOW_SECONDS, Problem, ProviderAccountView, RateLimitObservation, SessionId, Usd,
+    UserId,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -17,7 +17,9 @@ use skyzen_services::{Db, Kv};
 use skyzen_test::{TestClient, TestContext};
 
 use crate::clock::now_unix;
-use crate::testing::{migrated_router, seed_other_user, seed_session, seed_user};
+use crate::testing::{
+    migrated_router, seed_other_user, seed_provider_account, seed_session, seed_user,
+};
 use crate::{daemon_tokens, session};
 
 const PATH: &str = "/v1/usage/llm";
@@ -319,28 +321,6 @@ async fn a_panel_shows_only_the_callers_own_accounts(ctx: TestContext, kv: Kv, d
 
 // ── The cloud panel ──
 
-/// Registers the SSH host flyco develops against, which is a real machine
-/// the user owns rather than anything flyco meters.
-async fn link_host(client: &TestClient<Router>, token: &str) -> ProviderAccountView {
-    let response = client
-        .post("/v1/providers")
-        .bearer(token)
-        .json(&LinkProvider {
-            label: "the build host".to_owned(),
-            credentials: ProviderCredentials::ByoSsh {
-                host: "build.lexo.cool".to_owned(),
-                port: 22,
-                user: "flyco".to_owned(),
-                private_key: "-----BEGIN OPENSSH PRIVATE KEY-----".to_owned(),
-                host_fingerprint: "SHA256:qWyVLPxNBRr7Nnkm1xTQKMDcXwHFsSFRnLW6iNfPmcQ".to_owned(),
-            },
-        })
-        .send()
-        .await;
-    response.assert_status(201);
-    response.json()
-}
-
 async fn cloud(client: &TestClient<Router>, token: &str) -> Vec<CloudUsageView> {
     let response = client.get("/v1/usage/cloud").bearer(token).send().await;
     response.assert_status(200);
@@ -362,7 +342,7 @@ async fn a_host_the_user_owns_contributes_no_row(ctx: TestContext, kv: Kv, db: D
     let user = seed_user(&db).await;
     let token = session::issue(&kv, user.id).await.expect("issue a session");
 
-    let account = link_host(&client, &token).await;
+    let account = seed_provider_account(&db, user.id).await;
     assert!(
         client
             .get("/v1/providers")
@@ -371,7 +351,7 @@ async fn a_host_the_user_owns_contributes_no_row(ctx: TestContext, kv: Kv, db: D
             .await
             .json::<Vec<ProviderAccountView>>()
             .iter()
-            .any(|row| row.id == account.id),
+            .any(|row| row.id == account),
         "the account is linked"
     );
 

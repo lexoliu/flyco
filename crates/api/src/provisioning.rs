@@ -9,22 +9,23 @@
 //! supports.
 
 use flyco_core::{
-    CloudProviderKind, CloudSpend, MachineCatalogEntry, MachineSpec, ProviderAccountId,
-    ProviderCredentials, UserId,
+    CloudProviderKind, CloudSpend, HostFacts, HostId, HostState, MachineCatalogEntry, MachineSpec,
+    ProviderAccountId, ProviderCredentials, UserId,
 };
 use flyco_provider::aws::sigv4::AccessKey;
 use flyco_provider::aws::{AwsProvider, AwsWorkspace};
 use flyco_provider::azure::auth::ServicePrincipal;
 use flyco_provider::azure::{AzureProvider, Workspace};
-use flyco_provider::byo_ssh::ByoSsh;
 use flyco_provider::gcp::auth::ServiceAccountKey;
 use flyco_provider::gcp::{GcpProvider, GcpWorkspace};
+use flyco_provider::host::{ContainerJob, ControlToHost, Host};
 use flyco_provider::{CloudProvider, Machine, ProviderError, ProvisionRequest};
 use skyzen::sql;
 use skyzen_services::Db;
 
 use crate::config::ApiConfig;
 use crate::error::ApiError;
+use crate::rooms::HostRooms;
 
 /// One linked account, with its credentials unsealed for immediate use.
 ///
@@ -44,6 +45,25 @@ pub struct LinkedAccount {
     /// unsealing. An Azure account without one is a row no driver can be
     /// built from — see [`LinkedAccount::azure_workspace`].
     resource_group: Option<String>,
+    /// The enrolled machine this account provisions onto, for a host
+    /// account.
+    ///
+    /// Read in the same query as the account rather than fetched per use:
+    /// the credential names the host, but it is sealed and no `SELECT` can
+    /// see inside it, so `provider_accounts.host_id` is the join key and
+    /// this is what it joined to.
+    host: Option<HostSnapshot>,
+}
+
+/// The enrolled machine behind a host account, as one query read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostSnapshot {
+    /// Which machine it is.
+    pub id: HostId,
+    /// Where the control plane last recorded it in its life.
+    pub state: HostState,
+    /// What it last said about itself.
+    pub facts: HostFacts,
 }
 
 impl core::fmt::Debug for LinkedAccount {
@@ -71,6 +91,32 @@ impl LinkedAccount {
     #[must_use]
     pub const fn credentials(&self) -> &ProviderCredentials {
         &self.credentials
+    }
+
+    /// The enrolled machine behind this account, if it is a host account.
+    #[must_use]
+    pub const fn host(&self) -> Option<&HostSnapshot> {
+        self.host.as_ref()
+    }
+
+    /// The machine this account can provision onto *right now*.
+    ///
+    /// A host that is offline, draining or removed offers nothing: flyco
+    /// cannot reach it, and a catalog entry for it would be a machine the
+    /// user could pick and never get.
+    #[must_use]
+    pub fn schedulable_host(&self) -> Option<&HostSnapshot> {
+        self.host
+            .as_ref()
+            .filter(|host| host.state.is_schedulable())
+    }
+
+    /// The planner for this account's machine, when it is a host account.
+    #[must_use]
+    pub fn host_planner(&self) -> Option<Host> {
+        self.host
+            .as_ref()
+            .map(|host| Host::new(host.id, host.facts.clone()))
     }
 
     /// The resource group an Azure driver for this account must use.
@@ -156,6 +202,25 @@ struct SealedRow {
     id: ProviderAccountId,
     credentials_enc: String,
     resource_group: Option<String>,
+    host_id: Option<HostId>,
+    host_state: Option<HostState>,
+    #[row(json)]
+    host_facts: Option<HostFacts>,
+}
+
+impl SealedRow {
+    /// The enrolled machine this row joined to, when it is a host account.
+    ///
+    /// All three halves or none: a host account whose row is half-written is
+    /// a row enrollment could not have produced, and treating it as a cloud
+    /// account would provision nothing anywhere.
+    fn host(&self) -> Option<HostSnapshot> {
+        Some(HostSnapshot {
+            id: self.host_id?,
+            state: self.host_state?,
+            facts: self.host_facts.clone()?,
+        })
+    }
 }
 
 /// Loads the caller's linked accounts, optionally narrowed to one provider.
@@ -173,10 +238,17 @@ pub async fn accounts_for(
 ) -> Result<Vec<LinkedAccount>, ApiError> {
     // A NULL filter matches every provider, which keeps one statement for
     // both callers rather than assembling SQL per request.
+    // A drained host is skipped rather than returned: its account row
+    // survives so the machines that ran there still name something, but it
+    // can offer no catalog and meter nothing.
+    let removed = HostState::Removed;
     let rows: Vec<SealedRow> = sql!(
         db,
-        "SELECT id, credentials_enc, resource_group FROM provider_accounts \
-         WHERE user_id = {user} AND ({kind} IS NULL OR kind = {kind}) \
+        "SELECT provider_accounts.id, credentials_enc, resource_group, host_id, \
+         hosts.state AS host_state, hosts.facts AS host_facts \
+         FROM provider_accounts LEFT JOIN hosts ON hosts.id = provider_accounts.host_id \
+         WHERE provider_accounts.user_id = {user} AND ({kind} IS NULL OR kind = {kind}) \
+         AND (host_id IS NULL OR hosts.state != {removed}) \
          ORDER BY linked_at_unix"
     )
     .fetch_all()
@@ -192,6 +264,7 @@ pub async fn accounts_for(
             Ok(LinkedAccount {
                 id: row.id,
                 credentials,
+                host: row.host(),
                 resource_group: row.resource_group,
             })
         })
@@ -212,8 +285,10 @@ pub async fn account(
 ) -> Result<LinkedAccount, ApiError> {
     let row: SealedRow = sql!(
         db,
-        "SELECT id, credentials_enc, resource_group FROM provider_accounts \
-         WHERE id = {id} AND user_id = {user}"
+        "SELECT provider_accounts.id, credentials_enc, resource_group, host_id, \
+         hosts.state AS host_state, hosts.facts AS host_facts \
+         FROM provider_accounts LEFT JOIN hosts ON hosts.id = provider_accounts.host_id \
+         WHERE provider_accounts.id = {id} AND provider_accounts.user_id = {user}"
     )
     .fetch_optional()
     .await?
@@ -227,6 +302,7 @@ pub async fn account(
     Ok(LinkedAccount {
         id,
         credentials,
+        host: row.host(),
         resource_group: row.resource_group,
     })
 }
@@ -274,7 +350,14 @@ async fn catalog_of(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>,
             .catalog()
             .await
         }
-        ProviderCredentials::ByoSsh { host, .. } => Ok(ByoSsh::new(host.clone()).catalog()),
+        // One entry per *online* machine: an offline host is not a
+        // cheaper machine, it is one that cannot be started, and offering it
+        // would put a choice on the slider that fails the moment it is
+        // taken.
+        ProviderCredentials::Host { .. } => Ok(account
+            .schedulable_host()
+            .map(|host| Host::new(host.id, host.facts.clone()).catalog())
+            .unwrap_or_default()),
         ProviderCredentials::Aws {
             access_key_id,
             secret_access_key,
@@ -353,11 +436,11 @@ pub async fn cloud_usage(
         .await
         .map(Some),
         // Two providers contribute no row, for the two different reasons
-        // this function's documentation gives: a registered SSH host has
+        // this function's documentation gives: a machine the user owns has
         // nothing flyco meters, and a GCP project has plenty and no API that
         // will say so. The answer is the same because the honest answer to
         // "how much has this cost" is silence in both cases.
-        ProviderCredentials::ByoSsh { .. } | ProviderCredentials::Gcp { .. } => Ok(None),
+        ProviderCredentials::Host { .. } | ProviderCredentials::Gcp { .. } => Ok(None),
     }
 }
 
@@ -375,6 +458,7 @@ pub async fn cloud_usage(
 /// Returns [`ProviderError`] if the provider refuses the operation or
 /// cannot be reached.
 pub async fn operate(
+    hosts: &HostRooms,
     account: &LinkedAccount,
     machine: &flyco_provider::Machine,
     operation: Operation<'_>,
@@ -401,11 +485,7 @@ pub async fn operate(
                 )
                 .await
         }
-        ProviderCredentials::ByoSsh { .. } => Err(ProviderError::Unsupported {
-            provider: "byo-ssh",
-            operation: operation.name(),
-            reason: "a host you own is started and stopped by you, not by flyco",
-        }),
+        ProviderCredentials::Host { .. } => run_on_host(hosts, account, machine, operation).await,
         ProviderCredentials::Aws {
             access_key_id,
             secret_access_key,
@@ -434,6 +514,70 @@ pub async fn operate(
     }
 }
 
+/// Performs one lifecycle operation on a machine the user owns.
+///
+/// The machine is a container, so the operation is a container job posted
+/// down the host's own socket — flyco never reaches the machine any other
+/// way. What comes back is what the row must say *now*: the host answers
+/// asynchronously with a `JobResult`, and a job that fails there fails the
+/// session with what Podman said (see [`crate::hosts::record_job_result`]).
+///
+/// A resize is refused rather than attempted, exactly as the planner refuses
+/// it: the machine has the cores it has.
+async fn run_on_host(
+    hosts: &HostRooms,
+    account: &LinkedAccount,
+    machine: &flyco_provider::Machine,
+    operation: Operation<'_>,
+) -> Result<flyco_provider::Machine, ProviderError> {
+    let planner = account.host_planner().ok_or(ProviderError::Malformed(
+        "this host account names no enrolled machine; enroll it again",
+    ))?;
+    let job = planner.plan(&operation.on(machine))?;
+    post(hosts, planner.id(), &job).await?;
+
+    let mut updated = machine.clone();
+    updated.state = operation.leaves();
+    if matches!(operation, Operation::Destroy) {
+        updated.address = None;
+    }
+    Ok(updated)
+}
+
+/// Posts one container job to a host's room.
+async fn post(hosts: &HostRooms, host: HostId, job: &ContainerJob) -> Result<(), ProviderError> {
+    hosts
+        .command(host, &ControlToHost::Run { job: job.clone() })
+        .await
+        .map_err(|error| {
+            ProviderError::Rejected(format!("this host's room would not take a job: {error}"))
+        })
+}
+
+/// Refuses an operation on a machine whose host is not connected.
+///
+/// The check the *user-facing* routes make before they ask for anything: a
+/// host holds its own socket, so flyco cannot wake it, and answering
+/// [`ApiError::HostOffline`] tells the user the one thing that fixes it. A
+/// non-host account passes straight through.
+///
+/// # Errors
+///
+/// Returns [`ApiError::HostOffline`] when the machine's room reports no
+/// connected host.
+pub async fn require_host_online(
+    hosts: &HostRooms,
+    account: &LinkedAccount,
+) -> Result<(), ApiError> {
+    let Some(host) = account.host() else {
+        return Ok(());
+    };
+    if !hosts.status(host.id).await?.connected {
+        return Err(ApiError::HostOffline);
+    }
+    Ok(())
+}
+
 /// What [`operate`] should do to a machine.
 #[derive(Debug, Clone, Copy)]
 pub enum Operation<'a> {
@@ -451,13 +595,30 @@ pub enum Operation<'a> {
 }
 
 impl Operation<'_> {
-    /// The operation's name, for an error a user has to act on.
-    const fn name(self) -> &'static str {
+    /// The same operation, as the thing a planner turns into container work.
+    fn on(self, machine: &flyco_provider::Machine) -> flyco_provider::MachineOperation {
+        let machine = machine.clone();
         match self {
-            Self::Resize { .. } => "resize",
-            Self::Stop => "stop",
-            Self::Start => "start",
-            Self::Destroy => "destroy",
+            Self::Resize { machine_type } => flyco_provider::MachineOperation::Resize {
+                machine,
+                machine_type: machine_type.to_owned(),
+            },
+            Self::Stop => flyco_provider::MachineOperation::Deallocate { machine },
+            Self::Start => flyco_provider::MachineOperation::Start { machine },
+            Self::Destroy => flyco_provider::MachineOperation::Destroy { machine },
+        }
+    }
+
+    /// The state a machine is in once this operation has been asked for.
+    ///
+    /// On a host the answer is not a guess: the container the job named is
+    /// stopped, started or gone, and a job the room is still holding is one
+    /// the machine performs the moment it is back.
+    const fn leaves(self) -> flyco_core::MachineState {
+        match self {
+            Self::Stop => flyco_core::MachineState::Deallocated,
+            Self::Start | Self::Resize { .. } => flyco_core::MachineState::Running,
+            Self::Destroy => flyco_core::MachineState::Destroyed,
         }
     }
 
@@ -618,9 +779,25 @@ pub trait Provisioner {
 }
 
 /// The provisioner the deployed control plane uses: the real drivers, over
-/// the real network.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CloudProvisioner;
+/// the real network — and, for a machine the user owns, that machine's own
+/// room.
+///
+/// It holds the host-room namespace because provisioning onto a host is not
+/// a call to anybody's API: it is a container job posted down a socket the
+/// machine itself opened, and the Durable Object holding that socket is the
+/// only thing that can reach it.
+#[derive(Debug, Clone)]
+pub struct CloudProvisioner {
+    hosts: HostRooms,
+}
+
+impl CloudProvisioner {
+    /// Builds the provisioner around the host rooms this Worker can reach.
+    #[must_use]
+    pub const fn new(hosts: HostRooms) -> Self {
+        Self { hosts }
+    }
+}
 
 impl Provisioner for CloudProvisioner {
     async fn provision(
@@ -633,14 +810,8 @@ impl Provisioner for CloudProvisioner {
         }
 
         match account.credentials() {
-            ProviderCredentials::ByoSsh {
-                host,
-                port,
-                user,
-                private_key,
-                host_fingerprint,
-            } => {
-                provision_over_ssh(host, *port, user, private_key, host_fingerprint, request).await
+            ProviderCredentials::Host { .. } => {
+                provision_on_host(&self.hosts, account, request).await
             }
             // Unreachable: `azure_driver` answered for the Azure variant.
             ProviderCredentials::Azure { .. } => Err(ProviderError::Malformed(
@@ -664,59 +835,55 @@ impl Provisioner for CloudProvisioner {
         account: &LinkedAccount,
         machine: &Machine,
     ) -> Result<Machine, ProviderError> {
-        operate(account, machine, Operation::Start).await
+        operate(&self.hosts, account, machine, Operation::Start).await
     }
 }
 
-/// Runs the podman job that is a byo-ssh machine, over a real connection.
+/// Asks a machine the user owns to build a session's container.
 ///
-/// Native only, and the split is the crate graph's rather than a runtime
-/// check: `SshExecutor` exists behind `flyco-provider/ssh`, which this crate
-/// enables for native targets and cannot enable for the Worker, because a
-/// Worker has no sockets to give an SSH client.
-#[cfg(not(target_arch = "wasm32"))]
-async fn provision_over_ssh(
-    host: &str,
-    port: u16,
-    user: &str,
-    private_key: &str,
-    host_fingerprint: &str,
+/// What comes back is the same claim a cloud driver makes when its API
+/// accepts a create: the machine is flyco's now. It is true here for a
+/// different reason — the host's room took the job *durably*, and holds it
+/// until the machine answers, so a container that has not been built yet is
+/// one that will be — and the machine is not ready either way, which is why
+/// a session goes active when its daemon arrives rather than when this
+/// returns.
+///
+/// The row is then *completed* by the host's `JobResult`: the container and
+/// the volume Podman actually created, which is the pair every later stop,
+/// start and removal has to name, and which nothing but the machine knows.
+/// A job that failed comes back the same way and fails the session with what
+/// Podman said. See [`crate::hosts::record_job_result`].
+///
+/// Unlike the lifecycle operations, this does *not* refuse a machine that is
+/// not connected. A host offline at session creation offers no catalog and
+/// is never chosen; reaching here means the socket dropped in the seconds
+/// since, and the honest answer to that is the one the room already gives —
+/// hold the job and hand it over when the machine is back — rather than
+/// failing a session over a reconnect.
+async fn provision_on_host(
+    hosts: &HostRooms,
+    account: &LinkedAccount,
     request: &ProvisionRequest,
 ) -> Result<Machine, ProviderError> {
-    use flyco_provider::byo_ssh::{ByoSsh, SshCommandRunner, SshExecutor, SshHost};
+    let planner = account.host_planner().ok_or(ProviderError::Malformed(
+        "this host account names no enrolled machine; enroll it again",
+    ))?;
+    let job = planner.plan(&flyco_provider::MachineOperation::Provision(Box::new(
+        request.clone(),
+    )))?;
+    post(hosts, planner.id(), &job).await?;
 
-    let mut executor = SshExecutor::new(
-        ByoSsh::new(host.to_owned()),
-        SshCommandRunner::new(SshHost {
-            address: host.to_owned(),
-            port,
-            user: user.to_owned(),
-            private_key: private_key.to_owned(),
-            host_fingerprint: host_fingerprint.to_owned(),
-        }),
-    );
-    executor.provision(request).await
-}
-
-/// See the native counterpart above: the Worker has no SSH client to reach a
-/// registered host with, and refusing says so rather than failing at a layer
-/// that would read as the host being down.
-#[cfg(target_arch = "wasm32")]
-#[expect(
-    clippy::unused_async,
-    reason = "the native counterpart is async; one signature for both targets"
-)]
-async fn provision_over_ssh(
-    _host: &str,
-    _port: u16,
-    _user: &str,
-    _private_key: &str,
-    _host_fingerprint: &str,
-    _request: &ProvisionRequest,
-) -> Result<Machine, ProviderError> {
-    Err(ProviderError::Unsupported {
-        provider: flyco_provider::byo_ssh::PROVIDER,
-        operation: "provision",
-        reason: "SSH is a TCP transport and a Cloudflare Worker has no sockets",
+    Ok(Machine {
+        id: request.machine,
+        native_id: job.container().to_owned(),
+        // A host is its own region, and there is nowhere else to put it —
+        // the same answer its catalog gives.
+        region: planner.machine_type().to_owned(),
+        state: flyco_core::MachineState::Running,
+        // A container on hardware the user owns is never interruptible,
+        // whatever the session asked for.
+        capacity_mode: flyco_provider::CapacityMode::OnDemand,
+        address: Some(planner.machine_type().to_owned()),
     })
 }

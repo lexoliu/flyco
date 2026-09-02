@@ -39,6 +39,9 @@ askama = "0.14"
 # One timer that works on both sides: a real timer natively, `setTimeout` on
 # the Worker. Provider polling loops honour `Retry-After` with it.
 futures-timer = { version = "3", features = ["wasm-bindgen"] }
+# Quoting what goes into a rendered podman script. Pure Rust and
+# target-independent, so a container job renders to the same text on the
+# Worker that planned it and on the machine that runs it.
 shell-escape = "0.1"
 # Calendar arithmetic, for the one place flyco needs it: the start of the
 # billing month a cloud provider meters against. No clock is read from it —
@@ -73,7 +76,6 @@ clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 rand = "0.9"
 rust-embed = { version = "8", features = ["debug-embed", "include-exclude"] }
-russh = "0.63"
 portable-pty = "0.9"
 # The official Rust MCP SDK, for flycod's local stdio server. Only the
 # server half and the stdio transport: the daemon is spoken *to* by the

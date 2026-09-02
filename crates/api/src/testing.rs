@@ -3,8 +3,8 @@
 use core::future::{Future, ready};
 
 use flyco_core::{
-    CurrentUser, HarnessAccountId, HarnessKind, MachineChoice, ProviderAccountId,
-    ProviderCredentials, UserId,
+    CpuArchitecture, CurrentUser, HarnessAccountId, HarnessKind, HostFacts, HostId, MachineChoice,
+    ProviderAccountId, ProviderCredentials, UserId,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -21,12 +21,12 @@ use crate::harness_accounts::StoredCredential;
 use crate::openai::{
     self, CodexClient, CodexOauth, DeviceAuth, DeviceCode, DevicePoll, OpenAiError,
 };
-use crate::rooms::{NativeRooms, Rooms};
+use crate::rooms::{HostRooms, NativeHostRooms, NativeRooms, Rooms};
 use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 17] = [
+pub const MIGRATIONS: [&str; 18] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -44,6 +44,7 @@ pub const MIGRATIONS: [&str; 17] = [
     include_str!("../../../migrations/0016_machine_facts.sql"),
     include_str!("../../../migrations/0017_spot_reclaim.sql"),
     include_str!("../../../migrations/0018_session_activity.sql"),
+    include_str!("../../../migrations/0019_hosts.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -118,6 +119,16 @@ pub fn test_config() -> ApiConfig {
 #[must_use]
 pub fn test_rooms() -> Rooms {
     Rooms::from_native(NativeRooms::new())
+}
+
+/// Host rooms backed by skyzen's in-process simulator.
+///
+/// A fresh namespace per call, for the reason above — and one a test *does*
+/// read back: what a provisioning dispatch did is a container job sitting in
+/// a host's mailbox, and this is where it lands.
+#[must_use]
+pub fn test_host_rooms() -> HostRooms {
+    HostRooms::from_native(NativeHostRooms::new())
 }
 
 /// The display name [`TestGithub`] reports, which is what a session's
@@ -719,52 +730,83 @@ async fn seed_account(db: &Db, github_id: i64, login: &str) -> CurrentUser {
     .expect("seed the user row")
 }
 
-/// The registered host every test provisions onto.
+/// The hostname the enrolled machine every test provisions onto reports.
 ///
 /// A real address rather than a placeholder, because it is also the machine
-/// type and the region a byo-ssh catalog reports: the tests assert against
-/// the same string the driver derives from the credentials.
+/// type and the region a host's catalog offers: the tests assert against the
+/// same string the planner reads out of the machine's own facts.
 pub const SSH_HOST: &str = "build.lexo.cool";
 
-/// The SHA-256 host key fingerprint the fixture registers.
-pub const SSH_FINGERPRINT: &str = "SHA256:qWyVLPxNBRr7Nnkm1xTQKMDcXwHFsSFRnLW6iNfPmcQ";
-
-/// Links a byo-ssh provider account, sealed exactly as the link route seals
-/// one.
+/// What the fixture machine says about itself.
 ///
-/// byo-ssh is the provider whose catalog needs no network: it reports the
-/// one machine it is. That is what lets creation-time validation and the
-/// whole provisioning queue be exercised without a cloud account.
-pub async fn seed_provider_account(db: &Db, user: UserId) -> ProviderAccountId {
-    let credentials = ProviderCredentials::ByoSsh {
-        host: SSH_HOST.to_owned(),
-        port: 22,
-        user: "flyco".to_owned(),
-        private_key: "-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-real-key\n".to_owned(),
-        host_fingerprint: SSH_FINGERPRINT.to_owned(),
-    };
-    let sealed = test_config()
-        .token_cipher()
-        .seal(&serde_json::to_string(&credentials).expect("encode credentials"))
-        .expect("seal credentials");
+/// Big enough for flyco to pick on its own, so a test that leaves the
+/// machine to flyco gets this one rather than a refusal.
+#[must_use]
+pub fn host_facts() -> HostFacts {
+    HostFacts {
+        architecture: CpuArchitecture::Arm64,
+        vcpus: 10,
+        memory_mib: 32 * 1024,
+        disk_free_gib: 400,
+        podman_version: "5.4.0".to_owned(),
+        kernel: "6.11.0-19-generic".to_owned(),
+        hostname: SSH_HOST.to_owned(),
+    }
+}
 
-    let id = ProviderAccountId::generate();
-    let kind = credentials.kind();
-    let label = "the laptop".to_owned();
-    let linked_at = 1_787_000_000_u64;
+/// Enrols a machine and its provider account, exactly as
+/// `POST /v1/hosts/enroll` writes them.
+///
+/// A host is the provider whose catalog needs no network: it reports the one
+/// machine it is, out of the facts it enrolled with. That is what lets
+/// creation-time validation and the whole provisioning queue be exercised
+/// without a cloud account.
+///
+/// Seeded `online`, because what a test is usually about starts after the
+/// machine has arrived — the enrollment tests drive the real routes instead.
+pub async fn seed_host(db: &Db, user: UserId) -> HostId {
+    let id = HostId::generate();
+    let facts = serde_json::to_string(&host_facts()).expect("encode host facts");
+    let online = flyco_core::HostState::Online;
+    let created_at = 1_787_000_000_u64;
     sql!(
         db,
-        "INSERT INTO provider_accounts \
-         (id, user_id, kind, label, credentials_enc, linked_at_unix) \
-         VALUES ({id}, {user}, {kind}, {label}, {sealed}, {linked_at})"
+        "INSERT INTO hosts (id, user_id, label, facts, token_hash, state, created_at_unix) \
+         VALUES ({id}, {user}, {SSH_HOST}, {facts}, {crate::crypto::token_hash(HOST_TOKEN)}, \
+                 {online}, {created_at})"
     )
     .execute()
     .await
-    .expect("link a provider account");
+    .expect("enrol a host");
     id
 }
 
-/// The machine a test session asks for: the registered host itself.
+/// The token the seeded machine authenticates with.
+pub const HOST_TOKEN: &str = "fh_a-live-host-token";
+
+/// Links the provider account a seeded host provisions through.
+pub async fn seed_provider_account(db: &Db, user: UserId) -> ProviderAccountId {
+    seed_host_account(db, user).await.1
+}
+
+/// The same, answering with the machine as well as its account.
+pub async fn seed_host_account(db: &Db, user: UserId) -> (HostId, ProviderAccountId) {
+    let host = seed_host(db, user).await;
+    let account = crate::provider_accounts::create(
+        db,
+        &test_config(),
+        user,
+        SSH_HOST.to_owned(),
+        &ProviderCredentials::Host { host },
+        Some(host),
+    )
+    .await
+    .expect("link a host account")
+    .id;
+    (host, account)
+}
+
+/// The machine a test session asks for: the enrolled machine itself.
 #[must_use]
 pub fn machine_choice(account: ProviderAccountId) -> MachineChoice {
     MachineChoice {

@@ -186,6 +186,26 @@ max_retries = 3
 name = "SESSION_ROOMS"
 class_name = "SessionRoom"
 
+# One Durable Object per enrolled machine: the host relay room. `flycod host`
+# holds one hibernating socket tagged `host`, the Worker posts container jobs
+# to `/internal/command`, and the room holds a job until the machine answers
+# it. It is also the only thing that can see whether a machine is connected
+# at all — a Durable Object cannot reach D1, so the `hosts` row is refreshed
+# from the room every time the Worker looks at it.
+#
+# Addressed by the host id (`get_by_name`), so a machine and its room are the
+# same identity.
+[[cloudflare.durable_objects.bindings]]
+name = "HOST_ROOMS"
+class_name = "HostRoom"
+
 [[cloudflare.durable_objects.migrations]]
 tag = "v1"
 new_sqlite_classes = ["SessionRoom"]
+
+# A second tag rather than an edit to `v1`: a migration that has been applied
+# is history, and rewriting it would leave the deployed namespace and this
+# file describing different things.
+[[cloudflare.durable_objects.migrations]]
+tag = "v2"
+new_sqlite_classes = ["HostRoom"]
