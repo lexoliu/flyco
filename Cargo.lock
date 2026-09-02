@@ -5549,9 +5549,9 @@ dependencies = [
 
 [[package]]
 name = "zenwave"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "435349c21d9a319242d720885ad571a0a1eab52c79e546a08030bb1ad0f84716"
+checksum = "1c48e260a206f6a0c5f99cd89ffe5429b5e09fe6211e3283216c74b9bf56d5df"
 dependencies = [
  "anyhow",
  "async-fs",
