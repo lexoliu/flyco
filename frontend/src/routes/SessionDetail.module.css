@@ -291,3 +291,11 @@
     grid-template-columns: 1fr;
   }
 }
+
+.title {
+  margin: 0;
+  font-size: var(--text-xl);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

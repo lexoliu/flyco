@@ -223,7 +223,8 @@ export default function SessionDetail() {
   return (
     <section class={styles.page}>
       <header class={styles.header}>
-        <h1>{params.id}</h1>
+        {/* The title until the session answers; the id is not a name. */}
+        <h1 class={styles.title}>{session()?.title ?? params.id}</h1>
         <div class={styles.headerActions}>
           <span class={styles.connection} data-state={relay.state()}>
             <span class={styles.connectionDot} />
