@@ -14,6 +14,10 @@ window.scrollTo = () => {
   /* no-op in tests */
 };
 
+// Nor does jsdom implement window.open, which the Claude sign-in uses to put
+// Anthropic's authorize page in a tab of its own.
+window.open = () => null;
+
 // vite-plugin-pwa's virtual module only exists inside a real Vite build;
 // components that call registerSW() need a stand-in for it under Vitest.
 vi.mock("virtual:pwa-register", () => ({
@@ -153,6 +157,43 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
   }
   if (method === "GET" && path === "/v1/harness-accounts") {
     return Promise.resolve(jsonResponse([]));
+  }
+  if (method === "POST" && path === "/v1/harness-accounts") {
+    return Promise.resolve(
+      jsonResponse(
+        {
+          id: "harness-1",
+          harness: "codex",
+          label: "OpenAI API key",
+          linked_at_unix: 1_787_000_000,
+          expires_at_unix: null,
+        },
+        201,
+      ),
+    );
+  }
+  if (method === "POST" && path === "/v1/harness-accounts/claude/oauth/start") {
+    return Promise.resolve(
+      jsonResponse({
+        attempt_id: "11111111-2222-4333-8444-555555555555",
+        authorize_url:
+          "https://claude.ai/oauth/authorize?code=true&client_id=test&state=the-state",
+      }),
+    );
+  }
+  if (method === "POST" && path === "/v1/harness-accounts/claude/oauth/complete") {
+    return Promise.resolve(
+      jsonResponse(
+        {
+          id: "harness-2",
+          harness: "claude_code",
+          label: "me@lexo.cool",
+          linked_at_unix: 1_787_000_000,
+          expires_at_unix: 1_787_028_800,
+        },
+        201,
+      ),
+    );
   }
   if (method === "GET" && path === "/v1/memory") {
     return Promise.resolve(jsonResponse([]));

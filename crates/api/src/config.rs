@@ -24,6 +24,13 @@ pub mod var {
     pub const GITHUB_CLIENT_ID: &str = "FLYCO_GITHUB_CLIENT_ID";
     /// GitHub OAuth app client secret. Secret; `wrangler secret put`.
     pub const GITHUB_CLIENT_SECRET: &str = "FLYCO_GITHUB_CLIENT_SECRET";
+    /// Claude Code OAuth client id. Public; lives in `[cloudflare.vars]`.
+    ///
+    /// Anthropic issues no client secret for this flow — it is a public
+    /// client with PKCE — so the id is deployment configuration rather than
+    /// a secret, and a deployment presenting its own registered client sets
+    /// this one variable.
+    pub const CLAUDE_OAUTH_CLIENT_ID: &str = "FLYCO_CLAUDE_OAUTH_CLIENT_ID";
     /// Absolute URL GitHub redirects back to. Public.
     pub const REDIRECT_URI: &str = "FLYCO_REDIRECT_URI";
     /// AES-256 key for sealing third-party tokens, hex-encoded. Secret.
@@ -90,6 +97,7 @@ pub enum ConfigError {
 pub struct ApiConfig {
     github_client_id: String,
     github_client_secret: String,
+    claude_oauth_client_id: String,
     redirect_uri: Url,
     encryption_key: [u8; KEY_LEN],
     vapid: VapidConfig,
@@ -117,7 +125,42 @@ impl core::fmt::Debug for ApiConfig {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ApiConfig")
             .field("github_client_id", &self.github_client_id)
+            .field("claude_oauth_client_id", &self.claude_oauth_client_id)
             .field("redirect_uri", &self.redirect_uri.as_str())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The deployment's bindings as strings, before any of them is validated.
+///
+/// One field per name in [`var`]. A struct rather than eight positional
+/// arguments, because every one of them is a string: a swapped pair would
+/// type-check and fail only when a deployment tried to sign somebody in.
+pub struct ApiSettings {
+    /// [`var::GITHUB_CLIENT_ID`].
+    pub github_client_id: String,
+    /// [`var::GITHUB_CLIENT_SECRET`].
+    pub github_client_secret: String,
+    /// [`var::CLAUDE_OAUTH_CLIENT_ID`].
+    pub claude_oauth_client_id: String,
+    /// [`var::REDIRECT_URI`].
+    pub redirect_uri: String,
+    /// [`var::ENCRYPTION_KEY`], hex-encoded.
+    pub encryption_key_hex: String,
+    /// [`var::VAPID_PRIVATE_KEY`], raw base64url.
+    pub vapid_private_key: String,
+    /// [`var::VAPID_SUBJECT`].
+    pub vapid_subject: String,
+    /// [`var::GITHUB_WEBHOOK_SECRET`].
+    pub github_webhook_secret: String,
+}
+
+impl core::fmt::Debug for ApiSettings {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ApiSettings")
+            .field("github_client_id", &self.github_client_id)
+            .field("claude_oauth_client_id", &self.claude_oauth_client_id)
+            .field("redirect_uri", &self.redirect_uri)
             .finish_non_exhaustive()
     }
 }
@@ -127,37 +170,34 @@ impl ApiConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError`] if the redirect URI is not absolute or the
-    /// encryption key is not 32 hex-encoded bytes.
-    pub fn new(
-        github_client_id: String,
-        github_client_secret: String,
-        redirect_uri: &str,
-        encryption_key_hex: &str,
-        vapid_private_key: &str,
-        vapid_subject: &str,
-        github_webhook_secret: String,
-    ) -> Result<Self, ConfigError> {
+    /// Returns [`ConfigError`] if a required value is empty, the redirect
+    /// URI is not absolute, or the encryption key is not 32 hex-encoded
+    /// bytes.
+    pub fn new(settings: ApiSettings) -> Result<Self, ConfigError> {
         let github_webhook_secret =
-            reject_empty(var::GITHUB_WEBHOOK_SECRET, github_webhook_secret)?;
-        let redirect_uri = Url::parse(redirect_uri).map_err(|source| ConfigError::NotAUrl {
-            name: var::REDIRECT_URI,
-            source,
-        })?;
+            reject_empty(var::GITHUB_WEBHOOK_SECRET, settings.github_webhook_secret)?;
+        let claude_oauth_client_id =
+            reject_empty(var::CLAUDE_OAUTH_CLIENT_ID, settings.claude_oauth_client_id)?;
+        let redirect_uri =
+            Url::parse(&settings.redirect_uri).map_err(|source| ConfigError::NotAUrl {
+                name: var::REDIRECT_URI,
+                source,
+            })?;
 
         let mut encryption_key = [0_u8; KEY_LEN];
-        hex::decode_to_slice(encryption_key_hex, &mut encryption_key)
+        hex::decode_to_slice(&settings.encryption_key_hex, &mut encryption_key)
             .map_err(|_| ConfigError::NotAKey(var::ENCRYPTION_KEY))?;
 
         let private_key = URL_SAFE_NO_PAD
-            .decode(vapid_private_key)
+            .decode(&settings.vapid_private_key)
             .map_err(|_| ConfigError::NotAVapidKey(var::VAPID_PRIVATE_KEY))?;
         let signing_key = SigningKey::from_slice(&private_key)
             .map_err(|_| ConfigError::NotAVapidKey(var::VAPID_PRIVATE_KEY))?;
-        let subject = Url::parse(vapid_subject).map_err(|source| ConfigError::NotAUrl {
-            name: var::VAPID_SUBJECT,
-            source,
-        })?;
+        let subject =
+            Url::parse(&settings.vapid_subject).map_err(|source| ConfigError::NotAUrl {
+                name: var::VAPID_SUBJECT,
+                source,
+            })?;
 
         Ok(Self {
             vapid: VapidConfig {
@@ -167,8 +207,9 @@ impl ApiConfig {
                 subject,
             },
             github_webhook_secret,
-            github_client_id,
-            github_client_secret,
+            github_client_id: settings.github_client_id,
+            github_client_secret: settings.github_client_secret,
+            claude_oauth_client_id,
             redirect_uri,
             encryption_key,
         })
@@ -211,16 +252,16 @@ impl ApiConfig {
     fn read_with(
         read: impl Fn(&'static str) -> Result<String, ConfigError>,
     ) -> Result<Self, ConfigError> {
-        let config = Self::new(
-            read(var::GITHUB_CLIENT_ID)?,
-            read(var::GITHUB_CLIENT_SECRET)?,
-            &read(var::REDIRECT_URI)?,
-            &read(var::ENCRYPTION_KEY)?,
-            &read(var::VAPID_PRIVATE_KEY)?,
-            &read(var::VAPID_SUBJECT)?,
-            read(var::GITHUB_WEBHOOK_SECRET)?,
-        )?;
-        Ok(config)
+        Self::new(ApiSettings {
+            github_client_id: read(var::GITHUB_CLIENT_ID)?,
+            github_client_secret: read(var::GITHUB_CLIENT_SECRET)?,
+            claude_oauth_client_id: read(var::CLAUDE_OAUTH_CLIENT_ID)?,
+            redirect_uri: read(var::REDIRECT_URI)?,
+            encryption_key_hex: read(var::ENCRYPTION_KEY)?,
+            vapid_private_key: read(var::VAPID_PRIVATE_KEY)?,
+            vapid_subject: read(var::VAPID_SUBJECT)?,
+            github_webhook_secret: read(var::GITHUB_WEBHOOK_SECRET)?,
+        })
     }
 
     /// The VAPID application-server identity.
@@ -246,6 +287,12 @@ impl ApiConfig {
     #[must_use]
     pub fn github_client_secret(&self) -> &str {
         &self.github_client_secret
+    }
+
+    /// Claude Code OAuth client id this deployment presents to Anthropic.
+    #[must_use]
+    pub fn claude_oauth_client_id(&self) -> &str {
+        &self.claude_oauth_client_id
     }
 
     /// Absolute URL GitHub redirects the browser back to.
@@ -322,57 +369,53 @@ fn reject_empty(name: &'static str, value: String) -> Result<String, ConfigError
 mod tests {
     use super::{ApiConfig, ConfigError, var};
 
-    use crate::testing::{
-        CLIENT_SECRET, ENCRYPTION_KEY_HEX, VAPID_PRIVATE_KEY, VAPID_SUBJECT, test_config,
-    };
+    use crate::testing::{CLIENT_SECRET, ENCRYPTION_KEY_HEX, test_config, test_settings};
 
     const KEY_HEX: &str = ENCRYPTION_KEY_HEX;
 
     #[test]
     fn a_short_encryption_key_is_rejected() {
-        let error = ApiConfig::new(
-            "id".to_owned(),
-            "secret".to_owned(),
-            "https://flyco.test/cb",
-            "00112233",
-            VAPID_PRIVATE_KEY,
-            VAPID_SUBJECT,
-            "webhook-secret".to_owned(),
-        )
+        let error = ApiConfig::new(super::ApiSettings {
+            encryption_key_hex: "00112233".to_owned(),
+            ..test_settings()
+        })
         .expect_err("a 4-byte key must be rejected");
         assert!(matches!(error, ConfigError::NotAKey(var::ENCRYPTION_KEY)));
     }
 
     #[test]
     fn a_relative_redirect_uri_is_rejected() {
-        let error = ApiConfig::new(
-            "id".to_owned(),
-            "secret".to_owned(),
-            "/v1/auth/github/callback",
-            KEY_HEX,
-            VAPID_PRIVATE_KEY,
-            VAPID_SUBJECT,
-            "webhook-secret".to_owned(),
-        )
+        let error = ApiConfig::new(super::ApiSettings {
+            redirect_uri: "/v1/auth/github/callback".to_owned(),
+            ..test_settings()
+        })
         .expect_err("a relative redirect URI must be rejected");
         assert!(matches!(error, ConfigError::NotAUrl { .. }));
     }
 
     #[test]
     fn an_empty_webhook_secret_is_rejected() {
-        let error = ApiConfig::new(
-            "id".to_owned(),
-            "secret".to_owned(),
-            "https://flyco.test/cb",
-            KEY_HEX,
-            VAPID_PRIVATE_KEY,
-            VAPID_SUBJECT,
-            String::new(),
-        )
+        let error = ApiConfig::new(super::ApiSettings {
+            github_webhook_secret: String::new(),
+            ..test_settings()
+        })
         .expect_err("an empty webhook secret must be rejected at startup");
         assert!(matches!(
             error,
             ConfigError::Missing(var::GITHUB_WEBHOOK_SECRET)
+        ));
+    }
+
+    #[test]
+    fn an_empty_claude_client_id_is_rejected() {
+        let error = ApiConfig::new(super::ApiSettings {
+            claude_oauth_client_id: String::new(),
+            ..test_settings()
+        })
+        .expect_err("a deployment cannot run the Claude flow without a client id");
+        assert!(matches!(
+            error,
+            ConfigError::Missing(var::CLAUDE_OAUTH_CLIENT_ID)
         ));
     }
 

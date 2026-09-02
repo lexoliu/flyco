@@ -10,6 +10,7 @@ use skyzen::{Response, StatusCode};
 use skyzen_services::queue::QueueError;
 use skyzen_services::{DbError, KvError, StorageError};
 
+use crate::anthropic::AnthropicError;
 use crate::crypto::CryptoError;
 use crate::github::GithubError;
 use crate::problem::{self, Challenge};
@@ -130,6 +131,36 @@ pub enum ApiError {
     /// The harness account does not exist, or belongs to somebody else.
     #[error("harness account not found", status = StatusCode::NOT_FOUND)]
     HarnessAccountNotFound,
+
+    /// The Claude sign-in attempt this code names is unknown, already
+    /// redeemed, past its ten-minute lifetime, or another user's.
+    ///
+    /// Deliberately one variant for all four: the attempt id is the only
+    /// thing that names an attempt, and telling a caller which of the four
+    /// their id is would be a free oracle over somebody else's sign-in.
+    #[error(
+        "this Claude sign-in has expired or was already completed; start it again",
+        status = StatusCode::BAD_REQUEST
+    )]
+    ClaudeOauthAttemptExpired,
+
+    /// The `state` pasted alongside the code is not the one this attempt
+    /// was started with.
+    #[error(
+        "this code belongs to a different Claude sign-in than the one it was pasted into",
+        status = StatusCode::BAD_REQUEST
+    )]
+    ClaudeOauthStateMismatch,
+
+    /// Anthropic refused the grant, and said why.
+    ///
+    /// A caller error rather than an outage: the code was mistyped, already
+    /// used, or expired, and the answer is to run the flow again.
+    #[error("Anthropic refused this Claude sign-in: {reason}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    ClaudeOauthRejected {
+        /// Anthropic's own error code and description.
+        reason: String,
+    },
 
     /// The machine exists but the provider has not named it yet.
     ///
@@ -412,6 +443,15 @@ pub enum ApiError {
     #[error("GitHub call failed: {0}", status = StatusCode::BAD_GATEWAY)]
     Github(#[from] GithubError),
 
+    /// Anthropic could not be reached, or answered with something flyco
+    /// cannot interpret.
+    ///
+    /// A refusal is not one of these — that is
+    /// [`ClaudeOauthRejected`](Self::ClaudeOauthRejected), which the caller
+    /// can act on. See [`From<AnthropicError>`](Self::from).
+    #[error("Anthropic call failed: {0}", status = StatusCode::BAD_GATEWAY)]
+    Anthropic(AnthropicError),
+
     /// The key-value store failed.
     #[error("key-value store failed: {0}")]
     Kv(#[from] KvError),
@@ -427,6 +467,23 @@ pub enum ApiError {
     /// A cryptographic primitive failed.
     #[error("cryptography failed: {0}")]
     Crypto(#[from] CryptoError),
+}
+
+/// Sorts an Anthropic failure into "your code was no good" and "Anthropic
+/// is not answering".
+///
+/// The distinction is the whole difference between a 422 the user can fix
+/// by pasting the code again and a 502 they can only wait out, so it is made
+/// once, here, rather than at each call site.
+impl From<AnthropicError> for ApiError {
+    fn from(error: AnthropicError) -> Self {
+        match error {
+            rejected @ AnthropicError::Rejected { .. } => Self::ClaudeOauthRejected {
+                reason: rejected.to_string(),
+            },
+            unavailable => Self::Anthropic(unavailable),
+        }
+    }
 }
 
 impl ApiError {
@@ -455,6 +512,10 @@ impl ApiError {
             Self::ProviderAccountNotFound => "provider-account-not-found",
             Self::InvalidHarnessCredential(_) => "invalid-harness-credential",
             Self::HarnessAccountNotFound => "harness-account-not-found",
+            Self::ClaudeOauthAttemptExpired => "claude-oauth-attempt-expired",
+            Self::ClaudeOauthStateMismatch => "claude-oauth-state-mismatch",
+            Self::ClaudeOauthRejected { .. } => "claude-oauth-rejected",
+            Self::Anthropic(_) => "anthropic-unavailable",
             Self::MachineNotFound => "machine-not-found",
             Self::MachineNotReady => "machine-not-ready",
             Self::Provisioning(_) => "provisioning-failed",

@@ -74,6 +74,9 @@ openapi = []
 
 [dev-dependencies]
 skyzen-test = { workspace = true, features = ["runtime-tokio-rustls"] }
+# The recorded transport the Anthropic OAuth client is pinned against, the
+# same one every provider driver is tested with.
+flyco-provider = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

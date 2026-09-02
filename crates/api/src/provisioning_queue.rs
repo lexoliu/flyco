@@ -48,6 +48,7 @@ use skyzen_services::queue::{
 };
 use skyzen_services::{Db, Queue};
 
+use crate::anthropic::ClaudeOauth;
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
@@ -148,12 +149,13 @@ pub async fn consume(
     queue: &Queue,
     rooms: &Rooms,
     provisioner: &mut impl Provisioner,
+    claude: &impl ClaudeOauth,
     batch: QueueBatch<ProvisioningJob>,
 ) -> QueueBatchDisposition {
     let mut decisions = Vec::with_capacity(batch.messages.len());
     for message in batch.messages {
         decisions.push(
-            match perform(db, config, queue, rooms, provisioner, message.body).await {
+            match perform(db, config, queue, rooms, provisioner, claude, message.body).await {
                 Settled::Done => QueueMessageDisposition::Ack,
                 Settled::Redeliver(error) => {
                     tracing::error!(
@@ -180,11 +182,12 @@ async fn perform(
     queue: &Queue,
     rooms: &Rooms,
     provisioner: &mut impl Provisioner,
+    claude: &impl ClaudeOauth,
     job: ProvisioningJob,
 ) -> Settled {
     match claim(db, job).await {
         Ok(None) => Settled::Done,
-        Ok(Some(claimed)) => match build(db, config, rooms, provisioner, &claimed).await {
+        Ok(Some(claimed)) => match build(db, config, rooms, provisioner, claude, &claimed).await {
             Ok(()) => Settled::Done,
             Err(Provisioned::Failed(reason)) => {
                 match sessions::fail(db, job.session, &reason).await {
@@ -288,6 +291,7 @@ async fn build(
     config: &ApiConfig,
     rooms: &Rooms,
     provisioner: &mut impl Provisioner,
+    claude: &impl ClaudeOauth,
     claim: &Claim,
 ) -> Result<(), Provisioned> {
     let account = provisioning::account(db, config, claim.user, claim.machine.provider_account_id)
@@ -303,7 +307,7 @@ async fn build(
         .await
         .map_err(|error| classify(&error))?;
 
-    let bootstrap = bootstrap(db, config, claim).await?;
+    let bootstrap = bootstrap(db, config, claude, claim).await?;
     announce(rooms, claim.session, ProvisioningStage::Reserving).await;
     let machine = provisioner
         .provision(
@@ -360,15 +364,17 @@ async fn build(
 async fn bootstrap(
     db: &Db,
     config: &ApiConfig,
+    claude: &impl ClaudeOauth,
     claim: &Claim,
 ) -> Result<DaemonBootstrap, Provisioned> {
     let token = daemon_tokens::issue(db, claim.user, claim.session)
         .await
         .map_err(Provisioned::from)?;
-    let claude_auth =
-        harness_accounts::credential(db, &config.token_cipher(), claim.user, claim.harness)
-            .await
-            .map_err(Provisioned::from)?;
+    // Refreshes a Claude OAuth grant that is near its end, so the machine
+    // this boots is handed a token good for longer than the provision.
+    let claude_auth = harness_accounts::credential(db, config, claude, claim.user, claim.harness)
+        .await
+        .map_err(Provisioned::from)?;
 
     Ok(DaemonBootstrap {
         session: claim.session,
@@ -487,6 +493,7 @@ mod worker {
     use skyzen::wasm_bindgen_futures;
 
     use super::{ProvisioningJob, consume};
+    use crate::anthropic::ClaudeClient;
     use crate::config::{ApiConfig, binding};
     use crate::provisioning::CloudProvisioner;
     use crate::rooms::Rooms;
@@ -519,6 +526,15 @@ mod worker {
         };
 
         let rooms = Rooms::from_worker_env(env);
-        consume(&db, &config, &queue, &rooms, &mut CloudProvisioner, batch).await
+        consume(
+            &db,
+            &config,
+            &queue,
+            &rooms,
+            &mut CloudProvisioner,
+            &ClaudeClient::default(),
+            batch,
+        )
+        .await
     }
 }

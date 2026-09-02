@@ -44,14 +44,14 @@ pub use budget::{
 pub use env::{EnvDocument, EnvEntry, NETWORK_CONTROL_WARNING, UpdateEnv};
 pub use github::RepoSummary;
 pub use harness::{
-    Availability, ContextWindow, Feature, HarnessAccountView, HarnessCredentialInput, HarnessEvent,
-    HarnessFeature, HarnessKind, LinkHarnessAccount, PermissionMode, UsageReport, availability,
-    matrix,
+    Availability, ClaudeOauthStart, CompleteClaudeOauth, ContextWindow, Feature,
+    HarnessAccountView, HarnessCredentialInput, HarnessEvent, HarnessFeature, HarnessKind,
+    LinkHarnessAccount, PermissionMode, UsageReport, availability, matrix,
 };
 pub use id::{
-    ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, HarnessAccountId, HarnessObservationId, Id,
-    MachineId, McpServerId, MemoryNodeId, ProviderAccountId, PushSubscriptionId, SessionId,
-    SkillId, SpendEventId, UserId,
+    ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, ClaudeOauthAttemptId, HarnessAccountId,
+    HarnessObservationId, Id, MachineId, McpServerId, MemoryNodeId, ProviderAccountId,
+    PushSubscriptionId, SessionId, SkillId, SpendEventId, UserId,
 };
 pub use machine::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, CloudProviderKind, MachineCapacity, MachineCatalogEntry,

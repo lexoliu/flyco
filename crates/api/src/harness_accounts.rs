@@ -1,21 +1,33 @@
 //! Claude Code and Codex accounts, plus observed LLM usage.
 //!
-//! Credentials enter through an authenticated JSON request, are encoded with
-//! their authentication mode, and are sealed before D1 sees them. No response
-//! type contains the credential. A user has one credential per harness;
-//! linking that harness again replaces it through the database's
-//! `(user_id, harness)` uniqueness invariant.
+//! Credentials enter through an authenticated JSON request — or through the
+//! Claude OAuth flow in [`crate::claude_oauth`], which ends in the same
+//! [`link`] — are encoded with their authentication mode, and are sealed
+//! before D1 sees them. No response type contains the credential. A user has
+//! one credential per harness; linking that harness again replaces it
+//! through the database's `(user_id, harness)` uniqueness invariant.
+//!
+//! # A credential that expires
+//!
+//! Only one stored mode has a lifetime: the OAuth grant. It is refreshed
+//! where it is *used* rather than on a schedule — [`credential`] is the one
+//! place a sealed credential is opened for a session, so a grant near its
+//! end is rotated there, persisted, and handed on. A cron pass would have
+//! to guess which accounts matter; this one refreshes exactly the accounts
+//! that are about to run something.
 
 use flyco_core::{
     CurrentUser, HarnessAccountId, HarnessAccountView, HarnessCredentialInput, HarnessKind,
     LinkHarnessAccount, LlmUsageView, UserId,
 };
 use flyco_provider::ClaudeCredential;
+use serde::{Deserialize, Serialize};
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::sql;
 use skyzen::utils::{Json, State};
 use skyzen_services::Db;
 
+use crate::anthropic::{ClaudeOauth, TokenRequest, TokenSet};
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
@@ -23,6 +35,109 @@ use crate::extract::path_id;
 use crate::observations;
 use crate::problem::Outcome;
 use crate::respond::{Created, NoContent};
+
+/// How close to its end an access token is refreshed before it is used.
+///
+/// Thirty minutes, because what happens after this call is a provision: a
+/// machine takes minutes to boot and then runs a turn on the token it was
+/// given. Handing over a credential that expires during that is the same
+/// failure as handing over none.
+pub const REFRESH_WINDOW_SECONDS: u64 = 30 * 60;
+
+/// What `harness_accounts.credential_enc` holds, unsealed.
+///
+/// Tagged `mode`, and the two long-lived modes are spelled exactly as
+/// [`ClaudeCredential`] spells them, because that is what the column has
+/// always held. The OAuth grant is the shape that could not be stored as a
+/// daemon credential: the daemon is handed a bearer token, while the
+/// control plane has to keep the refresh token and the expiry that make the
+/// next bearer token possible.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum StoredCredential {
+    /// A long-lived Claude subscription token from `claude setup-token`.
+    OauthToken {
+        /// Value for `CLAUDE_CODE_OAUTH_TOKEN`.
+        token: String,
+    },
+    /// An Anthropic or `OpenAI` API key.
+    ApiKey {
+        /// Value for `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
+        key: String,
+    },
+    /// A Claude subscription grant from the browser OAuth flow.
+    ClaudeOauth {
+        /// Value for `CLAUDE_CODE_OAUTH_TOKEN`, until it expires.
+        access_token: String,
+        /// Redeemed for the next pair.
+        refresh_token: String,
+        /// When [`access_token`](Self::ClaudeOauth::access_token) stops
+        /// working, seconds since the Unix epoch.
+        expires_at_unix: u64,
+    },
+}
+
+impl core::fmt::Debug for StoredCredential {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mode = match self {
+            Self::OauthToken { .. } => "oauth_token",
+            Self::ApiKey { .. } => "api_key",
+            Self::ClaudeOauth { .. } => "claude_oauth",
+        };
+        f.debug_struct("StoredCredential")
+            .field("mode", &mode)
+            .finish_non_exhaustive()
+    }
+}
+
+impl StoredCredential {
+    /// The grant a token exchange just produced.
+    #[must_use]
+    pub fn from_tokens(tokens: &TokenSet, now: u64) -> Self {
+        Self::ClaudeOauth {
+            access_token: tokens.access_token.clone(),
+            refresh_token: tokens.refresh_token.clone(),
+            expires_at_unix: tokens.expires_at_unix(now),
+        }
+    }
+
+    /// When this credential stops working, if the vendor states a lifetime.
+    #[must_use]
+    pub const fn expires_at_unix(&self) -> Option<u64> {
+        match self {
+            Self::OauthToken { .. } | Self::ApiKey { .. } => None,
+            Self::ClaudeOauth {
+                expires_at_unix, ..
+            } => Some(*expires_at_unix),
+        }
+    }
+
+    /// Whether this credential can authenticate `harness`.
+    ///
+    /// Codex takes an API key and nothing else: a Claude subscription token
+    /// on a Codex row is a corrupt record, not a mode to try.
+    const fn suits(&self, harness: HarnessKind) -> bool {
+        match (self, harness) {
+            (Self::ApiKey { .. }, _)
+            | (Self::OauthToken { .. } | Self::ClaudeOauth { .. }, HarnessKind::ClaudeCode) => true,
+            (Self::OauthToken { .. } | Self::ClaudeOauth { .. }, HarnessKind::Codex) => false,
+        }
+    }
+
+    /// The credential a machine's `flycod` is provisioned with.
+    ///
+    /// An OAuth grant becomes the bearer token the setup-token path already
+    /// hands over, so the daemon has one Claude mode rather than two.
+    fn into_daemon_credential(self) -> ClaudeCredential {
+        match self {
+            Self::OauthToken { token } => ClaudeCredential::OauthToken { token },
+            Self::ApiKey { key } => ClaudeCredential::ApiKey { key },
+            Self::ClaudeOauth { access_token, .. } => ClaudeCredential::OauthToken {
+                token: access_token,
+            },
+        }
+    }
+}
 
 /// Browser-visible account columns. The sealed credential is never selected.
 #[derive(Debug, skyzen::FromRow)]
@@ -83,7 +198,7 @@ async fn link_harness_account(
 
 fn validated(
     request: LinkHarnessAccount,
-) -> Result<(String, HarnessKind, ClaudeCredential), ApiError> {
+) -> Result<(String, HarnessKind, StoredCredential), ApiError> {
     let label = request.label.trim();
     if label.is_empty() {
         return Err(ApiError::InvalidHarnessCredential(
@@ -98,39 +213,65 @@ fn validated(
 
     let harness = request.credential.harness();
     let credential = match request.credential {
-        HarnessCredentialInput::ClaudeSetupToken { token } => ClaudeCredential::OauthToken {
+        HarnessCredentialInput::ClaudeSetupToken { token } => StoredCredential::OauthToken {
             token: token.trim().to_owned(),
         },
         HarnessCredentialInput::ClaudeApiKey { key }
-        | HarnessCredentialInput::CodexApiKey { key } => ClaudeCredential::ApiKey {
+        | HarnessCredentialInput::CodexApiKey { key } => StoredCredential::ApiKey {
             key: key.trim().to_owned(),
         },
+        HarnessCredentialInput::ClaudeOauth {
+            access_token,
+            refresh_token,
+            expires_at_unix,
+        } => {
+            if refresh_token.trim().is_empty() {
+                return Err(ApiError::InvalidHarnessCredential(
+                    "an OAuth grant must carry the refresh token that renews it",
+                ));
+            }
+            StoredCredential::ClaudeOauth {
+                access_token: access_token.trim().to_owned(),
+                refresh_token: refresh_token.trim().to_owned(),
+                expires_at_unix,
+            }
+        }
     };
     Ok((label.to_owned(), harness, credential))
 }
 
-async fn link(
+/// Seals a credential and writes it as the user's account for that harness.
+///
+/// The one write path: the JSON link route and the Claude OAuth completion
+/// both end here, so "linking again replaces the credential" is one rule
+/// rather than two implementations of one.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the credential cannot be sealed or the database
+/// refuses the write.
+pub async fn store(
     db: &Db,
     config: &ApiConfig,
     user: UserId,
-    request: LinkHarnessAccount,
+    label: &str,
+    harness: HarnessKind,
+    credential: &StoredCredential,
 ) -> Result<HarnessAccountView, ApiError> {
-    let (label, harness, credential) = validated(request)?;
-    let encoded = serde_json::to_string(&credential)
-        .map_err(|_| ApiError::CorruptRecord("a harness credential could not be encoded"))?;
-    let sealed = config.token_cipher().seal(&encoded)?;
+    let sealed = seal(config, credential)?;
     let id = HarnessAccountId::generate();
     let now = now_unix();
-    let stored_label = label.clone();
+    let expires_at_unix = credential.expires_at_unix();
 
     let stored_id: HarnessAccountId = sql!(
         db,
         "INSERT INTO harness_accounts \
          (id, user_id, harness, label, credential_enc, linked_at_unix, expires_at_unix) \
-         VALUES ({id}, {user}, {harness}, {stored_label}, {sealed}, {now}, NULL) \
+         VALUES ({id}, {user}, {harness}, {label}, {sealed}, {now}, {expires_at_unix}) \
          ON CONFLICT (user_id, harness) DO UPDATE SET \
          label = excluded.label, credential_enc = excluded.credential_enc, \
-         linked_at_unix = excluded.linked_at_unix, expires_at_unix = NULL \
+         linked_at_unix = excluded.linked_at_unix, \
+         expires_at_unix = excluded.expires_at_unix \
          RETURNING id"
     )
     .fetch_scalar()
@@ -140,28 +281,42 @@ async fn link(
     Ok(HarnessAccountView {
         id: stored_id,
         harness,
-        label,
+        label: label.to_owned(),
         linked_at_unix: now,
-        expires_at_unix: None,
+        expires_at_unix,
     })
 }
 
-/// Credential provisioned for a user's selected harness.
-///
-/// A missing link yields [`ClaudeCredential::Inherit`]. A stored value must
-/// be a tagged credential compatible with the harness row; legacy untyped
-/// tokens and mismatched records fail rather than being guessed into a mode.
+/// Encodes and seals one credential for the `credential_enc` column.
+fn seal(config: &ApiConfig, credential: &StoredCredential) -> Result<String, ApiError> {
+    let encoded = serde_json::to_string(credential)
+        .map_err(|_| ApiError::CorruptRecord("a harness credential could not be encoded"))?;
+    Ok(config.token_cipher().seal(&encoded)?)
+}
+
+async fn link(
+    db: &Db,
+    config: &ApiConfig,
+    user: UserId,
+    request: LinkHarnessAccount,
+) -> Result<HarnessAccountView, ApiError> {
+    let (label, harness, credential) = validated(request)?;
+    store(db, config, user, &label, harness, &credential).await
+}
+
+/// The stored credential for one user's harness, or `None` if unlinked.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] when the database read, authenticated decryption, or
-/// tagged credential decoding fails.
-pub async fn credential(
+/// tagged credential decoding fails, or when the stored mode cannot
+/// authenticate the harness its row names.
+pub async fn stored(
     db: &Db,
-    cipher: &crate::crypto::TokenCipher,
+    config: &ApiConfig,
     user: UserId,
     harness: HarnessKind,
-) -> Result<ClaudeCredential, ApiError> {
+) -> Result<Option<StoredCredential>, ApiError> {
     let sealed: Option<String> = sql!(
         db,
         "SELECT credential_enc FROM harness_accounts \
@@ -171,23 +326,94 @@ pub async fn credential(
     .await?;
 
     let Some(sealed) = sealed else {
-        return Ok(ClaudeCredential::Inherit);
+        return Ok(None);
     };
-    let encoded = cipher.open(&sealed)?;
-    let credential: ClaudeCredential = serde_json::from_str(&encoded)
+    let encoded = config.token_cipher().open(&sealed)?;
+    let credential: StoredCredential = serde_json::from_str(&encoded)
         .map_err(|_| ApiError::CorruptRecord("a harness credential has an unknown encoding"))?;
 
-    match (&credential, harness) {
-        (
-            ClaudeCredential::OauthToken { .. } | ClaudeCredential::ApiKey { .. },
-            HarnessKind::ClaudeCode,
-        )
-        | (ClaudeCredential::ApiKey { .. }, HarnessKind::Codex) => Ok(credential),
-        (ClaudeCredential::Inherit | ClaudeCredential::OauthToken { .. }, HarnessKind::Codex)
-        | (ClaudeCredential::Inherit, HarnessKind::ClaudeCode) => Err(ApiError::CorruptRecord(
+    if credential.suits(harness) {
+        Ok(Some(credential))
+    } else {
+        Err(ApiError::CorruptRecord(
             "a harness credential is incompatible with its account",
-        )),
+        ))
     }
+}
+
+/// Credential provisioned for a user's selected harness.
+///
+/// A missing link yields [`ClaudeCredential::Inherit`]. A stored OAuth grant
+/// within [`REFRESH_WINDOW_SECONDS`] of its expiry is renewed at Anthropic
+/// first and the rotated pair is persisted, so the daemon is handed a token
+/// that will outlive the provision — and so a user who linked once never
+/// pastes anything again.
+///
+/// This is the single unsealing point for every session path — first
+/// provision and resume alike, because both build their machine through the
+/// same provisioning job — which is what makes refreshing here enough.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] when the database read, authenticated decryption, or
+/// tagged credential decoding fails, or when Anthropic refuses to renew a
+/// grant that has to be renewed before it can be used.
+pub async fn credential(
+    db: &Db,
+    config: &ApiConfig,
+    claude: &impl ClaudeOauth,
+    user: UserId,
+    harness: HarnessKind,
+) -> Result<ClaudeCredential, ApiError> {
+    let Some(credential) = stored(db, config, user, harness).await? else {
+        return Ok(ClaudeCredential::Inherit);
+    };
+
+    let credential = if let StoredCredential::ClaudeOauth {
+        refresh_token,
+        expires_at_unix,
+        ..
+    } = &credential
+        && *expires_at_unix <= now_unix().saturating_add(REFRESH_WINDOW_SECONDS)
+    {
+        renew(db, config, claude, user, refresh_token).await?
+    } else {
+        credential
+    };
+    Ok(credential.into_daemon_credential())
+}
+
+/// Redeems a refresh token and writes the pair it yields over the old one.
+async fn renew(
+    db: &Db,
+    config: &ApiConfig,
+    claude: &impl ClaudeOauth,
+    user: UserId,
+    refresh_token: &str,
+) -> Result<StoredCredential, ApiError> {
+    let tokens = claude
+        .exchange(TokenRequest::RefreshToken {
+            refresh_token,
+            client_id: config.claude_oauth_client_id(),
+        })
+        .await
+        .map_err(ApiError::from)?;
+
+    let renewed = StoredCredential::from_tokens(&tokens, now_unix());
+    let sealed = seal(config, &renewed)?;
+    let expires_at_unix = renewed.expires_at_unix();
+    let harness = HarnessKind::ClaudeCode;
+    sql!(
+        db,
+        "UPDATE harness_accounts \
+         SET credential_enc = {sealed}, expires_at_unix = {expires_at_unix} \
+         WHERE user_id = {user} AND harness = {harness}"
+    )
+    .execute()
+    .await?;
+
+    tracing::info!("refreshed a Claude OAuth grant before using it");
+    Ok(renewed)
 }
 
 /// Unlinks one account owned by the caller.

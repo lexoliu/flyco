@@ -16,7 +16,7 @@ import Logomark, {
   GOOGLE_CLOUD_MARK,
   OPENAI_MARK,
 } from "../components/Logomark";
-import HarnessLinkForm from "../components/link/HarnessLinkForm";
+import HarnessChooser from "../components/link/HarnessChooser";
 import ProviderLinkForm from "../components/link/ProviderLinkForm";
 import { useReadiness } from "../components/Readiness";
 import { dismissWelcome } from "../lib/localPreferences";
@@ -92,7 +92,7 @@ export default function Welcome() {
                   </p>
                 }
               >
-                <HarnessLinkForm onLinked={() => void readiness.refresh()} />
+                <HarnessChooser onLinked={() => void readiness.refresh()} />
               </Show>
             </Match>
 

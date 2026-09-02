@@ -32,8 +32,8 @@ use skyzen_test::{TestClient, TestContext};
 use crate::provisioning::{LinkedAccount, Provisioner};
 use crate::provisioning_queue::{self, MAX_ATTEMPTS, ProvisioningJob};
 use crate::testing::{
-    HARNESS_TOKEN, machine_choice, migrated_router_on, seed_harness_account, seed_provider_account,
-    seed_user, test_config, test_rooms,
+    HARNESS_TOKEN, TestClaude, machine_choice, migrated_router_on, seed_harness_account,
+    seed_provider_account, seed_user, test_config, test_rooms,
 };
 use crate::{machines, session, sessions};
 
@@ -207,7 +207,16 @@ async fn run_queue(
     provisioner: &mut RecordedHost,
 ) -> QueueBatchDisposition {
     let batch = drain(queue).await;
-    provisioning_queue::consume(db, &test_config(), queue, &test_rooms(), provisioner, batch).await
+    provisioning_queue::consume(
+        db,
+        &test_config(),
+        queue,
+        &test_rooms(),
+        provisioner,
+        &TestClaude,
+        batch,
+    )
+    .await
 }
 
 /// Every job the queue holds, delivered or not.
@@ -249,6 +258,7 @@ async fn run_job_twice(
             queue,
             &test_rooms(),
             provisioner,
+            &TestClaude,
             batch(job),
         )
         .await;
@@ -463,6 +473,7 @@ async fn an_unreachable_host_is_retried_a_bounded_number_of_times(
             &queue,
             &test_rooms(),
             &mut host,
+            &TestClaude,
             batch(job),
         )
         .await;
@@ -534,6 +545,7 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         &queue,
         &test_rooms(),
         &mut host,
+        &TestClaude,
         original,
     )
     .await;
@@ -572,6 +584,7 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         &queue,
         &test_rooms(),
         &mut host,
+        &TestClaude,
         queued,
     )
     .await;
@@ -660,6 +673,7 @@ async fn a_job_for_a_session_that_is_gone_is_dropped(db: Db, queue: Queue) {
         &queue,
         &test_rooms(),
         &mut host,
+        &TestClaude,
         batch(orphan),
     )
     .await;

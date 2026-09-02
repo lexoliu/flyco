@@ -1,15 +1,15 @@
 /**
  * `/connect/harness` — where the Harness chip goes when nothing is linked.
  *
- * The route exists now so the chip is a real entry point rather than a dead
- * label; the two-card chooser with Claude's OAuth flow (docs/ux.md §8) is
- * issue #60 and replaces the body of this page, not the page itself.
+ * The page is the two cards of docs/ux.md §8 and the sentence above them.
+ * Both cards expand in place, and the flow inside them is the same
+ * component the welcome step and Settings › Agents open.
  */
 import { Show } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { ArrowLeft, Check } from "lucide-solid";
 import Logomark, { ANTHROPIC_MARK, OPENAI_MARK } from "../../components/Logomark";
-import HarnessLinkForm from "../../components/link/HarnessLinkForm";
+import HarnessChooser from "../../components/link/HarnessChooser";
 import ProblemNotice from "../../components/ProblemNotice";
 import { useReadiness } from "../../components/Readiness";
 import styles from "./Connect.module.css";
@@ -53,7 +53,7 @@ export default function ConnectHarness() {
       </Show>
 
       <ProblemNotice error={readiness.error()} />
-      <HarnessLinkForm onLinked={() => void onLinked()} />
+      <HarnessChooser onLinked={() => void onLinked()} />
     </section>
   );
 }

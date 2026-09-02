@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::HarnessAccountId;
+use crate::id::{ClaudeOauthAttemptId, HarnessAccountId};
 use crate::money::Usd;
 
 /// The coding harness driving a session. Flyco supports exactly these two
@@ -252,6 +252,21 @@ pub enum HarnessCredentialInput {
         /// Value for `OPENAI_API_KEY`.
         key: String,
     },
+    /// A Claude subscription obtained through the OAuth code flow.
+    ///
+    /// The pair the flow yields rather than a single token: the access
+    /// token is what a session's machine runs the agent under, and the
+    /// refresh token is what keeps a linked account working past the
+    /// access token's lifetime without the user pasting anything again.
+    ClaudeOauth {
+        /// Value for `CLAUDE_CODE_OAUTH_TOKEN`, until it expires.
+        access_token: String,
+        /// Redeemed for a new pair once the access token is near its end.
+        refresh_token: String,
+        /// When the access token stops working, seconds since the Unix
+        /// epoch.
+        expires_at_unix: u64,
+    },
 }
 
 impl core::fmt::Debug for HarnessCredentialInput {
@@ -260,6 +275,7 @@ impl core::fmt::Debug for HarnessCredentialInput {
             Self::ClaudeSetupToken { .. } => "claude_setup_token",
             Self::ClaudeApiKey { .. } => "claude_api_key",
             Self::CodexApiKey { .. } => "codex_api_key",
+            Self::ClaudeOauth { .. } => "claude_oauth",
         };
         f.debug_struct("HarnessCredentialInput")
             .field("kind", &kind)
@@ -272,7 +288,9 @@ impl HarnessCredentialInput {
     #[must_use]
     pub const fn harness(&self) -> HarnessKind {
         match self {
-            Self::ClaudeSetupToken { .. } | Self::ClaudeApiKey { .. } => HarnessKind::ClaudeCode,
+            Self::ClaudeSetupToken { .. }
+            | Self::ClaudeApiKey { .. }
+            | Self::ClaudeOauth { .. } => HarnessKind::ClaudeCode,
             Self::CodexApiKey { .. } => HarnessKind::Codex,
         }
     }
@@ -283,6 +301,7 @@ impl HarnessCredentialInput {
         match self {
             Self::ClaudeSetupToken { token } => token,
             Self::ClaudeApiKey { key } | Self::CodexApiKey { key } => key,
+            Self::ClaudeOauth { access_token, .. } => access_token,
         }
     }
 }
@@ -294,6 +313,31 @@ pub struct LinkHarnessAccount {
     pub label: String,
     /// Authentication material, tagged with the mode that consumes it.
     pub credential: HarnessCredentialInput,
+}
+
+/// Response of `POST /v1/harness-accounts/claude/oauth/start`.
+///
+/// The PKCE verifier never appears here: it stays in the control plane's
+/// key-value store for the ten minutes the attempt lives, and the browser
+/// carries only the opaque attempt id that names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ClaudeOauthStart {
+    /// Names the verifier and `state` the completion must be redeemed
+    /// against.
+    pub attempt_id: ClaudeOauthAttemptId,
+    /// Fully-formed `https://claude.ai/oauth/authorize` URL to open.
+    pub authorize_url: String,
+}
+
+/// Request body of `POST /v1/harness-accounts/claude/oauth/complete`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct CompleteClaudeOauth {
+    /// The attempt this code belongs to, from [`ClaudeOauthStart`].
+    pub attempt_id: ClaudeOauthAttemptId,
+    /// What Anthropic showed the user, which is `CODE#STATE` — the bare
+    /// code alone is accepted too, because a user who selects only the
+    /// first half of it has still supplied everything the exchange needs.
+    pub code: String,
 }
 
 /// A Claude or Codex account the user has linked, as `GET

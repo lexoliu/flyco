@@ -17,6 +17,7 @@ use skyzen::utils::{Bytes, Json, State};
 use skyzen::{HttpError as _, Response};
 use skyzen_services::{Db, Kv, Queue, Storage};
 
+use crate::anthropic::ClaudeClient;
 use crate::authenticator::FlycoAuthenticator;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
@@ -30,9 +31,9 @@ use crate::respond::{Accepted, Created, NoContent};
 use crate::room::EventPage;
 use crate::rooms::Rooms;
 use crate::{
-    agents_md, api_keys, approvals, daemon_tokens, env, harness_accounts, machines, mcp, memory,
-    oauth, observations, problem, provider_accounts, provisioning, push, relay, releases, repos,
-    responses, sessions, skills, transcripts, turns, users, webhooks, workdirs,
+    agents_md, api_keys, approvals, claude_oauth, daemon_tokens, env, harness_accounts, machines,
+    mcp, memory, oauth, observations, problem, provider_accounts, provisioning, push, relay,
+    releases, repos, responses, sessions, skills, transcripts, turns, users, webhooks, workdirs,
 };
 
 /// Health probe response.
@@ -1293,6 +1294,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
     let mut nodes = account_routes();
     nodes.extend(session_routes());
     nodes.extend(agents_md::routes());
+    nodes.extend(claude_oauth::routes());
     nodes.extend(harness_accounts::routes());
     nodes.extend(machines::routes());
     nodes.extend(mcp::routes());
@@ -1374,39 +1376,50 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
     spec
 }
 
-/// Builds the control-plane router around an explicit configuration, GitHub
-/// client, database, and provisioning queue.
+/// Builds the control-plane router around an explicit configuration, vendor
+/// clients, database, and provisioning queue.
 ///
-/// All four are injected rather than discovered, so tests can drive the
-/// OAuth callback without reaching `github.com` or a real D1, and can read
-/// back the jobs a session creation enqueued. In the deployed control plane
-/// the database and the queue arrive the way the KV namespace and the R2
-/// bucket do — they are declared in `Skyzen.toml`, and `#[skyzen::main]`
-/// wraps the router with them — which is what [`router_from_environment`]
-/// builds instead.
+/// All of them are injected rather than discovered, so tests can drive the
+/// OAuth flows without reaching `github.com`, `console.anthropic.com`, or a
+/// real D1, and can read back the jobs a session creation enqueued. In the
+/// deployed control plane the database and the queue arrive the way the KV
+/// namespace and the R2 bucket do — they are declared in `Skyzen.toml`, and
+/// `#[skyzen::main]` wraps the router with them — which is what
+/// [`router_from_environment`] builds instead.
 #[must_use]
-pub fn router(config: ApiConfig, github: GithubClient, db: Db, queue: Queue) -> Router {
-    configured(config, github).with(db).with(queue).build()
+pub fn router(
+    config: ApiConfig,
+    github: GithubClient,
+    claude: ClaudeClient,
+    db: Db,
+    queue: Queue,
+) -> Router {
+    configured(config, github, claude)
+        .with(db)
+        .with(queue)
+        .build()
 }
 
 /// The router without the database and queue the declared `[[database]]`
 /// and `[[service]]` entries supply.
-fn configured(config: ApiConfig, github: GithubClient) -> Route {
+fn configured(config: ApiConfig, github: GithubClient, claude: ClaudeClient) -> Route {
     with_error_handling(
         with_rooms(Route::new((routes(), frontend())))
             .with(State(config))
-            .with(State(github)),
+            .with(State(github))
+            .with(State(claude)),
     )
 }
 
 /// Worker path: configuration is read from the request's `env`, not at
 /// isolate startup. See [`crate::middleware::LoadApiConfig`].
 #[cfg(target_arch = "wasm32")]
-fn configured_from_request(github: GithubClient) -> Route {
+fn configured_from_request(github: GithubClient, claude: ClaudeClient) -> Route {
     with_error_handling(
         with_rooms(Route::new((routes(), frontend())))
             .with(crate::middleware::LoadApiConfig)
-            .with(State(github)),
+            .with(State(github))
+            .with(State(claude)),
     )
 }
 
@@ -1447,11 +1460,11 @@ pub fn router_from_environment() -> Router {
     {
         let config = ApiConfig::from_environment()
             .unwrap_or_else(|error| panic!("flyco control plane is misconfigured: {error}"));
-        configured(config, GithubClient::default()).build()
+        configured(config, GithubClient::default(), ClaudeClient::default()).build()
     }
     #[cfg(target_arch = "wasm32")]
     {
-        configured_from_request(GithubClient::default()).build()
+        configured_from_request(GithubClient::default(), ClaudeClient::default()).build()
     }
 }
 

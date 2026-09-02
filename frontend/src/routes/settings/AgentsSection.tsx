@@ -5,17 +5,17 @@
  * to "can flyco run Claude Code for me", and a harness with nothing linked
  * has to occupy the same space as one that is, or the absence is invisible.
  *
- * Linking and relinking both open the very same `HarnessLinkForm` that
- * `/connect/harness` and the welcome flow use — there is one credential
- * form in this app, and this is a third place it is shown, not a third copy
- * of it.
+ * Linking and relinking both open the very same `HarnessConnect` flow that
+ * `/connect/harness` and the welcome flow use — there is one way to connect
+ * an agent in this app, and this is a third place it is shown, not a third
+ * copy of it.
  */
 import { For, Show, createResource, createSignal } from "solid-js";
 import Logomark, { HARNESS_MARK } from "../../components/Logomark";
-import HarnessLinkForm from "../../components/link/HarnessLinkForm";
+import { HarnessConnect } from "../../components/link/HarnessChooser";
 import ProblemNotice from "../../components/ProblemNotice";
 import Disclosure from "../../components/Disclosure";
-import RatioBar from "../../components/RatioBar";
+import HarnessUsage from "../../components/HarnessUsage";
 import { useReadiness } from "../../components/Readiness";
 import HarnessMatrix from "./HarnessMatrix";
 import {
@@ -23,11 +23,8 @@ import {
   unlinkHarnessAccount,
   type HarnessAccountView,
   type HarnessKind,
-  type LlmUsageRow,
 } from "../../api/client";
 import { formatDate } from "../../lib/dates";
-import { formatUsd } from "../../lib/money";
-import { relativeTime } from "../../lib/relativeTime";
 import { cx } from "../../lib/cx";
 import styles from "./Settings.module.css";
 
@@ -147,9 +144,7 @@ export default function AgentsSection() {
                               </button>
                             </div>
                           </div>
-                          <AccountUsage
-                            row={usage()?.find((row) => row.account === account.id)}
-                          />
+                          <HarnessUsage row={usage()?.find((row) => row.account === account.id)} />
                         </div>
                       )}
                     </For>
@@ -157,7 +152,11 @@ export default function AgentsSection() {
                 </Show>
 
                 <Show when={linking() === harness.kind}>
-                  <HarnessLinkForm onLinked={() => void onLinked()} />
+                  <HarnessConnect
+                    harness={harness.kind}
+                    onLinked={() => void onLinked()}
+                    onCancel={() => setLinking(null)}
+                  />
                 </Show>
               </article>
             );
@@ -169,53 +168,5 @@ export default function AgentsSection() {
         <HarnessMatrix />
       </Disclosure>
     </section>
-  );
-}
-
-/**
- * What `GET /v1/usage/llm` will actually say about an account.
- *
- * Deliberately not a "42% of your quota" bar. The endpoint's own contract
- * is that every field is an observation and never a quota, so the two
- * honest readings are the cost the harness reported over this window and,
- * once the vendor has actually limited the account, how much of the wait
- * for the reset has passed. Nothing renders at all until there is
- * something true to render.
- */
-function AccountUsage(props: { row: LlmUsageRow | undefined }) {
-  const now = Date.now();
-  const limitedAt = () => props.row?.rate_limited_at_unix ?? null;
-  const resetsAt = () => props.row?.resets_at_unix ?? null;
-  const waited = () => {
-    const from = limitedAt();
-    const to = resetsAt();
-    if (from === null || to === null || to <= from) {
-      return undefined;
-    }
-    return (Math.floor(now / 1000) - from) / (to - from);
-  };
-
-  return (
-    <Show when={props.row}>
-      {(row) => (
-        <div class={styles.cardBody}>
-          {/* A cost with no ceiling is a figure, not a bar. */}
-          <Show when={row().observed_cost !== null && row().observed_cost !== undefined}>
-            <p class={styles.cardMeta}>
-              {formatUsd(row().observed_cost ?? 0)} reported by the harness since{" "}
-              {formatDate(row().period_start_unix)}
-            </p>
-          </Show>
-          <Show when={waited() !== undefined}>
-            <RatioBar
-              label="Usage limit"
-              ratio={waited()}
-              value={`resets ${relativeTime(resetsAt() ?? 0, now)}`}
-              tier="warn"
-            />
-          </Show>
-        </div>
-      )}
-    </Show>
   );
 }

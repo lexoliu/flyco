@@ -104,7 +104,7 @@ mod linking {
     use skyzen_test::TestContext;
 
     use crate::session;
-    use crate::testing::{migrated_router, seed_user, test_config};
+    use crate::testing::{TestClaude, migrated_router, seed_user, test_config};
 
     fn request(credential: HarnessCredentialInput) -> LinkHarnessAccount {
         LinkHarnessAccount {
@@ -215,9 +215,10 @@ mod linking {
         .expect("count harness accounts");
         assert_eq!(count, 1);
 
-        let stored = super::super::super::harness_accounts::credential(
+        let stored = crate::harness_accounts::credential(
             &db,
-            &test_config().token_cipher(),
+            &test_config(),
+            &TestClaude,
             user.id,
             HarnessKind::Codex,
         )
