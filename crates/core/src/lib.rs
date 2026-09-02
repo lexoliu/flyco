@@ -25,6 +25,7 @@ pub mod money;
 pub mod problem;
 pub mod providers;
 pub mod push;
+pub mod release;
 pub mod repo;
 pub mod session;
 pub mod skills;
@@ -71,6 +72,7 @@ pub use providers::{
     QuickstartAnswers,
 };
 pub use push::{PushKeys, PushSubscription, PushSubscriptionView, VapidPublicKey};
+pub use release::{PublishedBinary, PublishedObject};
 pub use repo::{BranchName, BranchNameError, RepoSlug, RepoStatus};
 pub use session::{
     ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, HarnessSessionView,

@@ -2,7 +2,8 @@
 //!
 //! Cross-compiles the daemon for both Linux architectures against a pinned
 //! glibc, writes the checksum files `crates/api/src/releases.rs` serves,
-//! uploads all four objects to the channel's prefix, and reads back what the
+//! stages the installer and its systemd unit out of `crates/xtask/install/`,
+//! uploads all six objects to the channel's prefix, and reads back what the
 //! control plane actually serves. It refuses to publish a daemon speaking a
 //! wire protocol the deployed Worker does not, because that combination
 //! refuses every machine provisioned from it at `Hello`.
@@ -16,14 +17,15 @@ use anyhow::{Context as _, Result, bail, ensure};
 use askama::Template as _;
 use cargo_metadata::MetadataCommand;
 use clap::Parser;
+use flyco_core::release::{ASSETS, BINARY_COUNT};
 use serde::Deserialize;
 use tokio::fs;
 use tracing::info;
-use zenwave::ResponseExt as _;
+use zenwave::{ResponseExt as _, header::CONTENT_TYPE};
 
 use crate::release::{
-    ARCHITECTURE_COUNT, ARCHITECTURES, ArchitectureArtifacts, Channel, Invocation, Release,
-    WireCheck,
+    ARCHITECTURES, ArchitectureArtifacts, Channel, Invocation, Release, ReleaseObject, WireCheck,
+    asset_source,
 };
 
 /// An external program the publish runs, and how to install it.
@@ -82,7 +84,8 @@ struct Health {
 /// The workspace paths the publish works in.
 #[derive(Debug, Clone)]
 struct Workspace {
-    /// Directory the build is run from.
+    /// Directory the build is run from, and the one the installer sources are
+    /// read out of.
     root: PathBuf,
     /// Directory cargo writes build output to.
     target: PathBuf,
@@ -94,8 +97,9 @@ impl PublishFlycod {
     /// # Errors
     ///
     /// Returns an error when a required tool is missing, the wire protocol
-    /// versions disagree, the cross-compile fails, an upload fails, or the
-    /// published checksum does not match what was built.
+    /// versions disagree, the cross-compile fails, an installer source is
+    /// missing, an upload fails, or what the control plane serves afterwards
+    /// is not what was staged.
     pub async fn run(self) -> Result<()> {
         let publishing = flyco_core::WIRE_PROTOCOL_VERSION;
         info!(
@@ -127,20 +131,28 @@ impl PublishFlycod {
         let workspace = workspace().await?;
         run_to_completion(&Invocation::zigbuild(), &workspace.root).await?;
 
-        let release = stage(self.channel, &workspace.target).await?;
+        let release = stage(self.channel, &workspace).await?;
         for artifact in &release.artifacts {
             info!(
-                object = artifact.binary.name,
+                object = artifact.binary.name(),
                 digest = artifact.line.digest,
                 file = %artifact.binary.file.display(),
                 "built"
             );
         }
+        for asset in &release.assets {
+            info!(
+                object = asset.name(),
+                file = %asset.file.display(),
+                "copied from the repository"
+            );
+        }
 
         if self.dry_run {
             info!(
-                staged = %release.artifacts[0].binary.file.display(),
-                "dry run: four objects staged, nothing uploaded"
+                objects = release.objects().count(),
+                directory = %self.channel.stage_dir(&workspace.target).display(),
+                "dry run: staged, nothing uploaded"
             );
             return Ok(());
         }
@@ -148,7 +160,7 @@ impl PublishFlycod {
         for object in release.objects() {
             let upload = Invocation::upload(release.channel, object);
             run_to_completion(&upload, &workspace.root).await?;
-            info!(key = release.channel.key(&object.name), "uploaded");
+            info!(key = release.channel.key(object.name()), "uploaded");
         }
 
         verify(&release).await
@@ -207,17 +219,21 @@ async fn run_to_completion(invocation: &Invocation, directory: &Path) -> Result<
     Ok(())
 }
 
-/// Copies both freshly built binaries under their published names and writes
-/// the checksum file that attests each one.
-async fn stage(channel: Channel, target: &Path) -> Result<Release> {
-    let stage_dir = target.join("flycod-release").join(channel.name);
+/// Puts all six objects in the staging directory under their published names:
+/// both freshly built binaries, the checksum file attesting each one, and the
+/// installer and its unit copied verbatim out of the repository.
+///
+/// Everything is uploaded from here, so a `--dry-run` leaves behind exactly
+/// the bytes a real publish would have sent.
+async fn stage(channel: Channel, workspace: &Workspace) -> Result<Release> {
+    let stage_dir = channel.stage_dir(&workspace.target);
     fs::create_dir_all(&stage_dir)
         .await
         .with_context(|| format!("creating {}", stage_dir.display()))?;
 
-    let mut sources = Vec::with_capacity(ARCHITECTURE_COUNT);
+    let mut sources = Vec::with_capacity(BINARY_COUNT);
     for architecture in ARCHITECTURES {
-        let built = architecture.built_binary(target);
+        let built = architecture.built_binary(&workspace.target);
         sources.push(
             fs::read(&built)
                 .await
@@ -245,39 +261,71 @@ async fn stage(channel: Channel, target: &Path) -> Result<Release> {
             .with_context(|| format!("writing {}", artifact.checksum.file.display()))?;
     }
 
+    let mut assets = Vec::with_capacity(ASSETS.len());
+    for asset in ASSETS {
+        let staged = ReleaseObject::staged(asset, &stage_dir);
+        let source = asset_source(&workspace.root, asset);
+        let bytes = fs::read(&source)
+            .await
+            .with_context(|| format!("reading {}", source.display()))?;
+        fs::write(&staged.file, &bytes)
+            .await
+            .with_context(|| format!("writing {}", staged.file.display()))?;
+        assets.push(staged);
+    }
+    let assets = assets
+        .try_into()
+        .expect("one staged object per installer asset");
+
     Ok(Release {
         channel,
         artifacts: staged.map(|(artifact, _)| artifact),
+        assets,
     })
 }
 
 /// Reads back what the control plane serves and fails on any difference.
 ///
 /// This is the only check that covers the whole path — build, checksum,
-/// upload, bucket, Worker allowlist — so a publish is not finished until it
-/// passes.
+/// upload, bucket, Worker allowlist, media type — so a publish is not
+/// finished until it passes. The binaries themselves are not downloaded
+/// again: they are tens of megabytes, and the checksum objects read back here
+/// are what a machine trusts them by.
 async fn verify(release: &Release) -> Result<()> {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("reading the clock")?
         .as_nanos();
 
-    for artifact in &release.artifacts {
-        let url = release
-            .channel
-            .checksum_verification_url(&artifact.binary.name, nonce);
-        let served = zenwave::get(url.as_str())
+    for object in release.verified_objects() {
+        let expected = fs::read_to_string(&object.file)
             .await
-            .with_context(|| format!("GET {url}"))?
+            .with_context(|| format!("reading {}", object.file.display()))?;
+        let url = release.channel.verification_url(object.name(), nonce);
+        let response = zenwave::get(url.as_str())
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let served_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .with_context(|| format!("{url} answered without a content type"))?
+            .to_str()
+            .with_context(|| format!("{url} answered a content type that is not text"))?
+            .to_owned();
+        ensure!(
+            served_type == object.published.content_type,
+            "{url} is served as {served_type:?}, this publish uploaded {:?}",
+            object.published.content_type
+        );
+        let served = response
             .into_string()
             .await
             .with_context(|| format!("{url} did not answer text"))?;
-        let expected = artifact.line.render()?;
         ensure!(
             served.as_str() == expected,
-            "{url} serves {served:?}, this publish built {expected:?}"
+            "{url} serves {served:?}, this publish staged {expected:?}"
         );
-        info!(object = artifact.checksum.name, "verified as served");
+        info!(object = object.name(), "verified as served");
     }
     Ok(())
 }

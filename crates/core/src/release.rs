@@ -1,0 +1,182 @@
+//! The objects one `flycod` release publishes.
+//!
+//! A release crosses a boundary like any wire message does: `cargo xtask
+//! publish-flycod` writes these objects into the deployment's R2 bucket and
+//! `flyco_api::releases` serves exactly these names back to the machine
+//! installer, refusing every other key. Both sides read this table, so the
+//! publisher cannot produce an object the control plane would refuse and the
+//! control plane cannot advertise one no publish writes.
+//!
+//! Nothing here says how an object is *built* — the target triples, the glibc
+//! pin and the staging directory are the publisher's business and live in
+//! `crates/xtask`.
+
+/// One object of a release: what it is called, and what it is served as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishedObject {
+    /// Name the object is published and served under, which is also the last
+    /// segment of its key under `releases/<channel>/` and the last segment of
+    /// the `/install/` URL the installer downloads it from.
+    pub name: &'static str,
+    /// Media type the control plane answers with.
+    ///
+    /// Fixed per object rather than sniffed or read back from storage: a
+    /// bucket object whose stored type drifted would otherwise change how a
+    /// machine treats a binary it is about to execute.
+    pub content_type: &'static str,
+}
+
+/// Media type of an executable the installer downloads and runs.
+const EXECUTABLE: &str = "application/octet-stream";
+
+/// Media type of the plain-text objects: the checksum lines and the unit file.
+const TEXT: &str = "text/plain; charset=utf-8";
+
+/// One published architecture: the daemon binary, and the checksum attesting
+/// it.
+///
+/// The two travel together because the installer downloads both and refuses
+/// the machine if `sha256sum --check` disagrees, so a release that has one
+/// without the other is half-published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishedBinary {
+    /// What `uname -m` reports on a machine this binary runs on, which is how
+    /// the installer picks between them.
+    pub uname: &'static str,
+    /// The `flycod-linux-<uname>` binary.
+    pub binary: PublishedObject,
+    /// The `flycod-linux-<uname>.sha256` line attesting it.
+    pub checksum: PublishedObject,
+}
+
+/// The 64-bit x86 build.
+pub const X86_64: PublishedBinary = PublishedBinary {
+    uname: "x86_64",
+    binary: PublishedObject {
+        name: "flycod-linux-x86_64",
+        content_type: EXECUTABLE,
+    },
+    checksum: PublishedObject {
+        name: "flycod-linux-x86_64.sha256",
+        content_type: TEXT,
+    },
+};
+
+/// The 64-bit Arm build.
+pub const AARCH64: PublishedBinary = PublishedBinary {
+    uname: "aarch64",
+    binary: PublishedObject {
+        name: "flycod-linux-aarch64",
+        content_type: EXECUTABLE,
+    },
+    checksum: PublishedObject {
+        name: "flycod-linux-aarch64.sha256",
+        content_type: TEXT,
+    },
+};
+
+/// Number of architectures a release covers.
+pub const BINARY_COUNT: usize = 2;
+
+/// Every architecture a release covers.
+///
+/// An architecture absent here has no binary, and the installer refuses the
+/// machine rather than downloading one built for another instruction set.
+pub const BINARIES: [PublishedBinary; BINARY_COUNT] = [X86_64, AARCH64];
+
+/// The systemd unit that runs the daemon, installed by [`INSTALLER`].
+pub const UNIT: PublishedObject = PublishedObject {
+    name: "flycod.service",
+    content_type: TEXT,
+};
+
+/// The machine installer, which cloud-init fetches and runs as root.
+///
+/// Served as a shell script rather than as plain text because it is the one
+/// object a machine executes straight off the wire.
+pub const INSTALLER: PublishedObject = PublishedObject {
+    name: "flycod.sh",
+    content_type: "text/x-shellscript; charset=utf-8",
+};
+
+/// Number of objects a release copies verbatim out of the repository.
+pub const ASSET_COUNT: usize = 2;
+
+/// The objects a release copies verbatim out of the repository, in publish
+/// order.
+///
+/// The unit comes first and the installer last: the installer is the entry
+/// point cloud-init fetches, so it is the last thing a publish makes current,
+/// and a publish interrupted midway never points a machine at a unit file that
+/// is not there yet.
+pub const ASSETS: [PublishedObject; ASSET_COUNT] = [UNIT, INSTALLER];
+
+/// Number of objects one release publishes.
+pub const OBJECT_COUNT: usize = BINARY_COUNT * 2 + ASSET_COUNT;
+
+/// Every object one release publishes, and the control plane serves.
+pub const OBJECTS: [PublishedObject; OBJECT_COUNT] = [
+    X86_64.binary,
+    X86_64.checksum,
+    AARCH64.binary,
+    AARCH64.checksum,
+    UNIT,
+    INSTALLER,
+];
+
+/// The published object called `name`, if a release publishes one.
+///
+/// This is the whole of the control plane's allowlist: a name absent here
+/// never becomes a storage key, so `/install/` cannot be walked into the rest
+/// of the bucket.
+#[must_use]
+pub fn object(name: &str) -> Option<PublishedObject> {
+    OBJECTS.into_iter().find(|object| object.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ASSETS, BINARIES, INSTALLER, OBJECT_COUNT, OBJECTS, object};
+
+    #[test]
+    fn every_published_object_is_named_once() {
+        let mut names = OBJECTS.map(|object| object.name).to_vec();
+        names.sort_unstable();
+        names.dedup();
+
+        assert_eq!(names.len(), OBJECT_COUNT);
+    }
+
+    #[test]
+    fn the_objects_are_the_binaries_their_checksums_and_the_assets() {
+        let mut expected = BINARIES
+            .into_iter()
+            .flat_map(|architecture| [architecture.binary, architecture.checksum])
+            .chain(ASSETS)
+            .map(|object| object.name)
+            .collect::<Vec<_>>();
+        let mut published = OBJECTS.map(|object| object.name).to_vec();
+        expected.sort_unstable();
+        published.sort_unstable();
+
+        assert_eq!(published, expected);
+    }
+
+    #[test]
+    fn a_checksum_is_named_after_the_binary_it_attests() {
+        for architecture in BINARIES {
+            assert_eq!(
+                architecture.checksum.name,
+                format!("{}.sha256", architecture.binary.name)
+            );
+            assert!(architecture.binary.name.ends_with(architecture.uname));
+        }
+    }
+
+    #[test]
+    fn a_lookup_answers_only_for_published_names() {
+        assert_eq!(object("flycod.sh"), Some(INSTALLER));
+        assert_eq!(object("../transcripts/private"), None);
+        assert_eq!(object("flycod-linux-riscv64"), None);
+    }
+}
