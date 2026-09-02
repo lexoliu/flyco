@@ -60,6 +60,7 @@ use self::sidecar::{SidecarConfig, SidecarError};
 use self::store::{StoreError, TranscriptStore};
 use super::{Harness, HarnessSession, SessionOutput, StartRequest, Started, ToolApproval};
 use crate::config::ClaudeConfig;
+use crate::mount::{Mount, MountError};
 
 /// How long a clean shutdown may take before the child is killed.
 ///
@@ -77,6 +78,10 @@ pub enum ClaudeError {
     /// The Bun sidecar could not be prepared or launched.
     #[error(transparent)]
     Sidecar(#[from] SidecarError),
+    /// flyco's MCP server could not be declared to the harness, or the
+    /// harness came up without it.
+    #[error(transparent)]
+    Mount(#[from] MountError),
     /// The transcript store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -132,16 +137,18 @@ pub enum ClaudeError {
 pub struct ClaudeCodeHarness<S> {
     claude: ClaudeConfig,
     sidecar: SidecarConfig,
+    mount: Mount,
     store: S,
 }
 
 impl<S: TranscriptStore> ClaudeCodeHarness<S> {
-    /// Builds a harness from its configuration and the store its
-    /// transcripts go to.
-    pub const fn new(claude: ClaudeConfig, sidecar: SidecarConfig, store: S) -> Self {
+    /// Builds a harness from its configuration, the MCP servers the session
+    /// may reach, and the store its transcripts go to.
+    pub const fn new(claude: ClaudeConfig, sidecar: SidecarConfig, mount: Mount, store: S) -> Self {
         Self {
             claude,
             sidecar,
+            mount,
             store,
         }
     }
@@ -152,6 +159,16 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
     type Error = ClaudeError;
 
     async fn start(self, request: StartRequest) -> Result<Started<Self::Session>, ClaudeError> {
+        // Before the CLI exists, so there is no window in which a harness is
+        // running against a policy file this daemon has not written yet.
+        if let Some(dir) = &self.claude.managed_dir {
+            self.mount.write_claude_managed(dir).await?;
+        } else {
+            tracing::warn!(
+                "no `claude.managed_dir` in the config: this session's MCP servers are mounted \
+                 through the Agent SDK, but nothing on this machine stops the agent adding more"
+            );
+        }
         sidecar::prepare(&self.sidecar).await?;
         let mut child = sidecar::spawn(&self.sidecar)?;
 
@@ -186,6 +203,7 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
                 model: self.claude.model.clone(),
                 permission_mode: self.claude.permission_mode,
                 resume_session_id: request.resume_session_id,
+                mcp_servers: self.mount.claude_sdk_servers(),
             },
         )
         .await?;
@@ -551,6 +569,22 @@ impl<S: TranscriptStore> Driver<S> {
                     self.capabilities = Some(capabilities.clone());
                 }
                 emit(&self.outputs, SessionOutput::Capabilities { capabilities }).await
+            }
+            SidecarEvent::McpServers { servers } => {
+                // The session's whole point is an agent that can see what
+                // it is spending; one that cannot is stopped here rather
+                // than left to find out by trying.
+                if let Err(error) = crate::mount::verify(&servers) {
+                    emit(
+                        &self.outputs,
+                        SessionOutput::Fatal {
+                            error: ClaudeError::Mount(error.into()).to_string(),
+                        },
+                    )
+                    .await;
+                    return false;
+                }
+                true
             }
             SidecarEvent::SdkMessage { message } => {
                 for event in self.normalizer.normalize(&message) {

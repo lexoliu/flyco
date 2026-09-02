@@ -19,7 +19,20 @@ use flyco_daemon::harness::claude::sidecar::SidecarConfig;
 use flyco_daemon::harness::claude::store::JsonlTranscriptStore;
 use flyco_daemon::harness::claude::{ClaudeCodeHarness, ClaudeSession};
 use flyco_daemon::harness::{Harness as _, HarnessSession as _, SessionOutput, StartRequest};
+use flyco_daemon::mount::{FlycoServer, Mount};
 use tokio::sync::mpsc;
+
+/// The MCP servers a test session is given.
+///
+/// Only flyco's own, and it is never launched: the stand-in sidecar reports
+/// the mount rather than performing it. What the driver does with the
+/// report is what these tests are about.
+fn mount() -> Mount {
+    Mount::new(
+        FlycoServer::of(Path::new("/etc/flyco/flycod.toml")).expect("this test binary has a path"),
+        Vec::new(),
+    )
+}
 
 /// A scratch directory that removes itself.
 struct Scratch(PathBuf);
@@ -72,12 +85,14 @@ async fn start(scratch: &Scratch) -> (ClaudeSession, mpsc::Receiver<SessionOutpu
         ClaudeConfig {
             model: None,
             permission_mode: PermissionMode::Default,
+            managed_dir: None,
             auth: ClaudeAuth::Inherit,
         },
         SidecarConfig {
             dir: sidecar_dir,
             bun: script("fake-sidecar.sh"),
         },
+        mount(),
         JsonlTranscriptStore::new(scratch.join("transcripts")),
     );
 
@@ -97,6 +112,37 @@ async fn next(outputs: &mut mpsc::Receiver<SessionOutput>, what: &str) -> Sessio
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
         .unwrap_or_else(|| panic!("the session ended before {what}"))
+}
+
+#[tokio::test]
+async fn a_harness_that_came_up_without_flycos_tools_fails_the_session() {
+    // The scratch's name is what tells the stand-in sidecar to report a
+    // flyco server with `machine_status` missing.
+    let scratch = Scratch::new("unmounted");
+    let (_session, mut outputs) = start(&scratch).await;
+
+    // Identity still arrives first: the CLI is warm before its MCP servers
+    // have finished connecting, and the refusal is the next thing said.
+    assert!(matches!(
+        next(&mut outputs, "started").await,
+        SessionOutput::Started { .. }
+    ));
+
+    let SessionOutput::Fatal { error } = next(&mut outputs, "the mount refusal").await else {
+        panic!("a session whose agent cannot read its budget must not run");
+    };
+    assert!(
+        error.contains("machine_status"),
+        "the refusal must name the missing tool: {error}"
+    );
+    assert!(
+        error.contains("does not expose"),
+        "the refusal must say the server answered but not with the tools: {error}"
+    );
+    assert!(
+        outputs.recv().await.is_none(),
+        "a fatal ends the session rather than pausing it"
+    );
 }
 
 #[tokio::test]
@@ -299,12 +345,14 @@ async fn a_missing_bun_names_itself_instead_of_failing_obscurely() {
         ClaudeConfig {
             model: None,
             permission_mode: PermissionMode::Default,
+            managed_dir: None,
             auth: ClaudeAuth::Inherit,
         },
         SidecarConfig {
             dir: scratch.join("sidecar"),
             bun: PathBuf::from("definitely-not-a-real-bun"),
         },
+        mount(),
         JsonlTranscriptStore::new(scratch.join("transcripts")),
     );
 

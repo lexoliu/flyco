@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "flyco": {
+      "type": "stdio",
+      "command": "/usr/local/bin/flycod",
+      "args": [
+        "mcp",
+        "--config",
+        "/etc/flyco/flycod.toml"
+      ],
+      "env": {},
+      "alwaysLoad": true
+    }
+  }
+}

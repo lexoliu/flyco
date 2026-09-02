@@ -89,6 +89,15 @@ memory_mib = 16384
 # reaches flyco's approval UI, because auto-approved tools never call back.
 permission_mode = "default"
 
+# Claude Code's managed-policy directory, "/etc/claude-code" on a
+# provisioned machine. flycod writes managed-settings.json and
+# managed-mcp.json there: root-owned files that outrank every other settings
+# source and hold the MCP allowlist, so the agent cannot add a server or
+# remove flyco's. Omitted here because a developer's flycod is not root and
+# the host's own managed policy is not flyco's to overwrite — the session's
+# servers are still mounted through the Agent SDK, but nothing is enforced.
+# managed_dir = "/etc/claude-code"
+
 [claude.auth]
 # "inherit"      — no CLAUDE_CONFIG_DIR, no credential injection. Developer
 #                  machines only: the CLI reads the host user's ~/.claude.
@@ -102,3 +111,18 @@ dir = "/tmp/flycod-dev/sidecar"
 
 # The bun executable; a bare name is resolved through PATH.
 bun = "bun"
+
+# The user's registered MCP servers, written by the provisioner from
+# `GET /v1/mcp-servers`. This is the whole set the session gets beside
+# flyco's own local server, and it is an allowlist rather than a suggestion:
+# flycod renders it into the harness's root-owned MCP configuration, which
+# the agent's user cannot write. Last in the file because an array of tables
+# closes the document.
+#
+# [[mcp_servers]]
+# name = "git"
+# config = { transport = "stdio", command = "bunx", args = ["-y", "@modelcontextprotocol/server-git"], env = [{ key = "GIT_DIR", value = "/srv/flyco/work/.git" }] }
+#
+# [[mcp_servers]]
+# name = "deepwiki"
+# config = { transport = "http", url = "https://mcp.deepwiki.com/mcp", headers = [{ name = "authorization", value = "Bearer a-registered-token" }] }

@@ -1,0 +1,1 @@
+{"servers":[{"name":"flyco","state":"connected","status":"connected","tools":["machine_status","budget_status","machine_resize"]},{"name":"deepwiki","state":"failed","status":"needs-auth","tools":[]}],"type":"mcp_servers"}

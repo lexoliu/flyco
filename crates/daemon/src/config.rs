@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use flyco_core::{
-    BranchName, DAEMON_TOKEN_PREFIX, HarnessKind, MachineOrigin, RepoSlug, SessionId,
-    SessionMachine,
+    BranchName, DAEMON_TOKEN_PREFIX, HarnessKind, MachineOrigin, McpServerMount, RepoSlug,
+    SessionId, SessionMachine,
 };
 use serde::Deserialize;
 use url::Url;
@@ -128,6 +128,18 @@ pub struct ClaudeConfig {
     /// Permission mode, spelled the way the Agent SDK spells it
     /// (`default`, `acceptEdits`, `bypassPermissions`, `plan`).
     pub permission_mode: PermissionMode,
+    /// Claude Code's managed-policy directory — `/etc/claude-code` on a
+    /// provisioned machine.
+    ///
+    /// Where flycod writes `managed-settings.json` and `managed-mcp.json`,
+    /// which outrank every other settings source and are what make the MCP
+    /// allowlist a fact about the filesystem. Absent on a developer
+    /// machine, where flycod is not root and the host's own managed policy
+    /// is not flyco's to overwrite; the session's servers are still mounted
+    /// there, through the Agent SDK, but nothing stops the agent adding
+    /// more.
+    #[serde(default)]
+    pub managed_dir: Option<PathBuf>,
     /// Credentials and config isolation.
     pub auth: ClaudeAuth,
 }
@@ -458,6 +470,15 @@ pub struct DaemonConfig {
     /// workdir.
     #[serde(default)]
     pub terminal: TerminalConfig,
+    /// The user's registered MCP servers, as the control plane provisioned
+    /// them.
+    ///
+    /// The whole set the session gets, beside flyco's own local server.
+    /// [`crate::mount`] writes it into the harness's root-owned
+    /// configuration, which is the allowlist: an agent cannot reach a
+    /// server that is not here, and cannot add one.
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerMount>,
 }
 
 impl DaemonConfig {

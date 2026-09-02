@@ -6,11 +6,18 @@ else: no Codex binary, so the driver's handshake, turns, approvals,
 interrupt, and manual-compaction paths can run in CI. Extra argv
 (`app-server --strict-config`) is
 ignored the way a real binary's subcommand would consume it.
+
+The one thing a test can vary is the directory the driver runs it in, which
+is the scratch directory the test named: a scratch called `unmounted` gets
+an app-server whose flyco MCP server is missing `machine_status`. The driver
+gives the app-server no other channel, and a second copy of this file would
+be a second copy of the whole protocol.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 
@@ -51,7 +58,30 @@ def main() -> None:
         if msg is None:
             return
         method = msg.get("method")
-        if method == "turn/start":
+        if method == "mcpServerStatus/list":
+            # What the app-server mounted. The driver refuses the session
+            # unless flyco's own server is here, connected, with its tools.
+            tools = ["budget_status", "machine_resize"]
+            if "unmounted" not in os.getcwd():
+                tools.append("machine_status")
+            send(
+                {
+                    "id": msg["id"],
+                    "result": {
+                        "data": [
+                            {
+                                "name": "flyco",
+                                "runtimeStatus": "connected",
+                                "authStatus": "unsupported",
+                                "resources": [],
+                                "resourceTemplates": [],
+                                "tools": {name: {} for name in tools},
+                            }
+                        ]
+                    },
+                }
+            )
+        elif method == "turn/start":
             send({"id": msg["id"], "result": {}})
             send(
                 {

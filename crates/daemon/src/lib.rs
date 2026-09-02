@@ -26,6 +26,9 @@
 //! - [`mcp`] — the local stdio MCP server, which is the *only* sanctioned
 //!   way an agent acts on its own session: what machine it is on, what the
 //!   budget has left, and moving to another machine.
+//! - [`mount`] — telling the harness to run that server and only the
+//!   servers flyco named, through root-owned configuration the agent's user
+//!   cannot write, and refusing a session whose harness came up without it.
 //! - [`spot`] — the provider's eviction notice, watched on the machine's own
 //!   instance-metadata endpoint, and the disk flush the daemon answers it
 //!   with. The agent takes no part in a reclamation and is told about it
@@ -45,6 +48,7 @@ pub mod control;
 pub mod git;
 pub mod harness;
 pub mod mcp;
+pub mod mount;
 pub mod notice;
 pub mod repl;
 pub mod spot;

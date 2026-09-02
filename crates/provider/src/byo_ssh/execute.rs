@@ -481,6 +481,7 @@ mod tests {
                 machine_origin: flyco_core::MachineOrigin::Auto,
                 machine: crate::testing::session_machine(),
                 resume_session_id: None,
+                mcp_servers: crate::testing::mcp_servers(),
             },
         }
     }

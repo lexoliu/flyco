@@ -153,6 +153,7 @@ fn request_in(machine: MachineId, zone: &str, machine_type: &str, spot: bool) ->
             machine_origin: flyco_core::MachineOrigin::Auto,
             machine: crate::testing::session_machine(),
             resume_session_id: None,
+            mcp_servers: crate::testing::mcp_servers(),
         },
     }
 }

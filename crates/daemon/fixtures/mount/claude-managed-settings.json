@@ -1,0 +1,26 @@
+{
+  "allowManagedMcpServersOnly": true,
+  "allowedMcpServers": [
+    {
+      "serverName": "deepwiki",
+      "serverUrl": "https://mcp.deepwiki.com/mcp"
+    },
+    {
+      "serverName": "flyco",
+      "serverCommand": [
+        "/usr/local/bin/flycod",
+        "mcp",
+        "--config",
+        "/etc/flyco/flycod.toml"
+      ]
+    },
+    {
+      "serverName": "git",
+      "serverCommand": [
+        "bunx",
+        "-y",
+        "@modelcontextprotocol/server-git"
+      ]
+    }
+  ]
+}

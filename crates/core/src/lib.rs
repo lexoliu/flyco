@@ -62,7 +62,7 @@ pub use machine::{
     MachinePricing, MachineSpec, MachineState, MachineView, OsFamily, ResizeMachine,
     SessionMachine, StoragePriceTier, StoragePricing, auto_linux_choice,
 };
-pub use mcp::{HeaderEntry, McpServerConfig, McpServerView, UpsertMcpServer};
+pub use mcp::{HeaderEntry, McpServerConfig, McpServerMount, McpServerView, UpsertMcpServer};
 pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};
 pub use money::Usd;
 pub use problem::Problem;

@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "deepwiki": {
+      "type": "http",
+      "url": "https://mcp.deepwiki.com/mcp",
+      "headers": {
+        "authorization": "Bearer a-registered-token"
+      }
+    },
+    "flyco": {
+      "type": "stdio",
+      "command": "/usr/local/bin/flycod",
+      "args": [
+        "mcp",
+        "--config",
+        "/etc/flyco/flycod.toml"
+      ],
+      "env": {},
+      "alwaysLoad": true
+    },
+    "git": {
+      "type": "stdio",
+      "command": "bunx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-git"
+      ],
+      "env": {
+        "GIT_DIR": "/srv/flyco/work/.git"
+      },
+      "alwaysLoad": false
+    }
+  }
+}

@@ -6,11 +6,26 @@
 # and transcript store can be exercised in CI without a live session. The
 # driver invokes it exactly as it invokes bun (`<exe> run sidecar.ts` in the
 # materialized sidecar directory), and the arguments are ignored.
+#
+# The one thing a test can vary is the directory it is run in, which is the
+# scratch directory the test named: a scratch called `unmounted` gets a
+# sidecar that reports a flyco server missing `machine_status`. The driver
+# gives a sidecar no other channel, and a second copy of this script would
+# be a second copy of the whole protocol.
 set -eu
 
 say() {
 	printf '%s\n' "$1"
 }
+
+case "$PWD" in
+*unmounted*)
+	mounted='{"type":"mcp_servers","servers":[{"name":"flyco","status":"connected","state":"connected","tools":["budget_status","machine_resize"]}]}'
+	;;
+*)
+	mounted='{"type":"mcp_servers","servers":[{"name":"flyco","status":"connected","state":"connected","tools":["machine_status","budget_status","machine_resize"]}]}'
+	;;
+esac
 
 say '{"type":"ready","sdk_version":"0.0.0-fake"}'
 
@@ -22,6 +37,10 @@ while IFS= read -r line; do
 		# The session is identified as soon as the query is constructed —
 		# before any user message. Capabilities are NOT known yet.
 		say '{"type":"started","session_id":"fake-session"}'
+		# What the CLI mounted, reported once the `initialize` handshake
+		# is done and before any turn. A driver that did not get flyco's
+		# own tools here fails the session instead of continuing.
+		say "$mounted"
 		# Resume asks the store for the transcript before anything else.
 		say '{"type":"store_request","id":1,"op":{"load":{"key":{"project_key":"fake-project","session_id":"fake-session"}}}}'
 		;;

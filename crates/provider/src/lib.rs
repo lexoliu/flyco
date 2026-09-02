@@ -213,6 +213,15 @@ pub struct DaemonBootstrap {
     /// Harness-native session id to resume, for a session moving onto a new
     /// machine.
     pub resume_session_id: Option<String>,
+    /// The user's enabled MCP servers, as the machine's harness is given
+    /// them.
+    ///
+    /// Provisioned rather than fetched by the daemon, and it is the whole
+    /// set: `flycod` writes these — and flyco's own local server — into the
+    /// harness's root-owned MCP configuration, which is the allowlist the
+    /// agent is held to. A server absent from this list is one the session
+    /// cannot reach, and there is no route by which the agent adds one.
+    pub mcp_servers: Vec<flyco_core::McpServerMount>,
 }
 
 impl fmt::Debug for DaemonBootstrap {
@@ -227,6 +236,17 @@ impl fmt::Debug for DaemonBootstrap {
             .field("machine_origin", &self.machine_origin)
             .field("machine", &self.machine)
             .field("resume_session_id", &self.resume_session_id)
+            // Names only: a remote MCP server's headers routinely carry a
+            // bearer token, which is a fourth credential this structure
+            // holds and the fourth this rendering keeps out of a log line.
+            .field(
+                "mcp_servers",
+                &self
+                    .mcp_servers
+                    .iter()
+                    .map(|server| server.name.as_str())
+                    .collect::<Vec<_>>(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -495,13 +515,25 @@ mod tests {
             machine_origin: flyco_core::MachineOrigin::Auto,
             machine: crate::testing::session_machine(),
             resume_session_id: None,
+            mcp_servers: vec![flyco_core::McpServerMount {
+                name: "deepwiki".to_owned(),
+                config: flyco_core::McpServerConfig::Http {
+                    url: "https://mcp.deepwiki.com/mcp".to_owned(),
+                    headers: vec![flyco_core::HeaderEntry {
+                        name: "authorization".to_owned(),
+                        value: "Bearer a-live-mcp-credential".to_owned(),
+                    }],
+                },
+            }],
         };
 
         let rendered = format!("{bootstrap:?}");
         assert!(!rendered.contains("fd_a-live-credential"));
         assert!(!rendered.contains("sk-ant-oat01-live"));
         assert!(!rendered.contains(crate::testing::GITHUB_TOKEN));
+        assert!(!rendered.contains("a-live-mcp-credential"));
         assert!(rendered.contains("https://flyco.dev/"));
+        assert!(rendered.contains("deepwiki"));
     }
 
     #[test]

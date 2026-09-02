@@ -156,6 +156,42 @@ impl<T: Timer> Timer for &T {
     }
 }
 
+/// The MCP registry a bootstrap fixture carries.
+///
+/// One server of each transport, because the two are rendered differently
+/// into every harness's configuration and a fixture with only one of them
+/// would let the other rot. Written once here for the same reason
+/// [`session_machine`] is.
+#[must_use]
+pub fn mcp_servers() -> Vec<flyco_core::McpServerMount> {
+    vec![
+        flyco_core::McpServerMount {
+            name: "deepwiki".to_owned(),
+            config: flyco_core::McpServerConfig::Http {
+                url: "https://mcp.deepwiki.com/mcp".to_owned(),
+                headers: vec![flyco_core::HeaderEntry {
+                    name: "authorization".to_owned(),
+                    value: "Bearer a-registered-token".to_owned(),
+                }],
+            },
+        },
+        flyco_core::McpServerMount {
+            name: "git".to_owned(),
+            config: flyco_core::McpServerConfig::Stdio {
+                command: "bunx".to_owned(),
+                args: vec![
+                    "-y".to_owned(),
+                    "@modelcontextprotocol/server-git".to_owned(),
+                ],
+                env: vec![flyco_core::EnvEntry {
+                    key: "GIT_DIR".to_owned(),
+                    value: "/srv/flyco/work/.git".to_owned(),
+                }],
+            },
+        },
+    ]
+}
+
 /// The machine a bootstrap fixture describes.
 ///
 /// Every driver's tests build a [`DaemonBootstrap`](crate::DaemonBootstrap),
