@@ -14,7 +14,7 @@
 import { For, Show, createResource, createSignal } from "solid-js";
 import { ArrowRight, ExternalLink } from "lucide-solid";
 import ProblemNotice from "../../components/ProblemNotice";
-import Toggle from "../../components/Toggle";
+import YesNo from "../../components/YesNo";
 import { providerQuickstart, type CloudProviderKind } from "../../api/client";
 import { formatUsd } from "../../lib/money";
 import styles from "./Connect.module.css";
@@ -27,13 +27,19 @@ export interface BonusProgrammesProps {
 }
 
 export default function BonusProgrammes(props: BonusProgrammesProps) {
-  const [newToProvider, setNewToProvider] = createSignal(false);
-  const [isStudent, setIsStudent] = createSignal(false);
+  const [newToProvider, setNewToProvider] = createSignal<boolean | null>(null);
+  const [isStudent, setIsStudent] = createSignal<boolean | null>(null);
 
-  const [hints] = createResource(
-    () => ({ new_to_provider: newToProvider(), is_student: isStudent() }),
-    providerQuickstart,
-  );
+  /** Both answers, once both are given; the lookup waits until then. */
+  const answers = () => {
+    const newcomer = newToProvider();
+    const student = isStudent();
+    return newcomer === null || student === null
+      ? null
+      : { new_to_provider: newcomer, is_student: student };
+  };
+
+  const [hints] = createResource(answers, providerQuickstart);
 
   const matching = () =>
     (hints() ?? []).filter((hint) => hint.provider === props.provider);
@@ -41,18 +47,12 @@ export default function BonusProgrammes(props: BonusProgrammesProps) {
   return (
     <div class={styles.step}>
       <div class={styles.questions}>
-        <label class={styles.question}>
-          <Toggle
-            label="New to this provider"
-            checked={newToProvider()}
-            onChange={setNewToProvider}
-          />
-          New to this provider?
-        </label>
-        <label class={styles.question}>
-          <Toggle label="Student" checked={isStudent()} onChange={setIsStudent} />
-          Are you a student?
-        </label>
+        <YesNo
+          question="New to this provider?"
+          value={newToProvider()}
+          onChange={setNewToProvider}
+        />
+        <YesNo question="Are you a student?" value={isStudent()} onChange={setIsStudent} />
       </div>
 
       <ProblemNotice error={hints.error} />
@@ -61,9 +61,9 @@ export default function BonusProgrammes(props: BonusProgrammesProps) {
         when={matching().length > 0}
         fallback={
           <p class={styles.hint}>
-            {newToProvider() || isStudent()
-              ? "No credit programme matches those answers. Linking an account still works."
-              : "Answer either question to see the credit this provider offers."}
+            {answers() === null
+              ? "Answer both questions to see the credit this provider offers."
+              : "No credit programme matches those answers. Linking an account still works."}
           </p>
         }
       >

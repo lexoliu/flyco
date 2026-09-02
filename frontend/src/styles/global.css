@@ -78,6 +78,18 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* Anything that cannot be used right now says so: dimmed, no hover, and
+   a cursor that refuses. One rule, so no component invents its own. */
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled,
+[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: auto;
+}
+
 :focus-visible {
   outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
