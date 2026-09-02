@@ -13,7 +13,8 @@ import Popover from "./Popover";
 import UpdatePrompt from "./UpdatePrompt";
 import { ReadinessProvider } from "./Readiness";
 import { getMe } from "../api/client";
-import { clearSessionToken, isSignedIn, onSessionChanged } from "../lib/session";
+import { isSignedIn, onSessionChanged } from "../lib/session";
+import { signOut } from "../lib/signOut";
 import { type ThemePreference, readStoredThemePreference, setTheme } from "../lib/theme";
 import { cx } from "../lib/cx";
 import styles from "./AppShell.module.css";
@@ -61,11 +62,6 @@ export default function AppShell(props: { children?: JSX.Element }) {
   const stopListening = onSessionChanged(() => setSignedIn(isSignedIn()));
   onCleanup(stopListening);
 
-  function signOut(): void {
-    clearSessionToken();
-    navigate("/login", { replace: true });
-  }
-
   return (
     <Show when={location.pathname !== "/login" || !signedIn()} fallback={<Navigate href="/" />}>
       <Show when={isBareRoute() || signedIn()} fallback={<Navigate href={loginHref()} />}>
@@ -85,7 +81,7 @@ export default function AppShell(props: { children?: JSX.Element }) {
                     Settings
                   </A>
                 </nav>
-                <AccountMenu onSignOut={signOut} />
+                <AccountMenu onSignOut={() => signOut(navigate)} />
               </header>
             </Show>
             <main class={styles.main}>{props.children}</main>

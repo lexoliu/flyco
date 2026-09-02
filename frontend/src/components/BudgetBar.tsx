@@ -1,5 +1,4 @@
-import { Show } from "solid-js";
-import styles from "./Meter.module.css";
+import RatioBar, { type MeterTier } from "./RatioBar";
 
 export interface BudgetBarProps {
   label?: string | undefined;
@@ -13,9 +12,7 @@ const NOTICE_RATIO = 0.5;
 const WARN_RATIO = 0.8;
 const FINAL_WARN_RATIO = 0.9;
 
-type Tier = "ok" | "notice" | "warn" | "final-warn" | "paused";
-
-function tierFor(ratio: number): Tier {
+function tierFor(ratio: number): MeterTier {
   if (ratio >= 1) return "paused";
   if (ratio >= FINAL_WARN_RATIO) return "final-warn";
   if (ratio >= WARN_RATIO) return "warn";
@@ -24,7 +21,7 @@ function tierFor(ratio: number): Tier {
 }
 
 export default function BudgetBar(props: BudgetBarProps) {
-  const hasData = () => props.spentUsd !== undefined && props.limitUsd !== undefined;
+  const known = () => props.spentUsd !== undefined && props.limitUsd !== undefined;
   const ratio = () => {
     const spent = props.spentUsd;
     const limit = props.limitUsd;
@@ -33,32 +30,11 @@ export default function BudgetBar(props: BudgetBarProps) {
   };
 
   return (
-    <div class={styles.wrapper}>
-      <div class={styles.labelRow}>
-        <span>{props.label ?? "Budget"}</span>
-        <Show
-          when={hasData()}
-          fallback={<span class={styles.muted}>Not loaded yet</span>}
-        >
-          <span>
-            ${props.spentUsd?.toFixed(2)} / ${props.limitUsd?.toFixed(2)}
-          </span>
-        </Show>
-      </div>
-      <div
-        class={styles.track}
-        role="progressbar"
-        aria-label={props.label ?? "Budget"}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={hasData() ? Math.round(ratio() * 100) : 0}
-      >
-        <div
-          class={styles.fill}
-          data-tier={hasData() ? tierFor(ratio()) : "unknown"}
-          style={{ width: `${hasData() ? ratio() * 100 : 0}%` }}
-        />
-      </div>
-    </div>
+    <RatioBar
+      label={props.label ?? "Budget"}
+      ratio={known() ? ratio() : undefined}
+      value={`$${props.spentUsd?.toFixed(2)} / $${props.limitUsd?.toFixed(2)}`}
+      tier={tierFor(ratio())}
+    />
   );
 }

@@ -1,43 +1,603 @@
+/*
+ * One stylesheet for the whole of settings.
+ *
+ * All five sections are built from the same handful of shapes — a card, a
+ * pill button, an empty state, a field — so they share this module rather
+ * than each inventing a card of its own. Every value is a token; nothing
+ * here names a colour or a radius directly.
+ */
+
+/* ── Layout ──────────────────────────────────────────────────────────── */
+
 .page {
   flex: 1;
-  padding: var(--space-6);
+  width: 100%;
+  max-width: 940px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4) var(--space-8);
+  display: grid;
+  grid-template-columns: 172px minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: calc(48px + var(--space-6));
+}
+
+.railLink {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-full);
+  color: var(--color-text-muted);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.railLink:hover {
+  color: var(--color-text);
+  background: var(--color-surface-sunken);
+}
+
+.railLinkActive {
+  color: var(--color-text) !important;
+  background: var(--color-surface-sunken);
+  font-weight: var(--weight-medium);
+}
+
+.content {
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .page {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+    padding-top: var(--space-4);
+  }
+
+  .rail {
+    position: static;
+    flex-direction: row;
+    gap: var(--space-1);
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-bottom: var(--space-1);
+    margin: 0 calc(-1 * var(--space-4));
+    padding-inline: var(--space-4);
+  }
+
+  .rail::-webkit-scrollbar {
+    display: none;
+  }
+
+  .railLink {
+    border: var(--border-width) solid var(--color-border);
+  }
+}
+
+/* ── Section frame ───────────────────────────────────────────────────── */
+
+.section {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  max-width: 800px;
-  width: 100%;
-  margin: 0 auto;
 }
 
-.page h1 {
+.sectionHead h2 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-xl);
+}
+
+.lede {
   margin: 0;
-}
-
-.tabs {
-  display: flex;
-  gap: var(--space-2);
-  border-bottom: var(--border-width) solid var(--color-border);
-  flex-wrap: wrap;
-}
-
-.tab {
-  padding: var(--space-2) var(--space-3);
   color: var(--color-text-muted);
-  text-decoration: none;
-  font-size: var(--text-sm);
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
+  max-width: 62ch;
 }
 
-.tab:hover {
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.groupLabel {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-faint);
+}
+
+/* ── Cards ───────────────────────────────────────────────────────────── */
+
+.cards {
+  display: grid;
+  gap: var(--space-3);
+}
+
+/* Two across once there is room, so a pair of harnesses or providers reads
+   as a pair rather than as a column of banners. */
+.cardsPaired {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  min-width: 0;
+}
+
+.cardTop {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  border: var(--border-width) solid var(--color-border);
+  background: var(--color-bg);
   color: var(--color-text);
 }
 
-.tabActive {
-  color: var(--color-text) !important;
-  border-bottom-color: var(--color-primary) !important;
+.identity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
 }
 
-.tabPanel {
-  padding-top: var(--space-2);
+.cardTitle {
+  font-weight: var(--weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardMeta {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A meta line that opens with a vendor mark: the mark sits on the line, not
+   above it, because `Logomark` is a block element by design. */
+.metaWithMark {
+  composes: cardMeta;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* ── Status pill ─────────────────────────────────────────────────────── */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  align-self: flex-start;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  border: var(--border-width) solid var(--color-border);
+  color: var(--color-text-muted);
+  background: var(--color-bg);
+  white-space: nowrap;
+}
+
+.statusOn {
+  color: var(--color-success);
+  border-color: var(--color-success);
+  background: var(--color-success-soft);
+}
+
+.statusWarn {
+  color: var(--color-warning);
+  border-color: var(--color-warning);
+  background: var(--color-warning-soft);
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────── */
+
+.pill,
+.pillPrimary,
+.pillDanger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  border: var(--border-width) solid var(--color-border-strong);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: transform var(--transition-fast), background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.pill:hover {
+  background: var(--color-surface-sunken);
+}
+
+.pillPrimary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-primary-text);
+  font-weight: var(--weight-medium);
+}
+
+.pillPrimary:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+/*
+ * Destructive, but not shouting about it.
+ *
+ * `Unlink`, `Remove` and `Revoke` appear on every card on this page, and a
+ * red pill on each of them would make red the page's ambient colour — which
+ * is precisely what docs/ux.md §2 reserves it against. The danger shows up
+ * where it is about to be acted on: on hover and on focus.
+ */
+.pillDanger:hover,
+.pillDanger:focus-visible {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+  background: var(--color-danger-muted);
+}
+
+/* A press is felt, not announced. */
+.pill:active:not(:disabled),
+.pillPrimary:active:not(:disabled),
+.pillDanger:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.pill:disabled,
+.pillPrimary:disabled,
+.pillDanger:disabled {
+  opacity: 0.5;
+}
+
+/* ── Empty state: one sentence and the one action ────────────────────── */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-4);
+  border: var(--border-width) dashed var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  text-align: center;
+}
+
+.emptyLine {
+  margin: 0;
+  color: var(--color-text-muted);
+  max-width: 44ch;
+}
+
+/* ── Fields ──────────────────────────────────────────────────────────── */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fieldRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-3);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.field label {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.field input,
+.field select,
+.field textarea {
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-md);
+  width: 100%;
+}
+
+.field textarea {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.formActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.note {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
+}
+
+/* ── Segmented choice (skill scope, theme) ───────────────────────────── */
+
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-sunken);
+  border: var(--border-width) solid var(--color-border);
+}
+
+.segment {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-full);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.segment:hover {
+  color: var(--color-text);
+}
+
+.segmentOn {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── Drop zone ───────────────────────────────────────────────────────── */
+
+.dropZone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  border: var(--border-width) dashed var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  text-align: center;
+  color: var(--color-text-muted);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.dropZoneActive {
+  border-color: var(--color-text);
+  background: var(--color-surface-sunken);
+}
+
+/* ── Feature matrix ──────────────────────────────────────────────────── */
+
+.matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.matrix th,
+.matrix td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--border-width) solid var(--color-border);
+  white-space: nowrap;
+}
+
+.matrix thead th {
+  color: var(--color-text-muted);
+  font-weight: var(--weight-semibold);
+}
+
+.matrix tbody th {
+  font-weight: 400;
+  white-space: normal;
+}
+
+.matrix td[data-availability="supported"] {
+  color: var(--color-success);
+}
+
+.matrix td[data-availability="planned"],
+.matrix td[data-availability="phase2"] {
+  color: var(--color-text-muted);
+}
+
+.matrix td[data-availability="disabled"],
+.matrix td[data-availability="harness_limitation"],
+.matrix td[data-availability="not_applicable"] {
+  color: var(--color-text-faint);
+}
+
+/* ── Outliner ────────────────────────────────────────────────────────── */
+
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.treeRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--border-width) solid var(--color-border);
+  min-width: 0;
+}
+
+.treeRow:last-child {
+  border-bottom: none;
+}
+
+.treeRow:hover {
+  background: var(--color-surface-sunken);
+}
+
+.twisty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-faint);
+}
+
+.twisty:hover {
+  color: var(--color-text);
+  background: var(--color-border);
+}
+
+.twistyOpen {
+  transform: rotate(90deg);
+}
+
+.treeTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.treeSummary {
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.treeActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.iconButton:hover {
+  color: var(--color-text);
+  border-color: var(--color-border);
+  background: var(--color-bg);
+}
+
+.iconButtonDanger:hover {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.renameInput {
+  flex: 1;
+  min-width: 0;
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-text);
+  padding: 2px var(--space-2);
+  font-size: var(--text-md);
+}
+
+/* ── Secret reveal ───────────────────────────────────────────────────── */
+
+.secret {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  border: var(--border-width) solid var(--color-border);
+}
+
+.secretValue {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+  min-width: 0;
 }

@@ -1,0 +1,38 @@
+.track {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-sunken);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.track:disabled {
+  opacity: 0.5;
+}
+
+/* No accent colour: "on" is ink, the same weight the primary action carries. */
+.on {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--transition-fast);
+}
+
+.on .knob {
+  background: var(--color-primary-text);
+  transform: translateX(14px);
+}

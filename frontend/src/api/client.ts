@@ -350,6 +350,40 @@ export function decideApproval(
   return requestJson("POST", `/v1/approvals/${id}/decision`, { json: body });
 }
 
+// --- /v1/usage ---------------------------------------------------------------
+
+/** One row of `GET /v1/usage/llm`, covering one linked harness account. */
+export type LlmUsageRow = JsonResponse<
+  "flyco_api::harness_accounts::llm_usage",
+  200
+>[number];
+
+/** One row of `GET /v1/usage/cloud`, covering one linked provider account. */
+export type CloudUsageRow = JsonResponse<
+  "flyco_api::provider_accounts::cloud_usage",
+  200
+>[number];
+
+/**
+ * Observed usage per linked harness account.
+ *
+ * Every field is an observation, never a quota: the harness reports what it
+ * spent and when it was limited, and flyco repeats that rather than
+ * inventing a "requests remaining" it has no way to know.
+ */
+export function listLlmUsage(): Promise<
+  JsonResponse<"flyco_api::harness_accounts::llm_usage", 200>
+> {
+  return requestJson("GET", "/v1/usage/llm");
+}
+
+/** Metered cloud spend per linked provider account, read from the provider's own meter. */
+export function listCloudUsage(
+  provider?: CloudProviderKind,
+): Promise<JsonResponse<"flyco_api::provider_accounts::cloud_usage", 200>> {
+  return requestJson("GET", "/v1/usage/cloud", { query: { provider } });
+}
+
 // --- /v1/mcp-servers ---------------------------------------------------------
 
 export function listMcpServers(): Promise<JsonResponse<"flyco_api::mcp::list_mcp_servers", 200>> {

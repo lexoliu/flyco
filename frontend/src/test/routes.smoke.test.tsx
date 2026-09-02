@@ -10,15 +10,11 @@ import ConnectHarness from "../routes/connect/ConnectHarness";
 import ConnectCompute from "../routes/connect/ConnectCompute";
 import SessionDetail from "../routes/SessionDetail";
 import SettingsLayout from "../routes/settings/SettingsLayout";
-import McpServersTab from "../routes/settings/McpServersTab";
-import SkillsTab from "../routes/settings/SkillsTab";
-import CloudProvidersTab from "../routes/settings/CloudProvidersTab";
-import ApiKeysTab from "../routes/settings/ApiKeysTab";
-import HarnessAccountsTab from "../routes/settings/HarnessAccountsTab";
-import FeaturesTab from "../routes/settings/FeaturesTab";
-import MemoryTab from "../routes/settings/MemoryTab";
-import AgentsMdTab from "../routes/settings/AgentsMdTab";
-import NotificationsTab from "../routes/settings/NotificationsTab";
+import AgentsSection from "../routes/settings/AgentsSection";
+import ComputeSection from "../routes/settings/ComputeSection";
+import ToolsSection from "../routes/settings/ToolsSection";
+import InstructionsSection from "../routes/settings/InstructionsSection";
+import AccountSection from "../routes/settings/AccountSection";
 import NotFound from "../routes/NotFound";
 import { consumePostLoginPath } from "../lib/postLoginPath";
 import { clearSessionToken, setSessionToken } from "../lib/session";
@@ -55,16 +51,12 @@ function renderAt(url: string, signedIn = true, seenWelcome = true) {
       <Route path="/connect/compute" component={ConnectCompute} />
       <Route path="/sessions/:id" component={SessionDetail} />
       <Route path="/settings" component={SettingsLayout}>
-        <Route path="/" component={() => <Navigate href="/settings/mcp" />} />
-        <Route path="/mcp" component={McpServersTab} />
-        <Route path="/skills" component={SkillsTab} />
-        <Route path="/providers" component={CloudProvidersTab} />
-        <Route path="/harness-accounts" component={HarnessAccountsTab} />
-        <Route path="/features" component={FeaturesTab} />
-        <Route path="/memory" component={MemoryTab} />
-        <Route path="/agents-md" component={AgentsMdTab} />
-        <Route path="/notifications" component={NotificationsTab} />
-        <Route path="/api-keys" component={ApiKeysTab} />
+        <Route path="/" component={() => <Navigate href="/settings/agents" />} />
+        <Route path="/agents" component={AgentsSection} />
+        <Route path="/compute" component={ComputeSection} />
+        <Route path="/tools" component={ToolsSection} />
+        <Route path="/instructions" component={InstructionsSection} />
+        <Route path="/account" component={AccountSection} />
       </Route>
       <Route path="*404" component={NotFound} />
     </MemoryRouter>
@@ -165,37 +157,56 @@ describe("route smoke tests", () => {
     expect(getByText("Compact context")).toBeInTheDocument();
   });
 
-  it("renders /settings, redirecting to the MCP tab", async () => {
+  it("renders /settings, redirecting to Agents", async () => {
     const { findByRole } = renderAt("/settings");
-    expect(
-      await findByRole("heading", { level: 2, name: "MCP servers" }),
-    ).toBeInTheDocument();
+    expect(await findByRole("heading", { level: 2, name: "Agents" })).toBeInTheDocument();
   });
 
-  it("renders /settings/harness-accounts", async () => {
-    const { findByRole } = renderAt("/settings/harness-accounts");
-    expect(await findByRole("heading", { level: 2, name: "Harness accounts" })).toBeInTheDocument();
+  it("offers all five sections in the settings navigation", async () => {
+    const { findByRole, getByRole } = renderAt("/settings/agents");
+    await findByRole("heading", { level: 2, name: "Agents" });
+    for (const label of ["Agents", "Compute", "Tools", "Instructions", "Account"]) {
+      expect(getByRole("link", { name: label })).toBeInTheDocument();
+    }
   });
 
-  it("renders /settings/features", async () => {
-    const { findByRole } = renderAt("/settings/features");
-    expect(await findByRole("heading", { level: 2, name: "Harness features" })).toBeInTheDocument();
+  it("renders /settings/agents with a card for each harness", async () => {
+    const { findByRole, getAllByText, getByText } = renderAt("/settings/agents");
+    expect(await findByRole("heading", { level: 2, name: "Agents" })).toBeInTheDocument();
+    // Both harnesses are named twice: once on their card, once in the
+    // capability matrix under the disclosure.
+    expect(getAllByText("Claude Code").length).toBeGreaterThan(0);
+    expect(getAllByText("Codex").length).toBeGreaterThan(0);
+    expect(getByText("What works on each harness")).toBeInTheDocument();
+    expect(getAllByText("Not linked")).toHaveLength(2);
   });
 
-  it("renders /settings/memory", () => {
-    const { getByRole } = renderAt("/settings/memory");
-    expect(getByRole("heading", { level: 2, name: "Memory" })).toBeInTheDocument();
+  it("renders /settings/compute as an empty state with its one action", async () => {
+    const { findByRole, getByRole } = renderAt("/settings/compute");
+    expect(await findByRole("heading", { level: 2, name: "Compute" })).toBeInTheDocument();
+    expect(getByRole("link", { name: "Add compute" })).toBeInTheDocument();
   });
 
-  it("renders /settings/agents-md", () => {
-    const { getByRole } = renderAt("/settings/agents-md");
-    expect(getByRole("heading", { level: 2, name: "AGENTS.md" })).toBeInTheDocument();
+  it("renders /settings/tools with the skill drop zone", async () => {
+    const { findByRole, getByRole } = renderAt("/settings/tools");
+    expect(await findByRole("heading", { level: 2, name: "Tools" })).toBeInTheDocument();
+    expect(getByRole("group", { name: "Which harness gets the skill" })).toBeInTheDocument();
   });
 
-  it("renders /settings/notifications, handling an unconfigured VAPID key calmly", async () => {
-    const { getByRole, findByRole } = renderAt("/settings/notifications");
-    expect(getByRole("heading", { level: 2, name: "Notifications" })).toBeInTheDocument();
-    expect(await findByRole("status")).toHaveTextContent("Not built yet");
+  it("renders /settings/instructions with the AGENTS.md editor", async () => {
+    const { findByRole, findByLabelText } = renderAt("/settings/instructions");
+    expect(await findByRole("heading", { level: 2, name: "Instructions" })).toBeInTheDocument();
+    expect(await findByLabelText("Content")).toBeInTheDocument();
+  });
+
+  it("renders /settings/account, handling an unconfigured VAPID key calmly", async () => {
+    const { findByRole, findByText, getByRole } = renderAt("/settings/account");
+    expect(await findByRole("heading", { level: 2, name: "Account" })).toBeInTheDocument();
+    expect(getByRole("group", { name: "Theme" })).toBeInTheDocument();
+    expect(getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+    // Push is unavailable in jsdom and the VAPID key is unconfigured; the
+    // card says so instead of offering a button that cannot work.
+    expect(await findByText("Unsupported here")).toBeInTheDocument();
   });
 
   it("renders an unknown path as the 404 page", () => {
