@@ -178,6 +178,38 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
   if (method === "GET" && /^\/v1\/sessions\/[^/]+\/repo-status$/.test(path)) {
     return Promise.resolve(jsonResponse({ dirty: false, summary: "" }));
   }
+  if (method === "GET" && /^\/v1\/sessions\/[^/]+\/files$/.test(path)) {
+    return Promise.resolve(
+      jsonResponse({
+        path: url.searchParams.get("path") ?? "",
+        truncated: false,
+        entries: [
+          { name: "src", path: "src", kind: "directory", size_bytes: null, ignored: false },
+          { name: "README.md", path: "README.md", kind: "file", size_bytes: 812, ignored: false },
+        ],
+      }),
+    );
+  }
+  if (method === "GET" && /^\/v1\/sessions\/[^/]+\/files\/content$/.test(path)) {
+    return Promise.resolve(
+      jsonResponse({
+        path: url.searchParams.get("path") ?? "README.md",
+        text: "# flyco\n",
+        bytes: 8,
+      }),
+    );
+  }
+  if (method === "GET" && /^\/v1\/sessions\/[^/]+\/diff$/.test(path)) {
+    return Promise.resolve(
+      jsonResponse({
+        base: "origin/main",
+        files: [],
+        added_lines: 0,
+        removed_lines: 0,
+        truncated: false,
+      }),
+    );
+  }
   if (method === "GET" && /^\/v1\/sessions\/[^/]+\/env$/.test(path)) {
     return Promise.resolve(
       jsonResponse({ entries: [], warning: "Agents can read this file but not edit it." }),

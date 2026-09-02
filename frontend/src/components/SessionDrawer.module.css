@@ -56,16 +56,27 @@
 
 .tabs {
   display: flex;
-  gap: var(--space-1);
+  /*
+   * No gap, and wrapping rather than scrolling: five pills have to fit the
+   * drawer's 420px, and a tab the reader has to scroll sideways to find is
+   * a tab they do not know exists. The pills separate themselves — only the
+   * selected one has a background.
+   */
+  gap: 0;
   flex: none;
-  overflow-x: auto;
+  flex-wrap: wrap;
 }
 
 .tab {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
+  gap: var(--space-1);
+  /*
+   * Tight horizontal padding because five tabs have to fit the drawer's
+   * 420px without a scrollbar: a tab the user has to scroll to find is a
+   * tab they do not know exists.
+   */
+  padding: var(--space-1) var(--space-2);
   border: var(--border-width) solid transparent;
   border-radius: var(--radius-full);
   background: transparent;

@@ -657,6 +657,9 @@ async fn another_users_session_cannot_be_driven_or_read(ctx: TestContext, kv: Kv
     for path in [
         format!("/v1/sessions/{session}/turns"),
         format!("/v1/sessions/{session}/repo-status"),
+        format!("/v1/sessions/{session}/files"),
+        format!("/v1/sessions/{session}/files/content?path=README.md"),
+        format!("/v1/sessions/{session}/diff"),
     ] {
         let refused = client.get(&path).bearer(&stranger.token).send().await;
         refused.assert_status(404);
@@ -698,6 +701,34 @@ async fn a_session_with_no_turns_yet_has_an_empty_history(ctx: TestContext, kv: 
         refused.json::<Problem>().kind,
         problem_kind("invalid-cursor")
     );
+}
+
+#[skyzen::test]
+async fn reading_the_checkout_of_a_session_with_no_daemon_says_so(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+
+    // The `Files` and `Diff` tabs are answered live by the machine, so a
+    // session that has none is told that plainly rather than being shown an
+    // empty tree it would read as "the agent has changed nothing".
+    for path in [
+        format!("/v1/sessions/{session}/files"),
+        format!("/v1/sessions/{session}/files/content?path=README.md"),
+        format!("/v1/sessions/{session}/diff"),
+    ] {
+        let refused = client.get(&path).bearer(&caller.token).send().await;
+        refused.assert_status(503);
+        assert_eq!(
+            refused.json::<Problem>().kind,
+            problem_kind("session-daemon-offline"),
+            "{path}"
+        );
+    }
 }
 
 #[skyzen::test]

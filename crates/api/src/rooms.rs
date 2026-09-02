@@ -24,7 +24,10 @@
 #[cfg(target_arch = "wasm32")]
 use core::marker::PhantomData;
 
-use flyco_core::{ClientEvent, ControlToDaemon, HostId, RepoStatus, SessionId};
+use core::time::Duration;
+
+use flyco_core::workdir::{WorkdirReply, WorkdirRequest};
+use flyco_core::{ClientEvent, ControlToDaemon, HostId, RepoStatus, SessionId, WorkdirRequestId};
 use skyzen::extract::Extractor;
 use skyzen::{Body, Method, Request, StatusCode};
 
@@ -416,6 +419,89 @@ impl Rooms {
         }
         serde_json::from_slice(&body)
             .map_err(|error| ApiError::Room(format!("the room returned no working tree: {error}")))
+    }
+}
+
+/// How often the Worker asks the room whether the daemon has answered.
+///
+/// Short enough that opening a directory feels immediate on a machine in
+/// the same region, long enough that a slow diff does not cost a hundred
+/// round trips into the Durable Object.
+const WORKDIR_POLL: Duration = Duration::from_millis(120);
+
+/// How long the Worker waits for an answer before giving up on it.
+///
+/// A diff of a large tree runs git twice on the session VM, so this is
+/// generous by the standards of a REST call — and it is still bounded,
+/// because the browser is holding a request open behind it.
+const WORKDIR_DEADLINE: Duration = Duration::from_secs(12);
+
+impl Rooms {
+    /// Asks a session's daemon something about its checkout, and waits for
+    /// the answer.
+    ///
+    /// # Why this polls
+    ///
+    /// A Durable Object is *reconstructed* around every event, so the room
+    /// cannot hold a request open across the websocket frame that answers
+    /// it: the `fetch` that forwarded the question and the `websocket` that
+    /// receives the reply are two activations with no memory between them.
+    /// The answer therefore lands in the room's own database, and the
+    /// Worker — which *can* hold the browser's request open — comes back
+    /// for it. Two hops that a single in-memory `await` would do on any
+    /// server with a heap, and the reason the room's storage is the
+    /// rendezvous instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::SessionDaemonOffline`] if no daemon is connected
+    /// to read the checkout, [`ApiError::WorkdirTimeout`] if one is but did
+    /// not answer in [`WORKDIR_DEADLINE`], or [`ApiError::Room`] if the
+    /// room could not be reached.
+    pub async fn inspect_workdir(
+        &self,
+        session: SessionId,
+        request: WorkdirRequest,
+    ) -> Result<WorkdirReply, ApiError> {
+        let id = WorkdirRequestId::generate();
+        let command = ControlToDaemon::InspectWorkdir { id, request };
+        let encoded = serde_json::to_vec(&command)
+            .map_err(|_| ApiError::CorruptRecord("a workdir question failed to encode"))?;
+
+        let (status, _) = self
+            .call(session, Verb::Post, "/internal/workdir", Some(encoded))
+            .await?;
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            return Err(ApiError::SessionDaemonOffline);
+        }
+        if !status.is_success() {
+            return Err(ApiError::Room(format!(
+                "the room refused a workdir question with HTTP {status}"
+            )));
+        }
+
+        let path = format!("/internal/workdir?id={id}");
+        let mut waited = Duration::ZERO;
+        loop {
+            futures_timer::Delay::new(WORKDIR_POLL).await;
+            waited = waited.saturating_add(WORKDIR_POLL);
+
+            let (status, body) = self.call(session, Verb::Get, &path, None).await?;
+            if status.is_success() {
+                return serde_json::from_slice(&body).map_err(|error| {
+                    ApiError::Room(format!("the room returned no workdir answer: {error}"))
+                });
+            }
+            if status != StatusCode::NOT_FOUND {
+                return Err(ApiError::Room(format!(
+                    "the room refused a workdir collection with HTTP {status}"
+                )));
+            }
+            if waited >= WORKDIR_DEADLINE {
+                tracing::warn!(%session, %id, "a daemon did not answer a workdir question in time");
+                return Err(ApiError::WorkdirTimeout);
+            }
+        }
     }
 }
 

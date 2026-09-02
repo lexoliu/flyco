@@ -5,6 +5,7 @@
 //! describe themselves only in the log: the response says the status and
 //! nothing that would leak internals.
 
+use flyco_core::workdir::{FILE_BYTES_MAX, WorkdirRefusal};
 use flyco_core::{ApprovalState, Problem, RepoSlug, SessionState};
 use skyzen::{Response, StatusCode};
 use skyzen_services::queue::QueueError;
@@ -19,6 +20,33 @@ use crate::problem::{self, Challenge};
 /// Detail returned for any failure that is flyco's fault rather than the
 /// caller's.
 const SERVER_DETAIL: &str = "The control plane failed to handle this request.";
+
+impl From<WorkdirRefusal> for ApiError {
+    /// The daemon's refusal, as the RFC 9457 problem the browser sees.
+    ///
+    /// One arm per refusal, deliberately: the whole reason the daemon
+    /// answers with a typed refusal rather than an error string is that the
+    /// UI says something different for each — a binary file offers the
+    /// terminal, a file that is too large quotes both sizes, and a path
+    /// outside the checkout is a `400` rather than a `404`, because it is a
+    /// bug in the caller and not a state of the disk.
+    fn from(refusal: WorkdirRefusal) -> Self {
+        match refusal {
+            WorkdirRefusal::NotFound { path } => Self::PathNotFound { path },
+            WorkdirRefusal::OutsideCheckout { path } => Self::PathOutsideCheckout { path },
+            WorkdirRefusal::NotADirectory { path } => Self::PathNotADirectory { path },
+            WorkdirRefusal::NotAFile { path } => Self::PathNotAFile { path },
+            WorkdirRefusal::NotText { path } => Self::FileNotText { path },
+            WorkdirRefusal::TooLarge { path, bytes } => Self::FileTooLarge {
+                path,
+                bytes,
+                limit: FILE_BYTES_MAX,
+            },
+            WorkdirRefusal::NoBaseBranch => Self::NoBaseBranch,
+            WorkdirRefusal::Unreadable { detail } => Self::WorkdirUnreadable(detail),
+        }
+    }
+}
 
 /// Every way an auth request can fail.
 #[skyzen::error(status = StatusCode::INTERNAL_SERVER_ERROR)]
@@ -387,6 +415,104 @@ pub enum ApiError {
     )]
     RepoStatusUnknown,
 
+    /// The session's checkout cannot be read because no daemon is
+    /// connected to read it.
+    ///
+    /// The `Files` and `Diff` tabs are answered *live* by the machine —
+    /// there is no copy of a working tree in the control plane — so a
+    /// session that is still provisioning, stopped, or reconnecting has
+    /// nothing to show and says so rather than answering an empty tree.
+    #[error(
+        "this session has no daemon connected to read its checkout",
+        status = StatusCode::SERVICE_UNAVAILABLE
+    )]
+    SessionDaemonOffline,
+
+    /// The room has no answer to this question yet.
+    ///
+    /// Internal to the Worker⇄room hop and never rendered for a browser:
+    /// the Worker polls the room while it holds the browser's request open,
+    /// and this is the "not yet" it polls against. What a browser is told
+    /// when the polling runs out is [`WorkdirTimeout`](Self::WorkdirTimeout).
+    #[error(
+        "the room has not been given this answer yet",
+        status = StatusCode::NOT_FOUND
+    )]
+    WorkdirNotAnsweredYet,
+
+    /// The daemon did not answer a question about the checkout in time.
+    #[error(
+        "the session's daemon did not answer a question about its checkout in time",
+        status = StatusCode::GATEWAY_TIMEOUT
+    )]
+    WorkdirTimeout,
+
+    /// Nothing is at that path in the session's checkout.
+    #[error("`{path}` is not in this session's checkout", status = StatusCode::NOT_FOUND)]
+    PathNotFound {
+        /// The path asked for.
+        path: String,
+    },
+
+    /// The path leaves the checkout, or names its `.git` directory.
+    #[error(
+        "`{path}` is outside this session's checkout",
+        status = StatusCode::BAD_REQUEST
+    )]
+    PathOutsideCheckout {
+        /// The path asked for.
+        path: String,
+    },
+
+    /// A listing was asked for something that is not a directory.
+    #[error("`{path}` is not a directory", status = StatusCode::BAD_REQUEST)]
+    PathNotADirectory {
+        /// The path asked for.
+        path: String,
+    },
+
+    /// Content was asked for something that is not a regular file.
+    #[error("`{path}` is not a file", status = StatusCode::BAD_REQUEST)]
+    PathNotAFile {
+        /// The path asked for.
+        path: String,
+    },
+
+    /// The file is not text, so there is nothing to render.
+    #[error(
+        "`{path}` is not a text file; open it from the session's terminal",
+        status = StatusCode::UNSUPPORTED_MEDIA_TYPE
+    )]
+    FileNotText {
+        /// The path asked for.
+        path: String,
+    },
+
+    /// The file is larger than the control plane will serve.
+    #[error(
+        "`{path}` is {bytes} bytes, past the {limit} this route serves; open it from the session's terminal",
+        status = StatusCode::PAYLOAD_TOO_LARGE
+    )]
+    FileTooLarge {
+        /// The path asked for.
+        path: String,
+        /// What it actually measures, in bytes.
+        bytes: u64,
+        /// What the route will serve, in bytes.
+        limit: u64,
+    },
+
+    /// The session has no base branch, so there is nothing to diff against.
+    #[error(
+        "this session has no base branch to diff against",
+        status = StatusCode::CONFLICT
+    )]
+    NoBaseBranch,
+
+    /// git could not read the session's checkout.
+    #[error("the session's checkout could not be read: {0}", status = StatusCode::BAD_GATEWAY)]
+    WorkdirUnreadable(String),
+
     /// The working tree is dirty and the caller has not confirmed discarding
     /// the uncommitted work.
     #[error(
@@ -747,6 +873,17 @@ impl ApiError {
             Self::EnrollmentTokenExpired => "enrollment-token-expired",
             Self::InvalidHostCredential => "invalid-host-credential",
             Self::RepoStatusUnknown => "repo-status-unknown",
+            Self::SessionDaemonOffline => "session-daemon-offline",
+            Self::WorkdirNotAnsweredYet => "workdir-not-answered-yet",
+            Self::WorkdirTimeout => "workdir-timeout",
+            Self::PathNotFound { .. } => "path-not-found",
+            Self::PathOutsideCheckout { .. } => "path-outside-checkout",
+            Self::PathNotADirectory { .. } => "path-not-a-directory",
+            Self::PathNotAFile { .. } => "path-not-a-file",
+            Self::FileNotText { .. } => "file-not-text",
+            Self::FileTooLarge { .. } => "file-too-large",
+            Self::NoBaseBranch => "no-base-branch",
+            Self::WorkdirUnreadable(_) => "workdir-unreadable",
             Self::DirtyArchive { .. } => "dirty-archive",
             Self::SessionNotActive { .. } => "session-not-active",
             Self::SessionCapReached { .. } => "session-cap-reached",

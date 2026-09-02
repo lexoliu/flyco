@@ -29,6 +29,12 @@ aes-gcm.workspace = true
 # a file the build checks instead of in a `format!` chain.
 askama.workspace = true
 base64.workspace = true
+# The Worker's only clock that can wait. The `Files` and `Diff` tabs are
+# answered by the session's daemon over the relay, and a Durable Object is
+# rebuilt around every event — so the Worker holds the browser's request
+# open and comes back to the room for the answer, which is a `setTimeout`
+# on wasm32 and a real timer natively.
+futures-timer.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 hmac.workspace = true

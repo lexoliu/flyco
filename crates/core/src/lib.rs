@@ -34,6 +34,7 @@ pub mod skills;
 pub mod sql;
 pub mod usage;
 pub mod wire;
+pub mod workdir;
 
 pub use agents::{AgentsDocument, UpdateAgentsDocument};
 pub use approval::{ApprovalState, ApprovalView, DecideApproval};
@@ -62,7 +63,7 @@ pub use id::{
     ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, ClaudeOauthAttemptId, CodexOauthAttemptId,
     EnrollmentTokenId, HarnessAccountId, HarnessObservationId, HostId, Id, MachineId, McpServerId,
     MemoryNodeId, ProviderAccountId, PushSubscriptionId, SessionId, ShellRunId, SkillId,
-    SpendEventId, UserId,
+    SpendEventId, UserId, WorkdirRequestId,
 };
 pub use machine::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, CloudProviderKind,
@@ -96,10 +97,15 @@ pub use wire::{
     ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
     ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ShellOutcome, ShellStream,
 };
+pub use workdir::{
+    DIFF_PATCH_BYTES_MAX, DIRECTORY_ENTRIES_MAX, DirectoryEntry, DirectoryListing, EntryKind,
+    FILE_BYTES_MAX, FileChange, FileContent, FileDiff, WorkdirDiff, WorkdirRefusal, WorkdirReply,
+    WorkdirRequest,
+};
 
 /// Version of the daemon⇄control-plane wire protocol.
 ///
 /// Bumped on every incompatible change to [`wire`]; the control plane
 /// refuses daemons speaking a different version (fast fail, no
 /// best-effort compatibility).
-pub const WIRE_PROTOCOL_VERSION: u32 = 5;
+pub const WIRE_PROTOCOL_VERSION: u32 = 6;

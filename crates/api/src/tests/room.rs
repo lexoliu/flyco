@@ -899,6 +899,135 @@ async fn the_working_tree_the_daemon_reported_is_served_back() {
     );
 }
 
+// ── Questions about the checkout ──
+
+/// The question the `Files` tab asks, addressed to `id`.
+fn ask(id: flyco_core::WorkdirRequestId) -> ControlToDaemon {
+    ControlToDaemon::InspectWorkdir {
+        id,
+        request: flyco_core::workdir::WorkdirRequest::Entries {
+            path: "src".to_owned(),
+        },
+    }
+}
+
+/// One listing, as a daemon would answer it.
+fn listing() -> flyco_core::workdir::WorkdirReply {
+    flyco_core::workdir::WorkdirReply::Entries {
+        listing: flyco_core::workdir::DirectoryListing {
+            path: "src".to_owned(),
+            entries: vec![flyco_core::workdir::DirectoryEntry {
+                name: "lib.rs".to_owned(),
+                path: "src/lib.rs".to_owned(),
+                kind: flyco_core::workdir::EntryKind::File,
+                size_bytes: Some(12),
+                ignored: false,
+            }],
+            truncated: false,
+        },
+    }
+}
+
+#[skyzen::test]
+async fn a_question_about_the_checkout_with_no_daemon_to_answer_it_is_refused_at_once() {
+    let mut room = Room::open().await;
+    let id = flyco_core::WorkdirRequestId::generate();
+
+    let (status, _) = room
+        .call(
+            Method::POST,
+            "/internal/workdir",
+            Some(serde_json::to_vec(&ask(id)).expect("serialize")),
+        )
+        .await;
+    assert_eq!(
+        status, 503,
+        "a browser waiting for a listing is told at once that nothing can read it"
+    );
+    assert_eq!(room.drain(), vec![], "there was nobody to forward it to");
+}
+
+#[skyzen::test]
+async fn a_question_reaches_the_daemon_and_its_answer_is_collected_once() {
+    let mut room = Room::open().await;
+    room.greet().await;
+    let id = flyco_core::WorkdirRequestId::generate();
+
+    let (status, _) = room
+        .call(
+            Method::POST,
+            "/internal/workdir",
+            Some(serde_json::to_vec(&ask(id)).expect("serialize")),
+        )
+        .await;
+    assert_eq!(status, 204);
+    assert_eq!(room.drain(), vec![to_daemon(&ask(id))]);
+
+    // Nothing to collect until the daemon has answered.
+    let (status, _) = room
+        .call(Method::GET, &format!("/internal/workdir?id={id}"), None)
+        .await;
+    assert_eq!(status, 404);
+
+    room.deliver_json(
+        Which::Daemon,
+        &DaemonToControl::WorkdirReply {
+            id,
+            reply: listing(),
+        },
+    )
+    .await;
+    assert_eq!(
+        room.drain(),
+        vec![],
+        "an answer addressed to one request is not shown to every browser watching"
+    );
+    assert_eq!(
+        room.events(0).await.events,
+        Vec::<StoredEvent>::new(),
+        "nor is it part of what a replay carries"
+    );
+
+    let (status, body) = room
+        .call(Method::GET, &format!("/internal/workdir?id={id}"), None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        serde_json::from_slice::<flyco_core::workdir::WorkdirReply>(&body).expect("a reply"),
+        listing()
+    );
+
+    let (status, _) = room
+        .call(Method::GET, &format!("/internal/workdir?id={id}"), None)
+        .await;
+    assert_eq!(
+        status, 404,
+        "the Worker that asked is the only caller there will ever be"
+    );
+}
+
+#[skyzen::test]
+async fn an_answer_to_a_question_nobody_asked_is_not_served_to_another_one() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    let answered = flyco_core::WorkdirRequestId::generate();
+    room.deliver_json(
+        Which::Daemon,
+        &DaemonToControl::WorkdirReply {
+            id: answered,
+            reply: listing(),
+        },
+    )
+    .await;
+
+    let other = flyco_core::WorkdirRequestId::generate();
+    let (status, _) = room
+        .call(Method::GET, &format!("/internal/workdir?id={other}"), None)
+        .await;
+    assert_eq!(status, 404);
+}
+
 #[skyzen::test]
 async fn an_archive_command_announces_the_new_lifecycle_state() {
     let mut room = Room::open().await;

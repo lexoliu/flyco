@@ -82,6 +82,12 @@ export type VapidPublicKey = Schemas["VapidPublicKey"];
 export type TurnSummary = Schemas["TurnSummary"];
 export type TurnPage = Schemas["TurnPage"];
 export type RepoStatus = Schemas["RepoStatus"];
+export type DirectoryListing = Schemas["DirectoryListing"];
+export type DirectoryEntry = Schemas["DirectoryEntry"];
+export type FileContent = Schemas["FileContent"];
+export type WorkdirDiff = Schemas["WorkdirDiff"];
+export type FileDiff = Schemas["FileDiff"];
+export type FileChange = Schemas["FileChange"];
 export type HarnessFeature = Schemas["HarnessFeature"];
 export type Feature = Schemas["Feature"];
 export type Availability = Schemas["Availability"];
@@ -273,6 +279,34 @@ export function putSessionEnv(
 
 export function getRepoStatus(id: string): Promise<JsonResponse<"flyco_api::app::get_repo_status", 200>> {
   return requestJson("GET", `/v1/sessions/${id}/repo-status`);
+}
+
+/**
+ * Lists one directory of a session's checkout. An empty path is the root.
+ *
+ * Answered live by the machine, so a session with no daemon connected
+ * refuses with `session-daemon-offline` rather than an empty tree.
+ */
+export function listSessionFiles(
+  id: string,
+  path: string,
+): Promise<JsonResponse<"flyco_api::app::list_session_files", 200>> {
+  return requestJson("GET", `/v1/sessions/${id}/files`, { query: { path } });
+}
+
+/** Reads one text file out of a session's checkout. */
+export function readSessionFile(
+  id: string,
+  path: string,
+): Promise<JsonResponse<"flyco_api::app::read_session_file", 200>> {
+  return requestJson("GET", `/v1/sessions/${id}/files/content`, { query: { path } });
+}
+
+/** Diffs a session's working tree against the branch it started from. */
+export function getSessionDiff(
+  id: string,
+): Promise<JsonResponse<"flyco_api::app::get_session_diff", 200>> {
+  return requestJson("GET", `/v1/sessions/${id}/diff`);
 }
 
 /** REST fallback for sending a message; see the module doc comment above. */

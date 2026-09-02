@@ -46,8 +46,10 @@
 //! survive hibernation on their own. A field would be a fourth copy of the
 //! same facts, re-serialized on every frame, and the first one to drift.
 
+use flyco_core::workdir::WorkdirReply;
 use flyco_core::{
     ClientEvent, ControlToDaemon, DaemonToControl, RepoStatus, SessionId, ShellRunId,
+    WorkdirRequestId,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::durable::{
@@ -176,6 +178,9 @@ impl DurableObject for SessionRoom {
             "/internal/broadcast".post(run_broadcast),
             "/internal/events".at(read_events),
             "/internal/repo-status".at(read_repo_status),
+            "/internal/workdir"
+                .post(ask_workdir)
+                .get(collect_workdir_reply),
         ))
         .build()
     }
@@ -324,6 +329,12 @@ async fn on_daemon_frame(
 
     if greeted.is_none() {
         return refuse(ws, "the first frame must be `hello`");
+    }
+
+    // Addressed rather than broadcast: one browser is waiting on the HTTP
+    // request this answers, and nobody else in the room has any use for it.
+    if let DaemonToControl::WorkdirReply { id, reply } = frame {
+        return store_workdir_reply(ctx.db(), id, &reply).await;
     }
 
     record(&frame, ctx.db(), ctx.kv()).await?;
@@ -786,6 +797,15 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
         "CREATE TABLE IF NOT EXISTS held_commands (\
              seq  INTEGER PRIMARY KEY AUTOINCREMENT, \
              json TEXT    NOT NULL)",
+        // One row per answered question about the checkout, keyed by the
+        // id the Worker minted for it and deleted the moment that Worker
+        // collects it. A table rather than KV because these expire: the
+        // sweep in `store_workdir_reply` needs to find rows by age, which
+        // is a query and not a key.
+        "CREATE TABLE IF NOT EXISTS workdir_replies (\
+             id      TEXT    PRIMARY KEY, \
+             json    TEXT    NOT NULL, \
+             at_unix INTEGER NOT NULL)",
     ] {
         db.query(statement)
             .execute()
@@ -1043,6 +1063,124 @@ async fn repo_status(headers: &Headers, kv: &DurableKv) -> Result<Json<RepoStatu
         .map_err(|error| ApiError::Room(error.to_string()))?
         .map(Json)
         .ok_or(ApiError::RepoStatusUnknown)
+}
+
+/// How long an answered workdir question is kept for its asker.
+///
+/// The Worker that asked polls for a few seconds and then gives up, so
+/// anything older than this is an answer nobody came back for — a browser
+/// that closed the tab, or a request that timed out. Swept on the next
+/// write rather than on a timer: a room that is answering questions is
+/// exactly the room that has rows to sweep.
+const WORKDIR_REPLY_TTL_SECONDS: u64 = 120;
+
+/// Query of the route that collects an answered workdir question.
+#[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
+pub struct WorkdirCursor {
+    /// The request whose answer is being collected.
+    pub id: Option<String>,
+}
+
+/// Keeps one answer until the Worker that asked comes back for it.
+async fn store_workdir_reply(
+    db: &DurableDb,
+    id: WorkdirRequestId,
+    reply: &WorkdirReply,
+) -> Result<(), DurableObjectError> {
+    let json = serde_json::to_string(reply)
+        .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
+    let key = id.to_string();
+    let now = now_unix();
+    ensure_schema(db).await?;
+    sql!(
+        db,
+        "INSERT INTO workdir_replies (id, json, at_unix) VALUES ({key}, {json}, {now}) \
+         ON CONFLICT (id) DO UPDATE SET json = excluded.json, at_unix = excluded.at_unix"
+    )
+    .execute()
+    .await
+    .map_err(|error| stored(&error))?;
+
+    let oldest = now.saturating_sub(WORKDIR_REPLY_TTL_SECONDS);
+    sql!(db, "DELETE FROM workdir_replies WHERE at_unix < {oldest}")
+        .execute()
+        .await
+        .map_err(|error| stored(&error))?;
+    Ok(())
+}
+
+/// Puts one question about the checkout to the session's daemon.
+///
+/// Answers `503` when no daemon is connected, which is the whole reason
+/// this is not [`run_command`]: a browser waiting for a listing has to be
+/// told at once that there is nothing to read it, rather than waiting out
+/// the poll for an answer that is never coming.
+async fn ask_workdir(
+    headers: Headers,
+    Json(command): Json<ControlToDaemon>,
+    connections: DurableConnections,
+) -> Outcome<NoContent> {
+    ask(&headers, &command, &connections).into()
+}
+
+fn ask(
+    headers: &Headers,
+    command: &ControlToDaemon,
+    connections: &DurableConnections,
+) -> Result<NoContent, ApiError> {
+    internal(headers)?;
+    if !matches!(command, ControlToDaemon::InspectWorkdir { .. }) {
+        return Err(ApiError::Room(
+            "the workdir route was given something other than a question about the checkout"
+                .to_owned(),
+        ));
+    }
+    if forward_to_daemon(connections, command).map_err(|error| room_failed(&error))? {
+        Ok(NoContent)
+    } else {
+        Err(ApiError::SessionDaemonOffline)
+    }
+}
+
+/// Collects an answer the daemon has already sent, if it has.
+///
+/// Single use: the row is deleted as it is read, because the Worker holding
+/// the browser's request is the only caller that will ever want it.
+async fn collect_workdir_reply(
+    headers: Headers,
+    Query(cursor): Query<WorkdirCursor>,
+    db: DurableDb,
+) -> Outcome<Json<WorkdirReply>> {
+    collect(&headers, cursor.id.as_deref(), &db).await.into()
+}
+
+async fn collect(
+    headers: &Headers,
+    id: Option<&str>,
+    db: &DurableDb,
+) -> Result<Json<WorkdirReply>, ApiError> {
+    internal(headers)?;
+    let id =
+        id.ok_or_else(|| ApiError::Room("a workdir collection named no request".to_owned()))?;
+    ensure_schema(db)
+        .await
+        .map_err(|error| room_failed(&error))?;
+
+    let json: Option<String> = sql!(db, "SELECT json FROM workdir_replies WHERE id = {id}")
+        .fetch_scalar_optional()
+        .await
+        .map_err(|error| ApiError::Room(error.to_string()))?;
+    let Some(json) = json else {
+        return Err(ApiError::WorkdirNotAnsweredYet);
+    };
+    sql!(db, "DELETE FROM workdir_replies WHERE id = {id}")
+        .execute()
+        .await
+        .map_err(|error| ApiError::Room(error.to_string()))?;
+
+    serde_json::from_str(&json)
+        .map(Json)
+        .map_err(|error| ApiError::Room(format!("a stored workdir reply did not parse: {error}")))
 }
 
 fn room_failed(error: &DurableObjectError) -> ApiError {

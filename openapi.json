@@ -4041,6 +4041,72 @@
         }
       }
     },
+    "/v1/sessions/{id}/diff": {
+      "get": {
+        "summary": "Diffs a session's working tree against the branch it started from.",
+        "description": "Diffs a session's working tree against the branch it started from.",
+        "operationId": "flyco_api::app::get_session_diff",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Everything a session has changed, against the branch it started from.",
+                  "required": [
+                    "base",
+                    "files",
+                    "added_lines",
+                    "removed_lines",
+                    "truncated"
+                  ],
+                  "properties": {
+                    "added_lines": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "Lines gained across every file, including files whose patch was\nleft out.",
+                      "minimum": 0
+                    },
+                    "base": {
+                      "type": "string",
+                      "description": "The git ref the working tree was compared against."
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/FileDiff"
+                      },
+                      "description": "One entry per changed file, in git's own order."
+                    },
+                    "removed_lines": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "Lines lost across every file.",
+                      "minimum": 0
+                    },
+                    "truncated": {
+                      "type": "boolean",
+                      "description": "Whether some patches were left out for size."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/env": {
       "get": {
         "summary": "Reads a session's `.env`.",
@@ -4209,6 +4275,133 @@
                     "more": {
                       "type": "boolean",
                       "description": "Whether more events exist past the last one returned."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/files": {
+      "get": {
+        "summary": "Lists one directory of a session's checkout (docs/ux.md §9.4).",
+        "description": "Lists one directory of a session's checkout (docs/ux.md §9.4).\n\nAnswered live by the machine: there is no copy of a working tree in the\ncontrol plane, so this is relayed to the session's daemon and the\nbrowser is told plainly when there is no daemon to answer it.",
+        "operationId": "flyco_api::app::list_session_files",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A path inside the session's checkout, `/`-separated and relative to\nits root. Omitted lists the root itself."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One directory of a session's checkout.",
+                  "required": [
+                    "path",
+                    "entries",
+                    "truncated"
+                  ],
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DirectoryEntry"
+                      },
+                      "description": "Directories first, then files, each in name order."
+                    },
+                    "path": {
+                      "type": "string",
+                      "description": "The directory listed, relative to the checkout root. Empty is the\nroot itself."
+                    },
+                    "truncated": {
+                      "type": "boolean",
+                      "description": "Whether entries past [`DIRECTORY_ENTRIES_MAX`] were left out."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/files/content": {
+      "get": {
+        "summary": "Reads one text file out of a session's checkout (docs/ux.md §9.4).",
+        "description": "Reads one text file out of a session's checkout (docs/ux.md §9.4).",
+        "operationId": "flyco_api::app::read_session_file",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A path inside the session's checkout, `/`-separated and relative to\nits root. Omitted lists the root itself."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One text file of a session's checkout.",
+                  "required": [
+                    "path",
+                    "text",
+                    "bytes"
+                  ],
+                  "properties": {
+                    "bytes": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Its size on disk, in bytes.",
+                      "minimum": 0
+                    },
+                    "path": {
+                      "type": "string",
+                      "description": "The file read, relative to the checkout root."
+                    },
+                    "text": {
+                      "type": "string",
+                      "description": "Its whole content. Never a prefix: a file too big to serve is\n[refused](WorkdirRefusal::TooLarge) rather than cut in half."
                     }
                   }
                 }
@@ -6087,6 +6280,19 @@
           }
         }
       },
+      "CheckoutPath": {
+        "type": "object",
+        "description": "Query of the two `Files` routes.",
+        "properties": {
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A path inside the session's checkout, `/`-separated and relative to\nits root. Omitted lists the root itself."
+          }
+        }
+      },
       "ClaudeOauthStart": {
         "type": "object",
         "description": "Response of `POST /v1/harness-accounts/claude/oauth/start`.\n\nThe PKCE verifier never appears here: it stays in the control plane's\nkey-value store for the ten minutes the attempt lives, and the browser\ncarries only the opaque attempt id that names it.",
@@ -6490,6 +6696,69 @@
           }
         }
       },
+      "DirectoryEntry": {
+        "type": "object",
+        "description": "One row of a directory listing.",
+        "required": [
+          "name",
+          "path",
+          "kind",
+          "ignored"
+        ],
+        "properties": {
+          "ignored": {
+            "type": "boolean",
+            "description": "Whether git ignores it.\n\nMarked rather than hidden: a `target/` or a `.env` is exactly what a\nuser goes looking for when something is wrong, and a tree that\nsilently omitted them would be lying about the disk."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EntryKind",
+            "description": "Whether it is a file or a directory."
+          },
+          "name": {
+            "type": "string",
+            "description": "The entry's own name, without any directory part."
+          },
+          "path": {
+            "type": "string",
+            "description": "Where it is, relative to the checkout root, `/`-separated.\n\nWhat a `path=` query passes back to expand a directory or open a\nfile, so the browser never assembles a path itself."
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Size in bytes, for files.",
+            "minimum": 0
+          }
+        }
+      },
+      "DirectoryListing": {
+        "type": "object",
+        "description": "One directory of a session's checkout.",
+        "required": [
+          "path",
+          "entries",
+          "truncated"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DirectoryEntry"
+            },
+            "description": "Directories first, then files, each in name order."
+          },
+          "path": {
+            "type": "string",
+            "description": "The directory listed, relative to the checkout root. Empty is the\nroot itself."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether entries past [`DIRECTORY_ENTRIES_MAX`] were left out."
+          }
+        }
+      },
       "EnrollHost": {
         "type": "object",
         "description": "Request body of `POST /v1/hosts/enroll`.\n\nPresented by `flycod host enroll` on the machine itself. It carries no\nuser credential — the enrollment token *is* the credential, and it is\nbound to the user who minted it.",
@@ -6596,6 +6865,14 @@
           }
         }
       },
+      "EntryKind": {
+        "type": "string",
+        "description": "What a directory entry is.",
+        "enum": [
+          "file",
+          "directory"
+        ]
+      },
       "EnvDocument": {
         "type": "object",
         "description": "Response of `GET`/`PUT /v1/sessions/{id}/env`.",
@@ -6695,6 +6972,92 @@
           "browser_control",
           "computer_control"
         ]
+      },
+      "FileChange": {
+        "type": "string",
+        "description": "What happened to one file between the base branch and the working tree.",
+        "enum": [
+          "added",
+          "modified",
+          "deleted",
+          "renamed"
+        ]
+      },
+      "FileContent": {
+        "type": "object",
+        "description": "One text file of a session's checkout.",
+        "required": [
+          "path",
+          "text",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its size on disk, in bytes.",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string",
+            "description": "The file read, relative to the checkout root."
+          },
+          "text": {
+            "type": "string",
+            "description": "Its whole content. Never a prefix: a file too big to serve is\n[refused](WorkdirRefusal::TooLarge) rather than cut in half."
+          }
+        }
+      },
+      "FileDiff": {
+        "type": "object",
+        "description": "One file's share of a session's diff.",
+        "required": [
+          "path",
+          "change",
+          "added_lines",
+          "removed_lines",
+          "binary"
+        ],
+        "properties": {
+          "added_lines": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines this file gained.",
+            "minimum": 0
+          },
+          "binary": {
+            "type": "boolean",
+            "description": "Whether git could not diff it as text."
+          },
+          "change": {
+            "$ref": "#/components/schemas/FileChange",
+            "description": "What happened to it."
+          },
+          "patch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The file's own unified diff, hunk headers included.\n\n`None` when there is no text to show: a binary file, or a diff that\nhad already spent [`DIFF_PATCH_BYTES_MAX`] on the files before it —\nwhich the containing [`WorkdirDiff::truncated`] announces."
+          },
+          "path": {
+            "type": "string",
+            "description": "The file's path now, relative to the checkout root."
+          },
+          "previous_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where it was before, when [`change`](Self::change) is\n[`FileChange::Renamed`]."
+          },
+          "removed_lines": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines this file lost.",
+            "minimum": 0
+          }
+        }
       },
       "HarnessAccountView": {
         "type": "object",
@@ -8920,6 +9283,46 @@
           "key": {
             "type": "string",
             "description": "The uncompressed P-256 public point, base64url without padding."
+          }
+        }
+      },
+      "WorkdirDiff": {
+        "type": "object",
+        "description": "Everything a session has changed, against the branch it started from.",
+        "required": [
+          "base",
+          "files",
+          "added_lines",
+          "removed_lines",
+          "truncated"
+        ],
+        "properties": {
+          "added_lines": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines gained across every file, including files whose patch was\nleft out.",
+            "minimum": 0
+          },
+          "base": {
+            "type": "string",
+            "description": "The git ref the working tree was compared against."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileDiff"
+            },
+            "description": "One entry per changed file, in git's own order."
+          },
+          "removed_lines": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines lost across every file.",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether some patches were left out for size."
           }
         }
       }
