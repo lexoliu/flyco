@@ -21,6 +21,9 @@
 //! - [`repl`] — a line-oriented stand-in for the control plane, used to
 //!   drive and verify a session from a terminal.
 //! - [`terminal`] — a PTY-backed `fish` shell relayed to the browser.
+//! - [`shell`] — the one-off `bash -c` behind a composer message beginning
+//!   with `!`: bounded in time and in output, cancelled by Stop, and never
+//!   shown to the harness.
 //! - [`git`] — `git status --short` polling, dirty-tree keep-awake, and
 //!   workdir snapshots for automatic archive.
 //! - [`mcp`] — the local stdio MCP server, which is the *only* sanctioned
@@ -51,6 +54,7 @@ pub mod mcp;
 pub mod mount;
 pub mod notice;
 pub mod repl;
+pub mod shell;
 pub mod spot;
 pub mod terminal;
 

@@ -15,7 +15,13 @@
  * on every relay update without depending on Solid.
  */
 import type { TimedEvent } from "../api/relay";
-import type { ApprovalPayload, ProvisioningStage, UsageReport } from "../api/wire";
+import type {
+  ApprovalPayload,
+  ProvisioningStage,
+  ShellOutcome,
+  ShellStream,
+  UsageReport,
+} from "../api/wire";
 import type { ApprovalState } from "../api/client";
 import { formatUsd } from "./money";
 
@@ -41,8 +47,39 @@ export type TurnStatus = "running" | "completed" | "failed";
  */
 export type NoticeTone = "info" | "warning" | "danger";
 
+/** One run of output, as it came off one of the two pipes. */
+export interface ShellChunk {
+  stream: ShellStream;
+  data: string;
+}
+
 export type TranscriptItem =
   | { kind: "user_message"; key: string; text: string; atUnix: number }
+  | {
+      /**
+       * A `!` command the user ran on the machine (docs/ux.md §9.3).
+       *
+       * Its own item rather than a user message, because it is not part of
+       * the conversation: the agent was never told about it, and what it
+       * has to show is a command, its output and an exit status rather than
+       * a sentence.
+       */
+      kind: "shell";
+      key: string;
+      /** The run every frame about this command carries. */
+      run: string;
+      /** What was typed, without the `!`. */
+      command: string;
+      /** Output so far, oldest first. */
+      output: ShellChunk[];
+      /** `null` while the command is still running. */
+      outcome: ShellOutcome | null;
+      /** Whether output was dropped after the run's byte cap. */
+      truncated: boolean;
+      atUnix: number;
+      /** When it finished, or `null` while it is still running. */
+      endedAtUnix: number | null;
+    }
   | {
       kind: "turn";
       key: string;
@@ -110,6 +147,7 @@ export interface ProvisioningStep {
 type Turn = Extract<TranscriptItem, { kind: "turn" }>;
 type Approval = Extract<TranscriptItem, { kind: "approval" }>;
 type Provisioning = Extract<TranscriptItem, { kind: "provisioning" }>;
+type Shell = Extract<TranscriptItem, { kind: "shell" }>;
 
 function findTurn(items: TranscriptItem[], turnId: string): Turn | undefined {
   for (let i = items.length - 1; i >= 0; i -= 1) {
@@ -140,6 +178,54 @@ function startTurn(items: TranscriptItem[], turnId: string, atUnix: number): Tur
   };
   items.push(turn);
   return turn;
+}
+
+/**
+ * The block one run's frames belong to.
+ *
+ * Keyed by the run the session room assigned, so two commands started
+ * moments apart cannot collect each other's output — and a run whose
+ * command scrolled out of the replay window still gets a block rather than
+ * having its output dropped on the floor. The command reads as empty there,
+ * which is the truth: this browser never saw what was typed.
+ */
+function shellBlock(items: TranscriptItem[], run: string, atUnix: number): Shell {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item !== undefined && item.kind === "shell" && item.run === run) {
+      return item;
+    }
+  }
+  const block: Shell = {
+    kind: "shell",
+    key: `shell-${run}`,
+    run,
+    command: "",
+    output: [],
+    outcome: null,
+    truncated: false,
+    atUnix,
+    endedAtUnix: null,
+  };
+  items.push(block);
+  return block;
+}
+
+/**
+ * Appends a chunk, joining it to the one before it when both came off the
+ * same pipe.
+ *
+ * A pipe is read in 4 KiB bites and nothing about where one ends is
+ * meaningful, so rendering each as its own run of text would put a seam in
+ * the middle of a line.
+ */
+function appendChunk(block: Shell, stream: ShellStream, data: string): void {
+  const last = block.output[block.output.length - 1];
+  if (last !== undefined && last.stream === stream) {
+    last.data += data;
+    return;
+  }
+  block.output.push({ stream, data });
 }
 
 /**
@@ -218,6 +304,19 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
           atUnix,
         });
         break;
+      case "shell_command":
+        shellBlock(items, event.run, atUnix).command = event.command;
+        break;
+      case "shell_output":
+        appendChunk(shellBlock(items, event.run, atUnix), event.stream, event.data);
+        break;
+      case "shell_exited": {
+        const block = shellBlock(items, event.run, atUnix);
+        block.outcome = event.outcome;
+        block.truncated = event.truncated;
+        block.endedAtUnix = atUnix;
+        break;
+      }
       case "harness": {
         const harness = event.event;
         switch (harness.type) {

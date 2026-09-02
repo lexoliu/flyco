@@ -16,6 +16,7 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import { ArrowUp, Square, TerminalSquare } from "lucide-solid";
 import ComposerShell from "./ComposerShell";
 import { cx } from "../lib/cx";
+import { BASH_PREFIX } from "../lib/shell";
 import styles from "./Composer.module.css";
 import sessionStyles from "./SessionComposer.module.css";
 
@@ -40,8 +41,6 @@ const COMMANDS: readonly CommandEntry[] = [
   { command: "resize", typed: "/resize", description: "Move the session to another machine type" },
 ];
 
-/** The prefix that sends a message straight to the machine's shell. */
-const BASH_PREFIX = "!";
 
 export interface SessionComposerProps {
   /** Whether a turn is running, which turns Send into Stop. */

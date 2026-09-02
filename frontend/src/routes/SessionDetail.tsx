@@ -36,6 +36,7 @@ import { ApiProblem } from "../api/problem";
 import { createSessionRelay } from "../api/relay";
 import { PROVIDER_LABEL } from "../lib/providers";
 import { usdMicrosToDollars } from "../lib/money";
+import { shellCommandIn } from "../lib/shell";
 import { deriveStatus, liveSignalsFrom } from "../lib/status";
 import { foldTranscript, pendingApprovals } from "../lib/transcript";
 import styles from "./SessionDetail.module.css";
@@ -139,11 +140,38 @@ export default function SessionDetail() {
     }
   }
 
+  /**
+   * Sends what was typed to whichever of the two it was addressed to.
+   *
+   * A message beginning with `!` is for the machine's bash, not for the
+   * agent (docs/ux.md §9.3), and it has no REST door: a user message that
+   * misses the socket is conversation and waits in the room's mailbox, but
+   * a shell command recorded now and run whenever the daemon comes back
+   * would run against a working tree the user is no longer looking at. So
+   * the relay has to be live, and the composer says so when it is not
+   * rather than swallowing the command.
+   */
   function onSend(text: string): void {
-    void overRelay(
-      () => relay.send({ type: "user_message", text }),
-      () => sendMessage(params.id, text),
-    );
+    const command = shellCommandIn(text);
+    if (command === null) {
+      void overRelay(
+        () => relay.send({ type: "user_message", text }),
+        () => sendMessage(params.id, text),
+      );
+      return;
+    }
+    setError(null);
+    if (relay.state() !== "live") {
+      setError(
+        new Error("Reconnecting to the session — a shell command needs a live connection."),
+      );
+      return;
+    }
+    try {
+      relay.send({ type: "shell_command", command });
+    } catch (failure) {
+      setError(failure);
+    }
   }
 
   function onStop(): void {
