@@ -77,6 +77,10 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 rand = "0.9"
 rust-embed = { version = "8", features = ["debug-embed", "include-exclude"] }
 portable-pty = "0.9"
+# The handful of syscalls the execution plane makes directly. Today that is
+# `statvfs`, which is how an enrolled host measures the space left where
+# Podman keeps its containers.
+rustix = { version = "1", features = ["fs"] }
 # The official Rust MCP SDK, for flycod's local stdio server. Only the
 # server half and the stdio transport: the daemon is spoken *to* by the
 # harness it supervises and never speaks MCP itself, and `macros` is off

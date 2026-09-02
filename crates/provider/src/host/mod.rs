@@ -110,6 +110,20 @@ pub fn volume_name(machine: MachineId) -> String {
     name
 }
 
+/// The machine a flyco container or volume name identifies.
+///
+/// The inverse of [`container_name`] and [`volume_name`], and the reason
+/// neither of them allocates: the machine an operation acts on is
+/// recoverable from the name it produced, so a host answering a job it was
+/// sent does not need the control plane to have told it the id twice.
+/// `None` for a name flyco did not derive — a container the user runs on
+/// their own machine, or one a later version of this table names differently.
+#[must_use]
+pub fn machine_named(name: &str) -> Option<MachineId> {
+    let id = name.strip_prefix(RESOURCE_PREFIX)?;
+    id.strip_suffix(VOLUME_SUFFIX).unwrap_or(id).parse().ok()
+}
+
 /// One unit of container lifecycle work, as the control plane sends it.
 ///
 /// Serializable on purpose: this is what travels down a host's socket, and
@@ -174,6 +188,23 @@ impl ContainerJob {
             | Self::Stop { container }
             | Self::Start { container }
             | Self::Remove { container, .. } => container,
+        }
+    }
+
+    /// The machine this job acts on, which is also the job's identity.
+    ///
+    /// A `Create` carries it outright; the others carry it in the container
+    /// name, which is derived from it. This is what a host answers a
+    /// [`JobResult`](wire::HostToControl::JobResult) with, so the answer
+    /// names the same machine the job did without the wire carrying an id
+    /// beside a name that already encodes it.
+    #[must_use]
+    pub fn machine(&self) -> Option<MachineId> {
+        match self {
+            Self::Create { machine, .. } => Some(*machine),
+            Self::Stop { container }
+            | Self::Start { container }
+            | Self::Remove { container, .. } => machine_named(container),
         }
     }
 
@@ -487,6 +518,48 @@ mod tests {
         ] {
             assert_eq!(host.plan(&operation).expect("plan"), job);
         }
+    }
+
+    #[test]
+    fn every_job_names_the_machine_it_acts_on() {
+        let host = host();
+        let id = MachineId::generate();
+        let create = host.plan(&provision(HOSTNAME)).expect("plan");
+        let ContainerJob::Create {
+            machine: planned, ..
+        } = &create
+        else {
+            panic!("provisioning plans a create");
+        };
+
+        assert_eq!(create.machine(), Some(*planned));
+        for operation in [
+            MachineOperation::Deallocate {
+                machine: machine(id),
+            },
+            MachineOperation::Start {
+                machine: machine(id),
+            },
+            MachineOperation::Destroy {
+                machine: machine(id),
+            },
+        ] {
+            assert_eq!(host.plan(&operation).expect("plan").machine(), Some(id));
+        }
+    }
+
+    #[test]
+    fn a_name_flyco_did_not_derive_identifies_no_machine() {
+        let id = MachineId::generate();
+
+        assert_eq!(super::machine_named(&container_name(id)), Some(id));
+        assert_eq!(
+            super::machine_named(&volume_name(id)),
+            Some(id),
+            "a volume names the machine whose work is on it"
+        );
+        assert_eq!(super::machine_named("postgres"), None);
+        assert_eq!(super::machine_named("flyco-not-a-uuid"), None);
     }
 
     #[test]

@@ -23,6 +23,31 @@ use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
 
 use crate::harness::{HarnessSession, ToolApproval};
 
+/// What a session's machine is provisioned with, as a container job carries
+/// it.
+///
+/// The provider's own fixtures, so the machine a test bootstrap describes is
+/// described in exactly one place — and `flycod host`'s tests plan jobs
+/// against the same bootstrap the planner does.
+#[must_use]
+pub fn bootstrap() -> flyco_provider::DaemonBootstrap {
+    flyco_provider::DaemonBootstrap {
+        session: flyco_core::SessionId::generate(),
+        provider: flyco_core::machine::CloudProviderKind::Host,
+        control_plane_url: "https://dev.flyco.dev/".to_owned(),
+        daemon_token: "fd_a-daemon-token".to_owned(),
+        permission_mode: flyco_core::PermissionMode::Default,
+        auth: flyco_provider::HarnessCredential::ClaudeCode(
+            flyco_provider::ClaudeCredential::Inherit,
+        ),
+        repo: flyco_provider::testing::checkout(),
+        machine_origin: flyco_core::MachineOrigin::Auto,
+        machine: flyco_provider::testing::session_machine(),
+        resume_session_id: None,
+        mcp_servers: flyco_provider::testing::mcp_servers(),
+    }
+}
+
 // ── The harness, faked ──
 
 /// Something the wire client did, in the order it did it.
@@ -155,34 +180,52 @@ impl HarnessSession for FakeSession {
     }
 }
 
-// ── The session room, for real, on loopback ──
+// ── The rooms, for real, on loopback ──
 
-/// What the room saw a daemon do.
+/// What a room saw the machine at the other end do.
+///
+/// Generic over the frames that end speaks, because flyco has two of these
+/// sockets and they differ in nothing but their vocabulary: a session's
+/// daemon holds one to its [`Room`], and an enrolled host holds one to its
+/// [`HostRelay`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Seen {
-    /// A daemon opened a socket, presenting this `Authorization` header.
+pub enum Seen<Up = DaemonToControl> {
+    /// A peer opened a socket, presenting this `Authorization` header.
     Connected(Option<String>),
-    /// A daemon sent a frame.
-    Frame(DaemonToControl),
-    /// A daemon's socket ended.
+    /// A peer sent a frame.
+    Frame(Up),
+    /// A peer's socket ended.
     Disconnected,
 }
 
-/// What a test tells the room to do next.
+/// What a test tells a room to do next.
 #[derive(Debug)]
-pub enum Directive {
-    /// Send a command to the connected daemon.
-    Send(ControlToDaemon),
-    /// Close the current socket, so the daemon has to reconnect.
+pub enum Directive<Down = ControlToDaemon> {
+    /// Send a command to the connected peer.
+    Send(Down),
+    /// Close the current socket, so the peer has to reconnect.
     ///
     /// A proper WebSocket close, and [`Seen::Disconnected`] is reported only
-    /// once the daemon has acknowledged it — which is what makes "produced
+    /// once the peer has acknowledged it — which is what makes "produced
     /// while disconnected" a state a test can be in rather than a race. It
     /// is also what a hibernating or redeployed room actually does.
     Close,
 }
 
-/// How the room answers a daemon's `Hello`.
+/// What a room does with the first frame a peer sends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Handshake<Down> {
+    /// Answer it, as a session room answers a daemon's `Hello` with
+    /// `Welcome`.
+    Answer(Down),
+    /// Record it and say nothing, as a host room does: a machine that has
+    /// greeted is simply one the room now writes to.
+    Silent,
+    /// Close the socket, as a version or session mismatch does.
+    Refuse,
+}
+
+/// How the session room answers a daemon's `Hello`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Greeting {
     /// Answer with `Welcome`, as a matching daemon deserves.
@@ -191,25 +234,39 @@ pub enum Greeting {
     Refuse,
 }
 
-/// A WebSocket server standing in for a session's Durable Object.
+/// A WebSocket server standing in for one of flyco's Durable Objects.
 #[derive(Debug)]
-pub struct Room {
-    /// Base URL a daemon should be pointed at, e.g. `http://127.0.0.1:PORT/`.
+pub struct Relay<Up, Down> {
+    /// Base URL the peer should be pointed at, e.g. `http://127.0.0.1:PORT/`.
     pub base: url::Url,
     /// What the room saw, in order.
-    pub seen: mpsc::UnboundedReceiver<Seen>,
+    pub seen: mpsc::UnboundedReceiver<Seen<Up>>,
     /// What the room should do next.
-    pub directives: mpsc::UnboundedSender<Directive>,
+    pub directives: mpsc::UnboundedSender<Directive<Down>>,
 }
 
-impl Room {
+/// A WebSocket server standing in for a session's Durable Object.
+pub type Room = Relay<DaemonToControl, ControlToDaemon>;
+
+/// A WebSocket server standing in for an enrolled host's Durable Object.
+pub type HostRelay =
+    Relay<flyco_provider::host::HostToControl, flyco_provider::host::ControlToHost>;
+
+impl<Up, Down> Relay<Up, Down>
+where
+    Up: serde::de::DeserializeOwned + Send + 'static,
+    Down: serde::Serialize + Send + 'static,
+{
     /// Starts a room on a loopback port.
     ///
     /// # Panics
     ///
     /// Panics if the loopback socket cannot be bound, which would mean the
     /// test host has no usable networking.
-    pub async fn start(greeting: Greeting) -> Self {
+    pub async fn listen(handshake: Handshake<Down>) -> Self
+    where
+        Down: Clone,
+    {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind a loopback port");
@@ -221,7 +278,7 @@ impl Room {
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let seen_out = seen_out.clone();
-                if !serve(stream, greeting, &seen_out, &mut directive_in).await {
+                if !serve(stream, handshake.clone(), &seen_out, &mut directive_in).await {
                     break;
                 }
             }
@@ -237,7 +294,7 @@ impl Room {
     }
 
     /// The next thing the room saw, or `None` if nothing arrived in time.
-    pub async fn next(&mut self) -> Option<Seen> {
+    pub async fn next(&mut self) -> Option<Seen<Up>> {
         tokio::time::timeout(std::time::Duration::from_secs(5), self.seen.recv())
             .await
             .ok()
@@ -249,10 +306,10 @@ impl Room {
     /// # Panics
     ///
     /// Panics if no frame arrives before the timeout, which in these tests
-    /// means the daemon stopped pumping.
-    pub async fn next_frame(&mut self) -> DaemonToControl {
+    /// means the peer stopped pumping.
+    pub async fn next_frame(&mut self) -> Up {
         loop {
-            match self.next().await.expect("the daemon sent nothing") {
+            match self.next().await.expect("the peer sent nothing") {
                 Seen::Frame(frame) => return frame,
                 Seen::Connected(_) | Seen::Disconnected => {}
             }
@@ -260,18 +317,33 @@ impl Room {
     }
 }
 
-/// Serves one daemon connection; returns whether to keep accepting.
+impl Room {
+    /// Starts a session room that greets a daemon the way `greeting` says.
+    pub async fn start(greeting: Greeting) -> Self {
+        Self::listen(match greeting {
+            Greeting::Welcome => Handshake::Answer(ControlToDaemon::Welcome),
+            Greeting::Refuse => Handshake::Refuse,
+        })
+        .await
+    }
+}
+
+/// Serves one peer connection; returns whether to keep accepting.
 #[expect(
     clippy::result_large_err,
     reason = "tungstenite dictates the handshake callback's `ErrorResponse`; \
               this room never refuses one"
 )]
-async fn serve(
+async fn serve<Up, Down>(
     stream: TcpStream,
-    greeting: Greeting,
-    seen: &mpsc::UnboundedSender<Seen>,
-    directives: &mut mpsc::UnboundedReceiver<Directive>,
-) -> bool {
+    handshake: Handshake<Down>,
+    seen: &mpsc::UnboundedSender<Seen<Up>>,
+    directives: &mut mpsc::UnboundedReceiver<Directive<Down>>,
+) -> bool
+where
+    Up: serde::de::DeserializeOwned,
+    Down: serde::Serialize,
+{
     let mut authorization = None;
     let accepted = tokio_tungstenite::accept_hdr_async(
         stream,
@@ -295,43 +367,48 @@ async fn serve(
         return false;
     }
 
-    // The handshake, the way a room performs it: read `Hello`, then either
-    // welcome or close.
+    // The handshake, the way a room performs it: read the first frame, then
+    // answer it, say nothing, or close.
     let Some(Ok(Message::Text(hello))) = socket.next().await else {
         return true;
     };
-    let Ok(hello) = serde_json::from_str::<DaemonToControl>(&hello) else {
+    let Ok(hello) = serde_json::from_str::<Up>(&hello) else {
         return true;
     };
     if seen.send(Seen::Frame(hello)).is_err() {
         return false;
     }
 
-    if greeting == Greeting::Refuse {
-        let _ = socket.close(None).await;
-        let _ = seen.send(Seen::Disconnected);
-        return true;
-    }
-    let welcome = serde_json::to_string(&ControlToDaemon::Welcome).expect("serialize");
-    if socket
-        .send(Message::Text(Utf8Bytes::from(welcome)))
-        .await
-        .is_err()
-    {
-        return true;
+    match &handshake {
+        Handshake::Refuse => {
+            let _ = socket.close(None).await;
+            let _ = seen.send(Seen::Disconnected);
+            return true;
+        }
+        Handshake::Answer(answer) => {
+            let answer = serde_json::to_string(answer).expect("serialize");
+            if socket
+                .send(Message::Text(Utf8Bytes::from(answer)))
+                .await
+                .is_err()
+            {
+                return true;
+            }
+        }
+        Handshake::Silent => {}
     }
 
     loop {
         tokio::select! {
             incoming = socket.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
-                    match serde_json::from_str::<DaemonToControl>(&text) {
+                    match serde_json::from_str::<Up>(&text) {
                         Ok(frame) => {
                             if seen.send(Seen::Frame(frame)).is_err() {
                                 return false;
                             }
                         }
-                        Err(error) => panic!("the daemon sent an unreadable frame: {error}: {text}"),
+                        Err(error) => panic!("the peer sent an unreadable frame: {error}: {text}"),
                     }
                 }
                 Some(Ok(_)) => {}
@@ -350,9 +427,9 @@ async fn serve(
                 }
                 Some(Directive::Close) => {
                     let _ = socket.close(None).await;
-                    // Drain until the daemon's own close arrives: only then
-                    // is it certainly reconnecting rather than still holding
-                    // a socket it believes is live.
+                    // Drain until the peer's own close arrives: only then is
+                    // it certainly reconnecting rather than still holding a
+                    // socket it believes is live.
                     while let Some(Ok(_)) = socket.next().await {}
                     let _ = seen.send(Seen::Disconnected);
                     return true;
