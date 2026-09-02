@@ -60,6 +60,7 @@ export type MachineCapacity = Schemas["MachineCapacity"];
 export type OsFamily = Schemas["OsFamily"];
 export type HarnessAccountView = Schemas["HarnessAccountView"];
 export type HarnessCredentialInput = Schemas["HarnessCredentialInput"];
+export type ClaudeOauthStart = Schemas["ClaudeOauthStart"];
 export type MemoryNode = Schemas["MemoryNode"];
 export type AgentsDocument = Schemas["AgentsDocument"];
 export type PushSubscriptionView = Schemas["PushSubscriptionView"];
@@ -478,6 +479,25 @@ export function linkHarnessAccount(
 
 export function unlinkHarnessAccount(id: HarnessAccountView["id"]): Promise<void> {
   return requestVoid("DELETE", `/v1/harness-accounts/${id}`);
+}
+
+/**
+ * Begins the Claude sign-in (docs/ux.md §8.1).
+ *
+ * The PKCE verifier stays in the control plane; what comes back is the URL
+ * to open and the opaque attempt id the pasted code is redeemed against.
+ */
+export function startClaudeOauth(): Promise<
+  JsonResponse<"flyco_api::claude_oauth::start", 200>
+> {
+  return requestJson("POST", "/v1/harness-accounts/claude/oauth/start");
+}
+
+/** Redeems what Anthropic showed the user, linking the account. */
+export function completeClaudeOauth(
+  input: JsonBody<"flyco_api::claude_oauth::complete">,
+): Promise<JsonResponse<"flyco_api::claude_oauth::complete", 201>> {
+  return requestJson("POST", "/v1/harness-accounts/claude/oauth/complete", { json: input });
 }
 
 // --- /v1/memory ----------------------------------------------------------------

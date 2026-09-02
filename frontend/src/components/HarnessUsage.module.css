@@ -1,0 +1,11 @@
+.usage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.line {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}

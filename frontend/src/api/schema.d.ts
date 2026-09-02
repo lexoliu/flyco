@@ -230,6 +230,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/harness-accounts/claude/oauth/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/harness-accounts/claude/oauth/complete` — links the account.
+         * @description `POST /v1/harness-accounts/claude/oauth/complete` — links the account.
+         */
+        post: operations["flyco_api::claude_oauth::complete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/harness-accounts/claude/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/harness-accounts/claude/oauth/start` — begins a Claude sign-in.
+         * @description `POST /v1/harness-accounts/claude/oauth/start` — begins a Claude sign-in.
+         */
+        post: operations["flyco_api::claude_oauth::start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness-accounts/{id}": {
         parameters: {
             query?: never;
@@ -1516,6 +1556,22 @@ export interface components {
             region?: string | null;
         };
         /**
+         * @description Response of `POST /v1/harness-accounts/claude/oauth/start`.
+         *
+         *     The PKCE verifier never appears here: it stays in the control plane's
+         *     key-value store for the ten minutes the attempt lives, and the browser
+         *     carries only the opaque attempt id that names it.
+         */
+        ClaudeOauthStart: {
+            /**
+             * @description Names the verifier and `state` the completion must be redeemed
+             *     against.
+             */
+            attempt_id: components["schemas"]["Uuid"];
+            /** @description Fully-formed `https://claude.ai/oauth/authorize` URL to open. */
+            authorize_url: string;
+        };
+        /**
          * @description A supported compute provider.
          * @enum {string}
          */
@@ -1546,6 +1602,17 @@ export interface components {
             remaining_credit?: null | components["schemas"]["Usd"];
             /** @description Spend the provider has metered so far this period. */
             spent: components["schemas"]["Usd"];
+        };
+        /** @description Request body of `POST /v1/harness-accounts/claude/oauth/complete`. */
+        CompleteClaudeOauth: {
+            /** @description The attempt this code belongs to, from [`ClaudeOauthStart`]. */
+            attempt_id: components["schemas"]["Uuid"];
+            /**
+             * @description What Anthropic showed the user, which is `CODE#STATE` — the bare
+             *     code alone is accepted too, because a user who selects only the
+             *     first half of it has still supplied everything the exchange needs.
+             */
+            code: string;
         };
         /**
          * @description How full the model's context window is.
@@ -1763,6 +1830,19 @@ export interface components {
             key: string;
             /** @enum {string} */
             kind: "codex_api_key";
+        } | {
+            /** @description Value for `CLAUDE_CODE_OAUTH_TOKEN`, until it expires. */
+            access_token: string;
+            /**
+             * Format: int64
+             * @description When the access token stops working, seconds since the Unix
+             *     epoch.
+             */
+            expires_at_unix: number;
+            /** @enum {string} */
+            kind: "claude_oauth";
+            /** @description Redeemed for a new pair once the access token is near its end. */
+            refresh_token: string;
         };
         /** @description One row of the per-harness feature matrix. */
         HarnessFeature: {
@@ -3136,6 +3216,89 @@ export interface operations {
                          * @description When it was linked, seconds since the Unix epoch.
                          */
                         linked_at_unix: number;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::claude_oauth::complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The attempt this code belongs to, from [`ClaudeOauthStart`]. */
+                    attempt_id: components["schemas"]["Uuid"];
+                    /**
+                     * @description What Anthropic showed the user, which is `CODE#STATE` — the bare
+                     *     code alone is accepted too, because a user who selects only the
+                     *     first half of it has still supplied everything the exchange needs.
+                     */
+                    code: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When the stored credential expires, when the vendor states a
+                         *     lifetime.
+                         */
+                        expires_at_unix?: number | null;
+                        /** @description Which harness this account drives. */
+                        harness: components["schemas"]["HarnessKind"];
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /**
+                         * @description Account name as the vendor reports it, so the user can tell two
+                         *     linked accounts apart.
+                         */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When it was linked, seconds since the Unix epoch.
+                         */
+                        linked_at_unix: number;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::claude_oauth::start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * @description Names the verifier and `state` the completion must be redeemed
+                         *     against.
+                         */
+                        attempt_id: components["schemas"]["Uuid"];
+                        /** @description Fully-formed `https://claude.ai/oauth/authorize` URL to open. */
+                        authorize_url: string;
                     };
                 };
             };

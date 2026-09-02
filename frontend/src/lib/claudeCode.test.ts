@@ -1,0 +1,48 @@
+import { describe, expect, it } from "vitest";
+import { parsePastedCode, pastedCodeForExchange } from "./claudeCode";
+
+describe("parsePastedCode", () => {
+  it("reads the CODE#STATE string Anthropic shows", () => {
+    expect(parsePastedCode("ac_the-code#the-state")).toEqual({
+      code: "ac_the-code",
+      state: "the-state",
+    });
+  });
+
+  it("accepts the bare code, because half the string is still a code", () => {
+    expect(parsePastedCode("ac_the-code")).toEqual({ code: "ac_the-code", state: null });
+  });
+
+  it("tidies what a copy brought with it", () => {
+    for (const pasted of [
+      "  ac_the-code#the-state\n",
+      '"ac_the-code#the-state"',
+      "ac_the-code # the-state",
+      "`ac_the-code#the-state`",
+    ]) {
+      expect(parsePastedCode(pasted)).toEqual({ code: "ac_the-code", state: "the-state" });
+    }
+  });
+
+  it("reads a trailing separator as a code with no state", () => {
+    expect(parsePastedCode("ac_the-code#")).toEqual({ code: "ac_the-code", state: null });
+  });
+
+  it("has nothing to redeem for an empty or state-only paste", () => {
+    expect(parsePastedCode("")).toBeNull();
+    expect(parsePastedCode("   \n ")).toBeNull();
+    expect(parsePastedCode("#the-state")).toBeNull();
+  });
+});
+
+describe("pastedCodeForExchange", () => {
+  it("sends the halves back joined, so the server checks the state", () => {
+    expect(pastedCodeForExchange({ code: "ac_the-code", state: "the-state" })).toBe(
+      "ac_the-code#the-state",
+    );
+  });
+
+  it("sends a bare code as itself", () => {
+    expect(pastedCodeForExchange({ code: "ac_the-code", state: null })).toBe("ac_the-code");
+  });
+});
