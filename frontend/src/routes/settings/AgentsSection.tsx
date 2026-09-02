@@ -32,9 +32,9 @@ const HARNESSES: readonly { kind: HarnessKind; label: string; runsOn: string }[]
   {
     kind: "claude_code",
     label: "Claude Code",
-    runsOn: "Runs on your Anthropic subscription or API key.",
+    runsOn: "Runs on your Claude subscription, or an Anthropic API key.",
   },
-  { kind: "codex", label: "Codex", runsOn: "Runs on your OpenAI API key." },
+  { kind: "codex", label: "Codex", runsOn: "Runs on your ChatGPT subscription, or an OpenAI API key." },
 ];
 
 export default function AgentsSection() {

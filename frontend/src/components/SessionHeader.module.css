@@ -47,6 +47,34 @@
   border-bottom-color: var(--color-border-strong);
 }
 
+/* Holds the title's place while the session loads: the same height as one
+   line of the title, wide enough to read as a name rather than a dot. */
+.titleSkeleton {
+  display: inline-block;
+  width: 16ch;
+  height: calc(var(--text-xl) * var(--line-tight));
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .titleSkeleton {
+    animation: none;
+  }
+}
+
 .titleInput {
   min-width: 0;
   flex: 1;

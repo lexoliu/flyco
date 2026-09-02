@@ -45,6 +45,15 @@ function machineChip(machine: MachineView | undefined): string | null {
   return parts.join(" · ");
 }
 
+/**
+ * What a ring reads while its number is not known.
+ *
+ * A dash, not a sentence: "not loaded" and "not reported" describe the
+ * plumbing, and a header that explains its plumbing is a header that looks
+ * broken. The ring's label still names what the dash stands for.
+ */
+const UNKNOWN_READOUT = "—";
+
 /** `41k / 200k`, because a context window is read in thousands or not at all. */
 function tokens(count: number): string {
   return count >= 1000 ? `${Math.round(count / 1000)}k` : `${count}`;
@@ -65,7 +74,7 @@ const CONNECTION_LABEL: Partial<Record<ConnectionState, string>> = {
 
 export interface SessionHeaderProps {
   session: SessionDetail | undefined;
-  /** The id, which is all there is to show before the session loads. */
+  /** The id, for the `Copy session id` action; never shown as a title. */
   sessionId: string;
   status: StatusView;
   /** The relay socket's state, shown only while it is not carrying events. */
@@ -92,7 +101,7 @@ export default function SessionHeader(props: SessionHeaderProps) {
   const [draft, setDraft] = createSignal("");
   const [copied, setCopied] = createSignal(false);
 
-  const title = () => props.session?.title ?? props.sessionId;
+  const title = () => props.session?.title ?? "";
 
   function beginEdit(): void {
     setDraft(title());
@@ -117,12 +126,22 @@ export default function SessionHeader(props: SessionHeaderProps) {
   return (
     <header class={styles.header}>
       <div class={styles.identity}>
+        {/*
+          Before the session has loaded there is no title to show, and the
+          id is not one: a UUID where a name goes reads as an error. A quiet
+          block the width of a title holds the place instead.
+        */}
         <Show
           when={editing()}
           fallback={
-            <button type="button" class={styles.title} onClick={beginEdit} title="Rename">
-              {title()}
-            </button>
+            <Show
+              when={props.session}
+              fallback={<span class={styles.titleSkeleton} aria-label="Loading the session" />}
+            >
+              <button type="button" class={styles.title} onClick={beginEdit} title="Rename">
+                {title()}
+              </button>
+            </Show>
           }
         >
           <input
@@ -188,7 +207,7 @@ export default function SessionHeader(props: SessionHeaderProps) {
           total={props.budgetLimitUsd}
           readout={
             props.budgetSpentUsd === undefined || props.budgetLimitUsd === undefined
-              ? "Budget not loaded"
+              ? UNKNOWN_READOUT
               : `$${props.budgetSpentUsd.toFixed(2)} / $${props.budgetLimitUsd.toFixed(0)}`
           }
         />
@@ -198,7 +217,7 @@ export default function SessionHeader(props: SessionHeaderProps) {
           total={props.contextSize}
           readout={
             props.contextUsed === undefined || props.contextSize === undefined
-              ? "Context not reported"
+              ? UNKNOWN_READOUT
               : `${tokens(props.contextUsed)} / ${tokens(props.contextSize)}`
           }
         />

@@ -17,7 +17,7 @@
  */
 import { Show, createSignal } from "solid-js";
 import { Server } from "lucide-solid";
-import { CardShell, Fact } from "./ComputeCard";
+import { CardShell, Fact, YourHardware } from "./ComputeCard";
 import { removeHost, renameHost, type HostView } from "../api/client";
 import { formatDate } from "../lib/dates";
 import { activeSessions, isBusyHost } from "../lib/hostEnrollment";
@@ -218,10 +218,7 @@ export default function HostCard(props: HostCardProps) {
       <Fact label="Software">{hostSoftwareLabel(props.host.facts)}</Fact>
 
       <Fact label="What an hour costs">
-        {/* Not `$0.00`: flyco meters nothing here, and a zero would tell a
-            budget it can run forever. */}
-        <strong>your hardware</strong>
-        <span class={styles.dim}> · a session here spends no budget</span>
+        <YourHardware />
       </Fact>
     </CardShell>
   );
