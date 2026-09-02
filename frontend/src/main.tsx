@@ -1,6 +1,7 @@
 import { render } from "solid-js/web";
 import { Navigate, Route, Router } from "@solidjs/router";
 import "./styles/global.css";
+import { registerSW } from "virtual:pwa-register";
 import { initTheme } from "./lib/theme";
 import AppShell from "./components/AppShell";
 import Login from "./routes/Login";
@@ -19,6 +20,9 @@ import AccountSection from "./routes/settings/AccountSection";
 import NotFound from "./routes/NotFound";
 
 initTheme();
+// Registers the push service worker; with `registerType: "autoUpdate"` a
+// new build replaces the old one without asking.
+registerSW({ immediate: true });
 
 const root = document.getElementById("app");
 if (root === null) {

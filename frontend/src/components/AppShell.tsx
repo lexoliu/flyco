@@ -10,7 +10,6 @@ import {
 import { A, Navigate, useLocation, useNavigate } from "@solidjs/router";
 import { Check, LogOut, Monitor, Moon, Sun } from "lucide-solid";
 import Popover from "./Popover";
-import UpdatePrompt from "./UpdatePrompt";
 import { ReadinessProvider } from "./Readiness";
 import { getMe } from "../api/client";
 import { isSignedIn, onSessionChanged } from "../lib/session";
@@ -67,8 +66,7 @@ export default function AppShell(props: { children?: JSX.Element }) {
       <Show when={isBareRoute() || signedIn()} fallback={<Navigate href={loginHref()} />}>
         <ReadinessProvider enabled={signedIn}>
           <div class={styles.shell}>
-            <UpdatePrompt />
-            <Show when={!isBareRoute()}>
+              <Show when={!isBareRoute()}>
               <header class={styles.header}>
                 <A href="/" class={styles.brand}>
                   flyco

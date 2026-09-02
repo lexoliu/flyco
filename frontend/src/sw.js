@@ -33,3 +33,14 @@ self.addEventListener("notificationclick", (event) => {
     })(),
   );
 });
+
+// Flyco is not used offline and caches nothing: the service worker exists
+// for web push. A new version therefore takes over immediately instead of
+// waiting behind a "reload" prompt.
+self.addEventListener("install", () => {
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(self.clients.claim());
+});

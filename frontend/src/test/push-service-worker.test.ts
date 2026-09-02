@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import source from "../../public/push-sw.js?raw";
+import source from "../sw.js?raw";
 
 type WorkerEvent = { waitUntil: (work: Promise<unknown>) => void };
 
