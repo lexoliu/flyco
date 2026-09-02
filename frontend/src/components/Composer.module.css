@@ -145,6 +145,27 @@
   color: var(--color-text-faint);
 }
 
+/* A machine whose provider bills a minimum the moment it boots. Amber on the
+   chip, and the sentence itself under the composer — docs/ux.md §7.7 asks
+   for the number to be readable before send is enabled, and a badge alone is
+   not a number. */
+.chipBound {
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
+.licence {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  font-size: var(--text-sm);
+}
+
 /* ── Popover contents ────────────────────────────────────────────────── */
 
 .popover {
@@ -155,6 +176,7 @@
 
 .popoverWide {
   min-width: 320px;
+  max-width: min(420px, calc(100vw - 2 * var(--space-4)));
 }
 
 .popoverTitle {

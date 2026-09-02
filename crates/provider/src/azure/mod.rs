@@ -60,6 +60,13 @@
 //! Zone-restricted-but-usable is the dominant pattern for the machine types
 //! a small subscription can run, and a regional deployment is what succeeds.
 //! The field is not modelled at all — see [`bodies`].
+//!
+//! `clippy::future_not_send` is allowed across this module for the same reason
+//! it is in [`pricing`]: `Send`-ness follows from the concrete transport — the
+//! deployed one is a unit struct and the Worker is single-threaded — while the
+//! recorded transport is deliberately not `Sync`, and bounding `T: Sync` here
+//! would forbid the double the whole driver is tested against.
+#![expect(clippy::future_not_send, reason = "see the module documentation")]
 
 pub mod arm;
 pub mod auth;

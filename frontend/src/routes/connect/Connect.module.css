@@ -1,3 +1,10 @@
+/*
+ * The connect routes: a chooser of cards, and one wizard opening in place.
+ *
+ * Everything here is the cool neutral of docs/ux.md §2 — surfaces one step
+ * off the ground, hairline borders, pills, no accent. The only colour is
+ * status: amber where a warning has to be read, red where something failed.
+ */
 .page {
   flex: 1;
   width: 100%;
@@ -14,9 +21,13 @@
   align-items: center;
   gap: var(--space-1);
   align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: transparent;
   font-size: var(--text-md);
   color: var(--color-text-muted);
   text-decoration: none;
+  transition: color var(--transition-fast);
 }
 
 .back:hover {
@@ -40,28 +51,413 @@
   max-width: 56ch;
 }
 
-.marks {
+/* ── The chooser ─────────────────────────────────────────────────────── */
+
+/* The chooser is rendered inside a route and inside the welcome card, so it
+   owns its own vertical rhythm rather than borrowing the page's. */
+.chooserRoot {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: var(--space-4);
-  color: var(--color-text-faint);
-  padding: var(--space-2) 0;
 }
 
-.linked {
+/* One column, not three: these are four alternatives to read, and a row of
+   equal cards makes them look like features rather than a decision. */
+.chooser {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.choice {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-3);
+  width: 100%;
   padding: var(--space-3) var(--space-4);
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-lg);
-  background: var(--color-success-soft);
-  color: var(--color-success);
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-align: left;
+  text-decoration: none;
+  transition: border-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.choice:hover {
+  border-color: var(--color-border-strong);
+}
+
+.choice:active {
+  transform: translateY(1px);
+}
+
+/* Listed, but not linkable: the enrollment backend has not shipped. */
+.choiceMuted {
+  border-style: dashed;
+  background: transparent;
+}
+
+.choiceMark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+}
+
+.choiceText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.choiceTitle {
+  font-weight: var(--weight-medium);
+}
+
+.choiceLine {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.choiceGlyph {
+  margin-left: auto;
+  flex: none;
+  color: var(--color-text-faint);
+}
+
+/* ── The wizard ──────────────────────────────────────────────────────── */
+
+.wizard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.wizardHead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.wizardHead h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.stageTitle {
+  margin: 0;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-faint);
+}
+
+.hint {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  max-width: 62ch;
+}
+
+.error {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-danger);
+}
+
+/* ── Fields ──────────────────────────────────────────────────────────── */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.field > span:first-child {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.input,
+.paste {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+  font-size: var(--text-md);
+  transition: border-color var(--transition-fast);
+}
+
+.paste {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--line-normal);
+  resize: vertical;
+}
+
+.input:focus,
+.paste:focus {
+  outline: none;
+  border-color: var(--color-border-strong);
+}
+
+.paste[aria-invalid="true"] {
+  border-color: var(--color-danger);
+}
+
+/* ── Read-only confirmation rows ─────────────────────────────────────── */
+
+.confirm {
+  margin: 0;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.confirmRow {
+  display: grid;
+  grid-template-columns: 10rem 1fr;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+
+.confirmRow:last-child {
+  border-bottom: none;
+}
+
+.confirmRow dt {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.confirmRow dd {
+  margin: 0;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+/* ── The break-glass key ─────────────────────────────────────────────── */
+
+.keyRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.fingerprint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-right: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* ── The GCP drop zone ───────────────────────────────────────────────── */
+
+.drop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  border: var(--border-width) dashed var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.drop:hover,
+.dropActive {
+  border-color: var(--color-text);
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+}
+
+.drop:focus-within {
+  border-color: var(--color-focus-ring);
+}
+
+.fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+/* ── The bonus questions ─────────────────────────────────────────────── */
+
+.questions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.question {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   font-size: var(--text-md);
 }
 
-.linked a {
-  color: inherit;
-  margin-left: auto;
+.programmes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.programme {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.programmeTitle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
   font-weight: var(--weight-medium);
+}
+
+.credit {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-success);
+  font-size: var(--text-sm);
+}
+
+.programmeDetail {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  max-width: 56ch;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────── */
+
+.primary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  align-self: flex-start;
+  padding: var(--space-2) var(--space-4);
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+  transition: background var(--transition-fast), opacity var(--transition-fast);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.primary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.primary:disabled {
+  opacity: 0.35;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  align-self: flex-start;
+  flex: none;
+  margin-left: auto;
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: border-color var(--transition-fast);
+}
+
+.pill:hover {
+  border-color: var(--color-border-strong);
+}
+
+.pill:active {
+  transform: translateY(1px);
+}
+
+/* A block sized like the policy it stands in for, so the step does not jump
+   when the document arrives. */
+.policySkeleton {
+  height: 12rem;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .policySkeleton {
+    animation: none;
+  }
+}
+
+@media (width <= 560px) {
+  .confirmRow {
+    grid-template-columns: 1fr;
+    gap: var(--space-1);
+  }
 }

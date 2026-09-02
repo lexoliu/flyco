@@ -1485,7 +1485,7 @@ async fn live_provision_and_destroy() {
             !matches!(
                 entry.pricing,
                 flyco_core::MachinePricing::Metered {
-                    minimum_billing_hours: Some(_),
+                    minimum: Some(_),
                     ..
                 }
             )

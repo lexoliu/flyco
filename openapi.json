@@ -914,6 +914,22 @@
         "operationId": "flyco_api::machines::get_catalog",
         "parameters": [
           {
+            "name": "account",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/Uuid",
+                  "description": "Only machines this linked account can deploy.\n\nNarrower than [`Self::provider`], and a different question: a user\nwith two Azure subscriptions is choosing between two bills, and a\ncard that spoke for both of them would name a machine the account it\nsits on cannot create."
+                }
+              ]
+            }
+          },
+          {
             "name": "os",
             "in": "query",
             "required": false,
@@ -1044,6 +1060,22 @@
         "description": "Describes the machine flyco would provision if the caller named none.\n\nThe one honest way to show a user what \"let flyco choose\" means before\nthey commit to it: the same function `POST /v1/sessions` runs, answered\nwith the catalog entry behind it so the price and the size come from the\nchoice rather than from a second lookup that could disagree with it.",
         "operationId": "flyco_api::machines::get_default_machine",
         "parameters": [
+          {
+            "name": "account",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/Uuid",
+                  "description": "Answer for this linked account alone.\n\nWhat a compute card asks: \"if this were the only account, what would\nflyco run on?\" Absent, the answer is drawn from every linked account,\nwhich is what the composer's chip shows."
+                }
+              ]
+            }
+          },
           {
             "name": "spot",
             "in": "query",
@@ -4698,6 +4730,17 @@
         "type": "object",
         "description": "Narrows the machine catalog.\n\nEvery field is optional: an unfiltered catalog is the honest default,\nbecause a user with one linked provider should not have to name it.",
         "properties": {
+          "account": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Uuid",
+                "description": "Only machines this linked account can deploy.\n\nNarrower than [`Self::provider`], and a different question: a user\nwith two Azure subscriptions is choosing between two bills, and a\ncard that spoke for both of them would name a machine the account it\nsits on cannot create."
+              }
+            ]
+          },
           "os": {
             "oneOf": [
               {
@@ -5056,6 +5099,17 @@
         "type": "object",
         "description": "Whether a caller who names no machine wants interruptible capacity.",
         "properties": {
+          "account": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Uuid",
+                "description": "Answer for this linked account alone.\n\nWhat a compute card asks: \"if this were the only account, what would\nflyco run on?\" Absent, the answer is drawn from every linked account,\nwhich is what the composer's chip shows."
+              }
+            ]
+          },
           "spot": {
             "type": [
               "boolean",

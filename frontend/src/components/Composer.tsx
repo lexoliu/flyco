@@ -13,8 +13,9 @@
  */
 import { For, Show, createMemo, createResource, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
-import { ArrowUp, Cpu, FolderGit2, Plus, Server, Wallet } from "lucide-solid";
+import { AlertTriangle, ArrowUp, FolderGit2, Plus, Server, Wallet } from "lucide-solid";
 import ComposerShell from "./ComposerShell";
+import MachineSlider from "./MachineSlider";
 import Popover from "./Popover";
 import Logomark, { HARNESS_MARK, PROVIDER_MARK } from "./Logomark";
 import ProblemNotice from "./ProblemNotice";
@@ -26,12 +27,19 @@ import {
   type HarnessKind,
   type MachineCatalogEntry,
   type MachineDefault,
+  type ProviderAccountView,
   type RepoSummary,
 } from "../api/client";
 import type { NewSessionInput } from "../api/sessions";
 import { cx } from "../lib/cx";
-import { MAX_RECENT_REPOS, recentRepos, rememberRepo } from "../lib/localPreferences";
-import { formatUsd } from "../lib/money";
+import {
+  MAX_RECENT_REPOS,
+  recentRepos,
+  rememberRepo,
+  setSpotPreference,
+  spotPreference,
+} from "../lib/localPreferences";
+import { billingMinimumSentence, entryKey, hourlyLabel } from "../lib/machines";
 import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./Composer.module.css";
 
@@ -45,21 +53,6 @@ const HARNESS_LABEL: Record<HarnessKind, string> = {
   codex: "Codex",
 };
 
-/** Identifies one catalog entry across the account, region and type it names. */
-function entryKey(entry: MachineCatalogEntry): string {
-  return `${entry.account ?? ""}/${entry.region}/${entry.machine_type}`;
-}
-
-/** `$0.04/hr`, or the honest absence of a price on hardware the user owns. */
-function hourlyLabel(entry: MachineCatalogEntry, spot: boolean): string {
-  if (entry.pricing.kind === "user_owned") {
-    return "your hardware";
-  }
-  const spotHourly = entry.pricing.spot_hourly;
-  const useSpot = spot && spotHourly !== null && spotHourly !== undefined;
-  return `${formatUsd(useSpot ? spotHourly : entry.pricing.on_demand_hourly)}/hr`;
-}
-
 export interface ComposerProps {
   /** Starts the session. Rejections surface as a notice under the chips. */
   onSend: (input: NewSessionInput) => Promise<void>;
@@ -71,7 +64,7 @@ export default function Composer(props: ComposerProps) {
   const [prompt, setPrompt] = createSignal("");
   const [repo, setRepo] = createSignal<string | null>(recentRepos()[0] ?? null);
   const [budget, setBudget] = createSignal(DEFAULT_BUDGET);
-  const [spot, setSpot] = createSignal(true);
+  const [spot, setSpot] = createSignal(spotPreference());
   const [chosenKey, setChosenKey] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
   const [error, setError] = createSignal<unknown>(null);
@@ -86,11 +79,15 @@ export default function Composer(props: ComposerProps) {
   // rendering is "link an account" — which the chip already says.
   const [automatic] = createResource(
     () => (readiness.compute().length > 0 ? spot() : undefined),
-    getDefaultMachine,
+    (wanted: boolean) => getDefaultMachine(wanted),
   );
+  // The whole curated catalog, not just Linux: the slider's `Advanced`
+  // disclosure offers architecture and OS, and curation groups by both — so
+  // filtering here is exactly what filtering on the server would have done,
+  // one request instead of one per combination.
   const [catalog] = createResource(
     () => (readiness.compute().length > 0 ? true : undefined),
-    () => getMachineCatalog({ os: "linux" }),
+    () => getMachineCatalog(),
   );
 
   /** The harness a session opens on: the one linked account, or Claude. */
@@ -103,6 +100,15 @@ export default function Composer(props: ComposerProps) {
       return automatic()?.entry;
     }
     return (catalog() ?? []).find((entry) => entryKey(entry) === key);
+  });
+
+  /**
+   * The sentence a license-bound machine has to state before it can be
+   * started, from the entry the chip is showing.
+   */
+  const licenseNotice = createMemo(() => {
+    const entry = chosen();
+    return entry === undefined ? null : billingMinimumSentence(entry);
   });
 
   /** What stops this session from being started, in the order to fix it. */
@@ -125,6 +131,12 @@ export default function Composer(props: ComposerProps) {
   function chooseRepo(slug: string): void {
     setRepo(slug);
     rememberRepo(slug);
+  }
+
+  /** Remembered, because it is a default for the next session too. */
+  function chooseSpot(next: boolean): void {
+    setSpot(next);
+    setSpotPreference(next);
   }
 
   async function send(): Promise<void> {
@@ -178,13 +190,14 @@ export default function Composer(props: ComposerProps) {
           <HarnessChip harness={harness()} linked={readiness.harness().length > 0} />
           <ComputeChip
             linked={readiness.compute().length > 0}
+            accounts={readiness.compute()}
             automatic={automatic()}
             entry={chosen()}
             catalog={catalog() ?? []}
             chosenKey={chosenKey()}
             spot={spot()}
             onChoose={setChosenKey}
-            onSpot={setSpot}
+            onSpot={chooseSpot}
           />
           <RepoChip slug={repo()} onChoose={chooseRepo} />
           <BudgetChip dollars={budget()} onChange={setBudget} />
@@ -203,6 +216,14 @@ export default function Composer(props: ComposerProps) {
         </button>
       }
     >
+      <Show when={licenseNotice()}>
+        {(sentence) => (
+          <p class={styles.licence}>
+            <AlertTriangle size={14} aria-hidden="true" />
+            {sentence()}
+          </p>
+        )}
+      </Show>
       <ProblemNotice error={error()} />
     </ComposerShell>
   );
@@ -238,6 +259,7 @@ function HarnessChip(props: { harness: HarnessKind; linked: boolean }) {
  */
 function ComputeChip(props: {
   linked: boolean;
+  accounts: ProviderAccountView[];
   automatic: MachineDefault | undefined;
   entry: MachineCatalogEntry | undefined;
   catalog: MachineCatalogEntry[];
@@ -263,6 +285,11 @@ function ComputeChip(props: {
     return parts.join(" · ");
   });
 
+  /** The sentence a license-bound machine has to show before send. */
+  const warning = createMemo(() =>
+    props.entry === undefined ? null : billingMinimumSentence(props.entry),
+  );
+
   return (
     <Show
       when={props.linked}
@@ -283,7 +310,7 @@ function ComputeChip(props: {
             aria-expanded={attrs.expanded()}
             aria-haspopup="dialog"
             type="button"
-            class={styles.chip}
+            class={cx(styles.chip, warning() !== null && styles.chipBound)}
           >
             <Show
               when={props.entry !== undefined && PROVIDER_MARK[props.entry.provider]}
@@ -298,65 +325,21 @@ function ComputeChip(props: {
           </button>
         )}
       >
-        {(close) => (
+        {() => (
           <div class={styles.popover}>
-            <label class={styles.toggleRow}>
-              <input
-                type="checkbox"
-                checked={props.spot}
-                onChange={(event) => props.onSpot(event.currentTarget.checked)}
-              />
-              Use spot capacity — cheaper, and flyco handles eviction
-            </label>
-
-            <p class={styles.popoverTitle}>Machine</p>
-            <ul class={styles.options}>
-              <li>
-                <button
-                  type="button"
-                  class={cx(styles.option, props.chosenKey === null && styles.optionChosen)}
-                  onClick={() => {
-                    props.onChoose(null);
-                    close();
-                  }}
-                >
-                  <Cpu size={14} aria-hidden="true" />
-                  Let flyco choose
-                  <Show when={props.automatic}>
-                    {(chosenDefault) => (
-                      <span class={styles.optionMeta}>
-                        {chosenDefault().entry.machine_type}
-                      </span>
-                    )}
-                  </Show>
-                </button>
-              </li>
-              <For each={props.catalog}>
-                {(entry) => (
-                  <li>
-                    <button
-                      type="button"
-                      class={cx(
-                        styles.option,
-                        props.chosenKey === entryKey(entry) && styles.optionChosen,
-                      )}
-                      onClick={() => {
-                        props.onChoose(entryKey(entry));
-                        close();
-                      }}
-                    >
-                      <span class={styles.chipLabel}>
-                        {entry.machine_type} · {entry.region}
-                      </span>
-                      <span class={styles.optionMeta}>{hourlyLabel(entry, props.spot)}</span>
-                    </button>
-                  </li>
-                )}
-              </For>
-            </ul>
+            <MachineSlider
+              catalog={props.catalog}
+              accounts={props.accounts}
+              automatic={props.automatic}
+              spot={props.spot}
+              chosenKey={props.chosenKey}
+              onChoose={props.onChoose}
+              onSpot={props.onSpot}
+            />
             <p class={styles.note}>
-              Flyco picks the cheapest Linux machine of at least 4 vCPUs and 16 GiB that your
-              linked accounts can deploy. Choosing one yourself is remembered with the session.
+              Auto is the cheapest curated Linux type your linked accounts can deploy with at least
+              4 vCPU and 16 GiB. Choosing one yourself is remembered with the session, and the agent
+              is told you picked it.
             </p>
           </div>
         )}

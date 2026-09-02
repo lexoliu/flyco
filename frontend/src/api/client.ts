@@ -41,6 +41,7 @@ export type SkillScope = Schemas["SkillScope"];
 export type ProviderAccountView = Schemas["ProviderAccountView"];
 export type ProviderCredentials = Schemas["ProviderCredentials"];
 export type ProviderBonusHint = Schemas["ProviderBonusHint"];
+export type AwsIamPolicy = Schemas["AwsIamPolicy"];
 export type CloudProviderKind = Schemas["CloudProviderKind"];
 export type ApiKeySummary = Schemas["ApiKeySummary"];
 export type CreatedApiKey = Schemas["CreatedApiKey"];
@@ -57,6 +58,9 @@ export type MachineSpec = Schemas["MachineSpec"];
 export type MachineState = Schemas["MachineState"];
 export type MachinePricing = Schemas["MachinePricing"];
 export type MachineCapacity = Schemas["MachineCapacity"];
+export type MachineLineage = Schemas["MachineLineage"];
+export type CpuArchitecture = Schemas["CpuArchitecture"];
+export type BillingMinimum = Schemas["BillingMinimum"];
 export type OsFamily = Schemas["OsFamily"];
 export type HarnessAccountView = Schemas["HarnessAccountView"];
 export type HarnessCredentialInput = Schemas["HarnessCredentialInput"];
@@ -314,11 +318,17 @@ export function resizeSessionMachine(id: string, machineType: string): Promise<v
 
 export function getMachineCatalog(filter?: {
   provider?: CloudProviderKind;
+  account?: string;
   os?: OsFamily;
   region?: string;
 }): Promise<JsonResponse<"flyco_api::machines::get_catalog", 200>> {
   return requestJson("GET", "/v1/machines/catalog", {
-    query: { provider: filter?.provider, os: filter?.os, region: filter?.region },
+    query: {
+      provider: filter?.provider,
+      account: filter?.account,
+      os: filter?.os,
+      region: filter?.region,
+    },
   });
 }
 
@@ -328,8 +338,9 @@ export function getMachineCatalog(filter?: {
  */
 export function getDefaultMachine(
   spot: boolean,
+  account?: string,
 ): Promise<JsonResponse<"flyco_api::machines::get_default_machine", 200>> {
-  return requestJson("GET", "/v1/machines/default", { query: { spot } });
+  return requestJson("GET", "/v1/machines/default", { query: { spot, account } });
 }
 
 // --- /v1/approvals ----------------------------------------------------------
@@ -446,6 +457,20 @@ export function providerQuickstart(
   input: JsonBody<"flyco_api::provider_accounts::provider_quickstart">,
 ): Promise<JsonResponse<"flyco_api::provider_accounts::provider_quickstart", 200>> {
   return requestJson("POST", "/v1/providers/quickstart", { json: input });
+}
+
+/**
+ * The least privilege an AWS access key needs, as a document to paste into
+ * IAM.
+ *
+ * Served rather than checked in beside the wizard: it is rendered from the
+ * driver's own call sites, so a copy here would be right on the day it was
+ * written and quietly wrong afterwards.
+ */
+export function getAwsIamPolicy(): Promise<
+  JsonResponse<"flyco_api::provider_accounts::aws_iam_policy", 200>
+> {
+  return requestJson("GET", "/v1/providers/aws/iam-policy");
 }
 
 // --- /v1/api-keys ---------------------------------------------------------------

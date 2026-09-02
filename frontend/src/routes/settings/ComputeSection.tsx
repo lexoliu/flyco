@@ -1,47 +1,47 @@
 /**
  * Settings → Compute (docs/ux.md §10).
  *
- * One card per linked account, each carrying what the user actually wants
- * to know about a cloud account they gave flyco a key to: whose it is, when
- * they linked it, and what it has cost this billing period. Spend is read
- * from the provider's own meter (`GET /v1/usage/cloud`), which is the only
- * number that matches the invoice.
+ * One card per linked account, and the card is the same component every
+ * wizard ends with (`components/ComputeCard.tsx`). One component rather than
+ * two: the version a user reads the moment they finish linking and the
+ * version they come back to a week later have to be the same card, or the
+ * second one reads as a different account.
  *
- * Adding an account is a link to `/connect/compute` rather than a form
- * here: the wizards live on that route (docs/ux.md §7) and settings is not
- * a second place to paste a credential.
+ * Adding an account is a link to `/connect/compute` rather than a form here.
+ * The wizards live on that route, and settings is not a second place to paste
+ * a credential.
  */
 import { For, Show, createResource, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
-import { Plus, Server } from "lucide-solid";
-import Logomark, { PROVIDER_MARK } from "../../components/Logomark";
+import { Plus } from "lucide-solid";
+import ComputeCard from "../../components/ComputeCard";
 import ProblemNotice from "../../components/ProblemNotice";
 import { useReadiness } from "../../components/Readiness";
-import {
-  listCloudUsage,
-  unlinkProvider,
-  type CloudUsageRow,
-  type ProviderAccountView,
-} from "../../api/client";
-import { formatDate } from "../../lib/dates";
-import { formatUsd } from "../../lib/money";
-import { PROVIDER_LABEL } from "../../lib/providers";
-import { cx } from "../../lib/cx";
+import { listCloudUsage, unlinkProvider } from "../../api/client";
+import { setSpotPreference, spotPreference } from "../../lib/localPreferences";
 import styles from "./Settings.module.css";
 
 export default function ComputeSection() {
   const readiness = useReadiness();
-  const [usage] = createResource(() => listCloudUsage());
+  const [usage, { refetch: refetchUsage }] = createResource(() => listCloudUsage());
   const [actionError, setActionError] = createSignal<unknown>(null);
+  const [spot, setSpot] = createSignal(spotPreference());
 
   async function unlink(id: string): Promise<void> {
     setActionError(null);
     try {
       await unlinkProvider(id);
       await readiness.refresh();
+      void refetchUsage();
     } catch (err) {
       setActionError(err);
     }
+  }
+
+  /** The default for the next session, which is what this page is for. */
+  function chooseSpot(next: boolean): void {
+    setSpot(next);
+    setSpotPreference(next);
   }
 
   return (
@@ -50,7 +50,7 @@ export default function ComputeSection() {
         <h2>Compute</h2>
         <p class={styles.lede}>
           Sessions run on machines in your own cloud accounts, so you keep the bill, the region and
-          the data.
+          the data. Spot capacity is the default for every new session.
         </p>
       </header>
 
@@ -60,9 +60,7 @@ export default function ComputeSection() {
         when={readiness.compute().length > 0}
         fallback={
           <div class={styles.empty}>
-            <p class={styles.emptyLine}>
-              No compute is linked, so no session can start yet.
-            </p>
+            <p class={styles.emptyLine}>No compute is linked, so no session can start yet.</p>
             <A href="/connect/compute" class={styles.pillPrimary}>
               <Plus size={14} aria-hidden="true" />
               Add compute
@@ -70,12 +68,14 @@ export default function ComputeSection() {
           </div>
         }
       >
-        <div class={cx(styles.cards, styles.cardsPaired)}>
+        <div class={styles.cards}>
           <For each={readiness.compute()}>
             {(account) => (
               <ComputeCard
                 account={account}
                 usage={usage()?.find((row) => row.account === account.id)}
+                spot={spot()}
+                onSpot={chooseSpot}
                 onUnlink={() => void unlink(account.id)}
               />
             )}
@@ -89,61 +89,5 @@ export default function ComputeSection() {
         </div>
       </Show>
     </section>
-  );
-}
-
-function ComputeCard(props: {
-  account: ProviderAccountView;
-  usage: CloudUsageRow | undefined;
-  onUnlink: () => void;
-}) {
-  const mark = () => PROVIDER_MARK[props.account.kind];
-
-  return (
-    <article class={styles.card}>
-      <div class={styles.cardTop}>
-        <span class={styles.mark}>
-          <Show
-            when={mark()}
-            /* A machine the user owns has no vendor behind it, so it gets
-               the generic server glyph rather than borrowing a logo. */
-            fallback={<Server size={16} aria-hidden="true" />}
-          >
-            {(vendor) => <Logomark mark={vendor()} size={16} />}
-          </Show>
-        </span>
-        <div class={styles.identity}>
-          <span class={styles.cardTitle}>{props.account.label}</span>
-          <span class={styles.cardMeta}>
-            {PROVIDER_LABEL[props.account.kind]} · linked {formatDate(props.account.linked_at_unix)}
-          </span>
-        </div>
-        <div class={styles.actions}>
-          <button type="button" class={styles.pillDanger} onClick={props.onUnlink}>
-            Unlink
-          </button>
-        </div>
-      </div>
-
-      <Show
-        when={props.usage}
-        fallback={
-          /* `GET /v1/usage/cloud` deliberately returns no row for hardware
-             the user already owns; a `$0.00` there would read as "this is
-             free", which it is not. */
-          <p class={styles.cardMeta}>Flyco meters no spend on this account.</p>
-        }
-      >
-        {(row) => (
-          <p class={styles.cardMeta}>
-            <strong>{formatUsd(row().spent)}</strong> since {formatDate(row().period_start_unix)}
-            <Show when={row().remaining_credit !== null && row().remaining_credit !== undefined}>
-              {" · "}
-              {formatUsd(row().remaining_credit ?? 0)} credit left
-            </Show>
-          </p>
-        )}
-      </Show>
-    </article>
   );
 }

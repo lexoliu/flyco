@@ -1615,6 +1615,7 @@ export interface components {
          *     because a user with one linked provider should not have to name it.
          */
         CatalogFilter: {
+            account?: null | components["schemas"]["Uuid"];
             os?: null | components["schemas"]["OsFamily"];
             provider?: null | components["schemas"]["CloudProviderKind"];
             /** @description Only machines in this provider-native region. */
@@ -1812,6 +1813,7 @@ export interface components {
         };
         /** @description Whether a caller who names no machine wants interruptible capacity. */
         DefaultMachineQuery: {
+            account?: null | components["schemas"]["Uuid"];
             /**
              * @description Whether to price and pick against spot capacity. Spot is the default
              *     because it is cheaper and flyco handles eviction.
@@ -3479,6 +3481,7 @@ export interface operations {
     "flyco_api::machines::get_catalog": {
         parameters: {
             query?: {
+                account?: null | components["schemas"]["Uuid"];
                 os?: null | components["schemas"]["OsFamily"];
                 provider?: null | components["schemas"]["CloudProviderKind"];
                 region?: string | null;
@@ -3524,6 +3527,7 @@ export interface operations {
     "flyco_api::machines::get_default_machine": {
         parameters: {
             query?: {
+                account?: null | components["schemas"]["Uuid"];
                 spot?: boolean | null;
             };
             header?: never;

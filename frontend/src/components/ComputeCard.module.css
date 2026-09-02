@@ -1,0 +1,159 @@
+/*
+ * The compute card: a surface one step off the ground, a hairline border, no
+ * shadow. Its three facts are a definition list rather than a table, because
+ * that is what they are — a label and the one value it names.
+ */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.title {
+  font-weight: var(--weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.unlink {
+  margin-left: auto;
+  flex: none;
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+  transition: border-color var(--transition-fast);
+}
+
+.unlink:hover {
+  border-color: var(--color-danger);
+}
+
+.unlink:active {
+  transform: translateY(1px);
+}
+
+/* ── The three facts ─────────────────────────────────────────────────── */
+
+.facts {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.fact {
+  display: grid;
+  grid-template-columns: 11rem 1fr;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) 0;
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+
+.fact:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.fact dt {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.fact dd {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--text-md);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.toggleCell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.dim {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.absent {
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+}
+
+/* A skeleton sized like the line it replaces, so the card does not resize
+   when the catalog answers. */
+.skeleton {
+  display: inline-block;
+  width: 18ch;
+  height: 1em;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+
+@media (width <= 560px) {
+  .fact {
+    grid-template-columns: 1fr;
+    gap: var(--space-1);
+  }
+}
