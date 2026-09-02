@@ -229,13 +229,24 @@ pub enum ApiError {
         cap: u32,
     },
 
-    /// The caller asked flyco to pick a machine, but no deployable Linux
-    /// type exists on any linked account.
+    /// The caller asked flyco to pick a machine, but no linked account
+    /// offers a Linux type big enough for one.
+    ///
+    /// Deliberately not answered with something smaller: a machine under
+    /// the floor is not a cheaper version of the same session, and a
+    /// catalog offering nothing big enough is a fact the user has to act
+    /// on.
     #[error(
-        "none of your linked accounts can deploy a Linux machine for flyco to choose",
+        "none of your linked accounts can deploy a Linux machine of at least \
+         {vcpus} vCPUs and {memory_gib} GiB for flyco to choose",
         status = StatusCode::UNPROCESSABLE_ENTITY
     )]
-    NoDeployableLinuxMachine,
+    NoDeployableLinuxMachine {
+        /// Smallest vCPU count flyco picks on its own.
+        vcpus: u32,
+        /// Smallest memory, in GiB, flyco picks on its own.
+        memory_gib: u64,
+    },
 
     /// The requested lifecycle move is not part of the session state machine.
     #[error(
@@ -282,6 +293,16 @@ pub enum ApiError {
         status = StatusCode::UNPROCESSABLE_ENTITY
     )]
     InvalidEnvKey(String),
+
+    /// The submitted session title is empty or too long.
+    #[error(
+        "a session title must be between 1 and {max} characters",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    InvalidTitle {
+        /// Longest title the control plane accepts.
+        max: usize,
+    },
 
     /// The submitted budget limit cannot fund anything.
     #[error(
@@ -445,11 +466,12 @@ impl ApiError {
             Self::DirtyArchive { .. } => "dirty-archive",
             Self::SessionNotActive { .. } => "session-not-active",
             Self::SessionCapReached { .. } => "session-cap-reached",
-            Self::NoDeployableLinuxMachine => "no-deployable-linux-machine",
+            Self::NoDeployableLinuxMachine { .. } => "no-deployable-linux-machine",
             Self::InvalidTransition { .. } => "invalid-session-transition",
             Self::ApprovalAlreadyDecided { .. } => "approval-already-decided",
             Self::InvalidRepo(_) => "invalid-repo",
             Self::InvalidEnvKey(_) => "invalid-env-key",
+            Self::InvalidTitle { .. } => "invalid-title",
             Self::InvalidBudget => "invalid-budget",
             Self::InvalidSessionCap { .. } => "invalid-session-cap",
             Self::EmptyMessage => "empty-message",

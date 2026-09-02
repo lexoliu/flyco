@@ -39,6 +39,9 @@ use crate::{machines, session, sessions};
 
 const REPO: &str = "lexoliu/flyco";
 
+/// The opening instruction every test session is created with.
+const PROMPT: &str = "audit the relay for dropped frames";
+
 // ── The provisioner under test ──
 
 /// What the registered host answers with.
@@ -148,6 +151,7 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
             budget_limit: Usd::from_dollars(10),
@@ -263,6 +267,7 @@ async fn a_machine_the_account_cannot_deploy_is_refused_where_it_was_chosen(
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
             budget_limit: Usd::from_dollars(10),

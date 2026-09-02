@@ -54,9 +54,9 @@ pub use id::{
     SkillId, SpendEventId, UserId,
 };
 pub use machine::{
-    CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, MachineSpec,
-    MachineState, MachineView, OsFamily, ResizeMachine, StoragePriceTier, StoragePricing,
-    cheapest_linux,
+    AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, CloudProviderKind, MachineCapacity, MachineCatalogEntry,
+    MachineDefault, MachinePricing, MachineSpec, MachineState, MachineView, OsFamily,
+    ResizeMachine, StoragePriceTier, StoragePricing, auto_linux_choice,
 };
 pub use mcp::{HeaderEntry, McpServerConfig, McpServerView, UpsertMcpServer};
 pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};
@@ -68,8 +68,9 @@ pub use providers::{
 pub use push::{PushKeys, PushSubscription, PushSubscriptionView, VapidPublicKey};
 pub use repo::{RepoSlug, RepoStatus};
 pub use session::{
-    ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, MachineChoice, SendMessage,
-    SessionDetail, SessionState, SessionSummary, SessionTransitionError, TurnPage, TurnSummary,
+    ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, MAX_SESSION_TITLE_CHARS,
+    MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS, SendMessage, SessionDetail, SessionState,
+    SessionSummary, SessionTransitionError, TurnPage, TurnSummary, UpdateSession, excerpt,
 };
 pub use skills::{SkillScope, SkillView};
 pub use usage::{

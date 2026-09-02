@@ -179,19 +179,60 @@ pub struct MachineCatalogEntry {
     pub pricing: MachinePricing,
 }
 
-/// The cheapest deployable Linux machine in a catalog.
+/// Smallest vCPU count flyco will pick for a session on its own.
 ///
-/// User-owned hardware wins (flyco meters nothing on it). Metered entries
-/// are ordered by the hourly rate the session actually asked for — spot
-/// when the caller wants it and the type has a spot price, otherwise
-/// on-demand. Entries without a linked account cannot be provisioned and
-/// are ignored. Mac and Windows types are never the automatic first
-/// machine: flyco's image is Linux.
+/// A coding agent compiles, runs test suites and holds a language server
+/// open. Below this the machine is cheap and the session is slow, which is
+/// the wrong trade for compute billed by the hour — the fast machine
+/// finishes first and costs less in total.
+pub const AUTO_MIN_VCPUS: u32 = 4;
+
+/// Smallest memory, in MiB, flyco will pick for a session on its own.
+///
+/// The same argument as [`AUTO_MIN_VCPUS`], and the sharper of the two
+/// constraints: a linker or a test run that exhausts memory does not run
+/// slowly, it fails.
+pub const AUTO_MIN_MEMORY_MIB: u64 = 16 * 1024;
+
+impl MachineCatalogEntry {
+    /// Whether flyco may pick this entry without being asked to.
+    ///
+    /// Linux, provisionable through a linked account, and at least
+    /// [`AUTO_MIN_VCPUS`] × [`AUTO_MIN_MEMORY_MIB`]. An entry that publishes
+    /// no capacity qualifies: that is hardware the user already owns, whose
+    /// size flyco does not learn until a daemon runs on it, and refusing it
+    /// for a size nobody stated would rule out the one machine the user
+    /// explicitly registered.
+    #[must_use]
+    pub fn is_auto_eligible(&self) -> bool {
+        self.os == OsFamily::Linux
+            && self.account.is_some()
+            && self.capacity.as_ref().is_none_or(|capacity| {
+                capacity.vcpus >= AUTO_MIN_VCPUS && capacity.memory_mib >= AUTO_MIN_MEMORY_MIB
+            })
+    }
+}
+
+/// The machine flyco picks when the caller names none.
+///
+/// The cheapest [auto-eligible](MachineCatalogEntry::is_auto_eligible) entry:
+/// user-owned hardware wins (flyco meters nothing on it), and metered
+/// entries are ordered by the hourly rate the session actually asked for —
+/// spot when the caller wants it and the type has a spot price, otherwise
+/// on-demand.
+///
+/// There is deliberately no fallback to something smaller. A machine below
+/// the floor is not a cheaper version of the same session, it is a session
+/// that thrashes; a catalog offering nothing big enough is a fact the user
+/// has to act on, not one to paper over.
 #[must_use]
-pub fn cheapest_linux(entries: &[MachineCatalogEntry], spot: bool) -> Option<&MachineCatalogEntry> {
+pub fn auto_linux_choice(
+    entries: &[MachineCatalogEntry],
+    spot: bool,
+) -> Option<&MachineCatalogEntry> {
     entries
         .iter()
-        .filter(|entry| entry.os == OsFamily::Linux && entry.account.is_some())
+        .filter(|entry| entry.is_auto_eligible())
         .min_by_key(|entry| {
             entry
                 .pricing
@@ -262,6 +303,22 @@ pub struct MachineView {
     pub created_at_unix: u64,
 }
 
+/// Answer of `GET /v1/machines/default`.
+///
+/// The machine flyco would provision right now, and the catalog entry it
+/// came from, so a caller can show what it costs and how big it is without
+/// searching the whole catalog for the type flyco named. The two travel
+/// together because they are one answer: a choice whose entry the caller had
+/// to look up again could be looked up against a catalog that has since
+/// changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct MachineDefault {
+    /// What `POST /v1/sessions` would provision if it named no machine.
+    pub choice: crate::session::MachineChoice,
+    /// The catalog entry that choice points at, with its price and size.
+    pub entry: MachineCatalogEntry,
+}
+
 /// Request body of `POST /v1/sessions/{id}/machine/resize`.
 ///
 /// The disk survives a resize; only compute is replaced. The provider and
@@ -276,8 +333,8 @@ pub struct ResizeMachine {
 #[cfg(test)]
 mod tests {
     use super::{
-        CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing, OsFamily,
-        StoragePricing, cheapest_linux,
+        AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, CloudProviderKind, MachineCapacity,
+        MachineCatalogEntry, MachinePricing, OsFamily, StoragePricing, auto_linux_choice,
     };
     use crate::id::ProviderAccountId;
     use crate::money::Usd;
@@ -350,6 +407,7 @@ mod tests {
         );
     }
 
+    /// A Linux entry big enough for flyco to pick on its own.
     fn linux(machine_type: &str, hourly: Option<Usd>) -> MachineCatalogEntry {
         MachineCatalogEntry {
             account: Some(ProviderAccountId::from_uuid(Uuid::from_u128(1))),
@@ -357,7 +415,10 @@ mod tests {
             provider: CloudProviderKind::Aws,
             machine_type: machine_type.to_owned(),
             os: OsFamily::Linux,
-            capacity: None,
+            capacity: Some(MachineCapacity {
+                vcpus: AUTO_MIN_VCPUS,
+                memory_mib: AUTO_MIN_MEMORY_MIB,
+            }),
             pricing: hourly.map_or(MachinePricing::UserOwned, |on_demand_hourly| {
                 MachinePricing::Metered {
                     on_demand_hourly,
@@ -372,31 +433,68 @@ mod tests {
     }
 
     #[test]
-    fn automatic_choice_is_the_cheapest_linux_with_an_account() {
+    fn automatic_choice_is_the_cheapest_eligible_linux_with_an_account() {
         let mac = MachineCatalogEntry {
             os: OsFamily::MacOs,
             ..linux("mac.metal", Some(Usd::from_cents(1)))
         };
         let expensive = linux("big", Some(Usd::from_cents(50)));
-        let cheap = linux("small", Some(Usd::from_cents(2)));
-        let owned = linux("home", None);
+        let cheap = linux("right-sized", Some(Usd::from_cents(2)));
+        let owned = MachineCatalogEntry {
+            // Hardware the user owns publishes no size, and qualifies
+            // anyway: flyco learns what it is when a daemon runs on it.
+            capacity: None,
+            ..linux("home", None)
+        };
         let catalog = [mac, expensive, cheap, owned];
 
         assert_eq!(
-            cheapest_linux(&catalog, true).map(|entry| entry.machine_type.as_str()),
+            auto_linux_choice(&catalog, true).map(|entry| entry.machine_type.as_str()),
             Some("home")
         );
         assert_eq!(
-            cheapest_linux(&catalog[..3], true).map(|entry| entry.machine_type.as_str()),
-            Some("small")
+            auto_linux_choice(&catalog[..3], true).map(|entry| entry.machine_type.as_str()),
+            Some("right-sized")
         );
-        assert!(cheapest_linux(&catalog[..1], true).is_none());
+        assert!(auto_linux_choice(&catalog[..1], true).is_none());
     }
 
     #[test]
     fn an_entry_without_an_account_cannot_be_chosen() {
-        let mut orphan = linux("small", Some(Usd::from_cents(1)));
+        let mut orphan = linux("right-sized", Some(Usd::from_cents(1)));
         orphan.account = None;
-        assert!(cheapest_linux(&[orphan], true).is_none());
+        assert!(auto_linux_choice(&[orphan], true).is_none());
+    }
+
+    #[test]
+    fn a_machine_under_the_floor_is_never_chosen_automatically() {
+        // Cheaper than the eligible entry, and still not the answer: there
+        // is no fallback to something too small, only the refusal the
+        // caller can act on.
+        let tiny = MachineCatalogEntry {
+            capacity: Some(MachineCapacity {
+                vcpus: AUTO_MIN_VCPUS - 1,
+                memory_mib: AUTO_MIN_MEMORY_MIB,
+            }),
+            ..linux("t3.small", Some(Usd::from_cents(1)))
+        };
+        let starved = MachineCatalogEntry {
+            capacity: Some(MachineCapacity {
+                vcpus: AUTO_MIN_VCPUS,
+                memory_mib: AUTO_MIN_MEMORY_MIB - 1,
+            }),
+            ..linux("c7g.xlarge", Some(Usd::from_cents(1)))
+        };
+        let eligible = linux("m7g.xlarge", Some(Usd::from_cents(9)));
+
+        assert!(!tiny.is_auto_eligible());
+        assert!(!starved.is_auto_eligible());
+        assert!(eligible.is_auto_eligible());
+        assert_eq!(
+            auto_linux_choice(&[tiny.clone(), starved.clone(), eligible], true)
+                .map(|entry| entry.machine_type.as_str()),
+            Some("m7g.xlarge")
+        );
+        assert!(auto_linux_choice(&[tiny, starved], true).is_none());
     }
 }

@@ -27,8 +27,8 @@
 .githubButton {
   border: none;
   border-radius: var(--radius-md);
-  background: var(--color-accent);
-  color: var(--color-accent-contrast);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
   padding: var(--space-3) var(--space-4);
   font-size: var(--text-md);
   font-weight: 600;

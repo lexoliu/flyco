@@ -19,6 +19,9 @@ use crate::{app, approvals, budgets, session, sessions, testing};
 
 const REPO: &str = "lexoliu/flyco";
 
+/// The opening instruction every test session is created with.
+const PROMPT: &str = "audit the relay for dropped frames";
+
 fn problem_kind(slug: &str) -> String {
     let mut kind = String::from("https://flyco.dev/problems/");
     kind.push_str(slug);
@@ -45,6 +48,7 @@ async fn sign_in(kv: &Kv, db: &Db, user: CurrentUser) -> Caller {
 
 fn open(caller: &Caller, repo: &str, dollars: u64) -> CreateSession {
     CreateSession {
+        prompt: PROMPT.to_owned(),
         harness: HarnessKind::ClaudeCode,
         repo: repo.to_owned(),
         budget_limit: Usd::from_dollars(dollars),
@@ -100,6 +104,7 @@ async fn omitting_the_machine_provisions_the_cheapest_linux_type(ctx: TestContex
         &client,
         &caller,
         &CreateSession {
+            prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
             budget_limit: Usd::from_dollars(10),
@@ -139,6 +144,7 @@ async fn flyco_cannot_choose_a_machine_without_a_deployable_linux_type(
         .post("/v1/sessions")
         .bearer(&token)
         .json(&CreateSession {
+            prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
             budget_limit: Usd::from_dollars(10),
@@ -747,11 +753,15 @@ async fn ownership_is_answered_per_user(db: Db) {
 
     let session = sessions::create(
         &db,
-        owner.id,
         owner.session_cap,
-        HarnessKind::Codex,
-        &REPO.parse().expect("valid repo"),
-        flyco_core::BudgetConfig::new(Usd::from_dollars(1)).expect("non-zero"),
+        sessions::Opening {
+            user: owner.id,
+            title: "check ownership",
+            harness: HarnessKind::Codex,
+            repo: &REPO.parse().expect("valid repo"),
+            machine_origin: flyco_core::MachineOrigin::Auto,
+            budget: flyco_core::BudgetConfig::new(Usd::from_dollars(1)).expect("non-zero"),
+        },
     )
     .await
     .expect("create a session");

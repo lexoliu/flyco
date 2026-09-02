@@ -9,9 +9,10 @@
 //! it.
 
 use flyco_core::{
-    CloudProviderKind, CurrentUser, DEFAULT_DISK_GIB, MachineCatalogEntry, MachineChoice,
-    MachineId, MachineSpec, MachineState, MachineView, OsFamily, ProviderAccountId, ResizeMachine,
-    SessionId, Usd, UserId, cheapest_linux,
+    AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, CloudProviderKind, CurrentUser, DEFAULT_DISK_GIB,
+    MachineCatalogEntry, MachineChoice, MachineDefault, MachineId, MachineSpec, MachineState,
+    MachineView, OsFamily, ProviderAccountId, ResizeMachine, SessionId, Usd, UserId,
+    auto_linux_choice,
 };
 use serde::Deserialize;
 use skyzen::extract::Query;
@@ -296,18 +297,45 @@ pub(crate) async fn catalog(
     Ok(entries)
 }
 
-/// Picks the cheapest deployable Linux machine from the caller's catalog.
+/// Whether a caller who names no machine wants interruptible capacity.
+#[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
+pub struct DefaultMachineQuery {
+    /// Whether to price and pick against spot capacity. Spot is the default
+    /// because it is cheaper and flyco handles eviction.
+    pub spot: Option<bool>,
+}
+
+/// Describes the machine flyco would provision if the caller named none.
+///
+/// The one honest way to show a user what "let flyco choose" means before
+/// they commit to it: the same function `POST /v1/sessions` runs, answered
+/// with the catalog entry behind it so the price and the size come from the
+/// choice rather than from a second lookup that could disagree with it.
+#[skyzen::openapi]
+async fn get_default_machine(
+    State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
+    Query(query): Query<DefaultMachineQuery>,
+    db: Db,
+) -> Outcome<Json<MachineDefault>> {
+    automatic(&db, &config, user.id, query.spot.unwrap_or(true))
+        .await
+        .map(Json)
+        .into()
+}
+
+/// Picks the machine flyco provisions when the caller names none.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError::NoDeployableLinuxMachine`] if no linked account
-/// offers a Linux type flyco can provision.
-pub(crate) async fn cheapest_linux_choice(
+/// offers a Linux type big enough for flyco to choose on its own.
+pub(crate) async fn automatic(
     db: &Db,
     config: &ApiConfig,
     user: UserId,
     spot: bool,
-) -> Result<MachineChoice, ApiError> {
+) -> Result<MachineDefault, ApiError> {
     let entries = catalog(
         db,
         config,
@@ -319,15 +347,29 @@ pub(crate) async fn cheapest_linux_choice(
         },
     )
     .await?;
-    let entry = cheapest_linux(&entries, spot).ok_or(ApiError::NoDeployableLinuxMachine)?;
-    let account = entry.account.ok_or(ApiError::NoDeployableLinuxMachine)?;
-    Ok(MachineChoice {
-        provider_account: account,
-        machine_type: entry.machine_type.clone(),
-        region: entry.region.clone(),
-        spot,
-        disk_gib: DEFAULT_DISK_GIB,
+    let entry = auto_linux_choice(&entries, spot).ok_or(nothing_big_enough())?;
+    // `auto_linux_choice` only ever returns an entry with an account; the
+    // read is written as a refusal rather than an unwrap so the invariant
+    // is enforced here too, where it is used.
+    let account = entry.account.ok_or_else(nothing_big_enough)?;
+    Ok(MachineDefault {
+        choice: MachineChoice {
+            provider_account: account,
+            machine_type: entry.machine_type.clone(),
+            region: entry.region.clone(),
+            spot,
+            disk_gib: DEFAULT_DISK_GIB,
+        },
+        entry: entry.clone(),
     })
+}
+
+/// The refusal a catalog with nothing flyco may pick answers with.
+const fn nothing_big_enough() -> ApiError {
+    ApiError::NoDeployableLinuxMachine {
+        vcpus: AUTO_MIN_VCPUS,
+        memory_gib: AUTO_MIN_MEMORY_MIB / 1024,
+    }
 }
 
 /// Describes the machine a session is running on.
@@ -547,6 +589,7 @@ pub async fn reset_for_resume(db: &Db, session: SessionId) -> Result<MachineId, 
 pub fn routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/machines/catalog".at(get_catalog),
+        "/v1/machines/default".at(get_default_machine),
         "/v1/sessions/{id}/machine".at(get_session_machine),
         "/v1/sessions/{id}/machine/resize".post(resize_session_machine),
         "/v1/sessions/{id}/machine/stop".post(stop_session_machine),

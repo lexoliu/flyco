@@ -18,7 +18,7 @@
 .terminal {
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-md);
-  background: #0b0d11;
+  background: var(--color-terminal-bg);
   padding: var(--space-2);
   min-height: 220px;
 }

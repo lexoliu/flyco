@@ -80,11 +80,16 @@ async fn deliver(
 async fn active_session(db: &Db, user: &CurrentUser, repo: &str) -> SessionId {
     let session = crate::sessions::create(
         db,
-        user.id,
         flyco_core::SESSION_CAP_MAX,
-        flyco_core::HarnessKind::ClaudeCode,
-        &repo.parse().expect("a valid repo slug"),
-        flyco_core::BudgetConfig::new(flyco_core::Usd::from_dollars(10)).expect("a valid budget"),
+        crate::sessions::Opening {
+            user: user.id,
+            title: crate::testing::SEEDED_TITLE,
+            harness: flyco_core::HarnessKind::ClaudeCode,
+            repo: &repo.parse().expect("a valid repo slug"),
+            machine_origin: flyco_core::MachineOrigin::Auto,
+            budget: flyco_core::BudgetConfig::new(flyco_core::Usd::from_dollars(10))
+                .expect("a valid budget"),
+        },
     )
     .await
     .expect("open a session")

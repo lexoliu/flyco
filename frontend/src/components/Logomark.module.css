@@ -1,0 +1,8 @@
+.mark {
+  display: block;
+  width: auto;
+  flex: none;
+  /* The mark is identity, not emphasis: it sits at the weight of the text
+     beside it rather than shouting over it. */
+  opacity: 0.9;
+}
