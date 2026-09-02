@@ -530,11 +530,17 @@ async fn delivered_through(db: &DurableDb) -> Result<u64, DurableObjectError> {
 }
 
 /// Records that the daemon has now been told everything through `seq`.
+///
+/// Monotonic: the daemon is greeted before its mailbox is replayed, so a
+/// message arriving during the replay's own awaits is forwarded at once and
+/// moves the cursor past it. The replay finishing afterwards with an older
+/// position must not pull the cursor back, or that message would be
+/// delivered twice on the next `Hello`.
 async fn set_delivered(db: &DurableDb, seq: u64) -> Result<(), DurableObjectError> {
     sql!(
         db,
         "INSERT INTO delivery (id, seq) VALUES (0, {seq}) \
-         ON CONFLICT (id) DO UPDATE SET seq = excluded.seq"
+         ON CONFLICT (id) DO UPDATE SET seq = max(excluded.seq, delivery.seq)"
     )
     .execute()
     .await

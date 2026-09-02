@@ -229,24 +229,27 @@ async fn start_session(
     // queued, so the agent's first instruction is durable before anything
     // asynchronous can go wrong. No daemon exists yet — the room holds it
     // in its mailbox and hands it over on the daemon's first `Hello`.
-    rooms
-        .command(id, &ControlToDaemon::UserMessage { text: prompt })
-        .await?;
-
-    // A session whose job never reached the queue would wait for a consumer
-    // that is never going to run, so a refused enqueue fails it here rather
-    // than leaving it provisioning for ever.
-    if let Err(error) =
-        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await
-    {
-        sessions::fail(
-            db,
-            id,
-            "the provisioning queue would not accept this session's job",
-        )
-        .await?;
-        return Err(error);
-    }
+    //
+    // Both steps fail the session rather than return early: a session row
+    // whose prompt never reached its room, or whose job never reached the
+    // queue, would sit in `provisioning` waiting for something that is never
+    // going to happen.
+    fail_session_on(
+        db,
+        id,
+        "the session's room would not take its first prompt",
+        rooms
+            .command(id, &ControlToDaemon::UserMessage { text: prompt })
+            .await,
+    )
+    .await?;
+    fail_session_on(
+        db,
+        id,
+        "the provisioning queue would not accept this session's job",
+        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await,
+    )
+    .await?;
 
     tracing::info!(
         repo = %repo,
@@ -257,6 +260,23 @@ async fn start_session(
         "opened a session and queued its machine"
     );
     Ok(Created(Json(session)))
+}
+
+/// Marks a freshly opened session failed when one of its hand-off steps
+/// refused, and passes that refusal on.
+async fn fail_session_on<T>(
+    db: &Db,
+    id: SessionId,
+    reason: &str,
+    step: Result<T, ApiError>,
+) -> Result<T, ApiError> {
+    match step {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            sessions::fail(db, id, reason).await?;
+            Err(error)
+        }
+    }
 }
 
 /// Turns a provider's refusal into the answer the caller can act on.
