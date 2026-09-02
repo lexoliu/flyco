@@ -52,6 +52,10 @@ skyzen-cloudflare.workspace = true
 # Must equal the generator `skyzen` embeds — `skyzen doctor` reports the
 # version to use, and a mismatch fails as an opaque wasm-bindgen schema error.
 wasm-bindgen = "=0.2.120"
+# Worker-side tracing: `console.*` is what Workers Logs retains (flyco #119).
+tracing-subscriber.workspace = true
+tracing-web = "0.1"
+console_error_panic_hook = "0.1"
 
 # The native binary exists for `skyzen dev` and the `openapi.json` export. Its
 # portable-service wiring in `Skyzen.toml` resolves to skyzen's in-memory KV
