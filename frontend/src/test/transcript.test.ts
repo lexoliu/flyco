@@ -7,6 +7,7 @@ import {
 } from "../lib/transcript";
 import type { TimedEvent } from "../api/relay";
 import type { ClientEvent } from "../api/wire";
+import { shellCommandIn, shellOutcomeLabel, shellSucceeded } from "../lib/shell";
 
 const T0 = 1_800_000_000;
 
@@ -288,5 +289,115 @@ describe("foldTranscript provisioning timeline", () => {
       at(2, { type: "provisioning_stage", stage: "ready", at_unix: T0 + 200 }),
     ]);
     expect(items.map((item) => item.kind)).toEqual(["provisioning", "user_message"]);
+  });
+});
+
+describe("foldTranscript shell commands", () => {
+  const RUN = "6f1c8e2a-1111-4b3a-9e1a-4c2f8b6d7a10";
+  const OTHER = "6f1c8e2a-2222-4b3a-9e1a-4c2f8b6d7a10";
+
+  it("collects a command, its output and its exit into one block", () => {
+    const items = foldTranscript([
+      at(0, { type: "shell_command", run: RUN, command: "cargo test" }),
+      at(1, { type: "shell_output", run: RUN, stream: "stderr", data: "   Compiling\n" }),
+      at(2, { type: "shell_output", run: RUN, stream: "stderr", data: "    Finished\n" }),
+      at(3, { type: "shell_output", run: RUN, stream: "stdout", data: "ok\n" }),
+      at(9, {
+        type: "shell_exited",
+        run: RUN,
+        outcome: { kind: "exited", code: 0 },
+        truncated: false,
+      }),
+    ]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "shell",
+      run: RUN,
+      command: "cargo test",
+      // Chunks off the same pipe are joined: where one 4 KiB read ended is
+      // not something the reader should be able to see.
+      output: [
+        { stream: "stderr", data: "   Compiling\n    Finished\n" },
+        { stream: "stdout", data: "ok\n" },
+      ],
+      outcome: { kind: "exited", code: 0 },
+      truncated: false,
+      endedAtUnix: T0 + 9,
+    });
+  });
+
+  it("keeps two commands' output apart by the run the room named", () => {
+    const items = foldTranscript([
+      at(0, { type: "shell_command", run: RUN, command: "sleep 5; echo first" }),
+      at(1, { type: "shell_command", run: OTHER, command: "echo second" }),
+      at(2, { type: "shell_output", run: OTHER, stream: "stdout", data: "second\n" }),
+      at(3, { type: "shell_output", run: RUN, stream: "stdout", data: "first\n" }),
+    ]);
+
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({
+      command: "sleep 5; echo first",
+      output: [{ stream: "stdout", data: "first\n" }],
+    });
+    expect(items[1]).toMatchObject({
+      command: "echo second",
+      output: [{ stream: "stdout", data: "second\n" }],
+    });
+  });
+
+  it("leaves a running command running", () => {
+    const [block] = foldTranscript([
+      at(0, { type: "shell_command", run: RUN, command: "cargo build" }),
+    ]);
+    expect(block).toMatchObject({ kind: "shell", outcome: null, endedAtUnix: null });
+  });
+
+  it("says a command never ran rather than showing nothing at all", () => {
+    const [block] = foldTranscript([
+      at(0, { type: "shell_command", run: RUN, command: "ls" }),
+      at(0, { type: "shell_exited", run: RUN, outcome: { kind: "offline" }, truncated: false }),
+    ]);
+    expect(block).toMatchObject({ kind: "shell", outcome: { kind: "offline" } });
+    expect(shellOutcomeLabel({ kind: "offline" })).toContain("Not run");
+  });
+
+  it("names every way a command can end", () => {
+    expect(shellOutcomeLabel({ kind: "exited", code: 3 })).toBe("Exit 3");
+    expect(shellOutcomeLabel({ kind: "timed_out", after_seconds: 120 })).toBe(
+      "Timed out after 120s",
+    );
+    expect(shellOutcomeLabel({ kind: "cancelled" })).toBe("Stopped");
+    expect(shellOutcomeLabel({ kind: "failed", error: "no bash" })).toContain("no bash");
+    expect(shellSucceeded({ kind: "exited", code: 0 })).toBe(true);
+    expect(shellSucceeded({ kind: "exited", code: 1 })).toBe(false);
+    expect(shellSucceeded({ kind: "cancelled" })).toBe(false);
+  });
+
+  it("catches output whose command scrolled out of the replay window", () => {
+    // The room's catch-up is paged, and a browser can join a session with
+    // the command already behind it. Dropping the output would be worse
+    // than an unnamed block.
+    const [block] = foldTranscript([
+      at(0, { type: "shell_output", run: RUN, stream: "stdout", data: "still here\n" }),
+    ]);
+    expect(block).toMatchObject({
+      kind: "shell",
+      command: "",
+      output: [{ stream: "stdout", data: "still here\n" }],
+    });
+  });
+});
+
+describe("shellCommandIn", () => {
+  it("takes the command out of a `!` message and leaves a prompt alone", () => {
+    expect(shellCommandIn("!git status --short")).toBe("git status --short");
+    expect(shellCommandIn("! cargo test ")).toBe("cargo test");
+    expect(shellCommandIn("what does this crate do?")).toBeNull();
+  });
+
+  it("treats a bare `!` as a prompt, because there is nothing to run", () => {
+    expect(shellCommandIn("!")).toBeNull();
+    expect(shellCommandIn("!   ")).toBeNull();
   });
 });

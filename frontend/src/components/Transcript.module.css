@@ -164,6 +164,92 @@
   overflow-wrap: anywhere;
 }
 
+/* ── Shell commands (docs/ux.md §9.3) ────────────────────────── */
+
+/*
+ * Boxed and mono throughout: a `!` command is the one thing in the column
+ * the machine wrote verbatim, and reading it as prose would be reading it
+ * wrong.
+ */
+.shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+
+.shellCommand {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--line-normal);
+}
+
+.shellIcon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--color-text-faint);
+}
+
+.shellText {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.shellOutput {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--line-normal);
+  color: var(--color-text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Stderr is not an error, so it is marked rather than alarmed about. */
+.shellOutput span[data-stream="stderr"] {
+  color: var(--color-warning);
+}
+
+.shellTruncated {
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+}
+
+.shellStatus {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.shellStatus[data-ok="false"] {
+  color: var(--color-danger);
+}
+
+.shellStatus[data-ok="true"] {
+  color: var(--color-success);
+}
+
+.shellElapsed {
+  margin-left: auto;
+  color: var(--color-text-faint);
+}
+
 /* ── Provisioning timeline ───────────────────────────────────────────── */
 
 .timeline {

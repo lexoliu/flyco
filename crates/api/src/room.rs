@@ -33,7 +33,11 @@
 //! Every other command is still dropped when nobody is listening, and that
 //! is not an oversight — an interrupt, a compaction or a terminal keystroke
 //! held for a daemon that reconnects an hour later would arrive as an
-//! instruction about a turn that no longer exists.
+//! instruction about a turn that no longer exists. A `!` shell command is
+//! dropped for the same reason and *answered* anyway: the room records it,
+//! and if no daemon took it, records its exit as
+//! [`ShellOutcome::Offline`](flyco_core::ShellOutcome::Offline) rather than
+//! leaving the user watching for output that is never coming.
 //!
 //! # Why the state lives outside the struct
 //!
@@ -42,7 +46,9 @@
 //! survive hibernation on their own. A field would be a fourth copy of the
 //! same facts, re-serialized on every frame, and the first one to drift.
 
-use flyco_core::{ClientEvent, ControlToDaemon, DaemonToControl, RepoStatus, SessionId};
+use flyco_core::{
+    ClientEvent, ControlToDaemon, DaemonToControl, RepoStatus, SessionId, ShellRunId,
+};
 use serde::{Deserialize, Serialize};
 use skyzen::durable::{
     DurableConnections, DurableContext, DurableObject, DurableObjectError, WebSocketConnection,
@@ -348,14 +354,20 @@ async fn on_client_frame(
     if !command.is_client_command() {
         return refuse(
             ws,
-            "a client may only send `user_message`, `interrupt`, `compact`, or `terminal_input`",
+            "a client may only send `user_message`, `shell_command`, `interrupt`, `compact`, \
+             or `terminal_input`",
         );
     }
 
-    if let ControlToDaemon::UserMessage { text } = &command {
-        return deliver_user_message(ctx.db(), ctx.connections(), text).await;
+    match &command {
+        ControlToDaemon::UserMessage { text } => {
+            deliver_user_message(ctx.db(), ctx.connections(), text).await
+        }
+        ControlToDaemon::ShellCommand { command } => {
+            deliver_shell_command(ctx.db(), ctx.connections(), command).await
+        }
+        _ => forward_to_daemon(ctx.connections(), &command).map(drop),
     }
-    forward_to_daemon(ctx.connections(), &command).map(drop)
 }
 
 /// Records a user message, echoes it to browsers, and gets it to the daemon.
@@ -409,6 +421,61 @@ async fn deliver_user_message(
     Ok(())
 }
 
+/// Records a `!` shell command, echoes it, and gets it to the daemon
+/// (docs/ux.md §9.3).
+///
+/// The room is where a run gets its identity. The browser sends a bare
+/// [`ControlToDaemon::ShellCommand`]; this mints the [`ShellRunId`] that the
+/// recorded row, every output chunk and the exit status are keyed by, and
+/// reissues the command to the daemon as [`ControlToDaemon::RunShell`]. One
+/// writer assigning one identity is what keeps two browsers running `!`
+/// commands at the same moment from having their output attached to each
+/// other's row.
+///
+/// Recorded before it is forwarded, like a user message, because a `!`
+/// command is something a person did to this session: a replay without it
+/// would show a build's output with nothing saying what was built.
+///
+/// Nothing about it reaches the harness, and nothing waits in the mailbox.
+/// A command held for a daemon that turns up an hour later would run
+/// against a working tree the user is no longer looking at — so a session
+/// with no daemon connected gets an immediate
+/// [`ShellOutcome::Offline`](flyco_core::ShellOutcome::Offline) instead of
+/// silence.
+async fn deliver_shell_command(
+    db: &DurableDb,
+    connections: &DurableConnections,
+    command: &str,
+) -> Result<(), DurableObjectError> {
+    let run = ShellRunId::generate();
+    let asked = ClientEvent::ShellCommand {
+        run,
+        command: command.to_owned(),
+    };
+    append(db, &asked).await?;
+    broadcast(connections, &asked)?;
+
+    let instruction = ControlToDaemon::RunShell {
+        run,
+        command: command.to_owned(),
+    };
+    if forward_to_daemon(connections, &instruction)? {
+        return Ok(());
+    }
+
+    tracing::warn!(
+        %run,
+        "a shell command arrived while this session had no daemon connected"
+    );
+    let offline = ClientEvent::ShellExited {
+        run,
+        outcome: flyco_core::ShellOutcome::Offline,
+        truncated: false,
+    };
+    append(db, &offline).await?;
+    broadcast(connections, &offline)
+}
+
 /// Appends a frame to the room's durable stream and caches what the UI
 /// reads on connect.
 ///
@@ -437,6 +504,35 @@ async fn record(
         DaemonToControl::Capabilities { capabilities } => {
             put_latest(kv, KEY_CAPABILITIES, capabilities).await
         }
+        // Both halves of a `!` command's answer are appended: the command
+        // was recorded when it arrived, and a transcript row that replayed
+        // as a command with no output and no exit status would be worse
+        // than not replaying it at all. The web terminal's output is live
+        // only for the opposite reason — it has no row to belong to.
+        DaemonToControl::ShellOutput { run, stream, data } => append(
+            db,
+            &ClientEvent::ShellOutput {
+                run: *run,
+                stream: *stream,
+                data: data.clone(),
+            },
+        )
+        .await
+        .map(drop),
+        DaemonToControl::ShellExited {
+            run,
+            outcome,
+            truncated,
+        } => append(
+            db,
+            &ClientEvent::ShellExited {
+                run: *run,
+                outcome: outcome.clone(),
+                truncated: *truncated,
+            },
+        )
+        .await
+        .map(drop),
         DaemonToControl::ProvisioningStage { stage, at_unix } => append(
             db,
             &ClientEvent::ProvisioningStage {
@@ -812,12 +908,23 @@ async fn dispatch_command(
 
     // A user message forwarded from the Worker takes exactly the path one
     // that arrived on a browser socket takes — recorded, echoed, and either
-    // delivered or held for the daemon.
-    if let ControlToDaemon::UserMessage { text } = command {
-        deliver_user_message(db, connections, text)
-            .await
-            .map_err(|error| room_failed(&error))?;
-        return Ok(NoContent);
+    // delivered or held for the daemon. A shell command likewise: the door
+    // it came in by is not something a replay, or the agent, should be able
+    // to tell.
+    match command {
+        ControlToDaemon::UserMessage { text } => {
+            deliver_user_message(db, connections, text)
+                .await
+                .map_err(|error| room_failed(&error))?;
+            return Ok(NoContent);
+        }
+        ControlToDaemon::ShellCommand { command } => {
+            deliver_shell_command(db, connections, command)
+                .await
+                .map_err(|error| room_failed(&error))?;
+            return Ok(NoContent);
+        }
+        _ => {}
     }
 
     let echo = match &command {

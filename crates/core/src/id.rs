@@ -171,6 +171,9 @@ pub struct ClaudeOauthAttemptEntity(());
 /// Marker for in-flight Codex device-code sign-in identifiers.
 #[derive(Debug)]
 pub struct CodexOauthAttemptEntity(());
+/// Marker for shell-run identifiers.
+#[derive(Debug)]
+pub struct ShellRunEntity(());
 /// Marker for enrolled host identifiers.
 #[derive(Debug)]
 pub struct HostEntity(());
@@ -212,6 +215,8 @@ pub type HarnessObservationId = Id<HarnessObservationEntity>;
 pub type ClaudeOauthAttemptId = Id<ClaudeOauthAttemptEntity>;
 /// Identifies one browser's in-flight Codex device-code sign-in.
 pub type CodexOauthAttemptId = Id<CodexOauthAttemptEntity>;
+/// Identifies one `!` shell command run on a session's machine.
+pub type ShellRunId = Id<ShellRunEntity>;
 /// Identifies a Linux machine the user enrolled.
 pub type HostId = Id<HostEntity>;
 /// Identifies one minted host enrollment token.

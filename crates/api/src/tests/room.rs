@@ -15,7 +15,7 @@ use std::sync::{Arc, RwLock};
 
 use flyco_core::{
     ApprovalDecision, ApprovalId, ClientEvent, ControlToDaemon, DaemonToControl, HarnessEvent,
-    SessionId, WIRE_PROTOCOL_VERSION, wire::ApprovalPayload,
+    SessionId, ShellOutcome, ShellRunId, ShellStream, WIRE_PROTOCOL_VERSION, wire::ApprovalPayload,
 };
 use skyzen::durable::{
     DurableConnections, DurableContext, DurableObject as _, DurableObjectId, WebSocketConnection,
@@ -218,6 +218,19 @@ fn to_client(event: &ClientEvent) -> Sent {
         to: ROLE_CLIENT.to_owned(),
         text: serde_json::to_string(event).expect("serialize"),
     }
+}
+
+/// The event a frame the room broadcast carries.
+///
+/// Read back rather than predicted, because the room assigns a shell run's
+/// identity: what a test can assert is what the room *said*, and that the
+/// frames it sent afterwards name the same run.
+fn event_in(sent: &Sent) -> ClientEvent {
+    let Sent::Text { to, text } = sent else {
+        panic!("{sent:?} is not a frame");
+    };
+    assert_eq!(to, ROLE_CLIENT, "this frame did not go to a browser");
+    serde_json::from_str(text).expect("a client event")
 }
 
 /// The welcome every accepted handshake is answered with.
@@ -572,6 +585,149 @@ async fn a_user_message_is_forwarded_to_the_daemon_and_echoed_to_browsers() {
             .expect("serialize")
         ],
         "a replay must carry the user's half of the conversation too"
+    );
+}
+
+#[skyzen::test]
+async fn a_shell_command_is_recorded_named_and_handed_to_the_daemon() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    room.deliver_json(
+        Which::Client,
+        &ControlToDaemon::ShellCommand {
+            command: "git status --short".to_owned(),
+        },
+    )
+    .await;
+
+    // The room names the run: a browser sends a request, and what reaches
+    // the daemon is an instruction with the identity every frame about it
+    // will carry.
+    let sent = room.drain();
+    let [echoed, forwarded] = sent.as_slice() else {
+        panic!("a shell command is echoed once and forwarded once, not {sent:?}");
+    };
+    let ClientEvent::ShellCommand { run, command } = event_in(echoed) else {
+        panic!("the browsers see the command that was asked for");
+    };
+    assert_eq!(command, "git status --short");
+    assert_eq!(
+        forwarded,
+        &to_daemon(&ControlToDaemon::RunShell {
+            run,
+            command: "git status --short".to_owned(),
+        }),
+        "the daemon is told which run it is running"
+    );
+
+    assert_eq!(
+        room.events(0).await.events.len(),
+        1,
+        "a `!` command is part of the record of the session, like a message"
+    );
+}
+
+#[skyzen::test]
+async fn a_shell_command_with_no_daemon_to_run_it_is_answered_rather_than_dropped() {
+    let mut room = Room::open().await;
+
+    // No handshake: the machine is still being provisioned, or its daemon
+    // is mid-reconnect. Nothing runs the command, and the user is told so
+    // instead of watching a row that never finishes.
+    room.deliver_json(
+        Which::Client,
+        &ControlToDaemon::ShellCommand {
+            command: "ls".to_owned(),
+        },
+    )
+    .await;
+
+    let sent = room.drain();
+    let [asked, answered] = sent.as_slice() else {
+        panic!("an unrunnable command is echoed and then closed off, not {sent:?}");
+    };
+    let ClientEvent::ShellCommand { run, .. } = event_in(asked) else {
+        panic!("the command is still recorded");
+    };
+    assert_eq!(
+        answered,
+        &to_client(&ClientEvent::ShellExited {
+            run,
+            outcome: ShellOutcome::Offline,
+            truncated: false,
+        })
+    );
+
+    // And a browser that opens the session afterwards reads the same two.
+    assert_eq!(
+        room.events(0)
+            .await
+            .events
+            .into_iter()
+            .map(|stored| stored.event)
+            .collect::<Vec<_>>(),
+        vec![
+            serde_json::to_value(ClientEvent::ShellCommand {
+                run,
+                command: "ls".to_owned(),
+            })
+            .expect("serialize"),
+            serde_json::to_value(ClientEvent::ShellExited {
+                run,
+                outcome: ShellOutcome::Offline,
+                truncated: false,
+            })
+            .expect("serialize"),
+        ]
+    );
+}
+
+#[skyzen::test]
+async fn a_shell_run_replays_with_its_output_and_its_exit_status() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    let run = ShellRunId::generate();
+    for frame in [
+        DaemonToControl::ShellOutput {
+            run,
+            stream: ShellStream::Stdout,
+            data: " M src/lib.rs\n".to_owned(),
+        },
+        DaemonToControl::ShellExited {
+            run,
+            outcome: ShellOutcome::Exited { code: 0 },
+            truncated: false,
+        },
+    ] {
+        room.deliver_json(Which::Daemon, &frame).await;
+    }
+
+    // Stored as well as broadcast, unlike the web terminal's bytes: this
+    // output belongs to a row in the transcript, and a replay showing the
+    // command with nothing under it would be worse than showing neither.
+    assert_eq!(
+        room.events(0)
+            .await
+            .events
+            .into_iter()
+            .map(|stored| stored.event)
+            .collect::<Vec<_>>(),
+        vec![
+            serde_json::to_value(ClientEvent::ShellOutput {
+                run,
+                stream: ShellStream::Stdout,
+                data: " M src/lib.rs\n".to_owned(),
+            })
+            .expect("serialize"),
+            serde_json::to_value(ClientEvent::ShellExited {
+                run,
+                outcome: ShellOutcome::Exited { code: 0 },
+                truncated: false,
+            })
+            .expect("serialize"),
+        ]
     );
 }
 

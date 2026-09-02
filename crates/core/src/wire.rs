@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::budget::BudgetSignal;
 use crate::harness::{HarnessEvent, UsageReport};
-use crate::id::{ApprovalId, SessionId};
+use crate::id::{ApprovalId, SessionId, ShellRunId};
 use crate::session::SessionState;
 
 /// What the daemon asks the user to approve, mirrored in the approval UI.
@@ -158,6 +158,60 @@ pub enum ApprovalDecision {
     Denied,
 }
 
+/// Which of a shell command's two output streams a chunk came from.
+///
+/// Kept apart rather than interleaved into one pipe: the two are separate
+/// file descriptors and nothing orders them against each other, so merging
+/// them would invent an order the machine never had. The transcript renders
+/// both in one block and marks which is which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellStream {
+    /// The command's standard output.
+    Stdout,
+    /// The command's standard error.
+    Stderr,
+}
+
+/// How a `!` shell command ended.
+///
+/// Every way a run can finish, including the three where it never started:
+/// a composer that swallowed a command because no machine was listening
+/// would leave the user waiting for output that is never coming.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ShellOutcome {
+    /// `bash` exited with this status code.
+    Exited {
+        /// The status code, `0` for success.
+        code: i32,
+    },
+    /// It ended on a signal rather than with a status code.
+    Signalled,
+    /// The bounded timeout elapsed and the daemon killed it.
+    TimedOut {
+        /// The timeout that elapsed, in seconds.
+        after_seconds: u64,
+    },
+    /// The user pressed Stop while it was running.
+    Cancelled,
+    /// No daemon was connected, so nothing ran it.
+    Offline,
+    /// Another shell command was still running: the machine runs one at a
+    /// time, so the second is refused rather than queued behind a command
+    /// that may never end.
+    Busy,
+    /// The session is paused on an exhausted budget, or its machine is
+    /// being reclaimed.
+    Refused,
+    /// `bash` could not be started, or the daemon lost track of the child
+    /// it started.
+    Failed {
+        /// What the operating system said.
+        error: String,
+    },
+}
+
 /// Messages from the daemon to the control plane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -214,6 +268,32 @@ pub enum DaemonToControl {
         /// UTF-8 lossy terminal bytes.
         data: String,
     },
+    /// One chunk of a running `!` command's output.
+    ///
+    /// Streamed rather than held until the command ends, so a slow build
+    /// shows what it is doing while it does it.
+    ShellOutput {
+        /// The run this belongs to, as [`ControlToDaemon::RunShell`] named
+        /// it.
+        run: ShellRunId,
+        /// Which stream the chunk came from.
+        stream: ShellStream,
+        /// The bytes, decoded UTF-8 lossy.
+        data: String,
+    },
+    /// A `!` command finished. Exactly one per run.
+    ShellExited {
+        /// The run that finished.
+        run: ShellRunId,
+        /// How it ended.
+        outcome: ShellOutcome,
+        /// Whether output was dropped after the run's byte cap.
+        ///
+        /// Said rather than silently elided: a transcript that showed the
+        /// first megabyte of a command and no sign that there was more
+        /// would be a lie about what the machine printed.
+        truncated: bool,
+    },
     /// The repo has uncommitted changes; the agent is kept awake rather
     /// than allowed to complete.
     RepoDirty {
@@ -249,7 +329,36 @@ pub enum ControlToDaemon {
         /// Message text.
         text: String,
     },
-    /// Interrupt the current turn.
+    /// Run a shell command on the machine, as the composer's `!` prefix
+    /// asks for (docs/ux.md §9.3).
+    ///
+    /// A *request*: it carries no identity, because the browser that typed
+    /// it has no authority to name a run. The room assigns one and reissues
+    /// it as [`Self::RunShell`], which is what the daemon acts on and what
+    /// every frame about the run is keyed by.
+    ///
+    /// Never reaches the harness. A `!` command is the user talking to the
+    /// machine, not to the agent, and putting it in the conversation would
+    /// make the model think it had been asked to do something.
+    ShellCommand {
+        /// The command, without the `!`, to be run through `bash -c`.
+        command: String,
+    },
+    /// Run this shell command, under the identity the room assigned it.
+    ///
+    /// Control-plane authority rather than a client command: the run id is
+    /// what the recorded transcript row, every output chunk and the exit
+    /// status are correlated by, so it is minted by the room — the single
+    /// writer — rather than by whichever browser happened to send the
+    /// request.
+    RunShell {
+        /// The run every frame about this command carries.
+        run: ShellRunId,
+        /// The command, without the `!`, to be run through `bash -c`.
+        command: String,
+    },
+    /// Interrupt the current turn, and cancel a `!` command if one is
+    /// running.
     Interrupt,
     /// Compact the session's context through the harness's native command.
     Compact,
@@ -322,16 +431,21 @@ const fn is_false(value: &bool) -> bool {
 impl ControlToDaemon {
     /// Whether a browser may send this command.
     ///
-    /// A session room accepts exactly four commands from a client socket;
+    /// A session room accepts exactly five commands from a client socket;
     /// everything else is control-plane authority (budget signals, approval
-    /// decisions, archival) and reaches the daemon only through an
-    /// authenticated REST handler. A client that sends anything else is
-    /// closed rather than ignored.
+    /// decisions, archival, and the identified [`Self::RunShell`] the room
+    /// reissues a [`Self::ShellCommand`] as) and reaches the daemon only
+    /// through the room itself or an authenticated REST handler. A client
+    /// that sends anything else is closed rather than ignored.
     #[must_use]
     pub const fn is_client_command(&self) -> bool {
         matches!(
             self,
-            Self::UserMessage { .. } | Self::Interrupt | Self::Compact | Self::TerminalInput { .. }
+            Self::UserMessage { .. }
+                | Self::ShellCommand { .. }
+                | Self::Interrupt
+                | Self::Compact
+                | Self::TerminalInput { .. }
         )
     }
 
@@ -382,6 +496,38 @@ pub enum ClientEvent {
     UserMessage {
         /// What was said to the agent, verbatim.
         text: String,
+    },
+    /// A shell command the user ran on the machine with `!`.
+    ///
+    /// Recorded like a user message and for the same reason — it is
+    /// something a person did to this session, and a replay without it
+    /// would show output nobody asked for — but it is *not* conversation:
+    /// the harness never sees it, and it does not wait in the daemon's
+    /// mailbox, because a command held for a machine that arrives an hour
+    /// later would run against a working tree the user was not looking at.
+    ShellCommand {
+        /// The run this and every frame about it are keyed by.
+        run: ShellRunId,
+        /// The command, verbatim, without the `!`.
+        command: String,
+    },
+    /// One chunk of a running `!` command's output.
+    ShellOutput {
+        /// The run it belongs to.
+        run: ShellRunId,
+        /// Which stream it came from.
+        stream: ShellStream,
+        /// The bytes, decoded UTF-8 lossy.
+        data: String,
+    },
+    /// A `!` command finished. Exactly one per run.
+    ShellExited {
+        /// The run that finished.
+        run: ShellRunId,
+        /// How it ended.
+        outcome: ShellOutcome,
+        /// Whether output was dropped after the run's byte cap.
+        truncated: bool,
     },
     /// The harness announced its native session id.
     Started {
@@ -485,6 +631,18 @@ impl ClientEvent {
                 Some(Self::ApprovalPending { id, payload })
             }
             DaemonToControl::TerminalOutput { data } => Some(Self::TerminalOutput { data }),
+            DaemonToControl::ShellOutput { run, stream, data } => {
+                Some(Self::ShellOutput { run, stream, data })
+            }
+            DaemonToControl::ShellExited {
+                run,
+                outcome,
+                truncated,
+            } => Some(Self::ShellExited {
+                run,
+                outcome,
+                truncated,
+            }),
             DaemonToControl::RepoDirty { summary } => Some(Self::RepoDirty { summary }),
             DaemonToControl::SpotNotice { seconds_remaining } => {
                 Some(Self::SpotNotice { seconds_remaining })
@@ -500,11 +658,11 @@ impl ClientEvent {
 mod tests {
     use super::{
         ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-        ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
+        ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ShellOutcome, ShellStream,
     };
     use crate::budget::BudgetSignal;
     use crate::harness::{ContextWindow, HarnessEvent, UsageReport};
-    use crate::id::{ApprovalId, SessionId};
+    use crate::id::{ApprovalId, SessionId, ShellRunId};
     use crate::machine::BillingMinimum;
     use crate::money::Usd;
     use crate::session::SessionState;
@@ -573,6 +731,16 @@ mod tests {
             DaemonToControl::TerminalOutput {
                 data: "$ ls\n".to_owned(),
             },
+            DaemonToControl::ShellOutput {
+                run: ShellRunId::generate(),
+                stream: ShellStream::Stderr,
+                data: "error: no such file\n".to_owned(),
+            },
+            DaemonToControl::ShellExited {
+                run: ShellRunId::generate(),
+                outcome: ShellOutcome::Exited { code: 2 },
+                truncated: true,
+            },
             DaemonToControl::RepoDirty {
                 summary: " M src/lib.rs".to_owned(),
             },
@@ -591,6 +759,13 @@ mod tests {
             ControlToDaemon::Welcome,
             ControlToDaemon::UserMessage {
                 text: "what does this crate do?".to_owned(),
+            },
+            ControlToDaemon::ShellCommand {
+                command: "cargo test -p flyco-core".to_owned(),
+            },
+            ControlToDaemon::RunShell {
+                run: ShellRunId::generate(),
+                command: "cargo test -p flyco-core".to_owned(),
             },
             ControlToDaemon::Interrupt,
             ControlToDaemon::Compact,
@@ -668,6 +843,32 @@ mod tests {
             ClientEvent::Usage { usage: usage() },
             ClientEvent::TerminalOutput {
                 data: "$ ls\n".to_owned(),
+            },
+            ClientEvent::ShellCommand {
+                run: ShellRunId::generate(),
+                command: "git status --short".to_owned(),
+            },
+            ClientEvent::ShellOutput {
+                run: ShellRunId::generate(),
+                stream: ShellStream::Stdout,
+                data: " M src/lib.rs\n".to_owned(),
+            },
+            ClientEvent::ShellExited {
+                run: ShellRunId::generate(),
+                outcome: ShellOutcome::Exited { code: 0 },
+                truncated: false,
+            },
+            ClientEvent::ShellExited {
+                run: ShellRunId::generate(),
+                outcome: ShellOutcome::TimedOut { after_seconds: 120 },
+                truncated: true,
+            },
+            ClientEvent::ShellExited {
+                run: ShellRunId::generate(),
+                outcome: ShellOutcome::Failed {
+                    error: "No such file or directory (os error 2)".to_owned(),
+                },
+                truncated: false,
             },
             ClientEvent::RepoDirty {
                 summary: " M src/lib.rs".to_owned(),
@@ -761,12 +962,71 @@ mod tests {
             let allowed = matches!(
                 frame,
                 ControlToDaemon::UserMessage { .. }
+                    | ControlToDaemon::ShellCommand { .. }
                     | ControlToDaemon::Interrupt
                     | ControlToDaemon::Compact
                     | ControlToDaemon::TerminalInput { .. }
             );
             assert_eq!(frame.is_client_command(), allowed, "{frame:?}");
         }
+    }
+
+    #[test]
+    fn a_browser_may_ask_for_a_shell_command_but_not_name_the_run() {
+        // The identity of a run is the room's to assign: it keys the
+        // recorded row, the output and the exit status, and a browser that
+        // could choose it could attach its output to another browser's run.
+        assert!(
+            ControlToDaemon::ShellCommand {
+                command: "ls".to_owned(),
+            }
+            .is_client_command()
+        );
+        assert!(
+            !ControlToDaemon::RunShell {
+                run: ShellRunId::generate(),
+                command: "ls".to_owned(),
+            }
+            .is_client_command()
+        );
+    }
+
+    #[test]
+    fn every_way_a_shell_command_can_end_survives_the_wire() {
+        for outcome in [
+            ShellOutcome::Exited { code: 0 },
+            ShellOutcome::Exited { code: 127 },
+            ShellOutcome::Signalled,
+            ShellOutcome::TimedOut { after_seconds: 120 },
+            ShellOutcome::Cancelled,
+            ShellOutcome::Offline,
+            ShellOutcome::Busy,
+            ShellOutcome::Refused,
+            ShellOutcome::Failed {
+                error: "bash is not installed".to_owned(),
+            },
+        ] {
+            round_trip(&ClientEvent::ShellExited {
+                run: ShellRunId::generate(),
+                outcome,
+                truncated: false,
+            });
+        }
+    }
+
+    #[test]
+    fn a_shell_exit_keeps_its_outcome_tag_apart_from_the_frame_tag() {
+        // `ShellOutcome` is tagged on `kind` rather than on `type` for the
+        // same reason every variant here is a struct variant: two `type`
+        // keys in one object serialize and then refuse to read back.
+        let json = serde_json::to_string(&ClientEvent::ShellExited {
+            run: ShellRunId::generate(),
+            outcome: ShellOutcome::Exited { code: 3 },
+            truncated: false,
+        })
+        .expect("serialize");
+        assert_eq!(json.matches("\"type\"").count(), 1);
+        assert!(json.contains(r#""outcome":{"kind":"exited","code":3}"#));
     }
 
     #[test]

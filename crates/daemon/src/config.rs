@@ -296,6 +296,77 @@ impl Default for TerminalConfig {
     }
 }
 
+/// `bash`, the program a `!` composer message is run by.
+fn default_bash() -> PathBuf {
+    PathBuf::from("bash")
+}
+
+/// How long a `!` command may run before it is killed.
+///
+/// Two minutes is a test suite or a build, and past that a command the user
+/// wanted to watch belongs in the web terminal, which has no deadline. The
+/// bound exists at all because the machine runs one `!` command at a time:
+/// without it, a single `tail -f` would take the feature away for the rest
+/// of the session.
+const fn default_shell_timeout_seconds() -> u64 {
+    120
+}
+
+/// How much of a `!` command's output reaches the transcript.
+///
+/// Every chunk is appended to the session room's durable stream, so this is
+/// a bound on a Durable Object rather than on a terminal window.
+const fn default_shell_max_output_bytes() -> usize {
+    64 * 1024
+}
+
+/// How a message beginning with `!` is run (docs/ux.md §9.3).
+///
+/// The command runs as whoever `flycod` runs as — the agent's own user on a
+/// provisioned machine — in the session's [`workdir`](DaemonConfig::workdir),
+/// which is what makes `!git status` answer about the checkout the user is
+/// looking at.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellConfig {
+    /// The bash executable. A bare name is resolved through `PATH`.
+    ///
+    /// `bash` rather than the [terminal's](TerminalConfig) shell: the
+    /// composer tells the user their `!` message is bash, so what runs it
+    /// has to be bash whatever they chose to type in interactively.
+    #[serde(default = "default_bash")]
+    pub program: PathBuf,
+    /// How long one command may run before it is killed.
+    #[serde(default = "default_shell_timeout_seconds")]
+    pub timeout_seconds: u64,
+    /// How much output one command may put in the transcript.
+    #[serde(default = "default_shell_max_output_bytes")]
+    pub max_output_bytes: usize,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            program: default_bash(),
+            timeout_seconds: default_shell_timeout_seconds(),
+            max_output_bytes: default_shell_max_output_bytes(),
+        }
+    }
+}
+
+impl ShellConfig {
+    /// The runner this configuration describes, for `workdir`.
+    #[must_use]
+    pub fn runner(&self, workdir: PathBuf) -> crate::shell::Bash {
+        crate::shell::Bash::new(
+            self.program.clone(),
+            workdir,
+            core::time::Duration::from_secs(self.timeout_seconds),
+            self.max_output_bytes,
+        )
+    }
+}
+
 /// Where the control plane is, and what authenticates this daemon to it.
 ///
 /// Present on a provisioned session VM; absent on a developer machine,
@@ -470,6 +541,10 @@ pub struct DaemonConfig {
     /// workdir.
     #[serde(default)]
     pub terminal: TerminalConfig,
+    /// What a composer message beginning with `!` is run by. Omitted uses
+    /// `bash` with the defaults below.
+    #[serde(default)]
+    pub shell: ShellConfig,
     /// The user's registered MCP servers, as the control plane provisioned
     /// them.
     ///

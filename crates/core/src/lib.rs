@@ -61,7 +61,8 @@ pub use host::{
 pub use id::{
     ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, ClaudeOauthAttemptId, CodexOauthAttemptId,
     EnrollmentTokenId, HarnessAccountId, HarnessObservationId, HostId, Id, MachineId, McpServerId,
-    MemoryNodeId, ProviderAccountId, PushSubscriptionId, SessionId, SkillId, SpendEventId, UserId,
+    MemoryNodeId, ProviderAccountId, PushSubscriptionId, SessionId, ShellRunId, SkillId,
+    SpendEventId, UserId,
 };
 pub use machine::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, CloudProviderKind,
@@ -93,7 +94,7 @@ pub use usage::{
 };
 pub use wire::{
     ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-    ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
+    ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ShellOutcome, ShellStream,
 };
 
 /// Version of the daemon⇄control-plane wire protocol.
@@ -101,4 +102,4 @@ pub use wire::{
 /// Bumped on every incompatible change to [`wire`]; the control plane
 /// refuses daemons speaking a different version (fast fail, no
 /// best-effort compatibility).
-pub const WIRE_PROTOCOL_VERSION: u32 = 4;
+pub const WIRE_PROTOCOL_VERSION: u32 = 5;

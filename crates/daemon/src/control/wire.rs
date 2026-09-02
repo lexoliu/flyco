@@ -44,7 +44,7 @@ use askama::Template as _;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
     HarnessObservation, ProvisioningStage, RateLimitObservation, SessionId, SessionMachine,
-    WIRE_PROTOCOL_VERSION,
+    ShellOutcome, ShellRunId, WIRE_PROTOCOL_VERSION,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
 use rand::Rng as _;
@@ -58,6 +58,7 @@ use crate::control::rest::{ControlApi, ControlApiError};
 use crate::git::{GitError, WorkingTree};
 use crate::harness::{HarnessSession, SessionOutput, ToolApproval};
 use crate::notice::{MachineChanged, MachineLine, OpeningMessage, SessionStart};
+use crate::shell::{Shell, ShellEvent, ShellRun, ShellUpdate};
 use crate::spot::{Disk, Notices, SpotNotice};
 use crate::terminal::{TerminalError, TerminalSession};
 
@@ -493,10 +494,30 @@ struct Alive {
     spot_watch: bool,
 }
 
-struct Connection<S, T, A, W, D> {
+struct Connection<S, T, A, W, D, H> {
     session: S,
     terminal: T,
     terminal_out: mpsc::Receiver<String>,
+    /// Runs the composer's `!` commands (docs/ux.md §9.3).
+    shell: H,
+    /// Where a running command's output and its exit arrive.
+    ///
+    /// Unbounded, and bounded all the same: one command runs at a time and
+    /// [`crate::shell`] caps how much of it reaches the transcript, so the
+    /// queue behind this cannot outgrow one run's output cap. That is what
+    /// lets a refusal be written into it from this same task without the
+    /// deadlock a full bounded channel would be.
+    shell_updates: mpsc::UnboundedReceiver<ShellUpdate>,
+    /// The other end of [`Self::shell_updates`], handed to each run.
+    shell_reports: mpsc::UnboundedSender<ShellUpdate>,
+    /// The one `!` command in flight, and the run it is.
+    ///
+    /// One at a time: a second command is refused rather than queued behind
+    /// one that may never end, and Stop has exactly one thing to cancel.
+    /// The id is kept beside the handle because a cancelled command is not
+    /// over until it says so — its exit must not clear a slot that has
+    /// since been taken by the next command.
+    running_shell: Option<(ShellRunId, ShellRun)>,
     api: A,
     workdir: W,
     repo_status: mpsc::UnboundedReceiver<String>,
@@ -552,8 +573,8 @@ enum Ended {
     HarnessStopped,
 }
 
-impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Disk>
-    Connection<S, T, A, W, D>
+impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Disk, H: Shell>
+    Connection<S, T, A, W, D, H>
 {
     /// Pumps one connection until it ends.
     ///
@@ -599,6 +620,17 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                     let frame = DaemonToControl::TerminalOutput { data };
                     if let Err(error) = send(socket, &frame).await {
                         tracing::warn!(%error, "a terminal frame did not reach the room; retrying it on the next connection");
+                        *in_flight = Some(frame);
+                        return Ok(Ended::Disconnected);
+                    }
+                }
+                update = self.shell_updates.recv() => {
+                    // This connection holds a sender of its own, so the
+                    // channel outlives every run and never closes.
+                    let update = update.expect("the relay holds the shell's own sender");
+                    let frame = self.shell_frame(update);
+                    if let Err(error) = send(socket, &frame).await {
+                        tracing::warn!(%error, "a shell frame did not reach the room; retrying it on the next connection");
                         *in_flight = Some(frame);
                         return Ok(Ended::Disconnected);
                     }
@@ -810,6 +842,82 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
         }
     }
 
+    /// The frame one shell update leaves as, and the end of a run.
+    ///
+    /// The slot is cleared here rather than where the run was started,
+    /// because the exit is the only thing that says a command is over:
+    /// cancelling one asks it to stop, and it is still running until it
+    /// says otherwise.
+    fn shell_frame(&mut self, update: ShellUpdate) -> DaemonToControl {
+        let ShellUpdate { run, event } = update;
+        match event {
+            ShellEvent::Output { stream, data } => {
+                DaemonToControl::ShellOutput { run, stream, data }
+            }
+            ShellEvent::Exited { outcome, truncated } => {
+                if self
+                    .running_shell
+                    .as_ref()
+                    .is_some_and(|(open, _)| *open == run)
+                {
+                    self.running_shell = None;
+                }
+                DaemonToControl::ShellExited {
+                    run,
+                    outcome,
+                    truncated,
+                }
+            }
+        }
+    }
+
+    /// Runs one `!` command, or answers with why it will not.
+    ///
+    /// Every refusal is an [exit](DaemonToControl::ShellExited) rather than
+    /// a log line: the room has already recorded the command and put it in
+    /// front of the user, so a run that produces nothing at all would be a
+    /// transcript row that waits for ever.
+    fn run_shell(&mut self, run: ShellRunId, command: String) {
+        let refusal = if self.paused || self.reclaiming {
+            tracing::warn!(
+                %run,
+                "refused a shell command: this session is not accepting work"
+            );
+            Some(ShellOutcome::Refused)
+        } else if self.running_shell.is_some() {
+            tracing::warn!(%run, "refused a shell command: one is already running");
+            Some(ShellOutcome::Busy)
+        } else {
+            None
+        };
+
+        if let Some(outcome) = refusal {
+            self.report_shell(run, outcome);
+            return;
+        }
+
+        tracing::info!(%run, command, "running a shell command for the composer");
+        let started = self.shell.start(run, command, self.shell_reports.clone());
+        self.running_shell = Some((run, started));
+    }
+
+    /// Files an exit this daemon decided on rather than a command produced.
+    ///
+    /// Through the same channel a real run's frames take, so the room sees
+    /// one ordering of one run's life however it ended.
+    fn report_shell(&self, run: ShellRunId, outcome: ShellOutcome) {
+        let filed = self.shell_reports.send(ShellUpdate {
+            run,
+            event: ShellEvent::Exited {
+                outcome,
+                truncated: false,
+            },
+        });
+        if filed.is_err() {
+            tracing::error!(%run, "a shell refusal had nowhere to go");
+        }
+    }
+
     /// Acts on one command from the control plane.
     async fn dispatch(&mut self, command: ControlToDaemon) -> Result<Ended, WireError> {
         match command {
@@ -837,7 +945,25 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                     .await
                     .map_err(harness)?;
             }
-            ControlToDaemon::Interrupt => self.session.interrupt().await.map_err(harness)?,
+            ControlToDaemon::ShellCommand { .. } => {
+                // The room reissues a browser's request as `RunShell` with
+                // the identity it assigned; an unidentified one reaching a
+                // daemon is a control plane that skipped that step, and
+                // there is nothing to key the output to.
+                tracing::error!(
+                    "a shell command arrived without a run id; the session room did not assign one"
+                );
+            }
+            ControlToDaemon::RunShell { run, command } => self.run_shell(run, command),
+            ControlToDaemon::Interrupt => {
+                // Stop ends whatever is running, and a `!` command is as
+                // much "what is running" as a turn is: the user pressed one
+                // button and means both.
+                if let Some((_, running)) = self.running_shell.take() {
+                    running.cancel();
+                }
+                self.session.interrupt().await.map_err(harness)?;
+            }
             ControlToDaemon::Compact => {
                 if self.refuse_while_paused("context compaction")
                     || self.refuse_while_reclaiming("context compaction")
@@ -1026,7 +1152,7 @@ fn harness(error: impl core::fmt::Display) -> WireError {
 }
 
 /// Everything [`run`] needs to drive one session.
-pub struct SessionRelay<S, A, T, W, D> {
+pub struct SessionRelay<S, A, T, W, D, H> {
     /// Where the daemon connects.
     pub endpoint: Endpoint,
     /// The live harness handle.
@@ -1039,6 +1165,8 @@ pub struct SessionRelay<S, A, T, W, D> {
     pub terminal: T,
     /// Bytes the terminal produces.
     pub terminal_out: mpsc::Receiver<String>,
+    /// Runs the composer's `!` commands on this machine.
+    pub shell: H,
     /// Snapshot handle for the checkout.
     pub workdir: W,
     /// `git status --short` summaries as they change.
@@ -1054,7 +1182,7 @@ pub struct SessionRelay<S, A, T, W, D> {
     pub machine_origin: flyco_core::MachineOrigin,
 }
 
-impl<S, A, T, W, D> core::fmt::Debug for SessionRelay<S, A, T, W, D> {
+impl<S, A, T, W, D, H> core::fmt::Debug for SessionRelay<S, A, T, W, D, H> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SessionRelay")
             .field("endpoint", &self.endpoint)
@@ -1070,13 +1198,14 @@ impl<S, A, T, W, D> core::fmt::Debug for SessionRelay<S, A, T, W, D> {
 /// Returns [`WireError`] if the relay queue overflows, the control plane
 /// speaks a protocol this daemon cannot read, or the harness stops
 /// accepting commands. A dropped socket is not an error: it is reconnected.
-pub async fn run<S, A, T, W, D>(relay: SessionRelay<S, A, T, W, D>) -> Result<(), WireError>
+pub async fn run<S, A, T, W, D, H>(relay: SessionRelay<S, A, T, W, D, H>) -> Result<(), WireError>
 where
     S: HarnessSession + 'static,
     A: ControlApi + Clone,
     T: TerminalSession + 'static,
     W: WorkingTree + 'static,
     D: Disk,
+    H: Shell,
 {
     let (sender, mut queue) = mpsc::channel(QUEUE_DEPTH);
     let collector = tokio::spawn(collect(relay.outputs, sender, relay.api.clone()));
@@ -1088,10 +1217,20 @@ where
         .render()
         .map_err(|error| notice_failed(&error))?;
 
+    // Unbounded because the relay writes into it too — a refused `!`
+    // command is reported through the same channel a real run's frames take
+    // — and a bounded channel written to from the task that drains it is a
+    // deadlock. What keeps it small is the shell itself: one command at a
+    // time, with a cap on how much of it reaches the transcript.
+    let (shell_reports, shell_updates) = mpsc::unbounded_channel();
     let mut connection = Connection {
         session: relay.session,
         terminal: relay.terminal,
         terminal_out: relay.terminal_out,
+        shell: relay.shell,
+        shell_updates,
+        shell_reports,
+        running_shell: None,
         api: relay.api,
         workdir: relay.workdir,
         repo_status: relay.repo_status,

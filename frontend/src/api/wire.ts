@@ -50,12 +50,37 @@ export type HarnessEvent =
 export type ProvisioningStage = "reserving" | "booting" | "installing" | "cloning" | "ready";
 
 /**
+ * Which of a shell command's two output streams a chunk came from, mirroring
+ * `flyco_core::wire::ShellStream`.
+ */
+export type ShellStream = "stdout" | "stderr";
+
+/**
+ * How a `!` shell command ended, mirroring `flyco_core::wire::ShellOutcome`.
+ *
+ * Tagged on `kind` rather than `type`, because it is nested inside a frame
+ * that is already tagged on `type`.
+ */
+export type ShellOutcome =
+  | { kind: "exited"; code: number }
+  | { kind: "signalled" }
+  | { kind: "timed_out"; after_seconds: number }
+  | { kind: "cancelled" }
+  | { kind: "offline" }
+  | { kind: "busy" }
+  | { kind: "refused" }
+  | { kind: "failed"; error: string };
+
+/**
  * What a browser attached to a session room receives, mirroring
  * `flyco_core::wire::ClientEvent` exactly.
  */
 export type ClientEvent =
   | { type: "harness"; event: HarnessEvent }
   | { type: "user_message"; text: string }
+  | { type: "shell_command"; run: string; command: string }
+  | { type: "shell_output"; run: string; stream: ShellStream; data: string }
+  | { type: "shell_exited"; run: string; outcome: ShellOutcome; truncated: boolean }
   | { type: "started"; harness_session_id: string }
   | { type: "capabilities"; capabilities: string[] }
   | { type: "approval_pending"; id: string; payload: ApprovalPayload }
@@ -76,14 +101,16 @@ export type ClientEvent =
     };
 
 /**
- * The four `ControlToDaemon` variants a browser may send directly over the
+ * The five `ControlToDaemon` variants a browser may send directly over the
  * relay socket, mirroring `ControlToDaemon::is_client_command()`. Every
- * other command (approval decisions, budget signals, archive) is
- * control-plane authority and reaches the daemon only through an
- * authenticated REST handler.
+ * other command (approval decisions, budget signals, archive, and the
+ * identified `run_shell` the room reissues a `shell_command` as) is
+ * control-plane authority and reaches the daemon only through the room
+ * itself or an authenticated REST handler.
  */
 export type ClientCommand =
   | { type: "user_message"; text: string }
+  | { type: "shell_command"; command: string }
   | { type: "interrupt" }
   | { type: "compact" }
   | { type: "terminal_input"; data: string };
@@ -110,6 +137,9 @@ export function parseClientEvent(value: unknown): ClientEvent {
 const CLIENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "harness",
   "user_message",
+  "shell_command",
+  "shell_output",
+  "shell_exited",
   "started",
   "capabilities",
   "approval_pending",

@@ -5,8 +5,8 @@ use core::time::Duration;
 use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
-    HarnessObservation, MachineOrigin, ProvisioningStage, SessionId, UsageReport, Usd,
-    WIRE_PROTOCOL_VERSION,
+    HarnessObservation, MachineOrigin, ProvisioningStage, SessionId, ShellOutcome, ShellRunId,
+    ShellStream, UsageReport, Usd, WIRE_PROTOCOL_VERSION,
 };
 use tokio::sync::mpsc;
 
@@ -19,6 +19,7 @@ use crate::git::FakeWorkdir;
 use crate::harness::SessionOutput;
 use crate::harness::claude::protocol::SessionKey;
 use crate::harness::claude::store::{StoreError, TranscriptStore};
+use crate::shell::{FakeShell, ShellEvent, ShellUpdate, StartedRun};
 use crate::spot::{FakeEviction, SpotNotice};
 use crate::terminal::FakeTerminal;
 use crate::testing::{
@@ -197,6 +198,8 @@ struct Harness {
     approval_id: ApprovalId,
     terminal_writes: mpsc::UnboundedReceiver<String>,
     terminal_inject: mpsc::Sender<String>,
+    /// The `!` commands the daemon asked its shell to run.
+    shell_runs: mpsc::UnboundedReceiver<StartedRun>,
     repo_inject: mpsc::UnboundedSender<String>,
     /// Makes the fake metadata endpoint announce a reclamation. Taken once:
     /// a provider announces one machine's reclamation exactly once.
@@ -241,6 +244,7 @@ impl Harness {
         crate::spot::spawn(watcher, notices);
 
         let (terminal, terminal_writes, terminal_inject, terminal_out) = FakeTerminal::pair();
+        let (shell, shell_runs) = FakeShell::pair();
         let (workdir, repo_inject, repo_status) = FakeWorkdir::pair();
         let run = tokio::spawn(wire::run(SessionRelay {
             endpoint,
@@ -249,6 +253,7 @@ impl Harness {
             api,
             terminal,
             terminal_out,
+            shell,
             workdir,
             repo_status,
             disk: FakeDisk::new(recorder),
@@ -268,6 +273,7 @@ impl Harness {
             approval_id,
             terminal_writes,
             terminal_inject,
+            shell_runs,
             repo_inject,
             evict: Some(evict),
             run,
@@ -349,6 +355,14 @@ impl Harness {
     /// linked harness account meets a `404` on each one.
     fn refuse_observations(&mut self) {
         self.observations.close();
+    }
+
+    /// The next `!` command the daemon asked its shell to run.
+    async fn next_shell_run(&mut self) -> StartedRun {
+        tokio::time::timeout(Duration::from_secs(5), self.shell_runs.recv())
+            .await
+            .expect("the daemon started the command")
+            .expect("the shell is live")
     }
 
     /// The next thing the harness was told to do.
@@ -553,6 +567,153 @@ async fn terminal_input_reaches_the_shell_and_output_reaches_the_room() {
         harness.room.next_frame().await,
         DaemonToControl::TerminalOutput {
             data: "file.txt\n".to_owned()
+        }
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+// ── The composer's `!` commands ──
+
+#[tokio::test]
+async fn a_shell_command_runs_on_the_machine_and_its_output_reaches_the_room() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    let run = ShellRunId::generate();
+    harness.command(ControlToDaemon::RunShell {
+        run,
+        command: "cargo test".to_owned(),
+    });
+    let started = harness.next_shell_run().await;
+    assert_eq!(
+        started.run, run,
+        "the run keeps the identity the room gave it"
+    );
+    assert_eq!(started.command, "cargo test");
+
+    started
+        .updates
+        .send(ShellUpdate {
+            run,
+            event: ShellEvent::Output {
+                stream: ShellStream::Stderr,
+                data: "   Compiling flyco-core\n".to_owned(),
+            },
+        })
+        .expect("the relay is listening");
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::ShellOutput {
+            run,
+            stream: ShellStream::Stderr,
+            data: "   Compiling flyco-core\n".to_owned(),
+        }
+    );
+
+    started
+        .updates
+        .send(ShellUpdate {
+            run,
+            event: ShellEvent::Exited {
+                outcome: ShellOutcome::Exited { code: 0 },
+                truncated: false,
+            },
+        })
+        .expect("the relay is listening");
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::ShellExited {
+            run,
+            outcome: ShellOutcome::Exited { code: 0 },
+            truncated: false,
+        }
+    );
+
+    // Nothing about a `!` command is conversation. The harness was told
+    // none of it: the machine ran a command, and the model has no idea it
+    // happened.
+    assert!(
+        harness.calls.try_recv().is_err(),
+        "a shell command must never reach the harness"
+    );
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn stop_cancels_a_running_shell_command() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::RunShell {
+        run: ShellRunId::generate(),
+        command: "sleep 600".to_owned(),
+    });
+    let started = harness.next_shell_run().await;
+
+    harness.command(ControlToDaemon::Interrupt);
+    // Stop means both halves of "what is running": the turn is interrupted
+    // and the command is cancelled.
+    assert_eq!(harness.next_call().await, Call::Interrupt);
+    tokio::time::timeout(Duration::from_secs(5), started.cancelled)
+        .await
+        .expect("the command was cancelled")
+        .expect("the run was still there to cancel");
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_second_shell_command_is_refused_while_one_is_running() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::RunShell {
+        run: ShellRunId::generate(),
+        command: "sleep 600".to_owned(),
+    });
+    let _first = harness.next_shell_run().await;
+
+    let second = ShellRunId::generate();
+    harness.command(ControlToDaemon::RunShell {
+        run: second,
+        command: "echo hello".to_owned(),
+    });
+    // Refused rather than queued behind a command that may never end — and
+    // answered, because the room has already shown the user the row.
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::ShellExited {
+            run: second,
+            outcome: ShellOutcome::Busy,
+            truncated: false,
+        }
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_paused_session_refuses_a_shell_command_rather_than_ignoring_it() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::Budget {
+        signal: BudgetSignal::Pause,
+    });
+    assert_eq!(harness.next_call().await, Call::Interrupt);
+
+    let run = ShellRunId::generate();
+    harness.command(ControlToDaemon::RunShell {
+        run,
+        command: "echo hello".to_owned(),
+    });
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::ShellExited {
+            run,
+            outcome: ShellOutcome::Refused,
+            truncated: false,
         }
     );
 
@@ -777,6 +938,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         id: ApprovalId::generate(),
     };
     let (terminal, _, _, terminal_out) = FakeTerminal::pair();
+    let (shell, _shell_runs) = FakeShell::pair();
     let (workdir, _, repo_status) = FakeWorkdir::pair();
     let run = tokio::spawn(wire::run(SessionRelay {
         endpoint,
@@ -785,6 +947,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         api,
         terminal,
         terminal_out,
+        shell,
         workdir,
         repo_status,
         disk: FakeDisk::new(recorder),

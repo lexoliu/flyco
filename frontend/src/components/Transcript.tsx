@@ -19,10 +19,12 @@ import {
   Cpu,
   Info,
   Loader,
+  TerminalSquare,
   Wrench,
   X,
 } from "lucide-solid";
 import Markdown from "./Markdown";
+import { shellOutcomeLabel, shellSucceeded } from "../lib/shell";
 import type { ProvisioningStage } from "../api/wire";
 import { operation } from "../lib/approvals";
 import { cx } from "../lib/cx";
@@ -106,6 +108,10 @@ export default function Transcript(props: TranscriptProps) {
                     </Show>
                   </div>
                 )}
+              </Match>
+
+              <Match when={item.kind === "shell" && item}>
+                {(shell) => <ShellBlock shell={shell()} />}
               </Match>
 
               <Match when={item.kind === "approval" && item}>
@@ -200,6 +206,67 @@ function ToolRow(props: { tool: ToolCall }) {
         </div>
       </details>
     </li>
+  );
+}
+
+/**
+ * One `!` command and what the machine printed (docs/ux.md §9.3).
+ *
+ * Mono throughout, which docs/ux.md §2 reserves for text a person is meant
+ * to read as the machine wrote it — and the whole point of a `!` command is
+ * that the output is verbatim. The status line is always present, including
+ * while the command runs and including when it never ran at all: a block
+ * with no last line would leave the user waiting on a command that already
+ * has its answer.
+ */
+function ShellBlock(props: { shell: Extract<TranscriptItem, { kind: "shell" }> }) {
+  const outcome = () => props.shell.outcome;
+  /** Running, finished well, or finished badly — which is what colours it. */
+  const state = () => {
+    const ended = outcome();
+    return ended === null ? "running" : String(shellSucceeded(ended));
+  };
+  const ran = () => {
+    const ended = props.shell.endedAtUnix;
+    return ended === null ? null : formatDuration(ended - props.shell.atUnix);
+  };
+
+  return (
+    <section class={styles.shell} aria-label="Shell command">
+      <p class={styles.shellCommand}>
+        <TerminalSquare size={13} class={cx(styles.shellIcon)} aria-hidden="true" />
+        <span class={styles.shellText}>{props.shell.command}</span>
+      </p>
+      <Show when={props.shell.output.length > 0}>
+        <pre class={styles.shellOutput}>
+          <For each={props.shell.output}>
+            {(chunk) => <span data-stream={chunk.stream}>{chunk.data}</span>}
+          </For>
+        </pre>
+      </Show>
+      <Show when={props.shell.truncated}>
+        <p class={styles.shellTruncated}>
+          Output past this session's limit was dropped. Run it in the terminal to see all of it.
+        </p>
+      </Show>
+      <p
+        class={styles.shellStatus}
+        data-ok={state()}
+      >
+        <Show
+          when={outcome()}
+          fallback={
+            <>
+              <Loader size={13} class={cx(styles.spin)} aria-hidden="true" />
+              Running
+            </>
+          }
+        >
+          {(ended) => <span>{shellOutcomeLabel(ended())}</span>}
+        </Show>
+        <Show when={ran()}>{(elapsed) => <span class={styles.shellElapsed}>{elapsed()}</span>}</Show>
+      </p>
+    </section>
   );
 }
 
