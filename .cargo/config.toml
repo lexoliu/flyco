@@ -1,0 +1,6 @@
+# The cargo-xtask alias: `cargo xtask <task>` runs the workspace's own
+# automation binary (crates/xtask) with everything after `--` as its
+# arguments. Release procedures live there as compiler-checked Rust rather
+# than as shell scripts.
+[alias]
+xtask = "run -p xtask --"
