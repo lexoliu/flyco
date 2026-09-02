@@ -1,0 +1,220 @@
+/*
+ * The composer: one large, low-contrast, 16px-rounded container with every
+ * control inside it. It is the only primary control on the home page, so
+ * nothing else on the screen is allowed to look like this.
+ */
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-surface-sunken);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  transition: border-color var(--transition-fast);
+}
+
+.composer:focus-within {
+  border-color: var(--color-border-strong);
+}
+
+.prompt {
+  width: 100%;
+  min-height: 76px;
+  max-height: 40vh;
+  resize: none;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--text-lg);
+  line-height: var(--line-normal);
+  padding: var(--space-2) var(--space-2) 0;
+}
+
+.prompt::placeholder {
+  color: var(--color-text-faint);
+}
+
+.prompt:focus {
+  outline: none;
+}
+
+.controls {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+/* The chips wrap among themselves; send never wraps with them, because a
+   send button in the middle of a row is not a send button. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+}
+
+.send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  transition: opacity var(--transition-fast), background var(--transition-fast);
+}
+
+.send:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.send:disabled {
+  opacity: 0.35;
+}
+
+/* ── Chips ───────────────────────────────────────────────────────────── */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.chip:hover {
+  border-color: var(--color-border-strong);
+}
+
+/* A chip whose prerequisite is missing is the action, not a readout. */
+.chipMissing {
+  color: var(--color-text-muted);
+  border-style: dashed;
+}
+
+.chipLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 48ch;
+}
+
+.chipDim {
+  color: var(--color-text-faint);
+}
+
+/* ── Popover contents ────────────────────────────────────────────────── */
+
+.popover {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.popoverWide {
+  min-width: 320px;
+}
+
+.popoverTitle {
+  margin: 0;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-faint);
+}
+
+.note {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.search {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+  font-size: var(--text-md);
+}
+
+.options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--text-md);
+  text-align: left;
+}
+
+.option:hover {
+  background: var(--color-surface-sunken);
+}
+
+.optionChosen {
+  background: var(--color-surface-sunken);
+}
+
+.optionMeta {
+  margin-left: auto;
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.slider {
+  width: 100%;
+  accent-color: var(--color-primary);
+}
+
+.sliderRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.amount {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.toggleRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  color: var(--color-text-muted);
+}

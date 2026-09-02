@@ -912,6 +912,54 @@
         }
       }
     },
+    "/v1/machines/default": {
+      "get": {
+        "summary": "Describes the machine flyco would provision if the caller named none.",
+        "description": "Describes the machine flyco would provision if the caller named none.\n\nThe one honest way to show a user what \"let flyco choose\" means before\nthey commit to it: the same function `POST /v1/sessions` runs, answered\nwith the catalog entry behind it so the price and the size come from the\nchoice rather than from a second lookup that could disagree with it.",
+        "operationId": "flyco_api::machines::get_default_machine",
+        "parameters": [
+          {
+            "name": "spot",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Whether to price and pick against spot capacity. Spot is the default\nbecause it is cheaper and flyco handles eviction."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Answer of `GET /v1/machines/default`.\n\nThe machine flyco would provision right now, and the catalog entry it\ncame from, so a caller can show what it costs and how big it is without\nsearching the whole catalog for the type flyco named. The two travel\ntogether because they are one answer: a choice whose entry the caller had\nto look up again could be looked up against a catalog that has since\nchanged.",
+                  "required": [
+                    "choice",
+                    "entry"
+                  ],
+                  "properties": {
+                    "choice": {
+                      "$ref": "#/components/schemas/MachineChoice",
+                      "description": "What `POST /v1/sessions` would provision if it named no machine."
+                    },
+                    "entry": {
+                      "$ref": "#/components/schemas/MachineCatalogEntry",
+                      "description": "The catalog entry that choice points at, with its price and size."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/mcp-servers": {
       "get": {
         "summary": "Lists the caller's registered MCP servers.",
@@ -2106,6 +2154,8 @@
                     "description": "A session in a list.",
                     "required": [
                       "id",
+                      "title",
+                      "machine_origin",
                       "harness",
                       "repo",
                       "state",
@@ -2133,6 +2183,10 @@
                         "description": "Last time anything happened on it, seconds since the Unix epoch.",
                         "minimum": 0
                       },
+                      "machine_origin": {
+                        "$ref": "#/components/schemas/MachineOrigin",
+                        "description": "Whether flyco or the user chose the machine it runs on."
+                      },
                       "repo": {
                         "$ref": "#/components/schemas/RepoSlug",
                         "description": "Repository it works in."
@@ -2140,6 +2194,10 @@
                       "state": {
                         "$ref": "#/components/schemas/SessionState",
                         "description": "Where it is in its lifecycle."
+                      },
+                      "title": {
+                        "type": "string",
+                        "description": "What the session is called in a list.\n\nOpens as the excerpt of the first prompt and is editable through\n`PATCH /v1/sessions/{id}`. Never empty: a row with no name would\nleave every list entry identified by a UUID."
                       }
                     }
                   }
@@ -2161,6 +2219,7 @@
                 "type": "object",
                 "description": "Request body of `POST /v1/sessions`.",
                 "required": [
+                  "prompt",
                   "harness",
                   "repo",
                   "budget_limit"
@@ -2181,9 +2240,13 @@
                       },
                       {
                         "$ref": "#/components/schemas/MachineChoice",
-                        "description": "The machine to provision for it. Omitted, flyco picks the cheapest\ndeployable Linux type from the caller's catalog."
+                        "description": "The machine to provision for it.\n\nOmitted, flyco picks the cheapest Linux type in the caller's catalog\nof at least\n[`AUTO_MIN_VCPUS`](crate::machine::AUTO_MIN_VCPUS) vCPUs and\n[`AUTO_MIN_MEMORY_MIB`](crate::machine::AUTO_MIN_MEMORY_MIB) of\nmemory, and records the machine as automatically chosen."
                       }
                     ]
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "What the agent should do first.\n\nRequired, because a session with nothing to do is a machine nobody\nasked for: the prompt is recorded as the session's first user\nmessage and delivered to the daemon as soon as one connects. Its\nexcerpt is also the session's opening [`title`](SessionSummary::title)."
                   },
                   "repo": {
                     "type": "string",
@@ -2253,6 +2316,79 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionSummary",
+                      "description": "Everything a list entry carries."
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "budget"
+                      ],
+                      "properties": {
+                        "budget": {
+                          "$ref": "#/components/schemas/BudgetView",
+                          "description": "Budget accounting as of this request."
+                        },
+                        "failure": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Why the session is [`SessionState::Failed`], in the provider's own\nwords where it has any.\n\n`None` for every other state. A failed session that could not say\nwhy would leave the user with a dead session and no idea whether to\nretry it, pick another region, or ask for a quota increase."
+                        }
+                      }
+                    }
+                  ],
+                  "description": "A single session, with its budget."
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Renames one of the caller's sessions.",
+        "description": "Renames one of the caller's sessions.\n\nThe title opens as the excerpt of the prompt the session was created\nwith; this is how it becomes something the user chose.",
+        "operationId": "flyco_api::app::update_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `PATCH /v1/sessions/{id}`.",
+                "required": [
+                  "title"
+                ],
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "description": "What to call the session, 1 to\n[`MAX_SESSION_TITLE_CHARS`] characters once trimmed."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Response",
@@ -4543,6 +4679,7 @@
         "type": "object",
         "description": "Request body of `POST /v1/sessions`.",
         "required": [
+          "prompt",
           "harness",
           "repo",
           "budget_limit"
@@ -4563,9 +4700,13 @@
               },
               {
                 "$ref": "#/components/schemas/MachineChoice",
-                "description": "The machine to provision for it. Omitted, flyco picks the cheapest\ndeployable Linux type from the caller's catalog."
+                "description": "The machine to provision for it.\n\nOmitted, flyco picks the cheapest Linux type in the caller's catalog\nof at least\n[`AUTO_MIN_VCPUS`](crate::machine::AUTO_MIN_VCPUS) vCPUs and\n[`AUTO_MIN_MEMORY_MIB`](crate::machine::AUTO_MIN_MEMORY_MIB) of\nmemory, and records the machine as automatically chosen."
               }
             ]
+          },
+          "prompt": {
+            "type": "string",
+            "description": "What the agent should do first.\n\nRequired, because a session with nothing to do is a machine nobody\nasked for: the prompt is recorded as the session's first user\nmessage and delivered to the daemon as soon as one connects. Its\nexcerpt is also the session's opening [`title`](SessionSummary::title)."
           },
           "repo": {
             "type": "string",
@@ -4660,6 +4801,19 @@
           "decision": {
             "$ref": "#/components/schemas/ApprovalDecision",
             "description": "What the user decided."
+          }
+        }
+      },
+      "DefaultMachineQuery": {
+        "type": "object",
+        "description": "Whether a caller who names no machine wants interruptible capacity.",
+        "properties": {
+          "spot": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether to price and pick against spot capacity. Spot is the default\nbecause it is cheaper and flyco handles eviction."
           }
         }
       },
@@ -5146,7 +5300,7 @@
       },
       "MachineChoice": {
         "type": "object",
-        "description": "Which machine a session asks for.\n\nNamed on [`CreateSession`] when the caller picks a type themselves. The\nchoice is validated against the named account's own catalog before\nanything is written, so a machine the account cannot deploy is refused\nwhere the user made the choice. Omitted, flyco picks the cheapest\ndeployable Linux type instead of guessing and resizing afterwards.",
+        "description": "Which machine a session asks for.\n\nNamed on [`CreateSession`] when the caller picks a type themselves. The\nchoice is validated against the named account's own catalog before\nanything is written, so a machine the account cannot deploy is refused\nwhere the user made the choice. Omitted, flyco picks a machine itself\nwith [`auto_linux_choice`](crate::machine::auto_linux_choice) instead of\nguessing and resizing afterwards, and the session records that the\nchoice was flyco's ([`MachineOrigin::Auto`]).",
         "required": [
           "provider_account",
           "machine_type",
@@ -5176,6 +5330,32 @@
             "description": "Whether to ask for interruptible spot capacity. Spot is the default\nbecause it is the cheaper option and flyco handles eviction.\n\nA request, not a promise: a provider that cannot honour it is\nanswered with on-demand capacity, and\n[`MachineView::spot`](crate::machine::MachineView::spot) is what was\nactually obtained."
           }
         }
+      },
+      "MachineDefault": {
+        "type": "object",
+        "description": "Answer of `GET /v1/machines/default`.\n\nThe machine flyco would provision right now, and the catalog entry it\ncame from, so a caller can show what it costs and how big it is without\nsearching the whole catalog for the type flyco named. The two travel\ntogether because they are one answer: a choice whose entry the caller had\nto look up again could be looked up against a catalog that has since\nchanged.",
+        "required": [
+          "choice",
+          "entry"
+        ],
+        "properties": {
+          "choice": {
+            "$ref": "#/components/schemas/MachineChoice",
+            "description": "What `POST /v1/sessions` would provision if it named no machine."
+          },
+          "entry": {
+            "$ref": "#/components/schemas/MachineCatalogEntry",
+            "description": "The catalog entry that choice points at, with its price and size."
+          }
+        }
+      },
+      "MachineOrigin": {
+        "type": "string",
+        "description": "How the machine a session runs on was chosen.\n\nPersisted because the two are not interchangeable afterwards: a machine\nthe user picked is a decision flyco must not quietly undo, while an\nautomatic one is flyco's own guess and is free to be revisited.",
+        "enum": [
+          "auto",
+          "user"
+        ]
       },
       "MachinePricing": {
         "oneOf": [
@@ -6061,6 +6241,8 @@
         "description": "A session in a list.",
         "required": [
           "id",
+          "title",
+          "machine_origin",
           "harness",
           "repo",
           "state",
@@ -6088,6 +6270,10 @@
             "description": "Last time anything happened on it, seconds since the Unix epoch.",
             "minimum": 0
           },
+          "machine_origin": {
+            "$ref": "#/components/schemas/MachineOrigin",
+            "description": "Whether flyco or the user chose the machine it runs on."
+          },
           "repo": {
             "$ref": "#/components/schemas/RepoSlug",
             "description": "Repository it works in."
@@ -6095,6 +6281,10 @@
           "state": {
             "$ref": "#/components/schemas/SessionState",
             "description": "Where it is in its lifecycle."
+          },
+          "title": {
+            "type": "string",
+            "description": "What the session is called in a list.\n\nOpens as the excerpt of the first prompt and is editable through\n`PATCH /v1/sessions/{id}`. Never empty: a row with no name would\nleave every list entry identified by a UUID."
           }
         }
       },
@@ -6388,6 +6578,19 @@
               "null"
             ],
             "description": "New title."
+          }
+        }
+      },
+      "UpdateSession": {
+        "type": "object",
+        "description": "Request body of `PATCH /v1/sessions/{id}`.",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "What to call the session, 1 to\n[`MAX_SESSION_TITLE_CHARS`] characters once trimmed."
           }
         }
       },

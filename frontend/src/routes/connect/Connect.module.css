@@ -1,0 +1,67 @@
+.page {
+  flex: 1;
+  width: 100%;
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-4) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  align-self: flex-start;
+  font-size: var(--text-md);
+  color: var(--color-text-muted);
+  text-decoration: none;
+}
+
+.back:hover {
+  color: var(--color-text);
+}
+
+.heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.heading h1 {
+  margin: 0;
+  font-size: var(--text-xl);
+}
+
+.lede {
+  margin: 0;
+  color: var(--color-text-muted);
+  max-width: 56ch;
+}
+
+.marks {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--color-text-faint);
+  padding: var(--space-2) 0;
+}
+
+.linked {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-success-soft);
+  color: var(--color-success);
+  font-size: var(--text-md);
+}
+
+.linked a {
+  color: inherit;
+  margin-left: auto;
+  font-weight: var(--weight-medium);
+}

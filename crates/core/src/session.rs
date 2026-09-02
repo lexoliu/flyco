@@ -109,8 +109,10 @@ impl SessionState {
 /// Named on [`CreateSession`] when the caller picks a type themselves. The
 /// choice is validated against the named account's own catalog before
 /// anything is written, so a machine the account cannot deploy is refused
-/// where the user made the choice. Omitted, flyco picks the cheapest
-/// deployable Linux type instead of guessing and resizing afterwards.
+/// where the user made the choice. Omitted, flyco picks a machine itself
+/// with [`auto_linux_choice`](crate::machine::auto_linux_choice) instead of
+/// guessing and resizing afterwards, and the session records that the
+/// choice was flyco's ([`MachineOrigin::Auto`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MachineChoice {
     /// Which linked provider account to provision on.
@@ -154,9 +156,70 @@ const fn default_disk_gib() -> u32 {
     DEFAULT_DISK_GIB
 }
 
+/// How the machine a session runs on was chosen.
+///
+/// Persisted because the two are not interchangeable afterwards: a machine
+/// the user picked is a decision flyco must not quietly undo, while an
+/// automatic one is flyco's own guess and is free to be revisited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
+pub enum MachineOrigin {
+    /// Flyco chose it, with [`auto_linux_choice`](crate::machine::auto_linux_choice).
+    Auto,
+    /// The request named a machine type, so the user chose it.
+    User,
+}
+
+/// How much of a prompt names the turn it began, in
+/// [`TurnSummary::prompt_excerpt`].
+///
+/// Enough to recognise the turn in a list, short enough that a history of
+/// fifty turns is not a transcript in its own right.
+pub const PROMPT_EXCERPT_CHARS: usize = 200;
+
+/// Longest title a session may carry.
+///
+/// The same bound whether the title was derived from the first prompt or
+/// typed by hand, so a renamed session can never be longer than one flyco
+/// named itself.
+pub const MAX_SESSION_TITLE_CHARS: usize = 120;
+
+/// The opening of a piece of text, at most `max_chars` characters including
+/// the ellipsis that marks the cut.
+///
+/// The one place flyco shortens prose for a list: a turn's
+/// [`prompt_excerpt`](TurnSummary::prompt_excerpt) and a session's default
+/// [`title`](SessionSummary::title) are the same operation at two lengths.
+///
+/// # Panics
+///
+/// Panics if `max_chars` is zero, which would leave nowhere to put the
+/// ellipsis.
+#[must_use]
+pub fn excerpt(text: &str, max_chars: usize) -> String {
+    assert!(max_chars > 0, "an excerpt of zero characters says nothing");
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_owned();
+    }
+    let end = trimmed
+        .char_indices()
+        .nth(max_chars - 1)
+        .map_or(trimmed.len(), |(index, _)| index);
+    format!("{}\u{2026}", trimmed[..end].trim_end())
+}
+
 /// Request body of `POST /v1/sessions`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CreateSession {
+    /// What the agent should do first.
+    ///
+    /// Required, because a session with nothing to do is a machine nobody
+    /// asked for: the prompt is recorded as the session's first user
+    /// message and delivered to the daemon as soon as one connects. Its
+    /// excerpt is also the session's opening [`title`](SessionSummary::title).
+    pub prompt: String,
     /// Which coding harness drives the session.
     pub harness: HarnessKind,
     /// Repository to work in, `owner/name`. Untyped here because it is
@@ -165,8 +228,13 @@ pub struct CreateSession {
     pub repo: String,
     /// Spending limit for the whole session.
     pub budget_limit: Usd,
-    /// The machine to provision for it. Omitted, flyco picks the cheapest
-    /// deployable Linux type from the caller's catalog.
+    /// The machine to provision for it.
+    ///
+    /// Omitted, flyco picks the cheapest Linux type in the caller's catalog
+    /// of at least
+    /// [`AUTO_MIN_VCPUS`](crate::machine::AUTO_MIN_VCPUS) vCPUs and
+    /// [`AUTO_MIN_MEMORY_MIB`](crate::machine::AUTO_MIN_MEMORY_MIB) of
+    /// memory, and records the machine as automatically chosen.
     #[serde(default)]
     pub machine: Option<MachineChoice>,
     /// Whether to ask for interruptible spot capacity when flyco picks the
@@ -181,6 +249,14 @@ pub struct CreateSession {
 pub struct SessionSummary {
     /// Identifier.
     pub id: SessionId,
+    /// What the session is called in a list.
+    ///
+    /// Opens as the excerpt of the first prompt and is editable through
+    /// `PATCH /v1/sessions/{id}`. Never empty: a row with no name would
+    /// leave every list entry identified by a UUID.
+    pub title: String,
+    /// Whether flyco or the user chose the machine it runs on.
+    pub machine_origin: MachineOrigin,
     /// Which coding harness drives it.
     pub harness: HarnessKind,
     /// Repository it works in.
@@ -208,6 +284,14 @@ pub struct SessionDetail {
     /// why would leave the user with a dead session and no idea whether to
     /// retry it, pick another region, or ask for a quota increase.
     pub failure: Option<String>,
+}
+
+/// Request body of `PATCH /v1/sessions/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct UpdateSession {
+    /// What to call the session, 1 to
+    /// [`MAX_SESSION_TITLE_CHARS`] characters once trimmed.
+    pub title: String,
 }
 
 /// Request body of `POST /v1/sessions/{id}/messages`.
@@ -260,7 +344,8 @@ mod tests {
     fn spot_defaults_to_on_when_the_client_omits_it() {
         let account = ProviderAccountId::generate();
         let request: CreateSession = serde_json::from_str(&format!(
-            r#"{{"harness":"claude_code","repo":"lexoliu/flyco","budget_limit":10000000,
+            r#"{{"prompt":"add a test","harness":"claude_code","repo":"lexoliu/flyco",
+                "budget_limit":10000000,
                 "machine":{{"provider_account":"{account}","machine_type":"Standard_B2ats_v2",
                             "region":"northcentralus"}}}}"#
         ))
@@ -274,11 +359,61 @@ mod tests {
     #[test]
     fn omitting_the_machine_lets_flyco_choose() {
         let request: CreateSession = serde_json::from_str(
-            r#"{"harness":"claude_code","repo":"lexoliu/flyco","budget_limit":10000000}"#,
+            r#"{"prompt":"add a test","harness":"claude_code","repo":"lexoliu/flyco",
+                "budget_limit":10000000}"#,
         )
         .expect("deserialize");
         assert!(request.machine.is_none());
         assert!(request.spot);
+    }
+
+    #[test]
+    fn a_session_cannot_be_opened_without_a_prompt() {
+        assert!(
+            serde_json::from_str::<CreateSession>(
+                r#"{"harness":"claude_code","repo":"lexoliu/flyco","budget_limit":10000000}"#,
+            )
+            .is_err(),
+            "a session with nothing to do is a machine nobody asked for"
+        );
+    }
+
+    #[test]
+    fn an_excerpt_never_exceeds_the_length_it_was_given() {
+        let long = "x".repeat(MAX_SESSION_TITLE_CHARS * 2);
+        let short = excerpt(&long, MAX_SESSION_TITLE_CHARS);
+        assert_eq!(short.chars().count(), MAX_SESSION_TITLE_CHARS);
+        assert!(short.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn an_excerpt_that_fits_is_only_trimmed() {
+        assert_eq!(excerpt("  spaced  ", PROMPT_EXCERPT_CHARS), "spaced");
+        assert_eq!(
+            excerpt("\u{77ed}\u{3044}", PROMPT_EXCERPT_CHARS),
+            "\u{77ed}\u{3044}"
+        );
+        assert_eq!(excerpt("abcdef", 6), "abcdef");
+    }
+
+    #[test]
+    fn an_excerpt_cuts_on_a_character_boundary() {
+        // Cutting on a byte index would split the second character in half
+        // and panic; the cut is counted in characters for exactly that
+        // reason.
+        assert_eq!(excerpt("\u{65e5}\u{672c}\u{8a9e}", 2), "\u{65e5}\u{2026}");
+    }
+
+    #[test]
+    fn machine_origin_uses_the_tokens_the_schema_stores() {
+        assert_eq!(
+            serde_json::to_value(MachineOrigin::Auto).expect("serialize"),
+            serde_json::Value::String("auto".to_owned())
+        );
+        assert_eq!(
+            serde_json::to_value(MachineOrigin::User).expect("serialize"),
+            serde_json::Value::String("user".to_owned())
+        );
     }
 
     #[test]

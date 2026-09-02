@@ -3,9 +3,10 @@
 use flyco_core::{
     ApiKeyId, ApiKeySummary, ApprovalId, ApprovalState, ApprovalView, BudgetConfig, BudgetView,
     ControlToDaemon, CreateApiKey, CreateSession, CreatedApiKey, CurrentUser, DaemonToken,
-    DecideApproval, EnvDocument, HarnessFeature, HarnessObservation, MachineSpec, RepoSlug,
-    RepoStatus, SendMessage, SessionDetail, SessionId, SessionState, SessionSummary, TurnPage,
-    UpdateEnv, UpdateMe, UserId, wire::ApprovalPayload,
+    DecideApproval, EnvDocument, HarnessFeature, HarnessObservation, MAX_SESSION_TITLE_CHARS,
+    MachineOrigin, MachineSpec, RepoSlug, RepoStatus, SendMessage, SessionDetail, SessionId,
+    SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId,
+    wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -155,10 +156,11 @@ async fn create_session(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
     Json(request): Json<CreateSession>,
+    rooms: Rooms,
     queue: Queue,
     db: Db,
 ) -> Outcome<Created<Json<SessionDetail>>> {
-    start_session(&user, request, &config, &queue, &db)
+    start_session(&user, request, &config, &rooms, &queue, &db)
         .await
         .into()
 }
@@ -167,18 +169,33 @@ async fn start_session(
     user: &CurrentUser,
     request: CreateSession,
     config: &ApiConfig,
+    rooms: &Rooms,
     queue: &Queue,
     db: &Db,
 ) -> Result<Created<Json<SessionDetail>>, ApiError> {
+    let prompt = request.prompt.trim();
+    if prompt.is_empty() {
+        return Err(ApiError::EmptyMessage);
+    }
+    let prompt = prompt.to_owned();
     let repo = request
         .repo
         .parse::<RepoSlug>()
         .map_err(|_| ApiError::InvalidRepo(request.repo.clone()))?;
     let budget = BudgetConfig::new(request.budget_limit).map_err(|_| ApiError::InvalidBudget)?;
 
+    let machine_origin = if request.machine.is_some() {
+        MachineOrigin::User
+    } else {
+        MachineOrigin::Auto
+    };
     let choice = match request.machine {
         Some(choice) => choice,
-        None => machines::cheapest_linux_choice(db, config, user.id, request.spot).await?,
+        None => {
+            machines::automatic(db, config, user.id, request.spot)
+                .await?
+                .choice
+        }
     };
     let account = provisioning::account(db, config, user.id, choice.provider_account).await?;
     let spec = MachineSpec {
@@ -194,30 +211,45 @@ async fn start_session(
 
     let session = sessions::create(
         db,
-        user.id,
         user.session_cap,
-        request.harness,
-        &repo,
-        budget,
+        sessions::Opening {
+            user: user.id,
+            title: &flyco_core::excerpt(&prompt, MAX_SESSION_TITLE_CHARS),
+            harness: request.harness,
+            repo: &repo,
+            machine_origin,
+            budget,
+        },
     )
     .await?;
     let id = session.summary.id;
     let machine = machines::reserve(db, id, account.id, &spec).await?;
 
-    // A session whose job never reached the queue would wait for a consumer
-    // that is never going to run, so a refused enqueue fails it here rather
-    // than leaving it provisioning for ever.
-    if let Err(error) =
-        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await
-    {
-        sessions::fail(
-            db,
-            id,
-            "the provisioning queue would not accept this session's job",
-        )
-        .await?;
-        return Err(error);
-    }
+    // The prompt is posted to the session's room *before* the machine is
+    // queued, so the agent's first instruction is durable before anything
+    // asynchronous can go wrong. No daemon exists yet — the room holds it
+    // in its mailbox and hands it over on the daemon's first `Hello`.
+    //
+    // Both steps fail the session rather than return early: a session row
+    // whose prompt never reached its room, or whose job never reached the
+    // queue, would sit in `provisioning` waiting for something that is never
+    // going to happen.
+    fail_session_on(
+        db,
+        id,
+        "the session's room would not take its first prompt",
+        rooms
+            .command(id, &ControlToDaemon::UserMessage { text: prompt })
+            .await,
+    )
+    .await?;
+    fail_session_on(
+        db,
+        id,
+        "the provisioning queue would not accept this session's job",
+        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await,
+    )
+    .await?;
 
     tracing::info!(
         repo = %repo,
@@ -228,6 +260,23 @@ async fn start_session(
         "opened a session and queued its machine"
     );
     Ok(Created(Json(session)))
+}
+
+/// Marks a freshly opened session failed when one of its hand-off steps
+/// refused, and passes that refusal on.
+async fn fail_session_on<T>(
+    db: &Db,
+    id: SessionId,
+    reason: &str,
+    step: Result<T, ApiError>,
+) -> Result<T, ApiError> {
+    match step {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            sessions::fail(db, id, reason).await?;
+            Err(error)
+        }
+    }
 }
 
 /// Turns a provider's refusal into the answer the caller can act on.
@@ -276,6 +325,32 @@ async fn read_session(
 ) -> Result<Json<SessionDetail>, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
     sessions::find(db, user.id, id).await.map(Json)
+}
+
+/// Renames one of the caller's sessions.
+///
+/// The title opens as the excerpt of the prompt the session was created
+/// with; this is how it becomes something the user chose.
+#[skyzen::openapi]
+async fn update_session(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(update): Json<UpdateSession>,
+    db: Db,
+) -> Outcome<Json<SessionDetail>> {
+    rename_session(&user, &params, &update, &db).await.into()
+}
+
+async fn rename_session(
+    user: &CurrentUser,
+    params: &Params,
+    update: &UpdateSession,
+    db: &Db,
+) -> Result<Json<SessionDetail>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    sessions::rename(db, user.id, id, &update.title)
+        .await
+        .map(Json)
 }
 
 /// Narrows a manual archive.
@@ -1190,7 +1265,7 @@ fn account_routes() -> Vec<RouteNode> {
 fn session_routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/sessions".post(create_session).get(list_sessions),
-        "/v1/sessions/{id}".at(get_session),
+        "/v1/sessions/{id}".at(get_session).patch(update_session),
         "/v1/sessions/{id}/archive".post(archive_session),
         "/v1/sessions/{id}/budget".at(get_session_budget),
         "/v1/sessions/{id}/daemon-token".post(create_daemon_token),

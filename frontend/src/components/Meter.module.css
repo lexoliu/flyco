@@ -26,12 +26,12 @@
 .fill {
   height: 100%;
   border-radius: var(--radius-full);
-  background: var(--color-accent);
+  background: var(--color-primary);
   transition: width 0.2s ease;
 }
 
 .fill[data-tier="notice"] {
-  background: var(--color-accent);
+  background: var(--color-primary);
 }
 
 .fill[data-tier="warn"] {

@@ -1,0 +1,41 @@
+.anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.panel {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  left: 0;
+  z-index: 20;
+  min-width: 240px;
+  max-width: min(360px, calc(100vw - var(--space-6)));
+  padding: var(--space-3);
+  background: var(--color-surface-raised);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+  animation: rise var(--transition-panel);
+}
+
+.panel:focus {
+  outline: none;
+}
+
+.alignEnd {
+  left: auto;
+  right: 0;
+}
+
+/* Panels slide; nothing bounces. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

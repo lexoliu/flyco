@@ -3,6 +3,18 @@
  * type scale. Every other stylesheet reads these custom properties instead
  * of hardcoding values.
  *
+ * The system is cool neutral (docs/ux.md §2). Ground is pure white in
+ * light and near-black in dark; surfaces are one step off the ground and
+ * are separated by a hairline border rather than by a shadow. Text is ink
+ * and two grays.
+ *
+ * There is deliberately **no accent color**. A primary action is solid ink
+ * on white (white on ink in dark), which is why `--color-primary` and
+ * `--color-primary-text` swap between themes rather than naming a hue.
+ * Color is reserved for status — green while something is working, amber
+ * when a session is waiting on the user, red when it failed — so that the
+ * one colored thing on a screen is always the thing that needs a decision.
+ *
  * Theme resolution order:
  *   1. `prefers-color-scheme` picks a default.
  *   2. An explicit `data-theme="light"|"dark"` on <html> (set by the theme
@@ -18,8 +30,9 @@
   --space-6: 2rem;
   --space-8: 3rem;
 
-  --radius-sm: 6px;
-  --radius-md: 10px;
+  /* Pills and 16px input containers are the shape of the whole product. */
+  --radius-sm: 8px;
+  --radius-md: 12px;
   --radius-lg: 16px;
   --radius-full: 999px;
 
@@ -29,72 +42,121 @@
   --font-mono:
     ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
-  --text-xs: 0.75rem;
-  --text-sm: 0.875rem;
-  --text-md: 1rem;
-  --text-lg: 1.25rem;
-  --text-xl: 1.75rem;
+  /* 14px base. `--text-2xl` is the ceiling: no heading is ever larger. */
+  --text-xs: 0.6875rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.875rem;
+  --text-lg: 1rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.75rem;
 
   --line-tight: 1.2;
-  --line-normal: 1.5;
+  --line-normal: 1.45;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.12);
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* Content width of every centred screen. */
+  --measure: 720px;
 
   --border-width: 1px;
 
+  --transition-fast: 120ms ease;
+  --transition-panel: 200ms cubic-bezier(0.2, 0, 0, 1);
+
   /* Light palette (default). */
-  --color-bg: #f7f8fa;
-  --color-surface: #ffffff;
+  --color-bg: #ffffff;
+  --color-surface: #fafafa;
+  --color-surface-sunken: #f4f4f5;
   --color-surface-raised: #ffffff;
-  --color-border: #e2e5ea;
-  --color-text: #1a1d24;
-  --color-text-muted: #5b616e;
-  --color-text-faint: #8a909c;
-  --color-accent: #3661d6;
-  --color-accent-contrast: #ffffff;
-  --color-accent-muted: #e8edfc;
-  --color-success: #1f8a4c;
-  --color-warning: #b06a00;
-  --color-danger: #c0341f;
-  --color-danger-muted: #fbe9e6;
-  --color-focus-ring: #3661d6;
+  --color-border: #e6e6e9;
+  --color-border-strong: #d2d2d8;
+  --color-text: #111113;
+  --color-text-muted: #6a6a73;
+  --color-text-faint: #9a9aa3;
+
+  --color-primary: #111113;
+  --color-primary-text: #ffffff;
+  --color-primary-hover: #2a2a2e;
+
+  --color-success: #15803d;
+  --color-success-soft: #e8f4ec;
+  --color-warning: #b45309;
+  --color-warning-soft: #fdf1e3;
+  --color-danger: #b91c1c;
+  --color-danger-muted: #fbeaea;
+  --color-neutral-dot: #9a9aa3;
+
+  --color-focus-ring: #111113;
+  --color-overlay: rgb(17 17 19 / 8%);
+
+  --shadow-sm: 0 1px 2px rgb(17 17 19 / 5%);
+  --shadow-panel: 0 8px 28px rgb(17 17 19 / 10%);
+
+  /* A terminal is a terminal in either theme: xterm renders its own dark
+     palette, and the surface behind it has to match that rather than the
+     page. It is therefore the one colour that does not flip. */
+  --color-terminal-bg: #0b0b0c;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --color-bg: #0e1116;
-    --color-surface: #161a22;
-    --color-surface-raised: #1c2129;
-    --color-border: #2a3038;
-    --color-text: #eef0f4;
-    --color-text-muted: #a7adba;
-    --color-text-faint: #6c7280;
-    --color-accent: #7fa4ff;
-    --color-accent-contrast: #0e1116;
-    --color-accent-muted: #1e2740;
-    --color-success: #4bc27a;
-    --color-warning: #e0a336;
-    --color-danger: #e2685a;
-    --color-danger-muted: #3a1f1c;
-    --color-focus-ring: #7fa4ff;
+    --color-bg: #0b0b0c;
+    --color-surface: #141416;
+    --color-surface-sunken: #191a1c;
+    --color-surface-raised: #1c1d20;
+    --color-border: #26262a;
+    --color-border-strong: #35353b;
+    --color-text: #f2f2f3;
+    --color-text-muted: #a0a0a8;
+    --color-text-faint: #6c6c74;
+
+    --color-primary: #f2f2f3;
+    --color-primary-text: #0b0b0c;
+    --color-primary-hover: #ffffff;
+
+    --color-success: #4ade80;
+    --color-success-soft: #14241a;
+    --color-warning: #fbbf24;
+    --color-warning-soft: #2a2113;
+    --color-danger: #f87171;
+    --color-danger-muted: #2c1717;
+    --color-neutral-dot: #6c6c74;
+
+    --color-focus-ring: #f2f2f3;
+    --color-overlay: rgb(0 0 0 / 45%);
+
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+    --shadow-panel: 0 8px 28px rgb(0 0 0 / 55%);
   }
 }
 
 :root[data-theme="dark"] {
-  --color-bg: #0e1116;
-  --color-surface: #161a22;
-  --color-surface-raised: #1c2129;
-  --color-border: #2a3038;
-  --color-text: #eef0f4;
-  --color-text-muted: #a7adba;
-  --color-text-faint: #6c7280;
-  --color-accent: #7fa4ff;
-  --color-accent-contrast: #0e1116;
-  --color-accent-muted: #1e2740;
-  --color-success: #4bc27a;
-  --color-warning: #e0a336;
-  --color-danger: #e2685a;
-  --color-danger-muted: #3a1f1c;
-  --color-focus-ring: #7fa4ff;
+  --color-bg: #0b0b0c;
+  --color-surface: #141416;
+  --color-surface-sunken: #191a1c;
+  --color-surface-raised: #1c1d20;
+  --color-border: #26262a;
+  --color-border-strong: #35353b;
+  --color-text: #f2f2f3;
+  --color-text-muted: #a0a0a8;
+  --color-text-faint: #6c6c74;
+
+  --color-primary: #f2f2f3;
+  --color-primary-text: #0b0b0c;
+  --color-primary-hover: #ffffff;
+
+  --color-success: #4ade80;
+  --color-success-soft: #14241a;
+  --color-warning: #fbbf24;
+  --color-warning-soft: #2a2113;
+  --color-danger: #f87171;
+  --color-danger-muted: #2c1717;
+  --color-neutral-dot: #6c6c74;
+
+  --color-focus-ring: #f2f2f3;
+  --color-overlay: rgb(0 0 0 / 45%);
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-panel: 0 8px 28px rgb(0 0 0 / 55%);
 }

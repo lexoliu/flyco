@@ -18,6 +18,9 @@ use crate::transcripts::BATCH_COUNT_HEADER;
 
 const REPO: &str = "lexoliu/flyco";
 
+/// The opening instruction every test session is created with.
+const PROMPT: &str = "audit the relay for dropped frames";
+
 fn problem_kind(slug: &str) -> String {
     let mut kind = String::from("https://flyco.dev/problems/");
     kind.push_str(slug);
@@ -42,6 +45,7 @@ async fn open_session(client: &TestClient<Router>, caller: &Caller, repo: &str) 
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: repo.to_owned(),
             budget_limit: Usd::from_dollars(10),
@@ -443,8 +447,9 @@ async fn the_event_tail_is_readable_and_scoped_to_its_owner(ctx: TestContext, kv
     let stranger = sign_in(&kv, &db, seed_other_user(&db).await).await;
     let session = open_session(&client, &owner, REPO).await;
 
-    // A room nobody has spoken to yet has an empty tail rather than a 404:
-    // that is the state of every session before its first turn.
+    // A session that has never had a daemon still has a tail, because the
+    // prompt it was opened with is already conversation: it was recorded
+    // when the session was created and is waiting in the room's mailbox.
     let page = client
         .get(&format!("/v1/sessions/{session}/events"))
         .bearer(&owner.token)
@@ -452,7 +457,18 @@ async fn the_event_tail_is_readable_and_scoped_to_its_owner(ctx: TestContext, kv
         .await;
     page.assert_status(200);
     let page: crate::room::EventPage = page.json();
-    assert_eq!(page.events, [] as [crate::room::StoredEvent; 0]);
+    assert_eq!(
+        page.events
+            .iter()
+            .map(|stored| stored.event.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            serde_json::to_value(flyco_core::ClientEvent::UserMessage {
+                text: PROMPT.to_owned(),
+            })
+            .expect("serialize")
+        ]
+    );
     assert!(!page.more);
 
     // Ownership is settled in the Worker, because a room cannot reach D1.

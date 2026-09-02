@@ -233,8 +233,11 @@ impl Room {
         self.deliver(from, &text).await;
     }
 
-    /// Completes the daemon handshake.
-    async fn greet(&mut self) {
+    /// Sends the daemon's handshake without asserting what came back.
+    ///
+    /// What a `Hello` is answered with is the welcome *plus the mailbox*,
+    /// and the mailbox tests are the ones that care what is in it.
+    async fn hello(&mut self) {
         self.deliver_json(
             Which::Daemon,
             &DaemonToControl::Hello {
@@ -243,13 +246,15 @@ impl Room {
             },
         )
         .await;
+    }
+
+    /// Completes the daemon handshake on a room with nothing held for it.
+    async fn greet(&mut self) {
+        self.hello().await;
         assert_eq!(
             self.drain(),
-            vec![Sent::Text {
-                to: ROLE_DAEMON.to_owned(),
-                text: serde_json::to_string(&ControlToDaemon::Welcome).expect("serialize"),
-            }],
-            "a good hello is answered with exactly one welcome"
+            vec![welcome()],
+            "a good hello with an empty mailbox is answered with exactly one welcome"
         );
     }
 
@@ -336,6 +341,11 @@ fn to_client(event: &ClientEvent) -> Sent {
         to: ROLE_CLIENT.to_owned(),
         text: serde_json::to_string(event).expect("serialize"),
     }
+}
+
+/// The welcome every accepted handshake is answered with.
+fn welcome() -> Sent {
+    to_daemon(&ControlToDaemon::Welcome)
 }
 
 fn to_daemon(command: &ControlToDaemon) -> Sent {
@@ -956,4 +966,125 @@ async fn a_relay_upgrade_names_its_role_and_session() {
         502,
         "a daemon upgrade must not be accepted on the client route"
     );
+}
+
+// ── The daemon's mailbox ──
+//
+// A user message is conversation: it must reach the agent whether or not a
+// daemon happened to be connected when it was written. Both orders are
+// covered, because they are the two real ones — the prompt `POST
+// /v1/sessions` writes minutes before a machine exists, and every message
+// after that.
+
+#[skyzen::test]
+async fn a_message_sent_before_the_daemon_arrives_is_delivered_on_its_hello() {
+    let mut room = Room::open().await;
+
+    // No handshake yet: this is the session's opening prompt, written by the
+    // Worker while the machine is still being provisioned.
+    let command = ControlToDaemon::UserMessage {
+        text: "add a test for the mailbox".to_owned(),
+    };
+    let (status, _) = room
+        .call(
+            Method::POST,
+            "/internal/command",
+            Some(serde_json::to_vec(&command).expect("serialize")),
+        )
+        .await;
+    assert_eq!(status, 204);
+    assert_eq!(
+        room.drain(),
+        vec![to_client(&ClientEvent::UserMessage {
+            text: "add a test for the mailbox".to_owned(),
+        })],
+        "browsers see it immediately; the daemon is not there to see anything"
+    );
+
+    room.hello().await;
+    assert_eq!(
+        room.drain(),
+        vec![welcome(), to_daemon(&command)],
+        "the greeting is answered with everything the daemon missed"
+    );
+
+    // A reconnect does not replay it a second time: the cursor moved.
+    room.greet().await;
+}
+
+#[skyzen::test]
+async fn messages_held_for_a_daemon_are_replayed_in_the_order_they_were_written() {
+    let mut room = Room::open().await;
+
+    for text in ["first", "second", "third"] {
+        let (status, _) = room
+            .call(
+                Method::POST,
+                "/internal/command",
+                Some(
+                    serde_json::to_vec(&ControlToDaemon::UserMessage {
+                        text: text.to_owned(),
+                    })
+                    .expect("serialize"),
+                ),
+            )
+            .await;
+        assert_eq!(status, 204);
+    }
+    room.drain();
+
+    room.hello().await;
+    let expected: Vec<Sent> = core::iter::once(welcome())
+        .chain(["first", "second", "third"].into_iter().map(|text| {
+            to_daemon(&ControlToDaemon::UserMessage {
+                text: text.to_owned(),
+            })
+        }))
+        .collect();
+    assert_eq!(
+        room.drain(),
+        expected,
+        "a conversation replayed out of order is a different conversation"
+    );
+}
+
+#[skyzen::test]
+async fn a_message_sent_while_the_daemon_is_connected_is_not_replayed_later() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    let command = ControlToDaemon::UserMessage {
+        text: "keep going".to_owned(),
+    };
+    room.deliver_json(Which::Client, &command).await;
+    room.drain();
+
+    // The daemon dropped its socket and came back. It already has that
+    // message, and hearing it again would run the turn twice.
+    room.greet().await;
+}
+
+#[skyzen::test]
+async fn only_user_messages_wait_for_a_daemon() {
+    let mut room = Room::open().await;
+
+    // An interrupt for a daemon that is not there is about a turn that is
+    // not running; replaying it into a later one would be an instruction
+    // nobody gave.
+    let (status, _) = room
+        .call(
+            Method::POST,
+            "/internal/command",
+            Some(
+                serde_json::to_vec(&ControlToDaemon::Budget {
+                    signal: flyco_core::BudgetSignal::Pause,
+                })
+                .expect("serialize"),
+            ),
+        )
+        .await;
+    assert_eq!(status, 204);
+    room.drain();
+
+    room.greet().await;
 }

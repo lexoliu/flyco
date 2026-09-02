@@ -41,7 +41,7 @@
   font-size: var(--text-xs);
   padding: 2px var(--space-2);
   border-radius: var(--radius-full);
-  background: var(--color-accent-muted);
+  background: var(--color-surface-sunken);
   align-self: flex-start;
 }
 

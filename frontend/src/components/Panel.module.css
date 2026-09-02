@@ -103,8 +103,8 @@
 .primaryButton {
   align-self: flex-start;
   border: none;
-  background: var(--color-accent);
-  color: var(--color-accent-contrast);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
   border-radius: var(--radius-md);
   padding: var(--space-2) var(--space-4);
   font-size: var(--text-sm);
@@ -166,7 +166,7 @@
 .plaintext {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
-  background: var(--color-accent-muted);
+  background: var(--color-surface-sunken);
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
   word-break: break-all;

@@ -6,8 +6,8 @@
 //! no business knowing.
 
 use flyco_core::{
-    ARCHIVE_AFTER_IDLE_SECS, BudgetConfig, BudgetId, HarnessKind, RepoSlug, SessionDetail,
-    SessionId, SessionState, SessionSummary, UserId,
+    ARCHIVE_AFTER_IDLE_SECS, BudgetConfig, BudgetId, HarnessKind, MAX_SESSION_TITLE_CHARS,
+    MachineOrigin, RepoSlug, SessionDetail, SessionId, SessionState, SessionSummary, UserId,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -20,9 +20,11 @@ use crate::error::ApiError;
 #[derive(Debug, skyzen::FromRow)]
 struct SessionRow {
     id: SessionId,
+    title: String,
     harness: HarnessKind,
     repo: RepoSlug,
     state: SessionState,
+    machine_origin: MachineOrigin,
     budget_id: BudgetId,
     failure_reason: Option<String>,
     created_at_unix: u64,
@@ -33,9 +35,11 @@ impl From<SessionRow> for SessionSummary {
     fn from(row: SessionRow) -> Self {
         Self {
             id: row.id,
+            title: row.title,
             harness: row.harness,
             repo: row.repo,
             state: row.state,
+            machine_origin: row.machine_origin,
             created_at_unix: row.created_at_unix,
             last_active_unix: row.last_active_unix,
         }
@@ -78,6 +82,27 @@ pub async fn live_count(db: &Db, user: UserId) -> Result<u32, ApiError> {
     .await?)
 }
 
+/// Everything `POST /v1/sessions` decided before a row could be written.
+///
+/// One argument rather than six positional ones: `harness`, `repo`, and
+/// `title` are all things a session is opened with, and a call site that
+/// swaps two of them would still compile.
+#[derive(Debug, Clone, Copy)]
+pub struct Opening<'a> {
+    /// Whose session it is.
+    pub user: UserId,
+    /// What to call it — the excerpt of the prompt that opened it.
+    pub title: &'a str,
+    /// Which coding harness drives it.
+    pub harness: HarnessKind,
+    /// Repository it works in.
+    pub repo: &'a RepoSlug,
+    /// Whether flyco or the caller chose the machine.
+    pub machine_origin: MachineOrigin,
+    /// What it may spend.
+    pub budget: BudgetConfig,
+}
+
 /// Creates a session and the budget it accounts against.
 ///
 /// The session starts in [`SessionState::Provisioning`] and stays there
@@ -94,29 +119,70 @@ pub async fn live_count(db: &Db, user: UserId) -> Result<u32, ApiError> {
 ///
 /// Returns [`ApiError::SessionCapReached`] when the caller is at their cap,
 /// or a database error otherwise.
-pub async fn create(
-    db: &Db,
-    user: UserId,
-    cap: u32,
-    harness: HarnessKind,
-    repo: &RepoSlug,
-    budget: BudgetConfig,
-) -> Result<SessionDetail, ApiError> {
+pub async fn create(db: &Db, cap: u32, opening: Opening<'_>) -> Result<SessionDetail, ApiError> {
+    let user = opening.user;
     let live = live_count(db, user).await?;
     if live >= cap {
         return Err(ApiError::SessionCapReached { cap });
     }
 
     let id = SessionId::generate();
-    let budget_id = budgets::create(db, id, budget).await?;
+    let budget_id = budgets::create(db, id, opening.budget).await?;
     let now = now_unix();
+    let Opening {
+        title,
+        harness,
+        repo,
+        machine_origin,
+        ..
+    } = opening;
 
     sql!(
         db,
         "INSERT INTO sessions \
-         (id, user_id, harness, repo, state, budget_id, created_at_unix, last_active_unix) \
-         VALUES ({id}, {user}, {harness}, {repo}, \
-                 {SessionState::Provisioning}, {budget_id}, {now}, {now})"
+         (id, user_id, title, harness, repo, state, machine_origin, budget_id, \
+          created_at_unix, last_active_unix) \
+         VALUES ({id}, {user}, {title}, {harness}, {repo}, \
+                 {SessionState::Provisioning}, {machine_origin}, {budget_id}, {now}, {now})"
+    )
+    .execute()
+    .await?;
+
+    find(db, user, id).await
+}
+
+/// Renames one of the caller's sessions.
+///
+/// The title is the only thing about a session the user names directly, so
+/// it is validated here rather than at the boundary: an empty title would
+/// leave a list row identified by a UUID, and an unbounded one would push
+/// everything else out of it.
+///
+/// # Errors
+///
+/// Returns [`ApiError::InvalidTitle`] if the trimmed title is empty or
+/// longer than [`MAX_SESSION_TITLE_CHARS`], or
+/// [`ApiError::SessionNotFound`] if the session is not the caller's.
+pub async fn rename(
+    db: &Db,
+    user: UserId,
+    id: SessionId,
+    title: &str,
+) -> Result<SessionDetail, ApiError> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > MAX_SESSION_TITLE_CHARS {
+        return Err(ApiError::InvalidTitle {
+            max: MAX_SESSION_TITLE_CHARS,
+        });
+    }
+    // The row is loaded first so a session that is not the caller's is a
+    // 404 rather than an UPDATE that quietly writes nothing.
+    load(db, user, id).await?;
+
+    let title = trimmed.to_owned();
+    sql!(
+        db,
+        "UPDATE sessions SET title = {title} WHERE id = {id} AND user_id = {user}"
     )
     .execute()
     .await?;
@@ -132,8 +198,8 @@ pub async fn create(
 pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError> {
     let rows: Vec<SessionRow> = sql!(
         db,
-        "SELECT id, harness, repo, state, budget_id, failure_reason, created_at_unix, \
-         last_active_unix \
+        "SELECT id, title, harness, repo, state, machine_origin, budget_id, failure_reason, \
+         created_at_unix, last_active_unix \
          FROM sessions WHERE user_id = {user} ORDER BY created_at_unix DESC, id DESC"
     )
     .fetch_all()
@@ -237,8 +303,8 @@ pub async fn require_active(db: &Db, user: UserId, id: SessionId) -> Result<(), 
 async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiError> {
     sql!(
         db,
-        "SELECT id, harness, repo, state, budget_id, failure_reason, created_at_unix, \
-         last_active_unix \
+        "SELECT id, title, harness, repo, state, machine_origin, budget_id, failure_reason, \
+         created_at_unix, last_active_unix \
          FROM sessions WHERE id = {id} AND user_id = {user}"
     )
     .fetch_optional()

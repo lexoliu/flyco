@@ -13,8 +13,8 @@
 //! than drifting quietly.
 
 use flyco_core::{
-    ApprovalState, BudgetSignal, CloudProviderKind, HarnessKind, MachineState, SkillScope,
-    SpendKind,
+    ApprovalState, BudgetSignal, CloudProviderKind, HarnessKind, MachineOrigin, MachineState,
+    SkillScope, SpendKind,
 };
 use skyzen_services::sql::ColumnEnum;
 
@@ -23,6 +23,7 @@ use crate::testing::MIGRATIONS;
 /// Every text-valued `CHECK` in the schema, and the enum that owns it.
 const CONSTRAINED: &[(&str, &str, &[&str])] = &[
     ("sessions", "harness", HarnessKind::TOKENS),
+    ("sessions", "machine_origin", MachineOrigin::TOKENS),
     ("spend_events", "kind", SpendKind::TOKENS),
     ("approvals", "state", ApprovalState::TOKENS),
     ("provider_accounts", "kind", CloudProviderKind::TOKENS),
@@ -53,6 +54,15 @@ fn constraints() -> Vec<Constraint> {
 
     for line in MIGRATIONS.iter().flat_map(|sql| sql.lines()) {
         let trimmed = line.trim();
+        // An `ALTER TABLE … ADD COLUMN` names its table too, and a column
+        // added later is as constrained as one declared at the start.
+        if let Some(rest) = trimmed.strip_prefix("ALTER TABLE ") {
+            table = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+        }
         if let Some(rest) = trimmed.strip_prefix("CREATE TABLE ") {
             table = rest
                 .trim_start_matches("IF NOT EXISTS ")

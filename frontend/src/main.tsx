@@ -5,7 +5,10 @@ import { initTheme } from "./lib/theme";
 import AppShell from "./components/AppShell";
 import Login from "./routes/Login";
 import AuthComplete from "./routes/AuthComplete";
-import Sessions from "./routes/Sessions";
+import Home from "./routes/Home";
+import Welcome from "./routes/Welcome";
+import ConnectHarness from "./routes/connect/ConnectHarness";
+import ConnectCompute from "./routes/connect/ConnectCompute";
 import SessionDetail from "./routes/SessionDetail";
 import SettingsLayout from "./routes/settings/SettingsLayout";
 import McpServersTab from "./routes/settings/McpServersTab";
@@ -31,7 +34,10 @@ render(
     <Router root={AppShell}>
       <Route path="/login" component={Login} />
       <Route path="/auth/complete" component={AuthComplete} />
-      <Route path="/" component={Sessions} />
+      <Route path="/" component={Home} />
+      <Route path="/welcome" component={Welcome} />
+      <Route path="/connect/harness" component={ConnectHarness} />
+      <Route path="/connect/compute" component={ConnectCompute} />
       <Route path="/sessions/:id" component={SessionDetail} />
       <Route path="/settings" component={SettingsLayout}>
         <Route path="/" component={() => <Navigate href="/settings/mcp" />} />

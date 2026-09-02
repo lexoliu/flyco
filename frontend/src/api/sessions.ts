@@ -5,13 +5,21 @@ import { createSession, type HarnessKind, type SessionDetail } from "./client";
 import { dollarsToUsdMicros } from "../lib/money";
 
 export interface NewSessionInput {
+  /**
+   * What the agent should do first.
+   *
+   * Required, and the only thing the user has to type: it becomes the
+   * session's first user message and its title. The user types once.
+   */
+  prompt: string;
   repo: string;
   harness: HarnessKind;
-  /** Whole-dollar budget limit, as entered in the new-session form. */
+  /** Whole-dollar budget limit, as the budget chip sets it. */
   budgetLimitDollars: number;
   /**
    * The machine to provision on. Omitted, flyco picks the cheapest
-   * deployable Linux type from the caller's catalog.
+   * deployable Linux type from the caller's catalog that clears its size
+   * floor, and records the session's machine as automatically chosen.
    */
   machine?: {
     providerAccount: string;
@@ -29,6 +37,7 @@ export interface NewSessionInput {
 
 export function requestNewSession(input: NewSessionInput): Promise<SessionDetail> {
   return createSession({
+    prompt: input.prompt,
     repo: input.repo,
     harness: input.harness,
     budget_limit: dollarsToUsdMicros(input.budgetLimitDollars),

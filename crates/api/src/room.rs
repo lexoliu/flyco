@@ -16,6 +16,25 @@
 //! [`HEADER_SESSION`]) that only a same-Worker call can set. The room
 //! refuses a request without them rather than guessing.
 //!
+//! # The daemon's mailbox
+//!
+//! A daemon is not always connected — it is being provisioned, it is
+//! reconnecting, its machine was evicted — and a user message that arrives
+//! in that window is *conversation*, not control: it is the whole point of
+//! the session, and the user has no way to know it was thrown away. So
+//! every user message is appended to the room's stream (as it already was,
+//! for replay) and a **delivery cursor** records how far down that stream
+//! the daemon has been told about. A daemon that says `Hello` is sent
+//! everything past the cursor, in order, before anything else; a message
+//! that arrives while it is connected is forwarded and the cursor moves
+//! with it. The prompt `POST /v1/sessions` carries reaches the agent by
+//! exactly this path: it is written minutes before the machine exists.
+//!
+//! Every other command is still dropped when nobody is listening, and that
+//! is not an oversight — an interrupt, a compaction or a terminal keystroke
+//! held for a daemon that reconnects an hour later would arrive as an
+//! instruction about a turn that no longer exists.
+//!
 //! # Why the state lives outside the struct
 //!
 //! [`SessionRoom`] is empty. That is not an oversight: the room's state is
@@ -286,7 +305,10 @@ async fn on_daemon_frame(
             return refuse(ws, "this daemon belongs to another session");
         }
         ws.set_attachment(&Greeted { protocol_version })?;
-        return ws.send_json(&ControlToDaemon::Welcome);
+        ws.send_json(&ControlToDaemon::Welcome)?;
+        // After the welcome and before anything else: the daemon has to
+        // know what it missed before it is told what is happening now.
+        return replay_mailbox(ws, ctx.db()).await;
     }
 
     if greeted.is_none() {
@@ -325,27 +347,61 @@ async fn on_client_frame(
         );
     }
 
-    announce(ctx, &command).await?;
-    forward_to_daemon(ctx.connections(), &command)
+    if let ControlToDaemon::UserMessage { text } = &command {
+        return deliver_user_message(ctx.db(), ctx.connections(), text).await;
+    }
+    forward_to_daemon(ctx.connections(), &command).map(drop)
 }
 
-/// Records and echoes the half of a command that browsers must see.
+/// Records a user message, echoes it to browsers, and gets it to the daemon.
 ///
-/// A user message is conversation, not control: the browser that sent it
-/// already has it, every other browser watching the session does not, and a
-/// catch-up that replayed only the agent's side would show answers to
-/// questions nobody asked. Recording it is also what gives a turn in the
+/// The one path a user message takes, whichever door it came in by — a
+/// browser's socket or the Worker forwarding a REST call — because the route
+/// a message arrived on is not something a replay, or the agent, should be
+/// able to tell.
+///
+/// Recording comes first: the message is conversation. The browser that
+/// typed it already has it, every other browser watching the session does
+/// not, and a catch-up that replayed only the agent's side would show
+/// answers to questions nobody asked. It is also what gives a turn in the
 /// history list the prompt it is named by.
-async fn announce(
-    ctx: &DurableContext,
-    command: &ControlToDaemon,
+///
+/// The cursor moves only when the daemon actually took the frame. A message
+/// left behind it is redelivered by [`replay_mailbox`] on the next `Hello`.
+async fn deliver_user_message(
+    db: &DurableDb,
+    connections: &DurableConnections,
+    text: &str,
 ) -> Result<(), DurableObjectError> {
-    let ControlToDaemon::UserMessage { text } = command else {
-        return Ok(());
+    let event = ClientEvent::UserMessage {
+        text: text.to_owned(),
     };
-    let event = ClientEvent::UserMessage { text: text.clone() };
-    append(ctx.db(), &event).await?;
-    broadcast(ctx.connections(), &event)
+    let seq = append(db, &event).await?;
+    // The mailbox is an index into the stream, written under the position
+    // the event just took, so a redelivery can never reorder the
+    // conversation or invent a message the replay does not also carry.
+    let owned = text.to_owned();
+    sql!(
+        db,
+        "INSERT INTO user_messages (seq, text) VALUES ({seq}, {owned})"
+    )
+    .execute()
+    .await
+    .map_err(|error| stored(&error))?;
+    broadcast(connections, &event)?;
+
+    let command = ControlToDaemon::UserMessage {
+        text: text.to_owned(),
+    };
+    if forward_to_daemon(connections, &command)? {
+        set_delivered(db, seq).await?;
+    } else {
+        tracing::info!(
+            seq,
+            "held a user message for a daemon that is not connected yet"
+        );
+    }
+    Ok(())
 }
 
 /// Appends a frame to the room's durable stream and caches what the UI
@@ -361,15 +417,14 @@ async fn record(
     kv: &DurableKv,
 ) -> Result<(), DurableObjectError> {
     match frame {
-        DaemonToControl::Harness { event } => {
-            append(
-                db,
-                &ClientEvent::Harness {
-                    event: event.clone(),
-                },
-            )
-            .await
-        }
+        DaemonToControl::Harness { event } => append(
+            db,
+            &ClientEvent::Harness {
+                event: event.clone(),
+            },
+        )
+        .await
+        .map(drop),
         DaemonToControl::Started { harness_session_id } => {
             put_latest(kv, KEY_HARNESS_SESSION, harness_session_id).await
         }
@@ -396,8 +451,14 @@ async fn record(
     }
 }
 
-/// Appends one event to the room's replayable stream.
-async fn append(db: &DurableDb, event: &ClientEvent) -> Result<(), DurableObjectError> {
+/// Appends one event to the room's replayable stream, and answers with the
+/// position it took.
+///
+/// The position is read back rather than counted in the struct: the room
+/// hibernates, and `AUTOINCREMENT` is the only thing here that stays
+/// monotonic across that and across two writes racing in one wake-up. A
+/// user message's position is what the delivery cursor is compared against.
+async fn append(db: &DurableDb, event: &ClientEvent) -> Result<u64, DurableObjectError> {
     let json = serde_json::to_string(event)
         .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
 
@@ -405,6 +466,81 @@ async fn append(db: &DurableDb, event: &ClientEvent) -> Result<(), DurableObject
     sql!(
         db,
         "INSERT INTO events (json, at_unix) VALUES ({json}, {now_unix()})"
+    )
+    .execute()
+    .await
+    .map_err(|error| stored(&error))?;
+
+    // Single-threaded per room: nothing else can have appended between the
+    // insert above and this read.
+    sql!(db, "SELECT seq FROM events ORDER BY seq DESC LIMIT 1")
+        .fetch_scalar_optional()
+        .await
+        .map_err(|error| stored(&error))?
+        .ok_or_else(|| DurableObjectError::Runtime("an appended event had no position".to_owned()))
+}
+
+/// One user message waiting for a daemon to come and take it.
+#[derive(Debug, skyzen::FromRow)]
+struct PendingRow {
+    seq: u64,
+    text: String,
+}
+
+/// Sends the daemon every user message recorded since it was last told
+/// anything, oldest first, and moves the cursor past them.
+///
+/// Sent on the greeting rather than on the socket's accept, because the
+/// accept is a `101` the room answers before any frame may be written and
+/// before the daemon has proved it speaks this protocol version. `Hello` is
+/// the first moment a daemon exists as far as the room is concerned.
+async fn replay_mailbox(
+    ws: &WebSocketConnection,
+    db: &DurableDb,
+) -> Result<(), DurableObjectError> {
+    ensure_schema(db).await?;
+    let cursor = delivered_through(db).await?;
+    let pending: Vec<PendingRow> = sql!(
+        db,
+        "SELECT seq, text FROM user_messages WHERE seq > {cursor} ORDER BY seq"
+    )
+    .fetch_all()
+    .await
+    .map_err(|error| stored(&error))?;
+
+    let Some(last) = pending.last().map(|row| row.seq) else {
+        return Ok(());
+    };
+    let held = pending.len();
+    for row in pending {
+        ws.send_json(&ControlToDaemon::UserMessage { text: row.text })?;
+    }
+    set_delivered(db, last).await?;
+    tracing::info!(held, through = last, "replayed a daemon's mailbox");
+    Ok(())
+}
+
+/// The stream position through which the daemon has been told everything.
+async fn delivered_through(db: &DurableDb) -> Result<u64, DurableObjectError> {
+    Ok(sql!(db, "SELECT seq FROM delivery WHERE id = 0")
+        .fetch_scalar_optional()
+        .await
+        .map_err(|error| stored(&error))?
+        .unwrap_or(0))
+}
+
+/// Records that the daemon has now been told everything through `seq`.
+///
+/// Monotonic: the daemon is greeted before its mailbox is replayed, so a
+/// message arriving during the replay's own awaits is forwarded at once and
+/// moves the cursor past it. The replay finishing afterwards with an older
+/// position must not pull the cursor back, or that message would be
+/// delivered twice on the next `Hello`.
+async fn set_delivered(db: &DurableDb, seq: u64) -> Result<(), DurableObjectError> {
+    sql!(
+        db,
+        "INSERT INTO delivery (id, seq) VALUES (0, {seq}) \
+         ON CONFLICT (id) DO UPDATE SET seq = max(excluded.seq, delivery.seq)"
     )
     .execute()
     .await
@@ -437,15 +573,30 @@ async fn put_latest<T: Serialize + Sync>(
 /// be monotonic across hibernation and across two writes racing in one
 /// wake-up, and the database is the only thing here that guarantees both.
 async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
-    db.query(
+    for statement in [
         "CREATE TABLE IF NOT EXISTS events (\
              seq     INTEGER PRIMARY KEY AUTOINCREMENT, \
              json    TEXT    NOT NULL, \
              at_unix INTEGER NOT NULL)",
-    )
-    .execute()
-    .await
-    .map_err(|error| stored(&error))?;
+        // The daemon's mailbox: one row per user message, keyed by the
+        // position that message holds in `events`. An index rather than a
+        // queue — nothing is deleted from it — so the cursor and the stream
+        // are talking about the same positions and a redelivery can never
+        // reorder the conversation.
+        "CREATE TABLE IF NOT EXISTS user_messages (\
+             seq  INTEGER PRIMARY KEY REFERENCES events(seq), \
+             text TEXT    NOT NULL)",
+        // Exactly one row, because a room has exactly one daemon. The
+        // CHECK is what makes that structural rather than a convention.
+        "CREATE TABLE IF NOT EXISTS delivery (\
+             id  INTEGER PRIMARY KEY CHECK (id = 0), \
+             seq INTEGER NOT NULL)",
+    ] {
+        db.query(statement)
+            .execute()
+            .await
+            .map_err(|error| stored(&error))?;
+    }
     Ok(())
 }
 
@@ -468,25 +619,35 @@ fn broadcast(
     Ok(())
 }
 
-/// Sends a command to the session's daemon, if it is connected.
+/// Sends a command to the session's daemon, and says whether one took it.
 ///
-/// A disconnected daemon is not an error: it is a daemon mid-reconnect, and
-/// the user's message is theirs to resend. Dropping it loudly beats
-/// queueing it for a daemon that may never come back.
+/// A daemon is a *greeted* socket, not an open one: a connection that has
+/// not said `Hello` has not agreed a protocol version, and writing a command
+/// into it would be speaking before either side knows the other's language.
+/// The handshake is a moment away, and [`replay_mailbox`] hands over
+/// everything written during it.
+///
+/// A disconnected daemon is not an error — it is a daemon mid-reconnect, or
+/// a machine that does not exist yet. What happens next depends on the
+/// command: a user message is held in the mailbox and redelivered on the
+/// next `Hello`, and everything else is dropped with a warning, because an
+/// interrupt or a keystroke replayed into a later turn would be an
+/// instruction about something that is no longer happening.
 fn forward_to_daemon(
     connections: &DurableConnections,
     command: &ControlToDaemon,
-) -> Result<(), DurableObjectError> {
+) -> Result<bool, DurableObjectError> {
     let json = serde_json::to_string(command)
         .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
-    let daemons = connections.by_tag(ROLE_DAEMON)?;
-    if daemons.is_empty() {
-        tracing::warn!("dropped a command: this session has no daemon connected");
-    }
-    for daemon in daemons {
+    let mut delivered = false;
+    for daemon in connections.by_tag(ROLE_DAEMON)? {
+        if daemon.attachment::<Greeted>()?.is_none() {
+            continue;
+        }
         daemon.send_text(&json)?;
+        delivered = true;
     }
-    Ok(())
+    Ok(delivered)
 }
 
 // ── The room's own HTTP surface ──
@@ -550,15 +711,14 @@ async fn dispatch_command(
 ) -> Result<NoContent, ApiError> {
     internal(headers)?;
 
-    // A user message forwarded from the Worker is recorded exactly as one
-    // that arrived on a browser socket: the route it came in by is not
-    // something a replay should be able to tell.
+    // A user message forwarded from the Worker takes exactly the path one
+    // that arrived on a browser socket takes — recorded, echoed, and either
+    // delivered or held for the daemon.
     if let ControlToDaemon::UserMessage { text } = command {
-        let event = ClientEvent::UserMessage { text: text.clone() };
-        append(db, &event)
+        deliver_user_message(db, connections, text)
             .await
             .map_err(|error| room_failed(&error))?;
-        broadcast(connections, &event).map_err(|error| room_failed(&error))?;
+        return Ok(NoContent);
     }
 
     let echo = match &command {
@@ -572,7 +732,12 @@ async fn dispatch_command(
         _ => None,
     };
 
-    forward_to_daemon(connections, command).map_err(|error| room_failed(&error))?;
+    if !forward_to_daemon(connections, command).map_err(|error| room_failed(&error))? {
+        tracing::warn!(
+            ?command,
+            "dropped a command: this session has no daemon connected"
+        );
+    }
     if let Some(event) = echo {
         broadcast(connections, &event).map_err(|error| room_failed(&error))?;
     }

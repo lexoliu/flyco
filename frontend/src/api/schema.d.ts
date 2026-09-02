@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/install/{artifact}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** app::get_release_artifact */
+        get: operations["app::get_release_artifact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agents-md": {
         parameters: {
             query?: never;
@@ -286,6 +303,31 @@ export interface paths {
          * @description Lists the machine types the caller can provision, with their prices.
          */
         get: operations["flyco_api::machines::get_catalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/machines/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Describes the machine flyco would provision if the caller named none.
+         * @description Describes the machine flyco would provision if the caller named none.
+         *
+         *     The one honest way to show a user what "let flyco choose" means before
+         *     they commit to it: the same function `POST /v1/sessions` runs, answered
+         *     with the catalog entry behind it so the price and the size come from the
+         *     choice rather than from a second lookup that could disagree with it.
+         */
+        get: operations["flyco_api::machines::get_default_machine"];
         put?: never;
         post?: never;
         delete?: never;
@@ -599,7 +641,14 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Renames one of the caller's sessions.
+         * @description Renames one of the caller's sessions.
+         *
+         *     The title opens as the excerpt of the prompt the session was created
+         *     with; this is how it becomes something the user chose.
+         */
+        patch: operations["flyco_api::app::update_session"];
         trace?: never;
     };
     "/v1/sessions/{id}/approvals": {
@@ -1541,6 +1590,15 @@ export interface components {
             harness: components["schemas"]["HarnessKind"];
             machine?: null | components["schemas"]["MachineChoice"];
             /**
+             * @description What the agent should do first.
+             *
+             *     Required, because a session with nothing to do is a machine nobody
+             *     asked for: the prompt is recorded as the session's first user
+             *     message and delivered to the daemon as soon as one connects. Its
+             *     excerpt is also the session's opening [`title`](SessionSummary::title).
+             */
+            prompt: string;
+            /**
              * @description Repository to work in, `owner/name`. Untyped here because it is
              *     untrusted input; the control plane parses it into a
              *     [`RepoSlug`](crate::repo::RepoSlug) and rejects anything else.
@@ -1608,6 +1666,14 @@ export interface components {
         DecideApproval: {
             /** @description What the user decided. */
             decision: components["schemas"]["ApprovalDecision"];
+        };
+        /** @description Whether a caller who names no machine wants interruptible capacity. */
+        DefaultMachineQuery: {
+            /**
+             * @description Whether to price and pick against spot capacity. Spot is the default
+             *     because it is cheaper and flyco handles eviction.
+             */
+            spot?: boolean | null;
         };
         /** @description Response of `GET`/`PUT /v1/sessions/{id}/env`. */
         EnvDocument: {
@@ -1849,8 +1915,10 @@ export interface components {
          *     Named on [`CreateSession`] when the caller picks a type themselves. The
          *     choice is validated against the named account's own catalog before
          *     anything is written, so a machine the account cannot deploy is refused
-         *     where the user made the choice. Omitted, flyco picks the cheapest
-         *     deployable Linux type instead of guessing and resizing afterwards.
+         *     where the user made the choice. Omitted, flyco picks a machine itself
+         *     with [`auto_linux_choice`](crate::machine::auto_linux_choice) instead of
+         *     guessing and resizing afterwards, and the session records that the
+         *     choice was flyco's ([`MachineOrigin::Auto`]).
          */
         MachineChoice: {
             /**
@@ -1875,6 +1943,31 @@ export interface components {
              */
             spot?: boolean;
         };
+        /**
+         * @description Answer of `GET /v1/machines/default`.
+         *
+         *     The machine flyco would provision right now, and the catalog entry it
+         *     came from, so a caller can show what it costs and how big it is without
+         *     searching the whole catalog for the type flyco named. The two travel
+         *     together because they are one answer: a choice whose entry the caller had
+         *     to look up again could be looked up against a catalog that has since
+         *     changed.
+         */
+        MachineDefault: {
+            /** @description What `POST /v1/sessions` would provision if it named no machine. */
+            choice: components["schemas"]["MachineChoice"];
+            /** @description The catalog entry that choice points at, with its price and size. */
+            entry: components["schemas"]["MachineCatalogEntry"];
+        };
+        /**
+         * @description How the machine a session runs on was chosen.
+         *
+         *     Persisted because the two are not interchangeable afterwards: a machine
+         *     the user picked is a decision flyco must not quietly undo, while an
+         *     automatic one is flyco's own guess and is free to be revisited.
+         * @enum {string}
+         */
+        MachineOrigin: "auto" | "user";
         /**
          * @description What an hour on a machine costs.
          *
@@ -2354,10 +2447,20 @@ export interface components {
              * @description Last time anything happened on it, seconds since the Unix epoch.
              */
             last_active_unix: number;
+            /** @description Whether flyco or the user chose the machine it runs on. */
+            machine_origin: components["schemas"]["MachineOrigin"];
             /** @description Repository it works in. */
             repo: components["schemas"]["RepoSlug"];
             /** @description Where it is in its lifecycle. */
             state: components["schemas"]["SessionState"];
+            /**
+             * @description What the session is called in a list.
+             *
+             *     Opens as the excerpt of the first prompt and is editable through
+             *     `PATCH /v1/sessions/{id}`. Never empty: a row with no name would
+             *     leave every list entry identified by a UUID.
+             */
+            title: string;
         };
         /**
          * @description Which harness's global skills directory a bundle belongs in.
@@ -2524,6 +2627,14 @@ export interface components {
             /** @description New title. */
             title?: string | null;
         };
+        /** @description Request body of `PATCH /v1/sessions/{id}`. */
+        UpdateSession: {
+            /**
+             * @description What to call the session, 1 to
+             *     [`MAX_SESSION_TITLE_CHARS`] characters once trimmed.
+             */
+            title: string;
+        };
         /** @description What an uploaded zip is stored as. */
         UploadSkill: {
             /** @description Directory name the bundle is installed under. */
@@ -2591,6 +2702,26 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    "app::get_release_artifact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifact: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     "flyco_api::agents_md::get_agents_md": {
         parameters: {
             query?: never;
@@ -3123,6 +3254,33 @@ export interface operations {
                          */
                         region: string;
                     }[];
+                };
+            };
+        };
+    };
+    "flyco_api::machines::get_default_machine": {
+        parameters: {
+            query?: {
+                spot?: boolean | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description What `POST /v1/sessions` would provision if it named no machine. */
+                        choice: components["schemas"]["MachineChoice"];
+                        /** @description The catalog entry that choice points at, with its price and size. */
+                        entry: components["schemas"]["MachineCatalogEntry"];
+                    };
                 };
             };
         };
@@ -3830,10 +3988,20 @@ export interface operations {
                          * @description Last time anything happened on it, seconds since the Unix epoch.
                          */
                         last_active_unix: number;
+                        /** @description Whether flyco or the user chose the machine it runs on. */
+                        machine_origin: components["schemas"]["MachineOrigin"];
                         /** @description Repository it works in. */
                         repo: components["schemas"]["RepoSlug"];
                         /** @description Where it is in its lifecycle. */
                         state: components["schemas"]["SessionState"];
+                        /**
+                         * @description What the session is called in a list.
+                         *
+                         *     Opens as the excerpt of the first prompt and is editable through
+                         *     `PATCH /v1/sessions/{id}`. Never empty: a row with no name would
+                         *     leave every list entry identified by a UUID.
+                         */
+                        title: string;
                     }[];
                 };
             };
@@ -3855,6 +4023,15 @@ export interface operations {
                     /** @description Which coding harness drives the session. */
                     harness: components["schemas"]["HarnessKind"];
                     machine?: null | components["schemas"]["MachineChoice"];
+                    /**
+                     * @description What the agent should do first.
+                     *
+                     *     Required, because a session with nothing to do is a machine nobody
+                     *     asked for: the prompt is recorded as the session's first user
+                     *     message and delivered to the daemon as soon as one connects. Its
+                     *     excerpt is also the session's opening [`title`](SessionSummary::title).
+                     */
+                    prompt: string;
                     /**
                      * @description Repository to work in, `owner/name`. Untyped here because it is
                      *     untrusted input; the control plane parses it into a
@@ -3904,6 +4081,51 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionSummary"] & {
+                        /** @description Budget accounting as of this request. */
+                        budget: components["schemas"]["BudgetView"];
+                        /**
+                         * @description Why the session is [`SessionState::Failed`], in the provider's own
+                         *     words where it has any.
+                         *
+                         *     `None` for every other state. A failed session that could not say
+                         *     why would leave the user with a dead session and no idea whether to
+                         *     retry it, pick another region, or ask for a quota increase.
+                         */
+                        failure?: string | null;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::app::update_session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description What to call the session, 1 to
+                     *     [`MAX_SESSION_TITLE_CHARS`] characters once trimmed.
+                     */
+                    title: string;
+                };
+            };
+        };
         responses: {
             /** @description Response */
             200: {

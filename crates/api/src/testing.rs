@@ -17,7 +17,7 @@ use crate::github::{GithubClient, GithubError, GithubOauth, GithubToken, GithubU
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 11] = [
+pub const MIGRATIONS: [&str; 12] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -29,6 +29,7 @@ pub const MIGRATIONS: [&str; 11] = [
     include_str!("../../../migrations/0009_budget_metering.sql"),
     include_str!("../../../migrations/0010_harness_session.sql"),
     include_str!("../../../migrations/0012_harness_credentials.sql"),
+    include_str!("../../../migrations/0013_session_title.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -209,17 +210,26 @@ pub async fn seed_other_user(db: &Db) -> CurrentUser {
 pub async fn seed_session(db: &Db, user: &CurrentUser) -> flyco_core::SessionId {
     crate::sessions::create(
         db,
-        user.id,
         flyco_core::SESSION_CAP_MAX,
-        flyco_core::HarnessKind::ClaudeCode,
-        &"lexoliu/flyco".parse().expect("a valid repo slug"),
-        flyco_core::BudgetConfig::new(flyco_core::Usd::from_dollars(10)).expect("a valid budget"),
+        crate::sessions::Opening {
+            user: user.id,
+            title: SEEDED_TITLE,
+            harness: flyco_core::HarnessKind::ClaudeCode,
+            repo: &"lexoliu/flyco".parse().expect("a valid repo slug"),
+            machine_origin: flyco_core::MachineOrigin::Auto,
+            budget: flyco_core::BudgetConfig::new(flyco_core::Usd::from_dollars(10))
+                .expect("a valid budget"),
+        },
     )
     .await
     .expect("seed a session")
     .summary
     .id
 }
+
+/// Title a seeded session carries, standing in for the excerpt a real
+/// session takes from its opening prompt.
+pub const SEEDED_TITLE: &str = "wire up the relay";
 
 async fn seed_account(db: &Db, github_id: i64, login: &str) -> CurrentUser {
     let sealed = test_config()

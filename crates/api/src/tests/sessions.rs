@@ -3,8 +3,9 @@
 use flyco_core::wire::{ApprovalDecision, ApprovalPayload};
 use flyco_core::{
     ApprovalState, ApprovalView, BudgetStage, CreateSession, CurrentUser, DecideApproval,
-    EnvDocument, EnvEntry, HarnessKind, MachineState, Problem, ProviderAccountId, SessionDetail,
-    SessionId, SessionState, SessionSummary, SpendKind, UpdateEnv, UpdateMe, Usd,
+    EnvDocument, EnvEntry, HarnessKind, MachineOrigin, MachineState, Problem, ProviderAccountId,
+    SessionDetail, SessionId, SessionState, SessionSummary, SpendKind, UpdateEnv, UpdateMe,
+    UpdateSession, Usd,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -18,6 +19,9 @@ use crate::testing::{
 use crate::{app, approvals, budgets, session, sessions, testing};
 
 const REPO: &str = "lexoliu/flyco";
+
+/// The opening instruction every test session is created with.
+const PROMPT: &str = "audit the relay for dropped frames";
 
 fn problem_kind(slug: &str) -> String {
     let mut kind = String::from("https://flyco.dev/problems/");
@@ -45,6 +49,7 @@ async fn sign_in(kv: &Kv, db: &Db, user: CurrentUser) -> Caller {
 
 fn open(caller: &Caller, repo: &str, dollars: u64) -> CreateSession {
     CreateSession {
+        prompt: PROMPT.to_owned(),
         harness: HarnessKind::ClaudeCode,
         repo: repo.to_owned(),
         budget_limit: Usd::from_dollars(dollars),
@@ -84,6 +89,15 @@ async fn creating_a_session_returns_it_provisioning_with_its_budget(
     assert_eq!(session.summary.repo.to_string(), REPO);
     assert_eq!(session.summary.harness, HarnessKind::ClaudeCode);
     assert_eq!(session.summary.state, SessionState::Provisioning);
+    assert_eq!(
+        session.summary.title, PROMPT,
+        "a session opens named by the prompt that opened it"
+    );
+    assert_eq!(
+        session.summary.machine_origin,
+        MachineOrigin::User,
+        "this request named a machine, so the user chose it"
+    );
     assert_eq!(session.budget.limit, Usd::from_dollars(10));
     assert_eq!(session.budget.spent, Usd::ZERO);
     assert_eq!(session.budget.remaining, Usd::from_dollars(10));
@@ -91,7 +105,7 @@ async fn creating_a_session_returns_it_provisioning_with_its_budget(
 }
 
 #[skyzen::test]
-async fn omitting_the_machine_provisions_the_cheapest_linux_type(ctx: TestContext, kv: Kv, db: Db) {
+async fn omitting_the_machine_lets_flyco_pick_one(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
     let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let client = ctx.client(router);
@@ -100,6 +114,7 @@ async fn omitting_the_machine_provisions_the_cheapest_linux_type(ctx: TestContex
         &client,
         &caller,
         &CreateSession {
+            prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
             budget_limit: Usd::from_dollars(10),
@@ -117,10 +132,196 @@ async fn omitting_the_machine_provisions_the_cheapest_linux_type(ctx: TestContex
     )
     .fetch_scalar()
     .await
-    .expect("the cheapest type was recorded");
+    .expect("the chosen type was recorded");
     assert_eq!(
         machine_type, SSH_HOST,
         "the only deployable Linux type in tests is the registered host"
+    );
+    assert_eq!(
+        session.summary.machine_origin,
+        MachineOrigin::Auto,
+        "a session that named no machine records that flyco chose it"
+    );
+}
+
+#[skyzen::test]
+async fn the_prompt_is_recorded_as_the_session_s_first_user_message(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+
+    // No machine exists yet, let alone a daemon: the prompt is written to
+    // the session's room, which holds it until one greets the control plane.
+    let events = client
+        .get(&format!("/v1/sessions/{}/events", session.summary.id))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    events.assert_status(200);
+    let page: crate::room::EventPage = events.json();
+    assert_eq!(
+        page.events
+            .into_iter()
+            .map(|stored| stored.event)
+            .collect::<Vec<_>>(),
+        vec![
+            serde_json::to_value(flyco_core::ClientEvent::UserMessage {
+                text: PROMPT.to_owned(),
+            })
+            .expect("serialize")
+        ]
+    );
+}
+
+#[skyzen::test]
+async fn a_session_cannot_be_opened_with_a_blank_prompt(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+
+    let response = ctx
+        .client(router)
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .json(&CreateSession {
+            prompt: "   \n ".to_owned(),
+            ..open(&caller, REPO, 10)
+        })
+        .send()
+        .await;
+
+    response.assert_status(422);
+    assert_eq!(
+        response.json::<Problem>().kind,
+        problem_kind("empty-message")
+    );
+}
+
+#[skyzen::test]
+async fn a_long_prompt_is_shortened_into_the_title(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+
+    let session = create(
+        &ctx.client(router),
+        &caller,
+        &CreateSession {
+            prompt: "x".repeat(flyco_core::MAX_SESSION_TITLE_CHARS * 3),
+            ..open(&caller, REPO, 10)
+        },
+    )
+    .await;
+
+    assert_eq!(
+        session.summary.title.chars().count(),
+        flyco_core::MAX_SESSION_TITLE_CHARS
+    );
+    assert!(session.summary.title.ends_with('…'));
+}
+
+#[skyzen::test]
+async fn a_session_can_be_renamed_and_refuses_a_title_nobody_could_read(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    let path = format!("/v1/sessions/{}", session.summary.id);
+
+    let renamed = client
+        .patch(&path)
+        .bearer(&caller.token)
+        .json(&UpdateSession {
+            title: "  Rework the relay mailbox  ".to_owned(),
+        })
+        .send()
+        .await;
+    renamed.assert_status(200);
+    assert_eq!(
+        renamed.json::<SessionDetail>().summary.title,
+        "Rework the relay mailbox",
+        "a title is stored trimmed"
+    );
+
+    for title in [
+        String::new(),
+        "   ".to_owned(),
+        "t".repeat(flyco_core::MAX_SESSION_TITLE_CHARS + 1),
+    ] {
+        let refused = client
+            .patch(&path)
+            .bearer(&caller.token)
+            .json(&UpdateSession { title })
+            .send()
+            .await;
+        refused.assert_status(422);
+        assert_eq!(
+            refused.json::<Problem>().kind,
+            problem_kind("invalid-title")
+        );
+    }
+
+    // The rename is the owner's to make, and nobody else's.
+    let stranger = sign_in(&kv, &db, seed_other_user(&db).await).await;
+    client
+        .patch(&path)
+        .bearer(&stranger.token)
+        .json(&UpdateSession {
+            title: "mine now".to_owned(),
+        })
+        .send()
+        .await
+        .assert_status(404);
+}
+
+#[skyzen::test]
+async fn the_default_machine_is_the_one_a_session_would_be_given(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+
+    let response = ctx
+        .client(router)
+        .get("/v1/machines/default?spot=true")
+        .bearer(&caller.token)
+        .send()
+        .await;
+    response.assert_status(200);
+
+    let answer: flyco_core::MachineDefault = response.json();
+    assert_eq!(answer.choice.machine_type, SSH_HOST);
+    assert_eq!(answer.entry.machine_type, SSH_HOST);
+    assert_eq!(
+        answer.choice.provider_account, caller.account,
+        "the choice names the account it would be provisioned through"
+    );
+    assert!(answer.choice.spot);
+}
+
+#[skyzen::test]
+async fn there_is_no_default_machine_without_a_linked_account(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+
+    let response = ctx
+        .client(router)
+        .get("/v1/machines/default")
+        .bearer(&token)
+        .send()
+        .await;
+
+    response.assert_status(422);
+    assert_eq!(
+        response.json::<Problem>().kind,
+        problem_kind("no-deployable-linux-machine")
     );
 }
 
@@ -139,6 +340,7 @@ async fn flyco_cannot_choose_a_machine_without_a_deployable_linux_type(
         .post("/v1/sessions")
         .bearer(&token)
         .json(&CreateSession {
+            prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
             budget_limit: Usd::from_dollars(10),
@@ -747,11 +949,15 @@ async fn ownership_is_answered_per_user(db: Db) {
 
     let session = sessions::create(
         &db,
-        owner.id,
         owner.session_cap,
-        HarnessKind::Codex,
-        &REPO.parse().expect("valid repo"),
-        flyco_core::BudgetConfig::new(Usd::from_dollars(1)).expect("non-zero"),
+        sessions::Opening {
+            user: owner.id,
+            title: "check ownership",
+            harness: HarnessKind::Codex,
+            repo: &REPO.parse().expect("valid repo"),
+            machine_origin: flyco_core::MachineOrigin::Auto,
+            budget: flyco_core::BudgetConfig::new(Usd::from_dollars(1)).expect("non-zero"),
+        },
     )
     .await
     .expect("create a session");
