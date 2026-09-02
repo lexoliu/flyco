@@ -158,6 +158,15 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
   if (method === "GET" && path === "/v1/agents-md") {
     return Promise.resolve(jsonResponse({ content: "", updated_at_unix: 0 }));
   }
+  if (method === "GET" && path === "/v1/approvals") {
+    return Promise.resolve(jsonResponse([]));
+  }
+  if (method === "GET" && path === "/v1/harness-features") {
+    return Promise.resolve(jsonResponse([]));
+  }
+  if (method === "GET" && (path === "/v1/usage/llm" || path === "/v1/usage/cloud")) {
+    return Promise.resolve(jsonResponse([]));
+  }
 
   return Promise.resolve(NOT_IMPLEMENTED());
 }

@@ -11,15 +11,11 @@ import ConnectHarness from "./routes/connect/ConnectHarness";
 import ConnectCompute from "./routes/connect/ConnectCompute";
 import SessionDetail from "./routes/SessionDetail";
 import SettingsLayout from "./routes/settings/SettingsLayout";
-import McpServersTab from "./routes/settings/McpServersTab";
-import SkillsTab from "./routes/settings/SkillsTab";
-import CloudProvidersTab from "./routes/settings/CloudProvidersTab";
-import ApiKeysTab from "./routes/settings/ApiKeysTab";
-import HarnessAccountsTab from "./routes/settings/HarnessAccountsTab";
-import FeaturesTab from "./routes/settings/FeaturesTab";
-import MemoryTab from "./routes/settings/MemoryTab";
-import AgentsMdTab from "./routes/settings/AgentsMdTab";
-import NotificationsTab from "./routes/settings/NotificationsTab";
+import AgentsSection from "./routes/settings/AgentsSection";
+import ComputeSection from "./routes/settings/ComputeSection";
+import ToolsSection from "./routes/settings/ToolsSection";
+import InstructionsSection from "./routes/settings/InstructionsSection";
+import AccountSection from "./routes/settings/AccountSection";
 import NotFound from "./routes/NotFound";
 
 initTheme();
@@ -40,16 +36,12 @@ render(
       <Route path="/connect/compute" component={ConnectCompute} />
       <Route path="/sessions/:id" component={SessionDetail} />
       <Route path="/settings" component={SettingsLayout}>
-        <Route path="/" component={() => <Navigate href="/settings/mcp" />} />
-        <Route path="/mcp" component={McpServersTab} />
-        <Route path="/skills" component={SkillsTab} />
-        <Route path="/providers" component={CloudProvidersTab} />
-        <Route path="/harness-accounts" component={HarnessAccountsTab} />
-        <Route path="/features" component={FeaturesTab} />
-        <Route path="/memory" component={MemoryTab} />
-        <Route path="/agents-md" component={AgentsMdTab} />
-        <Route path="/notifications" component={NotificationsTab} />
-        <Route path="/api-keys" component={ApiKeysTab} />
+        <Route path="/" component={() => <Navigate href="/settings/agents" />} />
+        <Route path="/agents" component={AgentsSection} />
+        <Route path="/compute" component={ComputeSection} />
+        <Route path="/tools" component={ToolsSection} />
+        <Route path="/instructions" component={InstructionsSection} />
+        <Route path="/account" component={AccountSection} />
       </Route>
       <Route path="*404" component={NotFound} />
     </Router>

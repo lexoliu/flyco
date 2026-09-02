@@ -1,7 +1,16 @@
+/**
+ * What flyco actually offers on each official harness.
+ *
+ * Kept as its own component because it is reference material, not a
+ * setting: it sits under a disclosure in the Agents section (docs/ux.md
+ * §10) so that the thing the user came to change — the linked account — is
+ * what they see first, and the capability table is one click away when they
+ * want to know why something is missing.
+ */
 import { For, createResource } from "solid-js";
 import ProblemNotice from "../../components/ProblemNotice";
 import { listHarnessFeatures, type Availability, type Feature } from "../../api/client";
-import styles from "../../components/Panel.module.css";
+import styles from "./Settings.module.css";
 
 const FEATURE_LABEL: Record<Feature, string> = {
   usage_display: "Usage display",
@@ -35,20 +44,13 @@ const AVAILABILITY_LABEL: Record<Availability, string> = {
   not_applicable: "—",
 };
 
-export default function FeaturesTab() {
+export default function HarnessMatrix() {
   const [rows] = createResource(listHarnessFeatures);
 
   return (
-    <div class={styles.tab}>
-      <div class={styles.tabHeader}>
-        <h2>Harness features</h2>
-        <p class={styles.tabDescription}>
-          What flyco actually offers on each official harness. Vendor releases create tracked gaps
-          here rather than broken promises.
-        </p>
-      </div>
+    <>
       <ProblemNotice error={rows.error} />
-      <table class={styles.table}>
+      <table class={styles.matrix}>
         <thead>
           <tr>
             <th>Feature</th>
@@ -68,6 +70,6 @@ export default function FeaturesTab() {
           </For>
         </tbody>
       </table>
-    </div>
+    </>
   );
 }

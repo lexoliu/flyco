@@ -48,7 +48,7 @@ export default function ConnectHarness() {
           {readiness.harness().length === 1
             ? "One agent is linked."
             : `${readiness.harness().length} agents are linked.`}
-          <A href="/settings/harness-accounts">Manage</A>
+          <A href="/settings/agents">Manage</A>
         </p>
       </Show>
 

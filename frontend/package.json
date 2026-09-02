@@ -16,6 +16,7 @@
   "dependencies": {
     "@solidjs/router": "^0.15.3",
     "@xterm/xterm": "^6.0.0",
+    "diff": "^9.0.0",
     "lucide-solid": "^1.39.0",
     "simple-icons": "^16.29.0",
     "solid-js": "^1.9.5"

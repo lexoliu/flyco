@@ -77,8 +77,20 @@ export default function Composer(props: ComposerProps) {
 
   // The machine flyco would pick, re-asked when the spot preference moves:
   // spot changes both the price and, potentially, which type is cheapest.
-  const [automatic] = createResource(spot, getDefaultMachine);
-  const [catalog] = createResource(() => getMachineCatalog({ os: "linux" }));
+  //
+  // Neither request is made until compute is linked, for the same reason
+  // the shell does not load readiness while signed out (see
+  // components/Readiness.tsx): with no account there is no catalog to merge
+  // and no default to name, so asking produces an error whose only possible
+  // rendering is "link an account" — which the chip already says.
+  const [automatic] = createResource(
+    () => (readiness.compute().length > 0 ? spot() : undefined),
+    getDefaultMachine,
+  );
+  const [catalog] = createResource(
+    () => (readiness.compute().length > 0 ? true : undefined),
+    () => getMachineCatalog({ os: "linux" }),
+  );
 
   /** The harness a session opens on: the one linked account, or Claude. */
   const harness = createMemo<HarnessKind>(() => readiness.harness()[0]?.harness ?? "claude_code");

@@ -48,7 +48,7 @@ export default function ConnectCompute() {
           {readiness.compute().length === 1
             ? "One compute account is linked."
             : `${readiness.compute().length} compute accounts are linked.`}
-          <A href="/settings/providers">Manage</A>
+          <A href="/settings/compute">Manage</A>
         </p>
       </Show>
 
