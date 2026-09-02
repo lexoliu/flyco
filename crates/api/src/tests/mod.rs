@@ -4,6 +4,7 @@
 //! `testing` fixtures without exposing them in the public API.
 
 mod claude_oauth;
+mod codex_oauth;
 mod contract;
 mod harness_accounts;
 mod mcp;

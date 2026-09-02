@@ -250,12 +250,12 @@ impl ByoSsh {
 #[cfg(test)]
 mod tests {
     use flyco_core::machine::{CloudProviderKind, MachinePricing, MachineSpec, MachineState};
-    use flyco_core::{HarnessKind, MachineId, PermissionMode, SessionId};
+    use flyco_core::{MachineId, PermissionMode, SessionId};
 
     use super::{ByoSsh, ContainerJob, DEFAULT_IMAGE, PROVIDER, container_name};
     use crate::{
-        CapacityMode, ClaudeCredential, DaemonBootstrap, Machine, MachineOperation, ProviderError,
-        ProvisionRequest,
+        CapacityMode, ClaudeCredential, DaemonBootstrap, HarnessCredential, Machine,
+        MachineOperation, ProviderError, ProvisionRequest,
     };
 
     const HOST: &str = "build.lexo.cool";
@@ -265,9 +265,8 @@ mod tests {
             session: SessionId::generate(),
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_token".to_owned(),
-            harness: HarnessKind::ClaudeCode,
             permission_mode: PermissionMode::Default,
-            claude_auth: ClaudeCredential::Inherit,
+            auth: HarnessCredential::ClaudeCode(ClaudeCredential::Inherit),
             repo: crate::testing::checkout(),
             machine_origin: flyco_core::MachineOrigin::Auto,
             machine: crate::testing::session_machine(),

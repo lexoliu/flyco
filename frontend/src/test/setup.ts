@@ -14,8 +14,8 @@ window.scrollTo = () => {
   /* no-op in tests */
 };
 
-// Nor does jsdom implement window.open, which the Claude sign-in uses to put
-// Anthropic's authorize page in a tab of its own.
+// Nor does jsdom implement window.open, which both sign-ins use to put the
+// vendor's own page in a tab of its own.
 window.open = () => null;
 
 // vite-plugin-pwa's virtual module only exists inside a real Vite build;
@@ -194,6 +194,22 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
         201,
       ),
     );
+  }
+  if (method === "POST" && path === "/v1/harness-accounts/codex/oauth/start") {
+    return Promise.resolve(
+      jsonResponse({
+        attempt_id: "99999999-8888-4777-8666-555555555555",
+        user_code: "FLYC-8QK2",
+        verification_url: "https://auth.openai.com/codex/device",
+        interval_seconds: 1,
+      }),
+    );
+  }
+  // The default is a sign-in nobody has approved yet, so a card that opens
+  // and waits is the ordinary case; a test that wants the other outcomes
+  // routes this path itself.
+  if (method === "GET" && /^\/v1\/harness-accounts\/codex\/oauth\/[^/]+$/.test(path)) {
+    return Promise.resolve(jsonResponse({ state: "pending" }));
   }
   if (method === "GET" && path === "/v1/memory") {
     return Promise.resolve(jsonResponse([]));

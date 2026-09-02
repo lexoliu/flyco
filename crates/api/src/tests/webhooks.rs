@@ -15,12 +15,11 @@ use skyzen_services::{Db, Queue};
 use skyzen_test::mock::InMemoryQueue;
 use skyzen_test::{TestClient, TestContext};
 
-use crate::anthropic::ClaudeClient;
 use crate::app::router;
 use crate::github::GithubClient;
 use crate::room::EventPage;
 use crate::testing::{
-    GITHUB_WEBHOOK_SECRET, TestClaude, TestGithub, migrate, seed_user, test_config,
+    GITHUB_WEBHOOK_SECRET, TestGithub, migrate, seed_user, test_config, test_vendors,
 };
 use crate::webhooks::{EVENT_HEADER, SIGNATURE_HEADER};
 
@@ -46,7 +45,7 @@ async fn configured_router(db: &Db) -> Router {
     router(
         test_config(),
         GithubClient::Fake(TestGithub::default()),
-        ClaudeClient::Fake(TestClaude),
+        test_vendors(),
         db.clone(),
         Queue::new(InMemoryQueue::new()),
     )

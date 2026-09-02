@@ -290,6 +290,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/harness-accounts/codex/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/harness-accounts/codex/oauth/start` — begins a Codex sign-in.
+         * @description `POST /v1/harness-accounts/codex/oauth/start` — begins a Codex sign-in.
+         */
+        post: operations["flyco_api::codex_oauth::start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/harness-accounts/codex/oauth/{attempt_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /v1/harness-accounts/codex/oauth/{attempt_id}` — polls it once.
+         * @description `GET /v1/harness-accounts/codex/oauth/{attempt_id}` — polls it once.
+         */
+        get: operations["flyco_api::codex_oauth::poll"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness-accounts/{id}": {
         parameters: {
             query?: never;
@@ -1873,6 +1913,46 @@ export interface components {
             /** @description Spend the provider has metered so far this period. */
             spent: components["schemas"]["Usd"];
         };
+        /**
+         * @description Body of a `GET /v1/harness-accounts/codex/oauth/{attempt_id}` that found
+         *     the sign-in still waiting.
+         *
+         *     An approved sign-in answers `201` with the linked
+         *     [`HarnessAccountView`] instead, so the two outcomes are told apart by
+         *     the status code and never by a nullable field.
+         */
+        CodexOauthPending: {
+            /** @enum {string} */
+            state: "pending";
+        };
+        /**
+         * @description Response of `POST /v1/harness-accounts/codex/oauth/start`.
+         *
+         *     The three things `codex login --device-auth` prints, plus the opaque
+         *     attempt id the browser polls against. `OpenAI`'s `device_auth_id` is
+         *     deliberately not among them: it is the half that redeems the grant, so
+         *     it stays in the control plane's key-value store beside the user who
+         *     started the attempt.
+         */
+        CodexOauthStart: {
+            /** @description Names the device authorization this sign-in is polled against. */
+            attempt_id: components["schemas"]["Uuid"];
+            /**
+             * Format: int64
+             * @description How long to wait between polls, as `OpenAI` states it.
+             */
+            interval_seconds: number;
+            /**
+             * @description The one-time code the user types at
+             *     [`verification_url`](Self::verification_url).
+             */
+            user_code: string;
+            /**
+             * @description Where the user approves the code, which is
+             *     `https://auth.openai.com/codex/device`.
+             */
+            verification_url: string;
+        };
         /** @description Request body of `POST /v1/harness-accounts/claude/oauth/complete`. */
         CompleteClaudeOauth: {
             /** @description The attempt this code belongs to, from [`ClaudeOauthStart`]. */
@@ -2135,6 +2215,23 @@ export interface components {
             /** @enum {string} */
             kind: "claude_oauth";
             /** @description Redeemed for a new pair once the access token is near its end. */
+            refresh_token: string;
+        } | {
+            /** @description The bearer token Codex runs under, until it expires. */
+            access_token: string;
+            /** @description `chatgpt_account_id`, the workspace the grant belongs to. */
+            account_id: string;
+            /**
+             * Format: int64
+             * @description When the access token stops working, seconds since the Unix
+             *     epoch.
+             */
+            expires_at_unix: number;
+            /** @description The `ChatGPT` id token, a JWT naming the account. */
+            id_token: string;
+            /** @enum {string} */
+            kind: "codex_oauth";
+            /** @description Redeemed for a new set once the access token is near its end. */
             refresh_token: string;
         };
         /** @description One row of the per-harness feature matrix. */
@@ -3699,6 +3796,99 @@ export interface operations {
                         attempt_id: components["schemas"]["Uuid"];
                         /** @description Fully-formed `https://claude.ai/oauth/authorize` URL to open. */
                         authorize_url: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::codex_oauth::start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Names the device authorization this sign-in is polled against. */
+                        attempt_id: components["schemas"]["Uuid"];
+                        /**
+                         * Format: int64
+                         * @description How long to wait between polls, as `OpenAI` states it.
+                         */
+                        interval_seconds: number;
+                        /**
+                         * @description The one-time code the user types at
+                         *     [`verification_url`](Self::verification_url).
+                         */
+                        user_code: string;
+                        /**
+                         * @description Where the user approves the code, which is
+                         *     `https://auth.openai.com/codex/device`.
+                         */
+                        verification_url: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::codex_oauth::poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Nobody has approved the code yet; ask again after `interval_seconds`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        state: "pending";
+                    };
+                };
+            };
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When the stored credential expires, when the vendor states a
+                         *     lifetime.
+                         */
+                        expires_at_unix?: number | null;
+                        /** @description Which harness this account drives. */
+                        harness: components["schemas"]["HarnessKind"];
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /**
+                         * @description Account name as the vendor reports it, so the user can tell two
+                         *     linked accounts apart.
+                         */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When it was linked, seconds since the Unix epoch.
+                         */
+                        linked_at_unix: number;
                     };
                 };
             };

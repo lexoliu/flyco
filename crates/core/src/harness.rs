@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::{ClaudeOauthAttemptId, HarnessAccountId};
+use crate::id::{ClaudeOauthAttemptId, CodexOauthAttemptId, HarnessAccountId};
 use crate::money::Usd;
 
 /// The coding harness driving a session. Flyco supports exactly these two
@@ -267,6 +267,25 @@ pub enum HarnessCredentialInput {
         /// epoch.
         expires_at_unix: u64,
     },
+    /// A `ChatGPT` subscription obtained through the Codex device-code flow.
+    ///
+    /// Four values rather than one, because Codex's own `auth.json` is four
+    /// values: the id token names the account, the access token runs the
+    /// agent, the refresh token keeps the link alive, and the account id is
+    /// the workspace every request is billed to.
+    CodexOauth {
+        /// The `ChatGPT` id token, a JWT naming the account.
+        id_token: String,
+        /// The bearer token Codex runs under, until it expires.
+        access_token: String,
+        /// Redeemed for a new set once the access token is near its end.
+        refresh_token: String,
+        /// `chatgpt_account_id`, the workspace the grant belongs to.
+        account_id: String,
+        /// When the access token stops working, seconds since the Unix
+        /// epoch.
+        expires_at_unix: u64,
+    },
 }
 
 impl core::fmt::Debug for HarnessCredentialInput {
@@ -276,6 +295,7 @@ impl core::fmt::Debug for HarnessCredentialInput {
             Self::ClaudeApiKey { .. } => "claude_api_key",
             Self::CodexApiKey { .. } => "codex_api_key",
             Self::ClaudeOauth { .. } => "claude_oauth",
+            Self::CodexOauth { .. } => "codex_oauth",
         };
         f.debug_struct("HarnessCredentialInput")
             .field("kind", &kind)
@@ -291,7 +311,7 @@ impl HarnessCredentialInput {
             Self::ClaudeSetupToken { .. }
             | Self::ClaudeApiKey { .. }
             | Self::ClaudeOauth { .. } => HarnessKind::ClaudeCode,
-            Self::CodexApiKey { .. } => HarnessKind::Codex,
+            Self::CodexApiKey { .. } | Self::CodexOauth { .. } => HarnessKind::Codex,
         }
     }
 
@@ -301,7 +321,9 @@ impl HarnessCredentialInput {
         match self {
             Self::ClaudeSetupToken { token } => token,
             Self::ClaudeApiKey { key } | Self::CodexApiKey { key } => key,
-            Self::ClaudeOauth { access_token, .. } => access_token,
+            Self::ClaudeOauth { access_token, .. } | Self::CodexOauth { access_token, .. } => {
+                access_token
+            }
         }
     }
 }
@@ -338,6 +360,41 @@ pub struct CompleteClaudeOauth {
     /// code alone is accepted too, because a user who selects only the
     /// first half of it has still supplied everything the exchange needs.
     pub code: String,
+}
+
+/// Response of `POST /v1/harness-accounts/codex/oauth/start`.
+///
+/// The three things `codex login --device-auth` prints, plus the opaque
+/// attempt id the browser polls against. `OpenAI`'s `device_auth_id` is
+/// deliberately not among them: it is the half that redeems the grant, so
+/// it stays in the control plane's key-value store beside the user who
+/// started the attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct CodexOauthStart {
+    /// Names the device authorization this sign-in is polled against.
+    pub attempt_id: CodexOauthAttemptId,
+    /// The one-time code the user types at
+    /// [`verification_url`](Self::verification_url).
+    pub user_code: String,
+    /// Where the user approves the code, which is
+    /// `https://auth.openai.com/codex/device`.
+    pub verification_url: String,
+    /// How long to wait between polls, as `OpenAI` states it.
+    pub interval_seconds: u64,
+}
+
+/// Body of a `GET /v1/harness-accounts/codex/oauth/{attempt_id}` that found
+/// the sign-in still waiting.
+///
+/// An approved sign-in answers `201` with the linked
+/// [`HarnessAccountView`] instead, so the two outcomes are told apart by
+/// the status code and never by a nullable field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CodexOauthPending {
+    /// Nobody has approved the code yet. Poll again after
+    /// [`CodexOauthStart::interval_seconds`].
+    Pending,
 }
 
 /// A Claude or Codex account the user has linked, as `GET

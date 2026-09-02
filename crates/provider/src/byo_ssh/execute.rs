@@ -425,15 +425,15 @@ impl client::Handler for FingerprintCheck {
 #[cfg(test)]
 mod tests {
     use flyco_core::machine::{CloudProviderKind, MachineSpec, MachineState};
-    use flyco_core::{HarnessKind, MachineId, PermissionMode, SessionId};
+    use flyco_core::{MachineId, PermissionMode, SessionId};
 
     use core::future::{Future, ready};
 
     use super::{CommandOutcome, CommandRunner, SshExecutor, SshHost, render};
     use crate::byo_ssh::{ByoSsh, CONFIG_ENV, ContainerJob, container_name};
     use crate::{
-        ClaudeCredential, CloudProvider, DaemonBootstrap, MachineOperation, ProviderError,
-        ProvisionRequest,
+        ClaudeCredential, CloudProvider, DaemonBootstrap, HarnessCredential, MachineOperation,
+        ProviderError, ProvisionRequest,
     };
 
     const HOST: &str = "build.lexo.cool";
@@ -474,9 +474,8 @@ mod tests {
                 session: SessionId::generate(),
                 control_plane_url: "https://flyco.dev/".to_owned(),
                 daemon_token: TOKEN.to_owned(),
-                harness: HarnessKind::ClaudeCode,
                 permission_mode: PermissionMode::Default,
-                claude_auth: ClaudeCredential::Inherit,
+                auth: HarnessCredential::ClaudeCode(ClaudeCredential::Inherit),
                 repo: crate::testing::checkout(),
                 machine_origin: flyco_core::MachineOrigin::Auto,
                 machine: crate::testing::session_machine(),

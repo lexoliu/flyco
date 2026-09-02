@@ -13,6 +13,7 @@ use skyzen_services::{DbError, KvError, StorageError};
 use crate::anthropic::AnthropicError;
 use crate::crypto::CryptoError;
 use crate::github::GithubError;
+use crate::openai::{DEVICE_AUTH_SETTINGS_URL, OpenAiError};
 use crate::problem::{self, Challenge};
 
 /// Detail returned for any failure that is flyco's fault rather than the
@@ -159,6 +160,45 @@ pub enum ApiError {
     #[error("Anthropic refused this Claude sign-in: {reason}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     ClaudeOauthRejected {
         /// Anthropic's own error code and description.
+        reason: String,
+    },
+
+    /// The Codex sign-in this poll names is unknown, already completed,
+    /// past its fifteen-minute lifetime, or another user's.
+    ///
+    /// One variant for all four, for the same reason
+    /// [`ClaudeOauthAttemptExpired`](Self::ClaudeOauthAttemptExpired) is
+    /// one: the attempt id is the only thing that names an attempt, and
+    /// telling a caller which of the four theirs is would be a free oracle
+    /// over somebody else's sign-in.
+    #[error(
+        "this Codex sign-in has expired or was already completed; start it again",
+        status = StatusCode::BAD_REQUEST
+    )]
+    CodexOauthAttemptExpired,
+
+    /// `OpenAI` will not start a device sign-in for this account.
+    ///
+    /// Device code authorization is off by default — it is more open to
+    /// social engineering than a browser redirect — and only the account's
+    /// owner, or a workspace admin, can switch it on. The detail names the
+    /// page where they do it, because that is the entire fix.
+    #[error(
+        "OpenAI will not start a device sign-in for this account. Turn on device code \
+         authorization in your ChatGPT security settings at {settings_url} — on a workspace \
+         account a workspace admin does it — and try again.",
+        status = StatusCode::CONFLICT
+    )]
+    CodexDeviceAuthDisabled {
+        /// Where the switch is, so the problem document carries the fix
+        /// rather than describing it.
+        settings_url: &'static str,
+    },
+
+    /// `OpenAI` refused the grant, and said why.
+    #[error("OpenAI refused this Codex sign-in: {reason}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    CodexOauthRejected {
+        /// `OpenAI`'s own error code and description.
         reason: String,
     },
 
@@ -516,6 +556,16 @@ pub enum ApiError {
     #[error("Anthropic call failed: {0}", status = StatusCode::BAD_GATEWAY)]
     Anthropic(AnthropicError),
 
+    /// `OpenAI` could not be reached, or answered with something flyco
+    /// cannot interpret.
+    ///
+    /// A refusal is not one of these — those are
+    /// [`CodexOauthRejected`](Self::CodexOauthRejected) and
+    /// [`CodexDeviceAuthDisabled`](Self::CodexDeviceAuthDisabled), both of
+    /// which the caller can act on. See [`From<OpenAiError>`](Self::from).
+    #[error("OpenAI call failed: {0}", status = StatusCode::BAD_GATEWAY)]
+    OpenAi(OpenAiError),
+
     /// The key-value store failed.
     #[error("key-value store failed: {0}")]
     Kv(#[from] KvError),
@@ -550,6 +600,26 @@ impl From<AnthropicError> for ApiError {
     }
 }
 
+/// Sorts an `OpenAI` failure into what the user can fix and what they can
+/// only wait out.
+///
+/// Three answers rather than two, because the device flow has a refusal
+/// with a *fix*: device code authorization being switched off is a 409 that
+/// says where the switch is, not a 502 the user can do nothing about.
+impl From<OpenAiError> for ApiError {
+    fn from(error: OpenAiError) -> Self {
+        match error {
+            OpenAiError::DeviceAuthDisabled => Self::CodexDeviceAuthDisabled {
+                settings_url: DEVICE_AUTH_SETTINGS_URL,
+            },
+            rejected @ OpenAiError::Rejected { .. } => Self::CodexOauthRejected {
+                reason: rejected.to_string(),
+            },
+            unavailable => Self::OpenAi(unavailable),
+        }
+    }
+}
+
 impl ApiError {
     /// The slug this failure is documented under, below
     /// [`TYPE_BASE`](flyco_core::problem::TYPE_BASE).
@@ -580,6 +650,10 @@ impl ApiError {
             Self::ClaudeOauthStateMismatch => "claude-oauth-state-mismatch",
             Self::ClaudeOauthRejected { .. } => "claude-oauth-rejected",
             Self::Anthropic(_) => "anthropic-unavailable",
+            Self::CodexOauthAttemptExpired => "codex-oauth-attempt-expired",
+            Self::CodexDeviceAuthDisabled { .. } => "codex-device-auth-disabled",
+            Self::CodexOauthRejected { .. } => "codex-oauth-rejected",
+            Self::OpenAi(_) => "openai-unavailable",
             Self::MachineNotFound => "machine-not-found",
             Self::MachineTypeNotOffered(_) => "machine-type-not-offered",
             Self::LicenseBoundResizeNeedsApproval { .. } => "license-bound-resize-needs-approval",
