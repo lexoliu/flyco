@@ -2,8 +2,8 @@
 //!
 //! Cross-compiles the daemon for both Linux architectures against a pinned
 //! glibc, writes the checksum files `crates/api/src/releases.rs` serves,
-//! stages the installer and its systemd unit out of `crates/xtask/install/`,
-//! uploads all six objects to the channel's prefix, and reads back what the
+//! stages the installer and both systemd units out of `crates/xtask/install/`,
+//! uploads every object to the channel's prefix, and reads back what the
 //! control plane actually serves. It refuses to publish a daemon speaking a
 //! wire protocol the deployed Worker does not, because that combination
 //! refuses every machine provisioned from it at `Hello`.
@@ -219,9 +219,9 @@ async fn run_to_completion(invocation: &Invocation, directory: &Path) -> Result<
     Ok(())
 }
 
-/// Puts all six objects in the staging directory under their published names:
-/// both freshly built binaries, the checksum file attesting each one, and the
-/// installer and its unit copied verbatim out of the repository.
+/// Puts every object in the staging directory under its published name: both
+/// freshly built binaries, the checksum file attesting each one, and the
+/// installer and both units copied verbatim out of the repository.
 ///
 /// Everything is uploaded from here, so a `--dry-run` leaves behind exactly
 /// the bytes a real publish would have sent.

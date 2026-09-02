@@ -14,6 +14,7 @@ use flyco_daemon::harness::claude::ClaudeCodeHarness;
 use flyco_daemon::harness::claude::store::{JsonlTranscriptStore, TranscriptStore};
 use flyco_daemon::harness::codex::CodexHarness;
 use flyco_daemon::harness::{Harness as _, HarnessSession, StartRequest, Started};
+use flyco_daemon::host;
 use flyco_daemon::mcp::FlycoTools;
 use flyco_daemon::mount::{FlycoServer, Mount};
 use flyco_daemon::repl;
@@ -21,6 +22,7 @@ use rmcp::ServiceExt as _;
 use rmcp::transport::stdio;
 use tokio::io::AsyncWriteExt as _;
 use tracing_subscriber::EnvFilter;
+use url::Url;
 
 /// flyco's execution-plane daemon.
 #[derive(Debug, Parser)]
@@ -54,6 +56,47 @@ enum Command {
     },
     /// Print a complete, valid configuration to stdout.
     ExampleConfig,
+    /// Act as a machine the user owns, rather than as a session VM.
+    ///
+    /// The same binary in its other role: `flycod host run` holds one
+    /// outbound socket to this machine's room and runs the session
+    /// containers the control plane sends it (docs/host-enrollment.md).
+    Host {
+        #[command(subcommand)]
+        command: HostCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum HostCommand {
+    /// Register this machine with a control plane and write its
+    /// configuration.
+    ///
+    /// Run once, by the installer, with the single-use token the enrollment
+    /// wizard printed. It measures the machine, spends the token, and writes
+    /// the long-lived one root-only.
+    Enroll {
+        /// The single-use `fh_` enrollment token.
+        #[arg(long, value_name = "TOKEN")]
+        token: String,
+        /// The control plane that minted it.
+        #[arg(long, value_name = "URL")]
+        control_plane: Url,
+        /// Where rootless Podman keeps this machine's containers and
+        /// volumes. Its free space is what the control plane schedules
+        /// against.
+        #[arg(long, value_name = "PATH", default_value = host::config::DEFAULT_VOLUME_ROOT)]
+        volume_root: PathBuf,
+        /// Where to write the configuration.
+        #[arg(long, value_name = "PATH", default_value = host::config::DEFAULT_PATH)]
+        config: PathBuf,
+    },
+    /// Hold this machine's relay and run the container jobs it is sent.
+    Run {
+        /// Path to the configuration `flycod host enroll` wrote.
+        #[arg(long, value_name = "PATH", default_value = host::config::DEFAULT_PATH)]
+        config: PathBuf,
+    },
 }
 
 /// Anything that stops `flycod` before it finishes.
@@ -75,6 +118,8 @@ enum Failure {
     Git(#[from] flyco_daemon::git::GitError),
     #[error(transparent)]
     Mount(#[from] flyco_daemon::mount::MountError),
+    #[error(transparent)]
+    Host(#[from] host::HostError),
     #[error("could not write to stdout")]
     Stdout(#[source] std::io::Error),
     /// `flycod mcp` was pointed at a configuration with no control plane.
@@ -130,6 +175,7 @@ async fn run(cli: Cli) -> Result<(), Failure> {
                 .map_err(Failure::Stdout)?;
             stdout.flush().await.map_err(Failure::Stdout)
         }
+        Command::Host { command } => run_host(command).await,
         Command::Mcp { config } => serve_mcp(DaemonConfig::load(&config)?).await,
         Command::Run { config: path } => {
             let mut config = DaemonConfig::load(&path)?;
@@ -259,6 +305,33 @@ async fn check_out(config: &DaemonConfig, api: Option<&HttpControlApi>) -> Resul
         apply_stored_patch(api, &config.workdir).await?;
     }
     Ok(())
+}
+
+/// Runs `flycod host`: this machine, rather than a session on one.
+///
+/// Enrolling and running are one command apart because they happen at
+/// different times and with different credentials — the installer enrols
+/// once with a token the user pasted, and the unit runs for as long as the
+/// machine is flyco's to schedule onto.
+async fn run_host(command: HostCommand) -> Result<(), Failure> {
+    match command {
+        HostCommand::Enroll {
+            token,
+            control_plane,
+            volume_root,
+            config,
+        } => {
+            host::enroll(host::Enrollment {
+                token,
+                control_plane,
+                volume_root,
+                config,
+            })
+            .await?;
+            Ok(())
+        }
+        HostCommand::Run { config } => Ok(host::run(&config).await?),
+    }
 }
 
 /// Serves flyco's tools to the harness until it closes the pipe.

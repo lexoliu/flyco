@@ -39,9 +39,12 @@ from.
    stored root-only on the host. The enrollment token is spent.
 4. The unit starts `flycod host run`, which opens the outbound WebSocket to
    `/v1/hosts/{id}/relay` (hibernating, tag `host`) and reports
-   `HostToControl::Hello { facts }`. The wizard, polling
-   `GET /v1/hosts/enrollment-tokens/{id}`, flips from "waiting for the
-   machine…" to the compute card.
+   `HostToControl::Hello { facts }`. It heartbeats every **60 seconds**
+   thereafter: a hibernating socket nobody writes to is indistinguishable
+   from a machine that was unplugged, and a minute is short enough that a
+   host which lost power reads as offline before anybody is scheduled onto
+   it. The wizard, polling `GET /v1/hosts/enrollment-tokens/{id}`, flips
+   from "waiting for the machine…" to the compute card.
 
 ## Data model
 
@@ -105,8 +108,14 @@ still running names the count and offers `Remove anyway`.
    the `host` provider kind replacing `byo_ssh`.
 2. Control plane: hosts table, enrollment routes, `HostRoom` DO, host
    provider account, provisioning dispatch to a host.
-3. `flycod host`: enroll, run loop, local Podman executor, facts.
-4. Installer `host` subcommand and Podman bootstrap.
+3. ~~`flycod host`: enroll, run loop, local Podman executor, facts.~~ Done:
+   `crates/daemon/src/host`, root-only `/etc/flyco/host.toml`, jobs run
+   through `runuser` as the `flyco` user and idempotent under the room's
+   at-least-once redelivery.
+4. ~~Installer `host` subcommand and Podman bootstrap.~~ Done: `flycod.sh
+   host enroll <token>` installs Podman when absent, creates the `flyco`
+   user with subuid/subgid ranges and linger, enrols the machine, and starts
+   `flycod-host.service` — a seventh published release object.
 5. ~~Frontend wizard and settings card.~~ Done: the chooser's fourth card
    opens `components/link/HostWizard.tsx`, the enrollment poll is the state
    machine in `lib/hostEnrollment.ts`, and `components/HostCard.tsx` fills

@@ -1,18 +1,18 @@
 //! The typed description of a `flycod` release.
 //!
 //! Everything the publish is allowed to do is spelled out here: which
-//! architectures exist, where the six objects they produce come from, the
-//! exact bytes of a checksum file, and the exact argument vector of every
-//! external program the publish runs. Nothing in this module performs I/O, so
-//! all of it is assertable in unit tests — which is the point: the published
-//! names must be the ones the control plane serves, and the commands must
-//! equal the ones the deploy notes document.
+//! architectures exist, where the objects they produce come from, the exact
+//! bytes of a checksum file, and the exact argument vector of every external
+//! program the publish runs. Nothing in this module performs I/O, so all of
+//! it is assertable in unit tests — which is the point: the published names
+//! must be the ones the control plane serves, and the commands must equal
+//! the ones the deploy notes document.
 //!
 //! The names themselves are not declared here. They come from
 //! [`flyco_core::release`], the one table `flyco_api::releases` allowlists
-//! from as well, so a publisher that grew a seventh object and a control plane
-//! that serves six cannot exist. What this module adds is how each object is
-//! produced: two cross-compiles, two checksum lines, and two files copied
+//! from as well, so a publisher that grew an object the control plane does
+//! not serve cannot exist. What this module adds is how each object is
+//! produced: two cross-compiles, two checksum lines, and three files copied
 //! verbatim out of the repository.
 
 use std::{
@@ -306,14 +306,14 @@ pub struct Release {
     pub channel: Channel,
     /// One pair of objects per architecture — four objects, by construction.
     pub artifacts: [ArchitectureArtifacts; BINARY_COUNT],
-    /// The installer and its systemd unit, copied out of the repository —
-    /// two more objects, by construction, for six in all.
+    /// The installer and the two systemd units, copied out of the repository
+    /// — three more objects, by construction, for seven in all.
     pub assets: [ReleaseObject; ASSET_COUNT],
 }
 
 impl Release {
     /// Every object of the release, in upload order: each architecture's
-    /// binary and checksum, then the unit file, then the installer.
+    /// binary and checksum, then the two unit files, then the installer.
     ///
     /// The installer is last because it is the entry point cloud-init
     /// fetches: the object that makes a release live is the object published
@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn a_release_publishes_the_six_objects_in_upload_order() {
+    fn a_release_publishes_the_seven_objects_in_upload_order() {
         let release = release();
 
         assert_eq!(
@@ -532,6 +532,7 @@ mod tests {
                 "flycod-linux-aarch64",
                 "flycod-linux-aarch64.sha256",
                 "flycod.service",
+                "flycod-host.service",
                 "flycod.sh",
             ]
         );
@@ -570,13 +571,14 @@ mod tests {
     }
 
     #[test]
-    fn the_installer_and_its_unit_are_read_from_the_repository() {
+    fn the_installer_and_both_units_are_read_from_the_repository() {
         let root = Path::new("/w");
 
         assert_eq!(
             ASSETS.map(|asset| asset_source(root, asset)),
             [
                 PathBuf::from("/w/crates/xtask/install/flycod.service"),
+                PathBuf::from("/w/crates/xtask/install/flycod-host.service"),
                 PathBuf::from("/w/crates/xtask/install/flycod.sh"),
             ]
         );
@@ -595,6 +597,7 @@ mod tests {
                 "flycod-linux-x86_64.sha256",
                 "flycod-linux-aarch64.sha256",
                 "flycod.service",
+                "flycod-host.service",
                 "flycod.sh",
             ]
         );

@@ -142,7 +142,61 @@ fn notice_failed(error: &askama::Error) -> WireError {
 }
 
 /// The socket type a connected daemon holds.
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+pub(crate) type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+/// The `ws`/`wss` URL of one route under a control plane's base URL.
+///
+/// `http`/`https` become `ws`/`wss`: a configuration names one control
+/// plane, and nothing on a machine should have to be told its address twice
+/// in two schemes. Shared with the host relay, which reaches a different
+/// route on the same deployment.
+///
+/// # Errors
+///
+/// Returns [`WireError::Unaddressable`] if the base URL cannot address the
+/// route, or is not an HTTP or WebSocket URL at all.
+pub(crate) fn websocket_url(base: &url::Url, path: &str) -> Result<String, WireError> {
+    let mut url = base
+        .join(path)
+        .map_err(|error| WireError::Unaddressable(error.to_string()))?;
+
+    let scheme = match url.scheme() {
+        "http" | "ws" => "ws",
+        "https" | "wss" => "wss",
+        other => {
+            return Err(WireError::Unaddressable(format!(
+                "`{other}` is not an HTTP or WebSocket scheme"
+            )));
+        }
+    };
+    url.set_scheme(scheme)
+        .map_err(|()| WireError::Unaddressable("the URL scheme cannot be changed".to_owned()))?;
+    Ok(url.to_string())
+}
+
+/// Opens one authenticated WebSocket, presenting `token` as a bearer
+/// credential.
+///
+/// # Errors
+///
+/// Returns [`WireError`] if the URL is not one tungstenite can request, the
+/// token is not a legal header value, or the handshake failed.
+pub(crate) async fn connect_bearer(url: &str, token: &str) -> Result<Socket, WireError> {
+    let mut request = url
+        .into_client_request()
+        .map_err(|error| WireError::Unaddressable(error.to_string()))?;
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {token}")
+            .parse()
+            .map_err(|_| WireError::Unaddressable("the token is not a header value".to_owned()))?,
+    );
+
+    let (socket, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .map_err(|error| WireError::Unwelcome(error.to_string()))?;
+    Ok(socket)
+}
 
 /// Everything needed to reach one session's room.
 #[derive(Clone)]
@@ -180,25 +234,8 @@ impl Endpoint {
         session: SessionId,
         token: String,
     ) -> Result<Self, WireError> {
-        let mut url = base
-            .join(&format!("v1/sessions/{session}/relay/daemon"))
-            .map_err(|error| WireError::Unaddressable(error.to_string()))?;
-
-        let scheme = match url.scheme() {
-            "http" | "ws" => "ws",
-            "https" | "wss" => "wss",
-            other => {
-                return Err(WireError::Unaddressable(format!(
-                    "`{other}` is not an HTTP or WebSocket scheme"
-                )));
-            }
-        };
-        url.set_scheme(scheme).map_err(|()| {
-            WireError::Unaddressable("the URL scheme cannot be changed".to_owned())
-        })?;
-
         Ok(Self {
-            url: url.to_string(),
+            url: websocket_url(base, &format!("v1/sessions/{session}/relay/daemon"))?,
             token,
             session,
         })
@@ -206,21 +243,7 @@ impl Endpoint {
 
     /// Opens and handshakes one connection.
     async fn connect(&self) -> Result<Socket, WireError> {
-        let mut request = self
-            .url
-            .as_str()
-            .into_client_request()
-            .map_err(|error| WireError::Unaddressable(error.to_string()))?;
-        request.headers_mut().insert(
-            "authorization",
-            format!("Bearer {}", self.token).parse().map_err(|_| {
-                WireError::Unaddressable("the daemon token is not a header value".to_owned())
-            })?,
-        );
-
-        let (mut socket, _) = tokio_tungstenite::connect_async(request)
-            .await
-            .map_err(|error| WireError::Unwelcome(error.to_string()))?;
+        let mut socket = connect_bearer(&self.url, &self.token).await?;
 
         send(
             &mut socket,
@@ -261,7 +284,14 @@ fn now_unix() -> u64 {
 }
 
 /// Sends one frame.
-async fn send(socket: &mut Socket, frame: &DaemonToControl) -> Result<(), WireError> {
+///
+/// Generic over the frame type because flyco holds two of these sockets: a
+/// session's daemon speaks [`DaemonToControl`] and an enrolled host speaks
+/// `HostToControl`, and nothing else about writing one differs.
+pub(crate) async fn send<T: serde::Serialize>(
+    socket: &mut Socket,
+    frame: &T,
+) -> Result<(), WireError> {
     let json = serde_json::to_string(frame).expect("every wire frame serializes to JSON");
     socket
         .send(Message::Text(Utf8Bytes::from(json)))
@@ -272,7 +302,9 @@ async fn send(socket: &mut Socket, frame: &DaemonToControl) -> Result<(), WireEr
 /// Reads the next command, skipping anything that is not a text frame.
 ///
 /// `None` means the socket ended; the caller reconnects.
-async fn next_frame(socket: &mut Socket) -> Result<Option<ControlToDaemon>, WireError> {
+pub(crate) async fn next_frame<T: serde::de::DeserializeOwned>(
+    socket: &mut Socket,
+) -> Result<Option<T>, WireError> {
     while let Some(message) = socket.next().await {
         let message = match message {
             Ok(message) => message,
@@ -301,8 +333,10 @@ async fn next_frame(socket: &mut Socket) -> Result<Option<ControlToDaemon>, Wire
 ///
 /// Capped exponential with full jitter: the cap keeps a long outage from
 /// turning into an hour-long silence, and the jitter keeps every daemon on a
-/// restarted control plane from reconnecting in the same instant.
-fn backoff(attempt: u32) -> Duration {
+/// restarted control plane from reconnecting in the same instant. Shared
+/// with the host relay, which reconnects to a different room for the same
+/// reasons.
+pub(crate) fn backoff(attempt: u32) -> Duration {
     let ceiling = BACKOFF_MIN
         .saturating_mul(1_u32 << attempt.min(6))
         .min(BACKOFF_MAX);

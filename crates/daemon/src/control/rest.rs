@@ -77,7 +77,8 @@ pub enum ControlApiError {
     Unaddressable(String),
 }
 
-fn transport(error: impl core::fmt::Display) -> ControlApiError {
+/// A request that never completed, whoever was making it.
+pub(crate) fn transport(error: impl core::fmt::Display) -> ControlApiError {
     ControlApiError::Transport(error.to_string())
 }
 
@@ -87,7 +88,7 @@ fn transport(error: impl core::fmt::Display) -> ControlApiError {
 /// body — so the control plane's own RFC 9457 explanation is right there,
 /// and a refusal reaches the daemon's log saying *why* rather than showing
 /// a bare status line.
-fn refused(method: &'static str, path: &str, error: &zenwave::Error) -> ControlApiError {
+pub(crate) fn refused(method: &'static str, path: &str, error: &zenwave::Error) -> ControlApiError {
     let zenwave::Error::Http { status, .. } = error else {
         return ControlApiError::Transport(error.to_string());
     };

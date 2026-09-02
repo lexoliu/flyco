@@ -84,9 +84,23 @@ pub const BINARY_COUNT: usize = 2;
 /// machine rather than downloading one built for another instruction set.
 pub const BINARIES: [PublishedBinary; BINARY_COUNT] = [X86_64, AARCH64];
 
-/// The systemd unit that runs the daemon, installed by [`INSTALLER`].
+/// The systemd unit that runs the daemon on a session VM, installed by
+/// [`INSTALLER`].
 pub const UNIT: PublishedObject = PublishedObject {
     name: "flycod.service",
+    content_type: TEXT,
+};
+
+/// The systemd unit that runs `flycod host` on a machine the user owns.
+///
+/// A second unit rather than a second mode of the first: the two run
+/// different commands, as different users, against different configuration
+/// files, and a host is enrolled by a person pasting one line into a root
+/// shell rather than by cloud-init building an image. The installer's `host
+/// enroll` path is what puts this one on a machine
+/// (docs/host-enrollment.md).
+pub const HOST_UNIT: PublishedObject = PublishedObject {
+    name: "flycod-host.service",
     content_type: TEXT,
 };
 
@@ -100,16 +114,17 @@ pub const INSTALLER: PublishedObject = PublishedObject {
 };
 
 /// Number of objects a release copies verbatim out of the repository.
-pub const ASSET_COUNT: usize = 2;
+pub const ASSET_COUNT: usize = 3;
 
 /// The objects a release copies verbatim out of the repository, in publish
 /// order.
 ///
-/// The unit comes first and the installer last: the installer is the entry
-/// point cloud-init fetches, so it is the last thing a publish makes current,
-/// and a publish interrupted midway never points a machine at a unit file that
-/// is not there yet.
-pub const ASSETS: [PublishedObject; ASSET_COUNT] = [UNIT, INSTALLER];
+/// The two units come first and the installer last: the installer is the
+/// entry point cloud-init fetches and the one line a user pastes into a root
+/// shell, so it is the last thing a publish makes current, and a publish
+/// interrupted midway never points a machine at a unit file that is not
+/// there yet.
+pub const ASSETS: [PublishedObject; ASSET_COUNT] = [UNIT, HOST_UNIT, INSTALLER];
 
 /// Number of objects one release publishes.
 pub const OBJECT_COUNT: usize = BINARY_COUNT * 2 + ASSET_COUNT;
@@ -121,6 +136,7 @@ pub const OBJECTS: [PublishedObject; OBJECT_COUNT] = [
     AARCH64.binary,
     AARCH64.checksum,
     UNIT,
+    HOST_UNIT,
     INSTALLER,
 ];
 
@@ -136,7 +152,7 @@ pub fn object(name: &str) -> Option<PublishedObject> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ASSETS, BINARIES, INSTALLER, OBJECT_COUNT, OBJECTS, object};
+    use super::{ASSETS, BINARIES, HOST_UNIT, INSTALLER, OBJECT_COUNT, OBJECTS, object};
 
     #[test]
     fn every_published_object_is_named_once() {
@@ -176,6 +192,7 @@ mod tests {
     #[test]
     fn a_lookup_answers_only_for_published_names() {
         assert_eq!(object("flycod.sh"), Some(INSTALLER));
+        assert_eq!(object("flycod-host.service"), Some(HOST_UNIT));
         assert_eq!(object("../transcripts/private"), None);
         assert_eq!(object("flycod-linux-riscv64"), None);
     }

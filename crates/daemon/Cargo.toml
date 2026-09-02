@@ -13,6 +13,11 @@ path = "src/main.rs"
 
 [dependencies]
 flyco-core.workspace = true
+# `flycod host` runs exactly what the control plane planned: the container
+# jobs, the two host wire enums and the rendered podman scripts all come from
+# `flyco_provider::host`, so the machine cannot disagree with the planner
+# about what a job is or how it is quoted.
+flyco-provider.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -27,6 +32,11 @@ portable-pty.workspace = true
 rmcp.workspace = true
 rand.workspace = true
 rust-embed.workspace = true
+# `statvfs(3)`, for the one number an enrolled host cannot state without a
+# syscall: how much room is left where Podman keeps its containers and
+# volumes. Parsing `df` output would be the same fact, read out of a table
+# whose columns are a locale away from moving.
+rustix.workspace = true
 # Codex's `auth.json` stamps `last_refresh` as an RFC 3339 instant, so the
 # daemon needs a calendar to write one. `parsing` is the other direction:
 # an eviction notice publishes its deadline as an instant too — RFC 1123 on
@@ -41,8 +51,7 @@ url.workspace = true
 [dev-dependencies]
 tokio-tungstenite = { workspace = true, features = ["handshake"] }
 # `tests/provisioned_config.rs` pins the configuration a provisioner writes
-# against the loader that reads it. The `ssh` feature stays off: the daemon
-# needs the renderer, not an SSH client. `testing` publishes the bootstrap
+# against the loader that reads it. `testing` publishes the bootstrap
 # fixtures every driver's own tests are written against, so the machine a
 # test bootstrap describes is described in exactly one place.
 flyco-provider = { workspace = true, features = ["testing"] }

@@ -1,0 +1,29 @@
+[Unit]
+Description=Flyco host agent: runs session containers under rootless Podman
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Root, because /etc/flyco/host.toml holds this machine's host token and is
+# readable by nobody else. Every podman command it runs drops to the flyco
+# user with runuser, so the containers themselves are rootless.
+User=root
+Group=root
+WorkingDirectory=/etc/flyco
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/flycod host run --config /etc/flyco/host.toml
+# on-failure rather than always: `flycod host run` exits 0 when the control
+# plane revokes this machine's token, and a revoked host must stay stopped
+# rather than reconnect against a credential that will never work again.
+Restart=on-failure
+RestartSec=5s
+# `runuser` is setuid, so this unit cannot forbid new privileges the way the
+# session unit does: dropping to the flyco user is how the containers stay
+# rootless.
+NoNewPrivileges=false
+ProtectSystem=full
+ReadWritePaths=/etc/flyco /home/flyco /run/user
+
+[Install]
+WantedBy=multi-user.target

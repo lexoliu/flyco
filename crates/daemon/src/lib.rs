@@ -23,6 +23,9 @@
 //! - [`terminal`] — a PTY-backed `fish` shell relayed to the browser.
 //! - [`git`] — `git status --short` polling, dirty-tree keep-awake, and
 //!   workdir snapshots for automatic archive.
+//! - [`host`] — the daemon's other role: on a machine the user owns,
+//!   `flycod host` enrols the machine and runs the session containers the
+//!   control plane sends it, each of which has a `flycod run` inside it.
 //! - [`mcp`] — the local stdio MCP server, which is the *only* sanctioned
 //!   way an agent acts on its own session: what machine it is on, what the
 //!   budget has left, and moving to another machine.
@@ -47,6 +50,7 @@ pub mod config;
 pub mod control;
 pub mod git;
 pub mod harness;
+pub mod host;
 pub mod mcp;
 pub mod mount;
 pub mod notice;
