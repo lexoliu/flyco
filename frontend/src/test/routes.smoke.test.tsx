@@ -284,6 +284,10 @@ describe("route smoke tests", () => {
                 kind: "host",
                 label: "mercury",
                 linked_at_unix: 1_789_991_000,
+                // The account *is* the machine above, which is how the page
+                // knows this row is already on screen as a host card rather
+                // than owed a cloud one.
+                host_id: "8d1a6f30-4b7c-4e21-b0f5-9c2d6a7e4b11",
               },
             ]),
             { status: 200, headers: { "content-type": "application/json" } },

@@ -54,6 +54,12 @@ from.
   `byo_ssh`), so the compute chip, the curated catalog, session creation
   and the usage panel need no special case. Its catalog is one entry: the
   host's own capacity, `pricing: user_owned`, architecture from its facts.
+  The account row names the machine it is (`provider_accounts.host_id`,
+  exposed as `host_id` on `GET /v1/providers`), which is how a client
+  holding both lists joins them — by id, not by inferring it from the kind.
+  `PATCH /v1/hosts/{id}` renames both rows in one atomic batch, so the name
+  on the card and the name in the compute chip's account selector cannot
+  drift apart.
 - `machines` rows for host sessions carry the container name and the
   Podman volume name instead of a cloud instance id.
 

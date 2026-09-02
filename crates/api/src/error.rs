@@ -6,7 +6,7 @@
 //! nothing that would leak internals.
 
 use flyco_core::workdir::{FILE_BYTES_MAX, WorkdirRefusal};
-use flyco_core::{ApprovalState, Problem, RepoSlug, SessionState};
+use flyco_core::{ApprovalState, Problem, ProblemExtensions, RepoSlug, SessionState};
 use skyzen::{Response, StatusCode};
 use skyzen_services::queue::QueueError;
 use skyzen_services::{DbError, KvError, StorageError};
@@ -359,7 +359,11 @@ pub enum ApiError {
     )]
     HostHasActiveSessions {
         /// How many machines are still live there.
-        sessions: u64,
+        ///
+        /// Repeated as the `active_sessions` extension member of the problem
+        /// document, so the confirmation a browser puts up states the count
+        /// without reading it back out of this sentence.
+        sessions: u32,
     },
 
     /// The label is empty or longer than a list can render.
@@ -962,6 +966,23 @@ impl ApiError {
         };
 
         Problem::of_type(self.slug(), status.as_u16(), title, detail)
+            .with_extensions(self.extensions())
+    }
+
+    /// The typed facts this failure carries beyond its prose.
+    ///
+    /// RFC 9457 §3.2 extension members, and the reason a refusal never has
+    /// to be read as a sentence: a client that needs the number in
+    /// "3 session(s) still run on this host" reads `active_sessions`
+    /// instead of the words around it. Every other failure states its whole
+    /// self in `detail` and carries none.
+    fn extensions(&self) -> ProblemExtensions {
+        match *self {
+            Self::HostHasActiveSessions { sessions } => ProblemExtensions {
+                active_sessions: Some(sessions),
+            },
+            _ => ProblemExtensions::default(),
+        }
     }
 
     /// Renders this failure as a complete response.
@@ -992,6 +1013,30 @@ mod tests {
         assert_eq!(problem.status, 500);
         assert_eq!(problem.kind, "https://flyco.dev/problems/internal");
         assert!(!problem.detail.contains("users.id"));
+    }
+
+    #[test]
+    fn a_busy_host_states_its_count_as_a_typed_member() {
+        let problem = ApiError::HostHasActiveSessions { sessions: 3 }.problem();
+
+        // The number a browser acts on is a member of the document, not a
+        // word in a sentence it would have to parse.
+        assert_eq!(problem.extensions.active_sessions, Some(3));
+        let json = serde_json::to_value(&problem).expect("serialize");
+        assert_eq!(json["active_sessions"], 3);
+    }
+
+    #[test]
+    fn a_failure_that_defines_no_extension_carries_none() {
+        let problem = ApiError::HostNotFound.problem();
+
+        assert_eq!(problem.extensions, flyco_core::ProblemExtensions::default());
+        assert!(
+            serde_json::to_value(&problem)
+                .expect("serialize")
+                .get("active_sessions")
+                .is_none()
+        );
     }
 
     #[test]

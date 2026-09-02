@@ -74,7 +74,7 @@ pub use machine::{
 pub use mcp::{HeaderEntry, McpServerConfig, McpServerMount, McpServerView, UpsertMcpServer};
 pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};
 pub use money::Usd;
-pub use problem::Problem;
+pub use problem::{Problem, ProblemExtensions};
 pub use providers::{
     AwsIamPolicy, LinkProvider, ProviderAccountView, ProviderBonusHint, ProviderCredentials,
     QuickstartAnswers,
