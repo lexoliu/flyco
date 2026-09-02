@@ -361,10 +361,12 @@ function ComputeChip(props: {
               onChoose={props.onChoose}
               onSpot={props.onSpot}
             />
+            {/* What `Auto` picks is the slider's own line, under its track. What
+                is left for here is what choosing changes: who the session
+                records as having decided, and that the agent is told. */}
             <p class={styles.note}>
-              Auto is the cheapest curated Linux type your linked accounts can deploy with at least
-              4 vCPU and 16 GiB. Choosing one yourself is remembered with the session, and the agent
-              is told you picked it.
+              Choosing a machine yourself is remembered with the session, and the agent is told you
+              picked it.
             </p>
           </div>
         )}

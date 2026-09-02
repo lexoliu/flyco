@@ -8,14 +8,23 @@
  * be. The leftmost position is `Auto`, so the default is not a machine among
  * machines but the absence of a choice.
  *
- * Everything the slider needs is on the entry. The backend stamps each one
+ * The control is drawn rather than left to the user agent, because a bare
+ * range input hides the one thing that matters here: that the positions are
+ * *countable*. Every detent is a dot on the track, the thumb lands on one of
+ * them and nowhere between, the reading rides above the thumb so the name and
+ * the price are read where the eye already is, and a type its provider bills a
+ * minimum for wears amber on its dot before the user ever stops there.
+ *
+ * Underneath it is still a real `<input type="range">`, transparent and laid
+ * over the track: the pointer drag, the accessible role, the value semantics
+ * and the focus ring are the platform's. Only the mapping from key to detent
+ * is ours, in {@link detentForKey}, so that stepping is by detent rather than
+ * by number and so that it can be tested.
+ *
+ * Everything the reading needs is on the entry. The backend stamps each one
  * with the family, generation and architecture its provider published and
  * with the charge a billing minimum implies, so nothing here parses a type
  * name or multiplies a rate.
- *
- * Keyboard: it is a real `<input type="range">`, so arrows, Home and End work
- * without a line of code, and `aria-valuetext` reads out the machine rather
- * than the index.
  */
 import { For, Show, createMemo, createSignal } from "solid-js";
 import { AlertTriangle } from "lucide-solid";
@@ -33,11 +42,46 @@ import {
 } from "../lib/machines";
 import styles from "./MachineSlider.module.css";
 
-/** What the leftmost detent means, in the words docs/ux.md §7.7 asks for. */
-const AUTO_LABEL = "Auto — the cheapest Linux type with at least 4 vCPU and 16 GiB";
+/** The leftmost detent, which is flyco keeping the choice. */
+const AUTO_NAME = "Auto";
+
+/** What flyco picks when it keeps the choice, in the words docs/ux.md §7.7 asks for. */
+const AUTO_RULE = "The cheapest curated Linux type with at least 4 vCPU and 16 GiB.";
 
 /** The value of "no filter" in a `<select>`, which cannot hold null. */
 const ANY = "";
+
+/**
+ * The detent a key moves the thumb to, or `null` for a key the slider does
+ * not claim.
+ *
+ * The browser would step this input on its own, and every step would land on
+ * an integer — but the integers *are* the detents here, and which key means
+ * which detent is a decision about the control rather than about numbers:
+ * `Home` is `Auto`, `End` is the largest machine on offer, and both arrow
+ * axes move by one machine so that a thumb reached by keyboard behaves like
+ * the thumb reached by pointer. Owning it keeps that in one tested place;
+ * the component prevents the default so nothing steps twice.
+ */
+export function detentForKey(key: string, position: number, count: number): number | null {
+  const target = ((): number | null => {
+    switch (key) {
+      case "ArrowLeft":
+      case "ArrowDown":
+        return position - 1;
+      case "ArrowRight":
+      case "ArrowUp":
+        return position + 1;
+      case "Home":
+        return 0;
+      case "End":
+        return count;
+      default:
+        return null;
+    }
+  })();
+  return target === null ? null : Math.min(Math.max(target, 0), count);
+}
 
 export interface MachineSliderProps {
   /** The whole curated catalog, every account and region. */
@@ -115,9 +159,38 @@ export default function MachineSlider(props: MachineSliderProps) {
     position() === 0 ? undefined : detents()[position() - 1],
   );
 
-  const label = createMemo(() => {
+  /** How far along the track the thumb is, which the reading rides on too. */
+  const travelled = createMemo(() =>
+    detents().length === 0 ? "0%" : `${(position() / detents().length) * 100}%`,
+  );
+
+  /** The name over the thumb: a machine, or the absence of a choice. */
+  const reading = createMemo(() => {
     const entry = selected();
-    return entry === undefined ? AUTO_LABEL : detentLabel(entry, props.spot);
+    return entry === undefined ? AUTO_NAME : detentLabel(entry, props.spot);
+  });
+
+  /** The same thing said in full, for a reader who cannot see the track. */
+  const spoken = createMemo(() =>
+    selected() === undefined ? `${AUTO_NAME}. ${AUTO_RULE}` : reading(),
+  );
+
+  /** Whether the chosen machine starts billing the moment it boots. */
+  const bound = createMemo(() => {
+    const entry = selected();
+    return entry !== undefined && billingMinimum(entry) !== null;
+  });
+
+  /**
+   * The line under the track: what `Auto` picks, or what a floor costs.
+   *
+   * It holds its line whether or not it has something to say, because the
+   * popover is anchored to a chip and a control that changes height as the
+   * thumb passes a machine is a control that shrugs.
+   */
+  const note = createMemo(() => {
+    const entry = selected();
+    return entry === undefined ? AUTO_RULE : billingMinimumSentence(entry);
   });
 
   function move(next: number): void {
@@ -174,16 +247,6 @@ export default function MachineSlider(props: MachineSliderProps) {
         </div>
       </Disclosure>
 
-      <p class={styles.reading}>
-        <span class={styles.machine}>{label()}</span>
-        <Show when={selected() !== undefined && billingMinimum(selected() as MachineCatalogEntry)}>
-          <span class={styles.badge}>
-            <AlertTriangle size={12} aria-hidden="true" />
-            License-bound
-          </span>
-        </Show>
-      </p>
-
       <Show
         when={detents().length > 0}
         fallback={
@@ -193,45 +256,74 @@ export default function MachineSlider(props: MachineSliderProps) {
           </p>
         }
       >
-        <div class={styles.track}>
-          <input
-            class={styles.range}
-            type="range"
-            min={0}
-            max={detents().length}
-            step={1}
-            value={position()}
-            aria-label="Machine"
-            aria-valuetext={label()}
-            onInput={(event) => move(Number(event.currentTarget.value))}
-          />
-          <div class={styles.ticks} aria-hidden="true">
-            <For each={[undefined, ...detents()]}>
-              {(entry, index) => (
-                <span
-                  class={cx(
-                    styles.tick,
-                    entry !== undefined && billingMinimum(entry) !== null && styles.tickBound,
-                    index() === position() && styles.tickActive,
-                  )}
-                  style={{
-                    left: `${(index() / detents().length) * 100}%`,
-                  }}
-                />
-              )}
-            </For>
+        {/* One number drives the whole control: the thumb's travel, and the
+            reading that rides above it. The reading is carried the same
+            distance and then pulled back by that share of its own width, so
+            it centres on the thumb in the middle and tucks inside the track
+            at either end without measuring anything. */}
+        <div class={styles.control} style={{ "--travelled": travelled() }}>
+          <div class={styles.readingRow}>
+            <div class={styles.readingTravel}>
+              <p class={styles.reading}>
+                <span class={styles.machine}>{reading()}</span>
+                <Show when={bound()}>
+                  <span class={styles.badge}>
+                    <AlertTriangle size={12} aria-hidden="true" />
+                    License-bound
+                  </span>
+                </Show>
+              </p>
+            </div>
           </div>
+
+          <div class={styles.track}>
+            <div class={styles.rail}>
+              <For each={[undefined, ...detents()]}>
+                {(entry, index) => (
+                  <span
+                    aria-hidden="true"
+                    class={cx(
+                      styles.dot,
+                      entry !== undefined && billingMinimum(entry) !== null && styles.dotBound,
+                      index() === position() && styles.dotTaken,
+                    )}
+                    style={{ left: `${(index() / detents().length) * 100}%` }}
+                  />
+                )}
+              </For>
+              <div class={styles.thumbTravel} aria-hidden="true">
+                <span class={styles.thumb} />
+              </div>
+              <input
+                class={styles.range}
+                type="range"
+                min={0}
+                max={detents().length}
+                step={1}
+                value={position()}
+                aria-label="Machine"
+                aria-valuetext={spoken()}
+                onInput={(event) => move(Number(event.currentTarget.value))}
+                onKeyDown={(event) => {
+                  const next = detentForKey(event.key, position(), detents().length);
+                  if (next !== null) {
+                    event.preventDefault();
+                    move(next);
+                  }
+                }}
+              />
+            </div>
+          </div>
+
           <div class={styles.ends}>
-            <span>Auto</span>
+            <span>{AUTO_NAME}</span>
             <span>
               {detents().length} {detents().length === 1 ? "machine" : "machines"}
             </span>
           </div>
-        </div>
-      </Show>
 
-      <Show when={selected() !== undefined && billingMinimumSentence(selected() as MachineCatalogEntry)}>
-        {(sentence) => <p class={styles.warning}>{sentence()}</p>}
+          <p class={cx(styles.note, bound() && styles.noteBound)}>{note()}</p>
+        </div>
       </Show>
     </div>
   );
