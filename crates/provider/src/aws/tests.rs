@@ -1447,7 +1447,7 @@ async fn a_refused_key_is_reported_with_the_code_aws_gave() {
 #[ignore = "creates real, billable AWS resources"]
 async fn live_provision_and_destroy() {
     use crate::clock::{SystemClock, SystemTimer, SystemWallClock};
-    use crate::http::ZenwaveTransport;
+    use crate::http::LiveTransport;
 
     fn required(name: &str) -> String {
         std::env::var(name).unwrap_or_else(|_| panic!("the live test needs `{name}`"))
@@ -1464,7 +1464,7 @@ async fn live_provision_and_destroy() {
     }
 
     let mut aws = AwsProvider::with_parts(
-        ZenwaveTransport::new(),
+        LiveTransport::new(),
         SystemClock::new(),
         SystemTimer::new(),
         SystemWallClock::new(),

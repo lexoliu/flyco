@@ -1296,7 +1296,7 @@ async fn a_named_region_the_policy_forbids_is_dropped_rather_than_attempted() {
 #[ignore = "creates real, billable Azure resources"]
 async fn live_provision_and_destroy() {
     use crate::clock::{SystemClock, SystemTimer};
-    use crate::http::ZenwaveTransport;
+    use crate::http::LiveTransport;
 
     fn required(name: &str) -> String {
         std::env::var(name).unwrap_or_else(|_| panic!("the live test needs `{name}`"))
@@ -1318,7 +1318,7 @@ async fn live_provision_and_destroy() {
     .with_regions(vec![region.clone()]);
 
     let mut azure = AzureProvider::with_parts(
-        ZenwaveTransport::new(),
+        LiveTransport::new(),
         SystemClock::new(),
         SystemTimer::new(),
         principal,

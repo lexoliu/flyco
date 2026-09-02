@@ -1022,7 +1022,7 @@ async fn a_zone_name_that_is_not_one_is_refused_rather_than_guessed_at() {
 #[ignore = "creates real, billable GCP resources"]
 async fn live_provision_and_destroy() {
     use crate::clock::{SystemClock, SystemTimer, SystemWallClock};
-    use crate::http::ZenwaveTransport;
+    use crate::http::LiveTransport;
 
     fn required(name: &str) -> String {
         std::env::var(name).unwrap_or_else(|_| panic!("the live test needs `{name}`"))
@@ -1033,7 +1033,7 @@ async fn live_provision_and_destroy() {
     let zone = required("FLYCO_GCP_ZONE");
 
     let mut gcp = GcpProvider::with_parts(
-        ZenwaveTransport::new(),
+        LiveTransport::new(),
         SystemClock::new(),
         SystemTimer::new(),
         SystemWallClock::new(),

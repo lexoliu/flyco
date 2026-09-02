@@ -82,7 +82,7 @@ use crate::clock::{MonotonicClock, SystemClock, SystemTimer, Timer};
 use crate::http::{HttpRequest, HttpResponse, HttpTransport, Method};
 use crate::polling::{MAX_POLL_ATTEMPTS, poll_delay};
 use crate::{
-    CapacityMode, CloudProvider, Machine, ProviderError, ProvisionRequest, ZenwaveTransport,
+    CapacityMode, CloudProvider, LiveTransport, Machine, ProviderError, ProvisionRequest,
     cloud_init, flycod,
 };
 
@@ -323,7 +323,7 @@ impl Workspace {
 /// Generic over its transport, clock and timer so the whole of it is
 /// testable against recorded exchanges — see `crate::testing`.
 #[derive(Debug)]
-pub struct AzureProvider<T = ZenwaveTransport, C = SystemClock, K = SystemTimer> {
+pub struct AzureProvider<T = LiveTransport, C = SystemClock, K = SystemTimer> {
     transport: T,
     clock: C,
     timer: K,
@@ -334,11 +334,11 @@ pub struct AzureProvider<T = ZenwaveTransport, C = SystemClock, K = SystemTimer>
 }
 
 impl AzureProvider {
-    /// The driver as it is deployed: zenwave, the host clock, a real timer.
+    /// The driver as it is deployed: the live transport, the host clock, a real timer.
     #[must_use]
     pub fn new(principal: ServicePrincipal, workspace: Workspace) -> Self {
         Self::with_parts(
-            ZenwaveTransport::new(),
+            LiveTransport::new(),
             SystemClock::new(),
             SystemTimer::new(),
             principal,

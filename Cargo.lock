@@ -1864,6 +1864,7 @@ dependencies = [
  "tracing",
  "url",
  "wasm-bindgen",
+ "worker",
  "zenwave",
 ]
 

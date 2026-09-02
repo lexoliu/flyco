@@ -1,7 +1,7 @@
 //! The one HTTP exchange every provider driver is built out of.
 //!
 //! Drivers do not reach for [`zenwave`] directly. They describe a request as
-//! data and hand it to an [`HttpTransport`], which is [`ZenwaveTransport`] in
+//! data and hand it to an [`HttpTransport`], which is [`LiveTransport`] in
 //! production — Fetch-backed inside the Cloudflare Worker, hyper-backed
 //! natively — and a table of recorded exchanges under test. That is the only
 //! way to pin what a driver actually puts on the wire: the exact URL, the
@@ -16,6 +16,7 @@
 use core::fmt;
 use core::future::Future;
 
+#[cfg(not(target_arch = "wasm32"))]
 use zenwave::{Client as _, ResponseExt as _};
 
 /// The HTTP methods flyco's providers use.
@@ -49,6 +50,7 @@ impl Method {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     const fn zenwave(self) -> zenwave::Method {
         match self {
             Self::Get => zenwave::Method::GET,
@@ -280,12 +282,17 @@ pub trait HttpTransport {
     fn send(&self, request: HttpRequest) -> impl Future<Output = Result<HttpResponse, HttpError>>;
 }
 
-/// The production transport: zenwave, which is Fetch on the Worker and
-/// hyper natively.
+/// The production transport: hyper through zenwave natively, and the
+/// Worker's own `fetch` on wasm32.
+///
+/// Not zenwave on both: its Fetch backend hands the request body over as a
+/// `ReadableStream` driven from Rust, which a Workers handler never pulls,
+/// so any request with a body sat pending until the runtime cancelled the
+/// invocation (flyco #86). The runtime's `fetch` takes the bytes directly.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ZenwaveTransport;
+pub struct LiveTransport;
 
-impl ZenwaveTransport {
+impl LiveTransport {
     /// Creates the transport.
     #[must_use]
     pub const fn new() -> Self {
@@ -297,7 +304,8 @@ fn transport(error: impl fmt::Display) -> HttpError {
     HttpError::Transport(error.to_string())
 }
 
-impl HttpTransport for ZenwaveTransport {
+#[cfg(not(target_arch = "wasm32"))]
+impl HttpTransport for LiveTransport {
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
         let mut client = zenwave::client();
         let mut builder = client
@@ -327,6 +335,61 @@ impl HttpTransport for ZenwaveTransport {
             status,
             headers,
             body: body.to_vec(),
+        })
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Method {
+    const fn worker(self) -> worker::Method {
+        match self {
+            Self::Get => worker::Method::Get,
+            Self::Post => worker::Method::Post,
+            Self::Put => worker::Method::Put,
+            Self::Patch => worker::Method::Patch,
+            Self::Delete => worker::Method::Delete,
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl HttpTransport for LiveTransport {
+    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
+        use worker::send::IntoSendFuture as _;
+
+        let headers = worker::Headers::new();
+        for (name, value) in &request.headers {
+            headers.append(name, value).map_err(transport)?;
+        }
+        let mut init = worker::RequestInit::new();
+        init.with_method(request.method.worker())
+            .with_headers(headers);
+        if !request.body.is_empty() {
+            // Bytes, not a stream: the runtime reads them up front, so
+            // nothing on the Rust side has to be polled for the request
+            // to leave.
+            init.with_body(Some(
+                js_sys::Uint8Array::from(request.body.as_slice()).into(),
+            ));
+        }
+        let outgoing = worker::Request::new_with_init(&request.url, &init).map_err(transport)?;
+
+        let mut response = worker::Fetch::Request(outgoing)
+            .send()
+            .into_send()
+            .await
+            .map_err(transport)?;
+        let status = response.status_code();
+        let headers = response
+            .headers()
+            .entries()
+            .map(|(name, value)| (name.to_ascii_lowercase(), value))
+            .collect();
+        let body = response.bytes().into_send().await.map_err(transport)?;
+        Ok(HttpResponse {
+            status,
+            headers,
+            body,
         })
     }
 }
