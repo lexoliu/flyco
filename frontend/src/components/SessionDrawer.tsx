@@ -2,29 +2,44 @@
  * The session's right-hand drawer (docs/ux.md §9.4).
  *
  * Collapsed by default, and that is the point: the terminal, the files, the
- * machine and the `.env` are all things a user occasionally needs and never
- * reads while following a conversation. The page that showed them all at
- * once made the transcript — the thing the product is for — the narrower
- * half of the screen.
+ * diff, the machine and the `.env` are all things a user occasionally needs
+ * and never reads while following a conversation. The page that showed them
+ * all at once made the transcript — the thing the product is for — the
+ * narrower half of the screen.
+ *
+ * `Files` and `Diff` are two tabs rather than one because they answer two
+ * questions: what is on the disk, and what did the agent change. Both are
+ * read live from the machine, so both say plainly when there is no machine
+ * to read.
  *
  * `⌘.` (`Ctrl+.` off macOS) toggles it, which is the one keyboard shortcut
  * on the page.
  */
 import { For, Match, Show, Switch, createEffect, createSignal, onCleanup } from "solid-js";
-import { Cpu, FileCode2, PanelRightClose, PanelRightOpen, SlidersHorizontal, TerminalSquare } from "lucide-solid";
+import {
+  Cpu,
+  FileCode2,
+  GitCompare,
+  PanelRightClose,
+  PanelRightOpen,
+  SlidersHorizontal,
+  TerminalSquare,
+} from "lucide-solid";
+import DiffPanel from "./DiffPanel";
 import EnvEditor from "./EnvEditor";
+import FilesPanel from "./FilesPanel";
 import MachinePanel from "./MachinePanel";
-import RepoStatusPanel from "./RepoStatusPanel";
 import TerminalPanel from "./terminal/TerminalPanel";
 import type { SessionRelay } from "../api/relay";
 import { cx } from "../lib/cx";
 import styles from "./SessionDrawer.module.css";
 
-type Tab = "terminal" | "files" | "machine" | "env";
+type Tab = "terminal" | "files" | "diff" | "machine" | "env";
 
 const TABS: readonly { id: Tab; label: string }[] = [
   { id: "terminal", label: "Terminal" },
   { id: "files", label: "Files" },
+  { id: "diff", label: "Diff" },
   { id: "machine", label: "Machine" },
   { id: "env", label: "Env" },
 ];
@@ -102,6 +117,9 @@ export default function SessionDrawer(props: SessionDrawerProps) {
                     <Match when={entry.id === "files"}>
                       <FileCode2 size={13} aria-hidden="true" />
                     </Match>
+                    <Match when={entry.id === "diff"}>
+                      <GitCompare size={13} aria-hidden="true" />
+                    </Match>
                     <Match when={entry.id === "machine"}>
                       <Cpu size={13} aria-hidden="true" />
                     </Match>
@@ -121,9 +139,12 @@ export default function SessionDrawer(props: SessionDrawerProps) {
                 <TerminalPanel sessionId={props.sessionId} relay={props.relay} />
               </Match>
               <Match when={tab() === "files"}>
-                <RepoStatusPanel
+                <FilesPanel sessionId={props.sessionId} />
+              </Match>
+              <Match when={tab() === "diff"}>
+                <DiffPanel
                   sessionId={props.sessionId}
-                  liveSummary={props.liveRepoSummary}
+                  liveRepoSummary={props.liveRepoSummary}
                 />
               </Match>
               <Match when={tab() === "machine"}>

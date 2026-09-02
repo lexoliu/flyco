@@ -1,0 +1,132 @@
+/*
+ * A tree in a 420px drawer: one row per entry, indentation carrying depth,
+ * and nothing else. No connecting lines, no alternating tints — the only
+ * thing that should stand out here is the file the reader is looking for.
+ */
+.level {
+  display: contents;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.row:hover {
+  background: var(--color-surface-sunken);
+}
+
+.row:active {
+  transform: translateY(1px);
+}
+
+.rowOpen {
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+}
+
+.row[data-ignored] .name {
+  color: var(--color-text-faint);
+}
+
+.icon {
+  flex: none;
+  color: var(--color-text-faint);
+}
+
+.chevron {
+  flex: none;
+  color: var(--color-text-faint);
+  transition: transform var(--transition-fast);
+}
+
+.chevronOpen {
+  transform: rotate(90deg);
+}
+
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * `ignored` is a fact about the file, not a warning about it: it reads as
+ * the quietest thing on the row.
+ */
+.ignored {
+  flex: none;
+  margin-left: auto;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-faint);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+}
+
+.row:hover .ignored {
+  background: var(--color-bg);
+}
+
+.skeleton {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.skeletonRow {
+  height: 1.4em;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.skeletonRow:nth-child(2) {
+  width: 80%;
+}
+
+.skeletonRow:nth-child(3) {
+  width: 60%;
+}
+
+.empty,
+.truncated {
+  margin: var(--space-1) 0 var(--space-1) var(--space-2);
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeletonRow {
+    animation: none;
+  }
+}

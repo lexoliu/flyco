@@ -1464,6 +1464,7 @@ dependencies = [
  "base64",
  "flyco-core",
  "flyco-provider",
+ "futures-timer",
  "getrandom 0.4.3",
  "hex",
  "hmac 0.12.1",

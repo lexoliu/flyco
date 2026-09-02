@@ -407,6 +407,7 @@ async fn drive_claude_code(config: DaemonConfig, mount: Mount) -> Result<(), Fai
         // works in, as the same user this daemon runs as.
         shell: config.shell.runner(config.workdir.clone()),
         workdir,
+        checkout: checkout_of(&config),
         repo_status,
         disk: flyco_daemon::spot::HostDisk,
         // Watched from here rather than from inside the relay: which
@@ -468,6 +469,7 @@ async fn report<S: HarnessSession + 'static>(
         // works in, as the same user this daemon runs as.
         shell: config.shell.runner(config.workdir.clone()),
         workdir,
+        checkout: checkout_of(&config),
         repo_status,
         disk: flyco_daemon::spot::HostDisk,
         // Watched from here rather than from inside the relay: which
@@ -479,6 +481,25 @@ async fn report<S: HarnessSession + 'static>(
     }))
     .await?;
     Ok(())
+}
+
+/// The read-only view of the checkout the `Files` and `Diff` tabs read.
+///
+/// The base a diff is taken against is the *remote-tracking* ref of the
+/// branch the session was opened on, not the local branch: the agent
+/// commits onto the local one, and a diff against it would go empty the
+/// moment the agent committed — which is precisely when the user wants to
+/// see what it did. A daemon with no `[repo]` was pointed at a directory
+/// rather than given a clone, so it has no branch the session began at and
+/// says so rather than inventing one.
+fn checkout_of(config: &DaemonConfig) -> flyco_daemon::workdir::Checkout {
+    flyco_daemon::workdir::Checkout::new(
+        config.workdir.clone(),
+        config
+            .repo
+            .as_ref()
+            .map(|repo| format!("origin/{}", repo.branch)),
+    )
 }
 
 /// Replays uncommitted work an automatic archive stored, if any.

@@ -5,6 +5,10 @@
  * the two semantic colours this system already spends on "done" and
  * "failed" — and every unchanged line stays ink on the ground. A `+`/`-`
  * gutter carries the same information for anyone who cannot see the tint.
+ *
+ * One component for both diffs in the product: the approval diff, which has
+ * no line numbers because it compares two documents, and the session diff,
+ * which has git's own. The gutter renders whatever the rows carry.
  */
 import { For, Show } from "solid-js";
 import type { DiffRow } from "../lib/diffRows";
@@ -22,6 +26,11 @@ const SIGN: Record<"context" | "added" | "removed", string> = {
   removed: "-",
 };
 
+/** A line number, or the blank the other side of a change leaves. */
+function gutter(value: number | undefined): string {
+  return value === undefined ? "" : String(value);
+}
+
 export default function DiffView(props: DiffViewProps) {
   return (
     <Show
@@ -35,8 +44,16 @@ export default function DiffView(props: DiffViewProps) {
               <p class={styles.gap}>
                 {row.hidden} unchanged {row.hidden === 1 ? "line" : "lines"}
               </p>
+            ) : row.kind === "hunk" ? (
+              <p class={styles.hunk}>{row.text}</p>
             ) : (
               <p class={styles.line} data-kind={row.kind}>
+                <Show when={row.oldNumber !== undefined || row.newNumber !== undefined}>
+                  <span class={styles.numbers} aria-hidden="true">
+                    <span class={styles.number}>{gutter(row.oldNumber)}</span>
+                    <span class={styles.number}>{gutter(row.newNumber)}</span>
+                  </span>
+                </Show>
                 <span class={styles.sign} aria-hidden="true">
                   {SIGN[row.kind]}
                 </span>

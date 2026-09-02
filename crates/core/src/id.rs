@@ -180,6 +180,9 @@ pub struct HostEntity(());
 /// Marker for host enrollment token identifiers.
 #[derive(Debug)]
 pub struct EnrollmentTokenEntity(());
+/// Marker for one in-flight question about a session's checkout.
+#[derive(Debug)]
+pub struct WorkdirRequestEntity(());
 
 /// Identifies a flyco user.
 pub type UserId = Id<UserEntity>;
@@ -221,6 +224,9 @@ pub type ShellRunId = Id<ShellRunEntity>;
 pub type HostId = Id<HostEntity>;
 /// Identifies one minted host enrollment token.
 pub type EnrollmentTokenId = Id<EnrollmentTokenEntity>;
+/// Identifies one question the control plane relayed to a session's daemon
+/// about its checkout, and the reply that comes back for it.
+pub type WorkdirRequestId = Id<WorkdirRequestEntity>;
 
 #[cfg(test)]
 mod tests {

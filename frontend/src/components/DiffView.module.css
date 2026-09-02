@@ -23,6 +23,37 @@
   user-select: none;
 }
 
+/*
+ * Line numbers are reference, not content: they sit in a fixed gutter, are
+ * not selectable with the code, and never take colour from the row they
+ * belong to.
+ */
+.numbers {
+  display: flex;
+  gap: var(--space-2);
+  flex: none;
+  color: var(--color-text-faint);
+  user-select: none;
+}
+
+.number {
+  display: inline-block;
+  min-width: 3ch;
+  text-align: right;
+}
+
+.hunk {
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+  background: var(--color-surface-sunken);
+  border-top: var(--border-width) solid var(--color-border);
+  border-bottom: var(--border-width) solid var(--color-border);
+  white-space: pre;
+}
+
 .text {
   min-width: 0;
 }

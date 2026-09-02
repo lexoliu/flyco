@@ -41,10 +41,11 @@ use core::time::Duration;
 use std::collections::BTreeMap;
 
 use askama::Template as _;
+use flyco_core::workdir::WorkdirRequest;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
     HarnessObservation, ProvisioningStage, RateLimitObservation, SessionId, SessionMachine,
-    ShellOutcome, ShellRunId, WIRE_PROTOCOL_VERSION,
+    ShellOutcome, ShellRunId, WIRE_PROTOCOL_VERSION, WorkdirRequestId,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
 use rand::Rng as _;
@@ -61,6 +62,7 @@ use crate::notice::{MachineChanged, MachineLine, OpeningMessage, SessionStart};
 use crate::shell::{Shell, ShellEvent, ShellRun, ShellUpdate};
 use crate::spot::{Disk, Notices, SpotNotice};
 use crate::terminal::{TerminalError, TerminalSession};
+use crate::workdir::Checkout;
 
 /// How many frames may wait for a socket that is not there.
 ///
@@ -69,6 +71,13 @@ use crate::terminal::{TerminalError, TerminalSession};
 /// comfortably past the backoff's first few attempts and far short of a
 /// heap that matters. Overflowing it is a fatal error.
 pub const QUEUE_DEPTH: usize = 1024;
+
+/// How many answered workdir questions may wait for a socket.
+///
+/// Small on purpose: a browser asking what is in a directory is waiting on
+/// an HTTP request the control plane is holding open, and an answer that
+/// queued behind ten others is one nobody is still listening for.
+pub const REPLY_DEPTH: usize = 8;
 
 /// Shortest wait before a reconnect attempt.
 pub const BACKOFF_MIN: Duration = Duration::from_secs(1);
@@ -520,6 +529,16 @@ struct Connection<S, T, A, W, D, H> {
     running_shell: Option<(ShellRunId, ShellRun)>,
     api: A,
     workdir: W,
+    /// The read-only view of the checkout the `Files` and `Diff` tabs are
+    /// served from.
+    checkout: Checkout,
+    /// Where an answered workdir question is handed back to the pump.
+    ///
+    /// Its own channel rather than the harness's outbound queue, because
+    /// that queue closing is how the pump learns the harness stopped — a
+    /// second sender kept for replies would hold it open for ever.
+    reply_out: mpsc::Sender<DaemonToControl>,
+    replies: mpsc::Receiver<DaemonToControl>,
     repo_status: mpsc::UnboundedReceiver<String>,
     disk: D,
     /// Eviction notices from the provider's metadata endpoint.
@@ -656,6 +675,20 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                         // relay keeps its socket rather than tearing down
                         // over an error it cannot act on.
                         tracing::error!(%error, "the reclamation sequence did not complete");
+                    }
+                }
+                reply = self.replies.recv() => {
+                    let Some(frame) = reply else {
+                        // Unreachable: the connection owns a sender for the
+                        // life of the pump. Treated as a disconnect rather
+                        // than ignored, so a channel that somehow closed
+                        // cannot spin this loop.
+                        return Ok(Ended::Disconnected);
+                    };
+                    if let Err(error) = send(socket, &frame).await {
+                        tracing::warn!(%error, "a workdir reply did not reach the room; retrying it on the next connection");
+                        *in_flight = Some(frame);
+                        return Ok(Ended::Disconnected);
                     }
                 }
                 summary = self.repo_status.recv(), if self.alive.repo_watch => {
@@ -1033,6 +1066,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                 self.tell_the_agent(&notice.render().map_err(|error| notice_failed(&error))?)
                     .await?;
             }
+            ControlToDaemon::InspectWorkdir { id, request } => self.answer_workdir(id, request),
             ControlToDaemon::Archive { preserve_workdir } => {
                 if preserve_workdir && let Some(patch) = self.workdir.snapshot().await? {
                     self.api.put_workdir_patch(patch).await?;
@@ -1043,6 +1077,27 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
             }
         }
         Ok(Ended::Disconnected)
+    }
+
+    /// Reads the checkout for a browser, on a task of its own.
+    ///
+    /// Off the pump because a diff runs git over the whole tree, and the
+    /// socket has a harness stream to carry while it does. Read-only, so
+    /// nothing about it depends on what else the session is doing — a
+    /// paused or reclaiming session still shows the user its files.
+    fn answer_workdir(&self, id: WorkdirRequestId, request: WorkdirRequest) {
+        let checkout = self.checkout.clone();
+        let replies = self.reply_out.clone();
+        tokio::spawn(async move {
+            let reply = checkout.inspect(request).await;
+            if replies
+                .send(DaemonToControl::WorkdirReply { id, reply })
+                .await
+                .is_err()
+            {
+                tracing::warn!(%id, "a workdir reply outlived the connection that asked for it");
+            }
+        });
     }
 
     /// Puts a flyco notice into the conversation.
@@ -1169,6 +1224,8 @@ pub struct SessionRelay<S, A, T, W, D, H> {
     pub shell: H,
     /// Snapshot handle for the checkout.
     pub workdir: W,
+    /// The same checkout, read-only, for the `Files` and `Diff` tabs.
+    pub checkout: Checkout,
     /// `git status --short` summaries as they change.
     pub repo_status: mpsc::UnboundedReceiver<String>,
     /// The filesystems a reclamation flushes before the compute goes.
@@ -1223,6 +1280,7 @@ where
     // deadlock. What keeps it small is the shell itself: one command at a
     // time, with a cap on how much of it reaches the transcript.
     let (shell_reports, shell_updates) = mpsc::unbounded_channel();
+    let (reply_out, replies) = mpsc::channel(REPLY_DEPTH);
     let mut connection = Connection {
         session: relay.session,
         terminal: relay.terminal,
@@ -1233,6 +1291,9 @@ where
         running_shell: None,
         api: relay.api,
         workdir: relay.workdir,
+        checkout: relay.checkout,
+        reply_out,
+        replies,
         repo_status: relay.repo_status,
         disk: relay.disk,
         spot: relay.spot,

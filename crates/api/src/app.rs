@@ -1,5 +1,8 @@
 //! Router assembly and the handlers that are not part of the OAuth flow.
 
+use flyco_core::workdir::{
+    DirectoryListing, FileContent, WorkdirDiff, WorkdirReply, WorkdirRequest,
+};
 use flyco_core::{
     AgentMachineView, ApiKeyId, ApiKeySummary, ApprovalDecision, ApprovalId, ApprovalState,
     ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
@@ -1149,6 +1152,136 @@ async fn read_repo_status(
     rooms.repo_status(id).await.map(Json)
 }
 
+/// Query of the two `Files` routes.
+#[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
+struct CheckoutPath {
+    /// A path inside the session's checkout, `/`-separated and relative to
+    /// its root. Omitted lists the root itself.
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// Lists one directory of a session's checkout (docs/ux.md §9.4).
+///
+/// Answered live by the machine: there is no copy of a working tree in the
+/// control plane, so this is relayed to the session's daemon and the
+/// browser is told plainly when there is no daemon to answer it.
+#[skyzen::openapi]
+async fn list_session_files(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Query(query): Query<CheckoutPath>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Json<DirectoryListing>> {
+    read_session_files(&user, &params, query.path, &rooms, &db)
+        .await
+        .into()
+}
+
+async fn read_session_files(
+    user: &CurrentUser,
+    params: &Params,
+    path: Option<String>,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<Json<DirectoryListing>, ApiError> {
+    let request = WorkdirRequest::Entries {
+        path: path.unwrap_or_default(),
+    };
+    match inspect_workdir(user, params, rooms, db, request).await? {
+        WorkdirReply::Entries { listing } => Ok(Json(listing)),
+        other => Err(mismatched("a directory listing", &other)),
+    }
+}
+
+/// Reads one text file out of a session's checkout (docs/ux.md §9.4).
+#[skyzen::openapi]
+async fn read_session_file(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Query(query): Query<CheckoutPath>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Json<FileContent>> {
+    read_file_content(&user, &params, query.path, &rooms, &db)
+        .await
+        .into()
+}
+
+async fn read_file_content(
+    user: &CurrentUser,
+    params: &Params,
+    path: Option<String>,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<Json<FileContent>, ApiError> {
+    let request = WorkdirRequest::File {
+        path: path.unwrap_or_default(),
+    };
+    match inspect_workdir(user, params, rooms, db, request).await? {
+        WorkdirReply::File { content } => Ok(Json(content)),
+        other => Err(mismatched("a file", &other)),
+    }
+}
+
+/// Diffs a session's working tree against the branch it started from.
+#[skyzen::openapi]
+async fn get_session_diff(
+    State(user): State<CurrentUser>,
+    params: Params,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Json<WorkdirDiff>> {
+    read_session_diff(&user, &params, &rooms, &db).await.into()
+}
+
+async fn read_session_diff(
+    user: &CurrentUser,
+    params: &Params,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<Json<WorkdirDiff>, ApiError> {
+    match inspect_workdir(user, params, rooms, db, WorkdirRequest::Diff).await? {
+        WorkdirReply::Diff { diff } => Ok(Json(diff)),
+        other => Err(mismatched("a diff", &other)),
+    }
+}
+
+/// Puts one question about a session's checkout to its daemon.
+///
+/// Ownership is settled here, before the room is addressed at all: a room
+/// cannot reach D1, and the checkout of somebody else's session is
+/// indistinguishable from one that does not exist. A refusal the daemon
+/// answered with becomes the [`ApiError`] it maps to, so every one of them
+/// reaches the browser as its own RFC 9457 problem.
+async fn inspect_workdir(
+    user: &CurrentUser,
+    params: &Params,
+    rooms: &Rooms,
+    db: &Db,
+    request: WorkdirRequest,
+) -> Result<WorkdirReply, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    if !sessions::is_owned_by(db, user.id, id).await? {
+        return Err(ApiError::SessionNotFound);
+    }
+    let reply = rooms.inspect_workdir(id, request).await?;
+    if let WorkdirReply::Refused { refusal } = reply {
+        tracing::info!(session = %id, ?refusal, "a daemon refused a question about its checkout");
+        return Err(refusal.into());
+    }
+    Ok(reply)
+}
+
+/// A daemon answered a question with the answer to another one, which is a
+/// protocol fault rather than anything the caller did.
+fn mismatched(expected: &str, reply: &WorkdirReply) -> ApiError {
+    ApiError::Room(format!(
+        "the session's daemon answered {expected} with {reply:?}"
+    ))
+}
+
 // ── Daemon-scoped routes ──
 
 /// The harness-native session id the daemon announced at start.
@@ -1686,7 +1819,7 @@ fn account_routes() -> Vec<RouteNode> {
 
 /// A session's lifecycle, and driving the agent inside it.
 fn session_routes() -> Vec<RouteNode> {
-    Route::new((
+    let mut nodes = Route::new((
         "/v1/sessions".post(create_session).get(list_sessions),
         "/v1/sessions/{id}".at(get_session).patch(update_session),
         "/v1/sessions/{id}/archive".post(archive_session),
@@ -1703,6 +1836,20 @@ fn session_routes() -> Vec<RouteNode> {
             .at(get_session_env)
             .put(put_session_env),
         "/v1/sessions/{id}/repo-status".at(get_repo_status),
+    ))
+    .into_route_nodes();
+    // Split rather than one tuple: a route tree is a tuple, and tuples stop
+    // implementing the trait past sixteen elements.
+    nodes.extend(checkout_routes());
+    nodes
+}
+
+/// Reading the disk a session works on (docs/ux.md §9.4).
+fn checkout_routes() -> Vec<RouteNode> {
+    Route::new((
+        "/v1/sessions/{id}/files".at(list_session_files),
+        "/v1/sessions/{id}/files/content".at(read_session_file),
+        "/v1/sessions/{id}/diff".at(get_session_diff),
     ))
     .into_route_nodes()
 }

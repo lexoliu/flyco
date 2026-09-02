@@ -25,6 +25,8 @@ use crate::terminal::FakeTerminal;
 use crate::testing::{
     Call, ControlPlane, Directive, FakeDisk, FakeSession, Greeting, Reply, Room, Seen,
 };
+use crate::workdir::Checkout;
+use flyco_core::workdir::{WorkdirRefusal, WorkdirReply, WorkdirRequest};
 
 /// A daemon token shaped the way the control plane mints them.
 const TOKEN: &str = "fd_a-daemon-token";
@@ -212,6 +214,40 @@ struct Harness {
     /// greeting a welcoming room answers and never on a re-greeting or on
     /// a room that refuses the handshake outright.
     expect_ready: bool,
+    /// The scratch directory the relay's checkout reads, removed with the
+    /// harness.
+    #[expect(
+        dead_code,
+        reason = "held for its Drop: the directory outlives every frame the test sends"
+    )]
+    checkout_dir: ScratchDir,
+}
+
+/// A directory that removes itself.
+///
+/// A field rather than a `Drop` on the harness: a test hands
+/// [`Harness::run`]'s join handle out by value, which a type that
+/// implements `Drop` cannot have moved out of it.
+struct ScratchDir(std::path::PathBuf);
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A directory with one file in it, for the relay's read-only checkout.
+///
+/// Not a git repository: what the relay is responsible for is carrying a
+/// question to the checkout and its answer back, and a listing is the
+/// cheapest question that proves it. What the answers themselves are made
+/// of is [`crate::workdir`]'s own business, and is tested there against a
+/// real clone.
+fn scratch_checkout() -> ScratchDir {
+    let path = std::env::temp_dir().join(format!("flyco-relay-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&path).expect("a scratch checkout");
+    std::fs::write(path.join("NOTES.md"), "the agent was here\n").expect("write");
+    ScratchDir(path)
 }
 
 impl Harness {
@@ -246,6 +282,7 @@ impl Harness {
         let (terminal, terminal_writes, terminal_inject, terminal_out) = FakeTerminal::pair();
         let (shell, shell_runs) = FakeShell::pair();
         let (workdir, repo_inject, repo_status) = FakeWorkdir::pair();
+        let checkout_dir = scratch_checkout();
         let run = tokio::spawn(wire::run(SessionRelay {
             endpoint,
             session: fake,
@@ -255,6 +292,7 @@ impl Harness {
             terminal_out,
             shell,
             workdir,
+            checkout: Checkout::new(checkout_dir.0.clone(), None),
             repo_status,
             disk: FakeDisk::new(recorder),
             spot,
@@ -278,6 +316,7 @@ impl Harness {
             evict: Some(evict),
             run,
             expect_ready: greeting == Greeting::Welcome,
+            checkout_dir,
         }
     }
 
@@ -721,6 +760,81 @@ async fn a_paused_session_refuses_a_shell_command_rather_than_ignoring_it() {
 }
 
 #[tokio::test]
+async fn a_question_about_the_checkout_is_answered_on_the_socket_that_asked() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    let id = flyco_core::WorkdirRequestId::generate();
+    harness.command(ControlToDaemon::InspectWorkdir {
+        id,
+        request: WorkdirRequest::Entries {
+            path: String::new(),
+        },
+    });
+
+    let DaemonToControl::WorkdirReply {
+        id: answered,
+        reply: WorkdirReply::Entries { listing },
+    } = harness.room.next_frame().await
+    else {
+        panic!("the daemon answered something other than the listing it was asked for");
+    };
+    assert_eq!(
+        answered, id,
+        "the reply echoes the id, so the control plane knows whose answer it is"
+    );
+    assert_eq!(
+        listing
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["NOTES.md"]
+    );
+
+    // The harness stream is untouched by the detour: a reply rides its own
+    // channel, and the transcript keeps flowing while a diff is computed.
+    harness
+        .emit(SessionOutput::Event {
+            event: delta("still here"),
+        })
+        .await;
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness {
+            event: delta("still here")
+        }
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_refused_question_about_the_checkout_comes_back_as_a_refusal() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    let id = flyco_core::WorkdirRequestId::generate();
+    harness.command(ControlToDaemon::InspectWorkdir {
+        id,
+        request: WorkdirRequest::File {
+            path: "../elsewhere".to_owned(),
+        },
+    });
+
+    let DaemonToControl::WorkdirReply {
+        reply: WorkdirReply::Refused { refusal },
+        ..
+    } = harness.room.next_frame().await
+    else {
+        panic!("a path outside the checkout must not be answered with a file");
+    };
+    assert!(matches!(refusal, WorkdirRefusal::OutsideCheckout { .. }));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
 async fn user_messages_interrupts_and_compaction_reach_the_harness() {
     let mut harness = Harness::start(Greeting::Welcome).await;
     harness.handshake().await;
@@ -949,6 +1063,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         terminal_out,
         shell,
         workdir,
+        checkout: Checkout::new(std::env::temp_dir(), None),
         repo_status,
         disk: FakeDisk::new(recorder),
         spot: crate::spot::nothing_to_watch(),

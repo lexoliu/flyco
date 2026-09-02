@@ -1151,6 +1151,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Diffs a session's working tree against the branch it started from.
+         * @description Diffs a session's working tree against the branch it started from.
+         */
+        get: operations["flyco_api::app::get_session_diff"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/env": {
         parameters: {
             query?: never;
@@ -1199,6 +1219,50 @@ export interface paths {
          *     socket: replay from the last position it saw, then follow the relay.
          */
         get: operations["flyco_api::app::get_session_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lists one directory of a session's checkout (docs/ux.md §9.4).
+         * @description Lists one directory of a session's checkout (docs/ux.md §9.4).
+         *
+         *     Answered live by the machine: there is no copy of a working tree in the
+         *     control plane, so this is relayed to the session's daemon and the
+         *     browser is told plainly when there is no daemon to answer it.
+         */
+        get: operations["flyco_api::app::list_session_files"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/files/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reads one text file out of a session's checkout (docs/ux.md §9.4).
+         * @description Reads one text file out of a session's checkout (docs/ux.md §9.4).
+         */
+        get: operations["flyco_api::app::read_session_file"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2121,6 +2185,14 @@ export interface components {
             /** @description Only machines in this provider-native region. */
             region?: string | null;
         };
+        /** @description Query of the two `Files` routes. */
+        CheckoutPath: {
+            /**
+             * @description A path inside the session's checkout, `/`-separated and relative to
+             *     its root. Omitted lists the root itself.
+             */
+            path?: string | null;
+        };
         /**
          * @description Response of `POST /v1/harness-accounts/claude/oauth/start`.
          *
@@ -2371,6 +2443,45 @@ export interface components {
              */
             spot?: boolean | null;
         };
+        /** @description One row of a directory listing. */
+        DirectoryEntry: {
+            /**
+             * @description Whether git ignores it.
+             *
+             *     Marked rather than hidden: a `target/` or a `.env` is exactly what a
+             *     user goes looking for when something is wrong, and a tree that
+             *     silently omitted them would be lying about the disk.
+             */
+            ignored: boolean;
+            /** @description Whether it is a file or a directory. */
+            kind: components["schemas"]["EntryKind"];
+            /** @description The entry's own name, without any directory part. */
+            name: string;
+            /**
+             * @description Where it is, relative to the checkout root, `/`-separated.
+             *
+             *     What a `path=` query passes back to expand a directory or open a
+             *     file, so the browser never assembles a path itself.
+             */
+            path: string;
+            /**
+             * Format: int64
+             * @description Size in bytes, for files.
+             */
+            size_bytes?: number | null;
+        };
+        /** @description One directory of a session's checkout. */
+        DirectoryListing: {
+            /** @description Directories first, then files, each in name order. */
+            entries: components["schemas"]["DirectoryEntry"][];
+            /**
+             * @description The directory listed, relative to the checkout root. Empty is the
+             *     root itself.
+             */
+            path: string;
+            /** @description Whether entries past [`DIRECTORY_ENTRIES_MAX`] were left out. */
+            truncated: boolean;
+        };
         /**
          * @description Request body of `POST /v1/hosts/enroll`.
          *
@@ -2434,6 +2545,11 @@ export interface components {
             /** @description The single-use token, `fh_…`. */
             token: string;
         };
+        /**
+         * @description What a directory entry is.
+         * @enum {string}
+         */
+        EntryKind: "file" | "directory";
         /** @description Response of `GET`/`PUT /v1/sessions/{id}/env`. */
         EnvDocument: {
             /** @description Every variable the session runs with, in the order it is stored. */
@@ -2471,6 +2587,58 @@ export interface components {
          * @enum {string}
          */
         Feature: "usage_display" | "context_window_display" | "goal_mode" | "auto_mode" | "side_chat" | "dynamic_workflows" | "settings" | "compact" | "advisor" | "monitor" | "background_tasks" | "auto_continue_at_usage_limit" | "remote_control" | "resume" | "skills" | "mcp" | "memory" | "browser_control" | "computer_control";
+        /**
+         * @description What happened to one file between the base branch and the working tree.
+         * @enum {string}
+         */
+        FileChange: "added" | "modified" | "deleted" | "renamed";
+        /** @description One text file of a session's checkout. */
+        FileContent: {
+            /**
+             * Format: int64
+             * @description Its size on disk, in bytes.
+             */
+            bytes: number;
+            /** @description The file read, relative to the checkout root. */
+            path: string;
+            /**
+             * @description Its whole content. Never a prefix: a file too big to serve is
+             *     [refused](WorkdirRefusal::TooLarge) rather than cut in half.
+             */
+            text: string;
+        };
+        /** @description One file's share of a session's diff. */
+        FileDiff: {
+            /**
+             * Format: int32
+             * @description Lines this file gained.
+             */
+            added_lines: number;
+            /** @description Whether git could not diff it as text. */
+            binary: boolean;
+            /** @description What happened to it. */
+            change: components["schemas"]["FileChange"];
+            /**
+             * @description The file's own unified diff, hunk headers included.
+             *
+             *     `None` when there is no text to show: a binary file, or a diff that
+             *     had already spent [`DIFF_PATCH_BYTES_MAX`] on the files before it —
+             *     which the containing [`WorkdirDiff::truncated`] announces.
+             */
+            patch?: string | null;
+            /** @description The file's path now, relative to the checkout root. */
+            path: string;
+            /**
+             * @description Where it was before, when [`change`](Self::change) is
+             *     [`FileChange::Renamed`].
+             */
+            previous_path?: string | null;
+            /**
+             * Format: int32
+             * @description Lines this file lost.
+             */
+            removed_lines: number;
+        };
         /**
          * @description A Claude or Codex account the user has linked, as `GET
          *     /v1/harness-accounts` lists it.
@@ -3770,6 +3938,26 @@ export interface components {
         VapidPublicKey: {
             /** @description The uncompressed P-256 public point, base64url without padding. */
             key: string;
+        };
+        /** @description Everything a session has changed, against the branch it started from. */
+        WorkdirDiff: {
+            /**
+             * Format: int32
+             * @description Lines gained across every file, including files whose patch was
+             *     left out.
+             */
+            added_lines: number;
+            /** @description The git ref the working tree was compared against. */
+            base: string;
+            /** @description One entry per changed file, in git's own order. */
+            files: components["schemas"]["FileDiff"][];
+            /**
+             * Format: int32
+             * @description Lines lost across every file.
+             */
+            removed_lines: number;
+            /** @description Whether some patches were left out for size. */
+            truncated: boolean;
         };
     };
     responses: never;
@@ -6170,6 +6358,46 @@ export interface operations {
             };
         };
     };
+    "flyco_api::app::get_session_diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: int32
+                         * @description Lines gained across every file, including files whose patch was
+                         *     left out.
+                         */
+                        added_lines: number;
+                        /** @description The git ref the working tree was compared against. */
+                        base: string;
+                        /** @description One entry per changed file, in git's own order. */
+                        files: components["schemas"]["FileDiff"][];
+                        /**
+                         * Format: int32
+                         * @description Lines lost across every file.
+                         */
+                        removed_lines: number;
+                        /** @description Whether some patches were left out for size. */
+                        truncated: boolean;
+                    };
+                };
+            };
+        };
+    };
     "flyco_api::app::get_session_env": {
         parameters: {
             query?: never;
@@ -6262,6 +6490,77 @@ export interface operations {
                         events: components["schemas"]["StoredEvent"][];
                         /** @description Whether more events exist past the last one returned. */
                         more: boolean;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::app::list_session_files": {
+        parameters: {
+            query?: {
+                path?: string | null;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Directories first, then files, each in name order. */
+                        entries: components["schemas"]["DirectoryEntry"][];
+                        /**
+                         * @description The directory listed, relative to the checkout root. Empty is the
+                         *     root itself.
+                         */
+                        path: string;
+                        /** @description Whether entries past [`DIRECTORY_ENTRIES_MAX`] were left out. */
+                        truncated: boolean;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::app::read_session_file": {
+        parameters: {
+            query?: {
+                path?: string | null;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description Its size on disk, in bytes.
+                         */
+                        bytes: number;
+                        /** @description The file read, relative to the checkout root. */
+                        path: string;
+                        /**
+                         * @description Its whole content. Never a prefix: a file too big to serve is
+                         *     [refused](WorkdirRefusal::TooLarge) rather than cut in half.
+                         */
+                        text: string;
                     };
                 };
             };

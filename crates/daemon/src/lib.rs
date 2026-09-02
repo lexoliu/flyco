@@ -24,6 +24,9 @@
 //! - [`shell`] — the one-off `bash -c` behind a composer message beginning
 //!   with `!`: bounded in time and in output, cancelled by Stop, and never
 //!   shown to the harness.
+//! - [`workdir`] — the read-only view of the checkout behind the `Files`
+//!   and `Diff` tabs: one directory, one text file, or the whole diff
+//!   against the branch the session started from.
 //! - [`git`] — `git status --short` polling, dirty-tree keep-awake, and
 //!   workdir snapshots for automatic archive.
 //! - [`host`] — the daemon's other role: on a machine the user owns,
@@ -61,6 +64,7 @@ pub mod repl;
 pub mod shell;
 pub mod spot;
 pub mod terminal;
+pub mod workdir;
 
 #[cfg(test)]
 mod testing;

@@ -24,8 +24,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::budget::BudgetSignal;
 use crate::harness::{HarnessEvent, UsageReport};
-use crate::id::{ApprovalId, SessionId, ShellRunId};
+use crate::id::{ApprovalId, SessionId, ShellRunId, WorkdirRequestId};
 use crate::session::SessionState;
+use crate::workdir::{WorkdirReply, WorkdirRequest};
 
 /// What the daemon asks the user to approve, mirrored in the approval UI.
 ///
@@ -305,6 +306,19 @@ pub enum DaemonToControl {
         /// Seconds until reclamation, as announced.
         seconds_remaining: u32,
     },
+    /// The answer to one
+    /// [`InspectWorkdir`](ControlToDaemon::InspectWorkdir).
+    ///
+    /// The one frame in this direction that is addressed rather than
+    /// broadcast: no browser sees it, because the browser that asked is
+    /// waiting on the HTTP request the control plane is holding open for
+    /// it. The room stores it under `id` and the Worker collects it there.
+    WorkdirReply {
+        /// The request this answers.
+        id: WorkdirRequestId,
+        /// The listing, the file, the diff, or the refusal.
+        reply: WorkdirReply,
+    },
     /// The machine reached a provisioning milestone the daemon can see.
     ///
     /// The control plane cannot observe anything past the provider's
@@ -408,6 +422,24 @@ pub enum ControlToDaemon {
         /// move depends on it — a restart means every process it started is
         /// gone and the disk is exactly as it left it.
         restarted: bool,
+    },
+    /// Read something out of the session's checkout for the user.
+    ///
+    /// The `Files` and `Diff` tabs of docs/ux.md §9.4: the daemon is the
+    /// only process that can see the disk, so a browser's question about it
+    /// is relayed here and answered with a
+    /// [`WorkdirReply`](DaemonToControl::WorkdirReply) carrying the same
+    /// `id`. Read-only in both directions — nothing in this protocol writes
+    /// to a session's working tree, which is the agent's alone.
+    ///
+    /// Dropped rather than held when no daemon is connected: a browser is
+    /// waiting on the answer, and one delivered after the machine came back
+    /// would arrive at a request that timed out long ago.
+    InspectWorkdir {
+        /// Identifier the reply must echo.
+        id: WorkdirRequestId,
+        /// What is being asked.
+        request: WorkdirRequest,
     },
     /// Archive the session: flush state, optionally snapshot the repo, shut
     /// down.
@@ -614,11 +646,14 @@ impl ClientEvent {
     /// [`DaemonToControl::Hello`] is handshake traffic and never reaches a
     /// browser; an [`DaemonToControl::ApprovalRequest`] becomes
     /// [`Self::ApprovalPending`], because "pending" is the state the UI
-    /// renders rather than the act of asking.
+    /// renders rather than the act of asking. A
+    /// [`DaemonToControl::WorkdirReply`] is addressed to one waiting HTTP
+    /// request and is collected by the Worker rather than broadcast, so it
+    /// has no client form either.
     #[must_use]
     pub fn from_daemon(frame: DaemonToControl) -> Option<Self> {
         match frame {
-            DaemonToControl::Hello { .. } => None,
+            DaemonToControl::Hello { .. } | DaemonToControl::WorkdirReply { .. } => None,
             DaemonToControl::Started { harness_session_id } => {
                 Some(Self::Started { harness_session_id })
             }
@@ -662,10 +697,14 @@ mod tests {
     };
     use crate::budget::BudgetSignal;
     use crate::harness::{ContextWindow, HarnessEvent, UsageReport};
-    use crate::id::{ApprovalId, SessionId, ShellRunId};
+    use crate::id::{ApprovalId, SessionId, ShellRunId, WorkdirRequestId};
     use crate::machine::BillingMinimum;
     use crate::money::Usd;
     use crate::session::SessionState;
+    use crate::workdir::{
+        DirectoryEntry, DirectoryListing, EntryKind, FileChange, FileContent, FileDiff,
+        WorkdirDiff, WorkdirRefusal, WorkdirReply, WorkdirRequest,
+    };
 
     /// Round-trips through the JSON *text*, not through `serde_json::Value`.
     ///
@@ -751,6 +790,59 @@ mod tests {
                 stage: ProvisioningStage::Ready,
                 at_unix: 1_800_000_000,
             },
+            DaemonToControl::WorkdirReply {
+                id: WorkdirRequestId::generate(),
+                reply: WorkdirReply::Entries {
+                    listing: DirectoryListing {
+                        path: "src".to_owned(),
+                        entries: vec![DirectoryEntry {
+                            name: "lib.rs".to_owned(),
+                            path: "src/lib.rs".to_owned(),
+                            kind: EntryKind::File,
+                            size_bytes: Some(2_048),
+                            ignored: false,
+                        }],
+                        truncated: false,
+                    },
+                },
+            },
+            DaemonToControl::WorkdirReply {
+                id: WorkdirRequestId::generate(),
+                reply: WorkdirReply::File {
+                    content: FileContent {
+                        path: "README.md".to_owned(),
+                        text: "# flyco\n".to_owned(),
+                        bytes: 8,
+                    },
+                },
+            },
+            DaemonToControl::WorkdirReply {
+                id: WorkdirRequestId::generate(),
+                reply: WorkdirReply::Diff {
+                    diff: WorkdirDiff {
+                        base: "origin/main".to_owned(),
+                        files: vec![FileDiff {
+                            path: "src/lib.rs".to_owned(),
+                            previous_path: None,
+                            change: FileChange::Modified,
+                            added_lines: 3,
+                            removed_lines: 1,
+                            binary: false,
+                            patch: Some("@@ -1 +1,3 @@\n".to_owned()),
+                        }],
+                        added_lines: 3,
+                        removed_lines: 1,
+                        truncated: false,
+                    },
+                },
+            },
+            DaemonToControl::WorkdirReply {
+                id: WorkdirRequestId::generate(),
+                reply: WorkdirReply::refused(WorkdirRefusal::TooLarge {
+                    path: "data/dump.json".to_owned(),
+                    bytes: 9_000_000,
+                }),
+            },
         ]
     }
 
@@ -796,6 +888,22 @@ mod tests {
             },
             ControlToDaemon::Archive {
                 preserve_workdir: true,
+            },
+            ControlToDaemon::InspectWorkdir {
+                id: WorkdirRequestId::generate(),
+                request: WorkdirRequest::Entries {
+                    path: "src".to_owned(),
+                },
+            },
+            ControlToDaemon::InspectWorkdir {
+                id: WorkdirRequestId::generate(),
+                request: WorkdirRequest::File {
+                    path: "src/lib.rs".to_owned(),
+                },
+            },
+            ControlToDaemon::InspectWorkdir {
+                id: WorkdirRequestId::generate(),
+                request: WorkdirRequest::Diff,
             },
         ]
     }
@@ -1030,9 +1138,15 @@ mod tests {
     }
 
     #[test]
-    fn only_the_handshake_is_hidden_from_browsers() {
+    fn only_the_handshake_and_an_addressed_reply_are_hidden_from_browsers() {
         for frame in every_daemon_frame() {
-            let hidden = matches!(frame, DaemonToControl::Hello { .. });
+            // The two frames nobody watching the session is meant to see:
+            // the handshake, and an answer addressed to the one HTTP
+            // request that asked for it.
+            let hidden = matches!(
+                frame,
+                DaemonToControl::Hello { .. } | DaemonToControl::WorkdirReply { .. }
+            );
             assert_eq!(ClientEvent::from_daemon(frame.clone()).is_none(), hidden);
         }
     }

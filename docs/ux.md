@@ -348,9 +348,25 @@ one.
 ### 9.4 Drawer
 
 A right-side drawer, collapsed by default, with tabs `Terminal`, `Files`,
-`Machine`, `Env`. `Terminal` is the existing xterm panel. `Machine` shows
-spec, hourly, storage hourly, state, and the start/stop/resize controls.
-`Env` is the existing editor. Keyboard: `⌘.` toggles the drawer.
+`Diff`, `Machine`, `Env`. `Terminal` is the existing xterm panel.
+`Machine` shows spec, hourly, storage hourly, state, and the
+start/stop/resize controls. `Env` is the existing editor. Keyboard: `⌘.`
+toggles the drawer.
+
+`Files` is the session's checkout, read-only: a lazy tree that fetches one
+directory at a time, files git ignores shown and marked rather than hidden,
+and a syntax-highlighted view of any text file up to 128 KiB. A file past
+that, or one that is not text, says so and points at the terminal.
+
+`Diff` is what this session changed, against the branch it started from:
+the working tree — committed, uncommitted and untracked — diffed against
+`origin/<branch>`, one collapsible section per file, each headed by the
+path, what happened to it, and `+n −m`. A file whose diff runs past ~900
+lines opens as `Large diff · N lines · Load diff` instead of rendering.
+
+Both are answered live by the session's machine, over the relay: there is
+no copy of a working tree in the control plane, so a session with no daemon
+connected says exactly that rather than showing an empty tree.
 
 ### 9.5 Machine changes during a session
 

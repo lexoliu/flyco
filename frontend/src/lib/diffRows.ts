@@ -14,9 +14,26 @@
  */
 import { diffLines } from "diff";
 
-/** One rendered row of a diff. */
+/**
+ * One rendered row of a diff.
+ *
+ * Shared by the two diffs in the product: the approval diff below, which
+ * compares two documents the browser holds, and the session diff
+ * (`src/lib/patch.ts`), which reads git's own patch text. The line numbers
+ * are optional because only the second one has any: an approval is a
+ * proposed change to a document, not a change at a position in a file.
+ */
 export type DiffRow =
-  | { readonly kind: "context" | "added" | "removed"; readonly text: string }
+  | {
+      readonly kind: "context" | "added" | "removed";
+      readonly text: string;
+      /** Line number on the left, when the row exists there. */
+      readonly oldNumber?: number;
+      /** Line number on the right, when the row exists there. */
+      readonly newNumber?: number;
+    }
+  /** A hunk header, verbatim, marking a jump to another part of the file. */
+  | { readonly kind: "hunk"; readonly text: string }
   /** A run of unchanged lines that was elided, and how many it stood for. */
   | { readonly kind: "gap"; readonly hidden: number };
 

@@ -374,13 +374,42 @@ impl WorkingTree for FakeWorkdir {
 }
 
 async fn git(path: &Path, args: &[&str]) -> Result<std::process::Output, GitError> {
-    let command = args.first().copied().unwrap_or("git").to_owned();
-    let output = Command::new("git")
-        .current_dir(path)
-        .args(args)
-        .output()
-        .await
-        .map_err(GitError::Spawn)?;
+    let args: Vec<&OsStr> = args.iter().copied().map(OsStr::new).collect();
+    run_git(path, &args, &[], &[]).await
+}
+
+/// Runs one git command in `path`, and says what it wrote.
+///
+/// The shared runner behind every plain git call this crate makes.
+/// [`crate::workdir`] needs the two things a status poll does not: an
+/// environment (`GIT_INDEX_FILE`, so a diff can stage into an index that is
+/// not the checkout's) and a set of exit codes that are answers rather than
+/// failures — `check-ignore` exits 1 when nothing is ignored, and
+/// `rev-parse --verify` exits 1 when a ref does not exist.
+pub(crate) async fn run_git(
+    path: &Path,
+    args: &[&OsStr],
+    env: &[(&str, &OsStr)],
+    also_ok: &[i32],
+) -> Result<std::process::Output, GitError> {
+    let command = args
+        .first()
+        .and_then(|arg| arg.to_str())
+        .unwrap_or("git")
+        .to_owned();
+    let mut process = Command::new("git");
+    process.current_dir(path).args(args);
+    for (name, value) in env {
+        process.env(name, value);
+    }
+    let output = process.output().await.map_err(GitError::Spawn)?;
+    if output
+        .status
+        .code()
+        .is_some_and(|code| also_ok.contains(&code))
+    {
+        return Ok(output);
+    }
     finished(command, output)
 }
 
