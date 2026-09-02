@@ -1,0 +1,9 @@
+This session runs on {% include "machine_line.txt" %}, in {{ region }}, and the machine is {{ state }}.
+{% if let Some(minimum) = line.minimum -%}
+Booting it already {{ minimum }} — that money is spent whether or not this session uses the time.
+{% endif -%}
+{% if user_chose -%}
+{% include "user_chose_machine.txt" %}
+{%- else -%}
+Flyco chose this machine automatically as the cheapest curated Linux type big enough to work on, so moving to another one is your call to make when the work needs it.
+{%- endif %}

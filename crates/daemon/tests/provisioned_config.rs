@@ -13,7 +13,7 @@
 //! own loader parses; the assertions are on the fields the control plane
 //! depends on being carried.
 
-use flyco_core::{HarnessKind, PermissionMode, SessionId};
+use flyco_core::{BillingMinimum, HarnessKind, MachineOrigin, PermissionMode, SessionId, Usd};
 use flyco_daemon::config::{ClaudeAuth, CodexAuth, DaemonConfig};
 use flyco_provider::flycod::{
     self, CLAUDE_CONFIG_DIR, CLAUDE_PROJECT_DIR_NAME, CODEX_HOME, WORKDIR,
@@ -44,6 +44,8 @@ fn bootstrap(claude_auth: ClaudeCredential) -> DaemonBootstrap {
                 email: COMMIT_EMAIL.to_owned(),
             },
         },
+        machine_origin: MachineOrigin::User,
+        machine: flyco_provider::testing::session_machine(),
         resume_session_id: None,
     }
 }
@@ -67,6 +69,29 @@ fn a_provisioned_configuration_is_one_this_daemon_accepts() {
         config.claude.as_ref().expect("claude").permission_mode,
         PermissionMode::Auto
     );
+}
+
+#[test]
+fn it_carries_the_machine_the_agent_is_told_about_and_who_chose_it() {
+    let bootstrap = bootstrap(ClaudeCredential::Inherit);
+    let config = parse(&bootstrap);
+
+    assert_eq!(config.machine_origin, MachineOrigin::User);
+    assert_eq!(config.machine, bootstrap.machine);
+}
+
+#[test]
+fn a_license_bound_machine_arrives_with_the_minimum_it_billed() {
+    let mut bootstrap = bootstrap(ClaudeCredential::Inherit);
+    bootstrap.machine.machine_type = "mac2.metal".to_owned();
+    bootstrap.machine.minimum = Some(BillingMinimum::new(24, Usd::from_cents(65)));
+    let config = parse(&bootstrap);
+
+    assert_eq!(
+        config.machine.minimum,
+        Some(BillingMinimum::new(24, Usd::from_cents(65)))
+    );
+    assert!(config.machine.is_license_bound());
 }
 
 #[test]

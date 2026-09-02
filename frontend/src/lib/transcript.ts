@@ -17,6 +17,7 @@
 import type { TimedEvent } from "../api/relay";
 import type { ApprovalPayload, ProvisioningStage, UsageReport } from "../api/wire";
 import type { ApprovalState } from "../api/client";
+import { formatUsd } from "./money";
 
 export interface ToolCall {
   callId: string;
@@ -68,6 +69,24 @@ export type TranscriptItem =
       kind: "provisioning";
       key: string;
       steps: ProvisioningStep[];
+    }
+  | {
+      /**
+       * The session moved onto another machine (docs/ux.md §9.5).
+       *
+       * Its own item rather than a notice, because it says three things and
+       * the middle one is the part people miss: what the machine is now,
+       * that the old one was restarted out from under whatever was running
+       * on it, and that the disk came across untouched.
+       */
+      kind: "machine_change";
+      key: string;
+      machineType: string;
+      /** Integer microdollars, or `null` where flyco meters nothing. */
+      hourlyMicros: number | null;
+      spot: boolean;
+      restarted: boolean;
+      atUnix: number;
     }
   | { kind: "notice"; key: string; text: string; tone: NoticeTone; atUnix: number };
 
@@ -263,6 +282,17 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
           notice(`Uncommitted changes in the working tree: ${event.summary}`, "warning", atUnix);
         }
         break;
+      case "machine_changed":
+        items.push({
+          kind: "machine_change",
+          key: `machine-${items.length}`,
+          machineType: event.machine_type,
+          hourlyMicros: event.hourly,
+          spot: event.spot,
+          restarted: event.restarted,
+          atUnix,
+        });
+        break;
       case "spot_notice":
         notice(
           `Spot capacity is being reclaimed in ${event.seconds_remaining}s. Flyco saves the work and moves the session.`,
@@ -282,6 +312,41 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
   }
 
   return items;
+}
+
+type MachineChange = Extract<TranscriptItem, { kind: "machine_change" }>;
+
+/**
+ * The line docs/ux.md §9.5 asks for:
+ * `Switched to Standard_D8s_v6 · restarted the machine · disk kept`.
+ *
+ * The restart is stated rather than implied because it is the part with
+ * consequences — the dev server the user was watching is gone — and `disk
+ * kept` is stated for the same reason in the other direction: nothing was
+ * lost, and a person reading "restarted" needs to know that in the same
+ * breath.
+ */
+export function machineChangeSummary(change: MachineChange): string {
+  const parts = [`Switched to ${change.machineType}`];
+  if (change.restarted) {
+    parts.push("restarted the machine");
+  }
+  parts.push("disk kept");
+  return parts.join(" · ");
+}
+
+/**
+ * What the new machine costs: `$0.38/hr · spot`.
+ *
+ * `null` on hardware the user owns, where flyco meters nothing — `$0.00/hr`
+ * there would read as "this is free", which is a different claim.
+ */
+export function machineChangePrice(change: MachineChange): string | null {
+  if (change.hourlyMicros === null) {
+    return null;
+  }
+  const hourly = `${formatUsd(change.hourlyMicros)}/hr`;
+  return change.spot ? `${hourly} · spot` : hourly;
 }
 
 /** The approvals still waiting on the user, in the order they were raised. */

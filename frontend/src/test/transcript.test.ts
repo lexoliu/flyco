@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { foldTranscript, pendingApprovals } from "../lib/transcript";
+import {
+  foldTranscript,
+  machineChangePrice,
+  machineChangeSummary,
+  pendingApprovals,
+} from "../lib/transcript";
 import type { TimedEvent } from "../api/relay";
 import type { ClientEvent } from "../api/wire";
 
@@ -61,6 +66,57 @@ describe("foldTranscript notices", () => {
     expect(foldTranscript([at(0, { type: "repo_dirty", summary: " M src/lib.rs" })])).toHaveLength(
       1,
     );
+  });
+});
+
+describe("foldTranscript machine changes", () => {
+  it("reads as the line docs/ux.md §9.5 asks for", () => {
+    const [change] = foldTranscript([
+      at(0, {
+        type: "machine_changed",
+        machine_type: "Standard_D8s_v6",
+        hourly: 380_000,
+        spot: true,
+        restarted: true,
+      }),
+    ]);
+
+    expect(change).toMatchObject({ kind: "machine_change", machineType: "Standard_D8s_v6" });
+    expect(machineChangeSummary(change as never)).toBe(
+      "Switched to Standard_D8s_v6 · restarted the machine · disk kept",
+    );
+    expect(machineChangePrice(change as never)).toBe("$0.38/hr · spot");
+  });
+
+  it("does not claim a restart that did not happen", () => {
+    const [change] = foldTranscript([
+      at(0, {
+        type: "machine_changed",
+        machine_type: "Standard_D8s_v6",
+        hourly: 380_000,
+        spot: false,
+        restarted: false,
+      }),
+    ]);
+
+    expect(machineChangeSummary(change as never)).toBe("Switched to Standard_D8s_v6 · disk kept");
+    expect(machineChangePrice(change as never)).toBe("$0.38/hr");
+  });
+
+  it("quotes no price on hardware flyco does not meter", () => {
+    // `$0.00/hr` would read as "this is free", which is a different claim
+    // from "flyco meters nothing here".
+    const [change] = foldTranscript([
+      at(0, {
+        type: "machine_changed",
+        machine_type: "build.lexo.cool",
+        hourly: null,
+        spot: false,
+        restarted: true,
+      }),
+    ]);
+
+    expect(machineChangePrice(change as never)).toBeNull();
   });
 });
 

@@ -150,6 +150,8 @@ fn request_in(machine: MachineId, zone: &str, machine_type: &str, spot: bool) ->
             permission_mode: PermissionMode::Default,
             claude_auth: ClaudeCredential::Inherit,
             repo: crate::testing::checkout(),
+            machine_origin: flyco_core::MachineOrigin::Auto,
+            machine: crate::testing::session_machine(),
             resume_session_id: None,
         },
     }

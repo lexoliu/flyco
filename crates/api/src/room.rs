@@ -308,7 +308,11 @@ async fn on_daemon_frame(
         ws.set_attachment(&Greeted { protocol_version })?;
         ws.send_json(&ControlToDaemon::Welcome)?;
         // After the welcome and before anything else: the daemon has to
-        // know what it missed before it is told what is happening now.
+        // know what it missed before it is told what is happening now. The
+        // machine it is running on comes first of all — a daemon told its
+        // machine changed *after* a user message would answer that message
+        // believing it is somewhere else.
+        replay_held_commands(ws, ctx.db()).await?;
         return replay_mailbox(ws, ctx.db()).await;
     }
 
@@ -531,6 +535,73 @@ async fn replay_mailbox(
     Ok(())
 }
 
+/// One command kept for a daemon that was not there to take it.
+#[derive(Debug, skyzen::FromRow)]
+struct HeldRow {
+    seq: u64,
+    /// The command, as JSON. Untyped for the same reason a stored event is:
+    /// the room hands back what it was given, including a variant this build
+    /// of the Worker does not know how to read.
+    json: String,
+}
+
+/// Keeps a command for the daemon to take when it comes back.
+///
+/// Only the commands [`ControlToDaemon::survives_a_disconnect`] admits reach
+/// here, and there is exactly one: the machine changing, which is a state
+/// rather than an instant and which happens precisely while no daemon is
+/// connected because the change restarted the machine.
+async fn hold_for_daemon(
+    db: &DurableDb,
+    command: &ControlToDaemon,
+) -> Result<(), DurableObjectError> {
+    let json = serde_json::to_string(command)
+        .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
+    ensure_schema(db).await?;
+    sql!(db, "INSERT INTO held_commands (json) VALUES ({json})")
+        .execute()
+        .await
+        .map_err(|error| stored(&error))?;
+    Ok(())
+}
+
+/// Hands a freshly greeted daemon everything that was kept for it, oldest
+/// first, and forgets it.
+///
+/// Deleted rather than kept behind a cursor, unlike the user-message
+/// mailbox: these commands are not part of the conversation and nothing
+/// replays them, so a row that has been delivered has no further use. A
+/// delete that runs after a successful write is what makes delivery
+/// at-most-once here — and a machine change delivered twice would tell the
+/// agent its processes died twice.
+async fn replay_held_commands(
+    ws: &WebSocketConnection,
+    db: &DurableDb,
+) -> Result<(), DurableObjectError> {
+    ensure_schema(db).await?;
+    let held: Vec<HeldRow> = sql!(db, "SELECT seq, json FROM held_commands ORDER BY seq")
+        .fetch_all()
+        .await
+        .map_err(|error| stored(&error))?;
+
+    let Some(last) = held.last().map(|row| row.seq) else {
+        return Ok(());
+    };
+    let count = held.len();
+    for row in held {
+        ws.send_text(&row.json)?;
+    }
+    sql!(db, "DELETE FROM held_commands WHERE seq <= {last}")
+        .execute()
+        .await
+        .map_err(|error| stored(&error))?;
+    tracing::info!(
+        count,
+        "handed a reconnected daemon the commands kept for it"
+    );
+    Ok(())
+}
+
 /// The stream position through which the daemon has been told everything.
 async fn delivered_through(db: &DurableDb) -> Result<u64, DurableObjectError> {
     Ok(sql!(db, "SELECT seq FROM delivery WHERE id = 0")
@@ -602,6 +673,12 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
         "CREATE TABLE IF NOT EXISTS delivery (\
              id  INTEGER PRIMARY KEY CHECK (id = 0), \
              seq INTEGER NOT NULL)",
+        // Commands written while no daemon was listening. A queue rather
+        // than an index, because these are not conversation: a row is
+        // deleted the moment a daemon has taken it.
+        "CREATE TABLE IF NOT EXISTS held_commands (\
+             seq  INTEGER PRIMARY KEY AUTOINCREMENT, \
+             json TEXT    NOT NULL)",
     ] {
         db.query(statement)
             .execute()
@@ -744,10 +821,20 @@ async fn dispatch_command(
     };
 
     if !forward_to_daemon(connections, command).map_err(|error| room_failed(&error))? {
-        tracing::warn!(
-            ?command,
-            "dropped a command: this session has no daemon connected"
-        );
+        if command.survives_a_disconnect() {
+            hold_for_daemon(db, command)
+                .await
+                .map_err(|error| room_failed(&error))?;
+            tracing::info!(
+                ?command,
+                "held a command for a daemon that is not connected"
+            );
+        } else {
+            tracing::warn!(
+                ?command,
+                "dropped a command: this session has no daemon connected"
+            );
+        }
     }
     if let Some(event) = echo {
         broadcast(connections, &event).map_err(|error| room_failed(&error))?;

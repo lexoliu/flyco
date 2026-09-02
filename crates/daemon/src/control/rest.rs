@@ -27,8 +27,9 @@ use core::future::Future;
 
 use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
-    ApprovalId, ApprovalView, HarnessObservation, Problem, ProvisioningStage,
-    ReportProvisioningStage, SessionId,
+    AgentMachineView, ApprovalId, ApprovalView, BudgetView, HarnessObservation,
+    MachineCatalogEntry, Problem, ProvisioningStage, ReportProvisioningStage, ResizeMachine,
+    SessionId,
 };
 use url::Url;
 use zenwave::{Client as _, ResponseExt as _};
@@ -101,12 +102,14 @@ fn refused(method: &'static str, path: &str, error: &zenwave::Error) -> ControlA
     )
 }
 
-/// What the control plane offers a session's daemon.
+/// Putting a decision in front of the user.
 ///
-/// A trait so the wire client can be driven without a control plane, and so
-/// a test can assert on the *ordering* the relay depends on — the approval
-/// row exists before the frame announcing it leaves.
-pub trait ControlApi: Send + Sync + 'static {
+/// Its own trait because two unrelated things need it and neither needs the
+/// other's surface: the relay routes a harness tool call to flyco's approval
+/// UI, and [the MCP server](crate::mcp) asks before spending the user's
+/// money on a license-bound machine. A daemon-scoped `POST
+/// /v1/sessions/{id}/approvals` in both cases.
+pub trait ApprovalRaiser: Send + Sync + 'static {
     /// Records a pending approval and returns the id the user will decide.
     ///
     /// # Errors
@@ -117,7 +120,14 @@ pub trait ControlApi: Send + Sync + 'static {
         &self,
         payload: ApprovalPayload,
     ) -> impl Future<Output = Result<ApprovalId, ControlApiError>> + Send;
+}
 
+/// What the control plane offers a session's daemon.
+///
+/// A trait so the wire client can be driven without a control plane, and so
+/// a test can assert on the *ordering* the relay depends on — the approval
+/// row exists before the frame announcing it leaves.
+pub trait ControlApi: ApprovalRaiser {
     /// Stores one batch of a transcript stream.
     ///
     /// # Errors
@@ -204,6 +214,65 @@ pub trait ControlApi: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 }
 
+/// What the agent's own tools ask the control plane.
+///
+/// Separate from [`ControlApi`] because a different process asks: the relay
+/// supervises a harness and never wants to know what a machine costs, and
+/// [`the MCP server`](crate::mcp) answers tool calls and never writes a
+/// transcript. Keeping them apart means the relay's test doubles do not have
+/// to invent answers about machines they will never be asked for.
+pub trait AgentApi: ApprovalRaiser {
+    /// Reads the machine this session is on, and who chose it.
+    ///
+    /// Asked rather than remembered. A resize restarts the machine without
+    /// rewriting the configuration on its disk, so the file describes the
+    /// machine the session *booted* on and this describes the one it is on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or the session has no machine.
+    fn agent_machine(
+        &self,
+    ) -> impl Future<Output = Result<AgentMachineView, ControlApiError>> + Send;
+
+    /// Reads the machine types this session can be resized to.
+    ///
+    /// The curated catalog of docs/ux.md §7.6, already narrowed to the
+    /// account and region the session's disk lives in — the two a resize
+    /// cannot cross — so every entry is a machine this one can actually
+    /// become.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or a provider catalog could not be read.
+    fn agent_machine_catalog(
+        &self,
+    ) -> impl Future<Output = Result<Vec<MachineCatalogEntry>, ControlApiError>> + Send;
+
+    /// Moves this session onto another machine type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached, the type is not one this session can move to, or the type
+    /// bills a minimum on boot — which flyco refuses on a daemon's
+    /// authority and which the caller should have raised an approval for.
+    fn resize_machine(
+        &self,
+        machine_type: &str,
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
+
+    /// Reads this session's compute budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached.
+    fn agent_budget(&self) -> impl Future<Output = Result<BudgetView, ControlApiError>> + Send;
+}
+
 /// A transcript stream as the control plane serves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptRead {
@@ -255,7 +324,7 @@ impl HttpControlApi {
     }
 }
 
-impl ControlApi for HttpControlApi {
+impl ApprovalRaiser for HttpControlApi {
     async fn raise_approval(
         &self,
         payload: ApprovalPayload,
@@ -277,7 +346,9 @@ impl ControlApi for HttpControlApi {
             .map(|view| view.id)
             .map_err(transport)
     }
+}
 
+impl ControlApi for HttpControlApi {
     async fn put_transcript_batch(
         &self,
         stream: &str,
@@ -436,7 +507,57 @@ impl ControlApi for HttpControlApi {
     }
 }
 
+impl AgentApi for HttpControlApi {
+    async fn agent_machine(&self) -> Result<AgentMachineView, ControlApiError> {
+        self.get_json("agent/machine").await
+    }
+
+    async fn agent_machine_catalog(&self) -> Result<Vec<MachineCatalogEntry>, ControlApiError> {
+        self.get_json("agent/machine/catalog").await
+    }
+
+    async fn resize_machine(&self, machine_type: &str) -> Result<(), ControlApiError> {
+        let url = self.url("agent/machine/resize")?;
+        let mut client = zenwave::client();
+        let response = client
+            .post(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(&ResizeMachine {
+                machine_type: machine_type.to_owned(),
+            })
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("POST", &url, &error))?;
+
+        debug_assert!(response.status().is_success());
+        Ok(())
+    }
+
+    async fn agent_budget(&self) -> Result<BudgetView, ControlApiError> {
+        self.get_json("agent/budget").await
+    }
+}
+
 impl HttpControlApi {
+    /// Reads one JSON document from a daemon-scoped route.
+    async fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        suffix: &str,
+    ) -> Result<T, ControlApiError> {
+        let url = self.url(suffix)?;
+        let mut client = zenwave::client();
+        client
+            .get(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .await
+            .map_err(|error| refused("GET", &url, &error))?
+            .into_json::<T>()
+            .await
+            .map_err(transport)
+    }
+
     async fn post_empty(&self, suffix: &str) -> Result<(), ControlApiError> {
         let url = self.url(suffix)?;
         let mut client = zenwave::client();

@@ -1,0 +1,3 @@
+Resizing this session onto {% include "machine_line.txt" %}.
+
+The machine restarts now, so this process and everything else running on it is about to be killed. The disk is kept and the harness session resumes on the new machine; you will get a notice saying so, and anything you had running has to be started again.

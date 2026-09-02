@@ -9,10 +9,11 @@
 //! it.
 
 use flyco_core::{
-    AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, CloudProviderKind, CurrentUser, DEFAULT_DISK_GIB,
+    AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, ClientEvent,
+    CloudProviderKind, ControlToDaemon, CurrentUser, DEFAULT_DISK_GIB, MachineCapacity,
     MachineCatalogEntry, MachineChoice, MachineDefault, MachineId, MachineSpec, MachineState,
-    MachineView, OsFamily, ProviderAccountId, ResizeMachine, SessionId, Usd, UserId,
-    auto_linux_choice, curate,
+    MachineView, OsFamily, ProviderAccountId, ResizeMachine, SessionId, SessionMachine, Usd,
+    UserId, auto_linux_choice, curate,
 };
 use serde::Deserialize;
 use skyzen::extract::Query;
@@ -28,6 +29,8 @@ use crate::extract::path_id;
 use crate::problem::Outcome;
 use crate::provisioning;
 use crate::respond::Accepted;
+use crate::rooms::Rooms;
+use crate::sessions;
 
 /// The columns every read on this path projects.
 ///
@@ -52,6 +55,19 @@ pub struct MachineRow {
     pub state: MachineState,
     hourly_micros: Option<Usd>,
     storage_hourly_micros: Option<Usd>,
+    /// vCPUs the catalog published for the type it is running.
+    ///
+    /// Recorded on the row rather than looked up on demand: the agent asks
+    /// what machine it is on far more often than a catalog can be read, and
+    /// a type curation has since dropped is still a machine that is running.
+    /// `NULL` for hardware the user registered, whose size flyco has never
+    /// measured.
+    vcpus: Option<u32>,
+    memory_mib: Option<u64>,
+    /// Hours the provider billed the moment it booted, for a license-bound
+    /// type. `NULL` for every type that imposes no floor.
+    minimum_hours: Option<u32>,
+    minimum_charge_micros: Option<Usd>,
     /// The provider's own name for it, once there is one to name.
     pub native_id: Option<String>,
     address: Option<String>,
@@ -81,6 +97,29 @@ impl From<MachineRow> for MachineView {
 }
 
 impl MachineRow {
+    /// The machine, as the agent driving this session is told about it.
+    ///
+    /// Assembled from the row alone. Every fact the agent needs to decide
+    /// whether to keep working here was written when the machine was built
+    /// or last resized, so answering costs one read of one row rather than a
+    /// walk through a provider's catalog.
+    #[must_use]
+    pub fn session_machine(&self) -> SessionMachine {
+        SessionMachine {
+            machine_type: self.machine_type.clone(),
+            hourly: self.hourly_micros,
+            spot: self.spot,
+            capacity: self
+                .vcpus
+                .zip(self.memory_mib)
+                .map(|(vcpus, memory_mib)| MachineCapacity { vcpus, memory_mib }),
+            minimum: self
+                .minimum_hours
+                .zip(self.minimum_charge_micros)
+                .map(|(hours, charge)| BillingMinimum { hours, charge }),
+        }
+    }
+
     /// What was asked for, as a driver takes it.
     #[must_use]
     pub fn spec(&self) -> MachineSpec {
@@ -134,10 +173,9 @@ async fn run(
     db: &Db,
     config: &ApiConfig,
     user: UserId,
-    params: &Params,
+    session: SessionId,
     operation: provisioning::Operation<'_>,
-) -> Result<Accepted, ApiError> {
-    let session: SessionId = path_id(params, "id")?;
+) -> Result<flyco_provider::Machine, ApiError> {
     let row = load(db, user, session).await?;
     let machine = row.as_provider_machine()?;
     let account = provisioning::account(db, config, user, row.provider_account_id).await?;
@@ -164,7 +202,229 @@ async fn run(
     .await?;
 
     tracing::info!(machine = %row.id, state = ?updated.state, "ran a machine lifecycle operation");
-    Ok(Accepted)
+    Ok(updated)
+}
+
+/// The catalog a session's machine may be moved within.
+///
+/// A resize keeps the disk, so it cannot cross an account or a region — the
+/// disk is in one of each — which makes those two, plus the provider, the
+/// filter rather than a preference. What comes back is the curated list of
+/// docs/ux.md §7.6, the same one the user's slider and the agent's
+/// `machine_resize` tool read.
+fn resize_filter(row: &MachineRow) -> CatalogFilter {
+    CatalogFilter {
+        provider: Some(row.provider),
+        account: Some(row.provider_account_id),
+        region: Some(row.region.clone()),
+        os: None,
+    }
+}
+
+/// Every type this session's machine can become.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the session owns no machine or a provider catalog
+/// could not be read.
+pub(crate) async fn resize_catalog(
+    db: &Db,
+    config: &ApiConfig,
+    user: UserId,
+    session: SessionId,
+) -> Result<Vec<MachineCatalogEntry>, ApiError> {
+    let row = load(db, user, session).await?;
+    catalog(db, config, user, &resize_filter(&row)).await
+}
+
+/// Resolves a requested type against the catalog the session may move within.
+async fn offered(
+    db: &Db,
+    config: &ApiConfig,
+    user: UserId,
+    row: &MachineRow,
+    machine_type: &str,
+) -> Result<MachineCatalogEntry, ApiError> {
+    catalog(db, config, user, &resize_filter(row))
+        .await?
+        .into_iter()
+        .find(|entry| entry.machine_type == machine_type)
+        .ok_or_else(|| ApiError::MachineTypeNotOffered(machine_type.to_owned()))
+}
+
+/// Moves a session's machine to another type and tells everyone watching.
+///
+/// The user's own resize, and the one a `machine_resize_license_bound`
+/// approval performs once the user has agreed to the minimum charge. Neither
+/// is gated on the licence, because in both a person decided.
+///
+/// # Errors
+///
+/// Returns [`ApiError::MachineTypeNotOffered`] if the type is not one this
+/// machine can become, or [`ApiError`] if the provider refuses the resize.
+pub(crate) async fn resize(
+    db: &Db,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    user: UserId,
+    session: SessionId,
+    machine_type: &str,
+) -> Result<(), ApiError> {
+    let row = load(db, user, session).await?;
+    let entry = offered(db, config, user, &row, machine_type).await?;
+    apply(db, config, rooms, user, session, &row, &entry).await
+}
+
+/// The agent's resize, refused when it would spend money on its own.
+///
+/// A license-bound type bills its minimum the moment it boots, which is a
+/// commitment rather than a choice of machine — so the daemon raises an
+/// [`ApprovalPayload::MachineResizeLicenseBound`] and the user's decision
+/// comes back through [`resize`]. The refusal is here rather than only in the
+/// daemon's tool because a rule the agent could talk its way past is not a
+/// rule (docs/ARCHITECTURE.md: approvals are enforced by flyco, never by
+/// prompt engineering).
+///
+/// # Errors
+///
+/// Returns [`ApiError::LicenseBoundResizeNeedsApproval`] for a type with a
+/// billing minimum, [`ApiError::MachineTypeNotOffered`] for a type this
+/// machine cannot become, or [`ApiError`] if the provider refuses.
+///
+/// [`ApprovalPayload::MachineResizeLicenseBound`]: flyco_core::ApprovalPayload::MachineResizeLicenseBound
+pub(crate) async fn resize_for_agent(
+    db: &Db,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    user: UserId,
+    session: SessionId,
+    machine_type: &str,
+) -> Result<(), ApiError> {
+    let row = load(db, user, session).await?;
+    let entry = offered(db, config, user, &row, machine_type).await?;
+    on_the_agents_authority(&entry)?;
+    apply(db, config, rooms, user, session, &row, &entry).await
+}
+
+/// Whether an agent may move onto this type without asking.
+///
+/// The whole of the licence rule, in one place, so it reads the same way it
+/// is enforced: a type that bills a minimum the moment it boots costs the
+/// user money before it does any work, and that is a decision a person
+/// makes.
+fn on_the_agents_authority(entry: &MachineCatalogEntry) -> Result<(), ApiError> {
+    entry.billing_minimum().map_or(Ok(()), |minimum| {
+        Err(ApiError::LicenseBoundResizeNeedsApproval {
+            machine_type: entry.machine_type.clone(),
+            hours: minimum.hours,
+        })
+    })
+}
+
+/// Performs a resolved resize: the provider call, the new price, the notice.
+///
+/// The price is rewritten from the entry the machine actually became, not
+/// left at what the old type cost: every budget signal after this is
+/// computed from it, and a session billed at its previous rate would pause
+/// at the wrong moment.
+async fn apply(
+    db: &Db,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    user: UserId,
+    session: SessionId,
+    row: &MachineRow,
+    entry: &MachineCatalogEntry,
+) -> Result<(), ApiError> {
+    let updated = run(
+        db,
+        config,
+        user,
+        session,
+        provisioning::Operation::Resize {
+            machine_type: &entry.machine_type,
+        },
+    )
+    .await?;
+
+    let spot = updated.capacity_mode.is_spot();
+    let built = SessionMachine::of(entry, spot);
+    let storage_hourly = entry.pricing.storage_hourly(row.disk_gib);
+    let vcpus = built.capacity.as_ref().map(|capacity| capacity.vcpus);
+    let memory_mib = built.capacity.as_ref().map(|capacity| capacity.memory_mib);
+    let minimum_hours = built.minimum.map(|minimum| minimum.hours);
+    let minimum_charge = built.minimum.map(|minimum| minimum.charge);
+    sql!(
+        db,
+        "UPDATE machines SET hourly_micros = {built.hourly}, \
+         storage_hourly_micros = {storage_hourly}, vcpus = {vcpus}, \
+         memory_mib = {memory_mib}, minimum_hours = {minimum_hours}, \
+         minimum_charge_micros = {minimum_charge} WHERE id = {row.id}"
+    )
+    .execute()
+    .await?;
+
+    announce_machine_change(rooms, session, &built).await;
+    Ok(())
+}
+
+/// Reads the machine a session runs on, as its agent is told about it.
+///
+/// One row and one session column: what the machine is, and who chose it.
+/// The second is what the agent's instructions turn on — a machine the user
+/// picked is not one to trade away for a faster build (docs/ux.md §9.5).
+///
+/// # Errors
+///
+/// Returns [`ApiError::MachineNotFound`] if the session owns no machine, or
+/// [`ApiError`] if the database fails.
+pub(crate) async fn agent_view(
+    db: &Db,
+    user: UserId,
+    session: SessionId,
+) -> Result<AgentMachineView, ApiError> {
+    let row = load(db, user, session).await?;
+    Ok(AgentMachineView {
+        origin: sessions::machine_origin(db, session).await?,
+        machine: row.session_machine(),
+        state: row.state,
+        region: row.region,
+    })
+}
+
+/// Tells the session's browsers and its daemon that the machine changed.
+///
+/// Two messages for two audiences and neither is optional: the transcript
+/// says `Switched to … · restarted the machine · disk kept` (docs/ux.md
+/// §9.5), and the agent has to be told in the conversation that every
+/// process it started is gone. The daemon's copy is held for it while it is
+/// away — a resize restarts the machine, so the daemon is *always*
+/// disconnected at this moment and a command dropped for want of a listener
+/// would be the only one that ever mattered.
+///
+/// A room that cannot be reached costs the notice, not the resize: the
+/// machine has already changed, and failing the request here would tell the
+/// caller a resize did not happen when it did.
+async fn announce_machine_change(rooms: &Rooms, session: SessionId, built: &SessionMachine) {
+    let event = ClientEvent::MachineChanged {
+        machine_type: built.machine_type.clone(),
+        hourly: built.hourly,
+        spot: built.spot,
+        restarted: true,
+    };
+    if let Err(error) = rooms.broadcast(session, &event).await {
+        tracing::warn!(%session, %error, "a machine change did not reach the session's watchers");
+    }
+
+    let command = ControlToDaemon::MachineChanged {
+        machine_type: built.machine_type.clone(),
+        hourly: built.hourly,
+        spot: built.spot,
+        restarted: true,
+    };
+    if let Err(error) = rooms.command(session, &command).await {
+        tracing::warn!(%session, %error, "a machine change was not held for the session's daemon");
+    }
 }
 
 /// Permanently releases the machine and disk belonging to `session`.
@@ -218,7 +478,8 @@ async fn load(db: &Db, user: UserId, session: SessionId) -> Result<MachineRow, A
     sql!(
         db,
         "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
-         disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, native_id, address, \
+         disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, \
+         vcpus, memory_mib, minimum_hours, minimum_charge_micros, native_id, address, \
          created_at_unix \
          FROM machines \
          WHERE session_id = (SELECT id FROM sessions WHERE id = {session} AND user_id = {user})"
@@ -435,19 +696,25 @@ async fn resize_session_machine(
     State(config): State<ApiConfig>,
     params: Params,
     Json(request): Json<ResizeMachine>,
+    rooms: Rooms,
     db: Db,
 ) -> Outcome<Accepted> {
-    run(
-        &db,
-        &config,
-        user.id,
-        &params,
-        provisioning::Operation::Resize {
-            machine_type: &request.machine_type,
-        },
-    )
-    .await
-    .into()
+    user_resize(&db, &config, &rooms, user.id, &params, &request)
+        .await
+        .into()
+}
+
+async fn user_resize(
+    db: &Db,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    user: UserId,
+    params: &Params,
+    request: &ResizeMachine,
+) -> Result<Accepted, ApiError> {
+    let session: SessionId = path_id(params, "id")?;
+    resize(db, config, rooms, user, session, &request.machine_type).await?;
+    Ok(Accepted)
 }
 
 /// Deallocates a session's machine, keeping its disk.
@@ -461,7 +728,7 @@ async fn stop_session_machine(
     params: Params,
     db: Db,
 ) -> Outcome<Accepted> {
-    run(
+    lifecycle(
         &db,
         &config,
         user.id,
@@ -472,6 +739,19 @@ async fn stop_session_machine(
     .into()
 }
 
+/// Runs one lifecycle operation for a route that names its session in a path.
+async fn lifecycle(
+    db: &Db,
+    config: &ApiConfig,
+    user: UserId,
+    params: &Params,
+    operation: provisioning::Operation<'_>,
+) -> Result<Accepted, ApiError> {
+    let session: SessionId = path_id(params, "id")?;
+    run(db, config, user, session, operation).await?;
+    Ok(Accepted)
+}
+
 /// Brings a stopped session's machine back, on the same disk.
 #[skyzen::openapi]
 async fn start_session_machine(
@@ -480,7 +760,7 @@ async fn start_session_machine(
     params: Params,
     db: Db,
 ) -> Outcome<Accepted> {
-    run(
+    lifecycle(
         &db,
         &config,
         user.id,
@@ -552,7 +832,8 @@ pub async fn for_session(db: &Db, session: SessionId) -> Result<Option<MachineRo
     Ok(sql!(
         db,
         "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
-         disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, native_id, address, \
+         disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, \
+         vcpus, memory_mib, minimum_hours, minimum_charge_micros, native_id, address, \
          created_at_unix \
          FROM machines WHERE session_id = {session}"
     )
@@ -562,10 +843,15 @@ pub async fn for_session(db: &Db, session: SessionId) -> Result<Option<MachineRo
 
 /// Records what the provider actually built.
 ///
-/// `spot` and `hourly_micros` come from the machine that exists rather than
-/// from the request that asked for it: a spot request a provider cannot
-/// honour is answered with on-demand capacity, and the price billed follows
-/// what was obtained.
+/// `spot` and every number in `built` come from the machine that exists
+/// rather than from the request that asked for it: a spot request a provider
+/// cannot honour is answered with on-demand capacity, and both the price
+/// billed and the size the agent is told about follow what was obtained.
+///
+/// `built.machine_type` is not written back. The type is this row's
+/// identity — the job claimed it and every provider-native resource name is
+/// derived from it — and rewriting an identity from a second source is how
+/// two attempts end up naming different machines.
 ///
 /// # Errors
 ///
@@ -573,15 +859,21 @@ pub async fn for_session(db: &Db, session: SessionId) -> Result<Option<MachineRo
 pub async fn record(
     db: &Db,
     machine: &flyco_provider::Machine,
-    hourly: Option<Usd>,
+    built: &SessionMachine,
     storage_hourly: Option<Usd>,
 ) -> Result<(), ApiError> {
     let spot = machine.capacity_mode.is_spot();
     let now = now_unix();
+    let vcpus = built.capacity.as_ref().map(|capacity| capacity.vcpus);
+    let memory_mib = built.capacity.as_ref().map(|capacity| capacity.memory_mib);
+    let minimum_hours = built.minimum.map(|minimum| minimum.hours);
+    let minimum_charge = built.minimum.map(|minimum| minimum.charge);
     sql!(
         db,
         "UPDATE machines SET state = {machine.state}, spot = {spot}, \
-         hourly_micros = {hourly}, storage_hourly_micros = {storage_hourly}, \
+         hourly_micros = {built.hourly}, storage_hourly_micros = {storage_hourly}, \
+         vcpus = {vcpus}, memory_mib = {memory_mib}, \
+         minimum_hours = {minimum_hours}, minimum_charge_micros = {minimum_charge}, \
          compute_meter_started_at_unix = {now}, compute_metered_at_unix = {now}, \
          storage_meter_started_at_unix = {now}, storage_metered_at_unix = {now}, \
          native_id = {machine.native_id.clone()}, address = {machine.address.clone()} \
@@ -634,4 +926,72 @@ pub fn routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/machine/start".post(start_session_machine),
     ))
     .into_route_nodes()
+}
+
+#[cfg(test)]
+mod tests {
+    use flyco_core::{
+        BillingMinimum, CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing,
+        OsFamily, StoragePricing, Usd,
+    };
+
+    use super::on_the_agents_authority;
+    use crate::error::ApiError;
+
+    fn entry(machine_type: &str, minimum: Option<BillingMinimum>) -> MachineCatalogEntry {
+        MachineCatalogEntry {
+            provider: CloudProviderKind::Aws,
+            account: None,
+            region: "us-east-1".to_owned(),
+            machine_type: machine_type.to_owned(),
+            os: OsFamily::Linux,
+            capacity: Some(MachineCapacity {
+                vcpus: 8,
+                memory_mib: 32 * 1024,
+            }),
+            lineage: None,
+            pricing: MachinePricing::Metered {
+                on_demand_hourly: Usd::from_cents(65),
+                spot_hourly: None,
+                minimum,
+                storage: StoragePricing::PerGibHourly {
+                    rate: Usd::from_micros(100),
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn an_agent_moves_to_an_ordinary_type_on_its_own() {
+        assert!(on_the_agents_authority(&entry("m7i.2xlarge", None)).is_ok());
+    }
+
+    #[test]
+    fn an_agent_may_not_commit_the_user_to_a_minimum_charge() {
+        // The refusal names the hours rather than the money, because the
+        // hours are what the user is being asked to agree to; the charge is
+        // quoted on the approval card the daemon raises instead.
+        let refused = on_the_agents_authority(&entry(
+            "mac2.metal",
+            Some(BillingMinimum::new(24, Usd::from_cents(65))),
+        ))
+        .expect_err("a license-bound type is the user's decision");
+
+        assert!(matches!(
+            refused,
+            ApiError::LicenseBoundResizeNeedsApproval {
+                ref machine_type,
+                hours: 24,
+            } if machine_type == "mac2.metal"
+        ));
+    }
+
+    #[test]
+    fn hardware_the_user_owns_carries_no_minimum_to_gate_on() {
+        let owned = MachineCatalogEntry {
+            pricing: MachinePricing::UserOwned,
+            ..entry("build.lexo.cool", None)
+        };
+        assert!(on_the_agents_authority(&owned).is_ok());
+    }
 }

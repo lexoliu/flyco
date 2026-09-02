@@ -155,3 +155,25 @@ impl<T: Timer> Timer for &T {
         (*self).sleep(seconds)
     }
 }
+
+/// The machine a bootstrap fixture describes.
+///
+/// Every driver's tests build a [`DaemonBootstrap`](crate::DaemonBootstrap),
+/// and all of them want the same uninteresting answer to "which machine is
+/// this": a mid-sized metered Linux type with a spot rate and no licence
+/// minimum. Written once here so that adding a fact to the bootstrap is one
+/// edit rather than eight, and so a test that cares about a *different*
+/// machine — a license-bound one — says so by constructing its own.
+#[must_use]
+pub fn session_machine() -> flyco_core::SessionMachine {
+    flyco_core::SessionMachine {
+        machine_type: "Standard_D4s_v6".to_owned(),
+        hourly: Some(flyco_core::Usd::from_cents(19)),
+        spot: true,
+        capacity: Some(flyco_core::MachineCapacity {
+            vcpus: 4,
+            memory_mib: 16 * 1024,
+        }),
+        minimum: None,
+    }
+}

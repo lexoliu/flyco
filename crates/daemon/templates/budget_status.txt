@@ -1,0 +1,2 @@
+This session has spent {{ spent }} of its {{ limit }} compute budget, leaving {{ remaining }}. {{ stage }}
+The budget pays for machine time and storage, never for the tokens your turns cost. At 100% the session pauses immediately and stops accepting work, so price a long job against what is left before you start it.

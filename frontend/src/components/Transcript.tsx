@@ -16,6 +16,7 @@ import {
   Check,
   ChevronRight,
   CircleDashed,
+  Cpu,
   Info,
   Loader,
   Wrench,
@@ -23,10 +24,12 @@ import {
 } from "lucide-solid";
 import Markdown from "./Markdown";
 import type { ProvisioningStage } from "../api/wire";
+import { operation } from "../lib/approvals";
 import { cx } from "../lib/cx";
 import { formatDuration } from "../lib/duration";
 import { summarizeTool } from "../lib/toolSummary";
 import type { ProvisioningStep, ToolCall, TranscriptItem } from "../lib/transcript";
+import { machineChangePrice, machineChangeSummary } from "../lib/transcript";
 import styles from "./Transcript.module.css";
 
 /** How a stage reads, given what the session is actually provisioning. */
@@ -113,6 +116,10 @@ export default function Transcript(props: TranscriptProps) {
                     deciding={props.deciding ?? false}
                   />
                 )}
+              </Match>
+
+              <Match when={item.kind === "machine_change" && item}>
+                {(change) => <MachineChangeRow change={change()} />}
               </Match>
 
               <Match when={item.kind === "provisioning" && item}>
@@ -250,31 +257,26 @@ function ProvisioningTimeline(props: {
   );
 }
 
-/** Turns one of the four approval shapes into the exact operation being asked for. */
-function operation(approval: Extract<TranscriptItem, { kind: "approval" }>): {
-  title: string;
-  detail: string;
-} {
-  const payload = approval.payload;
-  switch (payload.kind) {
-    case "merge":
-      return {
-        title: "Merge a branch",
-        detail: `${payload.repo}: ${payload.from_branch} → ${payload.into_branch}`,
-      };
-    case "history_rewrite":
-      return {
-        title: "Rewrite history",
-        detail: `${payload.repo} on ${payload.branch}: ${payload.description}`,
-      };
-    case "agents_md_change":
-      return {
-        title: "Change AGENTS.md",
-        detail: `Replace "${payload.find}" with "${payload.replace}"`,
-      };
-    case "tool_use":
-      return { title: `Run ${payload.tool}`, detail: JSON.stringify(payload.input, null, 2) };
-  }
+/**
+ * The session moving onto another machine (docs/ux.md §9.5).
+ *
+ * One line, because that is what it is: what the machine is now, that it
+ * restarted, and that the disk came across. The price sits beside it rather
+ * than inside the sentence — the sentence is about what happened, and the
+ * rate is what it costs from here on.
+ */
+function MachineChangeRow(props: {
+  change: Extract<TranscriptItem, { kind: "machine_change" }>;
+}) {
+  return (
+    <p class={styles.machineChange}>
+      <Cpu size={14} aria-hidden="true" />
+      {machineChangeSummary(props.change)}
+      <Show when={machineChangePrice(props.change)}>
+        {(price) => <span class={styles.machineChangePrice}>{price()}</span>}
+      </Show>
+    </p>
+  );
 }
 
 /**
@@ -290,7 +292,7 @@ function ApprovalCard(props: {
   onDecide?: ((id: string, decision: "approved" | "denied") => void) | undefined;
   deciding: boolean;
 }) {
-  const asked = () => operation(props.approval);
+  const asked = () => operation(props.approval.payload);
 
   return (
     <section class={styles.approval} data-state={props.approval.state} aria-label="Approval">

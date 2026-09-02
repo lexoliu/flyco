@@ -1,12 +1,13 @@
 //! Router assembly and the handlers that are not part of the OAuth flow.
 
 use flyco_core::{
-    ApiKeyId, ApiKeySummary, ApprovalId, ApprovalState, ApprovalView, BranchName, BudgetConfig,
-    BudgetView, ClientEvent, ControlToDaemon, CreateApiKey, CreateSession, CreatedApiKey,
-    CurrentUser, DaemonToken, DecideApproval, EnvDocument, HarnessFeature, HarnessObservation,
-    MAX_SESSION_TITLE_CHARS, MachineOrigin, MachineSpec, RepoSlug, RepoStatus,
-    ReportProvisioningStage, SendMessage, SessionDetail, SessionId, SessionState, SessionSummary,
-    TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId, wire::ApprovalPayload,
+    AgentMachineView, ApiKeyId, ApiKeySummary, ApprovalDecision, ApprovalId, ApprovalState,
+    ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
+    CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, EnvDocument,
+    HarnessFeature, HarnessObservation, MAX_SESSION_TITLE_CHARS, MachineCatalogEntry,
+    MachineOrigin, MachineSpec, RepoSlug, RepoStatus, ReportProvisioningStage, ResizeMachine,
+    SendMessage, SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv,
+    UpdateMe, UpdateSession, UserId, wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -591,12 +592,13 @@ async fn list_approvals(
 #[skyzen::openapi]
 async fn decide_approval(
     State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
     params: Params,
     Json(request): Json<DecideApproval>,
     rooms: Rooms,
     db: Db,
 ) -> Outcome<Json<ApprovalView>> {
-    settle_approval(&user, &params, request, &rooms, &db)
+    settle_approval(&user, &params, request, &config, &rooms, &db)
         .await
         .into()
 }
@@ -605,6 +607,7 @@ async fn settle_approval(
     user: &CurrentUser,
     params: &Params,
     request: DecideApproval,
+    config: &ApiConfig,
     rooms: &Rooms,
     db: &Db,
 ) -> Result<Json<ApprovalView>, ApiError> {
@@ -633,8 +636,43 @@ async fn settle_approval(
         tracing::warn!(%error, session = %decided.session, "a decided approval did not reach its room");
     }
 
+    perform_approved(&decided, request.decision, user.id, config, rooms, db).await?;
+
     tracing::info!(decision = ?request.decision, "decided an approval");
     Ok(Json(decided))
+}
+
+/// Carries out the approval the user just allowed, where allowing it *is* the
+/// action.
+///
+/// Most approvals unblock something the daemon is holding — a tool call
+/// waiting on a permission — and the daemon performs them. A license-bound
+/// resize has nobody waiting: the agent was told the request is pending and
+/// went on with its turn, and the machine is the control plane's to change.
+/// So the decision and the resize happen in the same request, in that order,
+/// and a resize that fails answers with why rather than reporting success on
+/// a machine that did not change. The approval stays approved either way —
+/// the user did allow it — and the retry is the ordinary resize.
+async fn perform_approved(
+    approval: &ApprovalView,
+    decision: ApprovalDecision,
+    user: UserId,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<(), ApiError> {
+    if decision != ApprovalDecision::Approved {
+        return Ok(());
+    }
+    let ApprovalPayload::MachineResizeLicenseBound { machine_type, .. } = &approval.payload else {
+        return Ok(());
+    };
+    tracing::info!(
+        session = %approval.session,
+        machine_type,
+        "the user approved a license-bound resize; moving the machine"
+    );
+    machines::resize(db, config, rooms, user, approval.session, machine_type).await
 }
 
 // ── Pairing a session with its daemon ──
@@ -1277,6 +1315,99 @@ async fn read_workdir_patch(session: SessionId, storage: &Storage) -> Result<Res
     Ok(response)
 }
 
+// ── What the agent is allowed to know and to change ──
+//
+// The daemon's local MCP server is the only sanctioned way an agent touches
+// its own machine (docs/ARCHITECTURE.md), and these four routes are what it
+// is made of. They are daemon-scoped rather than user-scoped because the
+// agent has no user credential and must never be given one: an `fd_` token
+// proves which session is calling, and the owner every read is scoped to is
+// derived from that session here rather than taken from the caller.
+
+/// Tells a session's agent which machine it is on and who chose it.
+#[skyzen::openapi]
+async fn get_agent_machine(
+    State(session): State<DaemonSession>,
+    db: Db,
+) -> Outcome<Json<AgentMachineView>> {
+    read_agent_machine(session.0, &db).await.map(Json).into()
+}
+
+async fn read_agent_machine(session: SessionId, db: &Db) -> Result<AgentMachineView, ApiError> {
+    let user = sessions::owner(db, session).await?;
+    machines::agent_view(db, user, session).await
+}
+
+/// Lists the machine types this session can be resized to, with prices.
+///
+/// The curated catalog of docs/ux.md §7.6, narrowed to the account and
+/// region the session's disk already lives in — the two a resize cannot
+/// cross. The agent reads exactly the list the user's own slider shows.
+#[skyzen::openapi]
+async fn get_agent_machine_catalog(
+    State(session): State<DaemonSession>,
+    State(config): State<ApiConfig>,
+    db: Db,
+) -> Outcome<Json<Vec<MachineCatalogEntry>>> {
+    read_agent_catalog(session.0, &config, &db)
+        .await
+        .map(Json)
+        .into()
+}
+
+async fn read_agent_catalog(
+    session: SessionId,
+    config: &ApiConfig,
+    db: &Db,
+) -> Result<Vec<MachineCatalogEntry>, ApiError> {
+    let user = sessions::owner(db, session).await?;
+    machines::resize_catalog(db, config, user, session).await
+}
+
+/// Moves the session onto another machine type, on the agent's own say-so.
+///
+/// Refused for a type that bills a minimum the moment it boots: that is the
+/// user's money committed before anything runs, so the daemon raises an
+/// approval instead and the resize happens when the user decides.
+#[skyzen::openapi]
+async fn agent_resize_machine(
+    State(session): State<DaemonSession>,
+    State(config): State<ApiConfig>,
+    Json(request): Json<ResizeMachine>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Accepted> {
+    run_agent_resize(session.0, &request, &config, &rooms, &db)
+        .await
+        .into()
+}
+
+async fn run_agent_resize(
+    session: SessionId,
+    request: &ResizeMachine,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<Accepted, ApiError> {
+    let user = sessions::owner(db, session).await?;
+    machines::resize_for_agent(db, config, rooms, user, session, &request.machine_type).await?;
+    Ok(Accepted)
+}
+
+/// Tells a session's agent what it has spent and what is left.
+#[skyzen::openapi]
+async fn get_agent_budget(
+    State(session): State<DaemonSession>,
+    db: Db,
+) -> Outcome<Json<BudgetView>> {
+    read_agent_budget(session.0, &db).await.map(Json).into()
+}
+
+async fn read_agent_budget(session: SessionId, db: &Db) -> Result<BudgetView, ApiError> {
+    let user = sessions::owner(db, session).await?;
+    Ok(sessions::find(db, user, session).await?.budget)
+}
+
 /// Routes that anyone may call.
 ///
 /// Three of them are public because they cannot be anything else: a browser
@@ -1326,6 +1457,10 @@ fn daemon_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/workdir-patch"
             .at(get_workdir_patch)
             .put(put_workdir_patch),
+        "/v1/sessions/{id}/agent/machine".at(get_agent_machine),
+        "/v1/sessions/{id}/agent/machine/catalog".at(get_agent_machine_catalog),
+        "/v1/sessions/{id}/agent/machine/resize".post(agent_resize_machine),
+        "/v1/sessions/{id}/agent/budget".at(get_agent_budget),
     ))
     .middleware(RequireDaemon::new())
     .into_route_nodes()

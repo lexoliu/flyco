@@ -1,0 +1,1 @@
+The user chose this machine themselves; do not switch it unless the task cannot proceed on it, and say why when you do.

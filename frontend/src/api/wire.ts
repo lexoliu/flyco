@@ -65,7 +65,15 @@ export type ClientEvent =
   | { type: "terminal_output"; data: string }
   | { type: "repo_dirty"; summary: string }
   | { type: "spot_notice"; seconds_remaining: number }
-  | { type: "provisioning_stage"; stage: ProvisioningStage; at_unix: number };
+  | { type: "provisioning_stage"; stage: ProvisioningStage; at_unix: number }
+  | {
+      type: "machine_changed";
+      machine_type: string;
+      /** Integer microdollars, or `null` on hardware flyco does not meter. */
+      hourly: number | null;
+      spot: boolean;
+      restarted: boolean;
+    };
 
 /**
  * The four `ControlToDaemon` variants a browser may send directly over the
@@ -112,4 +120,5 @@ const CLIENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "repo_dirty",
   "spot_notice",
   "provisioning_stage",
+  "machine_changed",
 ]);

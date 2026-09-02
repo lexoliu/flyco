@@ -55,8 +55,10 @@ pub mod polling;
 
 use core::fmt;
 
-use flyco_core::machine::{MachineCatalogEntry, MachineSpec, MachineState};
-use flyco_core::{BranchName, HarnessKind, MachineId, PermissionMode, RepoSlug, SessionId};
+use flyco_core::machine::{MachineCatalogEntry, MachineSpec, MachineState, SessionMachine};
+use flyco_core::{
+    BranchName, HarnessKind, MachineId, MachineOrigin, PermissionMode, RepoSlug, SessionId,
+};
 use serde::{Deserialize, Serialize};
 
 pub use clock::{MonotonicClock, SystemClock, SystemWallClock, WallClock};
@@ -187,6 +189,20 @@ pub struct DaemonBootstrap {
     pub claude_auth: ClaudeCredential,
     /// The repository to check out before the harness starts.
     pub repo: RepoCheckout,
+    /// Whether flyco or the user chose the machine this session runs on.
+    ///
+    /// The agent is told, and told what it means: a machine the user picked
+    /// is not one to trade away for a faster build (docs/ux.md §9.5). It is
+    /// a fact about the *session* rather than about the machine, so it
+    /// survives every resize the session goes through.
+    pub machine_origin: MachineOrigin,
+    /// The machine being provisioned, as the agent is told about it.
+    ///
+    /// What the daemon states in the notice it injects at session start:
+    /// the type, the rate, whether the capacity is interruptible, how big it
+    /// is, and — the fact nothing else carries — whether booting it already
+    /// committed the user to a licence minimum.
+    pub machine: SessionMachine,
     /// Harness-native session id to resume, for a session moving onto a new
     /// machine.
     pub resume_session_id: Option<String>,
@@ -201,6 +217,8 @@ impl fmt::Debug for DaemonBootstrap {
             .field("permission_mode", &self.permission_mode)
             .field("claude_auth", &self.claude_auth)
             .field("repo", &self.repo)
+            .field("machine_origin", &self.machine_origin)
+            .field("machine", &self.machine)
             .field("resume_session_id", &self.resume_session_id)
             .finish_non_exhaustive()
     }
@@ -229,7 +247,15 @@ pub struct ProvisionRequest {
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum MachineOperation {
     /// Bring a new machine into existence.
-    Provision(ProvisionRequest),
+    ///
+    /// Boxed for the reason [`byo_ssh::ContainerJob::Create`] is: a
+    /// provisioning request carries the whole daemon bootstrap — three
+    /// credentials, a repository, a commit identity and the machine the
+    /// session is on — while every other operation here is a machine and a
+    /// string. Without the indirection each `Destroy` would be padded out
+    /// to the size of a `Provision`. The JSON is unchanged: a `Box`
+    /// serializes as what it holds.
+    Provision(Box<ProvisionRequest>),
     /// Move an existing machine to another type, keeping its disk.
     Resize {
         /// The machine to change.
@@ -459,6 +485,8 @@ mod tests {
                 token: "sk-ant-oat01-live".to_owned(),
             },
             repo: crate::testing::checkout(),
+            machine_origin: flyco_core::MachineOrigin::Auto,
+            machine: crate::testing::session_machine(),
             resume_session_id: None,
         };
 

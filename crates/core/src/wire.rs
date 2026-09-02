@@ -59,6 +59,24 @@ pub enum ApprovalPayload {
         /// Replacement text.
         replace: String,
     },
+    /// Move the session onto a machine type that bills a minimum the moment
+    /// it boots.
+    ///
+    /// Raised instead of performing the resize, because a license-bound type
+    /// spends the user's money before anything runs on it: an EC2 Mac bills
+    /// a full day under the Apple licence whether the agent uses it for
+    /// twenty hours or for one minute. The minimum travels with the request
+    /// so the approval card can quote the charge the user is agreeing to,
+    /// rather than recomputing it from a catalog that may have moved
+    /// (docs/ux.md §7.7, §9.5).
+    MachineResizeLicenseBound {
+        /// Provider-native machine type the agent wants to move to.
+        machine_type: String,
+        /// What booting it costs before it does any work.
+        minimum: crate::machine::BillingMinimum,
+        /// Why the agent says the session needs this machine.
+        reason: String,
+    },
     /// A harness tool call routed to the user for permission.
     ToolUse {
         /// Tool name as the harness reports it.
@@ -234,6 +252,35 @@ pub enum ControlToDaemon {
         /// Bytes to write to the terminal, UTF-8.
         data: String,
     },
+    /// The session's machine was replaced, and this is what it is now.
+    ///
+    /// Sent by the control plane rather than discovered by the daemon,
+    /// because the daemon cannot see it happen: resizing restarts the
+    /// machine, which kills `flycod` along with everything else the agent
+    /// was running. The daemon that reads this is a *new* process whose
+    /// configuration still describes the machine the session booted on, so
+    /// this is both how it learns the current machine and how the agent is
+    /// told, in the conversation, that its processes are gone and its disk
+    /// is not.
+    ///
+    /// Held for a daemon that is not connected and delivered on its next
+    /// `Hello` — the whole restart is a window with no daemon in it, so a
+    /// command dropped for want of a listener would be the only case that
+    /// ever mattered.
+    MachineChanged {
+        /// Provider-native type the session is on now.
+        machine_type: String,
+        /// What an hour of it costs, when flyco meters it at all.
+        hourly: Option<crate::money::Usd>,
+        /// Whether it holds interruptible capacity.
+        spot: bool,
+        /// Whether the change restarted the machine.
+        ///
+        /// A resize always does; the field exists because the agent's next
+        /// move depends on it — a restart means every process it started is
+        /// gone and the disk is exactly as it left it.
+        restarted: bool,
+    },
     /// Archive the session: flush state, optionally snapshot the repo, shut
     /// down.
     Archive {
@@ -267,6 +314,26 @@ impl ControlToDaemon {
             self,
             Self::UserMessage { .. } | Self::Interrupt | Self::Compact | Self::TerminalInput { .. }
         )
+    }
+
+    /// Whether the room must keep this command for a daemon that is away.
+    ///
+    /// Almost nothing survives a disconnect, and that is deliberate: an
+    /// interrupt, a compaction or a keystroke held for a daemon that
+    /// reconnects an hour later would arrive as an instruction about a turn
+    /// that no longer exists.
+    ///
+    /// [`MachineChanged`](Self::MachineChanged) is the exception, and it is
+    /// the exception by construction rather than by preference: the change
+    /// it reports *is* a restart, so the daemon is guaranteed to be gone at
+    /// the moment it is sent, and it describes a state rather than an
+    /// instant — the machine is still the new one whenever the daemon comes
+    /// back. A user message survives too, but through the room's mailbox,
+    /// which is an index into the replayable stream rather than a queue,
+    /// because a conversation must not be reordered.
+    #[must_use]
+    pub const fn survives_a_disconnect(&self) -> bool {
+        matches!(self, Self::MachineChanged { .. })
     }
 }
 
@@ -346,6 +413,23 @@ pub enum ClientEvent {
         /// Seconds until reclamation, as announced.
         seconds_remaining: u32,
     },
+    /// The session moved onto another machine.
+    ///
+    /// Rendered as one line in the transcript — `Switched to
+    /// Standard_D8s_v6 · restarted the machine · disk kept` (docs/ux.md
+    /// §9.5) — because a resize is not a silent operation: everything the
+    /// agent had running died with the old compute, and the user is now
+    /// being billed at a different rate.
+    MachineChanged {
+        /// Provider-native type the session is on now.
+        machine_type: String,
+        /// What an hour of it costs, when flyco meters it at all.
+        hourly: Option<crate::money::Usd>,
+        /// Whether it holds interruptible capacity.
+        spot: bool,
+        /// Whether the change restarted the machine. A resize always does.
+        restarted: bool,
+    },
     /// The machine reached a provisioning milestone.
     ///
     /// Announced by the provisioning queue up to the machine existing and
@@ -402,6 +486,7 @@ mod tests {
     use crate::budget::BudgetSignal;
     use crate::harness::{ContextWindow, HarnessEvent, UsageReport};
     use crate::id::{ApprovalId, SessionId};
+    use crate::machine::BillingMinimum;
     use crate::money::Usd;
     use crate::session::SessionState;
 
@@ -500,6 +585,18 @@ mod tests {
             ControlToDaemon::TerminalInput {
                 data: "ls\n".to_owned(),
             },
+            ControlToDaemon::MachineChanged {
+                machine_type: "Standard_D8s_v6".to_owned(),
+                hourly: Some(Usd::from_cents(38)),
+                spot: true,
+                restarted: true,
+            },
+            ControlToDaemon::MachineChanged {
+                machine_type: "build.lexo.cool".to_owned(),
+                hourly: None,
+                spot: false,
+                restarted: false,
+            },
             ControlToDaemon::Archive {
                 preserve_workdir: false,
             },
@@ -563,6 +660,26 @@ mod tests {
                 stage: ProvisioningStage::Booting,
                 at_unix: 1_800_000_000,
             },
+            ClientEvent::MachineChanged {
+                machine_type: "Standard_D8s_v6".to_owned(),
+                hourly: Some(Usd::from_cents(38)),
+                spot: true,
+                restarted: true,
+            },
+            ClientEvent::MachineChanged {
+                machine_type: "build.lexo.cool".to_owned(),
+                hourly: None,
+                spot: false,
+                restarted: false,
+            },
+            ClientEvent::ApprovalPending {
+                id: ApprovalId::generate(),
+                payload: ApprovalPayload::MachineResizeLicenseBound {
+                    machine_type: "mac2.metal".to_owned(),
+                    minimum: BillingMinimum::new(24, Usd::from_cents(65)),
+                    reason: "the build needs a signed macOS toolchain".to_owned(),
+                },
+            },
         ];
         for event in events {
             round_trip(&event);
@@ -590,6 +707,14 @@ mod tests {
         })
         .expect("serialize");
         assert_eq!(json, r#"{"type":"budget","signal":"pause"}"#);
+    }
+
+    #[test]
+    fn only_a_machine_change_outlives_the_daemon_it_was_sent_to() {
+        for frame in every_control_frame() {
+            let held = matches!(frame, ControlToDaemon::MachineChanged { .. });
+            assert_eq!(frame.survives_a_disconnect(), held, "{frame:?}");
+        }
     }
 
     #[test]

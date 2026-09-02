@@ -75,6 +75,15 @@ rand = "0.9"
 rust-embed = { version = "8", features = ["debug-embed", "include-exclude"] }
 russh = "0.63"
 portable-pty = "0.9"
+# The official Rust MCP SDK, for flycod's local stdio server. Only the
+# server half and the stdio transport: the daemon is spoken *to* by the
+# harness it supervises and never speaks MCP itself, and `macros` is off
+# because every tool flyco exposes describes itself from a compiled askama
+# template rather than from a string literal in an attribute.
+rmcp = { version = "3.2", default-features = false, features = [
+    "server",
+    "transport-io",
+] }
 tokio = { version = "1", features = [
     "fs",
     "io-std",

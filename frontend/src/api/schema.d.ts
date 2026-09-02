@@ -735,6 +735,94 @@ export interface paths {
         patch: operations["flyco_api::app::update_session"];
         trace?: never;
     };
+    "/v1/sessions/{id}/agent/budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tells a session's agent what it has spent and what is left.
+         * @description Tells a session's agent what it has spent and what is left.
+         */
+        get: operations["flyco_api::app::get_agent_budget"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/agent/machine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tells a session's agent which machine it is on and who chose it.
+         * @description Tells a session's agent which machine it is on and who chose it.
+         */
+        get: operations["flyco_api::app::get_agent_machine"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/agent/machine/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lists the machine types this session can be resized to, with prices.
+         * @description Lists the machine types this session can be resized to, with prices.
+         *
+         *     The curated catalog of docs/ux.md §7.6, narrowed to the account and
+         *     region the session's disk already lives in — the two a resize cannot
+         *     cross. The agent reads exactly the list the user's own slider shows.
+         */
+        get: operations["flyco_api::app::get_agent_machine_catalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/agent/machine/resize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moves the session onto another machine type, on the agent's own say-so.
+         * @description Moves the session onto another machine type, on the agent's own say-so.
+         *
+         *     Refused for a type that bills a minimum the moment it boots: that is the
+         *     user's money committed before anything runs, so the daemon raises an
+         *     approval instead and the resize happens when the user decides.
+         */
+        post: operations["flyco_api::app::agent_resize_machine"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/approvals": {
         parameters: {
             query?: never;
@@ -1469,6 +1557,23 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description What `GET /v1/sessions/{id}/agent/machine` tells a session's daemon.
+         *
+         *     The machine and *who chose it*, because the second changes what the agent
+         *     may do with the first: a machine the user picked is a decision flyco must
+         *     not quietly undo (docs/ux.md §9.5).
+         */
+        AgentMachineView: {
+            /** @description The machine, as the agent is told about it. */
+            machine: components["schemas"]["SessionMachine"];
+            /** @description Whether flyco or the user chose the machine this session runs on. */
+            origin: components["schemas"]["MachineOrigin"];
+            /** @description Provider-native region it runs in. */
+            region: string;
+            /** @description Where it is in its lifecycle. */
+            state: components["schemas"]["MachineState"];
+        };
         /** @description Response of `GET`/`PUT /v1/agents-md`. */
         AgentsDocument: {
             /** @description The whole document, as Markdown. */
@@ -1537,6 +1642,15 @@ export interface components {
             kind: "agents_md_change";
             /** @description Replacement text. */
             replace: string;
+        } | {
+            /** @enum {string} */
+            kind: "machine_resize_license_bound";
+            /** @description Provider-native machine type the agent wants to move to. */
+            machine_type: string;
+            /** @description What booting it costs before it does any work. */
+            minimum: components["schemas"]["BillingMinimum"];
+            /** @description Why the agent says the session needs this machine. */
+            reason: string;
         } | {
             /** @description Tool input as the harness reports it. */
             input: unknown;
@@ -2733,6 +2847,33 @@ export interface components {
              *     retry it, pick another region, or ask for a quota increase.
              */
             failure?: string | null;
+        };
+        /**
+         * @description The machine a session is on, as the agent driving it is told about it.
+         *
+         *     Not the whole [`MachineCatalogEntry`]: the agent is deciding whether to
+         *     keep working here, and five facts answer that — what the machine is
+         *     called, what an hour of it costs, whether the capacity is interruptible,
+         *     how big it is, and whether starting it already committed the user to a
+         *     licence minimum. The account, the region, the family and the storage
+         *     tiers answer a different question (where flyco would provision *another*
+         *     machine) and stay in the catalog.
+         *
+         *     The same value travels three ways and means one thing in all of them: in
+         *     the bootstrap a machine boots with, in the `[machine]` table of the
+         *     daemon's configuration, and in what the agent's `machine_status` tool
+         *     reads back. Absent facts are absent from the serialized document rather
+         *     than spelled `null`, because one of those three is TOML and TOML has no
+         *     null to spell.
+         */
+        SessionMachine: {
+            capacity?: null | components["schemas"]["MachineCapacity"];
+            hourly?: null | components["schemas"]["Usd"];
+            /** @description Provider-native machine type name. */
+            machine_type: string;
+            minimum?: null | components["schemas"]["BillingMinimum"];
+            /** @description Whether the machine holds interruptible capacity. */
+            spot: boolean;
         };
         /**
          * @description Lifecycle state of a session.
@@ -4617,6 +4758,139 @@ export interface operations {
             };
         };
     };
+    "flyco_api::app::get_agent_budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The spending limit. */
+                        limit: components["schemas"]["Usd"];
+                        /** @description Left to spend; zero once exhausted. */
+                        remaining: components["schemas"]["Usd"];
+                        /** @description Spent so far. */
+                        spent: components["schemas"]["Usd"];
+                        /** @description How far through the budget the session is. */
+                        stage: components["schemas"]["BudgetStage"];
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::app::get_agent_machine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The machine, as the agent is told about it. */
+                        machine: components["schemas"]["SessionMachine"];
+                        /** @description Whether flyco or the user chose the machine this session runs on. */
+                        origin: components["schemas"]["MachineOrigin"];
+                        /** @description Provider-native region it runs in. */
+                        region: string;
+                        /** @description Where it is in its lifecycle. */
+                        state: components["schemas"]["MachineState"];
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::app::get_agent_machine_catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        account?: null | components["schemas"]["Uuid"];
+                        capacity?: null | components["schemas"]["MachineCapacity"];
+                        lineage?: null | components["schemas"]["MachineLineage"];
+                        /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
+                        machine_type: string;
+                        /** @description Operating system family. */
+                        os: components["schemas"]["OsFamily"];
+                        /** @description What it costs to run for an hour. */
+                        pricing: components["schemas"]["MachinePricing"];
+                        /** @description Which provider offers it. */
+                        provider: components["schemas"]["CloudProviderKind"];
+                        /**
+                         * @description Provider-native region this entry is offered in.
+                         *
+                         *     A catalog spans every region an account may deploy into, so an entry
+                         *     without one would not say where the machine it describes can be
+                         *     created. A registered SSH host names itself here: it is its own
+                         *     region, and there is nowhere else to put it.
+                         */
+                        region: string;
+                    }[];
+                };
+            };
+        };
+    };
+    "flyco_api::app::agent_resize_machine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Provider-native machine type to move to, from the catalog. */
+                    machine_type: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     "flyco_api::app::raise_approval": {
         parameters: {
             query?: never;
@@ -4654,6 +4928,15 @@ export interface operations {
                     kind: "agents_md_change";
                     /** @description Replacement text. */
                     replace: string;
+                } | {
+                    /** @enum {string} */
+                    kind: "machine_resize_license_bound";
+                    /** @description Provider-native machine type the agent wants to move to. */
+                    machine_type: string;
+                    /** @description What booting it costs before it does any work. */
+                    minimum: components["schemas"]["BillingMinimum"];
+                    /** @description Why the agent says the session needs this machine. */
+                    reason: string;
                 } | {
                     /** @description Tool input as the harness reports it. */
                     input: unknown;

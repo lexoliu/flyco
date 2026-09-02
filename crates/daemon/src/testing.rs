@@ -572,3 +572,23 @@ async fn write_reply(stream: &mut TcpStream, reply: &Reply) -> std::io::Result<(
     stream.flush().await?;
     stream.shutdown().await
 }
+
+/// The machine a relay test's session is on.
+///
+/// Uninteresting on purpose: the relay tests are about ordering and
+/// reconnection, and the only thing they need from a machine is that the
+/// opening notice has something true to say. A test that cares about a
+/// particular machine — a license-bound one — builds its own.
+#[must_use]
+pub fn session_machine() -> flyco_core::SessionMachine {
+    flyco_core::SessionMachine {
+        machine_type: "Standard_D4s_v6".to_owned(),
+        hourly: Some(flyco_core::Usd::from_cents(19)),
+        spot: true,
+        capacity: Some(flyco_core::MachineCapacity {
+            vcpus: 4,
+            memory_mib: 16 * 1024,
+        }),
+        minimum: None,
+    }
+}

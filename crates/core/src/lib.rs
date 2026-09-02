@@ -56,10 +56,10 @@ pub use id::{
     PushSubscriptionId, SessionId, SkillId, SpendEventId, UserId,
 };
 pub use machine::{
-    AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, BillingMinimum, CloudProviderKind, CpuArchitecture,
-    MachineCapacity, MachineCatalogEntry, MachineDefault, MachineLineage, MachinePricing,
-    MachineSpec, MachineState, MachineView, OsFamily, ResizeMachine, StoragePriceTier,
-    StoragePricing, auto_linux_choice,
+    AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, CloudProviderKind,
+    CpuArchitecture, MachineCapacity, MachineCatalogEntry, MachineDefault, MachineLineage,
+    MachinePricing, MachineSpec, MachineState, MachineView, OsFamily, ResizeMachine,
+    SessionMachine, StoragePriceTier, StoragePricing, auto_linux_choice,
 };
 pub use mcp::{HeaderEntry, McpServerConfig, McpServerView, UpsertMcpServer};
 pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};
@@ -91,4 +91,4 @@ pub use wire::{
 /// Bumped on every incompatible change to [`wire`]; the control plane
 /// refuses daemons speaking a different version (fast fail, no
 /// best-effort compatibility).
-pub const WIRE_PROTOCOL_VERSION: u32 = 3;
+pub const WIRE_PROTOCOL_VERSION: u32 = 4;

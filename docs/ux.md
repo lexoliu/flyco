@@ -325,7 +325,9 @@ spec, hourly, storage hourly, state, and the start/stop/resize controls.
 
 ### 9.5 Machine changes during a session
 
-When the agent resizes, the transcript shows a notice: `Switched to Standard_D8s_v6 · restarted the machine · disk kept`. When the agent asks to move to a license-bound type, the request is an approval card, not a silent resize, and the card quotes the minimum charge. The agent is told (issue #65) whether the machine was chosen by the user and to be conservative about switching it.
+When the agent resizes, the transcript shows a notice: `Switched to Standard_D8s_v6 · restarted the machine · disk kept`. When the agent asks to move to a license-bound type, the request is an approval card, not a silent resize, and the card quotes the minimum charge. The agent is told whether the machine was chosen by the user and to be conservative about switching it.
+
+What the agent sees of all this is `flycod`'s local MCP server (§11): `machine_status` reports the machine and who chose it, `budget_status` reports what is left, and `machine_resize` moves the session. The resize tool's description states that resizing restarts the machine, lists only the curated catalog of §7.6 with each entry's hourly price and — for a license-bound type — the minimum charge in dollars, and refuses while the working tree is dirty unless it is called again with `force` and a reason. A resize to a license-bound type is never performed on the agent's own authority: the daemon raises the approval, the tool answers that the request is pending the user's decision, and the control plane performs the resize if the user approves. When the machine was the user's choice, every one of those places says so in the same words: "The user chose this machine themselves; do not switch it unless the task cannot proceed on it, and say why when you do."
 
 ## 10. Settings
 
@@ -359,6 +361,25 @@ Pre-1.0, the API changes to fit the product; no compatibility shims.
   `.../oauth/complete`; `HarnessCredentialInput` gains `ClaudeOauth`
   storing access and refresh tokens and expiry.
 - Host enrollment for user-owned machines is specified in its own issue.
+- Four daemon-scoped routes are what `flycod`'s local MCP server is made
+  of, authenticated by the session's `fd_` token and by nothing else:
+  `GET /v1/sessions/{id}/agent/machine` (the machine and who chose it,
+  as `AgentMachineView`), `GET /v1/sessions/{id}/agent/machine/catalog`
+  (the curated catalog of §7.6, narrowed to the account and region the
+  session's disk lives in — the two a resize cannot cross),
+  `POST /v1/sessions/{id}/agent/machine/resize`, and
+  `GET /v1/sessions/{id}/agent/budget`. The resize route refuses a
+  license-bound type with `409 license-bound-resize-needs-approval`: the
+  agent has to raise an approval instead, and the rule is enforced by
+  the control plane rather than described to the model.
+- `ApprovalPayload` gains `machine_resize_license_bound { machine_type,
+  minimum, reason }`. Approving it *is* the resize — the control plane
+  performs it, because nothing is waiting on the daemon's side.
+- `ClientEvent` gains `machine_changed { machine_type, hourly, spot,
+  restarted }`, which the transcript renders as the notice in §9.5.
+  `ControlToDaemon` gains the same variant, and it is the one command a
+  room holds for a daemon that is not connected: a resize restarts the
+  machine, so there is never a daemon listening at the moment it is sent.
 
 ## 12. Delivery order
 

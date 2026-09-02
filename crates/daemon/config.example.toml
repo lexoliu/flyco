@@ -15,6 +15,12 @@ harness = "claude_code"
 # Where the agent works.
 workdir = "/tmp/flycod-dev/work"
 
+# Who chose the machine this session runs on: "auto" (flyco picked the
+# cheapest curated Linux type big enough) or "user" (the machine was named
+# on the request). The agent is told which, and told to leave a machine the
+# user chose alone unless the task cannot proceed on it.
+machine_origin = "auto"
+
 # Root of the local append-only transcript store, used when there is no
 # [control_plane] below. A session that reports to a control plane keeps its
 # transcript in R2 instead — that is what lets it resume onto any machine.
@@ -48,6 +54,31 @@ transcript_dir = "/tmp/flycod-dev/transcripts"
 # branch = "dev"
 # token = "gho_a-user-access-token"
 # identity = { name = "lexoliu", email = "4242+lexoliu@users.noreply.github.com" }
+# The machine this daemon booted on, as the agent is told about it. Written
+# by the provisioner from the curated catalog entry the machine was created
+# from, and not rewritten afterwards: a resize restarts the machine without
+# touching this file, and the live answer is what `machine_status` reads
+# from the control plane.
+[machine]
+machine_type = "Standard_D4s_v6"
+
+# What one hour costs, in integer microdollars (1 USD = 1e6). Omit on
+# hardware the user owns, which flyco does not meter at all.
+hourly = 190000
+
+# Whether the machine holds interruptible spot capacity.
+spot = true
+
+# How big it is. Omit for a machine flyco has never measured.
+[machine.capacity]
+vcpus = 4
+memory_mib = 16384
+
+# What the provider billed the moment the machine booted, for a
+# license-bound type such as an EC2 Mac. Omit for every type with no floor.
+# [machine.minimum]
+# hours = 24
+# charge = 15600000
 
 [claude]
 # Model override. Omit to leave the CLI's own default in place.
