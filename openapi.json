@@ -2589,6 +2589,17 @@
                         "$ref": "#/components/schemas/Uuid",
                         "description": "Identifier."
                       },
+                      "interrupted_reason": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/InterruptedReason",
+                            "description": "Why the session lost its machine, while it is off one or being put\nback on one.\n\n`None` for a session that never lost a machine. Present through both\nhalves of a reclamation — the\n[`Interrupted`](SessionState::Interrupted) wait and the\n[`Provisioning`](SessionState::Provisioning) that recovers from it —\nso the UI renders `Interrupted · spot reclaimed` and then\n`Migrating` from one field rather than guessing which kind of\nprovisioning it is watching."
+                          }
+                        ]
+                      },
                       "last_active_unix": {
                         "type": "integer",
                         "format": "int64",
@@ -3725,6 +3736,43 @@
       }
     },
     "/v1/sessions/{id}/harness-session": {
+      "get": {
+        "summary": "Reads the harness conversation a daemon on this session must continue.",
+        "description": "Reads the harness conversation a daemon on this session must continue.\n\nThe daemon asks at startup instead of trusting the configuration on its\ndisk: that file was written when the machine was created, and a machine\nthat was stopped and started again on the same disk — which is how a\nspot reclamation is recovered from — boots the same file. A daemon that\ntrusted it would open a second conversation beside the one the user is\nwatching.",
+        "operationId": "flyco_api::app::get_harness_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "What `GET /v1/sessions/{id}/harness-session` answers.\n\nThe conversation a daemon starting on this session must continue, as the\ncontrol plane last recorded it. Asked rather than read out of the\ndaemon's own configuration, because that file was written when the\nmachine was *created*: a machine that was stopped and started again on\nthe same disk — which is what recovering from a spot reclamation is —\nboots the same file, and a daemon that trusted it would open a second\nconversation beside the one the user is watching.\n\n`None` is a session whose harness has never announced an identity, which\nis every session until its first daemon connects.",
+                  "properties": {
+                    "harness_session_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Harness-native session id; resume reopens this conversation."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "put": {
         "summary": "Records the harness-native session id so a later resume continues it.",
         "description": "Records the harness-native session id so a later resume continues it.",
@@ -4237,6 +4285,51 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/spot-notice": {
+      "post": {
+        "summary": "Records that this session's machine is being reclaimed by its provider.",
+        "description": "Records that this session's machine is being reclaimed by its provider.\n\nThe durable half of a spot notice. The relay frame beside it puts the\ncountdown in front of the user; this is what survives the machine, and\nit has to be a REST call rather than a room frame because a Durable\nObject can reach neither D1 nor the provisioning queue.\n\nTwo things happen, in this order:\n\n1. The session is marked interrupted, with the reason, so every list\nand header reads `Interrupted · spot reclaimed` rather than a\nsession that mysteriously stopped.\n2. A [`Recover`](crate::provisioning_queue::ProvisioningJob::Recover)\njob is queued for after the provider's own countdown, because a\nstart issued against a machine that is still running is not a\nrestart.\n\nAnswers `202`: the machine is going whatever the control plane thinks,\nand what this accepts is the work of getting the session back.\n\nWhat browsers see is *not* here. The countdown reaches them as the relay\nframe the daemon sends immediately after this call, which the room\nrecords and forwards in one place — announcing it here as well would put\nthe same notice in the transcript twice.",
+        "operationId": "flyco_api::app::report_spot_notice",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions/{id}/spot-notice`.\n\nThe relay frame beside it ([`DaemonToControl::SpotNotice`]) is what puts\nthe countdown in front of the user; this is what makes the reclamation\n*durable*. They are two routes for one fact because a session room is a\nDurable Object, and a Durable Object can reach neither D1 nor the\nprovisioning queue — so the half that marks the session interrupted and\nqueues its replacement has to arrive at the Worker, over HTTP, from the\nonly process that knows: the daemon on the machine being taken away.",
+                "required": [
+                  "seconds_remaining"
+                ],
+                "properties": {
+                  "seconds_remaining": {
+                    "type": "integer",
+                    "format": "int32",
+                    "description": "Seconds until reclamation, as the provider announced them.\n\nWhat the recovery is scheduled against: the machine is still up for\nthis long, and a replacement started before it goes would find the\ndisk still attached to a running instance.",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
           }
         }
       }
@@ -6184,6 +6277,19 @@
           }
         }
       },
+      "HarnessSessionView": {
+        "type": "object",
+        "description": "What `GET /v1/sessions/{id}/harness-session` answers.\n\nThe conversation a daemon starting on this session must continue, as the\ncontrol plane last recorded it. Asked rather than read out of the\ndaemon's own configuration, because that file was written when the\nmachine was *created*: a machine that was stopped and started again on\nthe same disk — which is what recovering from a spot reclamation is —\nboots the same file, and a daemon that trusted it would open a second\nconversation beside the one the user is watching.\n\n`None` is a session whose harness has never announced an identity, which\nis every session until its first daemon connects.",
+        "properties": {
+          "harness_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Harness-native session id; resume reopens this conversation."
+          }
+        }
+      },
       "HeaderEntry": {
         "type": "object",
         "description": "One HTTP header sent with every request to a remote MCP server.",
@@ -6216,6 +6322,13 @@
             "minimum": 0
           }
         }
+      },
+      "InterruptedReason": {
+        "type": "string",
+        "description": "Why a session lost the machine it was running on.\n\nRecorded beside [`SessionState::Interrupted`] rather than folded into\nit, because the state says the session is off its compute and this says\nwhat the user is looking at: `Interrupted · spot reclaimed` is a status\nflyco is already recovering from, and a status with no reason would read\nas a session somebody has to rescue by hand (docs/ux.md §6).\n\nKept while flyco puts the session back — the recovery runs through\n[`SessionState::Provisioning`], and the reason is what tells that\nprovisioning apart from a first one, which is the whole of `Migrating` —\nand cleared when the session's daemon reaches the control plane again.",
+        "enum": [
+          "spot_reclaimed"
+        ]
       },
       "LinkHarnessAccount": {
         "type": "object",
@@ -7320,6 +7433,21 @@
           }
         }
       },
+      "ReportSpotNotice": {
+        "type": "object",
+        "description": "Request body of `POST /v1/sessions/{id}/spot-notice`.\n\nThe relay frame beside it ([`DaemonToControl::SpotNotice`]) is what puts\nthe countdown in front of the user; this is what makes the reclamation\n*durable*. They are two routes for one fact because a session room is a\nDurable Object, and a Durable Object can reach neither D1 nor the\nprovisioning queue — so the half that marks the session interrupted and\nqueues its replacement has to arrive at the Worker, over HTTP, from the\nonly process that knows: the daemon on the machine being taken away.",
+        "required": [
+          "seconds_remaining"
+        ],
+        "properties": {
+          "seconds_remaining": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds until reclamation, as the provider announced them.\n\nWhat the recovery is scheduled against: the machine is still up for\nthis long, and a replacement started before it goes would find the\ndisk still attached to a running instance.",
+            "minimum": 0
+          }
+        }
+      },
       "ResizeMachine": {
         "type": "object",
         "description": "Request body of `POST /v1/sessions/{id}/machine/resize`.\n\nThe disk survives a resize; only compute is replaced. The provider and\nregion are not part of this, because moving a machine between them would\nmean a new disk, which is a new session's problem rather than a resize.",
@@ -7475,6 +7603,17 @@
           "id": {
             "$ref": "#/components/schemas/Uuid",
             "description": "Identifier."
+          },
+          "interrupted_reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/InterruptedReason",
+                "description": "Why the session lost its machine, while it is off one or being put\nback on one.\n\n`None` for a session that never lost a machine. Present through both\nhalves of a reclamation — the\n[`Interrupted`](SessionState::Interrupted) wait and the\n[`Provisioning`](SessionState::Provisioning) that recovers from it —\nso the UI renders `Interrupted · spot reclaimed` and then\n`Migrating` from one field rather than guessing which kind of\nprovisioning it is watching."
+              }
+            ]
           },
           "last_active_unix": {
             "type": "integer",

@@ -247,6 +247,10 @@ impl HarnessSession for ClaudeSession {
         self.ask(|ack| DriverCommand::Interrupt { ack }).await
     }
 
+    async fn flush(&self) -> Result<(), ClaudeError> {
+        self.ask(|ack| DriverCommand::Flush { ack }).await
+    }
+
     async fn compact(&self) -> Result<(), ClaudeError> {
         self.ask(|ack| DriverCommand::Compact { ack }).await
     }
@@ -271,6 +275,16 @@ enum DriverCommand {
     },
     /// From the handle: end the current turn.
     Interrupt {
+        ack: oneshot::Sender<Result<(), ClaudeError>>,
+    },
+    /// From the handle: answer once every store request received so far has
+    /// been written through.
+    ///
+    /// The driver does nothing for this beyond acknowledging it, and that
+    /// is the point: it is a marker in the same queue the sidecar's store
+    /// requests arrive on, so an acknowledgement means every batch queued
+    /// ahead of it has already been `append`ed and awaited.
+    Flush {
         ack: oneshot::Sender<Result<(), ClaudeError>>,
     },
     /// From the handle: compact the conversation context.
@@ -452,6 +466,14 @@ impl<S: TranscriptStore> Driver<S> {
                 let ok = result.is_ok();
                 let _ = ack.send(result);
                 ok
+            }
+            DriverCommand::Flush { ack } => {
+                // Nothing to do: reaching this arm *is* the answer. Every
+                // store request the sidecar sent before it was handled by
+                // this loop, in order, and each one awaited its write to
+                // the control plane before the next command was read.
+                let _ = ack.send(Ok(()));
+                true
             }
             DriverCommand::Approval { approval, ack } => {
                 let command = match approval {

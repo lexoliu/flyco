@@ -136,12 +136,17 @@ the state plus the latest relay events:
 | Needs input | `active` and (a pending approval exists, or the last turn completed and no user message followed it) |
 | Idle | `active`, no turn in flight, last event is a user message or nothing yet |
 | Paused · budget exhausted | `paused` |
-| Interrupted · spot reclaimed | `interrupted` |
+| Interrupted · spot reclaimed | `interrupted`; the clause is `interrupted_reason` |
+| Migrating · 40s | `provisioning` **and** an `interrupted_reason`: flyco is putting the session back on the disk it never lost. Elapsed since the machine went |
 | Failed | `failed`; the row shows the failure reason |
 | Archived | `archived` |
 
 Amber for `Needs input`, green breathing for `Working`, neutral breathing
-for `Provisioning`, gray for the rest, red for `Failed`.
+for `Provisioning` and `Migrating`, gray for the rest, red for `Failed`.
+
+`interrupted_reason` is cleared when the session's daemon reaches the
+control plane again, which is the moment a migration is genuinely over and
+the session goes back to whatever status it had before.
 
 ## 7. Connect compute
 
@@ -300,7 +305,10 @@ machine, start machine, resize, edit `.env`, copy session id).
   a machine on Azure` → `Booting` → `Installing flycod` → `Cloning
   owner/repo` → `Agent ready`, each with elapsed time, driven by
   `session_state_changed` and daemon events. "No turns yet" never
-  appears while a machine is being built.
+  appears while a machine is being built. A session reclaimed from spot
+  gets **another timeline in the place it happened**, headed `Migrating`
+  and holding only the stages a restart goes through — nothing is
+  installed or cloned, because the disk already has both.
 - Approvals appear inline as an **action card** (title, the exact
   operation, `Approve` / `Deny`) and, while any is pending, as a sticky
   amber banner at the top of the transcript.

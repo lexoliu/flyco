@@ -472,6 +472,7 @@ mod tests {
             },
             bootstrap: DaemonBootstrap {
                 session: SessionId::generate(),
+                provider: flyco_core::CloudProviderKind::ByoSsh,
                 control_plane_url: "https://flyco.dev/".to_owned(),
                 daemon_token: TOKEN.to_owned(),
                 permission_mode: PermissionMode::Default,

@@ -144,6 +144,7 @@ fn request_in(machine: MachineId, zone: &str, machine_type: &str, spot: bool) ->
         },
         bootstrap: DaemonBootstrap {
             session: SessionId::generate(),
+            provider: flyco_core::CloudProviderKind::Gcp,
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_a-live-daemon-token".to_owned(),
             permission_mode: PermissionMode::Default,

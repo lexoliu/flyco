@@ -19,7 +19,9 @@
 use core::fmt;
 
 use flyco_core::machine::SessionMachine;
-use flyco_core::{BranchName, HarnessKind, MachineOrigin, PermissionMode, RepoSlug, SessionId};
+use flyco_core::{
+    BranchName, CloudProviderKind, HarnessKind, MachineOrigin, PermissionMode, RepoSlug, SessionId,
+};
 use serde::Serialize;
 
 use crate::{DaemonBootstrap, GitIdentity};
@@ -286,6 +288,8 @@ struct Document<'a> {
     transcript_dir: &'static str,
     machine_origin: MachineOrigin,
     #[serde(skip_serializing_if = "Option::is_none")]
+    spot_provider: Option<CloudProviderKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     resume_session_id: Option<&'a str>,
     control_plane: ControlPlane<'a>,
     repo: Repo<'a>,
@@ -342,6 +346,28 @@ fn codex_auth(credential: &CodexCredential) -> CodexAuth<'_> {
     }
 }
 
+/// Which provider's metadata endpoint this machine's daemon must watch for
+/// an eviction notice, if any.
+///
+/// Two conditions, and both are load-bearing. On-demand capacity is never
+/// reclaimed, so a daemon polling for a notice that cannot arrive would be
+/// a request a second, for the life of the session, against an endpoint
+/// that has nothing to say. And a container on hardware the user
+/// registered has no instance metadata at all: it is started and stopped
+/// by its owner, and there is no notice to watch for.
+const fn spot_provider(bootstrap: &DaemonBootstrap) -> Option<CloudProviderKind> {
+    match bootstrap.provider {
+        CloudProviderKind::ByoSsh => None,
+        provider @ (CloudProviderKind::Azure | CloudProviderKind::Aws | CloudProviderKind::Gcp) => {
+            if bootstrap.machine.spot {
+                Some(provider)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 /// Renders the configuration a machine's `flycod` boots with.
 ///
 /// # Errors
@@ -381,6 +407,7 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
         workdir: WORKDIR,
         transcript_dir: TRANSCRIPT_DIR,
         machine_origin: bootstrap.machine_origin,
+        spot_provider: spot_provider(bootstrap),
         resume_session_id: bootstrap.resume_session_id.as_deref(),
         control_plane: ControlPlane {
             url: &bootstrap.control_plane_url,
@@ -403,7 +430,7 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
 
 #[cfg(test)]
 mod tests {
-    use flyco_core::{HarnessKind, MachineOrigin, PermissionMode, SessionId};
+    use flyco_core::{CloudProviderKind, HarnessKind, MachineOrigin, PermissionMode, SessionId};
 
     use super::{
         CLAUDE_CONFIG_DIR, CODEX_HOME, ClaudeCredential, CodexCredential, HarnessCredential, render,
@@ -414,6 +441,7 @@ mod tests {
     fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
         DaemonBootstrap {
             session: SessionId::generate(),
+            provider: CloudProviderKind::Azure,
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_token".to_owned(),
             permission_mode: PermissionMode::Default,
@@ -578,6 +606,42 @@ mod tests {
 
         assert!(!rendered.contains("capacity"));
         assert!(!rendered.contains("hourly"));
+    }
+
+    #[test]
+    fn interruptible_capacity_tells_the_daemon_whose_metadata_to_watch() {
+        // The daemon reads its eviction notice off the provider's own
+        // instance-metadata endpoint, and nothing else on the machine says
+        // whose machine it is.
+        let rendered = render(&claude(ClaudeCredential::Inherit)).expect("render");
+        assert!(rendered.contains("spot_provider = \"azure\""));
+
+        let mut on_gcp = claude(ClaudeCredential::Inherit);
+        on_gcp.provider = CloudProviderKind::Gcp;
+        assert!(
+            render(&on_gcp)
+                .expect("render")
+                .contains("spot_provider = \"gcp\"")
+        );
+    }
+
+    #[test]
+    fn a_machine_that_cannot_be_reclaimed_watches_nothing() {
+        // On-demand capacity is never taken back, and hardware the user
+        // registered has no instance metadata to watch at all. Either way a
+        // poll every second for the life of the session would be a request
+        // against an endpoint with nothing to say.
+        let mut on_demand = claude(ClaudeCredential::Inherit);
+        on_demand.machine.spot = false;
+        assert!(
+            !render(&on_demand)
+                .expect("render")
+                .contains("spot_provider")
+        );
+
+        let mut owned = claude(ClaudeCredential::Inherit);
+        owned.provider = CloudProviderKind::ByoSsh;
+        assert!(!render(&owned).expect("render").contains("spot_provider"));
     }
 
     #[test]

@@ -19,6 +19,11 @@
 //!   vendor publishes the numbers to read instead. They belong in D1 rather
 //!   than in a room's event log, which is per-session and lives as long as
 //!   the session does.
+//! * **A spot notice** has to reach the *Worker*: the room is a Durable
+//!   Object, and marking the session interrupted and queuing its
+//!   replacement need D1 and a queue, neither of which a Durable Object can
+//!   touch. The relay frame beside it is what puts the countdown in front
+//!   of the user; this is what survives the machine.
 //!
 //! Every call carries the session's `fd_` daemon token, which authorizes
 //! exactly this session's daemon-scoped routes.
@@ -27,9 +32,9 @@ use core::future::Future;
 
 use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
-    AgentMachineView, ApprovalId, ApprovalView, BudgetView, HarnessObservation,
-    MachineCatalogEntry, Problem, ProvisioningStage, ReportProvisioningStage, ResizeMachine,
-    SessionId,
+    AgentMachineView, ApprovalId, ApprovalView, BudgetView, HarnessObservation, HarnessSessionView,
+    MachineCatalogEntry, Problem, ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
+    ResizeMachine, SessionId,
 };
 use url::Url;
 use zenwave::{Client as _, ResponseExt as _};
@@ -198,6 +203,42 @@ pub trait ControlApi: ApprovalRaiser {
     fn get_workdir_patch(
         &self,
     ) -> impl Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send;
+
+    /// Reads the conversation a daemon starting on this session must
+    /// continue.
+    ///
+    /// The authority on it, and the configuration on the disk is not: that
+    /// file was written when the machine was created, and a machine that
+    /// was stopped and started again on the same disk — a spot reclamation
+    /// recovered from — boots the same file. A daemon that trusted it would
+    /// open a second conversation beside the one the user is watching.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or refused the read.
+    fn harness_session_id(
+        &self,
+    ) -> impl Future<Output = Result<Option<String>, ControlApiError>> + Send;
+
+    /// Reports that this machine's capacity is being reclaimed.
+    ///
+    /// The durable half of a spot notice, and the reason it is a REST call
+    /// rather than only the relay frame beside it: a session room is a
+    /// Durable Object and can reach neither D1 nor the provisioning queue,
+    /// so marking the session interrupted and queuing its replacement has
+    /// to arrive at the Worker over HTTP. Awaited, because the daemon is
+    /// about to stop existing and "the control plane knows" is the one
+    /// thing that has to be true before it does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or refused the report.
+    fn report_spot_notice(
+        &self,
+        seconds_remaining: u32,
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 
     /// Announces a provisioning milestone the machine has reached.
     ///
@@ -382,6 +423,28 @@ impl ControlApi for HttpControlApi {
             .map_err(transport)?
             .bearer_auth(self.token.clone())
             .json_body(&observation)
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("POST", &url, &error))?;
+
+        debug_assert!(response.status().is_success());
+        Ok(())
+    }
+
+    async fn harness_session_id(&self) -> Result<Option<String>, ControlApiError> {
+        self.get_json::<HarnessSessionView>("harness-session")
+            .await
+            .map(|view| view.harness_session_id)
+    }
+
+    async fn report_spot_notice(&self, seconds_remaining: u32) -> Result<(), ControlApiError> {
+        let url = self.url("spot-notice")?;
+        let mut client = zenwave::client();
+        let response = client
+            .post(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(&ReportSpotNotice { seconds_remaining })
             .map_err(transport)?
             .await
             .map_err(|error| refused("POST", &url, &error))?;

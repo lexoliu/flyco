@@ -1071,7 +1071,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Reads the harness conversation a daemon on this session must continue.
+         * @description Reads the harness conversation a daemon on this session must continue.
+         *
+         *     The daemon asks at startup instead of trusting the configuration on its
+         *     disk: that file was written when the machine was created, and a machine
+         *     that was stopped and started again on the same disk — which is how a
+         *     spot reclamation is recovered from — boots the same file. A daemon that
+         *     trusted it would open a second conversation beside the one the user is
+         *     watching.
+         */
+        get: operations["flyco_api::app::get_harness_session"];
         /**
          * Records the harness-native session id so a later resume continues it.
          * @description Records the harness-native session id so a later resume continues it.
@@ -1348,6 +1359,49 @@ export interface paths {
          *     session's own machine, not another one beside it.
          */
         post: operations["flyco_api::app::resume_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/spot-notice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Records that this session's machine is being reclaimed by its provider.
+         * @description Records that this session's machine is being reclaimed by its provider.
+         *
+         *     The durable half of a spot notice. The relay frame beside it puts the
+         *     countdown in front of the user; this is what survives the machine, and
+         *     it has to be a REST call rather than a room frame because a Durable
+         *     Object can reach neither D1 nor the provisioning queue.
+         *
+         *     Two things happen, in this order:
+         *
+         *     1. The session is marked interrupted, with the reason, so every list
+         *     and header reads `Interrupted · spot reclaimed` rather than a
+         *     session that mysteriously stopped.
+         *     2. A [`Recover`](crate::provisioning_queue::ProvisioningJob::Recover)
+         *     job is queued for after the provider's own countdown, because a
+         *     start issued against a machine that is still running is not a
+         *     restart.
+         *
+         *     Answers `202`: the machine is going whatever the control plane thinks,
+         *     and what this accepts is the work of getting the session back.
+         *
+         *     What browsers see is *not* here. The countdown reaches them as the relay
+         *     frame the daemon sends immediately after this call, which the room
+         *     records and forwards in one place — announcing it here as well would put
+         *     the same notice in the transcript twice.
+         */
+        post: operations["flyco_api::app::report_spot_notice"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2271,6 +2325,24 @@ export interface components {
             /** @description Identity the harness minted; resume reopens this conversation. */
             harness_session_id: string;
         };
+        /**
+         * @description What `GET /v1/sessions/{id}/harness-session` answers.
+         *
+         *     The conversation a daemon starting on this session must continue, as the
+         *     control plane last recorded it. Asked rather than read out of the
+         *     daemon's own configuration, because that file was written when the
+         *     machine was *created*: a machine that was stopped and started again on
+         *     the same disk — which is what recovering from a spot reclamation is —
+         *     boots the same file, and a daemon that trusted it would open a second
+         *     conversation beside the one the user is watching.
+         *
+         *     `None` is a session whose harness has never announced an identity, which
+         *     is every session until its first daemon connects.
+         */
+        HarnessSessionView: {
+            /** @description Harness-native session id; resume reopens this conversation. */
+            harness_session_id?: string | null;
+        };
         /** @description One HTTP header sent with every request to a remote MCP server. */
         HeaderEntry: {
             /** @description Header name. */
@@ -2286,6 +2358,22 @@ export interface components {
              */
             wire_protocol_version: number;
         };
+        /**
+         * @description Why a session lost the machine it was running on.
+         *
+         *     Recorded beside [`SessionState::Interrupted`] rather than folded into
+         *     it, because the state says the session is off its compute and this says
+         *     what the user is looking at: `Interrupted · spot reclaimed` is a status
+         *     flyco is already recovering from, and a status with no reason would read
+         *     as a session somebody has to rescue by hand (docs/ux.md §6).
+         *
+         *     Kept while flyco puts the session back — the recovery runs through
+         *     [`SessionState::Provisioning`], and the reason is what tells that
+         *     provisioning apart from a first one, which is the whole of `Migrating` —
+         *     and cleared when the session's daemon reaches the control plane again.
+         * @enum {string}
+         */
+        InterruptedReason: "spot_reclaimed";
         /** @description Request to link a Claude Code or Codex account. */
         LinkHarnessAccount: {
             /** @description Authentication material, tagged with the mode that consumes it. */
@@ -2912,6 +3000,28 @@ export interface components {
             stage: components["schemas"]["ProvisioningStage"];
         };
         /**
+         * @description Request body of `POST /v1/sessions/{id}/spot-notice`.
+         *
+         *     The relay frame beside it ([`DaemonToControl::SpotNotice`]) is what puts
+         *     the countdown in front of the user; this is what makes the reclamation
+         *     *durable*. They are two routes for one fact because a session room is a
+         *     Durable Object, and a Durable Object can reach neither D1 nor the
+         *     provisioning queue — so the half that marks the session interrupted and
+         *     queues its replacement has to arrive at the Worker, over HTTP, from the
+         *     only process that knows: the daemon on the machine being taken away.
+         */
+        ReportSpotNotice: {
+            /**
+             * Format: int32
+             * @description Seconds until reclamation, as the provider announced them.
+             *
+             *     What the recovery is scheduled against: the machine is still up for
+             *     this long, and a replacement started before it goes would find the
+             *     disk still attached to a running instance.
+             */
+            seconds_remaining: number;
+        };
+        /**
          * @description Request body of `POST /v1/sessions/{id}/machine/resize`.
          *
          *     The disk survives a resize; only compute is replaced. The provider and
@@ -2989,6 +3099,7 @@ export interface components {
             harness: components["schemas"]["HarnessKind"];
             /** @description Identifier. */
             id: components["schemas"]["Uuid"];
+            interrupted_reason?: null | components["schemas"]["InterruptedReason"];
             /**
              * Format: int64
              * @description Last time anything happened on it, seconds since the Unix epoch.
@@ -4770,6 +4881,7 @@ export interface operations {
                         harness: components["schemas"]["HarnessKind"];
                         /** @description Identifier. */
                         id: components["schemas"]["Uuid"];
+                        interrupted_reason?: null | components["schemas"]["InterruptedReason"];
                         /**
                          * Format: int64
                          * @description Last time anything happened on it, seconds since the Unix epoch.
@@ -5402,6 +5514,31 @@ export interface operations {
             };
         };
     };
+    "flyco_api::app::get_harness_session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Harness-native session id; resume reopens this conversation. */
+                        harness_session_id?: string | null;
+                    };
+                };
+            };
+        };
+    };
     "flyco_api::app::put_harness_session": {
         parameters: {
             query?: never;
@@ -5759,6 +5896,41 @@ export interface operations {
                         failure?: string | null;
                     };
                 };
+            };
+        };
+    };
+    "flyco_api::app::report_spot_notice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: int32
+                     * @description Seconds until reclamation, as the provider announced them.
+                     *
+                     *     What the recovery is scheduled against: the machine is still up for
+                     *     this long, and a replacement started before it goes would find the
+                     *     disk still attached to a running instance.
+                     */
+                    seconds_remaining: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

@@ -104,6 +104,30 @@ impl SessionState {
     }
 }
 
+/// Why a session lost the machine it was running on.
+///
+/// Recorded beside [`SessionState::Interrupted`] rather than folded into
+/// it, because the state says the session is off its compute and this says
+/// what the user is looking at: `Interrupted · spot reclaimed` is a status
+/// flyco is already recovering from, and a status with no reason would read
+/// as a session somebody has to rescue by hand (docs/ux.md §6).
+///
+/// Kept while flyco puts the session back — the recovery runs through
+/// [`SessionState::Provisioning`], and the reason is what tells that
+/// provisioning apart from a first one, which is the whole of `Migrating` —
+/// and cleared when the session's daemon reaches the control plane again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
+pub enum InterruptedReason {
+    /// The provider reclaimed the session's interruptible capacity.
+    ///
+    /// The disk is kept — every provider flyco provisions spot on is
+    /// configured to stop the machine rather than delete it — so the
+    /// session is put back on the same disk rather than rebuilt.
+    SpotReclaimed,
+}
+
 /// Which machine a session asks for.
 ///
 /// Named on [`CreateSession`] when the caller picks a type themselves. The
@@ -281,6 +305,18 @@ pub struct SessionSummary {
     pub branch: Option<BranchName>,
     /// Where it is in its lifecycle.
     pub state: SessionState,
+    /// Why the session lost its machine, while it is off one or being put
+    /// back on one.
+    ///
+    /// `None` for a session that never lost a machine. Present through both
+    /// halves of a reclamation — the
+    /// [`Interrupted`](SessionState::Interrupted) wait and the
+    /// [`Provisioning`](SessionState::Provisioning) that recovers from it —
+    /// so the UI renders `Interrupted · spot reclaimed` and then
+    /// `Migrating` from one field rather than guessing which kind of
+    /// provisioning it is watching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interrupted_reason: Option<InterruptedReason>,
     /// When it was created, seconds since the Unix epoch.
     pub created_at_unix: u64,
     /// Last time anything happened on it, seconds since the Unix epoch.
@@ -302,6 +338,24 @@ pub struct SessionDetail {
     /// why would leave the user with a dead session and no idea whether to
     /// retry it, pick another region, or ask for a quota increase.
     pub failure: Option<String>,
+}
+
+/// What `GET /v1/sessions/{id}/harness-session` answers.
+///
+/// The conversation a daemon starting on this session must continue, as the
+/// control plane last recorded it. Asked rather than read out of the
+/// daemon's own configuration, because that file was written when the
+/// machine was *created*: a machine that was stopped and started again on
+/// the same disk — which is what recovering from a spot reclamation is —
+/// boots the same file, and a daemon that trusted it would open a second
+/// conversation beside the one the user is watching.
+///
+/// `None` is a session whose harness has never announced an identity, which
+/// is every session until its first daemon connects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct HarnessSessionView {
+    /// Harness-native session id; resume reopens this conversation.
+    pub harness_session_id: Option<String>,
 }
 
 /// Request body of `PATCH /v1/sessions/{id}`.
@@ -446,6 +500,40 @@ mod tests {
             serde_json::to_value(MachineOrigin::User).expect("serialize"),
             serde_json::Value::String("user".to_owned())
         );
+    }
+
+    #[test]
+    fn a_summary_that_never_lost_a_machine_says_nothing_about_why() {
+        // The field is skipped rather than serialized as null: a session
+        // that was never interrupted has no reason, and `"interrupted_reason":
+        // null` in every list row would be a fact about nothing.
+        let summary = SessionSummary {
+            id: SessionId::generate(),
+            title: "add a test".to_owned(),
+            machine_origin: MachineOrigin::Auto,
+            harness: HarnessKind::ClaudeCode,
+            repo: "lexoliu/flyco".parse().expect("a repository"),
+            branch: None,
+            state: SessionState::Active,
+            interrupted_reason: None,
+            created_at_unix: 0,
+            last_active_unix: 0,
+        };
+        let json = serde_json::to_string(&summary).expect("serialize");
+        assert!(!json.contains("interrupted_reason"), "{json}");
+
+        let reclaimed = SessionSummary {
+            state: SessionState::Interrupted,
+            interrupted_reason: Some(InterruptedReason::SpotReclaimed),
+            ..summary
+        };
+        let json = serde_json::to_string(&reclaimed).expect("serialize");
+        assert!(
+            json.contains(r#""interrupted_reason":"spot_reclaimed""#),
+            "{json}"
+        );
+        let back: SessionSummary = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, reclaimed);
     }
 
     #[test]

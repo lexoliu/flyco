@@ -247,6 +247,10 @@ impl HarnessSession for CodexSession {
         self.ask(|ack| DriverCommand::Interrupt { ack }).await
     }
 
+    async fn flush(&self) -> Result<(), CodexError> {
+        self.ask(|ack| DriverCommand::Flush { ack }).await
+    }
+
     async fn compact(&self) -> Result<(), CodexError> {
         self.ask(|ack| DriverCommand::Compact { ack }).await
     }
@@ -271,6 +275,17 @@ enum DriverCommand {
     },
     /// From the handle: end the current turn.
     Interrupt {
+        ack: oneshot::Sender<Result<(), CodexError>>,
+    },
+    /// From the handle: answer once everything the app-server has already
+    /// said has been acted on.
+    ///
+    /// A marker in the same queue the app-server's own frames arrive on, so
+    /// an acknowledgement means every notification read before it has been
+    /// normalized and emitted. Codex keeps its rollout on the session disk
+    /// — which a reclamation does not take — so there is no batch to push
+    /// anywhere; what this orders is the frames already in flight.
+    Flush {
         ack: oneshot::Sender<Result<(), CodexError>>,
     },
     /// From the handle: compact the conversation context.
@@ -715,6 +730,12 @@ impl Driver {
                 let ok = result.is_ok();
                 let _ = ack.send(result);
                 ok
+            }
+            DriverCommand::Flush { ack } => {
+                // Reaching this arm is the answer: every frame the reader
+                // handed over before it has already been processed.
+                let _ = ack.send(Ok(()));
+                true
             }
             DriverCommand::Shutdown { ack } => {
                 let stopped = self.stop().await;

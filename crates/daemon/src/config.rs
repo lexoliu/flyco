@@ -413,6 +413,17 @@ pub struct DaemonConfig {
     /// `GET /v1/sessions/{id}/agent/machine`, which is what the agent's
     /// `machine_status` tool reads.
     pub machine: SessionMachine,
+    /// Whose instance-metadata endpoint announces this machine's
+    /// reclamation, when it holds capacity that can be reclaimed at all.
+    ///
+    /// Written by the provisioner on exactly the machines a notice can
+    /// arrive for: interruptible capacity on a cloud provider. Absent on
+    /// on-demand capacity, on hardware the user registered, and on a
+    /// developer machine — and an absent one is a daemon that watches
+    /// nothing, rather than one that probes three endpoints to find out
+    /// whose machine it is on (see [`crate::spot`]).
+    #[serde(default)]
+    pub spot_provider: Option<flyco_core::CloudProviderKind>,
     /// Root of the local append-only transcript store.
     ///
     /// Used only when there is no [`control_plane`](Self::control_plane):

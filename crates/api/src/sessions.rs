@@ -6,7 +6,7 @@
 //! no business knowing.
 
 use flyco_core::{
-    ARCHIVE_AFTER_IDLE_SECS, BranchName, BudgetConfig, BudgetId, HarnessKind,
+    ARCHIVE_AFTER_IDLE_SECS, BranchName, BudgetConfig, BudgetId, HarnessKind, InterruptedReason,
     MAX_SESSION_TITLE_CHARS, MachineOrigin, RepoSlug, SessionDetail, SessionId, SessionState,
     SessionSummary, UserId,
 };
@@ -29,6 +29,7 @@ struct SessionRow {
     machine_origin: MachineOrigin,
     budget_id: BudgetId,
     failure_reason: Option<String>,
+    interrupted_reason: Option<InterruptedReason>,
     created_at_unix: u64,
     last_active_unix: u64,
 }
@@ -43,6 +44,7 @@ impl From<SessionRow> for SessionSummary {
             branch: row.branch,
             state: row.state,
             machine_origin: row.machine_origin,
+            interrupted_reason: row.interrupted_reason,
             created_at_unix: row.created_at_unix,
             last_active_unix: row.last_active_unix,
         }
@@ -206,7 +208,7 @@ pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError
     let rows: Vec<SessionRow> = sql!(
         db,
         "SELECT id, title, harness, repo, branch, state, machine_origin, budget_id, \
-         failure_reason, created_at_unix, last_active_unix \
+         failure_reason, interrupted_reason, created_at_unix, last_active_unix \
          FROM sessions WHERE user_id = {user} ORDER BY created_at_unix DESC, id DESC"
     )
     .fetch_all()
@@ -311,7 +313,7 @@ async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiErr
     sql!(
         db,
         "SELECT id, title, harness, repo, branch, state, machine_origin, budget_id, \
-         failure_reason, created_at_unix, last_active_unix \
+         failure_reason, interrupted_reason, created_at_unix, last_active_unix \
          FROM sessions WHERE id = {id} AND user_id = {user}"
     )
     .fetch_optional()
@@ -469,6 +471,101 @@ pub async fn fail(db: &Db, id: SessionId, reason: &str) -> Result<(), ApiError> 
     Ok(())
 }
 
+/// Records that a session's machine is being reclaimed by its provider.
+///
+/// Called from the session's own daemon, in the seconds between the
+/// provider's notice and the machine going, and it is idempotent for the
+/// same reason [`pause_for_budget`] is: nothing about a reclamation is
+/// delivered exactly once, and a second report must not be an error.
+///
+/// A session that is already off its machine — interrupted by an earlier
+/// notice, or provisioning because the recovery has already started — keeps
+/// the reason it has and is left alone. Only an [`Active`](SessionState::Active)
+/// session actually moves.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is gone, or
+/// [`ApiError::InvalidTransition`] if it is in a state that cannot be
+/// interrupted — a session being archived, say, whose machine is going
+/// anyway.
+pub async fn interrupt_for_spot(db: &Db, id: SessionId) -> Result<(), ApiError> {
+    let state: SessionState = sql!(db, "SELECT state FROM sessions WHERE id = {id}")
+        .fetch_scalar_optional()
+        .await?
+        .ok_or(ApiError::SessionNotFound)?;
+    let reason = InterruptedReason::SpotReclaimed;
+    if matches!(
+        state,
+        SessionState::Interrupted | SessionState::Provisioning
+    ) {
+        // Already off its machine, or already being put back on one. The
+        // reason is written anyway: a reclamation during a provision is
+        // still what the UI has to render, and the column is what tells a
+        // recovery apart from a first provision.
+        sql!(
+            db,
+            "UPDATE sessions SET interrupted_reason = {reason}, \
+             last_active_unix = {now_unix()} WHERE id = {id}"
+        )
+        .execute()
+        .await?;
+        return Ok(());
+    }
+
+    let next = state
+        .transition(SessionState::Interrupted)
+        .map_err(|error| ApiError::InvalidTransition {
+            from: error.from,
+            to: error.to,
+        })?;
+    sql!(
+        db,
+        "UPDATE sessions SET state = {next}, interrupted_reason = {reason}, \
+         last_active_unix = {now_unix()} WHERE id = {id}"
+    )
+    .execute()
+    .await?;
+    tracing::warn!(session = %id, "a session's spot capacity is being reclaimed");
+    Ok(())
+}
+
+/// Puts a session that lost its machine back into
+/// [`SessionState::Provisioning`], keeping the reason it lost it.
+///
+/// What a [`Recover`](crate::provisioning_queue::ProvisioningJob::Recover)
+/// job does before it asks the provider for the machine back. The reason
+/// survives the move deliberately: it is the only thing that tells this
+/// provisioning apart from a first one, which is what the UI renders as
+/// `Migrating` rather than `Provisioning` (docs/ux.md §6).
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is gone, or
+/// [`ApiError::InvalidTransition`] if it cannot be put back on a machine.
+pub async fn recovering(db: &Db, id: SessionId) -> Result<(), ApiError> {
+    let state: SessionState = sql!(db, "SELECT state FROM sessions WHERE id = {id}")
+        .fetch_scalar_optional()
+        .await?
+        .ok_or(ApiError::SessionNotFound)?;
+    if state == SessionState::Provisioning {
+        return Ok(());
+    }
+    let next = state
+        .transition(SessionState::Provisioning)
+        .map_err(|error| ApiError::InvalidTransition {
+            from: error.from,
+            to: error.to,
+        })?;
+    sql!(
+        db,
+        "UPDATE sessions SET state = {next}, last_active_unix = {now_unix()} WHERE id = {id}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
 /// Pauses an active session because its compute budget is exhausted.
 ///
 /// Repeating the call is intentional: the budget-signal outbox is delivered
@@ -527,7 +624,8 @@ pub async fn resume(db: &Db, user: UserId, id: SessionId) -> Result<SessionDetai
     sql!(
         db,
         "UPDATE sessions SET state = {next}, failure_reason = NULL, \
-         last_active_unix = {now_unix()} WHERE id = {id} AND user_id = {user}"
+         interrupted_reason = NULL, last_active_unix = {now_unix()} \
+         WHERE id = {id} AND user_id = {user}"
     )
     .execute()
     .await?;
@@ -598,9 +696,14 @@ pub async fn harness_session_id(db: &Db, id: SessionId) -> Result<Option<String>
 pub async fn daemon_arrived(db: &Db, id: SessionId) -> Result<(), ApiError> {
     let provisioning = SessionState::Provisioning;
     let active = SessionState::Active;
+    // The reason the session lost its machine is cleared with the same
+    // write that says it has one again: it is what the UI renders
+    // `Migrating` from, and a session whose daemon is back is not
+    // migrating any more.
     let written = sql!(
         db,
-        "UPDATE sessions SET state = {active}, last_active_unix = {now_unix()} \
+        "UPDATE sessions SET state = {active}, interrupted_reason = NULL, \
+         last_active_unix = {now_unix()} \
          WHERE id = {id} AND state = {provisioning}"
     )
     .execute()

@@ -17,12 +17,13 @@
  * and passes none, so an `active` row there reads as `Idle`, which is the
  * honest answer for what a summary knows.
  */
-import type { SessionState, SessionSummary } from "../api/client";
+import type { InterruptedReason, SessionState, SessionSummary } from "../api/client";
 import type { TimedEvent } from "../api/relay";
 
 /** What a session looks like to the person who opened it. */
 export type SessionStatus =
   | "provisioning"
+  | "migrating"
   | "working"
   | "needs_input"
   | "idle"
@@ -75,11 +76,36 @@ const BASE: Record<Exclude<SessionState, "active">, StatusView> = {
     label: "Interrupted",
     tone: "quiet",
     breathing: false,
-    detail: "spot reclaimed",
   },
   failed: { status: "failed", label: "Failed", tone: "failed", breathing: false },
   archived: { status: "archived", label: "Archived", tone: "quiet", breathing: false },
 };
+
+/**
+ * What flyco is doing while it puts a reclaimed session back.
+ *
+ * Not a `SessionState` of its own: the session is `provisioning`, exactly
+ * as a brand-new one is, and what makes it different is *why*. Breathing
+ * and neutral like `Provisioning`, because it is the same kind of wait —
+ * something is happening and there is nothing for the user to do.
+ */
+const MIGRATING: StatusView = {
+  status: "migrating",
+  label: "Migrating",
+  tone: "neutral",
+  breathing: true,
+};
+
+/**
+ * The clause after `Interrupted`, for a session that lost its machine.
+ *
+ * `undefined` for a session that never lost one, and for a reason this
+ * build has not heard of: an unknown token is a newer control plane, and
+ * rendering it raw would put a snake_case identifier in front of a person.
+ */
+function lostItsMachine(reason: InterruptedReason | null | undefined): string | undefined {
+  return reason === "spot_reclaimed" ? "spot reclaimed" : undefined;
+}
 
 /**
  * The status of one session.
@@ -88,12 +114,30 @@ const BASE: Record<Exclude<SessionState, "active">, StatusView> = {
  * every row against one instant, and so that this is testable.
  */
 export function deriveStatus(
-  session: Pick<SessionSummary, "state" | "created_at_unix" | "last_active_unix">,
+  session: Pick<
+    SessionSummary,
+    "state" | "created_at_unix" | "last_active_unix" | "interrupted_reason"
+  >,
   now: number,
   live: LiveSignals = {},
 ): StatusView {
+  const lost = lostItsMachine(session.interrupted_reason);
   if (session.state === "provisioning") {
-    return { ...BASE.provisioning, detail: elapsedSince(session.created_at_unix, now) };
+    // Provisioning that follows a reclamation is flyco putting the session
+    // back on the disk it never lost, which is a different thing to a user
+    // than a machine being built for the first time (docs/ux.md §6). The
+    // reason is the only thing that tells the two apart, and it is cleared
+    // the moment the session's daemon is back.
+    // Each counts from where its own wait began: a first machine from when
+    // the session was opened, a replacement from when the old one went.
+    return lost === undefined
+      ? { ...BASE.provisioning, detail: elapsedSince(session.created_at_unix, now) }
+      : { ...MIGRATING, detail: elapsedSince(session.last_active_unix, now) };
+  }
+  if (session.state === "interrupted") {
+    // A session interrupted for a reason this build does not know reads as
+    // `Interrupted` with nothing after it, rather than with a raw token.
+    return lost === undefined ? BASE.interrupted : { ...BASE.interrupted, detail: lost };
   }
   if (session.state !== "active") {
     return BASE[session.state];
@@ -175,6 +219,7 @@ export const STATUS_ORDER: readonly SessionStatus[] = [
   "failed",
   "working",
   "provisioning",
+  "migrating",
   "idle",
   "paused",
   "interrupted",
@@ -187,6 +232,7 @@ export const GROUP_LABEL: Record<SessionStatus, string> = {
   failed: "Failed",
   working: "Working",
   provisioning: "Provisioning",
+  migrating: "Migrating",
   idle: "Idle",
   paused: "Paused",
   interrupted: "Interrupted",

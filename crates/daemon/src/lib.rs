@@ -26,6 +26,10 @@
 //! - [`mcp`] — the local stdio MCP server, which is the *only* sanctioned
 //!   way an agent acts on its own session: what machine it is on, what the
 //!   budget has left, and moving to another machine.
+//! - [`spot`] — the provider's eviction notice, watched on the machine's own
+//!   instance-metadata endpoint, and the disk flush the daemon answers it
+//!   with. The agent takes no part in a reclamation and is told about it
+//!   afterwards.
 //! - [`notice`] — every sentence flyco says to the agent, compiled from a
 //!   template rather than assembled from strings.
 //!
@@ -43,6 +47,7 @@ pub mod harness;
 pub mod mcp;
 pub mod notice;
 pub mod repl;
+pub mod spot;
 pub mod terminal;
 
 #[cfg(test)]

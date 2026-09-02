@@ -446,6 +446,17 @@ async fn record(
         )
         .await
         .map(drop),
+        // Appended rather than only forwarded: a reclamation is something
+        // that *happened* to the session, and the browser most likely to
+        // want it is one opened after the machine was already gone.
+        DaemonToControl::SpotNotice { seconds_remaining } => append(
+            db,
+            &ClientEvent::SpotNotice {
+                seconds_remaining: *seconds_remaining,
+            },
+        )
+        .await
+        .map(drop),
         DaemonToControl::RepoDirty { summary } => {
             // The daemon is the only thing that can see the working tree, and
             // it reports the whole `git status --short` output rather than a

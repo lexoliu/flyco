@@ -4,10 +4,10 @@ use flyco_core::{
     AgentMachineView, ApiKeyId, ApiKeySummary, ApprovalDecision, ApprovalId, ApprovalState,
     ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, EnvDocument,
-    HarnessFeature, HarnessObservation, MAX_SESSION_TITLE_CHARS, MachineCatalogEntry,
-    MachineOrigin, MachineSpec, RepoSlug, RepoStatus, ReportProvisioningStage, ResizeMachine,
-    SendMessage, SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv,
-    UpdateMe, UpdateSession, UserId, wire::ApprovalPayload,
+    HarnessFeature, HarnessObservation, HarnessSessionView, MAX_SESSION_TITLE_CHARS,
+    MachineCatalogEntry, MachineOrigin, MachineSpec, RepoSlug, RepoStatus, ReportProvisioningStage,
+    ReportSpotNotice, ResizeMachine, SendMessage, SessionDetail, SessionId, SessionState,
+    SessionSummary, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId, wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -1103,6 +1103,85 @@ async fn put_harness_session(
         .into()
 }
 
+/// Reads the harness conversation a daemon on this session must continue.
+///
+/// The daemon asks at startup instead of trusting the configuration on its
+/// disk: that file was written when the machine was created, and a machine
+/// that was stopped and started again on the same disk — which is how a
+/// spot reclamation is recovered from — boots the same file. A daemon that
+/// trusted it would open a second conversation beside the one the user is
+/// watching.
+#[skyzen::openapi]
+async fn get_harness_session(
+    State(session): State<DaemonSession>,
+    db: Db,
+) -> Outcome<Json<HarnessSessionView>> {
+    sessions::harness_session_id(&db, session.0)
+        .await
+        .map(|harness_session_id| Json(HarnessSessionView { harness_session_id }))
+        .into()
+}
+
+/// Records that this session's machine is being reclaimed by its provider.
+///
+/// The durable half of a spot notice. The relay frame beside it puts the
+/// countdown in front of the user; this is what survives the machine, and
+/// it has to be a REST call rather than a room frame because a Durable
+/// Object can reach neither D1 nor the provisioning queue.
+///
+/// Two things happen, in this order:
+///
+/// 1. The session is marked interrupted, with the reason, so every list
+///    and header reads `Interrupted · spot reclaimed` rather than a
+///    session that mysteriously stopped.
+/// 2. A [`Recover`](crate::provisioning_queue::ProvisioningJob::Recover)
+///    job is queued for after the provider's own countdown, because a
+///    start issued against a machine that is still running is not a
+///    restart.
+///
+/// Answers `202`: the machine is going whatever the control plane thinks,
+/// and what this accepts is the work of getting the session back.
+///
+/// What browsers see is *not* here. The countdown reaches them as the relay
+/// frame the daemon sends immediately after this call, which the room
+/// records and forwards in one place — announcing it here as well would put
+/// the same notice in the transcript twice.
+#[skyzen::openapi]
+async fn report_spot_notice(
+    State(session): State<DaemonSession>,
+    Json(report): Json<ReportSpotNotice>,
+    queue: Queue,
+    db: Db,
+) -> Outcome<Accepted> {
+    reclaim(session.0, report, &queue, &db).await.into()
+}
+
+async fn reclaim(
+    session: SessionId,
+    report: ReportSpotNotice,
+    queue: &Queue,
+    db: &Db,
+) -> Result<Accepted, ApiError> {
+    sessions::interrupt_for_spot(db, session).await?;
+
+    let machine = machines::for_session(db, session)
+        .await?
+        .ok_or(ApiError::MachineNotFound)?;
+    provisioning_queue::enqueue_after(
+        queue,
+        ProvisioningJob::recovery(session, machine.id, crate::clock::now_unix()),
+        core::time::Duration::from_secs(u64::from(report.seconds_remaining)),
+    )
+    .await?;
+
+    tracing::warn!(
+        %session,
+        seconds_remaining = report.seconds_remaining,
+        "a session's machine is being reclaimed; a recovery is queued"
+    );
+    Ok(Accepted)
+}
+
 /// Raises an approval against the daemon's own session.
 ///
 /// The daemon records the durable approval here *before* it announces the
@@ -1448,7 +1527,10 @@ fn relay_routes() -> Vec<RouteNode> {
 fn daemon_routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/sessions/{id}/approvals".post(raise_approval),
-        "/v1/sessions/{id}/harness-session".put(put_harness_session),
+        "/v1/sessions/{id}/harness-session"
+            .at(get_harness_session)
+            .put(put_harness_session),
+        "/v1/sessions/{id}/spot-notice".post(report_spot_notice),
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),
         "/v1/sessions/{id}/turn-completed".post(notify_turn_completed),
         "/v1/sessions/{id}/turn-failed".post(notify_turn_failed),

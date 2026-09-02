@@ -31,6 +31,7 @@ use skyzen_test::{TestClient, TestContext};
 
 use crate::provisioning::{LinkedAccount, Provisioner};
 use crate::provisioning_queue::{self, MAX_ATTEMPTS, ProvisioningJob};
+use crate::rooms::Rooms;
 use crate::testing::{
     GITHUB_ACCESS_TOKEN, GITHUB_COMMIT_EMAIL, GITHUB_NAME, HARNESS_TOKEN, TEST_DEFAULT_BRANCH,
     TestGithub, machine_choice, migrated_router_on, seed_harness_account, seed_provider_account,
@@ -88,6 +89,13 @@ impl CommandRunner for CannedRunner {
 struct RecordedHost {
     answer: Answer,
     provisions: u32,
+    /// Every machine this host was asked to start again, in order.
+    ///
+    /// A recovery is a *start*, never a provision, and the two counters are
+    /// separate so a recovery that quietly rebuilt the machine — and with
+    /// it the disk holding the session's work — would fail rather than
+    /// pass.
+    restarts: Vec<Machine>,
     bootstrap: Option<DaemonBootstrap>,
 }
 
@@ -96,6 +104,7 @@ impl RecordedHost {
         Self {
             answer,
             provisions: 0,
+            restarts: Vec::new(),
             bootstrap: None,
         }
     }
@@ -129,6 +138,23 @@ impl Provisioner for RecordedHost {
                 "the registered host did not answer".to_owned(),
             ))),
         }
+    }
+
+    fn restart(
+        &mut self,
+        _account: &LinkedAccount,
+        machine: &Machine,
+    ) -> impl Future<Output = Result<Machine, ProviderError>> {
+        if self.answer == Answer::Unreachable {
+            return core::future::ready(Err(ProviderError::Transport(HttpError::Transport(
+                "the registered host did not answer".to_owned(),
+            ))));
+        }
+        self.restarts.push(machine.clone());
+        core::future::ready(Ok(Machine {
+            state: MachineState::Running,
+            ..machine.clone()
+        }))
     }
 }
 
@@ -231,6 +257,25 @@ async fn run_queue_as(
         queue,
         &test_rooms(),
         &mut clients(provisioner, &github, &test_vendors()),
+        batch,
+    )
+    .await
+}
+
+/// The same, against rooms the caller keeps so it can read them back.
+async fn run_queue_watching(
+    db: &Db,
+    queue: &Queue,
+    rooms: &Rooms,
+    provisioner: &mut RecordedHost,
+    batch: QueueBatch<ProvisioningJob>,
+) -> QueueBatchDisposition {
+    provisioning_queue::consume(
+        db,
+        &test_config(),
+        queue,
+        rooms,
+        &mut clients(provisioner, &TestGithub::default(), &test_vendors()),
         batch,
     )
     .await
@@ -500,7 +545,7 @@ async fn an_unreachable_host_is_retried_a_bounded_number_of_times(
     let mut job = drain(&queue).await.messages[0].body;
 
     for attempt in 1..=MAX_ATTEMPTS {
-        assert_eq!(job.attempt, attempt);
+        assert_eq!(job.attempt(), attempt);
         provisioning_queue::consume(
             &db,
             &test_config(),
@@ -538,7 +583,7 @@ async fn an_unreachable_host_is_retried_a_bounded_number_of_times(
     assert!(
         queued(&backend)
             .iter()
-            .all(|job| job.attempt <= MAX_ATTEMPTS),
+            .all(|job| job.attempt() <= MAX_ATTEMPTS),
         "nothing was queued past the last attempt"
     );
 }
@@ -603,7 +648,8 @@ async fn an_archived_session_comes_back_through_the_same_queue(
     let queued = drain(&queue).await;
     assert_eq!(queued.len(), 1);
     assert_eq!(
-        queued.messages[0].body.machine, machine,
+        queued.messages[0].body.machine(),
+        machine,
         "a resume rebuilds the session's own machine rather than a second one \
          beside it"
     );
@@ -1330,5 +1376,371 @@ async fn a_users_own_resize_is_not_gated_on_a_licence(
             .json::<Problem>()
             .kind
             .ends_with("machine-type-not-offered")
+    );
+}
+
+// ── Spot reclamation ──
+//
+// Flyco migrates the session itself and the agent takes no part in it
+// (issue #66): the daemon spends the provider's notice saving the session,
+// and everything below is what the control plane does with what it reports.
+// The disk is never released, so recovering is a *start* of the same
+// machine — never a provision, which would build a second one and leave the
+// session's work on a disk nobody is attached to.
+
+/// One line of the append-only ledger.
+#[derive(Debug, skyzen::FromRow)]
+struct LedgerLine {
+    detail: String,
+}
+
+/// Reports a reclamation the way the session's own daemon does.
+///
+/// The session is taken live first, because that is the only state a
+/// reclamation is interesting from: a daemon that reports a notice is one
+/// that reached the control plane, which is what makes its session active.
+async fn report_reclaim(
+    client: &TestClient<Router>,
+    db: &Db,
+    session: SessionId,
+    daemon_token: &str,
+    seconds_remaining: u32,
+) {
+    sessions::daemon_arrived(db, session)
+        .await
+        .expect("the session's daemon reached the control plane");
+    let response = client
+        .post(&format!("/v1/sessions/{session}/spot-notice"))
+        .bearer(daemon_token)
+        .json(&flyco_core::ReportSpotNotice { seconds_remaining })
+        .send()
+        .await;
+    response.assert_status(202);
+}
+
+/// The one recovery a reclaimed session's queue is holding.
+fn queued_recovery(backend: &InMemoryQueue) -> ProvisioningJob {
+    let recoveries: Vec<ProvisioningJob> = queued(backend)
+        .into_iter()
+        .filter(|job| matches!(job, ProvisioningJob::Recover { .. }))
+        .collect();
+    assert_eq!(recoveries.len(), 1, "one notice queues one recovery");
+    recoveries[0]
+}
+
+/// Every `ClientEvent` the room recorded, in order.
+async fn recorded(rooms: &Rooms, session: SessionId) -> Vec<flyco_core::ClientEvent> {
+    rooms
+        .events(session, 0)
+        .await
+        .expect("read the room's stream")
+        .events
+        .iter()
+        .map(|stored| {
+            serde_json::from_value(stored.event.clone()).expect("a recorded client event")
+        })
+        .collect()
+}
+
+#[skyzen::test]
+async fn a_reclaimed_session_reads_as_interrupted_and_queues_its_own_recovery(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, daemon) = provisioned(&client, &caller, &db, &queue).await;
+    let machine = machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("a machine row")
+        .id;
+
+    report_reclaim(&client, &db, session, &daemon, 30).await;
+
+    let detail = read(&client, &caller, session).await;
+    assert_eq!(detail.summary.state, SessionState::Interrupted);
+    assert_eq!(
+        detail.summary.interrupted_reason,
+        Some(flyco_core::InterruptedReason::SpotReclaimed),
+        "the status the user reads is `Interrupted · spot reclaimed`, not a session that stopped"
+    );
+
+    // Queued rather than performed: the machine holds its disk for the
+    // seconds the provider announced, and a start against a running
+    // instance is not a restart.
+    assert!(matches!(
+        queued_recovery(&backend),
+        ProvisioningJob::Recover { session: queued, machine: on, .. }
+            if queued == session && on == machine
+    ));
+}
+
+#[skyzen::test]
+async fn a_recovery_starts_the_same_machine_rather_than_building_another(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    let session = open(&client, &caller).await.summary.id;
+    let mut host = RecordedHost::healthy();
+    let first = drain(&queue).await;
+    let rooms = test_rooms();
+    run_queue_watching(&db, &queue, &rooms, &mut host, first).await;
+    let daemon = pair(&client, &caller, session).await;
+    let built = machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("a machine row");
+    let native = built.native_id.clone().expect("the machine was built");
+
+    report_reclaim(&client, &db, session, &daemon, 30).await;
+    let recovery = queued_recovery(&backend);
+    let disposition = run_queue_watching(&db, &queue, &rooms, &mut host, batch(recovery)).await;
+    assert!(matches!(
+        disposition,
+        QueueBatchDisposition::PerMessage(ref decisions)
+            if decisions == &[QueueMessageDisposition::Ack]
+    ));
+
+    assert_eq!(
+        host.provisions, 1,
+        "a recovery must never provision: the disk holding the session's work is on the \
+         machine that already exists"
+    );
+    assert_eq!(host.restarts.len(), 1);
+    assert_eq!(
+        host.restarts[0].native_id, native,
+        "the machine started again is the machine that was reclaimed"
+    );
+
+    let row = machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("a machine row");
+    assert_eq!(row.id, built.id, "the same row, on the same disk");
+    assert_eq!(row.state, MachineState::Running);
+
+    // `Migrating`: the session is provisioning again, and the reason it
+    // lost its machine is what tells that apart from a first provision.
+    let detail = read(&client, &caller, session).await;
+    assert_eq!(detail.summary.state, SessionState::Provisioning);
+    assert_eq!(
+        detail.summary.interrupted_reason,
+        Some(flyco_core::InterruptedReason::SpotReclaimed)
+    );
+
+    // And the timeline the transcript renders it as.
+    let stages: Vec<flyco_core::ProvisioningStage> = recorded(&rooms, session)
+        .await
+        .into_iter()
+        .filter_map(|event| match event {
+            flyco_core::ClientEvent::ProvisioningStage { stage, .. } => Some(stage),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        stages.ends_with(&[
+            flyco_core::ProvisioningStage::Reserving,
+            flyco_core::ProvisioningStage::Booting,
+        ]),
+        "a recovery announces the stages it actually goes through: {stages:?}"
+    );
+}
+
+#[skyzen::test]
+async fn a_recovered_session_is_told_afterwards_and_the_ledger_names_the_replacement(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    let session = open(&client, &caller).await.summary.id;
+    let mut host = RecordedHost::healthy();
+    let first = drain(&queue).await;
+    let rooms = test_rooms();
+    run_queue_watching(&db, &queue, &rooms, &mut host, first).await;
+    let daemon = pair(&client, &caller, session).await;
+
+    report_reclaim(&client, &db, session, &daemon, 30).await;
+    let recovery = queued_recovery(&backend);
+    run_queue_watching(&db, &queue, &rooms, &mut host, batch(recovery)).await;
+
+    // The agent is told once, afterwards, as an ordinary message in the
+    // conversation — which is also what puts it in the transcript.
+    let messages: Vec<String> = recorded(&rooms, session)
+        .await
+        .into_iter()
+        .filter_map(|event| match event {
+            flyco_core::ClientEvent::UserMessage { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    let expected = format!(
+        "The machine was reclaimed and restarted on {}; continue.",
+        machine_choice(caller.account).machine_type
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|text| text.contains(&expected))
+            .count(),
+        1,
+        "the agent is told once, naming the machine it is on now: {messages:?}"
+    );
+
+    // The gap is what the ledger has to explain: the compute meter stopped
+    // and restarted while the disk was billed throughout.
+    let details: Vec<String> = sql!(
+        db,
+        "SELECT detail FROM spend_events \
+         WHERE budget_id = (SELECT budget_id FROM sessions WHERE id = {session})"
+    )
+    .fetch_all::<LedgerLine>()
+    .await
+    .expect("read the ledger")
+    .into_iter()
+    .map(|line| line.detail)
+    .collect();
+    assert_eq!(
+        details
+            .iter()
+            .filter(|detail| detail.contains("was reclaimed at"))
+            .count(),
+        1,
+        "the ledger names the replacement exactly once: {details:?}"
+    );
+}
+
+#[skyzen::test]
+async fn a_redelivered_recovery_neither_restarts_twice_nor_bills_twice(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // Cloudflare Queues delivers at least once, and a recovery is the one
+    // job that runs against a machine that already exists.
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    let session = open(&client, &caller).await.summary.id;
+    let mut host = RecordedHost::healthy();
+    let first = drain(&queue).await;
+    let rooms = test_rooms();
+    run_queue_watching(&db, &queue, &rooms, &mut host, first).await;
+    let daemon = pair(&client, &caller, session).await;
+
+    report_reclaim(&client, &db, session, &daemon, 30).await;
+    let recovery = queued_recovery(&backend);
+    for _ in 0..2 {
+        run_queue_watching(&db, &queue, &rooms, &mut host, batch(recovery)).await;
+    }
+
+    assert_eq!(host.provisions, 1);
+    let entries: u32 = sql!(
+        db,
+        "SELECT COUNT(*) AS n FROM spend_events \
+         WHERE meter_key LIKE 'spot-recovery:%' \
+         AND budget_id = (SELECT budget_id FROM sessions WHERE id = {session})"
+    )
+    .fetch_scalar()
+    .await
+    .expect("count the ledger");
+    assert_eq!(
+        entries, 1,
+        "the ledger line is keyed on the reclamation, so a second delivery writes nothing"
+    );
+}
+
+#[skyzen::test]
+async fn a_daemon_that_comes_back_ends_the_migration(ctx: TestContext, kv: Kv, db: Db) {
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, daemon) = provisioned(&client, &caller, &db, &queue).await;
+
+    report_reclaim(&client, &db, session, &daemon, 30).await;
+    sessions::recovering(&db, session)
+        .await
+        .expect("the recovery moves the session back to provisioning");
+    // What the daemon on the restarted machine does when it reaches the
+    // control plane.
+    sessions::daemon_arrived(&db, session)
+        .await
+        .expect("the daemon reached the control plane");
+
+    let detail = read(&client, &caller, session).await;
+    assert_eq!(detail.summary.state, SessionState::Active);
+    assert_eq!(
+        detail.summary.interrupted_reason, None,
+        "a session whose daemon is back is not migrating any more"
+    );
+}
+
+#[skyzen::test]
+async fn the_conversation_a_restarted_daemon_continues_comes_from_the_control_plane(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    // A reclaimed machine boots the configuration already on its disk,
+    // which was written when the machine was *created*. The id it must
+    // resume is the one the control plane recorded, so the daemon asks
+    // rather than trusting the file.
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, daemon) = provisioned(&client, &caller, &db, &queue).await;
+
+    let before = client
+        .get(&format!("/v1/sessions/{session}/harness-session"))
+        .bearer(&daemon)
+        .send()
+        .await;
+    before.assert_status(200);
+    assert_eq!(
+        before
+            .json::<flyco_core::HarnessSessionView>()
+            .harness_session_id,
+        None,
+        "a session whose harness has never announced itself has no conversation to continue"
+    );
+
+    sessions::record_harness_session(&db, session, "harness-native-thread")
+        .await
+        .expect("record what the daemon announced");
+
+    let after = client
+        .get(&format!("/v1/sessions/{session}/harness-session"))
+        .bearer(&daemon)
+        .send()
+        .await;
+    after.assert_status(200);
+    assert_eq!(
+        after
+            .json::<flyco_core::HarnessSessionView>()
+            .harness_session_id,
+        Some("harness-native-thread".to_owned())
     );
 }
