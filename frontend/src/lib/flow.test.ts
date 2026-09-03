@@ -8,6 +8,7 @@ import {
   advance,
   back,
   currentPage,
+  finishLink,
   isFinished,
   linkedAgents,
   pagesFor,
@@ -59,25 +60,20 @@ const ids = (state: FlowState): PageId[] =>
   pagesFor(state).map((page) => page.id);
 
 describe("pagesFor", () => {
-  it("walks the three stages: meet, one page per agent, the compute question", () => {
+  it("walks the three stages: meet, the agents list, the compute question", () => {
     const state = startFlow({ stages: ["meet", "agent", "compute"] });
-    expect(ids(state)).toEqual([
-      "meet",
-      "claude-sign-in",
-      "codex-sign-in",
-      "compute-choice",
-    ]);
+    expect(ids(state)).toEqual(["meet", "agents", "compute-choice"]);
     expect(currentPage(state)).toEqual({ id: "meet" });
   });
 
-  it("covers one stage alone for a flow opened from settings, and one agent when named", () => {
-    expect(ids(startFlow({ stages: ["agent"] }))).toEqual([
-      "claude-sign-in",
-      "codex-sign-in",
-    ]);
+  it("covers one stage alone for a flow opened from settings, and one agent's pages when named", () => {
+    expect(ids(startFlow({ stages: ["agent"] }))).toEqual(["agents"]);
     expect(ids(startFlow({ stages: ["agent"], agents: ["codex"] }))).toEqual([
       "codex-sign-in",
     ]);
+    expect(
+      ids(startFlow({ stages: ["agent"], agents: ["claude_code"] })),
+    ).toEqual(["claude-sign-in"]);
     expect(ids(startFlow({ stages: ["compute"] }))).toEqual(["compute-choice"]);
   });
 
@@ -87,36 +83,31 @@ describe("pagesFor", () => {
     );
   });
 
-  it("never asks which agent: the agent stage links agents, one page each", () => {
-    expect(ids(startFlow({ stages: ["agent"] }))).not.toContain("agent-choice");
+  it("stays one page however many agents there are: only the chosen one's pages follow", () => {
+    const list = startFlow({ stages: ["agent"] });
+    const claude = advance(list, { linking: "claude_code" });
+    expect(ids(claude)).toEqual(["agents", "claude-sign-in"]);
+    expect(currentPage(claude).id).toBe("claude-sign-in");
+    const codex = advance(list, { linking: "codex" });
+    expect(ids(codex)).toEqual(["agents", "codex-sign-in"]);
+    expect(currentPage(back(codex)).id).toBe("agents");
   });
 
   it("adds Claude's paste page only while a sign-in is open", () => {
-    const state = startFlow({ stages: ["agent"] });
-    expect(ids(state)).toEqual(["claude-sign-in", "codex-sign-in"]);
-    const opened = advance(state, { claudeAttempt: ATTEMPT });
-    expect(ids(opened)).toEqual([
-      "claude-sign-in",
-      "claude-paste",
-      "codex-sign-in",
-    ]);
+    const signIn = advance(startFlow({ stages: ["agent"] }), {
+      linking: "claude_code",
+    });
+    const opened = advance(signIn, { claudeAttempt: ATTEMPT });
+    expect(ids(opened)).toEqual(["agents", "claude-sign-in", "claude-paste"]);
     expect(currentPage(opened).id).toBe("claude-paste");
   });
 
-  it("goes straight to Codex when Claude Code is declined, dropping an open sign-in", () => {
-    const opened = advance(startFlow({ stages: ["agent"] }), {
-      claudeAttempt: ATTEMPT,
-    });
-    const declined = advance(back(opened), { claudeAttempt: null });
-    expect(ids(declined)).toEqual(["claude-sign-in", "codex-sign-in"]);
-    expect(currentPage(declined).id).toBe("codex-sign-in");
-  });
-
   it("swaps the sign-in's second page for the API-key page behind the link", () => {
-    const claude = advance(startFlow({ stages: ["agent"] }), {
-      routes: { claude_code: "api-key", codex: "sign-in" },
-    });
-    expect(ids(claude)).toEqual(["claude-sign-in", "api-key", "codex-sign-in"]);
+    const claude = advance(
+      advance(startFlow({ stages: ["agent"] }), { linking: "claude_code" }),
+      { routes: { claude_code: "api-key", codex: "sign-in" } },
+    );
+    expect(ids(claude)).toEqual(["agents", "claude-sign-in", "api-key"]);
     expect(currentPage(claude)).toEqual({
       id: "api-key",
       agent: "claude_code",
@@ -129,28 +120,30 @@ describe("pagesFor", () => {
     expect(currentPage(codex)).toEqual({ id: "api-key", agent: "codex" });
   });
 
-  it("collapses a linked agent to its one page, which is where a link lands after", () => {
-    const opened = advance(startFlow({ stages: ["agent"] }), {
-      claudeAttempt: ATTEMPT,
-    });
-    const linked = advance(opened, { agents: { claude_code: CLAUDE } });
-    expect(ids(linked)).toEqual(["claude-sign-in", "codex-sign-in"]);
-    expect(currentPage(linked).id).toBe("codex-sign-in");
-    expect(currentPage(back(linked)).id).toBe("claude-sign-in");
+  it("returns to the list when an agent links, its pages gone and the list reading Linked", () => {
+    const opened = advance(
+      advance(startFlow({ stages: ["meet", "agent", "compute"] })),
+      { linking: "claude_code" },
+    );
+    const paste = advance(opened, { claudeAttempt: ATTEMPT });
+    expect(currentPage(paste).id).toBe("claude-paste");
+    const linked = finishLink(paste, "claude_code", CLAUDE);
+    expect(ids(linked)).toEqual(["meet", "agents", "compute-choice"]);
+    expect(currentPage(linked).id).toBe("agents");
+    expect(linked.answers.agents.claude_code).toEqual(CLAUDE);
+    expect(linked.answers.linking).toBeNull();
+    expect(linked.answers.claudeAttempt).toBeNull();
   });
 
-  it("finishes the agent stage when the last agent links, with no page after it", () => {
-    const state = startFlow({
-      stages: ["agent"],
-      answers: { agents: { claude_code: CLAUDE } },
+  it("finishes a flow opened for one agent when that agent links", () => {
+    const codex = startFlow({ stages: ["agent"], agents: ["codex"] });
+    expect(isFinished(finishLink(codex, "codex", CODEX))).toBe(true);
+
+    const key = advance(startFlow({ stages: ["agent"], agents: ["codex"] }), {
+      routes: { claude_code: "sign-in", codex: "api-key" },
     });
-    const codexPage = advance(state);
-    expect(currentPage(codexPage).id).toBe("codex-sign-in");
-    expect(
-      isFinished(
-        advance(codexPage, { agents: { claude_code: CLAUDE, codex: CODEX } }),
-      ),
-    ).toBe(true);
+    expect(currentPage(key).id).toBe("api-key");
+    expect(isFinished(finishLink(key, "codex", CODEX))).toBe(true);
   });
 
   it("reads what a readiness read found into the agents answer", () => {
@@ -325,9 +318,10 @@ describe("advance and back", () => {
   });
 
   it("records an answer without moving, and refuses one that removes the page", () => {
-    const opened = advance(startFlow({ stages: ["agent"] }), {
-      claudeAttempt: ATTEMPT,
-    });
+    const opened = advance(
+      advance(startFlow({ stages: ["agent"] }), { linking: "claude_code" }),
+      { claudeAttempt: ATTEMPT },
+    );
     const kept = record(opened, { azurePaste: "kept" });
     expect(currentPage(kept).id).toBe("claude-paste");
     expect(kept.answers.azurePaste).toBe("kept");
@@ -337,9 +331,9 @@ describe("advance and back", () => {
   });
 
   it("can start further in, for a flow that already names the page", () => {
-    const state = startFlow({ stages: ["agent"], position: 1 });
-    expect(currentPage(state).id).toBe("codex-sign-in");
-    expect(() => startFlow({ stages: ["agent"], position: 5 })).toThrow(
+    const state = startFlow({ stages: ["meet", "agent"], position: 1 });
+    expect(currentPage(state).id).toBe("agents");
+    expect(() => startFlow({ stages: ["meet", "agent"], position: 5 })).toThrow(
       /past its 2 pages/,
     );
   });
@@ -349,6 +343,7 @@ describe("progress", () => {
   it("fills each bar with the page position inside its stage", () => {
     const state = advance(
       advance(startFlow({ stages: ["meet", "agent", "compute"] })),
+      { linking: "codex" },
     );
     expect(currentPage(state).id).toBe("codex-sign-in");
     expect(progress(state)).toEqual([

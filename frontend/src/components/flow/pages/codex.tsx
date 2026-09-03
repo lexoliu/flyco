@@ -18,7 +18,6 @@
  */
 import { Show, createSignal, onCleanup, onMount } from "solid-js";
 import CopyButton from "../../CopyButton";
-import Logomark, { HARNESS_MARK } from "../../Logomark";
 import ProblemNotice from "../../ProblemNotice";
 import { useReadiness } from "../../Readiness";
 import { pollCodexOauth, startCodexOauth } from "../../../api/client";
@@ -31,20 +30,13 @@ import {
   type CodexEvent,
   type CodexSignIn as SignIn,
 } from "../../../lib/codexDevice";
-import { HARNESS_LABEL } from "../../../lib/harnesses";
-import { NEXT, type PageComponent, type Primary } from "../page";
-import { ExternalLink, LinkedAgent, QuietLink, Waiting } from "./shared";
+import type { PageComponent, Primary } from "../page";
+import { ExternalLink, QuietLink, Waiting } from "./shared";
 import styles from "./pages.module.css";
 
 export const CodexSignIn: PageComponent<{ id: "codex-sign-in" }> = (props) => {
   const readiness = useReadiness();
   const [signIn, setSignIn] = createSignal<SignIn>(IDLE);
-  const linked = () => props.state().answers.agents.codex;
-  /** The other agent that is linked already, which is what makes Codex optional here. */
-  const otherLinked = () =>
-    Object.entries(props.state().answers.agents).find(
-      ([kind, account]) => kind !== "codex" && account !== undefined,
-    )?.[0] as keyof typeof HARNESS_LABEL | undefined;
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
@@ -79,9 +71,7 @@ export const CodexSignIn: PageComponent<{ id: "codex-sign-in" }> = (props) => {
       if (outcome.state === "linked") {
         transition({ kind: "linked" });
         await readiness.refresh();
-        props.advance({
-          agents: { ...props.state().answers.agents, codex: outcome.account },
-        });
+        props.linked("codex", outcome.account);
         return;
       }
       schedule(transition({ kind: "pending" }), attempt);
@@ -117,12 +107,9 @@ export const CodexSignIn: PageComponent<{ id: "codex-sign-in" }> = (props) => {
 
   // Requested as the page opens: the code *is* the page, and a button whose
   // only job is to reveal the one thing on the screen would be a step
-  // asking the user to confirm they meant to be here. A linked Codex asks
-  // for nothing.
+  // asking the user to confirm they meant to be here.
   onMount(() => {
-    if (linked() === undefined) {
-      void requestCode();
-    }
+    void requestCode();
   });
 
   const waiting = () =>
@@ -135,15 +122,6 @@ export const CodexSignIn: PageComponent<{ id: "codex-sign-in" }> = (props) => {
       : null;
 
   const primary = (): Primary => {
-    if (linked() !== undefined) {
-      return NEXT(() => props.advance());
-    }
-    // With another agent linked, Codex is optional: Next moves on without
-    // it. With nothing linked there is no way past this page but linking
-    // one agent or going back to link Claude Code.
-    if (otherLinked() !== undefined && signIn().step !== "linked") {
-      return NEXT(() => props.advance());
-    }
     switch (signIn().step) {
       case "expired":
         return {
@@ -180,106 +158,78 @@ export const CodexSignIn: PageComponent<{ id: "codex-sign-in" }> = (props) => {
   return {
     title: "Link Codex",
     body: (
-      <Show
-        when={linked()}
-        fallback={
-          <>
-            <Show when={waiting()}>
-              {(active) => (
-                <>
-                  <p class={styles.lede}>
-                    Runs on your ChatGPT subscription. Enter this code on
-                    OpenAI's page; your password never reaches flyco.
-                  </p>
-                  <div class={styles.codeRow}>
-                    <span class={styles.code} aria-label="One-time code">
-                      {active().attempt.userCode}
-                    </span>
-                    <CopyButton
-                      value={active().attempt.userCode}
-                      label="Copy code"
-                      class={styles.pill}
-                    />
-                  </div>
-                  <ExternalLink href={active().attempt.verificationUrl}>
-                    Open auth.openai.com/codex/device
-                  </ExternalLink>
-                  <Waiting>Waiting for you to approve in the browser…</Waiting>
-                </>
-              )}
-            </Show>
-
-            <Show
-              when={signIn().step === "idle" || signIn().step === "starting"}
-            >
+      <>
+        <Show when={waiting()}>
+          {(active) => (
+            <>
               <p class={styles.lede}>
-                Flyco asks OpenAI for a one-time code. Your password never
-                reaches flyco.
+                Runs on your ChatGPT subscription. Enter this code on OpenAI's
+                page; your password never reaches flyco.
               </p>
-              <div
-                class={`${styles.skeleton} ${styles.skeletonCommand}`}
-                aria-label="Asking for a code"
-              />
-            </Show>
-
-            <Show when={signIn().step === "expired"}>
-              <p class={styles.lede}>
-                That code expired before it was approved. Get a new one and try
-                again.
-              </p>
-            </Show>
-
-            <Show when={signIn().step === "blocked"}>
-              <div class={styles.notice}>
-                <p class={styles.hint}>
-                  OpenAI will not start a device sign-in for this account. Turn
-                  on <strong>device code authorization</strong> in your ChatGPT
-                  security settings — on a workspace account a workspace admin
-                  does it — and try again.
-                </p>
-                <ExternalLink href={CHATGPT_SECURITY_SETTINGS_URL}>
-                  Open ChatGPT security settings
-                </ExternalLink>
+              <div class={styles.codeRow}>
+                <span class={styles.code} aria-label="One-time code">
+                  {active().attempt.userCode}
+                </span>
+                <CopyButton
+                  value={active().attempt.userCode}
+                  label="Copy code"
+                  class={styles.pill}
+                />
               </div>
-            </Show>
+              <ExternalLink href={active().attempt.verificationUrl}>
+                Open auth.openai.com/codex/device
+              </ExternalLink>
+              <Waiting>Waiting for you to approve in the browser…</Waiting>
+            </>
+          )}
+        </Show>
 
-            <Show when={failed()}>
-              {(failure) => <ProblemNotice error={failure().error} />}
-            </Show>
+        <Show when={signIn().step === "idle" || signIn().step === "starting"}>
+          <p class={styles.lede}>
+            Flyco asks OpenAI for a one-time code. Your password never reaches
+            flyco.
+          </p>
+          <div
+            class={`${styles.skeleton} ${styles.skeletonCommand}`}
+            aria-label="Asking for a code"
+          />
+        </Show>
 
-            <Show when={otherLinked()}>
-              {(other) => (
-                <p class={styles.hint}>
-                  {HARNESS_LABEL[other()]} is linked already, so Next moves on
-                  without Codex.
-                </p>
-              )}
-            </Show>
-            <QuietLink
-              onClick={() =>
-                props.advance({
-                  routes: { ...props.state().answers.routes, codex: "api-key" },
-                })
-              }
-            >
-              Use an API key instead
-            </QuietLink>
-          </>
-        }
-      >
-        {(account) => (
-          <>
-            <LinkedAgent
-              mark={<Logomark mark={HARNESS_MARK.codex} size={18} />}
-              label={account().label}
-              linkedAtUnix={account().linked_at_unix}
-            />
+        <Show when={signIn().step === "expired"}>
+          <p class={styles.lede}>
+            That code expired before it was approved. Get a new one and try
+            again.
+          </p>
+        </Show>
+
+        <Show when={signIn().step === "blocked"}>
+          <div class={styles.notice}>
             <p class={styles.hint}>
-              Sessions can use it now. Settings › Agents relinks it.
+              OpenAI will not start a device sign-in for this account. Turn on{" "}
+              <strong>device code authorization</strong> in your ChatGPT
+              security settings — on a workspace account a workspace admin does
+              it — and try again.
             </p>
-          </>
-        )}
-      </Show>
+            <ExternalLink href={CHATGPT_SECURITY_SETTINGS_URL}>
+              Open ChatGPT security settings
+            </ExternalLink>
+          </div>
+        </Show>
+
+        <Show when={failed()}>
+          {(failure) => <ProblemNotice error={failure().error} />}
+        </Show>
+
+        <QuietLink
+          onClick={() =>
+            props.advance({
+              routes: { ...props.state().answers.routes, codex: "api-key" },
+            })
+          }
+        >
+          Use an API key instead
+        </QuietLink>
+      </>
     ),
     primary,
   };

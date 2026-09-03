@@ -1,14 +1,14 @@
 /**
  * Stage B's pages against the in-memory control plane (docs/ux.md §4 B).
  *
- * What is asserted is the order things happen in: nothing asks which
- * agent, the paste page does not exist until flyco has an attempt to
- * redeem against, the button that redeems it stays disabled until there is
- * something to redeem, what leaves the browser is the code the user pasted
- * rather than whatever came with it, a link moves straight to the next
- * thing to do rather than to a page saying it linked, and Codex's code is
- * on screen the moment its page is — with every button the page renders
- * answering to a name.
+ * What is asserted is the order things happen in: the stage is one list
+ * whatever the number of agents, nothing on it chooses an agent for good,
+ * an agent's sign-in pages exist only behind its row, a finished link
+ * returns to the list rather than to a page saying it linked, the paste
+ * page does not exist until flyco has an attempt to redeem against, what
+ * leaves the browser is the code the user pasted rather than whatever came
+ * with it, and Codex's code is on screen the moment its page is — with
+ * every button the page renders answering to a name.
  */
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, waitFor } from "@solidjs/testing-library";
@@ -30,6 +30,7 @@ const ATTEMPT = "11111111-2222-4333-8444-555555555555";
 const DEVICE_URL = "https://auth.openai.com/codex/device";
 const CODEX_ATTEMPT = "99999999-8888-4777-8666-555555555555";
 const SETTINGS_URL = "https://chatgpt.com/#settings/Security";
+const LIST = "Link the agents you use";
 
 const CLAUDE: HarnessAccountView = {
   id: "harness-2",
@@ -47,25 +48,126 @@ function isCodexPoll(path: string, method: string): boolean {
   );
 }
 
-describe("Claude Code", () => {
-  it("opens on Link Claude Code, never on a question about which agent", async () => {
-    const { container, findByRole, getByText, queryByText } = renderFlow([
-      "agent",
-    ]);
+describe("the agents list", () => {
+  it("lists every agent with its status, and cannot be passed with nothing linked", async () => {
+    const { container, findByRole, getAllByText, getByRole, queryByText } =
+      renderFlow(["agent"]);
+    await findByRole("heading", { level: 1, name: LIST });
+    expect(getByRole("radio", { name: /^Claude Code/ })).toBeInTheDocument();
+    expect(getByRole("radio", { name: /^Codex/ })).toBeInTheDocument();
+    expect(getAllByText(/^Not linked/)).toHaveLength(2);
+    // Nothing here chooses the agent tasks run on.
+    expect(queryByText(/Which agent should/)).not.toBeInTheDocument();
+    expect(primary(container)).toHaveTextContent("Next");
+    expect(primary(container)).toBeDisabled();
+    expect(primary(container)).toHaveAttribute(
+      "title",
+      "Link at least one agent to continue",
+    );
+    expectEveryButtonNamed(container);
+  });
+
+  it("links the chosen agent on its own pages and comes back to the list, which now reads Linked", async () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
+    const {
+      container,
+      findByRole,
+      findByLabelText,
+      findByText,
+      getByRole,
+      onDone,
+    } = renderFlow(["agent"]);
+    await findByRole("heading", { level: 1, name: LIST });
+
+    fireEvent.click(getByRole("radio", { name: /^Claude Code/ }));
+    await waitFor(() =>
+      expect(primary(container)).toHaveTextContent("Link Claude Code"),
+    );
+    expect(primary(container)).toBeEnabled();
+    fireEvent.click(primary(container));
+
     await findByRole("heading", { level: 1, name: "Link Claude Code" });
-    expect(queryByText(/Which agent/)).not.toBeInTheDocument();
+    fireEvent.click(primary(container));
+    type(await findByLabelText("Code from Anthropic"), "ac_the-code#the-state");
+    await waitFor(() => expect(primary(container)).toBeEnabled());
+    fireEvent.click(primary(container));
+
+    // Back on the list, not on a page saying it linked.
+    await findByRole("heading", { level: 1, name: LIST });
+    expect(await findByText(/^Linked · /)).toBeInTheDocument();
+    expect(getByRole("radio", { name: /^Codex/ })).toHaveTextContent(
+      /Not linked/,
+    );
+    expect(primary(container)).toHaveTextContent("Next");
+    expect(primary(container)).toBeEnabled();
+
+    fireEvent.click(primary(container));
+    expect(onDone).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the chosen agent when Back leaves its sign-in page", async () => {
+    const { container, findByRole, getByRole } = renderFlow(["agent"]);
+    await findByRole("heading", { level: 1, name: LIST });
+
+    fireEvent.click(getByRole("radio", { name: /^Codex/ }));
+    await waitFor(() =>
+      expect(primary(container)).toHaveTextContent("Link Codex"),
+    );
+    fireEvent.click(primary(container));
+    await findByRole("heading", { level: 1, name: "Link Codex" });
+
+    fireEvent.click(getByRole("button", { name: "Back" }));
+    await findByRole("heading", { level: 1, name: LIST });
+    expect(getByRole("radio", { name: /^Codex/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(primary(container)).toHaveTextContent("Link Codex");
+  });
+
+  it("shows what was linked before the flow opened, and choosing it changes nothing", async () => {
+    const { container, findByRole, findByText, getByRole } = renderFlow(
+      ["agent"],
+      { answers: { agents: { claude_code: CLAUDE } } },
+    );
+    await findByRole("heading", { level: 1, name: LIST });
+    expect(await findByText("Linked · me@lexo.cool")).toBeInTheDocument();
+    expect(primary(container)).toHaveTextContent("Next");
+    expect(primary(container)).toBeEnabled();
+
+    fireEvent.click(getByRole("radio", { name: /^Claude Code/ }));
+    await waitFor(() => expect(primary(container)).toHaveTextContent("Next"));
+    expect(primary(container)).toBeEnabled();
+  });
+
+  it("asks OpenAI for nothing while Codex is only listed", async () => {
+    const start = vi.fn();
+    route(
+      (path, method) =>
+        method === "POST" && path === "/v1/harness-accounts/codex/oauth/start",
+      () => {
+        start();
+        return problem(500, "unexpected", "should not be asked");
+      },
+    );
+    const { findByRole, getByRole } = renderFlow(["agent"]);
+    await findByRole("heading", { level: 1, name: LIST });
+    fireEvent.click(getByRole("radio", { name: /^Codex/ }));
+    expect(start).not.toHaveBeenCalled();
+  });
+});
+
+describe("Claude Code, opened for it alone", () => {
+  it("opens on its sign-in page and finishes when the pasted code links", async () => {
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    const { container, findByRole, findByLabelText, getByText, onDone } =
+      renderFlow(["agent"], { agents: ["claude_code"] });
+    await findByRole("heading", { level: 1, name: "Link Claude Code" });
     expect(
       getByText("Runs on your Claude subscription.", { exact: false }),
     ).toBeInTheDocument();
     expect(primary(container)).toHaveTextContent("Sign in with Claude");
     expectEveryButtonNamed(container);
-  });
-
-  it("walks from the sign-in page to a pasted code straight to Link Codex", async () => {
-    const opened = vi.spyOn(window, "open").mockReturnValue(null);
-    const { container, findByRole, findByLabelText, getByText, queryByRole } =
-      renderFlow(["agent"]);
-    await findByRole("heading", { level: 1, name: "Link Claude Code" });
     // The paste page is not reachable before there is an attempt to redeem into.
     expect(document.querySelector("#claude-oauth-code")).toBeNull();
 
@@ -93,11 +195,7 @@ describe("Claude Code", () => {
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
-    // No "is linked" page: the next thing to do is the next page.
-    await findByRole("heading", { level: 1, name: "Link Codex" });
-    expect(
-      queryByRole("heading", { name: /is linked/ }),
-    ).not.toBeInTheDocument();
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(postedTo("/v1/harness-accounts/claude/oauth/complete")).toEqual({
       attempt_id: ATTEMPT,
       code: "ac_the-code#the-state",
@@ -105,7 +203,10 @@ describe("Claude Code", () => {
   });
 
   it("redeems a bare code, and sends it tidied", async () => {
-    const { container, findByRole, findByLabelText } = renderFlow(["agent"]);
+    const { container, findByRole, findByLabelText, onDone } = renderFlow(
+      ["agent"],
+      { agents: ["claude_code"] },
+    );
     await findByRole("heading", { level: 1, name: "Link Claude Code" });
     fireEvent.click(primary(container));
 
@@ -113,7 +214,7 @@ describe("Claude Code", () => {
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
-    await findByRole("heading", { level: 1, name: "Link Codex" });
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(postedTo("/v1/harness-accounts/claude/oauth/complete")).toEqual({
       attempt_id: ATTEMPT,
       code: "ac_the-code",
@@ -127,9 +228,10 @@ describe("Claude Code", () => {
         path === "/v1/harness-accounts/claude/oauth/complete",
       () => problem(400, "invalid-code", "Anthropic did not accept that code."),
     );
-    const { container, findByRole, findByLabelText, getByRole } = renderFlow([
-      "agent",
-    ]);
+    const { container, findByRole, findByLabelText, getByRole } = renderFlow(
+      ["agent"],
+      { agents: ["claude_code"] },
+    );
     await findByRole("heading", { level: 1, name: "Link Claude Code" });
     fireEvent.click(primary(container));
 
@@ -148,24 +250,9 @@ describe("Claude Code", () => {
     ).toBeInTheDocument();
   });
 
-  it("moves on to Codex by the quiet link for someone who does not use Claude Code", async () => {
-    const { container, findByRole, getByRole } = renderFlow(["agent"]);
-    await findByRole("heading", { level: 1, name: "Link Claude Code" });
-
-    fireEvent.click(getByRole("button", { name: "I don't use Claude Code" }));
-    await findByRole("heading", { level: 1, name: "Link Codex" });
-    // Nothing is linked, so Codex cannot be passed without linking it.
-    expect(primary(container)).toHaveTextContent("Next");
-    expect(primary(container)).toBeDisabled();
-
-    fireEvent.click(getByRole("button", { name: "Back" }));
-    await findByRole("heading", { level: 1, name: "Link Claude Code" });
-  });
-
   it("leads by link to the API-key page, which links with an Anthropic key", async () => {
-    const { container, findByRole, findByLabelText, getByRole } = renderFlow([
-      "agent",
-    ]);
+    const { container, findByRole, findByLabelText, getByRole, onDone } =
+      renderFlow(["agent"], { agents: ["claude_code"] });
     await findByRole("heading", { level: 1, name: "Link Claude Code" });
 
     fireEvent.click(getByRole("button", { name: "Use an API key instead" }));
@@ -187,7 +274,7 @@ describe("Claude Code", () => {
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
-    await findByRole("heading", { level: 1, name: "Link Codex" });
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(postedTo("/v1/harness-accounts")).toEqual({
       label: "Anthropic API key",
       credential: {
@@ -198,8 +285,14 @@ describe("Claude Code", () => {
   });
 
   it("takes a setup token in the same field, and names both forms for anything else", async () => {
-    const { container, findByRole, findByLabelText, findByText, getByRole } =
-      renderFlow(["agent"]);
+    const {
+      container,
+      findByRole,
+      findByLabelText,
+      findByText,
+      getByRole,
+      onDone,
+    } = renderFlow(["agent"], { agents: ["claude_code"] });
     await findByRole("heading", { level: 1, name: "Link Claude Code" });
     fireEvent.click(getByRole("button", { name: "Use an API key instead" }));
     const field = await findByLabelText("Anthropic API key");
@@ -220,7 +313,7 @@ describe("Claude Code", () => {
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
-    await findByRole("heading", { level: 1, name: "Link Codex" });
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(postedTo("/v1/harness-accounts")).toEqual({
       label: "Claude subscription",
       credential: {
@@ -229,29 +322,9 @@ describe("Claude Code", () => {
       },
     });
   });
-
-  it("shows an agent that is linked already as linked, with nothing to do but Next", async () => {
-    const { container, findByRole, findByText, queryByRole } = renderFlow(
-      ["agent"],
-      {
-        answers: { agents: { claude_code: CLAUDE } },
-      },
-    );
-    await findByRole("heading", { level: 1, name: "Link Claude Code" });
-    expect(await findByText("me@lexo.cool")).toBeInTheDocument();
-    expect(await findByText(/^Linked /)).toBeInTheDocument();
-    expect(
-      queryByRole("button", { name: "Use an API key instead" }),
-    ).not.toBeInTheDocument();
-    expect(primary(container)).toHaveTextContent("Next");
-    expect(primary(container)).toBeEnabled();
-
-    fireEvent.click(primary(container));
-    await findByRole("heading", { level: 1, name: "Link Codex" });
-  });
 });
 
-describe("Codex", () => {
+describe("Codex, opened for it alone", () => {
   it("shows the code as the page opens, the page it is typed on, and that it is waiting", async () => {
     const opened = vi.spyOn(window, "open").mockReturnValue(null);
     const { container, findByRole, findByText, findByLabelText, getByRole } =
@@ -279,25 +352,6 @@ describe("Codex", () => {
       "Approve the code in the browser to continue",
     );
     expectEveryButtonNamed(container);
-  });
-
-  it("is optional once another agent is linked: Next moves on, and says so", async () => {
-    const { container, findByRole, findByText, onDone } = renderFlow(
-      ["agent"],
-      {
-        agents: ["codex"],
-        answers: { agents: { claude_code: CLAUDE } },
-      },
-    );
-    await findByRole("heading", { level: 1, name: "Link Codex" });
-    expect(
-      await findByText(/Claude Code is linked already/),
-    ).toBeInTheDocument();
-    await waitFor(() => expect(primary(container)).toBeEnabled());
-    expect(primary(container)).toHaveTextContent("Next");
-
-    fireEvent.click(primary(container));
-    expect(onDone).toHaveBeenCalledOnce();
   });
 
   it("finishes the stage by itself when a poll finds the code approved", async () => {
@@ -388,28 +442,5 @@ describe("Codex", () => {
       label: "OpenAI API key",
       credential: { kind: "codex_api_key", key: "sk-proj-a-real-looking-key" },
     });
-  });
-
-  it("shows a linked Codex as linked and asks OpenAI for nothing", async () => {
-    const start = vi.fn();
-    route(
-      (path, method) =>
-        method === "POST" && path === "/v1/harness-accounts/codex/oauth/start",
-      () => {
-        start();
-        return problem(500, "unexpected", "should not be asked");
-      },
-    );
-    const { container, findByRole, findByText } = renderFlow(["agent"], {
-      agents: ["codex"],
-      answers: {
-        agents: { codex: { ...CLAUDE, id: "harness-3", harness: "codex" } },
-      },
-    });
-    await findByRole("heading", { level: 1, name: "Link Codex" });
-    expect(await findByText(/^Linked /)).toBeInTheDocument();
-    expect(primary(container)).toHaveTextContent("Next");
-    expect(primary(container)).toBeEnabled();
-    expect(start).not.toHaveBeenCalled();
   });
 });
