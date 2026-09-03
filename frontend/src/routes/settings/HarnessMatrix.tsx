@@ -7,7 +7,8 @@
  * what they see first, and the capability table is one click away when they
  * want to know why something is missing.
  */
-import { For, createResource } from "solid-js";
+import { For } from "solid-js";
+import { createQuery } from "../../lib/query";
 import ProblemNotice from "../../components/ProblemNotice";
 import { listHarnessFeatures, type Availability, type Feature } from "../../api/client";
 import styles from "./Settings.module.css";
@@ -45,7 +46,7 @@ const AVAILABILITY_LABEL: Record<Availability, string> = {
 };
 
 export default function HarnessMatrix() {
-  const [rows] = createResource(listHarnessFeatures);
+  const [rows] = createQuery(listHarnessFeatures);
 
   return (
     <>

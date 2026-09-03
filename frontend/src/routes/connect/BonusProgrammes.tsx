@@ -11,7 +11,8 @@
  * Continuing without signing up is always available. This is an offer, not a
  * gate.
  */
-import { For, Show, createResource, createSignal } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
+import { createQuery } from "../../lib/query";
 import { ArrowRight, ExternalLink } from "lucide-solid";
 import ProblemNotice from "../../components/ProblemNotice";
 import YesNo from "../../components/YesNo";
@@ -39,7 +40,7 @@ export default function BonusProgrammes(props: BonusProgrammesProps) {
       : { new_to_provider: newcomer, is_student: student };
   };
 
-  const [hints] = createResource(answers, providerQuickstart);
+  const [hints] = createQuery(answers, providerQuickstart);
 
   const matching = () =>
     (hints() ?? []).filter((hint) => hint.provider === props.provider);

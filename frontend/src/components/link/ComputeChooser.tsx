@@ -13,10 +13,12 @@
  * machine the user owns: that machine is *enrolled* rather than dialled, and
  * its wizard is one command and a wait rather than a form.
  */
-import { For, Match, Show, Switch, createMemo, createResource, createSignal } from "solid-js";
+import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
+import { createQuery } from "../../lib/query";
 import { A } from "@solidjs/router";
 import { ArrowLeft, ChevronRight, Server } from "lucide-solid";
 import ComputeCard from "../ComputeCard";
+import ProblemNotice from "../ProblemNotice";
 import Logomark, { AWS_MARK, AZURE_MARK, GOOGLE_CLOUD_MARK, type Mark } from "../Logomark";
 import { useReadiness } from "../Readiness";
 import HostWizard from "./HostWizard";
@@ -85,7 +87,7 @@ export interface ComputeChooserProps {
 
 export default function ComputeChooser(props: ComputeChooserProps) {
   const readiness = useReadiness();
-  const [usage, { refetch: refetchUsage }] = createResource(() => listCloudUsage());
+  const [usage, { refetch: refetchUsage }] = createQuery(() => listCloudUsage());
   const [stage, setStage] = createSignal<Stage>({ at: "choosing" });
   const [linking, setLinking] = createSignal(false);
   const [error, setError] = createSignal<unknown>(null);
@@ -141,6 +143,9 @@ export default function ComputeChooser(props: ComputeChooserProps) {
 
   return (
     <div class={styles.chooserRoot}>
+      {/* Spend per account is secondary to linking one, so a failed usage
+          request is a line above the cards rather than an empty chooser. */}
+      <ProblemNotice error={usage.error} />
       <Show when={linked()}>
         {(account) => (
           <div class={styles.stage}>

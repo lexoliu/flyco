@@ -11,7 +11,8 @@
  * prerequisites are present. A disabled button that does not say why is a
  * dead end, so the tooltip names the missing one.
  */
-import { For, Show, createMemo, createResource, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
+import { createQuery } from "../lib/query";
 import { A } from "@solidjs/router";
 import {
   AlertTriangle,
@@ -91,7 +92,7 @@ export default function Composer(props: ComposerProps) {
   // components/Readiness.tsx): with no account there is no catalog to merge
   // and no default to name, so asking produces an error whose only possible
   // rendering is "link an account" — which the chip already says.
-  const [automatic] = createResource(
+  const [automatic] = createQuery(
     () => (readiness.compute().length > 0 ? spot() : undefined),
     (wanted: boolean) => getDefaultMachine(wanted),
   );
@@ -99,7 +100,7 @@ export default function Composer(props: ComposerProps) {
   // disclosure offers architecture and OS, and curation groups by both — so
   // filtering here is exactly what filtering on the server would have done,
   // one request instead of one per combination.
-  const [catalog] = createResource(
+  const [catalog] = createQuery(
     () => (readiness.compute().length > 0 ? true : undefined),
     () => getMachineCatalog(),
   );
@@ -218,6 +219,7 @@ export default function Composer(props: ComposerProps) {
             automatic={automatic()}
             entry={chosen()}
             catalog={catalog() ?? []}
+            error={catalog.error ?? automatic.error}
             chosenKey={chosenKey()}
             spot={spot()}
             onChoose={setChosenKey}
@@ -288,6 +290,8 @@ function ComputeChip(props: {
   automatic: MachineDefault | undefined;
   entry: MachineCatalogEntry | undefined;
   catalog: MachineCatalogEntry[];
+  /** Why the catalog or the automatic pick is missing, when either failed. */
+  error: unknown;
   chosenKey: string | null;
   spot: boolean;
   onChoose: (key: string | null) => void;
@@ -352,6 +356,10 @@ function ComputeChip(props: {
       >
         {() => (
           <div class={styles.popover}>
+            {/* The slider has nothing to offer when the catalog never
+                arrived, so the popover says that instead of showing an
+                empty track with no explanation. */}
+            <ProblemNotice error={props.error} />
             <MachineSlider
               catalog={props.catalog}
               accounts={props.accounts}
@@ -378,7 +386,7 @@ function ComputeChip(props: {
 /** Which repository the agent works in. */
 function RepoChip(props: { slug: string | null; onChoose: (slug: string) => void }) {
   const [query, setQuery] = createSignal("");
-  const [results] = createResource(query, listRepos);
+  const [results] = createQuery(query, listRepos);
   const recents = createMemo(() => recentRepos().slice(0, MAX_RECENT_REPOS));
 
   /**
@@ -491,7 +499,7 @@ function BranchChip(props: {
   // Keyed on the repository *and* on the chip having been opened at least
   // once, so browsing one repository's branches is not a request made for
   // every repository the user clicks past on the way to it.
-  const [page] = createResource(
+  const [page] = createQuery(
     () => (browsed() && props.slug !== null ? props.slug : undefined),
     (slug: string) => listBranches(slug),
   );

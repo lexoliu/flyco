@@ -11,7 +11,8 @@
  * approval. So each pending request is rendered as a diff of the document
  * the user has against the document they would get.
  */
-import { For, Show, createMemo, createResource, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
+import { createQuery } from "../../lib/query";
 import ProblemNotice from "../../components/ProblemNotice";
 import DiffView from "../../components/DiffView";
 import MemoryOutliner from "./MemoryOutliner";
@@ -27,7 +28,7 @@ import { relativeTime } from "../../lib/relativeTime";
 import styles from "./Settings.module.css";
 
 export default function InstructionsSection() {
-  const [doc, { refetch: refetchDoc }] = createResource(getAgentsMd);
+  const [doc, { refetch: refetchDoc }] = createQuery(getAgentsMd);
   const [draft, setDraft] = createSignal("");
   const [loadedAt, setLoadedAt] = createSignal<number | null>(null);
   const [saving, setSaving] = createSignal(false);
@@ -119,7 +120,7 @@ export default function InstructionsSection() {
 
 /** An `agents_md_change` approval, as a diff the user can actually judge. */
 function AgentsMdApprovals(props: { content: string | undefined; onApplied: () => void }) {
-  const [approvals, { refetch }] = createResource(() => listApprovals({ state: "pending" }));
+  const [approvals, { refetch }] = createQuery(() => listApprovals({ state: "pending" }));
   const [busy, setBusy] = createSignal<string | null>(null);
   const [error, setError] = createSignal<unknown>(null);
 
@@ -147,7 +148,10 @@ function AgentsMdApprovals(props: { content: string | undefined; onApplied: () =
   }
 
   return (
-    <Show when={changes().length > 0}>
+    // The block is the pending changes, plus the reason there are none on
+    // screen when asking for them failed: gating it on the list alone would
+    // hide the notice inside it in exactly the case it exists for.
+    <Show when={changes().length > 0 || approvals.error !== undefined}>
       <div class={styles.group}>
         <p class={styles.groupLabel}>Changes agents have asked for</p>
         <ProblemNotice error={approvals.error ?? error()} />

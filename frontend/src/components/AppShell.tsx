@@ -3,13 +3,14 @@ import {
   Show,
   createEffect,
   createMemo,
-  createResource,
   createSignal,
   onCleanup,
 } from "solid-js";
+import { createQuery } from "../lib/query";
 import { A, Navigate, useLocation, useNavigate } from "@solidjs/router";
 import { Check, LogOut, Monitor, Moon, Sun } from "lucide-solid";
 import Popover from "./Popover";
+import ProblemNotice from "./ProblemNotice";
 import { ReadinessProvider } from "./Readiness";
 import { getMe } from "../api/client";
 import { isSignedIn, onSessionChanged } from "../lib/session";
@@ -98,7 +99,7 @@ export default function AppShell(props: { children?: JSX.Element }) {
  * rather than as two more buttons competing with `Sessions`.
  */
 function AccountMenu(props: { onSignOut: () => void }) {
-  const [me] = createResource(getMe);
+  const [me] = createQuery(getMe);
   const [theme, setPreference] = createSignal<ThemePreference>(readStoredThemePreference());
   const initials = createMemo(() => {
     const login = me()?.login;
@@ -133,6 +134,10 @@ function AccountMenu(props: { onSignOut: () => void }) {
     >
       {(close) => (
         <>
+          {/* The shell renders on every route, so a failed `GET /v1/me` must
+              cost the identity line and nothing else; the menu says what went
+              wrong where the name would have been. */}
+          <ProblemNotice error={me.error} />
           <Show when={me()}>
             {(user) => (
               <p class={styles.menuIdentity}>

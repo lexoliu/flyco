@@ -11,7 +11,8 @@
  * wrong, and a tree that quietly omitted them would be lying about the
  * disk.
  */
-import { For, Show, createResource, createSignal } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
+import { createQuery } from "../lib/query";
 import { ChevronRight, File, Folder } from "lucide-solid";
 
 import ProblemNotice from "./ProblemNotice";
@@ -34,7 +35,7 @@ export interface FileTreeProps {
 export default function FileTree(props: FileTreeProps) {
   const path = () => props.path ?? "";
   const depth = () => props.depth ?? 0;
-  const [listing] = createResource(
+  const [listing] = createQuery(
     () => ({ session: props.sessionId, path: path() }),
     (key) => listSessionFiles(key.session, key.path),
   );

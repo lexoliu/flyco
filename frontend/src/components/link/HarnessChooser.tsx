@@ -21,11 +21,11 @@ import {
   Match,
   Show,
   Switch,
-  createResource,
   createSignal,
   onCleanup,
   type JSX,
 } from "solid-js";
+import { createQuery } from "../../lib/query";
 import { ArrowUpRight, Check, Copy } from "lucide-solid";
 import Logomark, { HARNESS_MARK } from "../Logomark";
 import Disclosure from "../Disclosure";
@@ -90,7 +90,7 @@ export interface HarnessChooserProps {
  */
 export default function HarnessChooser(props: HarnessChooserProps) {
   const readiness = useReadiness();
-  const [usage] = createResource(listLlmUsage);
+  const [usage] = createQuery(listLlmUsage);
   const [open, setOpen] = createSignal<HarnessKind | null>(null);
 
   const accountFor = (kind: HarnessKind): HarnessAccountView | undefined =>
@@ -102,73 +102,79 @@ export default function HarnessChooser(props: HarnessChooserProps) {
   }
 
   return (
-    <div class={styles.cards}>
-      <For each={HARNESSES}>
-        {(harness) => {
-          const account = () => accountFor(harness.kind);
-          const expanded = () => open() === harness.kind;
-          return (
-            <article class={cx(styles.card, expanded() && styles.cardOpen)}>
-              <div class={styles.head}>
-                <span class={styles.mark}>
-                  <Logomark mark={HARNESS_MARK[harness.kind]} size={17} />
-                </span>
-                <div class={styles.identity}>
-                  <span class={styles.title}>{harness.label}</span>
-                  <span class={styles.meta}>{account()?.label ?? harness.runsOn}</span>
+    <>
+      {/* Usage is what a linked account has spent, secondary to whether it is
+          linked at all — so its failure is a line above the cards rather than
+          anything that stops them rendering. */}
+      <ProblemNotice error={usage.error} />
+      <div class={styles.cards}>
+        <For each={HARNESSES}>
+          {(harness) => {
+            const account = () => accountFor(harness.kind);
+            const expanded = () => open() === harness.kind;
+            return (
+              <article class={cx(styles.card, expanded() && styles.cardOpen)}>
+                <div class={styles.head}>
+                  <span class={styles.mark}>
+                    <Logomark mark={HARNESS_MARK[harness.kind]} size={17} />
+                  </span>
+                  <div class={styles.identity}>
+                    <span class={styles.title}>{harness.label}</span>
+                    <span class={styles.meta}>{account()?.label ?? harness.runsOn}</span>
+                  </div>
+                  <span class={cx(styles.status, account() !== undefined && styles.statusOn)}>
+                    {account() === undefined ? "Not linked" : "Linked"}
+                  </span>
                 </div>
-                <span class={cx(styles.status, account() !== undefined && styles.statusOn)}>
-                  {account() === undefined ? "Not linked" : "Linked"}
-                </span>
-              </div>
 
-              <Show when={account()}>
-                {(linked) => (
-                  <div class={styles.linked}>
-                    <p class={styles.meta}>
-                      Linked {formatDate(linked().linked_at_unix)}
+                <Show when={account()}>
+                  {(linked) => (
+                    <div class={styles.linked}>
+                      <p class={styles.meta}>
+                        Linked {formatDate(linked().linked_at_unix)}
+                        <Show when={linked().expires_at_unix}>
+                          {(expires) => <> · expires {formatDate(expires())}</>}
+                        </Show>
+                      </p>
+                      {/* A grant with an end is renewed before a session is
+                          given it, so the date above is a fact rather than a
+                          deadline the user has to act on. */}
                       <Show when={linked().expires_at_unix}>
-                        {(expires) => <> · expires {formatDate(expires())}</>}
+                        <p class={styles.faint}>Renewed automatically before a session uses it.</p>
                       </Show>
-                    </p>
-                    {/* A grant with an end is renewed before a session is
-                        given it, so the date above is a fact rather than a
-                        deadline the user has to act on. */}
-                    <Show when={linked().expires_at_unix}>
-                      <p class={styles.faint}>Renewed automatically before a session uses it.</p>
-                    </Show>
-                    <HarnessUsage row={usage()?.find((row) => row.account === linked().id)} />
-                  </div>
-                )}
-              </Show>
+                      <HarnessUsage row={usage()?.find((row) => row.account === linked().id)} />
+                    </div>
+                  )}
+                </Show>
 
-              <Show
-                when={expanded()}
-                fallback={
-                  <div class={styles.actions}>
-                    <button
-                      type="button"
-                      class={account() === undefined ? styles.pillPrimary : styles.pill}
-                      onClick={() => setOpen(harness.kind)}
-                    >
-                      {account() === undefined
-                        ? `Connect ${harness.label}`
-                        : `Reconnect ${harness.label}`}
-                    </button>
-                  </div>
-                }
-              >
-                <HarnessConnect
-                  harness={harness.kind}
-                  onLinked={() => void onLinked()}
-                  onCancel={() => setOpen(null)}
-                />
-              </Show>
-            </article>
-          );
-        }}
-      </For>
-    </div>
+                <Show
+                  when={expanded()}
+                  fallback={
+                    <div class={styles.actions}>
+                      <button
+                        type="button"
+                        class={account() === undefined ? styles.pillPrimary : styles.pill}
+                        onClick={() => setOpen(harness.kind)}
+                      >
+                        {account() === undefined
+                          ? `Connect ${harness.label}`
+                          : `Reconnect ${harness.label}`}
+                      </button>
+                    </div>
+                  }
+                >
+                  <HarnessConnect
+                    harness={harness.kind}
+                    onLinked={() => void onLinked()}
+                    onCancel={() => setOpen(null)}
+                  />
+                </Show>
+              </article>
+            );
+          }}
+        </For>
+      </div>
+    </>
   );
 }
 

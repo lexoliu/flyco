@@ -10,7 +10,8 @@
  * an agent in this app, and this is a third place it is shown, not a third
  * copy of it.
  */
-import { For, Show, createResource, createSignal } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
+import { createQuery } from "../../lib/query";
 import Logomark, { HARNESS_MARK } from "../../components/Logomark";
 import { HarnessConnect } from "../../components/link/HarnessChooser";
 import ProblemNotice from "../../components/ProblemNotice";
@@ -39,7 +40,7 @@ const HARNESSES: readonly { kind: HarnessKind; label: string; runsOn: string }[]
 
 export default function AgentsSection() {
   const readiness = useReadiness();
-  const [usage] = createResource(listLlmUsage);
+  const [usage] = createQuery(listLlmUsage);
   const [linking, setLinking] = createSignal<HarnessKind | null>(null);
   const [actionError, setActionError] = createSignal<unknown>(null);
 
@@ -71,7 +72,7 @@ export default function AgentsSection() {
         </p>
       </header>
 
-      <ProblemNotice error={readiness.error() ?? actionError()} />
+      <ProblemNotice error={readiness.error() ?? usage.error ?? actionError()} />
 
       <div class={cx(styles.cards, styles.cardsPaired)}>
         <For each={HARNESSES}>

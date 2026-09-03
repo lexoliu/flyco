@@ -13,7 +13,8 @@
  * screen can never disagree about what happened.
  */
 import { useParams } from "@solidjs/router";
-import { Match, Show, Switch, createMemo, createResource, createSignal, onCleanup } from "solid-js";
+import { Match, Show, Switch, createMemo, createSignal, onCleanup } from "solid-js";
+import { createQuery } from "../lib/query";
 import { AlertTriangle } from "lucide-solid";
 import ProblemNotice from "../components/ProblemNotice";
 import SessionComposer, { type SessionCommand } from "../components/SessionComposer";
@@ -52,11 +53,11 @@ const TICK_MS = 1000;
 
 export default function SessionDetail() {
   const params = useParams<{ id: string }>();
-  const [session, { refetch: refetchSession, mutate: mutateSession }] = createResource(
+  const [session, { refetch: refetchSession, mutate: mutateSession }] = createQuery(
     () => params.id,
     getSession,
   );
-  const [machine, { refetch: refetchMachine }] = createResource(
+  const [machine, { refetch: refetchMachine }] = createQuery(
     () => params.id,
     getSessionMachine,
   );
@@ -300,7 +301,7 @@ export default function SessionDetail() {
         onOpenPanel={(panel) => setPanelRequest({ panel, at: Date.now() })}
       />
 
-      <ProblemNotice error={session.error} />
+      <ProblemNotice error={session.error ?? machine.error} />
       <ProblemNotice error={error()} />
 
       <Show when={session()?.failure}>

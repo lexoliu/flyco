@@ -14,7 +14,8 @@
  * a review, and rendering one costs the browser more than the reader got
  * out of it — so the count is stated and the reader decides.
  */
-import { For, Show, createMemo, createResource, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
+import { createQuery } from "../lib/query";
 import { ChevronRight } from "lucide-solid";
 
 import DiffView from "./DiffView";
@@ -40,7 +41,7 @@ export interface DiffPanelProps {
 }
 
 export default function DiffPanel(props: DiffPanelProps) {
-  const [diff] = createResource(() => props.sessionId, getSessionDiff);
+  const [diff] = createQuery(() => props.sessionId, getSessionDiff);
 
   return (
     <section class={styles.panel} aria-label="Diff">

@@ -16,9 +16,9 @@ import {
   type JSX,
   createContext,
   createMemo,
-  createResource,
   useContext,
 } from "solid-js";
+import { createQuery } from "../lib/query";
 import {
   listHarnessAccounts,
   listProviders,
@@ -60,8 +60,8 @@ export interface ReadinessProviderProps {
 
 export function ReadinessProvider(props: ReadinessProviderProps) {
   const when = () => (props.enabled() ? true : undefined);
-  const [harness, harnessActions] = createResource(when, listHarnessAccounts);
-  const [compute, computeActions] = createResource(when, listProviders);
+  const [harness, harnessActions] = createQuery(when, listHarnessAccounts);
+  const [compute, computeActions] = createQuery(when, listProviders);
 
   const value: Readiness = {
     harness: () => harness() ?? [],

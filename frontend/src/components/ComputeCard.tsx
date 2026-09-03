@@ -20,7 +20,8 @@
  * frame of its own would make one machine look like a different kind of
  * thing from the account beside it.
  */
-import { Show, createResource, type JSX } from "solid-js";
+import { Show, type JSX } from "solid-js";
+import { createQuery } from "../lib/query";
 import { Server } from "lucide-solid";
 import Logomark, { PROVIDER_MARK } from "./Logomark";
 import Toggle from "./Toggle";
@@ -102,7 +103,7 @@ export interface ComputeCardProps {
 export default function ComputeCard(props: ComputeCardProps) {
   // Keyed on both, because the machine flyco would pick and the price it
   // would pay both move with the capacity mode.
-  const [machine] = createResource(
+  const [machine] = createQuery(
     () => ({ account: props.account.id, spot: props.spot }),
     ({ account, spot }) => getDefaultMachine(spot, account),
   );

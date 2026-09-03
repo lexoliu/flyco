@@ -1,4 +1,5 @@
-import { For, Show, createResource, createSignal } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
+import { createQuery } from "../lib/query";
 import ProblemNotice from "./ProblemNotice";
 import {
   getMachineCatalog,
@@ -20,8 +21,8 @@ import styles from "./MachinePanel.module.css";
  * one.
  */
 export default function MachinePanel(props: { sessionId: string }) {
-  const [machine, { refetch }] = createResource(() => props.sessionId, getSessionMachine);
-  const [catalog] = createResource(() => getMachineCatalog());
+  const [machine, { refetch }] = createQuery(() => props.sessionId, getSessionMachine);
+  const [catalog] = createQuery(() => getMachineCatalog());
   const [resizing, setResizing] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<unknown>(null);
@@ -77,7 +78,10 @@ export default function MachinePanel(props: { sessionId: string }) {
   return (
     <section class={styles.panel} aria-label="Machine">
       <h2>Machine</h2>
-      <ProblemNotice error={machine.error} />
+      {/* The catalog is what the resize list is built from, so its failure
+          belongs here too: without it the dropdown is empty for a reason the
+          panel would otherwise never give. */}
+      <ProblemNotice error={machine.error ?? catalog.error} />
       <Show when={!machine.loading}>
         <Show when={machine()} fallback={<p class={styles.empty}>No machine provisioned for this session yet.</p>}>
           {(view) => (
