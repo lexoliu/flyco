@@ -26,25 +26,11 @@ import Ring from "./Ring";
 import type { MachineView, SessionDetail } from "../api/client";
 import type { ConnectionState } from "../api/relay";
 import { cx } from "../lib/cx";
-import { formatUsd, usdMicrosToDollars } from "../lib/money";
+import { machineChip, MACHINE_STATE_LABEL } from "../lib/machines";
+import { usdMicrosToDollars } from "../lib/money";
 import { PROVIDER_LABEL } from "../lib/providers";
 import type { StatusView } from "../lib/status";
 import styles from "./SessionHeader.module.css";
-
-/** `Standard_B2s · $0.04/hr · spot`, or nothing while the machine is unknown. */
-function machineChip(machine: MachineView | undefined): string | null {
-  if (machine === undefined) {
-    return null;
-  }
-  const parts = [machine.spec.machine_type];
-  if (machine.hourly !== null && machine.hourly !== undefined) {
-    parts.push(`${formatUsd(machine.hourly)}/hr`);
-  }
-  if (machine.spot) {
-    parts.push("spot");
-  }
-  return parts.join(" · ");
-}
 
 /**
  * What a ring reads while its number is not known.
@@ -263,8 +249,8 @@ export default function SessionHeader(props: SessionHeaderProps) {
           {(label) => <span class={styles.connection}>{label()}</span>}
         </Show>
 
-        <Show when={machineChip(props.machine)}>
-          {(chip) => <span class={styles.machine}>{chip()}</span>}
+        <Show when={props.machine}>
+          {(machine) => <span class={styles.machine}>{machineChip(machine())}</span>}
         </Show>
 
         {/*
@@ -396,7 +382,7 @@ export default function SessionHeader(props: SessionHeaderProps) {
                 {(machine) => (
                   <li class={styles.menuFooter}>
                     {PROVIDER_LABEL[machine().spec.provider]} · {machine().region} ·{" "}
-                    {machine().state}
+                    {MACHINE_STATE_LABEL[machine().state]}
                   </li>
                 )}
               </Show>

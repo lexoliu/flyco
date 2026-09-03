@@ -7,7 +7,7 @@
  * the four facts the slider's label states, and the one sentence a
  * license-bound type has to say before anybody commits to it.
  */
-import type { MachineCatalogEntry } from "../api/client";
+import type { MachineCatalogEntry, MachineState, MachineView } from "../api/client";
 import { formatUsd } from "./money";
 
 /** How many MiB are in a GiB. Catalog capacities are stated in MiB. */
@@ -131,3 +131,49 @@ export const OS_LABEL: Record<MachineCatalogEntry["os"], string> = {
   mac_os: "macOS",
   windows: "Windows",
 };
+
+/**
+ * How a machine's lifecycle state is written where a person reads it.
+ *
+ * The wire words are the control plane's: `deallocated` is a provider's
+ * term for a machine that is off but keeps its disk, and `destroyed` is one
+ * for a machine whose disk has been let go. Neither is what a user calls
+ * it, and both appear on screen — in the header's chip and on the drawer's
+ * machine tab — so they are written out in one place.
+ */
+export const MACHINE_STATE_LABEL: Record<MachineState, string> = {
+  provisioning: "starting",
+  running: "running",
+  deallocated: "stopped",
+  destroyed: "released",
+};
+
+/**
+ * The header's machine chip (docs/ux.md §9.1):
+ * `m7i-flex.xlarge · $0.15/hr · spot`.
+ *
+ * The hourly rate is what a *running* machine costs, so it is quoted only
+ * while one is running: a failed, archived or paused session whose machine
+ * is stopped or released reads `m7i-flex.xlarge · stopped`, because a price
+ * on a machine that is not there is a bill the user is not being sent
+ * (issue #135). `spot` goes with the rate for the same reason — it says
+ * which of two prices this one is.
+ *
+ * A running machine flyco meters nothing on (hardware the user enrolled)
+ * quotes no price either: `$0.00/hr` would read as "this is free", which is
+ * a different claim.
+ */
+export function machineChip(machine: MachineView): string {
+  const parts = [machine.spec.machine_type];
+  if (machine.state !== "running") {
+    parts.push(MACHINE_STATE_LABEL[machine.state]);
+    return parts.join(" · ");
+  }
+  if (machine.hourly !== null && machine.hourly !== undefined) {
+    parts.push(`${formatUsd(machine.hourly)}/hr`);
+  }
+  if (machine.spot) {
+    parts.push("spot");
+  }
+  return parts.join(" · ");
+}

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { render } from "@solidjs/testing-library";
 import { MemoryRouter, Navigate, Route, createMemoryHistory } from "@solidjs/router";
 import AppShell from "../components/AppShell";
@@ -251,6 +251,77 @@ describe("route smoke tests", () => {
     expect(getByRole("button", { name: "Back to sessions" })).toBeInTheDocument();
     expect(queryByText("Reconnecting…")).not.toBeInTheDocument();
     expect(queryByText("Loading")).not.toBeInTheDocument();
+  });
+
+  it("re-reads the machine when the room says the session moved onto another one", async () => {
+    // The header quotes a rate, and a rate for the machine the session used
+    // to be on is a bill nobody is being sent (issue #135). The relay says
+    // the session moved; the page asks the control plane what it moved to.
+    const original = globalThis.WebSocket;
+    const sockets: EventTarget[] = [];
+    class DrivableSocket extends EventTarget {
+      readyState = 1;
+      constructor(readonly url: string) {
+        super();
+        sockets.push(this);
+        queueMicrotask(() => this.dispatchEvent(new Event("open")));
+      }
+      send(): void {
+        /* nothing in this test speaks to the room */
+      }
+      close(): void {
+        this.readyState = 3;
+      }
+    }
+    vi.stubGlobal("WebSocket", DrivableSocket);
+    onTestFinished(() => {
+      vi.stubGlobal("WebSocket", original);
+    });
+
+    const base = vi.mocked(fetch).getMockImplementation();
+    let reads = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      if (!/^\/v1\/sessions\/[^/]+\/machine$/.test(url.pathname)) {
+        return base!(input, init);
+      }
+      reads += 1;
+      const response = await base!(input, init);
+      const machine = (await response.json()) as Record<string, unknown>;
+      // The first read is the machine the session started on; every read
+      // after the move answers with the one it moved to.
+      return new Response(
+        JSON.stringify(
+          reads === 1
+            ? machine
+            : {
+                ...machine,
+                hourly: 163_200,
+                spec: { ...(machine["spec"] as object), machine_type: "m7g.xlarge" },
+              },
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const { findByText } = renderAt("/sessions/abc-123");
+    expect(await findByText("t3.large · $0.04/hr · spot")).toBeInTheDocument();
+
+    await vi.waitFor(() => expect(sockets.length).toBeGreaterThan(0));
+    const socket = sockets[0];
+    socket?.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "machine_changed",
+          machine_type: "m7g.xlarge",
+          hourly: 163_200,
+          spot: true,
+          restarted: true,
+        }),
+      }),
+    );
+
+    expect(await findByText("m7g.xlarge · $0.16/hr · spot")).toBeInTheDocument();
   });
 
   it("keeps the session's side panels behind the collapsed drawer", async () => {

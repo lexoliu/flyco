@@ -13,7 +13,7 @@
  * screen can never disagree about what happened.
  */
 import { useNavigate, useParams } from "@solidjs/router";
-import { Match, Show, Switch, createMemo, createSignal, onCleanup } from "solid-js";
+import { Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import { createQuery } from "../lib/query";
 import { AlertTriangle } from "lucide-solid";
 import { BudgetRaise } from "../components/BudgetPicker";
@@ -70,6 +70,25 @@ export default function SessionDetail() {
   const [now, setNow] = createSignal(Date.now());
   const ticker = setInterval(() => setNow(Date.now()), TICK_MS);
   onCleanup(() => clearInterval(ticker));
+
+  /**
+   * How many times the room has said something that changes the machine.
+   *
+   * The machine is fetched once and would otherwise stay as it was read:
+   * the header would go on quoting a rate for a machine the session was
+   * moved off, or one that was released when the session failed (issue
+   * #135). A `machine_changed` frame says the session moved; a
+   * `session_state_changed` frame says the lifecycle moved, and the machine
+   * follows it into `deallocated` or `destroyed`. Counting them rather than
+   * watching the last one means two changes in a row are two refetches.
+   */
+  const machineNews = createMemo(
+    () =>
+      relay.events().filter(
+        ({ event }) => event.type === "machine_changed" || event.type === "session_state_changed",
+      ).length,
+  );
+  createEffect(on(machineNews, () => void refetchMachine(), { defer: true }));
 
   const transcript = createMemo(() => foldTranscript(relay.events()));
   const waiting = createMemo(() => pendingApprovals(transcript()));
