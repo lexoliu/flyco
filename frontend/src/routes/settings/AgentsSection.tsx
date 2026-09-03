@@ -11,6 +11,7 @@
  * copy of it.
  */
 import { For, Show, createSignal } from "solid-js";
+import { A } from "@solidjs/router";
 import { createQuery } from "../../lib/query";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import Logomark, { HARNESS_MARK } from "../../components/Logomark";
@@ -28,6 +29,7 @@ import {
 } from "../../api/client";
 import { formatDate } from "../../lib/dates";
 import { cx } from "../../lib/cx";
+import { inUseRefusal, sessionsStillRunning, type InUseRefusal } from "../../lib/inUse";
 import styles from "./Settings.module.css";
 
 const HARNESSES: readonly { kind: HarnessKind; label: string; runsOn: string }[] = [
@@ -46,6 +48,8 @@ export default function AgentsSection() {
   const [actionError, setActionError] = createSignal<unknown>(null);
   /** The account whose unlink has been asked about but not yet answered. */
   const [unlinking, setUnlinking] = createSignal<HarnessAccountView | null>(null);
+  /** What a refused unlink said, when sessions still run on the harness. */
+  const [refused, setRefused] = createSignal<InUseRefusal | null>(null);
   const [busy, setBusy] = createSignal(false);
 
   async function unlink(id: HarnessAccountView["id"]): Promise<void> {
@@ -56,10 +60,26 @@ export default function AgentsSection() {
       setUnlinking(null);
       await readiness.refresh();
     } catch (err) {
-      setActionError(err);
+      const inUse = inUseRefusal(err);
+      if (inUse === null) {
+        setActionError(err);
+      } else {
+        // There is no forcing this one: those sessions renew their grant
+        // against this credential, and flyco will not break them because a
+        // button was pressed. The dialog keeps its place and says what ends
+        // the refusal instead (issue #152).
+        setRefused(inUse);
+      }
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Puts the question away, however it was answered. */
+  function stopUnlinking(): void {
+    setUnlinking(null);
+    setRefused(null);
+    setActionError(null);
   }
 
   async function onLinked(): Promise<void> {
@@ -144,17 +164,26 @@ export default function AgentsSection() {
                               >
                                 Relink
                               </button>
-                              <button
-                                type="button"
-                                class={styles.pillDanger}
-                                disabled={busy()}
-                                onClick={() => {
-                                  setActionError(null);
-                                  setUnlinking(account);
-                                }}
-                              >
-                                Unlink
-                              </button>
+                              {/*
+                                Nothing else while the question is up: the
+                                dialog under the card is the one thing being
+                                answered, and a second `Unlink` beside it
+                                would be two buttons with one meaning.
+                              */}
+                              <Show when={unlinking()?.id !== account.id}>
+                                <button
+                                  type="button"
+                                  class={styles.pillDanger}
+                                  disabled={busy()}
+                                  onClick={() => {
+                                    setActionError(null);
+                                    setRefused(null);
+                                    setUnlinking(account);
+                                  }}
+                                >
+                                  Unlink
+                                </button>
+                              </Show>
                             </div>
                           </div>
                           {/*
@@ -168,20 +197,38 @@ export default function AgentsSection() {
                             <ConfirmDialog
                               title={`Unlink ${account.label}?`}
                               body={
-                                <>
-                                  Flyco forgets this credential and no new session can run{" "}
-                                  {harness.label} on it. A session already running keeps going
-                                  until its token needs refreshing, which flyco can no longer do.
-                                  Signing in again links it back.
-                                </>
+                                <Show
+                                  when={refused()}
+                                  fallback={
+                                    <>
+                                      Flyco forgets this credential and no new session can run{" "}
+                                      {harness.label} on it. Signing in again links it back.
+                                    </>
+                                  }
+                                >
+                                  {(inUse) => (
+                                    <>
+                                      {sessionsStillRunning(inUse())} They renew their{" "}
+                                      {harness.label} token against this credential and would stop
+                                      the moment it expired, so archive them first.
+                                    </>
+                                  )}
+                                </Show>
                               }
                               confirmLabel="Unlink"
-                              cancelLabel="Keep it"
+                              cancelLabel={refused() === null ? "Keep it" : "Close"}
                               busy={busy()}
-                              onConfirm={() => void unlink(account.id)}
-                              onCancel={() => setUnlinking(null)}
+                              {...(refused() === null
+                                ? { onConfirm: () => void unlink(account.id) }
+                                : {})}
+                              onCancel={stopUnlinking}
                             >
                               <ProblemNotice error={actionError()} />
+                              <Show when={refused()}>
+                                <A href="/" class={styles.sessionsLink}>
+                                  Go to Sessions
+                                </A>
+                              </Show>
                             </ConfirmDialog>
                           </Show>
                           <HarnessUsage row={usage()?.find((row) => row.account === account.id)} />

@@ -188,6 +188,7 @@ describe("ComputeCard", () => {
       title: "Conflict",
       status: 409,
       detail: "2 session(s) still run on this account; archive them before unlinking",
+      active_sessions: 2,
     });
     const onUnlink = vi.fn(() => Promise.reject(refusal));
     const { getByRole, findByText, queryByRole } = mountUnlinkable(onUnlink);
@@ -195,9 +196,9 @@ describe("ComputeCard", () => {
     getByRole("button", { name: "Unlink" }).click();
     getByRole("button", { name: "Unlink" }).click();
 
-    expect(
-      await findByText(/2 session\(s\) still run on this account/),
-    ).toBeInTheDocument();
+    // Counted from the `active_sessions` member the refusal now carries
+    // (issue #152), not from the sentence it also states it in.
+    expect(await findByText(/2 sessions are still running there/)).toBeInTheDocument();
     // Nothing left to press: the sessions have to be archived first, and
     // the way to them is on the dialog.
     expect(queryByRole("button", { name: "Unlink" })).toBeNull();

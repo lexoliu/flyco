@@ -334,7 +334,7 @@ async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, Api
     // running there, so a live machine makes this a 409 rather than a leak
     // nobody can clean up afterwards.
     let destroyed = flyco_core::MachineState::Destroyed;
-    let live: u64 = sql!(
+    let live: u32 = sql!(
         db,
         "SELECT COUNT(*) AS live FROM machines \
          WHERE provider_account_id = {id} AND state != {destroyed}"

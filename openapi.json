@@ -1021,7 +1021,7 @@
     "/v1/harness-accounts/{id}": {
       "delete": {
         "summary": "Unlinks one account owned by the caller.",
-        "description": "Unlinks one account owned by the caller.",
+        "description": "Unlinks one account owned by the caller.\n\nRefused with `harness-account-in-use` while any session of the caller's\nstill runs on that harness: the account is what those sessions renew\ntheir grant against, so unlinking it would break them at whatever moment\nthe token happened to expire. The problem document carries the count as\nits `active_sessions` member.",
         "operationId": "flyco_api::harness_accounts::unlink_harness_account",
         "parameters": [
           {

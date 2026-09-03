@@ -430,11 +430,25 @@ describe("route smoke tests", () => {
     // click, with nothing said about what it costs (issue #139).
     const base = vi.mocked(fetch).getMockImplementation();
     const deletes: string[] = [];
+    /** What the control plane answers the unlink with, per the test's turn. */
+    let refuse = false;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const url = new URL(String(input instanceof Request ? input.url : input));
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "DELETE" && url.pathname.startsWith("/v1/harness-accounts/")) {
         deletes.push(url.pathname);
+        if (refuse) {
+          return new Response(
+            JSON.stringify({
+              type: "https://flyco.dev/problems/harness-account-in-use",
+              title: "Conflict",
+              status: 409,
+              detail: "2 session(s) still run on this account; archive them before unlinking",
+              active_sessions: 2,
+            }),
+            { status: 409, headers: { "content-type": "application/problem+json" } },
+          );
+        }
         return new Response(null, { status: 204 });
       }
       if (method === "GET" && url.pathname === "/v1/harness-accounts") {
@@ -454,16 +468,27 @@ describe("route smoke tests", () => {
       return base!(input, init);
     });
 
-    const { findByRole, getByRole } = renderAt("/settings/agents");
+    const { findByRole, findByText, getByRole, queryByRole } = renderAt("/settings/agents");
 
     (await findByRole("button", { name: "Unlink" })).click();
     const dialog = await findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Unlink lexo@lexo.cool?");
-    expect(dialog).toHaveTextContent("which flyco can no longer do");
+    expect(dialog).toHaveTextContent("Signing in again links it back");
     expect(deletes).toEqual([]);
 
     getByRole("button", { name: "Keep it" }).click();
     expect(deletes).toEqual([]);
+
+    // And when the control plane refuses because sessions still run on the
+    // harness (issue #152), the dialog says how many and points at them
+    // rather than offering the button again — there is no forcing this one.
+    refuse = true;
+    (await findByRole("button", { name: "Unlink" })).click();
+    getByRole("button", { name: "Unlink" }).click();
+
+    expect(await findByText(/2 sessions are still running there/)).toBeInTheDocument();
+    expect(queryByRole("button", { name: "Unlink" })).toBeNull();
+    expect(getByRole("link", { name: "Go to Sessions" })).toHaveAttribute("href", "/");
   });
 
   it("renders /settings, redirecting to Agents", async () => {

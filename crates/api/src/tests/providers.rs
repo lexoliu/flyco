@@ -7,14 +7,17 @@
 //! resize sees. Both would be easy to hardcode and quietly wrong afterwards.
 
 use flyco_core::{
-    AwsIamPolicy, HostId, LinkProvider, MachineCatalogEntry, MachinePricing, Problem,
-    ProviderCredentials,
+    AwsIamPolicy, CloudProviderKind, HostId, LinkProvider, MachineCatalogEntry, MachinePricing,
+    MachineSpec, Problem, ProviderCredentials,
 };
+use skyzen::sql;
 use skyzen_services::{Db, Kv};
 use skyzen_test::TestContext;
 
-use crate::session;
-use crate::testing::{SSH_HOST, host_facts, migrated_router, seed_provider_account, seed_user};
+use crate::testing::{
+    SSH_HOST, host_facts, migrated_router, seed_provider_account, seed_session, seed_user,
+};
+use crate::{machines, session};
 
 #[skyzen::test]
 async fn the_iam_policy_is_not_public(ctx: TestContext, db: Db) {
@@ -110,4 +113,75 @@ async fn a_machine_you_own_cannot_be_linked_as_a_credential(ctx: TestContext, kv
         response.json::<Problem>().kind,
         "https://flyco.dev/problems/host-not-linkable"
     );
+}
+
+#[skyzen::test]
+async fn unlinking_an_account_with_a_live_machine_counts_what_it_would_strand(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+    let account = seed_provider_account(&db, user.id).await;
+    let session = seed_session(&db, &user).await;
+    machines::reserve(
+        &db,
+        session,
+        account,
+        &MachineSpec {
+            provider: CloudProviderKind::Host,
+            machine_type: SSH_HOST.to_owned(),
+            region: SSH_HOST.to_owned(),
+            spot: false,
+            disk_gib: 64,
+        },
+    )
+    .await
+    .expect("reserve a machine on the account");
+
+    let refused = client
+        .delete(&format!("/v1/providers/{account}"))
+        .bearer(&token)
+        .send()
+        .await;
+    refused.assert_status(409);
+    let problem = refused.json::<Problem>();
+    assert_eq!(problem.kind, "https://flyco.dev/problems/provider-in-use");
+    // Counted as a member of the document as well as in the sentence: the
+    // dialog that explains the refusal states the number, and a sentence
+    // written for a person is free to be reworded (RFC 9457 §3.2).
+    assert_eq!(problem.extensions.active_sessions, Some(1));
+    assert!(
+        problem.detail.contains('1'),
+        "and in the sentence, for a reader: {}",
+        problem.detail
+    );
+
+    // What the refusal counts is live machines and nothing else: an account
+    // whose machines are all destroyed is one nothing is running on.
+    let destroyed = flyco_core::MachineState::Destroyed;
+    sql!(
+        db,
+        "UPDATE machines SET state = {destroyed} WHERE provider_account_id = {account}"
+    )
+    .execute()
+    .await
+    .expect("destroy the machine");
+
+    // Not asserted here: that the unlink then succeeds. It does not —
+    // `machines.provider_account_id` is a `NOT NULL REFERENCES`, so
+    // deleting an account any machine has ever run on fails the foreign key
+    // and answers 500 (issue #153). That is a bug of its own and this test
+    // is about the refusal, so it stops at proving the refusal has lifted.
+    let lifted: u32 = sql!(
+        db,
+        "SELECT COUNT(*) AS live FROM machines \
+         WHERE provider_account_id = {account} AND state != {destroyed}"
+    )
+    .fetch_scalar()
+    .await
+    .expect("count what is left running");
+    assert_eq!(lifted, 0);
 }

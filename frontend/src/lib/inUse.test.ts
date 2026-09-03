@@ -13,7 +13,7 @@ function problem(slug: string, detail: string, extensions: Partial<Problem> = {}
 }
 
 describe("inUseRefusal", () => {
-  it("reads both refusals that mean something is still running there", () => {
+  it("reads every refusal that means something is still running there", () => {
     expect(
       inUseRefusal(
         problem("host-has-active-sessions", "3 session(s) still run on this host; pass force", {
@@ -22,9 +22,16 @@ describe("inUseRefusal", () => {
       ),
     ).toEqual({ sessions: 3, detail: "3 session(s) still run on this host; pass force" });
 
-    expect(
-      inUseRefusal(problem("provider-in-use", "2 session(s) still run on this account")),
-    ).toEqual({ sessions: null, detail: "2 session(s) still run on this account" });
+    // All three count in the member now (issue #152): unlinking a cloud
+    // account and unlinking the credential the agent runs on are refused
+    // with the same shape as removing a host.
+    for (const slug of ["provider-in-use", "harness-account-in-use"]) {
+      expect(
+        inUseRefusal(
+          problem(slug, "2 session(s) still run on this account", { active_sessions: 2 }),
+        ),
+      ).toEqual({ sessions: 2, detail: "2 session(s) still run on this account" });
+    }
   });
 
   it("reads the member rather than the sentence around it", () => {
@@ -57,9 +64,11 @@ describe("sessionsStillRunning", () => {
   });
 
   it("repeats what the control plane said when it counted nothing out loud", () => {
-    // Better the server's own sentence than a number parsed out of it:
-    // `provider-in-use` carries its count only in prose. It is closed as a
-    // sentence, because the guidance after it is another one.
+    // Every refusal flyco raises today counts in a member, so this is the
+    // path for one from a control plane older than #152, or newer than this
+    // build. Better the server's own sentence than a number parsed out of
+    // it — closed as a sentence, because the guidance after it is another
+    // one.
     expect(
       sessionsStillRunning({ sessions: null, detail: "2 session(s) still run on this account" }),
     ).toBe("2 session(s) still run on this account.");
