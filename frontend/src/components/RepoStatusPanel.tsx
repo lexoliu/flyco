@@ -1,4 +1,5 @@
-import { Show, createResource } from "solid-js";
+import { Show } from "solid-js";
+import { createQuery } from "../lib/query";
 import ProblemNotice from "./ProblemNotice";
 import { getRepoStatus } from "../api/client";
 import styles from "./MachinePanel.module.css";
@@ -13,7 +14,7 @@ export default function RepoStatusPanel(props: {
   /** Latest `repo_dirty` summary from the live relay, when one has arrived. */
   liveSummary?: string | null;
 }) {
-  const [status] = createResource(() => props.sessionId, getRepoStatus);
+  const [status] = createQuery(() => props.sessionId, getRepoStatus);
   const view = () => {
     if (props.liveSummary !== undefined && props.liveSummary !== null) {
       return { dirty: props.liveSummary.trim() !== "", summary: props.liveSummary };

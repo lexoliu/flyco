@@ -1,4 +1,5 @@
-import { For, Show, createResource, createSignal } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
+import { createQuery } from "../lib/query";
 import ProblemNotice from "./ProblemNotice";
 import { getSessionEnv, putSessionEnv, type EnvEntry } from "../api/client";
 import styles from "./Panel.module.css";
@@ -10,7 +11,7 @@ import styles from "./Panel.module.css";
  * rather than hard-coding the network-control caveat on the frontend.
  */
 export default function EnvEditor(props: { sessionId: string }) {
-  const [doc, { refetch }] = createResource(() => props.sessionId, getSessionEnv);
+  const [doc, { refetch }] = createQuery(() => props.sessionId, getSessionEnv);
   const [entries, setEntries] = createSignal<EnvEntry[]>([]);
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal<unknown>(null);

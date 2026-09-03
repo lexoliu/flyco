@@ -10,7 +10,8 @@
  * actually have is "will flyco tell me when a session needs me", and the
  * answer is a button that says yes.
  */
-import { For, Show, createResource, createSignal, onMount } from "solid-js";
+import { For, Show, createSignal, onMount } from "solid-js";
+import { createQuery } from "../../lib/query";
 import { useNavigate } from "@solidjs/router";
 import { BellRing, Check, LogOut, Monitor, Moon, Plus, Sun } from "lucide-solid";
 import Logomark, { GITHUB_MARK } from "../../components/Logomark";
@@ -68,7 +69,7 @@ export default function AccountSection() {
 /* ── Identity ─────────────────────────────────────────────────────────── */
 
 function Identity() {
-  const [me] = createResource(getMe);
+  const [me] = createQuery(getMe);
 
   return (
     <div class={styles.group}>
@@ -98,7 +99,7 @@ function Identity() {
 /* ── API keys ─────────────────────────────────────────────────────────── */
 
 function ApiKeys() {
-  const [keys, { refetch }] = createResource(listApiKeys);
+  const [keys, { refetch }] = createQuery(listApiKeys);
   const [label, setLabel] = createSignal("");
   const [creating, setCreating] = createSignal(false);
   const [created, setCreated] = createSignal<CreatedApiKey | null>(null);
@@ -218,7 +219,7 @@ function Notifications() {
   // A browser with no `PushManager` cannot use the key, so it is not asked
   // for: firing a request whose answer can only be discarded is how the
   // unsupported case ends up reported as a failure.
-  const [vapid] = createResource(
+  const [vapid] = createQuery(
     () => (isPushSupported() ? true : undefined),
     getVapidPublicKey,
   );

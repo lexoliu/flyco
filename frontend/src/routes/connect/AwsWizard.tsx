@@ -12,7 +12,8 @@
  * perfectly well without one — so it is a name under `Advanced` rather than
  * a step, and it names a key pair that lives in the user's own account.
  */
-import { Show, createResource, createSignal } from "solid-js";
+import { Show, createSignal } from "solid-js";
+import { createQuery } from "../../lib/query";
 import { ExternalLink } from "lucide-solid";
 import CommandBlock from "../../components/CommandBlock";
 import Disclosure from "../../components/Disclosure";
@@ -30,7 +31,7 @@ export interface AwsWizardProps {
 }
 
 export default function AwsWizard(props: AwsWizardProps) {
-  const [policy, { refetch: refetchPolicy }] = createResource(getAwsIamPolicy);
+  const [policy, { refetch: refetchPolicy }] = createQuery(getAwsIamPolicy);
   const [accessKeyId, setAccessKeyId] = createSignal("");
   const [secretAccessKey, setSecretAccessKey] = createSignal("");
   const [sessionToken, setSessionToken] = createSignal("");

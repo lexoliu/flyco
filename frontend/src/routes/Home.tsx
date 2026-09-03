@@ -6,7 +6,8 @@
  * prerequisite is missing, and the composer's send button says which one is
  * in the way.
  */
-import { For, Show, createMemo, createResource, createSignal, onCleanup } from "solid-js";
+import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
+import { createQuery } from "../lib/query";
 import { A, Navigate, useNavigate } from "@solidjs/router";
 import { ChevronRight, Cpu, Sparkles } from "lucide-solid";
 import Composer from "../components/Composer";
@@ -33,8 +34,8 @@ const TICK_MS = 1000;
 export default function Home() {
   const navigate = useNavigate();
   const readiness = useReadiness();
-  const [sessions, { refetch }] = createResource(listSessions);
-  const [me] = createResource(getMe);
+  const [sessions, { refetch }] = createQuery(listSessions);
+  const [me] = createQuery(getMe);
   const [query, setQuery] = createSignal("");
   const [showArchived, setShowArchived] = createSignal(false);
 
@@ -130,7 +131,7 @@ export default function Home() {
           </div>
         </Show>
 
-        <ProblemNotice error={sessions.error ?? readiness.error()} />
+        <ProblemNotice error={sessions.error ?? me.error ?? readiness.error()} />
 
         <div class={styles.sessions}>
           <div class={styles.sessionsHeader}>

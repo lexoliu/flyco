@@ -11,7 +11,8 @@
  * server or overwrite a skill directory, which is why this page is the only
  * place either is configured.
  */
-import { For, Show, createResource, createSignal } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
+import { createQuery } from "../../lib/query";
 import { Plus, Upload } from "lucide-solid";
 import ProblemNotice from "../../components/ProblemNotice";
 import Toggle from "../../components/Toggle";
@@ -62,11 +63,8 @@ export default function ToolsSection() {
 /* ── MCP servers ──────────────────────────────────────────────────────── */
 
 function McpServers() {
-  const [servers, { refetch }] = createResource(listMcpServers);
-  /** The list, or nothing while it is loading or after it failed: a rejected
-   *  resource throws from its accessor, which would unmount the block before
-   *  the notice above it could say why. */
-  const listed = (): McpServerView[] => (servers.error === undefined ? (servers() ?? []) : []);
+  const [servers, { refetch }] = createQuery(listMcpServers);
+  const listed = (): McpServerView[] => servers() ?? [];
   const [editing, setEditing] = createSignal<string | null>(null);
   const [adding, setAdding] = createSignal(false);
   const [busy, setBusy] = createSignal<string | null>(null);
@@ -199,9 +197,8 @@ function McpServers() {
 /* ── Skills ───────────────────────────────────────────────────────────── */
 
 function Skills() {
-  const [skills, { refetch }] = createResource(listSkills);
-  /** See `listed` in the MCP block: never read a rejected resource. */
-  const uploaded = (): SkillView[] => (skills.error === undefined ? (skills() ?? []) : []);
+  const [skills, { refetch }] = createQuery(listSkills);
+  const uploaded = (): SkillView[] => skills() ?? [];
   const [error, setError] = createSignal<unknown>(null);
 
   async function remove(id: string): Promise<void> {

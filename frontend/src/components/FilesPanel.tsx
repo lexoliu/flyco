@@ -10,7 +10,8 @@
  * belongs to the agent, and two writers on one disk is how a session loses
  * work. What this is for is *seeing* what the agent did.
  */
-import { Show, createResource, createSignal } from "solid-js";
+import { Show, createSignal } from "solid-js";
+import { createQuery } from "../lib/query";
 import { ChevronLeft } from "lucide-solid";
 
 import ProblemNotice from "./ProblemNotice";
@@ -39,7 +40,7 @@ export default function FilesPanel(props: { sessionId: string }) {
 }
 
 function FileView(props: { sessionId: string; path: string; onClose: () => void }) {
-  const [file] = createResource(
+  const [file] = createQuery(
     () => ({ session: props.sessionId, path: props.path }),
     (key) => readSessionFile(key.session, key.path),
   );

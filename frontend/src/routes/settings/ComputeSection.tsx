@@ -26,7 +26,8 @@
  * The wizards live on that route, and settings is not a second place to paste
  * a credential.
  */
-import { For, Show, createMemo, createResource, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
+import { createQuery } from "../../lib/query";
 import { A } from "@solidjs/router";
 import { Plus } from "lucide-solid";
 import ComputeCard from "../../components/ComputeCard";
@@ -39,8 +40,8 @@ import styles from "./Settings.module.css";
 
 export default function ComputeSection() {
   const readiness = useReadiness();
-  const [usage, { refetch: refetchUsage }] = createResource(() => listCloudUsage());
-  const [hosts, { refetch: refetchHosts }] = createResource(() => listHosts());
+  const [usage, { refetch: refetchUsage }] = createQuery(() => listCloudUsage());
+  const [hosts, { refetch: refetchHosts }] = createQuery(() => listHosts());
   const [actionError, setActionError] = createSignal<unknown>(null);
   const [spot, setSpot] = createSignal(spotPreference());
 
@@ -92,7 +93,7 @@ export default function ComputeSection() {
         </p>
       </header>
 
-      <ProblemNotice error={readiness.error() ?? hosts.error ?? actionError()} />
+      <ProblemNotice error={readiness.error() ?? hosts.error ?? usage.error ?? actionError()} />
 
       <Show
         when={readiness.compute().length > 0}
