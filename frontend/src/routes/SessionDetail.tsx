@@ -17,6 +17,7 @@ import { Match, Show, Switch, createEffect, createMemo, createSignal, on, onClea
 import { createQuery } from "../lib/query";
 import { AlertTriangle } from "lucide-solid";
 import { BudgetRaise } from "../components/BudgetPicker";
+import ConfirmDialog from "../components/ConfirmDialog";
 import ProblemNotice from "../components/ProblemNotice";
 import SessionComposer, { type SessionCommand } from "../components/SessionComposer";
 import SessionDrawer from "../components/SessionDrawer";
@@ -424,33 +425,18 @@ export default function SessionDetail() {
 
       <Show when={pendingDirtySummary()}>
         {(summary) => (
-          <div class={styles.archiveConfirm} role="alertdialog" aria-labelledby="archive-dirty">
-            <h2 id="archive-dirty" class={styles.archiveTitle}>
-              Uncommitted changes
-            </h2>
-            <p class={styles.archiveBody}>
-              Archiving releases the disk without keeping this work. Commit it first, or discard it
-              to archive anyway.
-            </p>
+          <ConfirmDialog
+            title="Uncommitted changes"
+            body="Archiving releases the disk without keeping this work. Commit it first, or discard it to archive anyway."
+            tone="danger"
+            confirmLabel="Discard and archive"
+            cancelLabel="Keep session"
+            busy={archiving()}
+            onConfirm={() => void onArchive(true)}
+            onCancel={() => setPendingDirtySummary(null)}
+          >
             <pre class={styles.archiveSummary}>{summary()}</pre>
-            <div class={styles.archiveActions}>
-              <button
-                type="button"
-                class={styles.keep}
-                onClick={() => setPendingDirtySummary(null)}
-              >
-                Keep session
-              </button>
-              <button
-                type="button"
-                class={styles.discard}
-                disabled={archiving()}
-                onClick={() => void onArchive(true)}
-              >
-                Discard and archive
-              </button>
-            </div>
-          </div>
+          </ConfirmDialog>
         )}
       </Show>
 

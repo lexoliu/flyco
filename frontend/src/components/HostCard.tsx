@@ -10,17 +10,19 @@
  * socket is up right now.
  *
  * `Rename` and `Remove` are here rather than in a menu because they are the
- * only two things anyone does to a machine after enrolling it. A removal
- * refused by `host-has-active-sessions` is not an error: it is the control
- * plane saying how much work is still running there, and the card repeats
- * the number before offering to stop it anyway.
+ * only two things anyone does to a machine after enrolling it. `Remove`
+ * asks first — it unenrols hardware and stops whatever is on it — and a
+ * removal refused by `host-has-active-sessions` is not an error: it is the
+ * control plane saying how much work is still running there, and the same
+ * dialog repeats the number before offering to stop it anyway.
  */
 import { Show, createSignal } from "solid-js";
 import { Server } from "lucide-solid";
 import { CardShell, Fact, YourHardware } from "./ComputeCard";
+import ConfirmDialog from "./ConfirmDialog";
 import { removeHost, renameHost, type HostView } from "../api/client";
 import { formatDate } from "../lib/dates";
-import { activeSessions, isBusyHost } from "../lib/hostEnrollment";
+import { inUseRefusal, sessionsStillRunning, type InUseRefusal } from "../lib/inUse";
 import {
   HOST_STATE_LABEL,
   hostCapacityLabel,
@@ -45,10 +47,11 @@ export default function HostCard(props: HostCardProps) {
   const [label, setLabel] = createSignal(props.host.label);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<unknown>(null);
-  // The count a refused removal named, so `Remove anyway` states what it is
-  // about to stop rather than asking for a blank confirmation.
-  const [running, setRunning] = createSignal<number | null>(null);
-  const [refused, setRefused] = createSignal(false);
+  /** Whether the removal has been asked about, and how it was answered. */
+  const [confirming, setConfirming] = createSignal(false);
+  // What a refused removal said, so `Remove anyway` states what it is about
+  // to stop rather than asking for a blank confirmation.
+  const [refused, setRefused] = createSignal<InUseRefusal | null>(null);
 
   const editable = () => props.editable !== false;
 
@@ -77,18 +80,26 @@ export default function HostCard(props: HostCardProps) {
     setError(null);
     try {
       await removeHost(props.host.id, { force });
-      setRefused(false);
+      setRefused(null);
+      setConfirming(false);
       await props.onChanged();
     } catch (failure) {
-      if (isBusyHost(failure)) {
-        setRunning(activeSessions(failure));
-        setRefused(true);
-      } else {
+      const inUse = inUseRefusal(failure);
+      if (inUse === null) {
         setError(failure);
+      } else {
+        // Not an error: the machine is busy, and `force` is what the
+        // control plane says to send once the user knows how busy.
+        setRefused(inUse);
       }
     } finally {
       setBusy(false);
     }
+  }
+
+  function stopConfirming(): void {
+    setConfirming(false);
+    setRefused(null);
   }
 
   return (
@@ -137,7 +148,10 @@ export default function HostCard(props: HostCardProps) {
         </span>
       }
       actions={
-        <Show when={editable() && !renaming()}>
+        // Nothing else while the question is up: the dialog under the card
+        // is the one thing being answered, and a second `Remove` beside it
+        // would be two buttons with one meaning.
+        <Show when={editable() && !renaming() && !confirming()}>
           <button type="button" class={styles.action} onClick={() => setRenaming(true)}>
             Rename
           </button>
@@ -145,7 +159,7 @@ export default function HostCard(props: HostCardProps) {
             type="button"
             class={styles.danger}
             disabled={busy()}
-            onClick={() => void remove(false)}
+            onClick={() => setConfirming(true)}
           >
             Remove
           </button>
@@ -153,37 +167,34 @@ export default function HostCard(props: HostCardProps) {
       }
       footer={
         <>
-          <Show when={refused()}>
-            <div class={styles.confirm} role="alert">
-              <p class={styles.confirmLine}>
+          <Show when={confirming()}>
+            <ConfirmDialog
+              title={`Remove ${props.host.label}?`}
+              body={
                 <Show
-                  when={running()}
-                  fallback={<>Sessions are still running on {props.host.label}.</>}
-                >
-                  {(count) => (
+                  when={refused()}
+                  fallback={
                     <>
-                      {count()} {count() === 1 ? "session is" : "sessions are"} still running on{" "}
-                      {props.host.label}.
+                      Flyco stops managing this machine and no new session can be placed on it.
+                      The machine keeps its disks, and enrolling it again brings it back.
+                    </>
+                  }
+                >
+                  {(inUse) => (
+                    <>
+                      {sessionsStillRunning(inUse())} Removing it stops their containers and keeps
+                      the disks, so the work stays on your hardware.
                     </>
                   )}
-                </Show>{" "}
-                Removing it stops their containers and keeps the disks, so the work stays on your
-                hardware.
-              </p>
-              <div class={styles.confirmActions}>
-                <button
-                  type="button"
-                  class={styles.danger}
-                  disabled={busy()}
-                  onClick={() => void remove(true)}
-                >
-                  Remove anyway
-                </button>
-                <button type="button" class={styles.action} onClick={() => setRefused(false)}>
-                  Keep it
-                </button>
-              </div>
-            </div>
+                </Show>
+              }
+              tone="danger"
+              confirmLabel={refused() === null ? "Remove" : "Remove anyway"}
+              cancelLabel="Keep it"
+              busy={busy()}
+              onConfirm={() => void remove(refused() !== null)}
+              onCancel={stopConfirming}
+            />
           </Show>
           <Show when={error()}>
             {(failure) => (

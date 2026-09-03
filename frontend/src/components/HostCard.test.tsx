@@ -106,9 +106,35 @@ describe("HostCard", () => {
     expect(JSON.parse(String(init?.body))).toEqual({ label: "the loud one under the desk" });
   });
 
-  it("removes the machine when nothing is running on it", async () => {
-    const { getByRole, onChanged } = mount();
+  it("asks before it unenrols anything", async () => {
+    // `Remove` used to fire the DELETE on the first click (issue #139).
+    const { getByRole, findByRole, onChanged } = mount();
 
+    getByRole("button", { name: "Remove" }).click();
+    const dialog = await findByRole("alertdialog");
+
+    expect(dialog).toHaveTextContent("Remove mercury?");
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("keeps the machine when the question is declined", async () => {
+    const { getByRole, findByRole, queryByRole, onChanged } = mount();
+
+    getByRole("button", { name: "Remove" }).click();
+    await findByRole("alertdialog");
+    getByRole("button", { name: "Keep it" }).click();
+
+    expect(queryByRole("alertdialog")).toBeNull();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("removes the machine when nothing is running on it", async () => {
+    const { getByRole, findByRole, onChanged } = mount();
+
+    getByRole("button", { name: "Remove" }).click();
+    await findByRole("alertdialog");
     getByRole("button", { name: "Remove" }).click();
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
@@ -130,10 +156,12 @@ describe("HostCard", () => {
       )
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
 
-    const { getByRole, findByText, onChanged } = mount();
+    const { getByRole, findByText, findByRole, onChanged } = mount();
+    getByRole("button", { name: "Remove" }).click();
+    await findByRole("alertdialog");
     getByRole("button", { name: "Remove" }).click();
 
-    expect(await findByText(/2 sessions are still running on mercury/)).toBeInTheDocument();
+    expect(await findByText(/2 sessions are still running there/)).toBeInTheDocument();
     expect(onChanged).not.toHaveBeenCalled();
 
     getByRole("button", { name: "Remove anyway" }).click();
@@ -144,7 +172,7 @@ describe("HostCard", () => {
     expect(init?.method).toBe("DELETE");
   });
 
-  it("keeps the machine when the refusal is declined", async () => {
+  it("keeps the machine when the refusal itself is declined", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       problemResponse(
         409,
@@ -154,10 +182,12 @@ describe("HostCard", () => {
       ),
     );
 
-    const { getByRole, findByText, queryByRole, onChanged } = mount();
+    const { getByRole, findByText, findByRole, queryByRole, onChanged } = mount();
+    getByRole("button", { name: "Remove" }).click();
+    await findByRole("alertdialog");
     getByRole("button", { name: "Remove" }).click();
 
-    expect(await findByText(/1 session is still running on mercury/)).toBeInTheDocument();
+    expect(await findByText(/1 session is still running there/)).toBeInTheDocument();
     getByRole("button", { name: "Keep it" }).click();
 
     expect(queryByRole("button", { name: "Remove anyway" })).toBeNull();
@@ -174,10 +204,12 @@ describe("HostCard", () => {
       }),
     );
 
-    const { getByRole, findByText } = mount();
+    const { getByRole, findByText, findByRole } = mount();
+    getByRole("button", { name: "Remove" }).click();
+    await findByRole("alertdialog");
     getByRole("button", { name: "Remove" }).click();
 
-    expect(await findByText(/4 sessions are still running on mercury/)).toBeInTheDocument();
+    expect(await findByText(/4 sessions are still running there/)).toBeInTheDocument();
   });
 
   it("states no number when the refusal carries none", async () => {
@@ -185,10 +217,14 @@ describe("HostCard", () => {
       problemResponse(409, "host-has-active-sessions", "sessions are still running"),
     );
 
-    const { getByRole, findByText } = mount();
+    const { getByRole, findByText, findByRole } = mount();
+    getByRole("button", { name: "Remove" }).click();
+    await findByRole("alertdialog");
     getByRole("button", { name: "Remove" }).click();
 
-    expect(await findByText(/Sessions are still running on mercury/)).toBeInTheDocument();
+    // No member, so the control plane's own sentence stands rather than a
+    // number nobody stated.
+    expect(await findByText(/sessions are still running/)).toBeInTheDocument();
   });
 
   it("shows any other refusal as what it was", async () => {
@@ -197,6 +233,8 @@ describe("HostCard", () => {
     );
 
     const { getByRole, findByRole } = mount();
+    getByRole("button", { name: "Remove" }).click();
+    await findByRole("alertdialog");
     getByRole("button", { name: "Remove" }).click();
 
     expect(await findByRole("alert")).toHaveTextContent("no such host");

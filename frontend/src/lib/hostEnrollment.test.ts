@@ -5,9 +5,7 @@ import {
   IDLE,
   POLL_INTERVAL_SECONDS,
   type Enrollment,
-  activeSessions,
   hasExpired,
-  isBusyHost,
   isEnrollmentOver,
   isRunning,
   nextEnrollment,
@@ -179,41 +177,12 @@ describe("classifying a failure", () => {
     expect(isEnrollmentOver(problem("enrollment-token-expired", "gone"))).toBe(true);
     expect(isEnrollmentOver(problem("enrollment-token-not-found", "gone"))).toBe(true);
     expect(isEnrollmentOver(problem("host-offline", "not here"))).toBe(false);
-    expect(isBusyHost(problem("host-has-active-sessions", "3 session(s) still run"))).toBe(true);
-    expect(isBusyHost(problem("host-not-found", "no"))).toBe(false);
   });
 
-  it("treats anything that is not a problem document as neither", () => {
-    for (const error of [null, undefined, new Error("offline"), "host-has-active-sessions", {}]) {
+  it("treats anything that is not a problem document as no verdict at all", () => {
+    for (const error of [null, undefined, new Error("offline"), "enrollment-token-expired", {}]) {
       expect(isEnrollmentOver(error)).toBe(false);
-      expect(isBusyHost(error)).toBe(false);
-      expect(activeSessions(error)).toBeNull();
     }
-  });
-
-  it("reads the session count off the member the refusal carries", () => {
-    expect(
-      activeSessions(
-        problem("host-has-active-sessions", "3 session(s) still run on this host; pass force", {
-          active_sessions: 3,
-        }),
-      ),
-    ).toBe(3);
-  });
-
-  it("reads the member rather than the sentence around it", () => {
-    // `detail` is written for a person and free to be reworded; the number
-    // a client acts on is the extension member and nothing else.
-    expect(
-      activeSessions(
-        problem("host-has-active-sessions", "plenty of them", { active_sessions: 12 }),
-      ),
-    ).toBe(12);
-  });
-
-  it("invents no number when the refusal states none", () => {
-    expect(activeSessions(problem("host-has-active-sessions", "sessions still run"))).toBeNull();
-    expect(activeSessions(problem("host-not-found", "7 of them", { active_sessions: 7 }))).toBeNull();
   });
 });
 

@@ -42,7 +42,6 @@ export default function ComputeSection() {
   const readiness = useReadiness();
   const [usage, { refetch: refetchUsage }] = createQuery(() => listCloudUsage());
   const [hosts, { refetch: refetchHosts }] = createQuery(() => listHosts());
-  const [actionError, setActionError] = createSignal<unknown>(null);
   const [spot, setSpot] = createSignal(spotPreference());
 
   /** The machines on screen, by the account each one provisions through. */
@@ -60,15 +59,17 @@ export default function ComputeSection() {
     });
   });
 
+  /**
+   * Unlinks one account, and lets the failure through.
+   *
+   * The card asked before this ran and is the thing on screen holding the
+   * question, so a refusal belongs in the dialog it opened rather than in a
+   * notice at the top of the page (issue #139).
+   */
   async function unlink(id: string): Promise<void> {
-    setActionError(null);
-    try {
-      await unlinkProvider(id);
-      await readiness.refresh();
-      void refetchUsage();
-    } catch (err) {
-      setActionError(err);
-    }
+    await unlinkProvider(id);
+    await readiness.refresh();
+    void refetchUsage();
   }
 
   /** A machine was renamed or removed; both lists can have moved. */
@@ -93,7 +94,7 @@ export default function ComputeSection() {
         </p>
       </header>
 
-      <ProblemNotice error={readiness.error() ?? hosts.error ?? usage.error ?? actionError()} />
+      <ProblemNotice error={readiness.error() ?? hosts.error ?? usage.error} />
 
       <Show
         when={readiness.compute().length > 0}
@@ -118,7 +119,7 @@ export default function ComputeSection() {
                 usage={usage()?.find((row) => row.account === account.id)}
                 spot={spot()}
                 onSpot={chooseSpot}
-                onUnlink={() => void unlink(account.id)}
+                onUnlink={() => unlink(account.id)}
               />
             )}
           </For>
