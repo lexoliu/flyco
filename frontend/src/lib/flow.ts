@@ -19,8 +19,6 @@ import type {
   CloudProviderKind,
   HarnessAccountView,
   HarnessKind,
-  HostView,
-  ProviderAccountView,
   ProviderBonusHint,
 } from "../api/client";
 import type { AzureServicePrincipal } from "./azureCredentials";
@@ -29,27 +27,33 @@ import type { BreakGlassKey } from "./sshKey";
 /** The three stages of the first run; a settings-launched flow covers one. */
 export type Stage = "meet" | "agent" | "compute";
 
-/** How the chosen agent is being linked, until it is. */
+/** How an agent is being linked, until it is. */
 export type AgentRoute =
   /** The vendor's own sign-in: Anthropic's code, or OpenAI's device flow. */
   | "sign-in"
   /** The one-field page behind *Use an API key instead*. */
   | "api-key";
 
+/** The accounts linked, by agent: before the flow opened, or during it. */
+export type LinkedAgents = Readonly<
+  Partial<Record<HarnessKind, HarnessAccountView>>
+>;
+
 /** Every answer the flow collects, in the order the pages ask for them. */
 export interface FlowAnswers {
-  readonly agent: HarnessKind | null;
-  readonly agentRoute: AgentRoute;
-  /** The Claude sign-in that was opened, which the paste page redeems against. */
-  readonly claudeAttempt: ClaudeOauthStart | null;
   /**
-   * The agent account, once one is linked or was found already linked.
-   *
-   * Set, it collapses stage B to the choice and the linked page: there is
-   * nothing to sign in to twice, and `Back` from the linked page lands on
-   * the choice rather than on a code that has already been redeemed.
+   * What is linked. The agent is never chosen here — a task chooses its
+   * agent in the composer — so stage B links agents one page each, and a
+   * linked agent's pages collapse to that one page, which reads `Linked`.
    */
-  readonly agentAccount: HarnessAccountView | null;
+  readonly agents: LinkedAgents;
+  /** How each agent is being linked, until it is. */
+  readonly routes: Readonly<Record<HarnessKind, AgentRoute>>;
+  /**
+   * The Claude sign-in that was opened, which the paste page redeems
+   * against; the paste page exists only while there is one.
+   */
+  readonly claudeAttempt: ClaudeOauthStart | null;
   readonly compute: CloudProviderKind | null;
   readonly newToProvider: boolean | null;
   readonly student: boolean | null;
@@ -66,18 +70,13 @@ export interface FlowAnswers {
    * again shows the same key the user may already have downloaded.
    */
   readonly azureKey: BreakGlassKey | null;
-  /** The cloud account, once linked; collapses stage C like `agentAccount`. */
-  readonly computeAccount: ProviderAccountView | null;
-  /** The machine, once it enrolled; likewise. */
-  readonly host: HostView | null;
 }
 
 /** A flow that has asked nothing yet. */
 export const NO_ANSWERS: FlowAnswers = {
-  agent: null,
-  agentRoute: "sign-in",
+  agents: {},
+  routes: { claude_code: "sign-in", codex: "sign-in" },
   claudeAttempt: null,
-  agentAccount: null,
   compute: null,
   newToProvider: null,
   student: null,
@@ -86,13 +85,28 @@ export const NO_ANSWERS: FlowAnswers = {
   azurePrincipal: null,
   azureSubscription: null,
   azureKey: null,
-  computeAccount: null,
-  host: null,
 };
+
+/** The accounts a readiness read found, keyed by agent, for `FlowAnswers.agents`. */
+export function linkedAgents(
+  accounts: readonly HarnessAccountView[],
+): LinkedAgents {
+  return Object.fromEntries(
+    accounts.map((account) => [account.harness, account]),
+  );
+}
+
+/** The agents flyco runs, in the order the agent stage links them. */
+export const EVERY_AGENT: readonly HarnessKind[] = ["claude_code", "codex"];
 
 /** Which stages this flow walks, where it is, and what it has been told. */
 export interface FlowState {
   readonly stages: readonly Stage[];
+  /**
+   * Which agents the agent stage links, in order: every one on `/welcome`,
+   * the one a settings card named when opened from there.
+   */
+  readonly agents: readonly HarnessKind[];
   /** Index into `pagesFor(state)`. */
   readonly position: number;
   readonly answers: FlowAnswers;
@@ -104,16 +118,18 @@ export type CloudKind = Exclude<CloudProviderKind, "host">;
 /** One page of the sequence, with whatever it needs beyond the answers. */
 export type Page =
   | { readonly id: "meet" }
-  | { readonly id: "agent-choice" }
   | { readonly id: "claude-sign-in" }
   | { readonly id: "claude-paste" }
   | { readonly id: "codex-sign-in" }
   | { readonly id: "api-key"; readonly agent: HarnessKind }
-  | { readonly id: "agent-linked" }
   | { readonly id: "compute-choice" }
   | { readonly id: "new-to-provider"; readonly provider: CloudKind }
   | { readonly id: "student"; readonly provider: CloudKind }
-  | { readonly id: "credit"; readonly provider: CloudKind; readonly programmes: readonly ProviderBonusHint[] }
+  | {
+      readonly id: "credit";
+      readonly provider: CloudKind;
+      readonly programmes: readonly ProviderBonusHint[];
+    }
   | { readonly id: "azure-command" }
   | { readonly id: "azure-paste" }
   | { readonly id: "azure-subscription" }
@@ -122,8 +138,7 @@ export type Page =
   | { readonly id: "aws-keys" }
   | { readonly id: "gcp-commands" }
   | { readonly id: "gcp-key-file" }
-  | { readonly id: "host-enroll" }
-  | { readonly id: "compute-linked" };
+  | { readonly id: "host-enroll" };
 
 export type PageId = Page["id"];
 
@@ -132,12 +147,10 @@ export function stageOf(page: Page): Stage {
   switch (page.id) {
     case "meet":
       return "meet";
-    case "agent-choice":
     case "claude-sign-in":
     case "claude-paste":
     case "codex-sign-in":
     case "api-key":
-    case "agent-linked":
       return "agent";
     case "compute-choice":
     case "new-to-provider":
@@ -152,38 +165,37 @@ export function stageOf(page: Page): Stage {
     case "gcp-commands":
     case "gcp-key-file":
     case "host-enroll":
-    case "compute-linked":
       return "compute";
   }
 }
 
-/** Stage B's pages, given what has been answered. */
-function agentPages(answers: FlowAnswers): Page[] {
-  const pages: Page[] = [{ id: "agent-choice" }];
-  if (answers.agent === null) {
-    return pages;
+/**
+ * One agent's pages: its sign-in page always, and behind it whatever its
+ * route still needs — nothing once it is linked, the paste page while a
+ * Claude sign-in is open, the key page behind *Use an API key instead*.
+ */
+function agentPages(answers: FlowAnswers, agent: HarnessKind): Page[] {
+  const signIn: Page =
+    agent === "claude_code"
+      ? { id: "claude-sign-in" }
+      : { id: "codex-sign-in" };
+  if (answers.agents[agent] !== undefined) {
+    return [signIn];
   }
-  if (answers.agentAccount !== null) {
-    return [...pages, { id: "agent-linked" }];
-  }
-  const signIn: Page = answers.agent === "claude_code" ? { id: "claude-sign-in" } : { id: "codex-sign-in" };
-  switch (answers.agentRoute) {
+  switch (answers.routes[agent]) {
     case "sign-in":
-      pages.push(signIn);
-      if (answers.agent === "claude_code") {
-        pages.push({ id: "claude-paste" });
-      }
-      break;
+      return agent === "claude_code" && answers.claudeAttempt !== null
+        ? [signIn, { id: "claude-paste" }]
+        : [signIn];
     case "api-key":
-      pages.push(signIn, { id: "api-key", agent: answers.agent });
-      break;
+      return [signIn, { id: "api-key", agent }];
   }
-  pages.push({ id: "agent-linked" });
-  return pages;
 }
 
 /** The programmes the quickstart matched for the chosen provider. */
-export function matchingProgrammes(answers: FlowAnswers): readonly ProviderBonusHint[] {
+export function matchingProgrammes(
+  answers: FlowAnswers,
+): readonly ProviderBonusHint[] {
   return answers.programmes.filter((hint) => hint.provider === answers.compute);
 }
 
@@ -194,7 +206,10 @@ function providerPages(answers: FlowAnswers, provider: CloudKind): Page[] {
       const pages: Page[] = [{ id: "azure-command" }, { id: "azure-paste" }];
       // The CLI's default output names no subscription; the page that asks
       // for one exists only when the paste turned out to lack it.
-      if (answers.azurePrincipal !== null && answers.azurePrincipal.subscriptionId === null) {
+      if (
+        answers.azurePrincipal !== null &&
+        answers.azurePrincipal.subscriptionId === null
+      ) {
         pages.push({ id: "azure-subscription" });
       }
       pages.push({ id: "azure-key" });
@@ -214,39 +229,38 @@ function computePages(answers: FlowAnswers): Page[] {
   if (provider === null) {
     return pages;
   }
-  if (answers.computeAccount !== null || answers.host !== null) {
-    return [...pages, { id: "compute-linked" }];
-  }
   if (provider === "host") {
     // No bonus questions: there is no free credit for hardware somebody
     // already bought, and "new to your own machine" has no answer.
     pages.push({ id: "host-enroll" });
   } else {
-    pages.push({ id: "new-to-provider", provider }, { id: "student", provider });
+    pages.push(
+      { id: "new-to-provider", provider },
+      { id: "student", provider },
+    );
     const programmes = matchingProgrammes(answers);
     if (programmes.length > 0) {
       pages.push({ id: "credit", provider, programmes });
     }
     pages.push(...providerPages(answers, provider));
   }
-  pages.push({ id: "compute-linked" });
   return pages;
 }
 
-function stagePages(stage: Stage, answers: FlowAnswers): Page[] {
+function stagePages(stage: Stage, state: FlowState): Page[] {
   switch (stage) {
     case "meet":
       return [{ id: "meet" }];
     case "agent":
-      return agentPages(answers);
+      return state.agents.flatMap((agent) => agentPages(state.answers, agent));
     case "compute":
-      return computePages(answers);
+      return computePages(state.answers);
   }
 }
 
 /** The pages the flow will walk, as far as the answers so far determine them. */
 export function pagesFor(state: FlowState): Page[] {
-  return state.stages.flatMap((stage) => stagePages(stage, state.answers));
+  return state.stages.flatMap((stage) => stagePages(stage, state));
 }
 
 /**
@@ -258,21 +272,39 @@ export function pagesFor(state: FlowState): Page[] {
 export function currentPage(state: FlowState): Page {
   const page = pagesFor(state)[state.position];
   if (page === undefined) {
-    throw new Error(`flow position ${state.position} is past its ${pagesFor(state).length} pages`);
+    throw new Error(
+      `flow position ${state.position} is past its ${pagesFor(state).length} pages`,
+    );
   }
   return page;
 }
 
+/** What a flow is opened with. */
+export interface FlowStart {
+  readonly stages: readonly Stage[];
+  /** Which agents the agent stage links; every one unless a caller names one. */
+  readonly agents?: readonly HarnessKind[] | undefined;
+  /** Answers known before the first page: above all, what is linked already. */
+  readonly answers?: Partial<FlowAnswers> | undefined;
+  /** Where to start, when the answers above make the first pages moot. */
+  readonly position?: number | undefined;
+}
+
 /** A flow at its first page, or at `position` when a caller starts it further in. */
-export function startFlow(
-  stages: readonly Stage[],
-  answers: Partial<FlowAnswers> = {},
-  position = 0,
-): FlowState {
-  if (stages.length === 0) {
+export function startFlow(start: FlowStart): FlowState {
+  if (start.stages.length === 0) {
     throw new Error("a flow needs at least one stage");
   }
-  const state: FlowState = { stages, position, answers: { ...NO_ANSWERS, ...answers } };
+  const agents = start.agents ?? EVERY_AGENT;
+  if (start.stages.includes("agent") && agents.length === 0) {
+    throw new Error("an agent stage needs at least one agent to link");
+  }
+  const state: FlowState = {
+    stages: start.stages,
+    agents,
+    position: start.position ?? 0,
+    answers: { ...NO_ANSWERS, ...start.answers },
+  };
   // Reading the page is the check: it throws when `position` is off the list.
   currentPage(state);
   return state;
@@ -284,13 +316,20 @@ export function startFlow(
  * The page on screen is found again in the recomputed sequence, so an
  * answer that appends pages (the provider choice, the student question, a
  * paste with no subscription) lands one past the page that gave it — and
- * an answer that removes pages (a link, which collapses the stage to its
- * choice and its linked page) lands one past the nearest page before it
- * that still exists. Positions are never carried across a change in the
+ * an answer that removes pages (a link, which collapses an agent's pages
+ * to its one page; a declined agent, which drops its paste page) lands one
+ * past the nearest page before it that still exists. Positions are never carried across a change in the
  * sequence, only pages are.
  */
-function settle(state: FlowState, answers: Partial<FlowAnswers>, forward: boolean): FlowState {
-  const next: FlowState = { ...state, answers: { ...state.answers, ...answers } };
+function settle(
+  state: FlowState,
+  answers: Partial<FlowAnswers>,
+  forward: boolean,
+): FlowState {
+  const next: FlowState = {
+    ...state,
+    answers: { ...state.answers, ...answers },
+  };
   const before = pagesFor(state);
   const after = pagesFor(next);
   for (let index = state.position; index >= 0; index -= 1) {
@@ -298,7 +337,9 @@ function settle(state: FlowState, answers: Partial<FlowAnswers>, forward: boolea
     const found = after.findIndex((candidate) => candidate.id === page.id);
     if (found === -1) {
       if (!forward) {
-        throw new Error(`recording an answer removed the ${page.id} page it was given on`);
+        throw new Error(
+          `recording an answer removed the ${page.id} page it was given on`,
+        );
       }
       continue;
     }
@@ -308,7 +349,10 @@ function settle(state: FlowState, answers: Partial<FlowAnswers>, forward: boolea
 }
 
 /** Records answers and moves one page on. */
-export function advance(state: FlowState, answers: Partial<FlowAnswers> = {}): FlowState {
+export function advance(
+  state: FlowState,
+  answers: Partial<FlowAnswers> = {},
+): FlowState {
   return settle(state, answers, true);
 }
 
@@ -316,7 +360,10 @@ export function advance(state: FlowState, answers: Partial<FlowAnswers> = {}): F
  * Records answers without moving: for what a page has to keep even if it
  * is left by `Back` — a key it minted, above all.
  */
-export function record(state: FlowState, answers: Partial<FlowAnswers>): FlowState {
+export function record(
+  state: FlowState,
+  answers: Partial<FlowAnswers>,
+): FlowState {
   return settle(state, answers, false);
 }
 

@@ -34,8 +34,9 @@ export const GcpCommands: PageComponent<{ id: "gcp-commands" }> = (props) => ({
     <>
       <CommandBlock value={CREATE_ACCOUNT} label="Copy" />
       <p class={styles.hint}>
-        Run these where the <code>gcloud</code> CLI is signed in to the project you want sessions
-        to run in. The last one writes <code>flyco-key.json</code> into the current directory.
+        Run these where the <code>gcloud</code> CLI is signed in to the project
+        you want sessions to run in. The last one writes{" "}
+        <code>flyco-key.json</code> into the current directory.
       </p>
     </>
   ),
@@ -67,7 +68,9 @@ export const GcpKeyFile: PageComponent<{ id: "gcp-key-file" }> = (props) => {
       return;
     }
     if (!file.name.endsWith(".json")) {
-      setReadError("That is not a .json file. Drop the key the last command wrote.");
+      setReadError(
+        "That is not a .json file. Drop the key the last command wrote.",
+      );
       return;
     }
     setFilename(file.name);
@@ -84,12 +87,12 @@ export const GcpKeyFile: PageComponent<{ id: "gcp-key-file" }> = (props) => {
         if (found === null) {
           return;
         }
-        const linked = await linkProvider({
+        await linkProvider({
           label: found.projectId,
           credentials: { kind: "gcp", service_account_json: contents() },
         });
         await readiness.refresh();
-        props.advance({ computeAccount: linked });
+        props.advance();
       },
     };
   };
@@ -99,7 +102,9 @@ export const GcpKeyFile: PageComponent<{ id: "gcp-key-file" }> = (props) => {
     body: (
       <>
         <label
-          class={dragging() ? `${styles.drop} ${styles.dropActive}` : styles.drop}
+          class={
+            dragging() ? `${styles.drop} ${styles.dropActive}` : styles.drop
+          }
           onDragOver={(event) => {
             event.preventDefault();
             setDragging(true);
@@ -120,7 +125,10 @@ export const GcpKeyFile: PageComponent<{ id: "gcp-key-file" }> = (props) => {
           />
           <Upload size={18} aria-hidden="true" />
           <span>
-            <Show when={filename()} fallback="Drop flyco-key.json, or choose a file">
+            <Show
+              when={filename()}
+              fallback="Drop flyco-key.json, or choose a file"
+            >
               {(name) => (
                 <>
                   <FileJson size={13} aria-hidden="true" /> {name()}
@@ -129,8 +137,12 @@ export const GcpKeyFile: PageComponent<{ id: "gcp-key-file" }> = (props) => {
             </Show>
           </span>
         </label>
-        <Show when={readError()}>{(message) => <p class={styles.error}>{message()}</p>}</Show>
-        <Show when={parseError()}>{(message) => <p class={styles.error}>{message()}</p>}</Show>
+        <Show when={readError()}>
+          {(message) => <p class={styles.error}>{message()}</p>}
+        </Show>
+        <Show when={parseError()}>
+          {(message) => <p class={styles.error}>{message()}</p>}
+        </Show>
         <Show when={account()}>
           {(found) => (
             <dl class={styles.confirm}>

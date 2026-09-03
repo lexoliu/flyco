@@ -73,7 +73,7 @@ export const HostEnroll: PageComponent<{ id: "host-enroll" }> = (props) => {
       if (enrollment.status === "enrolled") {
         transition({ kind: "arrived", host: enrollment.host });
         await readiness.refresh();
-        props.advance({ host: enrollment.host });
+        props.advance();
         return;
       }
       schedule(transition({ kind: "pending" }), id);
@@ -125,19 +125,37 @@ export const HostEnroll: PageComponent<{ id: "host-enroll" }> = (props) => {
   });
 
   const waiting = () =>
-    state().step === "waiting" ? (state() as Extract<Enrollment, { step: "waiting" }>) : null;
+    state().step === "waiting"
+      ? (state() as Extract<Enrollment, { step: "waiting" }>)
+      : null;
   const failed = () =>
-    state().step === "failed" ? (state() as Extract<Enrollment, { step: "failed" }>) : null;
+    state().step === "failed"
+      ? (state() as Extract<Enrollment, { step: "failed" }>)
+      : null;
 
   const primary = (): Primary => {
     switch (state().step) {
       case "expired":
-        return { label: "Mint a new command", busy: "Minting…", disabled: null, onClick: mint };
+        return {
+          label: "Mint a new command",
+          busy: "Minting…",
+          disabled: null,
+          onClick: mint,
+        };
       case "failed":
-        return { label: "Try again", busy: "Minting…", disabled: null, onClick: mint };
+        return {
+          label: "Try again",
+          busy: "Minting…",
+          disabled: null,
+          onClick: mint,
+        };
       case "idle":
       case "minting":
-        return { label: "Next", disabled: "Preparing the command…", onClick: () => undefined };
+        return {
+          label: "Next",
+          disabled: "Preparing the command…",
+          onClick: () => undefined,
+        };
       case "waiting":
       case "enrolled":
         return {
@@ -159,13 +177,16 @@ export const HostEnroll: PageComponent<{ id: "host-enroll" }> = (props) => {
                   nobody should run half a line they could not see. */}
               <CommandBlock value={live().token.command} label="Copy" wrap />
               <p class={styles.hint}>
-                The machine has to be Linux, and it needs Podman — the installer installs Podman
-                when it is absent. Nothing dials in: the machine opens the connection to flyco
-                itself and keeps it open.
+                The machine has to be Linux, and it needs Podman — the installer
+                installs Podman when it is absent. Nothing dials in: the machine
+                opens the connection to flyco itself and keeps it open.
               </p>
               <p class={styles.hint}>
                 The command works once, and expires in{" "}
-                <strong>{formatDuration(secondsUntilExpiry(live().token, now()))}</strong>.
+                <strong>
+                  {formatDuration(secondsUntilExpiry(live().token, now()))}
+                </strong>
+                .
               </p>
               <Waiting>Waiting for the machine…</Waiting>
               <p class={styles.hint}>
@@ -177,12 +198,14 @@ export const HostEnroll: PageComponent<{ id: "host-enroll" }> = (props) => {
 
         <Show when={state().step === "expired"}>
           <p class={styles.lede}>
-            <strong>The command expired</strong> before any machine ran it. A command is good for
-            ten minutes and works once.
+            <strong>The command expired</strong> before any machine ran it. A
+            command is good for ten minutes and works once.
           </p>
         </Show>
 
-        <Show when={failed()}>{(failure) => <ProblemNotice error={failure().error} />}</Show>
+        <Show when={failed()}>
+          {(failure) => <ProblemNotice error={failure().error} />}
+        </Show>
 
         {/* Minting: the command is one request away, so the page holds its
             shape rather than collapsing and pushing the footer around. */}

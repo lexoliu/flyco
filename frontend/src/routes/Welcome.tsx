@@ -8,10 +8,13 @@
  */
 import { useNavigate } from "@solidjs/router";
 import Flow from "../components/flow/Flow";
+import { useReadiness } from "../components/Readiness";
+import { linkedAgents } from "../lib/flow";
 import { dismissWelcome } from "../lib/localPreferences";
 
 export default function Welcome() {
   const navigate = useNavigate();
+  const readiness = useReadiness();
 
   /** Ends the flow for good; the card never returns. */
   function finish(): void {
@@ -19,5 +22,11 @@ export default function Welcome() {
     navigate("/", { replace: true });
   }
 
-  return <Flow stages={["meet", "agent", "compute"]} onDone={finish} />;
+  return (
+    <Flow
+      stages={["meet", "agent", "compute"]}
+      answers={{ agents: linkedAgents(readiness.harness()) }}
+      onDone={finish}
+    />
+  );
 }

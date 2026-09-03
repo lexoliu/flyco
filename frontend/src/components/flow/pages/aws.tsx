@@ -47,9 +47,9 @@ export const AwsPolicy: PageComponent<{ id: "aws-policy" }> = (props) => {
     body: (
       <>
         <p class={styles.lede}>
-          Make an IAM user, attach this policy to it, and create an access key for it. The policy
-          is generated from the calls the driver actually makes, so it grants what flyco needs and
-          no more.
+          Make an IAM user, attach this policy to it, and create an access key
+          for it. The policy is generated from the calls the driver actually
+          makes, so it grants what flyco needs and no more.
         </p>
         <Show
           when={policy.error === undefined}
@@ -78,7 +78,9 @@ export const AwsPolicy: PageComponent<{ id: "aws-policy" }> = (props) => {
             )}
           </Show>
         </Show>
-        <ExternalLink href={IAM_USERS_CONSOLE}>Open the IAM console</ExternalLink>
+        <ExternalLink href={IAM_USERS_CONSOLE}>
+          Open the IAM console
+        </ExternalLink>
       </>
     ),
     primary,
@@ -108,7 +110,7 @@ export const AwsKeys: PageComponent<{ id: "aws-keys" }> = (props) => {
           return;
         }
         const token = sessionToken()?.trim() ?? "";
-        const account = await linkProvider({
+        await linkProvider({
           label: "AWS",
           credentials: {
             kind: "aws",
@@ -118,7 +120,7 @@ export const AwsKeys: PageComponent<{ id: "aws-keys" }> = (props) => {
           },
         });
         await readiness.refresh();
-        props.advance({ computeAccount: account });
+        props.advance();
       },
     };
   };
@@ -152,7 +154,9 @@ export const AwsKeys: PageComponent<{ id: "aws-keys" }> = (props) => {
         <Show
           when={sessionToken() !== null}
           fallback={
-            <QuietLink onClick={() => setSessionToken("")}>I have a session token</QuietLink>
+            <QuietLink onClick={() => setSessionToken("")}>
+              I have a session token
+            </QuietLink>
           }
         >
           <div class={styles.field}>
@@ -167,7 +171,8 @@ export const AwsKeys: PageComponent<{ id: "aws-keys" }> = (props) => {
               autofocus
             />
             <p class={styles.hint}>
-              Only a temporary credential from <code>sts:AssumeRole</code> carries one.
+              Only a temporary credential from <code>sts:AssumeRole</code>{" "}
+              carries one.
             </p>
           </div>
         </Show>

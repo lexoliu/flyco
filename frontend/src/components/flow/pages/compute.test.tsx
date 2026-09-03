@@ -7,9 +7,22 @@
  */
 import { describe, expect, it } from "vitest";
 import { fireEvent, waitFor } from "@solidjs/testing-library";
-import type { AwsIamPolicy, HostView, ProviderAccountView, ProviderBonusHint } from "../../../api/client";
+import type {
+  AwsIamPolicy,
+  HostView,
+  ProviderAccountView,
+  ProviderBonusHint,
+} from "../../../api/client";
 import { HOST_ENROLL_COMMAND } from "../../../test/setup";
-import { json, postedTo, primary, problem, renderFlow, route, type } from "../testSupport";
+import {
+  json,
+  postedTo,
+  primary,
+  problem,
+  renderFlow,
+  route,
+  type,
+} from "../testSupport";
 
 const AZURE_STUDENTS: ProviderBonusHint = {
   provider: "azure",
@@ -20,7 +33,11 @@ const AZURE_STUDENTS: ProviderBonusHint = {
 };
 
 const POLICY: AwsIamPolicy = {
-  actions: ["ec2:DescribeInstanceTypes", "ec2:RunInstances", "ec2:TerminateInstances"],
+  actions: [
+    "ec2:DescribeInstanceTypes",
+    "ec2:RunInstances",
+    "ec2:TerminateInstances",
+  ],
   document: '{"Version":"2012-10-17","Statement":[]}',
 };
 
@@ -41,8 +58,16 @@ const HOST: HostView = {
   created_at_unix: 1_790_000_000,
 };
 
-function linkedAccount(kind: ProviderAccountView["kind"], label: string): ProviderAccountView {
-  return { id: "5f2b9a10-7c34-4d1e-9a6b-2f8c1d0e4b73", kind, label, linked_at_unix: 1_790_000_000 };
+function linkedAccount(
+  kind: ProviderAccountView["kind"],
+  label: string,
+): ProviderAccountView {
+  return {
+    id: "5f2b9a10-7c34-4d1e-9a6b-2f8c1d0e4b73",
+    kind,
+    label,
+    linked_at_unix: 1_790_000_000,
+  };
 }
 
 /** Answers the quickstart with `hints`, and the link with `account`. */
@@ -51,13 +76,19 @@ function cloud(hints: ProviderBonusHint[], account: ProviderAccountView): void {
     (path, method) => method === "POST" && path === "/v1/providers/quickstart",
     () => json(hints),
   );
-  route((path, method) => method === "POST" && path === "/v1/providers", () => json(account, 201));
+  route(
+    (path, method) => method === "POST" && path === "/v1/providers",
+    () => json(account, 201),
+  );
 }
 
 /** Opens stage C alone and chooses one place for sessions to run. */
 async function choosePlace(name: RegExp) {
   const flow = renderFlow(["compute"]);
-  await flow.findByRole("heading", { level: 1, name: "Where should sessions run?" });
+  await flow.findByRole("heading", {
+    level: 1,
+    name: "Where should sessions run?",
+  });
   fireEvent.click(flow.getByRole("radio", { name }));
   fireEvent.click(primary(flow.container));
   return flow;
@@ -70,19 +101,28 @@ async function answerBonus(
   answers: { newcomer: boolean; student: boolean },
 ): Promise<void> {
   await flow.findByRole("heading", { level: 1, name: `New to ${provider}?` });
-  fireEvent.click(flow.getByRole("radio", { name: answers.newcomer ? "Yes" : "No" }));
+  fireEvent.click(
+    flow.getByRole("radio", { name: answers.newcomer ? /^Yes/ : /^No/ }),
+  );
   fireEvent.click(primary(flow.container));
   await flow.findByRole("heading", { level: 1, name: "Are you a student?" });
-  fireEvent.click(flow.getByRole("radio", { name: answers.student ? "Yes" : "No" }));
+  fireEvent.click(
+    flow.getByRole("radio", { name: answers.student ? /^Yes/ : /^No/ }),
+  );
   fireEvent.click(primary(flow.container));
 }
 
 describe("the choice", () => {
   it("offers the four places docs/ux.md §7 names, as radios", async () => {
     const { findByRole, getByRole } = renderFlow(["compute"]);
-    await findByRole("heading", { level: 1, name: "Where should sessions run?" });
+    await findByRole("heading", {
+      level: 1,
+      name: "Where should sessions run?",
+    });
     for (const title of ["Azure", "AWS", "Google Cloud", "Your own machine"]) {
-      expect(getByRole("radio", { name: new RegExp(title) })).toBeInTheDocument();
+      expect(
+        getByRole("radio", { name: new RegExp(title) }),
+      ).toBeInTheDocument();
     }
   });
 });
@@ -91,33 +131,56 @@ describe("Azure", () => {
   it("walks credit, command, paste, subscription and key to the linked card", async () => {
     cloud([AZURE_STUDENTS], linkedAccount("azure", "Azure"));
     const flow = await choosePlace(/Azure/);
-    const { container, findByRole, findByText, getByRole, getByText, getByLabelText, onDone } = flow;
+    const {
+      container,
+      findByRole,
+      findByText,
+      getByRole,
+      getByText,
+      getByLabelText,
+      onDone,
+    } = flow;
 
     await answerBonus(flow, "Azure", { newcomer: true, student: true });
-    expect(postedTo("/v1/providers/quickstart")).toEqual({ new_to_provider: true, is_student: true });
+    expect(postedTo("/v1/providers/quickstart")).toEqual({
+      new_to_provider: true,
+      is_student: true,
+    });
 
     // A programme matched, so it has a page: the offer, and a quiet link.
     await findByRole("heading", { level: 1, name: "Azure gives you credit" });
     expect(getByText("Azure for Students")).toBeInTheDocument();
     expect(getByText("$100.00")).toBeInTheDocument();
-    expect(getByRole("link", { name: /Sign up/ })).toHaveAttribute("href", AZURE_STUDENTS.url);
+    expect(getByRole("link", { name: /Sign up/ })).toHaveAttribute(
+      "href",
+      AZURE_STUDENTS.url,
+    );
     expect(primary(container)).toHaveTextContent("Next");
     fireEvent.click(primary(container));
 
-    await findByRole("heading", { level: 1, name: "Run this in Azure Cloud Shell" });
+    await findByRole("heading", {
+      level: 1,
+      name: "Run this in Azure Cloud Shell",
+    });
     expect(getByText(/az ad sp create-for-rbac/)).toBeInTheDocument();
     expect(getByRole("button", { name: "Copy" })).toBeInTheDocument();
     fireEvent.click(primary(container));
 
     await findByRole("heading", { level: 1, name: "Paste the JSON block" });
     expect(primary(container)).toBeDisabled();
-    expect(primary(container)).toHaveAttribute("title", "Paste the JSON block to continue");
+    expect(primary(container)).toHaveAttribute(
+      "title",
+      "Paste the JSON block to continue",
+    );
     const paste = getByLabelText("The JSON block the command printed");
     type(paste, '{"clientId": "app-1", "clientSecret": "s3cret"}');
     expect(await findByText(/no tenant id in it/)).toBeInTheDocument();
     expect(primary(container)).toBeDisabled();
     // The CLI's default output: no subscription in it.
-    type(paste, '{"appId": "app-1", "password": "s3cret", "tenant": "tenant-1"}');
+    type(
+      paste,
+      '{"appId": "app-1", "password": "s3cret", "tenant": "tenant-1"}',
+    );
     expect(await findByText("app-1")).toBeInTheDocument();
     expect(getByText("tenant-1")).toBeInTheDocument();
     expect(getByText("held, and never shown again")).toBeInTheDocument();
@@ -132,7 +195,10 @@ describe("Azure", () => {
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
-    await findByRole("heading", { level: 1, name: "Save the machine's admin SSH key" });
+    await findByRole("heading", {
+      level: 1,
+      name: "Save the machine's admin SSH key",
+    });
     expect(await findByText(/Fingerprint/)).toBeInTheDocument();
     expect(getByRole("button", { name: "Download" })).toBeInTheDocument();
     expect(getByRole("button", { name: "Copy" })).toBeInTheDocument();
@@ -140,7 +206,8 @@ describe("Azure", () => {
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
-    await findByRole("heading", { level: 1, name: "Azure is linked" });
+    // No "is linked" page: the link is the last thing to do, and it finishes the flow.
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     const posted = postedTo("/v1/providers") as {
       label: string;
       credentials: Record<string, string>;
@@ -154,21 +221,19 @@ describe("Azure", () => {
       subscription_id: "sub-1",
     });
     expect(posted.credentials["admin_ssh_public_key"]).toMatch(/^ssh-ed25519 /);
-    // The compute card of §7, with its spot toggle.
-    expect(getByRole("switch", { name: /Use spot capacity/ })).toBeInTheDocument();
-    expect(primary(container)).toHaveTextContent("Start building");
-    fireEvent.click(primary(container));
-    expect(onDone).toHaveBeenCalledOnce();
   });
 
   it("takes the user's own public key instead of the generated one", async () => {
     cloud([], linkedAccount("azure", "Azure"));
     const flow = await choosePlace(/Azure/);
-    const { container, findByRole, getByRole, getByLabelText } = flow;
+    const { onDone, container, findByRole, getByRole, getByLabelText } = flow;
     await answerBonus(flow, "Azure", { newcomer: false, student: false });
 
     // Nothing matched: no credit page, straight to the command.
-    await findByRole("heading", { level: 1, name: "Run this in Azure Cloud Shell" });
+    await findByRole("heading", {
+      level: 1,
+      name: "Run this in Azure Cloud Shell",
+    });
     fireEvent.click(primary(container));
     await findByRole("heading", { level: 1, name: "Paste the JSON block" });
     type(
@@ -179,16 +244,27 @@ describe("Azure", () => {
     fireEvent.click(primary(container));
 
     // A complete block: no subscription page.
-    await findByRole("heading", { level: 1, name: "Save the machine's admin SSH key" });
-    fireEvent.click(getByRole("button", { name: "Use my own public key instead" }));
+    await findByRole("heading", {
+      level: 1,
+      name: "Save the machine's admin SSH key",
+    });
+    fireEvent.click(
+      getByRole("button", { name: "Use my own public key instead" }),
+    );
     expect(primary(container)).toBeDisabled();
-    expect(primary(container)).toHaveAttribute("title", "Paste a public key to continue");
+    expect(primary(container)).toHaveAttribute(
+      "title",
+      "Paste a public key to continue",
+    );
     type(getByLabelText("Your own public key"), "ssh-ed25519 AAAAC3Nza mine");
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
-    await findByRole("heading", { level: 1, name: "Azure is linked" });
-    expect((postedTo("/v1/providers") as { credentials: Record<string, string> }).credentials).toMatchObject({
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(
+      (postedTo("/v1/providers") as { credentials: Record<string, string> })
+        .credentials,
+    ).toMatchObject({
       subscription_id: "sub-1",
       admin_ssh_public_key: "ssh-ed25519 AAAAC3Nza mine",
     });
@@ -198,12 +274,20 @@ describe("Azure", () => {
     cloud([], linkedAccount("azure", "Azure"));
     route(
       (path, method) => method === "POST" && path === "/v1/providers",
-      () => problem(422, "invalid-credential", "Azure refused the service principal."),
+      () =>
+        problem(
+          422,
+          "invalid-credential",
+          "Azure refused the service principal.",
+        ),
     );
     const flow = await choosePlace(/Azure/);
     const { container, findByRole, getByLabelText, getByRole } = flow;
     await answerBonus(flow, "Azure", { newcomer: false, student: false });
-    await findByRole("heading", { level: 1, name: "Run this in Azure Cloud Shell" });
+    await findByRole("heading", {
+      level: 1,
+      name: "Run this in Azure Cloud Shell",
+    });
     fireEvent.click(primary(container));
     await findByRole("heading", { level: 1, name: "Paste the JSON block" });
     type(
@@ -212,14 +296,22 @@ describe("Azure", () => {
     );
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
-    await findByRole("heading", { level: 1, name: "Save the machine's admin SSH key" });
+    await findByRole("heading", {
+      level: 1,
+      name: "Save the machine's admin SSH key",
+    });
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
-    expect(await findByRole("alert")).toHaveTextContent("Azure refused the service principal.");
+    expect(await findByRole("alert")).toHaveTextContent(
+      "Azure refused the service principal.",
+    );
     expect(primary(container)).toHaveTextContent("Link Azure");
     expect(
-      getByRole("heading", { level: 1, name: "Save the machine's admin SSH key" }),
+      getByRole("heading", {
+        level: 1,
+        name: "Save the machine's admin SSH key",
+      }),
     ).toBeInTheDocument();
   });
 });
@@ -228,28 +320,49 @@ describe("AWS", () => {
   it("shows the policy, then takes the key, then links", async () => {
     cloud([], linkedAccount("aws", "AWS"));
     route(
-      (path, method) => method === "GET" && path === "/v1/providers/aws/iam-policy",
+      (path, method) =>
+        method === "GET" && path === "/v1/providers/aws/iam-policy",
       () => json(POLICY),
     );
     const flow = await choosePlace(/AWS/);
-    const { container, findByRole, getByRole, getByLabelText, getByText } = flow;
+    const {
+      onDone,
+      container,
+      findByRole,
+      getByRole,
+      getByLabelText,
+      getByText,
+    } = flow;
     await answerBonus(flow, "AWS", { newcomer: true, student: false });
 
     await findByRole("heading", { level: 1, name: "Create an access key" });
-    expect(await flow.findByText("3 actions, and nothing else")).toBeInTheDocument();
+    expect(
+      await flow.findByText("3 actions, and nothing else"),
+    ).toBeInTheDocument();
     expect(getByRole("button", { name: "Copy" })).toBeInTheDocument();
-    expect(getByRole("link", { name: /Open the IAM console/ })).toBeInTheDocument();
+    expect(
+      getByRole("link", { name: /Open the IAM console/ }),
+    ).toBeInTheDocument();
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
     await findByRole("heading", { level: 1, name: "Enter the access key" });
     expect(primary(container)).toHaveTextContent("Link AWS");
-    expect(primary(container)).toHaveAttribute("title", "Enter the access key ID to continue");
+    expect(primary(container)).toHaveAttribute(
+      "title",
+      "Enter the access key ID to continue",
+    );
     type(getByLabelText("Access key ID"), "AKIAIOSFODNN7EXAMPLE");
     await waitFor(() =>
-      expect(primary(container)).toHaveAttribute("title", "Enter the secret access key to continue"),
+      expect(primary(container)).toHaveAttribute(
+        "title",
+        "Enter the secret access key to continue",
+      ),
     );
-    type(getByLabelText("Secret access key"), "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
+    type(
+      getByLabelText("Secret access key"),
+      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    );
     await waitFor(() => expect(primary(container)).toBeEnabled());
 
     // The session token is a field revealed in place, not a page.
@@ -258,7 +371,7 @@ describe("AWS", () => {
     expect(getByText(/sts:AssumeRole/)).toBeInTheDocument();
     fireEvent.click(primary(container));
 
-    await findByRole("heading", { level: 1, name: "AWS is linked" });
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(postedTo("/v1/providers")).toEqual({
       label: "AWS",
       credentials: {
@@ -272,9 +385,11 @@ describe("AWS", () => {
 
   it("says when the policy failed to load, offers a retry, and holds Next until it lands", async () => {
     cloud([], linkedAccount("aws", "AWS"));
-    let answer = () => problem(500, "internal", "The policy could not be rendered.");
+    let answer = () =>
+      problem(500, "internal", "The policy could not be rendered.");
     route(
-      (path, method) => method === "GET" && path === "/v1/providers/aws/iam-policy",
+      (path, method) =>
+        method === "GET" && path === "/v1/providers/aws/iam-policy",
       () => answer(),
     );
     const flow = await choosePlace(/AWS/);
@@ -284,7 +399,9 @@ describe("AWS", () => {
 
     // The page owns the failure: the notice sits where the policy would
     // be, the way out is on the same line, and Next waits.
-    expect(await findByRole("alert")).toHaveTextContent("The policy could not be rendered.");
+    expect(await findByRole("alert")).toHaveTextContent(
+      "The policy could not be rendered.",
+    );
     expect(primary(container)).toBeDisabled();
     expect(primary(container)).toHaveAttribute(
       "title",
@@ -303,26 +420,44 @@ describe("Google Cloud", () => {
   it("shows the commands, reads the dropped key, and links", async () => {
     cloud([], linkedAccount("gcp", "my-project"));
     const flow = await choosePlace(/Google Cloud/);
-    const { container, findByRole, findByText, getByRole, getByLabelText, getByText } = flow;
+    const {
+      onDone,
+      container,
+      findByRole,
+      findByText,
+      getByRole,
+      getByLabelText,
+      getByText,
+    } = flow;
     await answerBonus(flow, "Google Cloud", { newcomer: false, student: true });
 
     await findByRole("heading", { level: 1, name: "Create a service account" });
-    expect(getByText(/gcloud iam service-accounts create flyco/)).toBeInTheDocument();
+    expect(
+      getByText(/gcloud iam service-accounts create flyco/),
+    ).toBeInTheDocument();
     expect(getByRole("button", { name: "Copy" })).toBeInTheDocument();
     fireEvent.click(primary(container));
 
     await findByRole("heading", { level: 1, name: "Drop the key file" });
     expect(primary(container)).toHaveTextContent("Link Google Cloud");
-    expect(primary(container)).toHaveAttribute("title", "Drop the key file to continue");
+    expect(primary(container)).toHaveAttribute(
+      "title",
+      "Drop the key file to continue",
+    );
 
     const key = JSON.stringify({
       type: "service_account",
       project_id: "my-project",
-      private_key: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n",
+      private_key:
+        "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n",
       client_email: "flyco@my-project.iam.gserviceaccount.com",
     });
-    const input = getByLabelText("Service account key file") as HTMLInputElement;
-    const file = new File([key], "flyco-key.json", { type: "application/json" });
+    const input = getByLabelText(
+      "Service account key file",
+    ) as HTMLInputElement;
+    const file = new File([key], "flyco-key.json", {
+      type: "application/json",
+    });
     // jsdom's File has no `text()`; the page reads the file the way a
     // browser lets it, so the test supplies what jsdom does not.
     Object.defineProperty(file, "text", { value: () => Promise.resolve(key) });
@@ -330,11 +465,13 @@ describe("Google Cloud", () => {
     fireEvent.change(input);
 
     expect(await findByText("my-project")).toBeInTheDocument();
-    expect(getByText("flyco@my-project.iam.gserviceaccount.com")).toBeInTheDocument();
+    expect(
+      getByText("flyco@my-project.iam.gserviceaccount.com"),
+    ).toBeInTheDocument();
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
-    await findByRole("heading", { level: 1, name: "Google Cloud is linked" });
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(postedTo("/v1/providers")).toEqual({
       label: "my-project",
       credentials: { kind: "gcp", service_account_json: key },
@@ -344,8 +481,14 @@ describe("Google Cloud", () => {
 
 describe("Your own machine", () => {
   it("mints the command as the page opens and waits, with no bonus questions", async () => {
-    const { container, findByRole, findByText, getByRole, getByText, queryByText } =
-      await choosePlace(/Your own machine/);
+    const {
+      container,
+      findByRole,
+      findByText,
+      getByRole,
+      getByText,
+      queryByText,
+    } = await choosePlace(/Your own machine/);
 
     await findByRole("heading", { level: 1, name: "Run this on the machine" });
     expect(await findByText(HOST_ENROLL_COMMAND)).toBeInTheDocument();
@@ -362,25 +505,26 @@ describe("Your own machine", () => {
     );
   });
 
-  it("moves on to the machine's own card the moment it arrives", async () => {
+  it("finishes the flow the moment the machine arrives", async () => {
     route(
-      (path, method) => method === "GET" && /^\/v1\/hosts\/enrollment-tokens\/[^/]+$/.test(path),
+      (path, method) =>
+        method === "GET" &&
+        /^\/v1\/hosts\/enrollment-tokens\/[^/]+$/.test(path),
       () => json({ status: "enrolled", host: HOST }),
     );
-    const { container, findByRole, getByText } = await choosePlace(/Your own machine/);
+    const { onDone } = await choosePlace(/Your own machine/);
 
     // The first poll is a few seconds out: nobody installs a daemon faster
     // than that, and a tighter loop would be a request per keystroke.
-    await findByRole("heading", { level: 1, name: "mercury is linked" }, { timeout: 6000 });
-    expect(getByText(/^arm64 · 12 vCPU \/ 32 GiB$/)).toBeInTheDocument();
-    expect(getByText("Online")).toBeInTheDocument();
-    expect(getByText("your hardware")).toBeInTheDocument();
-    expect(primary(container)).toHaveTextContent("Start building");
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce(), {
+      timeout: 6000,
+    });
   });
 
   it("turns an expired command into Mint a new command", async () => {
     route(
-      (path, method) => method === "POST" && path === "/v1/hosts/enrollment-tokens",
+      (path, method) =>
+        method === "POST" && path === "/v1/hosts/enrollment-tokens",
       () =>
         json(
           {
@@ -392,10 +536,13 @@ describe("Your own machine", () => {
           201,
         ),
     );
-    const { container, findByRole, findByText } = await choosePlace(/Your own machine/);
+    const { container, findByRole, findByText } =
+      await choosePlace(/Your own machine/);
     await findByRole("heading", { level: 1, name: "Run this on the machine" });
 
-    expect(await findByText(/The command expired/, {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(
+      await findByText(/The command expired/, {}, { timeout: 3000 }),
+    ).toBeInTheDocument();
     expect(primary(container)).toHaveTextContent("Mint a new command");
     expect(primary(container)).toBeEnabled();
   });

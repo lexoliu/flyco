@@ -14,8 +14,9 @@ export const Meet: PageComponent<{ id: "meet" }> = (props) => ({
   body: (
     <>
       <p class={styles.lede}>
-        Flyco runs the official Claude Code and Codex on a computer you own. You bring the agent
-        and the machine; flyco runs the session, keeps the budget, and gets out of the way.
+        Flyco runs the official Claude Code and Codex on a computer you own. You
+        bring the agent and the machine; flyco runs the session, keeps the
+        budget, and gets out of the way.
       </p>
       <div class={styles.marks}>
         <Logomark mark={ANTHROPIC_MARK} size={20} labelled />

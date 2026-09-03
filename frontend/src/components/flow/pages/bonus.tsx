@@ -12,26 +12,49 @@
  * exists only when something matched. Nobody is asked to sign up.
  */
 import { For, Show, createSignal } from "solid-js";
-import YesNo from "../../YesNo";
 import { providerQuickstart } from "../../../api/client";
 import type { CloudKind, Page } from "../../../lib/flow";
 import { formatUsd } from "../../../lib/money";
 import { PROVIDER_LABEL } from "../../../lib/providers";
 import { NEXT, type PageComponent, type Primary } from "../page";
-import { ExternalLink } from "./shared";
+import { ChoiceCards, ExternalLink, type Choice } from "./shared";
 import styles from "./pages.module.css";
 
-export const NewToProvider: PageComponent<{ id: "new-to-provider"; provider: CloudKind }> = (
-  props,
-) => {
-  const question = `New to ${PROVIDER_LABEL[props.page.provider]}?`;
-  const [answer, setAnswer] = createSignal(props.state().answers.newToProvider);
+type Answer = "yes" | "no";
+
+const toAnswer = (value: boolean | null): Answer | null =>
+  value === null ? null : value ? "yes" : "no";
+const fromAnswer = (value: Answer | null): boolean | null =>
+  value === null ? null : value === "yes";
+
+/**
+ * Yes and No as the page's body: two full-width cards, each saying what
+ * answering it means, because a question page's answer is the page — not
+ * a control under it.
+ */
+function yesNo(yes: string, no: string): Choice<Answer>[] {
+  return [
+    { kind: "yes", title: "Yes", line: yes, linked: false },
+    { kind: "no", title: "No", line: no, linked: false },
+  ];
+}
+
+export const NewToProvider: PageComponent<{
+  id: "new-to-provider";
+  provider: CloudKind;
+}> = (props) => {
+  const provider = PROVIDER_LABEL[props.page.provider];
+  const question = `New to ${provider}?`;
+  const [answer, setAnswer] = createSignal(
+    toAnswer(props.state().answers.newToProvider),
+  );
 
   const primary = (): Primary => {
-    const newToProvider = answer();
+    const newToProvider = fromAnswer(answer());
     return {
       label: "Next",
-      disabled: newToProvider === null ? "Answer the question to continue" : null,
+      disabled:
+        newToProvider === null ? "Answer the question to continue" : null,
       onClick: () => {
         if (newToProvider !== null) {
           props.advance({ newToProvider });
@@ -45,22 +68,34 @@ export const NewToProvider: PageComponent<{ id: "new-to-provider"; provider: Clo
     body: (
       <>
         <p class={styles.lede}>
-          Most clouds give a new account credit to start with. Flyco only asks so it can tell you
-          about a programme you qualify for.
+          Most clouds give a new account credit to start with. Flyco only asks
+          so it can tell you about a programme you qualify for.
         </p>
-        <YesNo question={question} value={answer()} onChange={setAnswer} questionShown={false} />
+        <ChoiceCards
+          question={question}
+          choices={yesNo(
+            `I have never used ${provider}.`,
+            `I already use ${provider}.`,
+          )}
+          value={answer()}
+          onChange={setAnswer}
+        />
       </>
     ),
     primary,
   };
 };
 
-export const Student: PageComponent<{ id: "student"; provider: CloudKind }> = (props) => {
+export const Student: PageComponent<{ id: "student"; provider: CloudKind }> = (
+  props,
+) => {
   const question = "Are you a student?";
-  const [answer, setAnswer] = createSignal(props.state().answers.student);
+  const [answer, setAnswer] = createSignal(
+    toAnswer(props.state().answers.student),
+  );
 
   const primary = (): Primary => {
-    const student = answer();
+    const student = fromAnswer(answer());
     return {
       label: "Next",
       busy: "Checking…",
@@ -68,7 +103,9 @@ export const Student: PageComponent<{ id: "student"; provider: CloudKind }> = (p
       onClick: async () => {
         const newToProvider = props.state().answers.newToProvider;
         if (student === null || newToProvider === null) {
-          throw new Error("the student page was reached before the newcomer question was answered");
+          throw new Error(
+            "the student page was reached before the newcomer question was answered",
+          );
         }
         const programmes = await providerQuickstart({
           new_to_provider: newToProvider,
@@ -86,20 +123,32 @@ export const Student: PageComponent<{ id: "student"; provider: CloudKind }> = (p
         <p class={styles.lede}>
           Education programmes unlock credit a general account does not get.
         </p>
-        <YesNo question={question} value={answer()} onChange={setAnswer} questionShown={false} />
+        <ChoiceCards
+          question={question}
+          choices={yesNo(
+            "I have a school email address to verify with.",
+            "I am not studying right now.",
+          )}
+          value={answer()}
+          onChange={setAnswer}
+        />
       </>
     ),
     primary,
   };
 };
 
-export const Credit: PageComponent<Extract<Page, { id: "credit" }>> = (props) => ({
+export const Credit: PageComponent<Extract<Page, { id: "credit" }>> = (
+  props,
+) => ({
   title: `${PROVIDER_LABEL[props.page.provider]} gives you credit`,
   body: (
     <>
       <p class={styles.lede}>
-        Your answers match {props.page.programmes.length === 1 ? "a programme" : "programmes"} worth
-        signing up for before you link the account. Linking works either way.
+        Your answers match{" "}
+        {props.page.programmes.length === 1 ? "a programme" : "programmes"}{" "}
+        worth signing up for before you link the account. Linking works either
+        way.
       </p>
       <ul class={styles.programmes}>
         <For each={props.page.programmes}>
@@ -108,8 +157,15 @@ export const Credit: PageComponent<Extract<Page, { id: "credit" }>> = (props) =>
               <div class={styles.programmeText}>
                 <p class={styles.programmeTitle}>
                   {programme.title}
-                  <Show when={programme.credit !== null && programme.credit !== undefined}>
-                    <span class={styles.credit}>{formatUsd(programme.credit ?? 0)}</span>
+                  <Show
+                    when={
+                      programme.credit !== null &&
+                      programme.credit !== undefined
+                    }
+                  >
+                    <span class={styles.credit}>
+                      {formatUsd(programme.credit ?? 0)}
+                    </span>
                   </Show>
                 </p>
                 <p class={styles.hint}>{programme.detail}</p>

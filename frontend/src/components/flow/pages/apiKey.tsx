@@ -17,7 +17,10 @@ import {
   type HarnessCredentialInput,
   type HarnessKind,
 } from "../../../api/client";
-import { CLAUDE_SECRET_FORMS, parseClaudeSecret } from "../../../lib/claudeCode";
+import {
+  CLAUDE_SECRET_FORMS,
+  parseClaudeSecret,
+} from "../../../lib/claudeCode";
 import { HARNESS_LABEL } from "../../../lib/harnesses";
 import type { PageComponent, Primary } from "../page";
 import { ExternalLink } from "./shared";
@@ -30,7 +33,9 @@ interface Linkable {
 }
 
 /** Either what to link, or why the field's contents cannot be. */
-type ReadSecret = { readonly ok: true; readonly link: Linkable } | { readonly ok: false; readonly error: string };
+type ReadSecret =
+  | { readonly ok: true; readonly link: Linkable }
+  | { readonly ok: false; readonly error: string };
 
 /** What one vendor's secret is called, where it comes from, and how it is read. */
 interface KeyVendor {
@@ -59,7 +64,10 @@ const VENDORS: Record<HarnessKind, KeyVendor> = {
       return {
         ok: true,
         link: {
-          label: secret.kind === "claude_api_key" ? "Anthropic API key" : "Claude subscription",
+          label:
+            secret.kind === "claude_api_key"
+              ? "Anthropic API key"
+              : "Claude subscription",
           credential: secret,
         },
       };
@@ -72,12 +80,17 @@ const VENDORS: Record<HarnessKind, KeyVendor> = {
     keysPage: "the OpenAI API keys page",
     read: (value) => ({
       ok: true,
-      link: { label: "OpenAI API key", credential: { kind: "codex_api_key", key: value } },
+      link: {
+        label: "OpenAI API key",
+        credential: { kind: "codex_api_key", key: value },
+      },
     }),
   },
 };
 
-export const ApiKey: PageComponent<{ id: "api-key"; agent: HarnessKind }> = (props) => {
+export const ApiKey: PageComponent<{ id: "api-key"; agent: HarnessKind }> = (
+  props,
+) => {
   const readiness = useReadiness();
   const vendor = VENDORS[props.page.agent];
   const [secret, setSecret] = createSignal("");
@@ -110,7 +123,12 @@ export const ApiKey: PageComponent<{ id: "api-key"; agent: HarnessKind }> = (pro
         }
         const account = await linkHarnessAccount(link);
         await readiness.refresh();
-        props.advance({ agentAccount: account });
+        props.advance({
+          agents: {
+            ...props.state().answers.agents,
+            [props.page.agent]: account,
+          },
+        });
       },
     };
   };
@@ -120,8 +138,8 @@ export const ApiKey: PageComponent<{ id: "api-key"; agent: HarnessKind }> = (pro
     body: (
       <>
         <p class={styles.lede}>
-          Billed per token by the vendor rather than by your subscription. Flyco encrypts the key
-          before storing it.
+          Billed per token by the vendor rather than by your subscription. Flyco
+          encrypts the key before storing it.
         </p>
         <div class={styles.field}>
           <label for="harness-api-key">{vendor.label}</label>
@@ -135,11 +153,16 @@ export const ApiKey: PageComponent<{ id: "api-key"; agent: HarnessKind }> = (pro
             autocomplete="off"
             autofocus
           />
-          <Show when={error()} fallback={<p class={styles.hint}>{vendor.hint}</p>}>
+          <Show
+            when={error()}
+            fallback={<p class={styles.hint}>{vendor.hint}</p>}
+          >
             {(message) => <p class={styles.error}>{message()}</p>}
           </Show>
         </div>
-        <ExternalLink href={vendor.keysUrl}>Create a key on {vendor.keysPage}</ExternalLink>
+        <ExternalLink href={vendor.keysUrl}>
+          Create a key on {vendor.keysPage}
+        </ExternalLink>
       </>
     ),
     primary,

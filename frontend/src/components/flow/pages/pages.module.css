@@ -516,3 +516,18 @@
   font-size: var(--text-xs);
   white-space: nowrap;
 }
+
+/* ── A linked agent ───────────────────────────────────────────────────── */
+
+/* The same row a choice card is, minus the choosing: the account, its
+   date, and the check, for a page whose only thing to do is move on. */
+.linked {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--color-text);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+}

@@ -15,14 +15,27 @@ import { ChoiceCards, type Choice } from "./shared";
 
 /** The four places a session can run, in the order the page lists them. */
 const PLACES: readonly { kind: CloudProviderKind; line: string }[] = [
-  { kind: "azure", line: "One command in Cloud Shell, then paste what it printed." },
-  { kind: "aws", line: "An IAM user carrying the policy flyco actually calls." },
-  { kind: "gcp", line: "A Compute Admin service account, dropped in as its key file." },
+  {
+    kind: "azure",
+    line: "One command in Cloud Shell, then paste what it printed.",
+  },
+  {
+    kind: "aws",
+    line: "An IAM user carrying the policy flyco actually calls.",
+  },
+  {
+    kind: "gcp",
+    line: "A Compute Admin service account, dropped in as its key file.",
+  },
   { kind: "host", line: "Enroll a Linux machine you own with one command." },
 ];
 
-export const ComputeChoice: PageComponent<{ id: "compute-choice" }> = (props) => {
-  const [chosen, setChosen] = createSignal<CloudProviderKind | null>(props.state().answers.compute);
+export const ComputeChoice: PageComponent<{ id: "compute-choice" }> = (
+  props,
+) => {
+  const [chosen, setChosen] = createSignal<CloudProviderKind | null>(
+    props.state().answers.compute,
+  );
 
   const choices: Choice<CloudProviderKind>[] = PLACES.map((place) => ({
     kind: place.kind,
@@ -45,7 +58,8 @@ export const ComputeChoice: PageComponent<{ id: "compute-choice" }> = (props) =>
     const compute = chosen();
     return {
       label: "Next",
-      disabled: compute === null ? "Choose where sessions run to continue" : null,
+      disabled:
+        compute === null ? "Choose where sessions run to continue" : null,
       onClick: () => {
         if (compute === null) {
           return;
@@ -56,8 +70,6 @@ export const ComputeChoice: PageComponent<{ id: "compute-choice" }> = (props) =>
           azurePrincipal: null,
           azureSubscription: null,
           azureKey: null,
-          computeAccount: null,
-          host: null,
         });
       },
     };
