@@ -12,7 +12,7 @@
  * event list (src/lib/transcript.ts, src/lib/status.ts), so two things on
  * screen can never disagree about what happened.
  */
-import { useParams } from "@solidjs/router";
+import { useNavigate, useParams } from "@solidjs/router";
 import { Match, Show, Switch, createMemo, createSignal, onCleanup } from "solid-js";
 import { createQuery } from "../lib/query";
 import { AlertTriangle } from "lucide-solid";
@@ -54,6 +54,7 @@ const TICK_MS = 1000;
 
 export default function SessionDetail() {
   const params = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [session, { refetch: refetchSession, mutate: mutateSession }] = createQuery(
     () => params.id,
     getSession,
@@ -74,15 +75,22 @@ export default function SessionDetail() {
   const waiting = createMemo(() => pendingApprovals(transcript()));
   const signals = createMemo(() => liveSignalsFrom(relay.events()));
 
-  const status = createMemo((): StatusView => {
+  const status = createMemo((): StatusView | undefined => {
     const current = session();
-    if (current === undefined) {
-      // Nothing is known yet; the pill says so rather than guessing at a
-      // lifecycle the request has not answered with.
-      return { status: "idle", label: "Loading", tone: "quiet", breathing: false };
-    }
-    return deriveStatus(current, now(), signals());
+    // No session, no status: a page whose request 404'd has no lifecycle to
+    // report, and a pill reading `Loading` over a session that will never
+    // arrive is the header claiming something the notice below it denies.
+    return current === undefined ? undefined : deriveStatus(current, now(), signals());
   });
+
+  /**
+   * The one failure that makes the whole page moot: the session could not
+   * be read, or the relay stopped for good (a 404, a 403 — see
+   * `isDefinitiveFailure`). Both mean there is nothing here to look at, so
+   * the notice carries the way out rather than leaving the reader on a dead
+   * page.
+   */
+  const fatal = createMemo(() => session.error ?? relay.failure());
 
   const latestUsage = createMemo(() => {
     const events = relay.events();
@@ -328,7 +336,18 @@ export default function SessionDetail() {
         onOpenPanel={(panel) => setPanelRequest({ panel, at: Date.now() })}
       />
 
-      <ProblemNotice error={session.error ?? machine.error} />
+      {/*
+        A session that could not be read takes everything derived from it
+        down with it — the machine, the budget, the relay — and repeating
+        the same 404 once per query would bury the way out of the page in
+        copies of itself. So the fatal notice replaces them.
+      */}
+      <Show when={fatal()} fallback={<ProblemNotice error={machine.error} />}>
+        <ProblemNotice
+          error={fatal()}
+          action={{ label: "Back to sessions", onClick: () => navigate("/") }}
+        />
+      </Show>
       <ProblemNotice error={error()} />
 
       <Show when={session()?.failure}>
@@ -435,7 +454,7 @@ export default function SessionDetail() {
                     <>
                       <ProvisioningTimeline
                         steps={[{ stage: "reserving", atUnix: current().created_at_unix }]}
-                        recovery={status().status === "migrating"}
+                        recovery={status()?.status === "migrating"}
                         repo={current().repo}
                         provider={providerLabel()}
                         now={now()}
@@ -453,8 +472,8 @@ export default function SessionDetail() {
                 </Match>
                 <Match when={session()}>
                   <p class={styles.empty}>
-                    {status().label}
-                    <Show when={status().detail}>{(detail) => <> · {detail()}</>}</Show>. Nothing
+                    {status()?.label}
+                    <Show when={status()?.detail}>{(detail) => <> · {detail()}</>}</Show>. Nothing
                     ran before it stopped.
                   </p>
                 </Match>

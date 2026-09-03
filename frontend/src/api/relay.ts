@@ -39,6 +39,7 @@
  */
 import { createSignal, type Accessor } from "solid-js";
 import { createRelayTicket, getSessionEvents, apiWebSocketUrl, type StoredEvent } from "./client";
+import { ApiProblem, NotImplementedError } from "./problem";
 import { parseClientEvent, type ClientCommand, type ClientEvent } from "./wire";
 
 const RECENT_WINDOW = 256;
@@ -151,11 +152,58 @@ export function nextBackoffDelay(attempt: number, options: BackoffOptions = {}):
   return random() * cap;
 }
 
-export type ConnectionState = "connecting" | "live" | "reconnecting" | "closed";
+export type ConnectionState = "connecting" | "live" | "reconnecting" | "failed" | "closed";
+
+/**
+ * Statuses that a retry can still get past.
+ *
+ * `401` is an expired session token, which the next request re-mints; `429`
+ * is the control plane asking for a slower client. Every other 4xx is a
+ * statement about the request itself — this session does not exist, or it
+ * is not this account's — and repeating it cannot change the answer.
+ */
+const RETRYABLE_CLIENT_STATUSES: readonly number[] = [401, 429];
+
+/**
+ * Whether a failure means "not now" or "not ever".
+ *
+ * A relay that backs off and retries forever is right about a dropped
+ * network, a restarting worker and a 5xx, and wrong about a session that
+ * does not exist: the page would spin a `Reconnecting…` pill on a socket
+ * that will never open (issue #137). So a 4xx problem document other than
+ * the two above stops the relay for good, and so does a
+ * [`NotImplementedError`] — a build without the relay does not grow one
+ * while the page is open.
+ *
+ * Everything that is not an [`ApiProblem`] — a [`NetworkError`], an
+ * [`UnexpectedResponseError`], a socket that closed — is retried, because
+ * none of them is the server saying the request was wrong.
+ */
+export function isDefinitiveFailure(error: unknown): boolean {
+  if (!(error instanceof ApiProblem)) {
+    return false;
+  }
+  if (error instanceof NotImplementedError) {
+    return true;
+  }
+  return (
+    error.status >= 400 &&
+    error.status < 500 &&
+    !RETRYABLE_CLIENT_STATUSES.includes(error.status)
+  );
+}
 
 export interface SessionRelay {
   /** Connection lifecycle: never a silently dead socket. */
   state: Accessor<ConnectionState>;
+  /**
+   * Why the relay stopped, when it stopped for good; `null` otherwise.
+   *
+   * Set exactly when {@link state} is `failed`, so the page can render the
+   * problem itself instead of showing a pill that promises a reconnection
+   * that is never coming.
+   */
+  failure: Accessor<unknown>;
   /** Every event shown so far, oldest first, deduplicated and dated. */
   events: Accessor<TimedEvent[]>;
   /**
@@ -184,6 +232,7 @@ const OPEN = 1;
 export function createSessionRelay(sessionId: string, options: CreateSessionRelayOptions = {}): SessionRelay {
   const WebSocketImpl = options.webSocketImpl ?? WebSocket;
   const [state, setState] = createSignal<ConnectionState>("connecting");
+  const [failure, setFailure] = createSignal<unknown>(null);
   const [events, setEvents] = createSignal<TimedEvent[]>([]);
   const stream = new EventStream();
 
@@ -205,6 +254,27 @@ export function createSessionRelay(sessionId: string, options: CreateSessionRela
       }
       more = page.more;
     }
+  }
+
+  /**
+   * What a failed connect attempt does next: back off, or stop.
+   *
+   * The one place the two outcomes are decided, so a failure raised by the
+   * first catch-up, by the ticket, or by the catch-up the socket's `open`
+   * handler fires is treated identically.
+   */
+  function onFailure(error: unknown): void {
+    if (disposed) {
+      return;
+    }
+    if (!isDefinitiveFailure(error)) {
+      scheduleReconnect();
+      return;
+    }
+    socket?.close();
+    socket = null;
+    setFailure(error);
+    setState("failed");
   }
 
   function scheduleReconnect(): void {
@@ -247,7 +317,7 @@ export function createSessionRelay(sessionId: string, options: CreateSessionRela
         // server during ticket-minting and the handshake is otherwise
         // never seen. ingestCatchUp's dedup keeps this from re-showing
         // anything a live frame already rendered in the meantime.
-        void catchUp();
+        catchUp().catch(onFailure);
       });
       ws.addEventListener("message", (message) => {
         if (typeof message.data !== "string") {
@@ -258,9 +328,15 @@ export function createSessionRelay(sessionId: string, options: CreateSessionRela
           pushEvent(event);
         }
       });
-      ws.addEventListener("close", scheduleReconnect);
-    } catch {
-      scheduleReconnect();
+      ws.addEventListener("close", () => {
+        // A socket that closes after a definitive failure has already been
+        // accounted for; reconnecting here would undo the stop.
+        if (state() !== "failed") {
+          scheduleReconnect();
+        }
+      });
+    } catch (error) {
+      onFailure(error);
     }
   }
 
@@ -283,5 +359,5 @@ export function createSessionRelay(sessionId: string, options: CreateSessionRela
 
   void connect();
 
-  return { state, events, send, dispose };
+  return { state, failure, events, send, dispose };
 }

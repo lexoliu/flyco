@@ -224,6 +224,35 @@ describe("route smoke tests", () => {
     expect(queryByLabelText("Provisioning")).not.toBeInTheDocument();
   });
 
+  it("renders a session that does not exist as a problem with a way back", async () => {
+    // A 404 on the session is definitive: the relay stops instead of
+    // backing off forever behind a `Reconnecting…` pill that will never
+    // become anything (issue #137).
+    const base = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      if (!url.pathname.startsWith("/v1/sessions/abc-123")) {
+        return base!(input, init);
+      }
+      return new Response(
+        JSON.stringify({
+          type: "https://flyco.dev/problems/not-found",
+          title: "Not Found",
+          status: 404,
+          detail: "no session with that id",
+        }),
+        { status: 404, headers: { "content-type": "application/problem+json" } },
+      );
+    });
+    const { findByRole, getByRole, queryByText } = renderAt("/sessions/abc-123");
+
+    const notice = await findByRole("alert");
+    expect(notice).toHaveTextContent("no session with that id");
+    expect(getByRole("button", { name: "Back to sessions" })).toBeInTheDocument();
+    expect(queryByText("Reconnecting…")).not.toBeInTheDocument();
+    expect(queryByText("Loading")).not.toBeInTheDocument();
+  });
+
   it("keeps the session's side panels behind the collapsed drawer", async () => {
     const { findByText, queryByLabelText, getByLabelText } = renderAt("/sessions/abc-123");
     await findByText("Audit the relay for dropped frames");

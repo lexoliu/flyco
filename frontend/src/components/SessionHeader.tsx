@@ -71,13 +71,18 @@ const CONNECTION_LABEL: Partial<Record<ConnectionState, string>> = {
   connecting: "Connecting…",
   reconnecting: "Reconnecting…",
   closed: "Disconnected",
+  // `failed` has no label: the relay stopped for a reason the page states
+  // in full, in a notice with a way out of it, and a second readout saying
+  // `Disconnected` beside it would only be a quieter version of the same
+  // sentence (issue #137).
 };
 
 export interface SessionHeaderProps {
   session: SessionDetail | undefined;
   /** The id, for the `Copy session id` action; never shown as a title. */
   sessionId: string;
-  status: StatusView;
+  /** How the session is doing; absent until there is a session to say. */
+  status: StatusView | undefined;
   /** The relay socket's state, shown only while it is not carrying events. */
   connection: ConnectionState;
   machine: MachineView | undefined;
@@ -234,16 +239,25 @@ export default function SessionHeader(props: SessionHeaderProps) {
       </div>
 
       <div class={styles.readouts}>
-        <span
-          class={cx(styles.status, props.status.breathing && styles.breathing)}
-          data-tone={props.status.tone}
-        >
-          <span class={styles.statusDot} aria-hidden="true" />
-          {props.status.label}
-          <Show when={props.status.detail}>
-            {(detail) => <span class={styles.statusDetail}>· {detail()}</span>}
-          </Show>
-        </span>
+        {/*
+          No pill until there is a session: a status is a claim about a
+          lifecycle, and a page whose session could not be read has none to
+          make (issue #137).
+        */}
+        <Show when={props.status}>
+          {(status) => (
+            <span
+              class={cx(styles.status, status().breathing && styles.breathing)}
+              data-tone={status().tone}
+            >
+              <span class={styles.statusDot} aria-hidden="true" />
+              {status().label}
+              <Show when={status().detail}>
+                {(detail) => <span class={styles.statusDetail}>· {detail()}</span>}
+              </Show>
+            </span>
+          )}
+        </Show>
 
         <Show when={CONNECTION_LABEL[props.connection]}>
           {(label) => <span class={styles.connection}>{label()}</span>}
