@@ -23,6 +23,8 @@ import type {
   UsageReport,
 } from "../api/wire";
 import type { ApprovalState } from "../api/client";
+import { formatTimeOfDay } from "./dates";
+import { formatDuration } from "./duration";
 import { formatUsd } from "./money";
 
 export interface ToolCall {
@@ -276,14 +278,40 @@ function findApproval(items: TranscriptItem[], id: string): Approval | undefined
   return undefined;
 }
 
-/** When a usage limit resets, as a sentence rather than an epoch second. */
-function usageLimitText(resetsAtUnix: number | null): string {
+/**
+ * When a usage limit resets, as a sentence rather than an epoch second.
+ *
+ * How long the wait is comes first, because that is the question — `in 1h
+ * 30m` is what decides whether to stay on the page — and the clock time
+ * follows it in brackets for whoever wants to come back at it. Both are
+ * measured against `atUnix`, the moment the limit was announced, so a
+ * transcript read back tomorrow still says what the user was told then
+ * rather than a countdown that has long since run out.
+ *
+ * A reset already in the past when it was announced drops the countdown
+ * rather than printing `in 0s`.
+ */
+export function usageLimitText(resetsAtUnix: number | null, atUnix: number): string {
   if (resetsAtUnix === null) {
     return "Usage limit reached. The agent waits for the account's limit to reset.";
   }
-  const resets = new Date(resetsAtUnix * 1000).toLocaleString();
-  return `Usage limit reached. The agent continues by itself at ${resets}.`;
+  const clock = formatTimeOfDay(resetsAtUnix);
+  if (resetsAtUnix <= atUnix) {
+    return `Usage limit reached. The agent continues by itself at ${clock}.`;
+  }
+  const wait = formatDuration(resetsAtUnix - atUnix);
+  return `Usage limit reached. The agent continues by itself in ${wait} (${clock}).`;
 }
+
+/**
+ * What a turn that stopped mid-way says for itself.
+ *
+ * The harness's own error is the second half, not the whole notice: `stream
+ * closed by the provider: overloaded_error` on a line of its own tells a
+ * first-time reader neither that the turn is over nor that the session is
+ * still theirs to continue (issue #136).
+ */
+export const TURN_FAILED_NOTE = "The turn stopped before it finished. Send a message to continue it.";
 
 export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] {
   const items: TranscriptItem[] = [];
@@ -364,7 +392,7 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
             break;
           }
           case "usage_limited":
-            notice(usageLimitText(harness.resets_at_unix), "warning", atUnix);
+            notice(usageLimitText(harness.resets_at_unix, atUnix), "warning", atUnix);
             break;
           case "context_compacted":
             notice(
@@ -424,8 +452,12 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
         });
         break;
       case "spot_notice":
+        // `120s` is how a provider states a deadline; `2m` is how a person
+        // reads one (issue #136).
         notice(
-          `Spot capacity is being reclaimed in ${event.seconds_remaining}s. Flyco saves the work and moves the session.`,
+          `Spot capacity is being reclaimed in ${formatDuration(
+            event.seconds_remaining,
+          )}. Flyco saves the work and moves the session.`,
           "warning",
           atUnix,
         );

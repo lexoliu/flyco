@@ -26,35 +26,56 @@
 const MAX_SUMMARY_CHARS = 72;
 
 /**
+ * How one tool is described, in the two ways a finished call can end.
+ *
+ * Both forms are written out rather than derived from each other: English
+ * has no rule that turns `Ran` into "did not run", and a transcript that
+ * guessed would produce a sentence nobody wrote.
+ */
+interface ToolVerb {
+  /** What the call did, when it worked: `Edited src/main.rs`. */
+  done: string;
+  /** What it did not do, when it failed: `Could not edit src/main.rs`. */
+  failed: string;
+}
+
+/**
  * The verb each known tool is described by.
  *
  * Keys are lower-cased tool names. Both harnesses' built-ins are here;
  * anything else (an MCP server's tool, a harness that renames one) falls
  * through to the tool's own name rather than being mislabelled.
  */
-const VERBS: ReadonlyMap<string, string> = new Map([
+const VERBS: ReadonlyMap<string, ToolVerb> = new Map([
   // Claude Code
-  ["read", "Read"],
-  ["write", "Wrote"],
-  ["edit", "Edited"],
-  ["multiedit", "Edited"],
-  ["notebookedit", "Edited"],
-  ["bash", "Ran"],
-  ["bashoutput", "Read output of"],
-  ["killshell", "Stopped"],
-  ["glob", "Searched for"],
-  ["grep", "Searched for"],
-  ["webfetch", "Fetched"],
-  ["websearch", "Searched the web for"],
-  ["task", "Delegated"],
-  ["todowrite", "Updated the plan"],
-  ["skill", "Used skill"],
+  ["read", { done: "Read", failed: "Could not read" }],
+  ["write", { done: "Wrote", failed: "Could not write" }],
+  ["edit", { done: "Edited", failed: "Could not edit" }],
+  ["multiedit", { done: "Edited", failed: "Could not edit" }],
+  ["notebookedit", { done: "Edited", failed: "Could not edit" }],
+  ["bash", { done: "Ran", failed: "Could not run" }],
+  ["bashoutput", { done: "Read output of", failed: "Could not read output of" }],
+  ["killshell", { done: "Stopped", failed: "Could not stop" }],
+  ["glob", { done: "Searched for", failed: "Could not search for" }],
+  ["grep", { done: "Searched for", failed: "Could not search for" }],
+  ["webfetch", { done: "Fetched", failed: "Could not fetch" }],
+  ["websearch", { done: "Searched the web for", failed: "Could not search the web for" }],
+  ["task", { done: "Delegated", failed: "Could not delegate" }],
+  ["todowrite", { done: "Updated the plan", failed: "Could not update the plan" }],
+  ["skill", { done: "Used skill", failed: "Could not use skill" }],
   // Codex
-  ["shell", "Ran"],
-  ["apply_patch", "Edited"],
-  ["update_plan", "Updated the plan"],
-  ["view_image", "Viewed"],
+  ["shell", { done: "Ran", failed: "Could not run" }],
+  ["apply_patch", { done: "Edited", failed: "Could not edit" }],
+  ["update_plan", { done: "Updated the plan", failed: "Could not update the plan" }],
+  ["view_image", { done: "Viewed", failed: "Could not view" }],
 ]);
+
+/** How an unrecognized tool's call is named when it failed. */
+function unknownToolVerb(tool: string): ToolVerb {
+  // The tool's own name still leads, because it remains the only true thing
+  // about it; what changes is that the row says the call did not happen.
+  return { done: tool, failed: `Could not call ${tool}` };
+}
 
 /**
  * Tools whose whole meaning is the verb: an object would repeat it.
@@ -145,24 +166,27 @@ function collapse(value: string): string {
  * Never empty and never a lie: an unrecognized tool with unreadable input
  * is summarised as its own name, which is exactly as much as the transcript
  * actually knows.
+ *
+ * `ok` is the outcome the harness reported — `false` for a call that
+ * failed, `null` while it is still running. A failed call says so in the
+ * verb rather than in a glyph at the end of the row: `Edited
+ * crates/daemon/src/compaction.rs` beside a small ✕ is a line that reads as
+ * a success to everyone who does not study the icon (issue #136).
  */
-export function summarizeTool(tool: string, input: unknown): string {
+export function summarizeTool(tool: string, input: unknown, ok: boolean | null): string {
   const key = tool.toLowerCase();
-  const verb = VERBS.get(key);
+  const verb = VERBS.get(key) ?? unknownToolVerb(tool);
+  const word = ok === false ? verb.failed : verb.done;
 
-  if (verb !== undefined && VERB_ONLY.has(key)) {
-    return verb;
+  if (VERBS.has(key) && VERB_ONLY.has(key)) {
+    return word;
   }
 
   const count = fileCount(input);
   if (count !== null && (key === "multiedit" || key === "apply_patch")) {
-    return `${verb ?? tool} ${count} files`;
+    return `${word} ${count} files`;
   }
 
   const object = objectOf(input);
-  if (verb === undefined) {
-    // An unknown tool: its name is the only true thing here, so it leads.
-    return object === null ? tool : `${tool} ${object}`;
-  }
-  return object === null ? verb : `${verb} ${object}`;
+  return object === null ? word : `${word} ${object}`;
 }

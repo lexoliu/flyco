@@ -12,7 +12,7 @@ describe("approval cards", () => {
       }),
     ).toEqual({
       title: "Merge a branch",
-      detail: "lexoliu/flyco: feat/issue-65 → dev",
+      detail: { kind: "text", text: "lexoliu/flyco: feat/issue-65 → dev" },
     });
   });
 
@@ -27,9 +27,10 @@ describe("approval cards", () => {
     });
 
     expect(asked.title).toBe("Switch to mac2.metal");
-    expect(asked.detail).toContain(
-      "Starts a 24-hour minimum charge of $15.60 the moment it boots.",
-    );
+    expect(asked.detail).toEqual({
+      kind: "text",
+      text: expect.stringContaining("Starts a 24-hour minimum charge of $15.60 the moment it boots."),
+    });
   });
 
   it("shows the agent's own reason for wanting the machine", () => {
@@ -40,14 +41,85 @@ describe("approval cards", () => {
       reason: "the build needs a signed macOS toolchain",
     });
 
-    expect(asked.detail).toContain("The agent says: the build needs a signed macOS toolchain");
-    expect(asked.detail).toContain("Resizing restarts the machine; the disk is kept.");
+    expect(asked.detail).toEqual({
+      kind: "text",
+      text: expect.stringContaining("The agent says: the build needs a signed macOS toolchain"),
+    });
+    expect(asked.detail).toEqual({
+      kind: "text",
+      text: expect.stringContaining("Resizing restarts the machine; the disk is kept."),
+    });
   });
 
-  it("shows a tool call's input as it would run", () => {
-    expect(operation({ kind: "tool_use", tool: "Bash", input: { command: "ls" } })).toEqual({
+  it("reads a tool call's input out as its arguments, not as JSON", () => {
+    // The decision is about the command; braces around it make the reader
+    // find it first (issue #136).
+    expect(
+      operation({
+        kind: "tool_use",
+        tool: "Bash",
+        input: { command: "git push --force origin fix/flaky-compaction" },
+      }),
+    ).toEqual({
       title: "Run Bash",
-      detail: JSON.stringify({ command: "ls" }, null, 2),
+      detail: {
+        kind: "fields",
+        fields: [
+          {
+            name: "command",
+            value: "git push --force origin fix/flaky-compaction",
+            block: false,
+          },
+        ],
+      },
+    });
+  });
+
+  it("keeps a string exactly as it was written, quotes and all", () => {
+    const asked = operation({
+      kind: "tool_use",
+      tool: "Write",
+      input: { file_path: "notes.md", content: "line one\nline two" },
+    });
+
+    expect(asked.detail).toEqual({
+      kind: "fields",
+      fields: [
+        { name: "file_path", value: "notes.md", block: false },
+        // Over one line, so the card gives it a block rather than a line.
+        { name: "content", value: "line one\nline two", block: true },
+      ],
+    });
+  });
+
+  it("falls back to JSON for a value that is not a string", () => {
+    const asked = operation({
+      kind: "tool_use",
+      tool: "Grep",
+      input: { pattern: "TODO", options: { glob: "*.rs", limit: 20 } },
+    });
+
+    expect(asked.detail).toEqual({
+      kind: "fields",
+      fields: [
+        { name: "pattern", value: "TODO", block: false },
+        {
+          name: "options",
+          value: JSON.stringify({ glob: "*.rs", limit: 20 }, null, 2),
+          block: true,
+        },
+      ],
+    });
+  });
+
+  it("shows an input with no keys as the one value it is", () => {
+    expect(operation({ kind: "tool_use", tool: "Ping", input: {} }).detail).toEqual({
+      kind: "text",
+      text: "{}",
+    });
+    expect(operation({ kind: "tool_use", tool: "Say", input: "hello" }).detail).toEqual({
+      kind: "text",
+      text: "hello",
     });
   });
 });

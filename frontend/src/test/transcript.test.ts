@@ -7,6 +7,7 @@ import {
 } from "../lib/transcript";
 import type { TimedEvent } from "../api/relay";
 import type { ClientEvent } from "../api/wire";
+import { formatTimeOfDay } from "../lib/dates";
 import { shellCommandIn, shellOutcomeLabel, shellSucceeded } from "../lib/shell";
 
 const T0 = 1_800_000_000;
@@ -41,12 +42,19 @@ describe("foldTranscript notices", () => {
     });
   });
 
-  it("says when a usage limit resets, and stays honest when it does not know", () => {
+  it("says how long a usage limit lasts before saying when it ends", () => {
+    // How long the wait is decides whether to stay on the page; the clock
+    // time is for whoever wants to come back at it (issue #136). Both are
+    // measured from the moment the limit was announced, so the sentence
+    // still says what the user was told when it is read back tomorrow.
     const [known] = foldTranscript([
-      at(0, { type: "harness", event: { type: "usage_limited", resets_at_unix: T0 + 3600 } }),
+      at(0, { type: "harness", event: { type: "usage_limited", resets_at_unix: T0 + 5_400 } }),
     ]);
     expect(known).toMatchObject({ kind: "notice", tone: "warning" });
-    expect((known as { text: string }).text).toContain("continues by itself at");
+    expect((known as { text: string }).text).toContain(
+      `continues by itself in 1h 30m (${formatTimeOfDay(T0 + 5_400)}).`,
+    );
+    expect((known as { text: string }).text).not.toContain(":00:00");
 
     const [unknown] = foldTranscript([
       at(0, { type: "harness", event: { type: "usage_limited", resets_at_unix: null } }),
@@ -54,10 +62,20 @@ describe("foldTranscript notices", () => {
     expect((unknown as { text: string }).text).toContain("waits for the account's limit to reset");
   });
 
-  it("counts down a spot reclamation", () => {
-    const [notice] = foldTranscript([at(0, { type: "spot_notice", seconds_remaining: 30 })]);
+  it("drops the countdown on a limit that had already reset when it was announced", () => {
+    const [notice] = foldTranscript([
+      at(0, { type: "harness", event: { type: "usage_limited", resets_at_unix: T0 - 60 } }),
+    ]);
+    expect((notice as { text: string }).text).toBe(
+      `Usage limit reached. The agent continues by itself at ${formatTimeOfDay(T0 - 60)}.`,
+    );
+  });
+
+  it("counts down a spot reclamation the way a person reads a countdown", () => {
+    const [notice] = foldTranscript([at(0, { type: "spot_notice", seconds_remaining: 120 })]);
     expect(notice).toMatchObject({ kind: "notice", tone: "warning" });
-    expect((notice as { text: string }).text).toContain("30s");
+    // `120s` is how a provider states a deadline (issue #136).
+    expect((notice as { text: string }).text).toContain("reclaimed in 2m.");
   });
 
   it("says nothing about a clean working tree", () => {

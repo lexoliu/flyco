@@ -110,3 +110,104 @@ describe("Transcript shell block", () => {
     expect(getByRole("region").textContent).toContain("the machine was not connected");
   });
 });
+
+/** One turn, with everything overridable. */
+function turn(overrides: Partial<Extract<TranscriptItem, { kind: "turn" }>> = {}) {
+  const item: TranscriptItem = {
+    kind: "turn",
+    key: "turn-t1",
+    turnId: "t1",
+    text: "I'll rebase the branch and push it.",
+    tools: [],
+    status: "completed",
+    error: null,
+    usage: null,
+    startedAtUnix: T0,
+    endedAtUnix: T0 + 30,
+    ...overrides,
+  };
+  return item;
+}
+
+describe("Transcript turn", () => {
+  it("says a failed turn stopped, and that the session is still the user's to continue", () => {
+    // The provider's own words used to stand alone, which tells a
+    // first-time reader neither of those things (issue #136).
+    const { getByText } = show(
+      turn({ status: "failed", error: "stream closed by the provider: overloaded_error" }),
+    );
+
+    expect(
+      getByText("The turn stopped before it finished. Send a message to continue it."),
+    ).toBeInTheDocument();
+    expect(getByText("stream closed by the provider: overloaded_error")).toBeInTheDocument();
+  });
+
+  it("says a tool call failed in the line, not only in the glyph beside it", () => {
+    const { getByText } = show(
+      turn({
+        tools: [
+          {
+            callId: "c1",
+            tool: "Edit",
+            input: { file_path: "crates/daemon/src/compaction.rs" },
+            ok: false,
+            startedAtUnix: T0,
+            endedAtUnix: T0 + 2,
+          },
+        ],
+      }),
+    );
+
+    expect(getByText("Could not edit crates/daemon/src/compaction.rs")).toBeInTheDocument();
+  });
+});
+
+describe("Transcript approval card", () => {
+  /** One approval, as the room raises it. */
+  function approval(payload: Extract<TranscriptItem, { kind: "approval" }>["payload"]) {
+    const item: TranscriptItem = {
+      kind: "approval",
+      key: "approval-ap-1",
+      id: "ap-1",
+      payload,
+      state: "pending",
+      atUnix: T0,
+    };
+    return item;
+  }
+
+  it("reads a tool call's arguments out, one row each, instead of printing JSON", () => {
+    const { getByRole, getByText, queryByText } = show(
+      approval({
+        kind: "tool_use",
+        tool: "Bash",
+        input: { command: "git push --force origin fix/flaky-compaction" },
+      }),
+    );
+
+    const card = getByRole("region", { name: "Approval" });
+    expect(card.textContent).toContain("Run Bash");
+    expect(getByText("command")).toBeInTheDocument();
+    // The command exactly as it would run: no quotes, no braces, no
+    // re-indentation of the text the user is being asked to allow.
+    expect(getByText("git push --force origin fix/flaky-compaction")).toBeInTheDocument();
+    expect(queryByText(/^\{$/)).not.toBeInTheDocument();
+    expect(card.querySelector("dl")).not.toBeNull();
+  });
+
+  it("keeps writing the cards it wrote itself as sentences", () => {
+    const { getByRole } = show(
+      approval({
+        kind: "merge",
+        repo: "lexoliu/flyco",
+        from_branch: "fix/flaky-compaction",
+        into_branch: "dev",
+      }),
+    );
+
+    const card = getByRole("region", { name: "Approval" });
+    expect(card.textContent).toContain("lexoliu/flyco: fix/flaky-compaction → dev");
+    expect(card.querySelector("dl")).toBeNull();
+  });
+});
