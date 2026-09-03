@@ -6,7 +6,8 @@
  * order they happen in: step two does not exist until flyco has an attempt
  * to redeem against, the button that redeems it stays disabled until there
  * is something to redeem, and what leaves the browser is the code the user
- * pasted rather than whatever else came with it.
+ * pasted rather than whatever else came with it — and that every button the
+ * cards render has a name a screen reader can announce.
  */
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@solidjs/testing-library";
@@ -75,6 +76,14 @@ function postedTo(path: string): unknown {
     .mock.calls.find(([input, init]) => String(input).endsWith(path) && init?.method === "POST");
   expect(call, `no POST to ${path}`).toBeDefined();
   return JSON.parse(String(call?.[1]?.body));
+}
+
+/**
+ * What a screen reader would call `button`, by the two routes this component
+ * uses to name one: an explicit `aria-label`, or the text inside it.
+ */
+function accessibleName(button: HTMLButtonElement): string {
+  return (button.getAttribute("aria-label") ?? button.textContent ?? "").trim();
 }
 
 /** Types `value` into a field, the way an input event carries it. */
@@ -171,6 +180,34 @@ describe("HarnessChooser", () => {
     );
     expect(await findByText(/Waiting for you to approve in the browser/)).toBeInTheDocument();
     expect(await findByRole("button", { name: /Copy code/ })).toBeInTheDocument();
+  });
+
+  /**
+   * Every button the card renders answers to something.
+   *
+   * The waiting state is where this last went wrong (#140): a walkthrough
+   * that read `innerText` reported a nameless disabled button, which turned
+   * out to be the `Advanced` form's submit — named `Link with an API key`,
+   * but inside a closed `<details>`, where rendered text does not exist.
+   * Reading the name the way the accessibility tree does covers the hidden
+   * ones too, so a genuinely nameless button cannot hide behind a collapsed
+   * section.
+   */
+  it("names every button it renders while it waits for approval", async () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
+    const { container, findByRole, findByText } = renderChooser();
+
+    fireEvent.click(await findByRole("button", { name: "Connect Codex" }));
+    fireEvent.click(await findByRole("button", { name: /Sign in with ChatGPT/ }));
+    expect(await findByText(/Waiting for you to approve in the browser/)).toBeInTheDocument();
+
+    const buttons = [...container.querySelectorAll("button")];
+    expect(buttons.length).toBeGreaterThan(0);
+    // The offenders name themselves in the failure, since a nameless button
+    // has nothing else to identify it by.
+    expect(
+      buttons.filter((button) => accessibleName(button) === "").map((button) => button.outerHTML),
+    ).toEqual([]);
   });
 
   it("links the account when a poll finds the code approved", async () => {
