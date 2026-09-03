@@ -15,6 +15,7 @@ import type {
 } from "../../../api/client";
 import { HOST_ENROLL_COMMAND } from "../../../test/setup";
 import {
+  command,
   json,
   postedTo,
   primary,
@@ -165,7 +166,7 @@ describe("Azure", () => {
     expect(
       getByRole("link", { name: /Open Azure Cloud Shell/ }),
     ).toHaveAttribute("href", "https://shell.azure.com");
-    expect(getByText(/az ad sp create-for-rbac/)).toBeInTheDocument();
+    expect(getByText(command(/az ad sp create-for-rbac/))).toBeInTheDocument();
     expect(getByRole("button", { name: "Copy" })).toBeInTheDocument();
     fireEvent.click(primary(container));
 
@@ -192,7 +193,9 @@ describe("Azure", () => {
 
     // So the one page that asks for it appears.
     await findByRole("heading", { level: 1, name: "Which subscription?" });
-    expect(getByText("az account show --query id -o tsv")).toBeInTheDocument();
+    expect(
+      getByText(command("az account show --query id -o tsv")),
+    ).toBeInTheDocument();
     expect(primary(container)).toBeDisabled();
     type(getByLabelText("Subscription id"), "sub-1");
     await waitFor(() => expect(primary(container)).toBeEnabled());
@@ -439,10 +442,12 @@ describe("Google Cloud", () => {
       name: "Run this in Google Cloud Shell",
     });
     expect(
-      getByText(/gcloud iam service-accounts create flyco/),
+      getByText(command(/gcloud iam service-accounts create flyco/)),
     ).toBeInTheDocument();
     // The key is downloaded by the command, for a user with only a browser.
-    expect(getByText(/cloudshell download flyco-key.json/)).toBeInTheDocument();
+    expect(
+      getByText(command(/cloudshell download flyco-key\.json/)),
+    ).toBeInTheDocument();
     expect(
       getByRole("link", { name: /Open Google Cloud Shell/ }),
     ).toHaveAttribute("href", "https://shell.cloud.google.com/?show=terminal");
@@ -502,7 +507,7 @@ describe("Your own machine", () => {
     } = await choosePlace(/Your own machine/);
 
     await findByRole("heading", { level: 1, name: "Run this on the machine" });
-    expect(await findByText(HOST_ENROLL_COMMAND)).toBeInTheDocument();
+    expect(await findByText(command(HOST_ENROLL_COMMAND))).toBeInTheDocument();
     expect(queryByText("Are you a student?")).toBeNull();
     expect(getByRole("button", { name: "Copy" })).toBeInTheDocument();
     expect(getByText(/needs Podman/)).toBeInTheDocument();

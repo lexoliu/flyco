@@ -63,7 +63,9 @@
   background: var(--color-bg);
   color: var(--color-text-muted);
   font-size: var(--text-xs);
-  transition: color var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .copy:hover {

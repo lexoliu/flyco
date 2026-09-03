@@ -21,6 +21,7 @@ import InstructionsSection from "../routes/settings/InstructionsSection";
 import AccountSection from "../routes/settings/AccountSection";
 import NotFound from "../routes/NotFound";
 import { HOST_ENROLL_COMMAND } from "./setup";
+import { command } from "../components/flow/testSupport";
 import { consumePostLoginPath } from "../lib/postLoginPath";
 import { clearSessionToken, setSessionToken } from "../lib/session";
 import { dismissWelcome } from "../lib/localPreferences";
@@ -225,7 +226,7 @@ describe("route smoke tests", () => {
 
     // The command comes from the control plane, which is the only thing
     // that knows this deployment's own origin.
-    expect(await findByText(HOST_ENROLL_COMMAND)).toBeInTheDocument();
+    expect(await findByText(command(HOST_ENROLL_COMMAND))).toBeInTheDocument();
     expect(getByRole("button", { name: "Copy" })).toBeInTheDocument();
     expect(getByText(/needs Podman/)).toBeInTheDocument();
     expect(getByRole("status")).toHaveTextContent("Waiting for the machine…");
