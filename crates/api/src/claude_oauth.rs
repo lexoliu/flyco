@@ -140,9 +140,14 @@ async fn redeem(
     user: UserId,
     request: CompleteClaudeOauth,
 ) -> Result<HarnessAccountView, ApiError> {
-    // Single-use, like every other OAuth state: the read that consumes it
-    // is the read that spends it, whether or not the exchange then works.
-    let attempt = expiring::take::<Attempt>(kv, &attempt_key(request.attempt_id))
+    // Read, not yet spent: a paste Anthropic refuses — a typo, a code from
+    // the wrong tab — has to be retryable against the same sign-in, and a
+    // control plane that fails after the exchange must not leave the user
+    // with a page that can only fail again. The attempt is spent below,
+    // once Anthropic has accepted the code; the code itself is single-use
+    // at Anthropic, so nothing here can be replayed.
+    let key = attempt_key(request.attempt_id);
+    let attempt = expiring::get::<Attempt>(kv, &key)
         .await?
         .ok_or(ApiError::ClaudeOauthAttemptExpired)?;
     if attempt.user != user {
@@ -171,6 +176,11 @@ async fn redeem(
         })
         .await?;
 
+    // Spent: the code has been exchanged, so the attempt has done its job.
+    // A concurrent second paste of the same code loses at Anthropic, not
+    // here, which is why nothing is made of the delete finding it gone.
+    expiring::take::<Attempt>(kv, &key).await?;
+
     let credential = StoredCredential::from_tokens(&tokens, now_unix());
     let label = tokens.email_address().unwrap_or(UNNAMED_ACCOUNT).to_owned();
     harness_accounts::store(
@@ -191,4 +201,55 @@ pub fn routes() -> Vec<RouteNode> {
         "/v1/harness-accounts/claude/oauth/complete".post(complete),
     ))
     .into_route_nodes()
+}
+
+#[cfg(test)]
+mod tests {
+    use skyzen_services::{Db, Kv};
+    use skyzen_test::TestContext;
+
+    use super::{CompleteClaudeOauth, begin, redeem};
+    use crate::anthropic::ClaudeClient;
+    use crate::error::ApiError;
+    use crate::testing::{CLAUDE_CODE, TestClaude, migrate, seed_user, test_config};
+    use flyco_core::HarnessKind;
+
+    /// A refused paste leaves the sign-in standing, and only a redeemed
+    /// code spends it: the typo case and the after-a-failure case are the
+    /// same page, and both need a second paste to be possible.
+    #[skyzen::test]
+    async fn the_attempt_is_spent_by_the_exchange_and_not_before(
+        _ctx: TestContext,
+        kv: Kv,
+        db: Db,
+    ) {
+        migrate(&db).await;
+        let user = seed_user(&db).await;
+        let config = test_config();
+        let claude = ClaudeClient::Fake(TestClaude);
+        let started = begin(&config, &kv, user.id)
+            .await
+            .expect("a sign-in starts");
+        let paste = |code: &str| CompleteClaudeOauth {
+            attempt_id: started.attempt_id,
+            code: code.to_owned(),
+        };
+
+        let wrong = redeem(&config, &claude, &kv, &db, user.id, paste("not-the-code")).await;
+        assert!(
+            matches!(wrong, Err(ApiError::ClaudeOauthRejected { .. })),
+            "a wrong paste is Anthropic's refusal, not a spent attempt: {wrong:?}"
+        );
+
+        let linked = redeem(&config, &claude, &kv, &db, user.id, paste(CLAUDE_CODE))
+            .await
+            .expect("the same sign-in redeems the right paste");
+        assert_eq!(linked.harness, HarnessKind::ClaudeCode);
+
+        let again = redeem(&config, &claude, &kv, &db, user.id, paste(CLAUDE_CODE)).await;
+        assert!(
+            matches!(again, Err(ApiError::ClaudeOauthAttemptExpired)),
+            "a redeemed sign-in is spent: {again:?}"
+        );
+    }
 }

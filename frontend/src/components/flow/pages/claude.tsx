@@ -64,16 +64,34 @@ export const ClaudeSignIn: PageComponent<{ id: "claude-sign-in" }> = (
 
 export const ClaudePaste: PageComponent<{ id: "claude-paste" }> = (props) => {
   const readiness = useReadiness();
-  const attempt = props.state().answers.claudeAttempt;
-  if (attempt === null) {
-    throw new Error(
-      "the paste page was reached without a Claude sign-in to redeem against",
-    );
-  }
+  /** The sign-in the paste redeems against: the one the page opened with, or a fresh one. */
+  const attempt = () => {
+    const open = props.state().answers.claudeAttempt;
+    if (open === null) {
+      throw new Error(
+        "the paste page was reached without a Claude sign-in to redeem against",
+      );
+    }
+    return open;
+  };
   const [pasted, setPasted] = createSignal("");
   const [refusal, setRefusal] = createSignal<unknown>(null);
 
   const code = () => parsePastedCode(pasted());
+
+  /**
+   * A new sign-in, in place: a code that was refused, or spent by an
+   * exchange that then failed, is not coming back, and the way out is a
+   * new code — which needs a new attempt, since the old one's state has
+   * been used. The page stays; the attempt under it changes.
+   */
+  async function restart(): Promise<void> {
+    const started = await startClaudeOauth();
+    setPasted("");
+    setRefusal(null);
+    props.record({ claudeAttempt: started });
+    openInNewTab(started.authorize_url);
+  }
 
   const primary = (): Primary => {
     const parsed = code();
@@ -91,14 +109,14 @@ export const ClaudePaste: PageComponent<{ id: "claude-paste" }> = (props) => {
         setRefusal(null);
         try {
           const account = await completeClaudeOauth({
-            attempt_id: attempt.attempt_id,
+            attempt_id: attempt().attempt_id,
             code: pastedCodeForExchange(parsed),
           });
           await readiness.refresh();
           props.linked("claude_code", account);
         } catch (error) {
           // Under the field rather than above the footer: the code is what
-          // was refused, and the way out is to paste it again.
+          // was refused, and the way out is to paste it again or start over.
           setRefusal(error);
         }
       },
@@ -127,8 +145,8 @@ export const ClaudePaste: PageComponent<{ id: "claude-paste" }> = (props) => {
             <ProblemNotice error={refusal()} />
           </Show>
         </div>
-        <QuietLink onClick={() => openInNewTab(attempt.authorize_url)}>
-          Open the sign-in page again
+        <QuietLink onClick={() => void restart()}>
+          Start the sign-in again
         </QuietLink>
       </>
     ),
