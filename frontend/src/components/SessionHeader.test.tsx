@@ -6,7 +6,6 @@ import type { StatusView } from "../lib/status";
 
 const SESSION_ID = "3f2b1c9d-6a4e-4d8b-9f21-7c5a0e3b8d14";
 
-const LOADING: StatusView = { status: "idle", label: "Loading", tone: "quiet", breathing: false };
 const WORKING: StatusView = { status: "working", label: "Working", tone: "working", breathing: true };
 
 const SESSION: SessionDetail = {
@@ -27,7 +26,7 @@ function mount(overrides: Partial<SessionHeaderProps>) {
   const props: SessionHeaderProps = {
     session: undefined,
     sessionId: SESSION_ID,
-    status: LOADING,
+    status: undefined,
     connection: "live",
     machine: undefined,
     budgetSpentUsd: undefined,
@@ -53,6 +52,9 @@ describe("SessionHeader", () => {
 
     expect(getByLabelText("Loading the session")).toBeInTheDocument();
     expect(queryByText(SESSION_ID)).not.toBeInTheDocument();
+    // No status either: a session nothing is known about has no lifecycle
+    // to report, and a pill is a claim (issue #137).
+    expect(queryByText("Loading")).not.toBeInTheDocument();
 
     // The rings keep their names and read a dash: what is unknown is the
     // number, and the header has no business explaining its plumbing.
@@ -117,5 +119,18 @@ describe("SessionHeader", () => {
 
     expect(getByRole("img", { name: "Budget: $1.20 / $10" })).toBeInTheDocument();
     expect(queryByRole("button", { name: /^Budget:/ })).not.toBeInTheDocument();
+  });
+
+  it("says a socket is coming back while it still is", () => {
+    const { getByText } = mount({ session: SESSION, status: WORKING, connection: "reconnecting" });
+    expect(getByText("Reconnecting…")).toBeInTheDocument();
+  });
+
+  it("promises no reconnection once the relay has stopped for good", () => {
+    // The page renders the problem itself, with a way out of it; a pill
+    // here would only be a quieter version of the same sentence (#137).
+    const { queryByText } = mount({ session: SESSION, status: WORKING, connection: "failed" });
+    expect(queryByText("Reconnecting…")).not.toBeInTheDocument();
+    expect(queryByText("Disconnected")).not.toBeInTheDocument();
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { EventStream, nextBackoffDelay } from "./relay";
+import { EventStream, isDefinitiveFailure, nextBackoffDelay } from "./relay";
+import { ApiProblem, NetworkError, NotImplementedError, UnexpectedResponseError } from "./problem";
 import type { StoredEvent } from "./client";
 
 /** The instant the fixture's live frames are dated at. */
@@ -154,5 +155,47 @@ describe("nextBackoffDelay", () => {
   it("uses default base/max when options are omitted", () => {
     expect(nextBackoffDelay(0, { random: () => 1 })).toBe(1000);
     expect(nextBackoffDelay(6, { random: () => 1 })).toBe(60_000);
+  });
+});
+
+/** A problem document of one status, as the control plane would answer it. */
+function problem(status: number, type = "https://flyco.dev/problems/not-found"): ApiProblem {
+  return new ApiProblem({ type, title: "Not Found", status, detail: "no such session" });
+}
+
+describe("isDefinitiveFailure", () => {
+  it("stops the relay on a session this account cannot open", () => {
+    // The two the walkthrough meets: a session id that does not exist, and
+    // one that belongs to somebody else.
+    expect(isDefinitiveFailure(problem(404))).toBe(true);
+    expect(isDefinitiveFailure(problem(403))).toBe(true);
+  });
+
+  it("keeps retrying the two client statuses a retry can get past", () => {
+    expect(isDefinitiveFailure(problem(401))).toBe(false);
+    expect(isDefinitiveFailure(problem(429))).toBe(false);
+  });
+
+  it("keeps retrying a server that is having a bad minute", () => {
+    expect(isDefinitiveFailure(problem(500))).toBe(false);
+    expect(isDefinitiveFailure(problem(502))).toBe(false);
+    expect(isDefinitiveFailure(problem(503))).toBe(false);
+  });
+
+  it("stops on a build that does not have the relay, which no retry adds", () => {
+    const unbuilt = new NotImplementedError({
+      type: "https://flyco.dev/problems/relay-unavailable",
+      title: "Not Implemented",
+      status: 501,
+      detail: "the session relay is not available on this build",
+    });
+    expect(isDefinitiveFailure(unbuilt)).toBe(true);
+  });
+
+  it("keeps retrying everything that is not the server refusing the request", () => {
+    expect(isDefinitiveFailure(new NetworkError(new Error("offline")))).toBe(false);
+    expect(isDefinitiveFailure(new UnexpectedResponseError(404, "<html>proxy</html>"))).toBe(false);
+    expect(isDefinitiveFailure(new Error("the socket closed"))).toBe(false);
+    expect(isDefinitiveFailure(null)).toBe(false);
   });
 });
