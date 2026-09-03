@@ -6,11 +6,13 @@ import {
   SESSION_GROUPS,
   STATUS_ORDER,
   type SessionStatus,
+  composerRefusal,
   deriveStatus,
   elapsedSince,
   groupOf,
   groupSessions,
   liveSignalsFrom,
+  sessionNotice,
 } from "./status";
 
 /** A fixed instant, so nothing here depends on when the suite runs. */
@@ -412,5 +414,104 @@ describe("elapsedSince", () => {
 
   it("never counts backwards from a clock that is behind the server", () => {
     expect(elapsedSince(NOW_UNIX + 30, NOW)).toBe("0s");
+  });
+});
+
+describe("sessionNotice", () => {
+  /** What a session that has spent nothing of a $10 budget is working with. */
+  const FACTS = { failure: null, budgetLimit: 10_000_000 };
+
+  /** The notice a session in one state carries, with no failure recorded. */
+  function noticeFor(state: SessionState, failure: string | null = null) {
+    return sessionNotice(deriveStatus(session(state), NOW), { ...FACTS, failure });
+  }
+
+  it("says nothing at all about a session that is running", () => {
+    expect(noticeFor("active")).toBeNull();
+  });
+
+  it("leaves a first machine to the provisioning timeline", () => {
+    // The transcript already tells that story, stage by stage.
+    expect(noticeFor("provisioning")).toBeNull();
+  });
+
+  it("gives a failed session the provider's reason and a way on from it", () => {
+    const notice = noticeFor("failed", "AWS refused the reservation: InsufficientInstanceCapacity.");
+
+    expect(notice?.title).toBe("Failed");
+    expect(notice?.tone).toBe("failed");
+    expect(notice?.body).toContain("AWS refused the reservation");
+    expect(notice?.body).toContain("reopens the same conversation");
+    expect(notice?.action).toEqual({ kind: "resume", label: "Resume" });
+  });
+
+  it("stays honest about a failure nothing was recorded for", () => {
+    expect(noticeFor("failed")?.body).toContain("said nothing about why");
+  });
+
+  it("offers to put an interrupted session back on its own disk", () => {
+    const notice = sessionNotice(deriveStatus(reclaimed("interrupted"), NOW), FACTS);
+
+    expect(notice?.title).toBe("Interrupted · spot reclaimed");
+    expect(notice?.action).toEqual({ kind: "resume", label: "Resume" });
+  });
+
+  it("asks nothing of the user while flyco is already putting the session back", () => {
+    const notice = sessionNotice(deriveStatus(reclaimed("provisioning", 40), NOW), FACTS);
+
+    expect(notice?.title).toBe("Migrating · 40s");
+    expect(notice?.body).toContain("Nothing is needed from you");
+    expect(notice?.action).toBeUndefined();
+  });
+
+  it("says an archived session is read-only, and offers to build it again", () => {
+    const notice = noticeFor("archived");
+
+    expect(notice?.title).toBe("Archived");
+    expect(notice?.body).toContain("read-only");
+    expect(notice?.action).toEqual({ kind: "resume", label: "Resume" });
+  });
+
+  it("names the sum a budget pause is about, and offers to raise it", () => {
+    const notice = noticeFor("paused");
+
+    expect(notice?.title).toBe("Paused · budget exhausted");
+    expect(notice?.body).toBe("The $10.00 budget is spent. Raise it to continue.");
+    expect(notice?.action).toEqual({ kind: "raise_budget", label: "Raise budget" });
+  });
+
+  it("still asks for a raise when the limit has not been read yet", () => {
+    const notice = sessionNotice(deriveStatus(session("paused"), NOW), {
+      failure: null,
+      budgetLimit: undefined,
+    });
+
+    expect(notice?.body).toBe("This session's budget is spent. Raise it to continue.");
+    expect(notice?.action).toEqual({ kind: "raise_budget", label: "Raise budget" });
+  });
+});
+
+describe("composerRefusal", () => {
+  it("lets a running session be spoken to, whatever it is doing", () => {
+    const running: SessionStatus[] = ["working", "needs_input", "idle"];
+    expect(running.map(composerRefusal)).toEqual([null, null, null]);
+  });
+
+  it("takes a message for a machine that is still being built", () => {
+    // It waits in the room's mailbox, which is worth having said.
+    expect(composerRefusal("provisioning")).toBeNull();
+    expect(composerRefusal("migrating")).toBeNull();
+  });
+
+  it("gives every state that cannot take a message its own reason", () => {
+    const refused: SessionStatus[] = ["failed", "interrupted", "paused", "archived"];
+    const reasons = refused.map(composerRefusal);
+
+    expect(reasons.every((reason) => reason !== null)).toBe(true);
+    expect(new Set(reasons).size).toBe(refused.length);
+    expect(composerRefusal("archived")).toBe("This session is archived and read-only.");
+    expect(composerRefusal("paused")).toBe(
+      "This session is paused: its budget is spent. Raise it to continue.",
+    );
   });
 });

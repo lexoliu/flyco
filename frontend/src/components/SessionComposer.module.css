@@ -1,7 +1,8 @@
 /*
  * What the session composer adds to the shared shell: the command palette
- * that `/` opens, and the line under the field that says a `!` message goes
- * to the machine's shell.
+ * that `/` opens, the line under the field that says a `!` message goes to
+ * the machine's shell, and the line that says why a session will not take
+ * one at all.
  */
 
 .palette {
@@ -63,6 +64,26 @@
   padding-left: var(--space-3);
   color: var(--color-text-muted);
   font-size: var(--text-sm);
+}
+
+/*
+ * Why the field is refusing (issue #133). It sits where the shell hint
+ * sits, because it answers the same question — what happens if I type here
+ * — and it is quiet rather than red: a session that is archived or paused
+ * is not an error, it is just not taking messages.
+ */
+.refusal {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-3);
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+}
+
+.refusal svg {
+  flex: none;
 }
 
 /* Panels slide; nothing bounces. */

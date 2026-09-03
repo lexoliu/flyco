@@ -13,7 +13,7 @@
  *   says so while one is being typed rather than after it is sent.
  */
 import { For, Show, createMemo, createSignal } from "solid-js";
-import { ArrowUp, Square, TerminalSquare } from "lucide-solid";
+import { ArrowUp, Ban, Square, TerminalSquare } from "lucide-solid";
 import ComposerShell from "./ComposerShell";
 import { cx } from "../lib/cx";
 import { BASH_PREFIX } from "../lib/shell";
@@ -45,8 +45,15 @@ const COMMANDS: readonly CommandEntry[] = [
 export interface SessionComposerProps {
   /** Whether a turn is running, which turns Send into Stop. */
   turnInFlight: boolean;
-  /** Whether the composer accepts input at all (an archived session does not). */
-  disabled?: boolean | undefined;
+  /**
+   * Why this session will not take a message, or `null` when it will.
+   *
+   * The reason, not a boolean: a disabled field with a disabled button
+   * beside it and nothing saying why is the page refusing without saying so
+   * (issue #133). What is passed here is shown under the field and is what
+   * the send button says when it is pointed at.
+   */
+  refusal?: string | null | undefined;
   /** Sends the message, verbatim — including a leading `!`. */
   onSend: (text: string) => void;
   /** Interrupts the running turn. */
@@ -57,6 +64,8 @@ export interface SessionComposerProps {
 
 export default function SessionComposer(props: SessionComposerProps) {
   const [text, setText] = createSignal("");
+  /** A session that will not take a message takes no input either. */
+  const refused = createMemo(() => (props.refusal ?? null) !== null);
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [highlighted, setHighlighted] = createSignal(0);
   let field: HTMLTextAreaElement | undefined;
@@ -87,7 +96,7 @@ export default function SessionComposer(props: SessionComposerProps) {
 
   function send(): void {
     const message = text().trim();
-    if (message === "" || props.disabled === true) {
+    if (message === "" || refused()) {
       return;
     }
     // A typed-out command is the same action as picking it from the
@@ -161,7 +170,7 @@ export default function SessionComposer(props: SessionComposerProps) {
       placeholder="Message the agent, / for commands, ! to run a shell command"
       label="Message the agent"
       submitOn="enter"
-      disabled={props.disabled ?? false}
+      disabled={refused()}
       onKeyDown={onKeyDown}
       ref={(element) => {
         field = element;
@@ -199,8 +208,8 @@ export default function SessionComposer(props: SessionComposerProps) {
             <button
               type="button"
               class={styles.send}
-              disabled={text().trim() === "" || props.disabled === true}
-              title="Send"
+              disabled={text().trim() === "" || refused()}
+              title={props.refusal ?? "Send"}
               aria-label="Send"
               onClick={send}
             >
@@ -220,7 +229,15 @@ export default function SessionComposer(props: SessionComposerProps) {
         </Show>
       }
     >
-      <Show when={isBash()}>
+      <Show when={props.refusal}>
+        {(refusal) => (
+          <p class={sessionStyles.refusal} role="status">
+            <Ban size={13} aria-hidden="true" />
+            {refusal()}
+          </p>
+        )}
+      </Show>
+      <Show when={isBash() && !refused()}>
         <p class={sessionStyles.hint}>
           <TerminalSquare size={13} aria-hidden="true" />
           Runs in the machine's bash

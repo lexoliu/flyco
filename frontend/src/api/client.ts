@@ -249,6 +249,20 @@ export function updateSession(
   return requestJson("PATCH", `/v1/sessions/${id}`, { json: body });
 }
 
+/**
+ * Puts an interrupted, failed or archived session back on a machine.
+ *
+ * The machine row keeps its identity and the harness conversation is
+ * reopened, so this is the session coming back rather than a new one beside
+ * it. The session is `provisioning` in the answer: what follows is the
+ * ordinary provisioning timeline.
+ */
+export function resumeSession(
+  id: string,
+): Promise<JsonResponse<"flyco_api::app::resume_session", 200>> {
+  return requestJson("POST", `/v1/sessions/${id}/resume`);
+}
+
 export function archiveSession(
   id: string,
   options: { discardUncommitted?: boolean } = {},
