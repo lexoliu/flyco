@@ -119,7 +119,7 @@ export default function Home() {
                 <span class={styles.readinessText}>
                   <span class={styles.readinessTitle}>Give it a computer</span>
                   <span class={styles.readinessDetail}>
-                    Link Azure, AWS or Google Cloud. The machine stays in your account.
+                    Link Azure, AWS, Google Cloud or a machine you own. The machine stays yours.
                   </span>
                 </span>
                 <span class={styles.readinessAction}>

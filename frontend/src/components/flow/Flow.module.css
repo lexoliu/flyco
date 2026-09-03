@@ -1,0 +1,122 @@
+/*
+ * The first-run frame (docs/ux.md §4): one card, a bar per stage, a title,
+ * a body, and a footer that is the only navigation on the screen.
+ */
+.page {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6) var(--space-4);
+}
+
+.card {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-6);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+/* ── The stage bars ──────────────────────────────────────────────────── */
+
+.bars {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* One track per stage; the fill inside it is the page position. */
+.bar {
+  position: relative;
+  height: 3px;
+  flex: 1;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--color-border);
+}
+
+/* The stage being walked is told apart from the ones ahead even on its
+   first page, where the fill is still nothing. */
+.barCurrent {
+  background: var(--color-text-faint);
+}
+
+.fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--radius-full);
+  background: var(--color-text);
+  transition: width var(--transition-panel);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill {
+    transition: none;
+  }
+}
+
+/* ── Title and body ──────────────────────────────────────────────────── */
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 232px;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-xl);
+}
+
+/* ── The footer ──────────────────────────────────────────────────────── */
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.back {
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-full);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-md);
+  color: var(--color-text-muted);
+}
+
+.back:hover {
+  color: var(--color-text);
+}
+
+/* The one primary on the page, at the end of the footer whatever is or is
+   not to its left. */
+.primary {
+  margin-left: auto;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  transition: background var(--transition-fast), opacity var(--transition-fast);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.primary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.primary:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parsePastedCode, pastedCodeForExchange } from "./claudeCode";
+import { parseClaudeSecret, parsePastedCode, pastedCodeForExchange } from "./claudeCode";
 
 describe("parsePastedCode", () => {
   it("reads the CODE#STATE string Anthropic shows", () => {
@@ -44,5 +44,34 @@ describe("pastedCodeForExchange", () => {
 
   it("sends a bare code as itself", () => {
     expect(pastedCodeForExchange({ code: "ac_the-code", state: null })).toBe("ac_the-code");
+  });
+});
+
+describe("parseClaudeSecret", () => {
+  it("reads a setup token by its prefix", () => {
+    expect(parseClaudeSecret("sk-ant-oat01-abc")).toEqual({
+      kind: "claude_setup_token",
+      token: "sk-ant-oat01-abc",
+    });
+  });
+
+  it("reads an API key by its prefix", () => {
+    expect(parseClaudeSecret("sk-ant-api03-abc")).toEqual({
+      kind: "claude_api_key",
+      key: "sk-ant-api03-abc",
+    });
+  });
+
+  it("tidies what a terminal or a clipboard added", () => {
+    expect(parseClaudeSecret('  "sk-ant-api03-abc"\n')).toEqual({
+      kind: "claude_api_key",
+      key: "sk-ant-api03-abc",
+    });
+  });
+
+  it("refuses to guess at anything else", () => {
+    expect(parseClaudeSecret("")).toBeNull();
+    expect(parseClaudeSecret("sk-proj-openai")).toBeNull();
+    expect(parseClaudeSecret("sk-ant-")).toBeNull();
   });
 });

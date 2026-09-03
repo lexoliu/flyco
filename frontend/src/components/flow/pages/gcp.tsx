@@ -1,22 +1,24 @@
 /**
- * Linking Google Cloud: two commands, then the file they produce
- * (docs/ux.md §7.4).
+ * Google Cloud's pages (docs/ux.md §4 C5″–C6″, §7.4): the commands, then
+ * the file they produce.
  *
  * A Google credential is a *document* rather than a set of fields, so the
- * step is a drop zone rather than a form: the user already has the file, and
- * retyping any part of it would only be a chance to get it wrong. What the
- * page reads out of it is `project_id` and `client_email`, which is how
- * somebody with three projects tells which key they just dropped.
+ * second page is a drop zone rather than a form: the user already has the
+ * file, and retyping any part of it would only be a chance to get it
+ * wrong. What the page reads out of it is `project_id` and `client_email`,
+ * which is how somebody with three projects tells which key they dropped.
  */
 import { Show, createMemo, createSignal } from "solid-js";
 import { FileJson, Upload } from "lucide-solid";
-import CommandBlock from "../../components/CommandBlock";
-import ProblemNotice from "../../components/ProblemNotice";
-import type { ProviderCredentials } from "../../api/client";
-import { parseGcpServiceAccount } from "../../lib/gcpCredentials";
-import styles from "./Connect.module.css";
+import CommandBlock from "../../CommandBlock";
+import { useReadiness } from "../../Readiness";
+import { linkProvider } from "../../../api/client";
+import { parseGcpServiceAccount } from "../../../lib/gcpCredentials";
+import { NEXT, type PageComponent, type Primary } from "../page";
+import { ConfirmRow } from "./shared";
+import styles from "./pages.module.css";
 
-/** The two commands that create the account and download its key. */
+/** The commands that create the account and download its key. */
 const CREATE_ACCOUNT = `gcloud iam service-accounts create flyco --display-name flyco
 
 gcloud projects add-iam-policy-binding $(gcloud config get-value project) \\
@@ -26,13 +28,22 @@ gcloud projects add-iam-policy-binding $(gcloud config get-value project) \\
 gcloud iam service-accounts keys create flyco-key.json \\
   --iam-account flyco@$(gcloud config get-value project).iam.gserviceaccount.com`;
 
-export interface GcpWizardProps {
-  onLink: (credentials: ProviderCredentials, label: string) => Promise<void>;
-  linking: boolean;
-  error: unknown;
-}
+export const GcpCommands: PageComponent<{ id: "gcp-commands" }> = (props) => ({
+  title: "Create a service account",
+  body: (
+    <>
+      <CommandBlock value={CREATE_ACCOUNT} label="Copy" />
+      <p class={styles.hint}>
+        Run these where the <code>gcloud</code> CLI is signed in to the project you want sessions
+        to run in. The last one writes <code>flyco-key.json</code> into the current directory.
+      </p>
+    </>
+  ),
+  primary: () => NEXT(() => props.advance()),
+});
 
-export default function GcpWizard(props: GcpWizardProps) {
+export const GcpKeyFile: PageComponent<{ id: "gcp-key-file" }> = (props) => {
+  const readiness = useReadiness();
   const [contents, setContents] = createSignal("");
   const [filename, setFilename] = createSignal("");
   const [dragging, setDragging] = createSignal(false);
@@ -41,14 +52,14 @@ export default function GcpWizard(props: GcpWizardProps) {
   const parsed = createMemo(() =>
     contents().trim() === "" ? null : parseGcpServiceAccount(contents()),
   );
-  const account = createMemo(() => {
+  const account = () => {
     const result = parsed();
     return result !== null && result.ok ? result.account : null;
-  });
-  const parseError = createMemo(() => {
+  };
+  const parseError = () => {
     const result = parsed();
     return result !== null && !result.ok ? result.error : null;
-  });
+  };
 
   async function accept(file: File | undefined): Promise<void> {
     setReadError(null);
@@ -63,29 +74,30 @@ export default function GcpWizard(props: GcpWizardProps) {
     setContents(await file.text());
   }
 
-  async function link(): Promise<void> {
-    if (account() === null) {
-      return;
-    }
-    await props.onLink(
-      { kind: "gcp", service_account_json: contents() },
-      account()?.projectId ?? "Google Cloud",
-    );
-  }
+  const primary = (): Primary => {
+    const found = account();
+    return {
+      label: "Link Google Cloud",
+      busy: "Linking…",
+      disabled: found === null ? "Drop the key file to continue" : null,
+      onClick: async () => {
+        if (found === null) {
+          return;
+        }
+        const linked = await linkProvider({
+          label: found.projectId,
+          credentials: { kind: "gcp", service_account_json: contents() },
+        });
+        await readiness.refresh();
+        props.advance({ computeAccount: linked });
+      },
+    };
+  };
 
-  return (
-    <div class={styles.step}>
-      <section class={styles.stage}>
-        <p class={styles.stageTitle}>1 · Create a service account and its key</p>
-        <CommandBlock value={CREATE_ACCOUNT} label="Copy commands" />
-        <p class={styles.hint}>
-          Run these where the `gcloud` CLI is signed in to the project you want sessions to run in.
-          The last one writes `flyco-key.json` into the current directory.
-        </p>
-      </section>
-
-      <section class={styles.stage}>
-        <p class={styles.stageTitle}>2 · Drop the key file here</p>
+  return {
+    title: "Drop the key file",
+    body: (
+      <>
         <label
           class={dragging() ? `${styles.drop} ${styles.dropActive}` : styles.drop}
           onDragOver={(event) => {
@@ -103,6 +115,7 @@ export default function GcpWizard(props: GcpWizardProps) {
             type="file"
             accept="application/json,.json"
             class={styles.fileInput}
+            aria-label="Service account key file"
             onChange={(event) => void accept(event.currentTarget.files?.[0])}
           />
           <Upload size={18} aria-hidden="true" />
@@ -116,35 +129,18 @@ export default function GcpWizard(props: GcpWizardProps) {
             </Show>
           </span>
         </label>
-
         <Show when={readError()}>{(message) => <p class={styles.error}>{message()}</p>}</Show>
         <Show when={parseError()}>{(message) => <p class={styles.error}>{message()}</p>}</Show>
-
         <Show when={account()}>
           {(found) => (
             <dl class={styles.confirm}>
-              <div class={styles.confirmRow}>
-                <dt>Project</dt>
-                <dd>{found().projectId}</dd>
-              </div>
-              <div class={styles.confirmRow}>
-                <dt>Service account</dt>
-                <dd>{found().clientEmail}</dd>
-              </div>
+              <ConfirmRow label="Project" value={found().projectId} />
+              <ConfirmRow label="Service account" value={found().clientEmail} />
             </dl>
           )}
         </Show>
-      </section>
-
-      <ProblemNotice error={props.error} />
-      <button
-        type="button"
-        class={styles.primary}
-        disabled={account() === null || props.linking}
-        onClick={() => void link()}
-      >
-        {props.linking ? "Linking…" : "Link Google Cloud"}
-      </button>
-    </div>
-  );
-}
+      </>
+    ),
+    primary,
+  };
+};

@@ -5,17 +5,17 @@
  * to "can flyco run Claude Code for me", and a harness with nothing linked
  * has to occupy the same space as one that is, or the absence is invisible.
  *
- * Linking and relinking both open the very same `HarnessConnect` flow that
- * `/connect/harness` and the welcome flow use — there is one way to connect
- * an agent in this app, and this is a third place it is shown, not a third
- * copy of it.
+ * `Connect` and `Relink` both lead to `/connect/harness`, which walks the
+ * very same pages the first run does (docs/ux.md §4) — there is one way to
+ * connect an agent in this app, and this card is a place it is reached
+ * from, not a second copy of it. The card names the agent, so the flow
+ * starts on that agent's sign-in page and comes back here when it is done.
  */
 import { For, Show, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
 import { createQuery } from "../../lib/query";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import Logomark, { HARNESS_MARK } from "../../components/Logomark";
-import { HarnessConnect } from "../../components/link/HarnessChooser";
 import ProblemNotice from "../../components/ProblemNotice";
 import Disclosure from "../../components/Disclosure";
 import HarnessUsage from "../../components/HarnessUsage";
@@ -44,7 +44,6 @@ const HARNESSES: readonly { kind: HarnessKind; label: string; runsOn: string }[]
 export default function AgentsSection() {
   const readiness = useReadiness();
   const [usage] = createQuery(listLlmUsage);
-  const [linking, setLinking] = createSignal<HarnessKind | null>(null);
   const [actionError, setActionError] = createSignal<unknown>(null);
   /** The account whose unlink has been asked about but not yet answered. */
   const [unlinking, setUnlinking] = createSignal<HarnessAccountView | null>(null);
@@ -82,10 +81,8 @@ export default function AgentsSection() {
     setActionError(null);
   }
 
-  async function onLinked(): Promise<void> {
-    setLinking(null);
-    await readiness.refresh();
-  }
+  /** Where the connect flow starts for one agent, and where it returns to. */
+  const connectPath = (kind: HarnessKind) => `/connect/harness?agent=${kind}&return=/settings/agents`;
 
   const accountsFor = (kind: HarnessKind) =>
     readiness.harness().filter((account) => account.harness === kind);
@@ -127,15 +124,9 @@ export default function AgentsSection() {
                   when={accounts().length > 0}
                   fallback={
                     <div class={styles.cardBody}>
-                      <button
-                        type="button"
-                        class={styles.pillPrimary}
-                        onClick={() =>
-                          setLinking(linking() === harness.kind ? null : harness.kind)
-                        }
-                      >
-                        {linking() === harness.kind ? "Cancel" : `Connect ${harness.label}`}
-                      </button>
+                      <A href={connectPath(harness.kind)} class={styles.pillPrimary}>
+                        Connect {harness.label}
+                      </A>
                     </div>
                   }
                 >
@@ -155,15 +146,9 @@ export default function AgentsSection() {
                               </span>
                             </div>
                             <div class={styles.actions}>
-                              <button
-                                type="button"
-                                class={styles.pill}
-                                onClick={() =>
-                                  setLinking(linking() === harness.kind ? null : harness.kind)
-                                }
-                              >
+                              <A href={connectPath(harness.kind)} class={styles.pill}>
                                 Relink
-                              </button>
+                              </A>
                               {/*
                                 Nothing else while the question is up: the
                                 dialog under the card is the one thing being
@@ -236,14 +221,6 @@ export default function AgentsSection() {
                       )}
                     </For>
                   </div>
-                </Show>
-
-                <Show when={linking() === harness.kind}>
-                  <HarnessConnect
-                    harness={harness.kind}
-                    onLinked={() => void onLinked()}
-                    onCancel={() => setLinking(null)}
-                  />
                 </Show>
               </article>
             );
