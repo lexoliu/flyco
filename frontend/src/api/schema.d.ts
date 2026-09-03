@@ -830,6 +830,18 @@ export interface paths {
         /**
          * Unlinks a cloud-provider account.
          * @description Unlinks a cloud-provider account.
+         *
+         *     The row survives the unlink and the credential does not. Every machine
+         *     flyco ever built there still names this account — that is the spend
+         *     history the budget ledger explains — so deleting the row would either
+         *     fail the foreign key holding the history together or, if it cascaded,
+         *     erase it. What is deleted is the only part that matters: the sealed
+         *     credential is scrubbed, the account is stamped unlinked, and it stops
+         *     appearing anywhere flyco offers something to provision through.
+         *
+         *     Linking the same cloud account again writes a new row. This one is
+         *     history from here on, and reading it back by id is a 404 like any
+         *     account the caller does not have.
          */
         delete: operations["flyco_api::provider_accounts::unlink_provider"];
         options?: never;

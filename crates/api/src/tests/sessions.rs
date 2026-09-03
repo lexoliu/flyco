@@ -324,6 +324,36 @@ async fn the_default_machine_is_the_one_a_session_would_be_given(ctx: TestContex
 }
 
 #[skyzen::test]
+async fn a_session_cannot_be_opened_on_an_unlinked_account(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let body = open(&caller, REPO, 10);
+
+    client
+        .delete(&format!("/v1/providers/{}", caller.account))
+        .bearer(&caller.token)
+        .send()
+        .await
+        .assert_status(204);
+
+    // The account row survives the unlink (issue #153) so the machines that
+    // ran there still name it — but naming it in a new session is naming an
+    // account that no longer exists to provision through.
+    let refused = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .json(&body)
+        .send()
+        .await;
+    refused.assert_status(404);
+    assert_eq!(
+        refused.json::<Problem>().kind,
+        problem_kind("provider-account-not-found")
+    );
+}
+
+#[skyzen::test]
 async fn there_is_no_default_machine_without_a_linked_account(ctx: TestContext, kv: Kv, db: Db) {
     let router = migrated_router(&db).await;
     let user = seed_user(&db).await;
