@@ -94,6 +94,16 @@ step (two questions side by side, an inner `Continue` above an outer
 - **Secondary paths are links to other pages**, never disclosures with
   their own submit. "Use an API key instead" is a quiet link on the
   sign-in page that leads to a page whose single question is the key.
+- **The user has a browser and nothing else.** No page assumes a
+  terminal, an installed CLI, or a file on disk. Where a vendor's own API
+  is only reachable through a command, the page sends the user to that
+  vendor's terminal *in the browser* — Azure Cloud Shell, Google Cloud
+  Shell — with a link that opens it, the command with `Copy`, shown whole
+  (wrapped, never clipped), and a sentence saying what it prints and how
+  that gets back here. A file a command produces is downloaded to the
+  browser by the command itself (`cloudshell download`), never left in a
+  home directory the user cannot see. The one exception is a machine the
+  user owns, which by definition has to be reached on that machine.
 
 The pages, by stage:
 
@@ -170,8 +180,11 @@ one agent linked it states that agent, with two it is a choice.
    `POST /v1/providers/quickstart` matches a programme: its name, the
    credit, the quiet link `Sign up` (new tab). `Next`. No page when
    nothing matches.
-5. Azure — *Run this in Azure Cloud Shell.* The one command with `Copy`
-   and the sentence that it prints a JSON block. `Next`.
+5. Azure — *Run this in Azure Cloud Shell.* "Cloud Shell is a terminal
+   in your browser, already signed in to your Azure account. Nothing to
+   install." The one command with `Copy`, shown whole, the link *Open
+   Azure Cloud Shell* (new tab), and the sentence that it prints a JSON
+   block the next page asks for. `Next`.
 6. Azure — *Paste the JSON block.* One textarea; the parsed `clientId`,
    `tenantId`, `subscriptionId` appear as read-only rows under it once it
    parses; a missing key is an inline error naming it (a block without a
@@ -190,8 +203,11 @@ one agent linked it states that agent, with two it is a choice.
 6′. AWS — *Enter the access key.* Two fields (Access key ID, Secret access
    key); the quiet link *I have a session token* reveals the third field
    in place. Primary `Link AWS`; success finishes the flow.
-5″. Google Cloud — *Create a service account.* The `gcloud` commands with
-   `Copy`. `Next`.
+5″. Google Cloud — *Run this in Google Cloud Shell.* The same shape as
+   Azure's: the `gcloud` commands with `Copy`, ending in `cloudshell
+   download flyco-key.json` so the key lands in the browser's downloads,
+   the link *Open Google Cloud Shell*, and the sentence that the next page
+   asks for that file. `Next`.
 6″. Google Cloud — *Drop the key file.* One drop zone; `project_id` and
    `client_email` as confirmation rows. Primary `Link Google Cloud`;
    success finishes the flow.
@@ -315,8 +331,8 @@ Two fields, not six.
    az ad sp create-for-rbac --name flyco --role Contributor \
      --scopes /subscriptions/$(az account show --query id -o tsv) --sdk-auth
    ```
-   and the sentence "Run this in Azure Cloud Shell or a terminal with the
-   Azure CLI signed in. It prints a JSON block."
+   with the link that opens Azure Cloud Shell in the browser and the
+   sentence that it prints a JSON block. No terminal or CLI is assumed.
 2. One textarea: "Paste the JSON block." The frontend parses `clientId`,
    `clientSecret`, `tenantId`, `subscriptionId` from it and shows them as
    read-only confirmation rows. Malformed input is an inline error naming

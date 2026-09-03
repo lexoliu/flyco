@@ -162,6 +162,9 @@ describe("Azure", () => {
       level: 1,
       name: "Run this in Azure Cloud Shell",
     });
+    expect(
+      getByRole("link", { name: /Open Azure Cloud Shell/ }),
+    ).toHaveAttribute("href", "https://shell.azure.com");
     expect(getByText(/az ad sp create-for-rbac/)).toBeInTheDocument();
     expect(getByRole("button", { name: "Copy" })).toBeInTheDocument();
     fireEvent.click(primary(container));
@@ -431,10 +434,18 @@ describe("Google Cloud", () => {
     } = flow;
     await answerBonus(flow, "Google Cloud", { newcomer: false, student: true });
 
-    await findByRole("heading", { level: 1, name: "Create a service account" });
+    await findByRole("heading", {
+      level: 1,
+      name: "Run this in Google Cloud Shell",
+    });
     expect(
       getByText(/gcloud iam service-accounts create flyco/),
     ).toBeInTheDocument();
+    // The key is downloaded by the command, for a user with only a browser.
+    expect(getByText(/cloudshell download flyco-key.json/)).toBeInTheDocument();
+    expect(
+      getByRole("link", { name: /Open Google Cloud Shell/ }),
+    ).toHaveAttribute("href", "https://shell.cloud.google.com/?show=terminal");
     expect(getByRole("button", { name: "Copy" })).toBeInTheDocument();
     fireEvent.click(primary(container));
 

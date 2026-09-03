@@ -15,10 +15,25 @@ import { useReadiness } from "../../Readiness";
 import { linkProvider } from "../../../api/client";
 import { parseGcpServiceAccount } from "../../../lib/gcpCredentials";
 import { NEXT, type PageComponent, type Primary } from "../page";
-import { ConfirmRow } from "./shared";
+import { ConfirmRow, ExternalLink } from "./shared";
 import styles from "./pages.module.css";
 
-/** The commands that create the account and download its key. */
+/**
+ * Google's terminal in the browser, signed in as the user already, with
+ * `gcloud` on the project picked in the console. The one place the flow
+ * sends anyone to run a command: a user is assumed to have a browser and
+ * nothing else installed.
+ */
+const GOOGLE_CLOUD_SHELL = "https://shell.cloud.google.com/?show=terminal";
+
+/**
+ * The commands that create the account and hand its key to the browser.
+ *
+ * The last line is Cloud Shell's own: it sends `flyco-key.json` to the
+ * browser's downloads, which is where the next page's drop zone takes it
+ * from. Without it the key would sit in Cloud Shell's home directory,
+ * which a user with only a browser cannot reach any other way.
+ */
 const CREATE_ACCOUNT = `gcloud iam service-accounts create flyco --display-name flyco
 
 gcloud projects add-iam-policy-binding $(gcloud config get-value project) \\
@@ -26,17 +41,26 @@ gcloud projects add-iam-policy-binding $(gcloud config get-value project) \\
   --role roles/compute.admin
 
 gcloud iam service-accounts keys create flyco-key.json \\
-  --iam-account flyco@$(gcloud config get-value project).iam.gserviceaccount.com`;
+  --iam-account flyco@$(gcloud config get-value project).iam.gserviceaccount.com
+
+cloudshell download flyco-key.json`;
 
 export const GcpCommands: PageComponent<{ id: "gcp-commands" }> = (props) => ({
-  title: "Create a service account",
+  title: "Run this in Google Cloud Shell",
   body: (
     <>
-      <CommandBlock value={CREATE_ACCOUNT} label="Copy" />
+      <p class={styles.lede}>
+        Cloud Shell is a terminal in your browser, already signed in to your
+        Google account. Nothing to install.
+      </p>
+      <CommandBlock value={CREATE_ACCOUNT} label="Copy" wrap />
+      <ExternalLink href={GOOGLE_CLOUD_SHELL}>
+        Open Google Cloud Shell
+      </ExternalLink>
       <p class={styles.hint}>
-        Run these where the <code>gcloud</code> CLI is signed in to the project
-        you want sessions to run in. The last one writes{" "}
-        <code>flyco-key.json</code> into the current directory.
+        Pick the project sessions should run in, paste the commands and press
+        Enter. The last one downloads <code>flyco-key.json</code> to your
+        browser; the next page asks for it.
       </p>
     </>
   ),

@@ -43,6 +43,11 @@
   overflow-wrap: anywhere;
 }
 
+/* A short token — a flag, a path — is one thing, and stays on one line. */
+.token {
+  white-space: nowrap;
+}
+
 .actions {
   grid-column: 2;
   padding: var(--space-2) var(--space-2) var(--space-2) 0;
