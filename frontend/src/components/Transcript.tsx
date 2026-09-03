@@ -26,12 +26,12 @@ import {
 import Markdown from "./Markdown";
 import { shellOutcomeLabel, shellSucceeded } from "../lib/shell";
 import type { ProvisioningStage } from "../api/wire";
-import { operation } from "../lib/approvals";
+import { operation, type OperationDetail } from "../lib/approvals";
 import { cx } from "../lib/cx";
 import { formatDuration } from "../lib/duration";
 import { summarizeTool } from "../lib/toolSummary";
 import type { ProvisioningStep, ToolCall, TranscriptItem } from "../lib/transcript";
-import { machineChangePrice, machineChangeSummary } from "../lib/transcript";
+import { machineChangePrice, machineChangeSummary, TURN_FAILED_NOTE } from "../lib/transcript";
 import styles from "./Transcript.module.css";
 
 /** How a stage reads, given what the session is actually provisioning. */
@@ -100,8 +100,22 @@ export default function Transcript(props: TranscriptProps) {
                         </For>
                       </ul>
                     </Show>
+                    {/*
+                      A turn that stopped says so, and says the session is
+                      still the user's to continue; the harness's own words
+                      follow as the reason rather than standing alone
+                      (issue #136).
+                    */}
                     <Show when={turn().status === "failed"}>
-                      <p class={styles.turnError}>{turn().error}</p>
+                      <div class={styles.turnFailed}>
+                        <p class={styles.turnFailedNote}>
+                          <AlertTriangle size={14} aria-hidden="true" />
+                          {TURN_FAILED_NOTE}
+                        </p>
+                        <Show when={turn().error}>
+                          {(error) => <p class={styles.turnError}>{error()}</p>}
+                        </Show>
+                      </div>
                     </Show>
                     <Show when={workedFor(turn())}>
                       {(worked) => <p class={styles.workedFor}>Worked for {worked()}</p>}
@@ -182,7 +196,9 @@ function ToolRow(props: { tool: ToolCall }) {
         <summary class={styles.toolSummary}>
           <ChevronRight class={cx(styles.toolChevron)} size={13} aria-hidden="true" />
           <Wrench size={13} class={cx(styles.toolIcon)} aria-hidden="true" />
-          <span class={styles.toolText}>{summarizeTool(props.tool.tool, props.tool.input)}</span>
+          <span class={styles.toolText}>
+            {summarizeTool(props.tool.tool, props.tool.input, props.tool.ok)}
+          </span>
           <Show when={duration()}>
             {(elapsed) => <span class={styles.toolDuration}>{elapsed()}</span>}
           </Show>
@@ -355,6 +371,41 @@ function MachineChangeRow(props: {
 }
 
 /**
+ * Exactly what is being approved.
+ *
+ * A tool call's arguments are read out one per row — the name of the
+ * argument, and the value as it was written — because the value is what the
+ * decision is about, and finding a shell command inside pretty-printed JSON
+ * is work the reader should not be doing (issue #136). A one-line value
+ * sits beside its name; anything that runs over gets a block under it.
+ */
+function OperationDetailView(props: { detail: OperationDetail }) {
+  return (
+    <Switch>
+      <Match when={props.detail.kind === "text" && props.detail}>
+        {(detail) => <pre class={styles.approvalDetail}>{detail().text}</pre>}
+      </Match>
+      <Match when={props.detail.kind === "fields" && props.detail}>
+        {(detail) => (
+          <dl class={styles.approvalFields}>
+            <For each={detail().fields}>
+              {(field) => (
+                <div class={styles.approvalField} data-block={field.block}>
+                  <dt class={styles.approvalFieldName}>{field.name}</dt>
+                  <dd class={styles.approvalFieldValue}>
+                    <code>{field.value}</code>
+                  </dd>
+                </div>
+              )}
+            </For>
+          </dl>
+        )}
+      </Match>
+    </Switch>
+  );
+}
+
+/**
  * One approval, inline where it happened (docs/ux.md §9.2).
  *
  * It keeps its place in the transcript after it is decided rather than
@@ -372,7 +423,7 @@ function ApprovalCard(props: {
   return (
     <section class={styles.approval} data-state={props.approval.state} aria-label="Approval">
       <p class={styles.approvalTitle}>{asked().title}</p>
-      <pre class={styles.approvalDetail}>{asked().detail}</pre>
+      <OperationDetailView detail={asked().detail} />
       <Show
         when={props.approval.state === "pending" && props.onDecide}
         fallback={

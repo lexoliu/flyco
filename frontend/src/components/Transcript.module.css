@@ -42,10 +42,42 @@
   min-width: 0;
 }
 
-.turnError {
+/*
+ * A turn that stopped: what it means for the user first, the harness's own
+ * words under it. Two lines rather than one paragraph, because the first is
+ * the interface speaking and the second is the provider.
+ */
+.turnFailed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-muted);
+}
+
+.turnFailedNote {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
   margin: 0;
   color: var(--color-danger);
   font-size: var(--text-sm);
+  line-height: var(--line-normal);
+}
+
+.turnFailedNote svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.turnError {
+  margin: 0;
+  padding-left: calc(14px + var(--space-2));
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
 }
 
 .workedFor {
@@ -347,6 +379,55 @@
   margin: 0;
   font-size: var(--text-md);
   font-weight: var(--weight-semibold);
+}
+
+/*
+ * A tool call's arguments, one row each: the name in the interface's voice,
+ * the value exactly as the agent wrote it. A value that fits on a line sits
+ * beside its name; one that does not takes a block under it, so a script
+ * keeps its shape.
+ */
+.approvalFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+}
+
+.approvalField {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+}
+
+.approvalField[data-block="true"] {
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.approvalFieldName {
+  flex: none;
+  min-width: 5.5rem;
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+}
+
+.approvalFieldValue {
+  margin: 0;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.approvalField[data-block="true"] .approvalFieldValue {
+  align-self: stretch;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 
 .approvalDetail {
