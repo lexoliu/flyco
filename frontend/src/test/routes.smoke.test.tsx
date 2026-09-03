@@ -21,7 +21,7 @@ import InstructionsSection from "../routes/settings/InstructionsSection";
 import AccountSection from "../routes/settings/AccountSection";
 import NotFound from "../routes/NotFound";
 import { HOST_ENROLL_COMMAND } from "./setup";
-import { command } from "../components/flow/testSupport";
+import { command, route } from "../components/flow/testSupport";
 import { consumePostLoginPath } from "../lib/postLoginPath";
 import { clearSessionToken, setSessionToken } from "../lib/session";
 import { dismissWelcome } from "../lib/localPreferences";
@@ -158,6 +158,40 @@ describe("route smoke tests", () => {
     // protected call went out, and sign-in returns here.
     expect(fetch).not.toHaveBeenCalled();
     expect(consumePostLoginPath()).toBe("/welcome");
+  });
+
+  it("paints nothing on /welcome until readiness has been read", async () => {
+    vi.mocked(fetch).mockImplementation(() => new Promise(() => undefined));
+    const { queryByRole } = renderAt("/welcome");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Not the first page: a flow that started now would start from
+    // "nothing is linked" and never hear otherwise.
+    expect(queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+  });
+
+  it("shows on /welcome what is linked already, as a refresh mid-flow finds it", async () => {
+    route(
+      (path, method) => method === "GET" && path === "/v1/harness-accounts",
+      () =>
+        new Response(
+          JSON.stringify([
+            {
+              id: "harness-2",
+              harness: "claude_code",
+              label: "me@lexo.cool",
+              linked_at_unix: 1_787_000_000,
+              expires_at_unix: 1_787_028_800,
+            },
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const { findByRole, findByText, getByRole } = renderAt("/welcome");
+    await findByRole("heading", { level: 1, name: "Meet flyco" });
+    getByRole("button", { name: "Next" }).click();
+    await findByRole("heading", { level: 1, name: "Link the agents you use" });
+    expect(await findByText("Linked · me@lexo.cool")).toBeInTheDocument();
+    expect(getByRole("button", { name: "Next" })).toBeEnabled();
   });
 
   it("renders /welcome as the first page of the linear flow", async () => {

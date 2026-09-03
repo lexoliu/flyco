@@ -14,10 +14,14 @@
  */
 import {
   type JSX,
+  Show,
   createContext,
+  createEffect,
   createMemo,
+  createSignal,
   useContext,
 } from "solid-js";
+import ProblemNotice from "./ProblemNotice";
 import { createQuery } from "../lib/query";
 import {
   listHarnessAccounts,
@@ -77,7 +81,9 @@ export function ReadinessProvider(props: ReadinessProviderProps) {
   };
 
   return (
-    <ReadinessContext.Provider value={value}>{props.children}</ReadinessContext.Provider>
+    <ReadinessContext.Provider value={value}>
+      {props.children}
+    </ReadinessContext.Provider>
   );
 }
 
@@ -93,4 +99,44 @@ export function useReadiness(): Readiness {
     throw new Error("useReadiness() was called outside a <ReadinessProvider>.");
   }
   return value;
+}
+
+/**
+ * Draws its children once readiness has been read for the first time.
+ *
+ * A flow that starts before that read lands starts from "nothing is
+ * linked" and never hears otherwise: a refresh of `/welcome` showed a
+ * freshly linked agent as unlinked exactly this way, because the page
+ * mounted with the lists still in flight. Until the first read settles
+ * nothing is drawn — the same blank the home page keeps — and a first
+ * read that failed is shown as the problem it is, with a way to retry,
+ * since a flow that cannot tell what is linked could only guess.
+ *
+ * Later refreshes (after a link) do not unmount anything: the gate opens
+ * once and stays open.
+ */
+export function ReadinessGate(props: { children: JSX.Element }) {
+  const readiness = useReadiness();
+  const [settled, setSettled] = createSignal(false);
+  createEffect(() => {
+    if (!readiness.loading() && readiness.error() === undefined) {
+      setSettled(true);
+    }
+  });
+  const failed = () => !readiness.loading() && readiness.error() !== undefined;
+  return (
+    <Show
+      when={settled()}
+      fallback={
+        <Show when={failed()}>
+          <ProblemNotice
+            error={readiness.error()}
+            action={{ label: "Retry", onClick: () => void readiness.refresh() }}
+          />
+        </Show>
+      }
+    >
+      {props.children}
+    </Show>
+  );
 }
