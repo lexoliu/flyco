@@ -172,7 +172,8 @@ export default function SessionDetail() {
   const [archiving, setArchiving] = createSignal(false);
   const [settingBudget, setSettingBudget] = createSignal(false);
   const [pendingDirtySummary, setPendingDirtySummary] = createSignal<string | null>(null);
-  const [panelRequest, setPanelRequest] = createSignal<{ panel: "machine" | "env"; at: number }>();
+  const [panelRequest, setPanelRequest] =
+    createSignal<{ panel: "machine" | "env"; at: number; resize?: boolean }>();
 
   /**
    * Prefers the relay socket whenever it is live — lower latency, and the
@@ -252,9 +253,9 @@ export default function SessionDetail() {
         break;
       case "resize":
         // Resizing is a choice among machine types, and the machine tab is
-        // where those are listed; sending the user there beats a second
-        // picker that would have to duplicate it.
-        setPanelRequest({ panel: "machine", at: Date.now() });
+        // where that choice is made; the request carries the intent so the
+        // tab opens on the control rather than beside it (issue #138).
+        setPanelRequest({ panel: "machine", at: Date.now(), resize: true });
         break;
     }
   }
@@ -404,7 +405,7 @@ export default function SessionDetail() {
         archiving={archiving()}
         onStartMachine={() => void onMachine("start")}
         onStopMachine={() => void onMachine("stop")}
-        onOpenPanel={(panel) => setPanelRequest({ panel, at: Date.now() })}
+        onOpenPanel={(request) => setPanelRequest({ ...request, at: Date.now() })}
       />
 
       {/*

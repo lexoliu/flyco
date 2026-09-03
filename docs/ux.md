@@ -368,6 +368,15 @@ A right-side drawer, collapsed by default, with tabs `Terminal`, `Files`,
 start/stop/resize controls. `Env` is the existing editor. Keyboard: `⌘.`
 toggles the drawer.
 
+`Resize` is the tiered slider of §7.7, on the machine the session is
+already on: the same detents, prices and license-bound badge, opened on the
+current type, with no `Auto` — flyco choosing again is not one of the
+outcomes — and without the account, region and capacity filters, because
+the resize carries a machine type and nothing else. The commit reads
+`Resize to <type>` over the line `Restarts the machine; the disk is kept.`
+`/resize` in the composer and `Resize` in the header's `⋯` menu both open
+that control, not merely the tab it lives on.
+
 `Files` is the session's checkout, read-only: a lazy tree that fetches one
 directory at a time, files git ignores shown and marked rather than hidden,
 and a syntax-highlighted view of any text file up to 128 KiB. A file past

@@ -268,6 +268,85 @@ describe("MachineSlider", () => {
   });
 });
 
+describe("MachineSlider without an Auto detent", () => {
+  /** The resize case: a machine already exists, so one is always chosen. */
+  function mountFixed(catalog: MachineCatalogEntry[], chosenKey: string | null, onChoose = vi.fn()) {
+    const result = render(() => (
+      <MachineSlider
+        catalog={catalog}
+        accounts={ACCOUNTS}
+        automatic={undefined}
+        anchor={catalog[0]}
+        allowAuto={false}
+        filters={["architecture", "os"]}
+        spot={false}
+        chosenKey={chosenKey}
+        onChoose={onChoose}
+      />
+    ));
+    return { ...result, onChoose };
+  }
+
+  it("gives the machines the whole track, with no position for flyco to choose", () => {
+    const { getByLabelText, getByText, queryByText } = mountFixed([SMALL, LARGE], SMALL_KEY);
+
+    // Two machines, two positions: 0 and 1, rather than 1 and 2 above Auto.
+    expect(getByLabelText("Machine")).toHaveAttribute("max", "1");
+    expect(getByLabelText("Machine")).toHaveValue("0");
+    expect(getByText("Cheapest")).toBeInTheDocument();
+    expect(queryByText("Auto")).not.toBeInTheDocument();
+  });
+
+  it("opens on the machine it was given, not on the cheapest one", () => {
+    const { getByLabelText } = mountFixed([SMALL, LARGE], LARGE_KEY);
+    expect(getByLabelText("Machine")).toHaveValue("1");
+    expect(getByLabelText("Machine")).toHaveAttribute(
+      "aria-valuetext",
+      "Standard_D8als_v6 · 8 vCPU / 32 GiB · $0.27/hr",
+    );
+  });
+
+  it("chooses the detent the thumb lands on, and never hands the choice back", () => {
+    const { getByLabelText, onChoose } = mountFixed([SMALL, LARGE], LARGE_KEY);
+
+    fireEvent.input(getByLabelText("Machine"), { target: { value: "0" } });
+    expect(onChoose).toHaveBeenCalledWith(SMALL_KEY);
+    expect(onChoose).not.toHaveBeenCalledWith(null);
+  });
+
+  it("moves the choice when a filter drops the machine it was on", () => {
+    // Otherwise the reading above the thumb and the machine the caller
+    // holds would be two different machines.
+    const onChoose = vi.fn();
+    mountFixed([SMALL, LARGE], `${ACCOUNT}/eastus/Standard_D64als_v6`, onChoose);
+    expect(onChoose).toHaveBeenCalledWith(SMALL_KEY);
+  });
+
+  it("offers only the dimensions the caller can act on", () => {
+    // A resize carries a machine type and nothing else, so account, region
+    // and capacity mode are not on the panel to be changed.
+    const { getByText, queryByText } = mountFixed([SMALL, LARGE], SMALL_KEY);
+    getByText("Advanced").click();
+
+    expect(getByText("Operating system")).toBeInTheDocument();
+    expect(getByText("Architecture")).toBeInTheDocument();
+    expect(queryByText("Account")).not.toBeInTheDocument();
+    expect(queryByText("Region")).not.toBeInTheDocument();
+    expect(queryByText(/Spot capacity/)).not.toBeInTheDocument();
+  });
+
+  it("still warns about a license-bound machine before it is committed to", () => {
+    const { getByLabelText, getByText } = mountFixed([MAC], `${ACCOUNT}/eastus/mac2-m2.metal`);
+
+    // The Mac is the only machine its OS offers, so the track opens on it.
+    expect(getByLabelText("Machine")).toHaveValue("0");
+    expect(getByText("License-bound")).toBeInTheDocument();
+    expect(
+      getByText("Starts a 24-hour minimum charge of $15.60 the moment it boots."),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("detentForKey", () => {
   it("moves one detent per arrow, on either axis", () => {
     expect(detentForKey("ArrowRight", 1, 4)).toBe(2);

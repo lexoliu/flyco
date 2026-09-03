@@ -25,7 +25,7 @@ import {
 } from "lucide-solid";
 import BudgetPicker, { DEFAULT_BUDGET } from "./BudgetPicker";
 import ComposerShell from "./ComposerShell";
-import MachineSlider from "./MachineSlider";
+import MachinePicker from "./MachinePicker";
 import Popover from "./Popover";
 import Logomark, { HARNESS_MARK, PROVIDER_MARK } from "./Logomark";
 import ProblemNotice from "./ProblemNotice";
@@ -351,28 +351,20 @@ function ComputeChip(props: {
         )}
       >
         {() => (
-          <div class={styles.popover}>
-            {/* The slider has nothing to offer when the catalog never
-                arrived, so the popover says that instead of showing an
-                empty track with no explanation. */}
-            <ProblemNotice error={props.error} />
-            <MachineSlider
-              catalog={props.catalog}
-              accounts={props.accounts}
-              automatic={props.automatic}
-              spot={props.spot}
-              chosenKey={props.chosenKey}
-              onChoose={props.onChoose}
-              onSpot={props.onSpot}
-            />
-            {/* What `Auto` picks is the slider's own line, under its track. What
-                is left for here is what choosing changes: who the session
-                records as having decided, and that the agent is told. */}
-            <p class={styles.note}>
-              Choosing a machine yourself is remembered with the session, and the agent is told you
-              picked it.
-            </p>
-          </div>
+          <MachinePicker
+            catalog={props.catalog}
+            accounts={props.accounts}
+            automatic={props.automatic}
+            spot={props.spot}
+            chosenKey={props.chosenKey}
+            onChoose={props.onChoose}
+            onSpot={props.onSpot}
+            error={props.error}
+            // What `Auto` picks is the slider's own line, under its track.
+            // What is left for here is what choosing changes: who the
+            // session records as having decided, and that the agent is told.
+            note="Choosing a machine yourself is remembered with the session, and the agent is told you picked it."
+          />
         )}
       </Popover>
     </Show>

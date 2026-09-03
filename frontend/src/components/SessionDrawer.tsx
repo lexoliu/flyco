@@ -57,18 +57,27 @@ export interface SessionDrawerProps {
    * is two requests: without it, a user who closed the drawer and picked
    * `Edit .env` again would set an unchanged signal and see nothing happen.
    */
-  openPanel?: { panel: "machine" | "env"; at: number } | undefined;
+  openPanel?: { panel: "machine" | "env"; at: number; resize?: boolean } | undefined;
 }
 
 export default function SessionDrawer(props: SessionDrawerProps) {
   const [open, setOpen] = createSignal(false);
   const [tab, setTab] = createSignal<Tab>("terminal");
+  /**
+   * When the machine tab was last asked for a resize, rather than merely
+   * asked for: `/resize` wants the control, and the `⋯` menu's `Resize`
+   * wants the same thing, while `Edit .env` wants neither.
+   */
+  const [resizeAt, setResizeAt] = createSignal<number | undefined>(undefined);
 
   createEffect(() => {
     const request = props.openPanel;
     if (request !== undefined) {
       setTab(request.panel);
       setOpen(true);
+      if (request.resize === true) {
+        setResizeAt(request.at);
+      }
     }
   });
 
@@ -148,7 +157,7 @@ export default function SessionDrawer(props: SessionDrawerProps) {
                 />
               </Match>
               <Match when={tab() === "machine"}>
-                <MachinePanel sessionId={props.sessionId} />
+                <MachinePanel sessionId={props.sessionId} openResize={resizeAt()} />
               </Match>
               <Match when={tab() === "env"}>
                 <EnvEditor sessionId={props.sessionId} />

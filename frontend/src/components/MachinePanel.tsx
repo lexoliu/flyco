@@ -1,18 +1,31 @@
-import { For, Show, createSignal } from "solid-js";
+import { Show, createEffect, createSignal, on } from "solid-js";
 import { createQuery } from "../lib/query";
+import { MachineResize } from "./MachinePicker";
 import ProblemNotice from "./ProblemNotice";
 import {
   getMachineCatalog,
   getSessionMachine,
+  listProviders,
   resizeSessionMachine,
   startSessionMachine,
   stopSessionMachine,
-  type MachineCatalogEntry,
 } from "../api/client";
 import { MACHINE_STATE_LABEL } from "../lib/machines";
 import { formatUsd } from "../lib/money";
 import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./MachinePanel.module.css";
+
+export interface MachinePanelProps {
+  sessionId: string;
+  /**
+   * A request to open the resize control, from `/resize` in the composer.
+   *
+   * The instant it was asked for, so that asking twice is two requests: a
+   * user who cancelled a resize and typed `/resize` again would otherwise
+   * set an unchanged signal and see nothing happen.
+   */
+  openResize?: number | undefined;
+}
 
 /**
  * The machine a session runs on: type, region, lifecycle state, whether it
@@ -21,20 +34,31 @@ import styles from "./MachinePanel.module.css";
  * changes, so this refetches after every action rather than listening for
  * one.
  */
-export default function MachinePanel(props: { sessionId: string }) {
+export default function MachinePanel(props: MachinePanelProps) {
   const [machine, { refetch }] = createQuery(() => props.sessionId, getSessionMachine);
   const [catalog] = createQuery(() => getMachineCatalog());
+  // The account labels the slider's filters read; the catalog itself only
+  // carries account ids.
+  const [providers] = createQuery(() => listProviders());
   const [resizing, setResizing] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<unknown>(null);
 
-  const resizeOptions = () => {
-    const provider = machine()?.spec.provider;
-    if (provider === undefined) {
-      return [];
-    }
-    return (catalog() ?? []).filter((entry: MachineCatalogEntry) => entry.provider === provider);
-  };
+  // `/resize` in the composer asks for this control, not for this tab: a
+  // command that opened a drawer and left the user to find the button is a
+  // command that did half of what it said (issue #138). Not deferred: the
+  // request is usually what mounted this panel in the first place, and the
+  // instant it carries is what makes a second `/resize` a second request.
+  createEffect(
+    on(
+      () => props.openResize,
+      (at) => {
+        if (at !== undefined) {
+          setResizing(true);
+        }
+      },
+    ),
+  );
 
   async function onStart(): Promise<void> {
     setBusy(true);
@@ -121,37 +145,27 @@ export default function MachinePanel(props: { sessionId: string }) {
                 <button type="button" disabled={busy() || view().state !== "running"} onClick={() => void onStop()}>
                   Stop
                 </button>
-                <Show
-                  when={resizing()}
-                  fallback={
-                    <button type="button" disabled={busy()} onClick={() => setResizing(true)}>
-                      Resize
-                    </button>
-                  }
-                >
-                  <select
-                    disabled={busy()}
-                    value=""
-                    onChange={(event) => {
-                      if (event.currentTarget.value !== "") {
-                        void onResize(event.currentTarget.value);
-                      }
-                    }}
-                  >
-                    <option value="">Choose a new type…</option>
-                    <For each={resizeOptions()}>
-                      {(entry) => (
-                        <option value={entry.machine_type}>
-                          {entry.region} · {entry.machine_type}
-                        </option>
-                      )}
-                    </For>
-                  </select>
-                  <button type="button" disabled={busy()} onClick={() => setResizing(false)}>
-                    Cancel
+                <Show when={!resizing()}>
+                  <button type="button" disabled={busy()} onClick={() => setResizing(true)}>
+                    Resize
                   </button>
                 </Show>
               </div>
+
+              {/* The same tiered slider the home composer picks a machine
+                  with (docs/ux.md §7.7), on the machine this session is
+                  already on. */}
+              <Show when={resizing()}>
+                <MachineResize
+                  catalog={catalog() ?? []}
+                  accounts={providers() ?? []}
+                  error={catalog.error ?? providers.error}
+                  current={view()}
+                  saving={busy()}
+                  onResize={(machineType) => void onResize(machineType)}
+                  onCancel={() => setResizing(false)}
+                />
+              </Show>
             </>
           )}
         </Show>
