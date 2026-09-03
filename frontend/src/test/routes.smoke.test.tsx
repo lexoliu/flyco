@@ -324,6 +324,96 @@ describe("route smoke tests", () => {
     expect(await findByText("m7g.xlarge · $0.16/hr · spot")).toBeInTheDocument();
   });
 
+  it("offers a failed session a resume, and takes it back to provisioning", async () => {
+    // The page used to state the provider's error and offer nothing: no
+    // way on, and a composer that refused without saying why (issue #133).
+    const base = vi.mocked(fetch).getMockImplementation();
+    let resumed = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && /^\/v1\/sessions\/[^/]+\/resume$/.test(url.pathname)) {
+        resumed = true;
+        const response = await base!(new URL(url.href.replace("/resume", "")).href, {});
+        return response;
+      }
+      if (method !== "GET" || !/^\/v1\/sessions\/[^/]+$/.test(url.pathname)) {
+        return base!(input, init);
+      }
+      const response = await base!(input, init);
+      const session = (await response.json()) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify(
+          resumed
+            ? session
+            : {
+                ...session,
+                state: "failed",
+                activity: "idle",
+                failure: "AWS refused the reservation: InsufficientInstanceCapacity.",
+              },
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const { findByRole, findByText, getByRole, getByText } = renderAt("/sessions/abc-123");
+
+    const state = await findByRole("region", { name: "Session state" });
+    expect(state.textContent).toContain("Failed");
+    expect(state.textContent).toContain("AWS refused the reservation");
+    // And the composer says why it is not taking a message.
+    expect(getByText("This session failed. Resume it to pick the conversation back up."))
+      .toBeInTheDocument();
+
+    getByRole("button", { name: "Resume" }).click();
+
+    // The answer is the session provisioning again, so the page comes back
+    // as the build it now is rather than as the dead end it was.
+    expect(
+      await findByText("Your task is queued and will start as soon as the machine is ready."),
+    ).toBeInTheDocument();
+    expect(resumed).toBe(true);
+  });
+
+  it("carries the budget raise on the paused session's own notice", async () => {
+    // One notice per state, and a paused session's way out is the picker
+    // rather than a second block beside it (#133, #134).
+    const base = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      if ((init?.method ?? "GET").toUpperCase() !== "GET" || !/^\/v1\/sessions\/[^/]+$/.test(url.pathname)) {
+        return base!(input, init);
+      }
+      const response = await base!(input, init);
+      const session = (await response.json()) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          ...session,
+          state: "paused",
+          activity: "idle",
+          budget: { limit: 10_000_000, spent: 10_000_000, remaining: 0, stage: "exhausted" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const { findByRole, getByRole, getByText } = renderAt("/sessions/abc-123");
+
+    const state = await findByRole("region", { name: "Session state" });
+    expect(state.textContent).toContain("Paused · budget exhausted");
+    expect(state.textContent).toContain("The $10.00 budget is spent. Raise it to continue.");
+
+    // The action is the picker itself, and its floor is the first whole
+    // dollar above the spend.
+    getByRole("button", { name: "Raise budget" }).click();
+    expect((getByRole("slider", { name: "Session budget in dollars" }) as HTMLInputElement).min)
+      .toBe("11");
+    expect(
+      getByText("This session is paused: its budget is spent. Raise it to continue."),
+    ).toBeInTheDocument();
+  });
+
   it("keeps the session's side panels behind the collapsed drawer", async () => {
     const { findByText, queryByLabelText, getByLabelText } = renderAt("/sessions/abc-123");
     await findByText("Audit the relay for dropped frames");

@@ -29,6 +29,7 @@ import {
   getSession,
   getSessionMachine,
   interruptSession,
+  resumeSession,
   sendMessage,
   startSessionMachine,
   stopSessionMachine,
@@ -37,9 +38,15 @@ import {
 import { ApiProblem } from "../api/problem";
 import { createSessionRelay } from "../api/relay";
 import { PROVIDER_LABEL } from "../lib/providers";
-import { dollarsToUsdMicros, formatUsd, usdMicrosToDollars } from "../lib/money";
+import { dollarsToUsdMicros, usdMicrosToDollars } from "../lib/money";
 import { shellCommandIn } from "../lib/shell";
-import { deriveStatus, liveSignalsFrom, type StatusView } from "../lib/status";
+import {
+  composerRefusal,
+  deriveStatus,
+  liveSignalsFrom,
+  sessionNotice,
+  type StatusView,
+} from "../lib/status";
 import { foldTranscript, pendingApprovals } from "../lib/transcript";
 import styles from "./SessionDetail.module.css";
 
@@ -139,8 +146,29 @@ export default function SessionDetail() {
     return null;
   });
 
+  /**
+   * What this session says for itself while it is not running, and the one
+   * thing to do about it (docs/ux.md §6, issue #133).
+   */
+  const notice = createMemo(() => {
+    const view = status();
+    return view === undefined
+      ? null
+      : sessionNotice(view, {
+          failure: session()?.failure,
+          budgetLimit: session()?.budget.limit,
+        });
+  });
+
+  /** Why the composer will not send, or `null` when it will. */
+  const refusal = createMemo(() => {
+    const view = status();
+    return view === undefined ? null : composerRefusal(view.status);
+  });
+
   const [error, setError] = createSignal<unknown>(null);
   const [deciding, setDeciding] = createSignal(false);
+  const [resuming, setResuming] = createSignal(false);
   const [archiving, setArchiving] = createSignal(false);
   const [settingBudget, setSettingBudget] = createSignal(false);
   const [pendingDirtySummary, setPendingDirtySummary] = createSignal<string | null>(null);
@@ -296,6 +324,30 @@ export default function SessionDetail() {
     }
   }
 
+  /**
+   * Puts a stopped session back on a machine.
+   *
+   * The answer is the session in `provisioning`, so the page it comes back
+   * to is the provisioning timeline rather than the dead end it was — no
+   * refetch needed, and no window where the notice still offers a resume
+   * that has already happened.
+   */
+  async function onResume(): Promise<void> {
+    if (resuming()) {
+      return;
+    }
+    setError(null);
+    setResuming(true);
+    try {
+      mutateSession(await resumeSession(params.id));
+      await refetchMachine();
+    } catch (failure) {
+      setError(failure);
+    } finally {
+      setResuming(false);
+    }
+  }
+
   async function onDecide(id: string, decision: "approved" | "denied"): Promise<void> {
     setError(null);
     setDeciding(true);
@@ -369,44 +421,6 @@ export default function SessionDetail() {
       </Show>
       <ProblemNotice error={error()} />
 
-      <Show when={session()?.failure}>
-        {(failure) => <p class={styles.failure}>{failure()}</p>}
-      </Show>
-
-      {/*
-        A paused session is a session whose budget ran out, and the only way
-        out of it is more budget — so the notice carries the raise rather
-        than telling the user to go and find it.
-      */}
-      <Show when={session()?.state === "paused" && session()}>
-        {(paused) => (
-          <div class={styles.paused}>
-            <span>
-              The {formatUsd(paused().budget.limit)} budget is spent. Raise it to continue.
-            </span>
-            <BudgetRaise
-              limitUsd={usdMicrosToDollars(paused().budget.limit)}
-              spentUsd={usdMicrosToDollars(paused().budget.spent)}
-              saving={settingBudget()}
-              onSet={(dollars) => void onSetBudget(dollars)}
-              label="Raise the session budget"
-              trigger={(attrs) => (
-                <button
-                  id={attrs.id}
-                  onClick={attrs.onClick}
-                  aria-expanded={attrs.expanded()}
-                  aria-haspopup="dialog"
-                  type="button"
-                  class={styles.pausedAction}
-                >
-                  Raise budget
-                </button>
-              )}
-            />
-          </div>
-        )}
-      </Show>
-
       <Show when={pendingDirtySummary()}>
         {(summary) => (
           <div class={styles.archiveConfirm} role="alertdialog" aria-labelledby="archive-dirty">
@@ -441,6 +455,65 @@ export default function SessionDetail() {
 
       <div class={styles.body}>
         <div class={styles.column}>
+          {/*
+            Above the transcript rather than in the header, because it is
+            not a label: it is the page telling the reader what happened and
+            handing them the way on from it.
+          */}
+          <Show when={notice()}>
+            {(state) => (
+              <section class={styles.stateNotice} data-tone={state().tone} aria-label="Session state">
+                <h2 class={styles.stateTitle}>{state().title}</h2>
+                <p class={styles.stateBody}>{state().body}</p>
+                {/*
+                  Each way out is the control it actually is: a resume is a
+                  button because it is one request, and a budget raise is
+                  the picker of docs/ux.md §9.1 because the user has to say
+                  how much before there is a request at all.
+                */}
+                <Show when={state().action}>
+                  {(action) => (
+                    <Switch>
+                      <Match when={action().kind === "resume"}>
+                        <button
+                          type="button"
+                          class={styles.stateAction}
+                          disabled={resuming()}
+                          onClick={() => void onResume()}
+                        >
+                          {resuming() ? "Resuming…" : action().label}
+                        </button>
+                      </Match>
+                      <Match when={action().kind === "raise_budget" && session()}>
+                        {(current) => (
+                          <BudgetRaise
+                            limitUsd={usdMicrosToDollars(current().budget.limit)}
+                            spentUsd={usdMicrosToDollars(current().budget.spent)}
+                            saving={settingBudget()}
+                            onSet={(dollars) => void onSetBudget(dollars)}
+                            label="Raise the session budget"
+                            trigger={(attrs) => (
+                              <button
+                                id={attrs.id}
+                                onClick={attrs.onClick}
+                                aria-expanded={attrs.expanded()}
+                                aria-haspopup="dialog"
+                                type="button"
+                                class={styles.stateAction}
+                              >
+                                {action().label}
+                              </button>
+                            )}
+                          />
+                        )}
+                      </Match>
+                    </Switch>
+                  )}
+                </Show>
+              </section>
+            )}
+          </Show>
+
           {/*
             The banner is sticky so an approval raised a hundred rows ago is
             still one click away, and amber because it is the one thing on
@@ -514,7 +587,7 @@ export default function SessionDetail() {
           <div class={styles.composer}>
             <SessionComposer
               turnInFlight={signals().turnInFlight === true}
-              disabled={session()?.state === "archived"}
+              refusal={refusal()}
               onSend={onSend}
               onStop={onStop}
               onCommand={onCommand}

@@ -28,6 +28,7 @@ import type {
   SessionSummary,
 } from "../api/client";
 import type { TimedEvent } from "../api/relay";
+import { formatUsd } from "./money";
 
 /** What a session looks like to the person who opened it. */
 export type SessionStatus =
@@ -233,6 +234,133 @@ export function liveSignalsFrom(events: readonly TimedEvent[]): LiveSignals {
   }
 
   return { turnInFlight, awaitingUser: undecided.size > 0 || agentSpokeLast };
+}
+
+/**
+ * The one thing a stopped session offers to do about itself.
+ *
+ * A kind rather than a callback, because this module is pure: the page maps
+ * each one onto the control it takes — `POST /v1/sessions/{id}/resume` for
+ * a session that lost its machine, and the budget picker of docs/ux.md §9.1
+ * for one that ran out of money.
+ */
+export type SessionNoticeAction =
+  | { kind: "resume"; label: string }
+  | { kind: "raise_budget"; label: string };
+
+/**
+ * What a session that is not running says for itself, above the transcript.
+ *
+ * A status pill in the header says `Failed` in one word, which is the right
+ * size for a list and far too small for the page you opened to find out
+ * what to do next: a failed session used to state its provider's error and
+ * offer nothing, and an archived one said nothing at all while its composer
+ * sat silently disabled (issue #133). So every state that is not running
+ * says what happened, what it means, and — where there is one — carries the
+ * way out on the notice itself.
+ */
+export interface SessionNotice {
+  /** What happened, in the same words the header's pill uses. */
+  title: string;
+  /** What that means, and what to do next. */
+  body: string;
+  /** How it is coloured, from the status it describes. */
+  tone: StatusTone;
+  /** The one thing to do about it, where there is one. */
+  action?: SessionNoticeAction;
+}
+
+/** What a resumable session's button says. */
+const RESUME: SessionNoticeAction = { kind: "resume", label: "Resume" };
+
+/** What a session paused on an exhausted budget offers instead. */
+const RAISE_BUDGET: SessionNoticeAction = { kind: "raise_budget", label: "Raise budget" };
+
+/** The facts a notice quotes beyond the status itself. */
+export interface NoticeFacts {
+  /** Why a failed session failed, in the provider's own words if it gave any. */
+  failure: string | null | undefined;
+  /** What the session may spend, in microdollars: the sum a pause is about. */
+  budgetLimit: number | undefined;
+}
+
+/**
+ * The notice for one session, or `null` while nothing is the matter.
+ *
+ * A running session says nothing here — the transcript is the page — and
+ * neither does a first machine being built, because the provisioning
+ * timeline in the transcript is already that story told better
+ * (docs/ux.md §9.2).
+ */
+export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNotice | null {
+  const title = view.detail === undefined ? view.label : `${view.label} · ${view.detail}`;
+  const notice = (body: string, action?: SessionNoticeAction): SessionNotice => ({
+    title,
+    body,
+    tone: view.tone,
+    ...(action === undefined ? {} : { action }),
+  });
+
+  switch (view.status) {
+    case "failed":
+      return notice(
+        `${facts.failure ?? "The session stopped and said nothing about why."} Resuming builds the machine again and reopens the same conversation.`,
+        RESUME,
+      );
+    case "interrupted":
+      return notice(
+        "The machine is gone and the session is waiting. Resuming puts it back on its own disk, with the conversation where it stopped.",
+        RESUME,
+      );
+    case "migrating":
+      // The one stopped state with nothing to offer and nothing to worry
+      // about: flyco is already doing the thing a `Resume` would ask for.
+      return notice(
+        "Flyco is putting the session back on its own disk. Nothing is needed from you; the conversation continues where it stopped.",
+      );
+    case "archived":
+      return notice(
+        "This session is read-only and its machine has been released. Resuming builds a machine again and reopens the same conversation.",
+        RESUME,
+      );
+    case "paused":
+      // The sum, because it is the number the decision is about: a budget
+      // above the spend is the only thing that ends this state (#134), and
+      // the notice carries that control rather than sending the user to
+      // look for it in the header.
+      return notice(
+        facts.budgetLimit === undefined
+          ? "This session's budget is spent. Raise it to continue."
+          : `The ${formatUsd(facts.budgetLimit)} budget is spent. Raise it to continue.`,
+        RAISE_BUDGET,
+      );
+    default:
+      return null;
+  }
+}
+
+/**
+ * Why the composer will not send, or `null` when it will.
+ *
+ * A disabled button with no explanation is the page refusing without
+ * saying so (issue #133). A session with no machine is the one thing this
+ * covers: a message to a session whose machine is still being built waits
+ * in the room's mailbox and is worth sending, so provisioning and migrating
+ * are not refused.
+ */
+export function composerRefusal(status: SessionStatus): string | null {
+  switch (status) {
+    case "failed":
+      return "This session failed. Resume it to pick the conversation back up.";
+    case "interrupted":
+      return "This session has no machine right now. Resume it to send a message.";
+    case "paused":
+      return "This session is paused: its budget is spent. Raise it to continue.";
+    case "archived":
+      return "This session is archived and read-only.";
+    default:
+      return null;
+  }
 }
 
 /**

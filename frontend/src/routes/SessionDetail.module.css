@@ -15,14 +15,73 @@
   gap: var(--space-4);
 }
 
-.failure {
+/*
+ * What a session that is not running says for itself, above the transcript
+ * (docs/ux.md §6, issue #133): the state in the header's own words, what it
+ * means, and the one thing to do about it. Bordered in the colour of the
+ * status it describes, so a failure reads as one and an archived session
+ * reads as the quiet fact it is.
+ */
+.stateNotice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
   margin: 0;
   padding: var(--space-3) var(--space-4);
-  border: var(--border-width) solid var(--color-danger);
+  border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+
+.stateNotice[data-tone="failed"] {
+  border-color: var(--color-danger);
   background: var(--color-danger-muted);
-  color: var(--color-danger);
+}
+
+.stateNotice[data-tone="attention"],
+.stateNotice[data-tone="neutral"] {
+  border-color: var(--color-border-strong);
+}
+
+.stateTitle {
+  margin: 0;
   font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.stateNotice[data-tone="failed"] .stateTitle {
+  color: var(--color-danger);
+}
+
+.stateBody {
+  flex: 1 1 20rem;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--line-normal);
+}
+
+.stateAction {
+  flex: none;
+  padding: var(--space-2) var(--space-4);
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition: transform var(--transition-fast);
+}
+
+.stateAction:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.stateAction:disabled {
+  opacity: 0.6;
+  cursor: progress;
 }
 
 .body {
@@ -170,36 +229,4 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* A session paused on an exhausted budget, and the one thing that ends it.
-   Quiet rather than alarming: nothing is broken and nothing was lost — the
-   session is waiting on a decision about money. */
-.paused {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
-}
-
-.pausedAction {
-  padding: var(--space-1) var(--space-3);
-  border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-full);
-  background: var(--color-bg);
-  color: var(--color-text);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: border-color var(--transition-fast);
-}
-
-.pausedAction:hover {
-  border-color: var(--color-border-strong);
 }
