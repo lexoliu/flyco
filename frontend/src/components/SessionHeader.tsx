@@ -95,8 +95,14 @@ export interface SessionHeaderProps {
   archiving: boolean;
   onStartMachine: () => void;
   onStopMachine: () => void;
-  /** Opens the drawer on a given tab, for the menu items that live there. */
-  onOpenPanel: (panel: "machine" | "env") => void;
+  /**
+   * Opens the drawer on a given tab, for the menu items that live there.
+   *
+   * `Resize` asks for the resize control itself rather than for the tab it
+   * is on: a menu item that opened a panel and left the user to find the
+   * button did half of what it said (issue #138).
+   */
+  onOpenPanel: (request: { panel: "machine" | "env"; resize?: boolean }) => void;
 }
 
 export default function SessionHeader(props: SessionHeaderProps) {
@@ -351,7 +357,7 @@ export default function SessionHeader(props: SessionHeaderProps) {
                   type="button"
                   class={styles.menuItem}
                   onClick={() => {
-                    props.onOpenPanel("machine");
+                    props.onOpenPanel({ panel: "machine", resize: true });
                     close();
                   }}
                 >
@@ -364,7 +370,7 @@ export default function SessionHeader(props: SessionHeaderProps) {
                   type="button"
                   class={styles.menuItem}
                   onClick={() => {
-                    props.onOpenPanel("env");
+                    props.onOpenPanel({ panel: "env" });
                     close();
                   }}
                 >

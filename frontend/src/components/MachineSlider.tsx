@@ -26,7 +26,7 @@
  * with the charge a billing minimum implies, so nothing here parses a type
  * name or multiplies a rate.
  */
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { AlertTriangle } from "lucide-solid";
 import Disclosure from "./Disclosure";
 import Toggle from "./Toggle";
@@ -45,6 +45,36 @@ import styles from "./MachineSlider.module.css";
 
 /** The leftmost detent, which is flyco keeping the choice. */
 const AUTO_NAME = "Auto";
+
+/**
+ * What the leftmost detent is called where flyco is not choosing.
+ *
+ * A resize is a move from one machine to another (docs/ux.md §9.5): there
+ * is no "let flyco decide" in it, and the track's left end is simply the
+ * cheapest thing on offer.
+ */
+const CHEAPEST_NAME = "Cheapest";
+
+/**
+ * A dimension the `Advanced` disclosure lets the user change.
+ *
+ * Named rather than a row of booleans, because which ones are offered is a
+ * fact about the *caller*: a new session can be put in any account, any
+ * region and either capacity mode, while a resize moves a machine that
+ * already exists — `POST /v1/sessions/{id}/machine/resize` carries a type
+ * and nothing else — so offering those three there would be offering
+ * choices the request cannot express.
+ */
+export type MachineFilter = "account" | "region" | "architecture" | "os" | "spot";
+
+/** Every dimension, which is what the composer's chip offers. */
+const ALL_FILTERS: readonly MachineFilter[] = [
+  "account",
+  "region",
+  "architecture",
+  "os",
+  "spot",
+];
 
 /** The value of "no filter" in a `<select>`, which cannot hold null. */
 const ANY = "";
@@ -88,13 +118,32 @@ export interface MachineSliderProps {
   accounts: ProviderAccountView[];
   /** What flyco would pick on its own, which the `Auto` detent describes. */
   automatic: MachineDefault | undefined;
+  /**
+   * The entry the detents open around: whose account and region are shown
+   * before the user touches a filter.
+   *
+   * Defaults to the machine flyco would pick, which is what a new session
+   * is about to use. A resize passes the machine the session is *on*, so
+   * the track it opens on is the one it can actually move along.
+   */
+  anchor?: MachineCatalogEntry | undefined;
+  /**
+   * Whether the leftmost detent hands the choice back to flyco.
+   *
+   * `false` for a machine that already exists: there is nothing to hand
+   * back, and something is always chosen.
+   */
+  allowAuto?: boolean | undefined;
+  /** Which dimensions `Advanced` offers. Defaults to all of them. */
+  filters?: readonly MachineFilter[] | undefined;
   /** Whether prices are quoted against spot capacity. */
   spot: boolean;
   /** The chosen entry's key, or `null` while the choice is flyco's. */
   chosenKey: string | null;
   /** Chooses an entry, or `null` to hand the choice back to flyco. */
   onChoose: (key: string | null) => void;
-  onSpot: (spot: boolean) => void;
+  /** Changes the capacity mode. Absent where `spot` is not offered. */
+  onSpot?: ((spot: boolean) => void) | undefined;
 }
 
 export default function MachineSlider(props: MachineSliderProps) {
@@ -104,10 +153,21 @@ export default function MachineSlider(props: MachineSliderProps) {
   const [account, setAccount] = createSignal<string | null>(null);
   const [region, setRegion] = createSignal<string | null>(null);
   const [architecture, setArchitecture] = createSignal<string | null>(null);
-  const [os, setOs] = createSignal("linux");
+  const [os, setOs] = createSignal<string | null>(null);
 
-  const activeAccount = createMemo(() => account() ?? props.automatic?.entry.account ?? null);
-  const activeRegion = createMemo(() => region() ?? props.automatic?.entry.region ?? null);
+  /** The entry the untouched filters follow. */
+  const anchor = createMemo(() => props.anchor ?? props.automatic?.entry);
+  const activeAccount = createMemo(() => account() ?? anchor()?.account ?? null);
+  const activeRegion = createMemo(() => region() ?? anchor()?.region ?? null);
+  // Linux where nothing says otherwise, which is what a new session opens
+  // on; a resize of a Mac opens on macOS, because the machine it is moving
+  // is one and an empty track would be the control's own doing.
+  const activeOs = createMemo(() => os() ?? anchor()?.os ?? "linux");
+  const autoOffered = createMemo(() => props.allowAuto !== false);
+  /** How far the detents are pushed right by an `Auto` at position 0. */
+  const offset = createMemo(() => (autoOffered() ? 1 : 0));
+  const offers = (filter: MachineFilter): boolean =>
+    (props.filters ?? ALL_FILTERS).includes(filter);
 
   /** Every value one dimension takes, once the others have had their say. */
   function optionsFor(dimension: "account" | "region" | "architecture"): string[] {
@@ -138,28 +198,51 @@ export default function MachineSlider(props: MachineSliderProps) {
       (entry) =>
         entry.account === activeAccount() &&
         entry.region === activeRegion() &&
-        entry.os === os() &&
+        entry.os === activeOs() &&
         (architecture() === null || entry.lineage?.architecture === architecture()),
     ),
   );
 
-  /** Where the thumb sits: 0 is `Auto`, 1…n are the detents. */
+  /**
+   * Where the thumb sits: 0 is `Auto` where it is offered, and the detents
+   * follow it; without an `Auto` the detents start at 0 themselves.
+   */
   const position = createMemo(() => {
     const key = props.chosenKey;
     if (key === null) {
       return 0;
     }
     const index = detents().findIndex((entry) => entryKey(entry) === key);
-    return index < 0 ? 0 : index + 1;
+    return index < 0 ? 0 : index + offset();
   });
 
+  /** The rightmost position, which is the last detent. */
+  const lastPosition = createMemo(() => Math.max(0, detents().length - 1 + offset()));
+
   const selected = createMemo<MachineCatalogEntry | undefined>(() =>
-    position() === 0 ? undefined : detents()[position() - 1],
+    detents()[position() - offset()],
   );
+
+  /**
+   * Without an `Auto` detent something is always chosen, so a filter change
+   * that drops the chosen machine out of the set has to move the choice
+   * with it — otherwise the reading above the thumb and the machine the
+   * caller holds would be two different machines.
+   */
+  createEffect(() => {
+    if (autoOffered()) {
+      return;
+    }
+    const entries = detents();
+    const first = entries[0];
+    if (first !== undefined && !entries.some((entry) => entryKey(entry) === props.chosenKey)) {
+      props.onChoose(entryKey(first));
+    }
+  });
 
   /** How far along the track the thumb is, which the reading rides on too. */
   const travelled = createMemo(() =>
-    detents().length === 0 ? "0%" : `${(position() / detents().length) * 100}%`,
+    lastPosition() === 0 ? "0%" : `${(position() / lastPosition()) * 100}%`,
   );
 
   /** The name over the thumb: a machine, or the absence of a choice. */
@@ -202,14 +285,20 @@ export default function MachineSlider(props: MachineSliderProps) {
   });
 
   function move(next: number): void {
-    const entry = detents()[next - 1];
-    props.onChoose(next === 0 || entry === undefined ? null : entryKey(entry));
+    const entry = detents()[next - offset()];
+    props.onChoose(entry === undefined ? null : entryKey(entry));
   }
 
   return (
     <div class={styles.slider}>
+      {/*
+        Only the dimensions the caller can act on: a filter whose change the
+        request cannot carry is a control that lies.
+      */}
+      <Show when={(props.filters ?? ALL_FILTERS).length > 0}>
       <Disclosure summary="Advanced">
         <div class={styles.filters}>
+          <Show when={offers("account")}>
           <Filter
             label="Account"
             value={activeAccount() ?? ANY}
@@ -219,12 +308,16 @@ export default function MachineSlider(props: MachineSliderProps) {
             }))}
             onChange={setAccount}
           />
+          </Show>
+          <Show when={offers("region")}>
           <Filter
             label="Region"
             value={activeRegion() ?? ANY}
             options={optionsFor("region").map((value) => ({ value, label: value }))}
             onChange={setRegion}
           />
+          </Show>
+          <Show when={offers("architecture")}>
           <Filter
             label="Architecture"
             value={architecture() ?? ANY}
@@ -235,25 +328,33 @@ export default function MachineSlider(props: MachineSliderProps) {
             }))}
             onChange={setArchitecture}
           />
+          </Show>
+          <Show when={offers("os")}>
           <Filter
             label="Operating system"
-            value={os()}
+            value={activeOs()}
             options={[...new Set(props.catalog.map((entry) => entry.os))].sort().map((value) => ({
               value,
               label: OS_LABEL[value],
             }))}
-            onChange={(next) => setOs(next ?? "linux")}
+            onChange={setOs}
           />
-          <label class={styles.toggleRow}>
-            <Toggle
-              label="Use spot capacity"
-              checked={props.spot}
-              onChange={(next) => props.onSpot(next)}
-            />
-            Spot capacity — cheaper, and flyco handles eviction
-          </label>
+          </Show>
+          <Show when={offers("spot") && props.onSpot}>
+            {(onSpot) => (
+              <label class={styles.toggleRow}>
+                <Toggle
+                  label="Use spot capacity"
+                  checked={props.spot}
+                  onChange={(next) => onSpot()(next)}
+                />
+                Spot capacity — cheaper, and flyco handles eviction
+              </label>
+            )}
+          </Show>
         </div>
       </Disclosure>
+      </Show>
 
       <Show
         when={detents().length > 0}
@@ -286,7 +387,7 @@ export default function MachineSlider(props: MachineSliderProps) {
 
           <div class={styles.track}>
             <div class={styles.rail}>
-              <For each={[undefined, ...detents()]}>
+              <For each={autoOffered() ? [undefined, ...detents()] : detents()}>
                 {(entry, index) => (
                   <span
                     aria-hidden="true"
@@ -295,7 +396,9 @@ export default function MachineSlider(props: MachineSliderProps) {
                       entry !== undefined && billingMinimum(entry) !== null && styles.dotBound,
                       index() === position() && styles.dotTaken,
                     )}
-                    style={{ left: `${(index() / detents().length) * 100}%` }}
+                    style={{
+                      left: lastPosition() === 0 ? "0%" : `${(index() / lastPosition()) * 100}%`,
+                    }}
                   />
                 )}
               </For>
@@ -306,14 +409,14 @@ export default function MachineSlider(props: MachineSliderProps) {
                 class={styles.range}
                 type="range"
                 min={0}
-                max={detents().length}
+                max={lastPosition()}
                 step={1}
                 value={position()}
                 aria-label="Machine"
                 aria-valuetext={spoken()}
                 onInput={(event) => move(Number(event.currentTarget.value))}
                 onKeyDown={(event) => {
-                  const next = detentForKey(event.key, position(), detents().length);
+                  const next = detentForKey(event.key, position(), lastPosition());
                   if (next !== null) {
                     event.preventDefault();
                     move(next);
@@ -324,7 +427,7 @@ export default function MachineSlider(props: MachineSliderProps) {
           </div>
 
           <div class={styles.ends}>
-            <span>{AUTO_NAME}</span>
+            <span>{autoOffered() ? AUTO_NAME : CHEAPEST_NAME}</span>
             <span>
               {detents().length} {detents().length === 1 ? "machine" : "machines"}
             </span>

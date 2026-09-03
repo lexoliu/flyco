@@ -1,0 +1,77 @@
+/*
+ * The machine picker's own box, shared by the composer's compute popover and
+ * the drawer's resize (docs/ux.md §7.7, §9.5).
+ */
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.note {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/*
+ * What a resize costs before it does any work: the machine restarts, and
+ * the disk does not go with it. Stated where the button is, because that is
+ * the moment the user is deciding.
+ */
+.confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.confirm svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.commit {
+  flex: 1;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.commit:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.commit:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.cancel {
+  flex: none;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.cancel:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+}
