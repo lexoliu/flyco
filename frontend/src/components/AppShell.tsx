@@ -15,14 +15,30 @@ import { ReadinessProvider } from "./Readiness";
 import { getMe } from "../api/client";
 import { isSignedIn, onSessionChanged } from "../lib/session";
 import { signOut } from "../lib/signOut";
-import { type ThemePreference, readStoredThemePreference, setTheme } from "../lib/theme";
+import {
+  type ThemePreference,
+  readStoredThemePreference,
+  setTheme,
+} from "../lib/theme";
 import { cx } from "../lib/cx";
 import styles from "./AppShell.module.css";
 
-/** Routes that render their own full-page layout, with no top bar. */
-const BARE_ROUTES = new Set(["/login", "/auth/complete", "/welcome"]);
+/**
+ * Routes a signed-out visitor may see: the sign-in itself and its return.
+ *
+ * Everything else — the first run included — belongs to a flyco account,
+ * so a visit without a session goes to sign-in first and comes back.
+ */
+const PUBLIC_ROUTES = new Set(["/login", "/auth/complete"]);
 
-const THEMES: readonly { value: ThemePreference; label: string; icon: typeof Sun }[] = [
+/** Routes that render their own full-page layout, with no top bar. */
+const BARE_ROUTES = new Set([...PUBLIC_ROUTES, "/welcome"]);
+
+const THEMES: readonly {
+  value: ThemePreference;
+  label: string;
+  icon: typeof Sun;
+}[] = [
   { value: "system", label: "System", icon: Monitor },
   { value: "light", label: "Light", icon: Sun },
   { value: "dark", label: "Dark", icon: Moon },
@@ -36,9 +52,13 @@ const THEMES: readonly { value: ThemePreference; label: string; icon: typeof Sun
  * single-word login keeps its first letter rather than inventing a second.
  */
 export function initialsOf(login: string): string {
-  const parts = login.split(/[^a-zA-Z0-9]+|(?=[A-Z])/u).filter((part) => part.length > 0);
+  const parts = login
+    .split(/[^a-zA-Z0-9]+|(?=[A-Z])/u)
+    .filter((part) => part.length > 0);
   const letters = parts.slice(0, 2).map((part) => part.charAt(0));
-  return (letters.length > 0 ? letters.join("") : login.charAt(0)).toUpperCase();
+  return (
+    letters.length > 0 ? letters.join("") : login.charAt(0)
+  ).toUpperCase();
 }
 
 export default function AppShell(props: { children?: JSX.Element }) {
@@ -46,6 +66,7 @@ export default function AppShell(props: { children?: JSX.Element }) {
   const navigate = useNavigate();
   const [signedIn, setSignedIn] = createSignal(isSignedIn());
   const isBareRoute = createMemo(() => BARE_ROUTES.has(location.pathname));
+  const isPublicRoute = createMemo(() => PUBLIC_ROUTES.has(location.pathname));
   const loginHref = createMemo(() => {
     const destination = `${location.pathname}${location.search}${location.hash}`;
     return `/login?returnTo=${encodeURIComponent(destination)}`;
@@ -63,11 +84,17 @@ export default function AppShell(props: { children?: JSX.Element }) {
   onCleanup(stopListening);
 
   return (
-    <Show when={location.pathname !== "/login" || !signedIn()} fallback={<Navigate href="/" />}>
-      <Show when={isBareRoute() || signedIn()} fallback={<Navigate href={loginHref()} />}>
+    <Show
+      when={location.pathname !== "/login" || !signedIn()}
+      fallback={<Navigate href="/" />}
+    >
+      <Show
+        when={isPublicRoute() || signedIn()}
+        fallback={<Navigate href={loginHref()} />}
+      >
         <ReadinessProvider enabled={signedIn}>
           <div class={styles.shell}>
-              <Show when={!isBareRoute()}>
+            <Show when={!isBareRoute()}>
               <header class={styles.header}>
                 <A href="/" class={styles.brand}>
                   flyco
@@ -100,7 +127,9 @@ export default function AppShell(props: { children?: JSX.Element }) {
  */
 function AccountMenu(props: { onSignOut: () => void }) {
   const [me] = createQuery(getMe);
-  const [theme, setPreference] = createSignal<ThemePreference>(readStoredThemePreference());
+  const [theme, setPreference] = createSignal<ThemePreference>(
+    readStoredThemePreference(),
+  );
   const initials = createMemo(() => {
     const login = me()?.login;
     return login === undefined ? "" : initialsOf(login);
@@ -124,9 +153,14 @@ function AccountMenu(props: { onSignOut: () => void }) {
           aria-haspopup="dialog"
           type="button"
           class={styles.avatar}
-          aria-label={me() === undefined ? "Account" : `Account: ${me()?.login ?? ""}`}
+          aria-label={
+            me() === undefined ? "Account" : `Account: ${me()?.login ?? ""}`
+          }
         >
-          <Show when={initials()} fallback={<span class={styles.avatarBlank} />}>
+          <Show
+            when={initials()}
+            fallback={<span class={styles.avatarBlank} />}
+          >
             {initials()}
           </Show>
         </button>
@@ -148,18 +182,29 @@ function AccountMenu(props: { onSignOut: () => void }) {
           <p class={styles.menuLabel} id="appearance-label">
             Appearance
           </p>
-          <div class={styles.themeRow} role="group" aria-labelledby="appearance-label">
+          <div
+            class={styles.themeRow}
+            role="group"
+            aria-labelledby="appearance-label"
+          >
             {THEMES.map((option) => (
               <button
                 type="button"
-                class={cx(styles.themeOption, theme() === option.value && styles.themeChosen)}
+                class={cx(
+                  styles.themeOption,
+                  theme() === option.value && styles.themeChosen,
+                )}
                 aria-pressed={theme() === option.value}
                 onClick={() => choose(option.value)}
               >
                 <option.icon size={14} aria-hidden="true" />
                 {option.label}
                 <Show when={theme() === option.value}>
-                  <Check size={13} aria-hidden="true" class={cx(styles.themeCheck)} />
+                  <Check
+                    size={13}
+                    aria-hidden="true"
+                    class={cx(styles.themeCheck)}
+                  />
                 </Show>
               </button>
             ))}
