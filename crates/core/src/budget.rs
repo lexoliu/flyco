@@ -110,6 +110,24 @@ impl BudgetStage {
             _ => Self::Exhausted,
         }
     }
+
+    /// How many thresholds this stage has crossed.
+    ///
+    /// The same scale [`BudgetSignal::ordinal`] counts on, so a stage and
+    /// the signals it implies are comparable: a signal belongs to a budget
+    /// standing at this stage exactly while its ordinal is no greater.
+    /// That is what lets a raised limit drop the thresholds it un-crossed
+    /// out of the delivery outbox, so re-reaching one fires it again.
+    #[must_use]
+    pub const fn ordinal(self) -> u8 {
+        match self {
+            Self::Ok => 0,
+            Self::Notice50 => 1,
+            Self::Warn80 => 2,
+            Self::Final90 => 3,
+            Self::Exhausted => 4,
+        }
+    }
 }
 
 /// A signal the control plane must deliver when a threshold is crossed.
@@ -307,6 +325,28 @@ mod tests {
             Some(BudgetSignal::FinalWarn90)
         ); // 90%
         assert_eq!(budget.apply(spend(400_000)), Some(BudgetSignal::Pause)); // 100%
+    }
+
+    #[test]
+    fn a_stage_and_the_signal_announcing_it_count_the_same_thresholds() {
+        // The outbox is pruned by comparing a signal's ordinal against the
+        // stage a replay reached, which is only sound while the two scales
+        // agree.
+        let config = BudgetConfig::new(Usd::from_dollars(10)).expect("non-zero limit");
+        for stage in [
+            BudgetStage::Ok,
+            BudgetStage::Notice50,
+            BudgetStage::Warn80,
+            BudgetStage::Final90,
+            BudgetStage::Exhausted,
+        ] {
+            let announced = BudgetSignal::for_stage(stage, config);
+            assert_eq!(
+                announced.map(BudgetSignal::ordinal),
+                (stage != BudgetStage::Ok).then_some(stage.ordinal()),
+                "{stage:?}"
+            );
+        }
     }
 
     #[test]

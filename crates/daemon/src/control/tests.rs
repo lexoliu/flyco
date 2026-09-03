@@ -1144,6 +1144,67 @@ async fn a_budget_threshold_below_the_pause_is_told_to_the_agent() {
     harness.archive().await.expect("the run ended cleanly");
 }
 
+#[tokio::test]
+async fn a_raised_budget_lifts_the_pause_and_tells_the_agent_to_carry_on() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::Budget {
+        signal: BudgetSignal::Pause,
+    });
+    assert_eq!(harness.next_call().await, Call::Interrupt);
+
+    harness.command(ControlToDaemon::BudgetRaised {
+        limit: Usd::from_dollars(25),
+    });
+    let Call::UserMessage(text) = harness.next_call().await else {
+        panic!("lifting a pause must reach the agent as a message");
+    };
+    assert!(
+        text.starts_with("[flyco budget notice]"),
+        "the agent must be able to tell this from the user: {text}"
+    );
+    assert!(text.contains("$25.00"), "the new limit is the news: {text}");
+
+    // And the session accepts work again, which is the whole point. The
+    // machine notice still rides in front of the first user message: the
+    // pause never let one through, so this is still the first.
+    harness.command(ControlToDaemon::UserMessage {
+        text: "keep going".to_owned(),
+    });
+    let Call::UserMessage(resumed) = harness.next_call().await else {
+        panic!("a released session must accept a user message");
+    };
+    assert!(resumed.ends_with("keep going"), "{resumed}");
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_budget_raised_on_a_session_that_never_paused_says_nothing() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    // Topping a budget up early is not news the agent has to read: there
+    // was no pause to lift, and `budget_status` answers whenever it wants
+    // the number.
+    harness.command(ControlToDaemon::BudgetRaised {
+        limit: Usd::from_dollars(25),
+    });
+    harness.command(ControlToDaemon::UserMessage {
+        text: "carry on".to_owned(),
+    });
+    let Call::UserMessage(first) = harness.next_call().await else {
+        panic!("the user's message must be the first thing the harness hears");
+    };
+    assert!(
+        first.ends_with("carry on") && !first.contains("[flyco budget notice]"),
+        "the raise must not have put a message in front of the user's: {first}"
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
 // ── Archival ──
 
 #[tokio::test]

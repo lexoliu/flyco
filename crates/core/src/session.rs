@@ -442,11 +442,27 @@ pub struct HarnessSessionView {
 }
 
 /// Request body of `PATCH /v1/sessions/{id}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+///
+/// Both fields are independently optional, because the two things a user
+/// changes about a live session are changed from opposite ends of the
+/// header and neither has any business restating the other's value. A body
+/// carrying neither is refused rather than answered with a session nothing
+/// happened to.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct UpdateSession {
     /// What to call the session, 1 to
     /// [`MAX_SESSION_TITLE_CHARS`] characters once trimmed.
-    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// What the session may spend on compute, in microdollars.
+    ///
+    /// The one thing that releases a session paused on an exhausted
+    /// budget: a limit above what the ledger has already spent puts the
+    /// session back to [`SessionState::Active`] and tells its daemon to
+    /// carry on. A limit that is still under the spend is accepted and
+    /// changes nothing else — the session stays paused, because it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_limit: Option<Usd>,
 }
 
 /// Request body of `POST /v1/sessions/{id}/messages`.

@@ -385,30 +385,65 @@ async fn read_session(
     sessions::find(db, user.id, id).await.map(Json)
 }
 
-/// Renames one of the caller's sessions.
+/// Changes what one of the caller's sessions is called, what it may spend,
+/// or both.
 ///
 /// The title opens as the excerpt of the prompt the session was created
-/// with; this is how it becomes something the user chose.
+/// with; this is how it becomes something the user chose. The budget limit
+/// is the one thing that releases a session paused on an exhausted budget,
+/// and raising it past the spend both puts the session back to
+/// [`SessionState::Active`] and tells its daemon to carry on — the daemon
+/// stopped accepting work when the pause reached it and nothing in the
+/// database can lift that.
 #[skyzen::openapi]
 async fn update_session(
     State(user): State<CurrentUser>,
     params: Params,
     Json(update): Json<UpdateSession>,
+    rooms: Rooms,
     db: Db,
 ) -> Outcome<Json<SessionDetail>> {
-    rename_session(&user, &params, &update, &db).await.into()
+    apply_session_update(&user, &params, &update, &rooms, &db)
+        .await
+        .into()
 }
 
-async fn rename_session(
+async fn apply_session_update(
     user: &CurrentUser,
     params: &Params,
     update: &UpdateSession,
+    rooms: &Rooms,
     db: &Db,
 ) -> Result<Json<SessionDetail>, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
-    sessions::rename(db, user.id, id, &update.title)
-        .await
+
+    let renamed = match &update.title {
+        Some(title) => Some(sessions::rename(db, user.id, id, title).await?),
+        None => None,
+    };
+
+    let rebudgeted = match update.budget_limit {
+        Some(limit) => {
+            let raise = sessions::set_budget_limit(db, user.id, id, limit).await?;
+            if raise.resumed {
+                rooms
+                    .command(id, &ControlToDaemon::BudgetRaised { limit })
+                    .await?;
+                tracing::info!(session = %id, %limit, "a raised budget released a paused session");
+            }
+            Some(raise.session)
+        }
+        None => None,
+    };
+
+    // The budget answer wins where both were asked for: it is the later of
+    // the two reads and therefore the one carrying the rename as well.
+    // Neither means a body that named nothing to do, which is the caller's
+    // bug rather than a session that happens to be unchanged.
+    rebudgeted
+        .or(renamed)
         .map(Json)
+        .ok_or(ApiError::EmptyUpdate)
 }
 
 /// Narrows a manual archive.

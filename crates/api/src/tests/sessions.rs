@@ -13,10 +13,11 @@ use skyzen_services::sql::Row;
 use skyzen_services::{Db, Kv};
 use skyzen_test::{TestClient, TestContext};
 
+use crate::rooms::{NativeRooms, Rooms};
 use crate::testing::{
     SSH_HOST, machine_choice, migrated_router, seed_other_user, seed_provider_account, seed_user,
 };
-use crate::{app, approvals, budgets, session, sessions, testing};
+use crate::{app, approvals, budgets, metering, session, sessions, testing};
 
 const REPO: &str = "lexoliu/flyco";
 
@@ -25,6 +26,22 @@ const BRANCH: &str = "dev";
 
 /// The opening instruction every test session is created with.
 const PROMPT: &str = "audit the relay for dropped frames";
+
+/// A `PATCH /v1/sessions/{id}` body that only renames.
+fn rename(title: &str) -> UpdateSession {
+    UpdateSession {
+        title: Some(title.to_owned()),
+        ..UpdateSession::default()
+    }
+}
+
+/// A `PATCH /v1/sessions/{id}` body that only changes the budget.
+fn rebudget(dollars: u64) -> UpdateSession {
+    UpdateSession {
+        budget_limit: Some(Usd::from_dollars(dollars)),
+        ..UpdateSession::default()
+    }
+}
 
 fn problem_kind(slug: &str) -> String {
     let mut kind = String::from("https://flyco.dev/problems/");
@@ -244,9 +261,7 @@ async fn a_session_can_be_renamed_and_refuses_a_title_nobody_could_read(
     let renamed = client
         .patch(&path)
         .bearer(&caller.token)
-        .json(&UpdateSession {
-            title: "  Rework the relay mailbox  ".to_owned(),
-        })
+        .json(&rename("  Rework the relay mailbox  "))
         .send()
         .await;
     renamed.assert_status(200);
@@ -264,7 +279,7 @@ async fn a_session_can_be_renamed_and_refuses_a_title_nobody_could_read(
         let refused = client
             .patch(&path)
             .bearer(&caller.token)
-            .json(&UpdateSession { title })
+            .json(&rename(&title))
             .send()
             .await;
         refused.assert_status(422);
@@ -279,9 +294,7 @@ async fn a_session_can_be_renamed_and_refuses_a_title_nobody_could_read(
     client
         .patch(&path)
         .bearer(&stranger.token)
-        .json(&UpdateSession {
-            title: "mine now".to_owned(),
-        })
+        .json(&rename("mine now"))
         .send()
         .await
         .assert_status(404);
@@ -936,6 +949,200 @@ async fn an_unknown_session_is_not_found(ctx: TestContext, kv: Kv, db: Db) {
         .await;
 
     response.assert_status(404);
+}
+
+// ── Raising an exhausted budget ──
+
+/// Spends a session's whole budget the way the meter does, and lets the
+/// outbox deliver the pause — so the session under test is paused for the
+/// one reason a session is ever paused.
+async fn exhaust_the_budget(db: &Db, caller: &Caller, session: SessionId, dollars: u64) {
+    sessions::transition(db, caller.user.id, session, SessionState::Active)
+        .await
+        .expect("a provisioning session becomes active when its daemon arrives");
+    budgets::record(
+        db,
+        budget_id(db, session).await,
+        SpendKind::Compute,
+        Usd::from_dollars(dollars),
+        "machine time",
+    )
+    .await
+    .expect("record spend");
+    metering::deliver(db, &Rooms::from_native(NativeRooms::new()))
+        .await
+        .expect("deliver the pause");
+}
+
+#[skyzen::test]
+async fn raising_the_budget_past_the_spend_releases_a_paused_session(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    let id = session.summary.id;
+    let path = format!("/v1/sessions/{id}");
+    exhaust_the_budget(&db, &caller, id, 10).await;
+
+    // A raise that is still under the spend is a legitimate change to the
+    // limit and nothing more: the money is spent either way, so the session
+    // stays paused rather than being released onto a budget it has already
+    // overrun.
+    let under = client
+        .patch(&path)
+        .bearer(&caller.token)
+        .json(&rebudget(9))
+        .send()
+        .await;
+    under.assert_status(200);
+    let under: SessionDetail = under.json();
+    assert_eq!(under.summary.state, SessionState::Paused);
+    assert_eq!(under.budget.limit, Usd::from_dollars(9));
+    assert_eq!(under.budget.stage, BudgetStage::Exhausted);
+
+    let raised = client
+        .patch(&path)
+        .bearer(&caller.token)
+        .json(&rebudget(25))
+        .send()
+        .await;
+    raised.assert_status(200);
+    let raised: SessionDetail = raised.json();
+    assert_eq!(
+        raised.summary.state,
+        SessionState::Active,
+        "a budget with room left in it releases the session it paused"
+    );
+    assert_eq!(raised.budget.limit, Usd::from_dollars(25));
+    assert_eq!(raised.budget.spent, Usd::from_dollars(10));
+    assert_eq!(raised.budget.remaining, Usd::from_dollars(15));
+    assert_eq!(
+        raised.budget.stage,
+        BudgetStage::Ok,
+        "$10 of a $25 budget is below every threshold, so the replay says so"
+    );
+
+    // The ledger is untouched by any of it: a limit is re-read against the
+    // same history, never an adjustment to it.
+    let events: u32 = sql!(
+        db,
+        "SELECT COUNT(*) AS events FROM spend_events \
+         WHERE budget_id = {budget_id(&db, id).await}"
+    )
+    .fetch_scalar()
+    .await
+    .expect("count the ledger");
+    assert_eq!(events, 1);
+}
+
+#[skyzen::test]
+async fn a_budget_raised_and_spent_again_pauses_again(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    let id = session.summary.id;
+    exhaust_the_budget(&db, &caller, id, 10).await;
+
+    client
+        .patch(&format!("/v1/sessions/{id}"))
+        .bearer(&caller.token)
+        .json(&rebudget(20))
+        .send()
+        .await
+        .assert_status(200);
+
+    // The outbox is keyed `UNIQUE (budget_id, signal)`, so a pause row left
+    // behind by the first exhaustion would silence the second one for good.
+    budgets::record(
+        &db,
+        budget_id(&db, id).await,
+        SpendKind::Compute,
+        Usd::from_dollars(10),
+        "machine time",
+    )
+    .await
+    .expect("spend the raised budget too");
+    assert!(
+        budgets::pending_signals(&db)
+            .await
+            .expect("outbox")
+            .iter()
+            .any(|pending| pending.session_id == id
+                && pending.signal == flyco_core::BudgetSignal::Pause),
+        "exhausting a raised budget announces the pause again"
+    );
+
+    metering::deliver(&db, &Rooms::from_native(NativeRooms::new()))
+        .await
+        .expect("deliver the second pause");
+    assert_eq!(
+        sessions::state_of(&db, caller.user.id, id)
+            .await
+            .expect("state"),
+        SessionState::Paused
+    );
+}
+
+#[skyzen::test]
+async fn an_update_refuses_a_budget_nothing_can_run_on_and_a_body_that_says_nothing(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    let path = format!("/v1/sessions/{}", session.summary.id);
+
+    let zero = client
+        .patch(&path)
+        .bearer(&caller.token)
+        .json(&rebudget(0))
+        .send()
+        .await;
+    zero.assert_status(422);
+    assert_eq!(zero.json::<Problem>().kind, problem_kind("invalid-budget"));
+
+    let empty = client
+        .patch(&path)
+        .bearer(&caller.token)
+        .json(&UpdateSession::default())
+        .send()
+        .await;
+    empty.assert_status(422);
+    assert_eq!(empty.json::<Problem>().kind, problem_kind("empty-update"));
+
+    // One `PATCH` may carry both, and the answer describes both.
+    let both = client
+        .patch(&path)
+        .bearer(&caller.token)
+        .json(&UpdateSession {
+            title: Some("Rework the relay mailbox".to_owned()),
+            budget_limit: Some(Usd::from_dollars(30)),
+        })
+        .send()
+        .await;
+    both.assert_status(200);
+    let both: SessionDetail = both.json();
+    assert_eq!(both.summary.title, "Rework the relay mailbox");
+    assert_eq!(both.budget.limit, Usd::from_dollars(30));
+
+    // And a budget is the owner's to set, like every other thing about a
+    // session.
+    let stranger = sign_in(&kv, &db, seed_other_user(&db).await).await;
+    client
+        .patch(&path)
+        .bearer(&stranger.token)
+        .json(&rebudget(50))
+        .send()
+        .await
+        .assert_status(404);
 }
 
 async fn budget_id(db: &Db, session: SessionId) -> flyco_core::BudgetId {

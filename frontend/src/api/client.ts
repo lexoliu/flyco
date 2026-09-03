@@ -230,12 +230,22 @@ export function getSession(id: string): Promise<JsonResponse<"flyco_api::app::ge
   return requestJson("GET", `/v1/sessions/${id}`);
 }
 
-/** Renames a session. The title is what every list row is identified by. */
+/**
+ * Changes a session's title, its compute budget, or both.
+ *
+ * Every field is optional and a body naming none of them is refused, so
+ * callers pass exactly what they are changing. Raising `budgetLimit` (in
+ * microdollars) past what the session has spent is what releases one paused
+ * on an exhausted budget: the answer carries the session already `active`.
+ */
 export function updateSession(
   id: string,
-  title: string,
+  changes: { title?: string; budgetLimit?: number },
 ): Promise<JsonResponse<"flyco_api::app::update_session", 200>> {
-  const body: JsonBody<"flyco_api::app::update_session"> = { title };
+  const body: JsonBody<"flyco_api::app::update_session"> = {
+    ...(changes.title === undefined ? {} : { title: changes.title }),
+    ...(changes.budgetLimit === undefined ? {} : { budget_limit: changes.budgetLimit }),
+  };
   return requestJson("PATCH", `/v1/sessions/${id}`, { json: body });
 }
 

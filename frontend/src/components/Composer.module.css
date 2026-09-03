@@ -243,24 +243,6 @@
   white-space: nowrap;
 }
 
-.slider {
-  width: 100%;
-  accent-color: var(--color-primary);
-}
-
-.sliderRow {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.amount {
-  font-size: var(--text-xl);
-  font-weight: var(--weight-semibold);
-  font-variant-numeric: tabular-nums;
-}
-
 .toggleRow {
   display: flex;
   align-items: center;

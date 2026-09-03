@@ -16,6 +16,7 @@ import { useParams } from "@solidjs/router";
 import { Match, Show, Switch, createMemo, createSignal, onCleanup } from "solid-js";
 import { createQuery } from "../lib/query";
 import { AlertTriangle } from "lucide-solid";
+import { BudgetRaise } from "../components/BudgetPicker";
 import ProblemNotice from "../components/ProblemNotice";
 import SessionComposer, { type SessionCommand } from "../components/SessionComposer";
 import SessionDrawer from "../components/SessionDrawer";
@@ -36,7 +37,7 @@ import {
 import { ApiProblem } from "../api/problem";
 import { createSessionRelay } from "../api/relay";
 import { PROVIDER_LABEL } from "../lib/providers";
-import { usdMicrosToDollars } from "../lib/money";
+import { dollarsToUsdMicros, formatUsd, usdMicrosToDollars } from "../lib/money";
 import { shellCommandIn } from "../lib/shell";
 import { deriveStatus, liveSignalsFrom, type StatusView } from "../lib/status";
 import { foldTranscript, pendingApprovals } from "../lib/transcript";
@@ -114,6 +115,7 @@ export default function SessionDetail() {
   const [error, setError] = createSignal<unknown>(null);
   const [deciding, setDeciding] = createSignal(false);
   const [archiving, setArchiving] = createSignal(false);
+  const [settingBudget, setSettingBudget] = createSignal(false);
   const [pendingDirtySummary, setPendingDirtySummary] = createSignal<string | null>(null);
   const [panelRequest, setPanelRequest] = createSignal<{ panel: "machine" | "env"; at: number }>();
 
@@ -211,11 +213,34 @@ export default function SessionDetail() {
       mutateSession({ ...previous, title });
     }
     try {
-      const updated = await updateSession(params.id, title);
+      const updated = await updateSession(params.id, { title });
       mutateSession(updated);
     } catch (failure) {
       setError(failure);
       mutateSession(previous);
+    }
+  }
+
+  /**
+   * Sets the session's compute budget.
+   *
+   * Not shown before the answer lands, unlike the rename: raising a budget
+   * can move the session out of `paused`, and a header that showed the new
+   * limit beside the old status would be showing two halves of one change.
+   * The answer carries both.
+   */
+  async function onSetBudget(dollars: number): Promise<void> {
+    if (settingBudget()) {
+      return;
+    }
+    setError(null);
+    setSettingBudget(true);
+    try {
+      mutateSession(await updateSession(params.id, { budgetLimit: dollarsToUsdMicros(dollars) }));
+    } catch (failure) {
+      setError(failure);
+    } finally {
+      setSettingBudget(false);
     }
   }
 
@@ -294,6 +319,8 @@ export default function SessionDetail() {
         contextUsed={latestUsage()?.context?.used_tokens}
         contextSize={latestUsage()?.context?.size_tokens}
         onRename={(title) => void onRename(title)}
+        onSetBudget={(dollars) => void onSetBudget(dollars)}
+        settingBudget={settingBudget()}
         onArchive={() => void onArchive(false)}
         archiving={archiving()}
         onStartMachine={() => void onMachine("start")}
@@ -306,6 +333,40 @@ export default function SessionDetail() {
 
       <Show when={session()?.failure}>
         {(failure) => <p class={styles.failure}>{failure()}</p>}
+      </Show>
+
+      {/*
+        A paused session is a session whose budget ran out, and the only way
+        out of it is more budget — so the notice carries the raise rather
+        than telling the user to go and find it.
+      */}
+      <Show when={session()?.state === "paused" && session()}>
+        {(paused) => (
+          <div class={styles.paused}>
+            <span>
+              The {formatUsd(paused().budget.limit)} budget is spent. Raise it to continue.
+            </span>
+            <BudgetRaise
+              limitUsd={usdMicrosToDollars(paused().budget.limit)}
+              spentUsd={usdMicrosToDollars(paused().budget.spent)}
+              saving={settingBudget()}
+              onSet={(dollars) => void onSetBudget(dollars)}
+              label="Raise the session budget"
+              trigger={(attrs) => (
+                <button
+                  id={attrs.id}
+                  onClick={attrs.onClick}
+                  aria-expanded={attrs.expanded()}
+                  aria-haspopup="dialog"
+                  type="button"
+                  class={styles.pausedAction}
+                >
+                  Raise budget
+                </button>
+              )}
+            />
+          </div>
+        )}
       </Show>
 
       <Show when={pendingDirtySummary()}>

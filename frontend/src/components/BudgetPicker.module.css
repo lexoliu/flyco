@@ -1,0 +1,53 @@
+.popover {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.sliderRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.amount {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.slider {
+  width: 100%;
+  accent-color: var(--color-primary);
+}
+
+.note {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* The button that spends the round trip. Full width because the panel is
+   narrow and a button floating in it would be a target to aim at. */
+.commit {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.commit:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.commit:disabled {
+  opacity: 0.35;
+  cursor: default;
+}

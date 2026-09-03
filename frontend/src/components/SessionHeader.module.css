@@ -284,3 +284,21 @@
     animation: none;
   }
 }
+
+/* The budget ring is a control, and the only thing that says so is that it
+   answers to a pointer: a bordered button around it would make the header a
+   row of two shapes where the two rings should read as a pair. */
+.budgetTrigger {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.budgetTrigger:hover {
+  color: var(--color-text);
+}
