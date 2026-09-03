@@ -126,6 +126,19 @@ async fn reconcile(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
         }
     }
 
+    // A raised limit un-crosses thresholds, and the outbox is keyed
+    // `UNIQUE (budget_id, signal)` so a row left behind would silence that
+    // threshold for the rest of the budget's life — including the pause.
+    // Dropping the signals this replay did not reach keeps the outbox
+    // describing the budget as it now stands, so re-spending re-announces.
+    sql!(
+        db,
+        "DELETE FROM budget_signals \
+         WHERE budget_id = {budget} AND ordinal > {state.stage().ordinal()}"
+    )
+    .execute()
+    .await?;
+
     sql!(
         db,
         "UPDATE budgets SET spent_micros = {state.spent()}, stage = {state.stage()} \
@@ -135,6 +148,28 @@ async fn reconcile(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
     .await?;
 
     Ok(state.into())
+}
+
+/// Changes what a budget may spend, and replays the ledger against it.
+///
+/// The limit is the one part of a budget that is not append-only: the
+/// ledger under it is untouched and every total is still derived from it,
+/// so raising a limit is a re-reading of the same history rather than an
+/// adjustment to it.
+///
+/// # Errors
+///
+/// Returns [`ApiError::InvalidBudget`] if the limit is zero, or a database
+/// error if the budget cannot be written or replayed.
+pub async fn set_limit(db: &Db, budget: BudgetId, limit: Usd) -> Result<BudgetView, ApiError> {
+    let config = BudgetConfig::new(limit).map_err(|_| ApiError::InvalidBudget)?;
+    sql!(
+        db,
+        "UPDATE budgets SET limit_micros = {config.limit()} WHERE id = {budget}"
+    )
+    .execute()
+    .await?;
+    reconcile(db, budget).await
 }
 
 /// Appends one accrual to the ledger.

@@ -35,6 +35,8 @@ function mount(overrides: Partial<SessionHeaderProps>) {
     contextUsed: undefined,
     contextSize: undefined,
     onRename: vi.fn(),
+    onSetBudget: vi.fn(),
+    settingBudget: false,
     onArchive: vi.fn(),
     archiving: false,
     onStartMachine: vi.fn(),
@@ -75,5 +77,45 @@ describe("SessionHeader", () => {
     expect(getByText("octocat/hello-world")).toBeInTheDocument();
     expect(getByRole("img", { name: "Budget: $1.20 / $10" })).toBeInTheDocument();
     expect(getByRole("img", { name: "Context: 41k / 200k" })).toBeInTheDocument();
+  });
+
+  it("raises the budget from the ring, never below what is already spent", async () => {
+    const onSetBudget = vi.fn();
+    const { getByRole, getByLabelText } = mount({
+      session: {
+        ...SESSION,
+        state: "paused",
+        budget: { limit: 10_000_000, spent: 10_000_000, remaining: 0, stage: "exhausted" },
+      },
+      budgetSpentUsd: 10,
+      budgetLimitUsd: 10,
+      onSetBudget,
+    });
+
+    // The ring is the button: what it is named by is the reading it shows,
+    // which is what a person clicking it is acting on.
+    getByRole("button", { name: "Budget: $10.00 / $10" }).click();
+
+    // The floor is the first whole dollar above the spend: a limit at or
+    // under it would leave the session paused on the same exhausted budget.
+    const slider = getByLabelText("Session budget in dollars") as HTMLInputElement;
+    expect(slider.min).toBe("11");
+
+    slider.value = "25";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+    getByRole("button", { name: "Set budget to $25" }).click();
+
+    expect(onSetBudget).toHaveBeenCalledWith(25);
+  });
+
+  it("leaves the budget a readout on an archived session", () => {
+    const { getByRole, queryByRole } = mount({
+      session: { ...SESSION, state: "archived" },
+      budgetSpentUsd: 1.2,
+      budgetLimitUsd: 10,
+    });
+
+    expect(getByRole("img", { name: "Budget: $1.20 / $10" })).toBeInTheDocument();
+    expect(queryByRole("button", { name: /^Budget:/ })).not.toBeInTheDocument();
   });
 });

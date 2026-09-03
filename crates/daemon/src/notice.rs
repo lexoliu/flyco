@@ -230,6 +230,19 @@ impl BudgetStatus {
     }
 }
 
+/// What the agent is told when the user raises an exhausted budget.
+///
+/// The symmetric half of the pause: the pause was enforced without a word
+/// to the model — the turn was interrupted mid-thought — so lifting it has
+/// to say what happened, or the agent wakes up with no account of why it
+/// stopped and no instruction to continue.
+#[derive(Debug, Template)]
+#[template(path = "budget_raised.txt", escape = "none")]
+pub struct BudgetRaised {
+    /// What the session may spend now, in total.
+    pub limit: String,
+}
+
 /// What `machine_resize` says when it started one.
 #[derive(Debug, Template)]
 #[template(path = "resize_accepted.txt", escape = "none")]
@@ -261,8 +274,8 @@ pub struct ResizeRefusedDirty {
 #[cfg(test)]
 mod tests {
     use super::{
-        BudgetStatus, MachineChanged, MachineLine, MachineStatus, ResizeDescription, ResizePending,
-        ResizeRefusedDirty, SessionStart,
+        BudgetRaised, BudgetStatus, MachineChanged, MachineLine, MachineStatus, ResizeDescription,
+        ResizePending, ResizeRefusedDirty, SessionStart,
     };
     use askama::Template as _;
     use flyco_core::{
@@ -433,6 +446,19 @@ mod tests {
         assert!(rendered.contains("spent $9.00 of its $10.00 compute budget, leaving $1.00"));
         assert!(rendered.contains("never for the tokens your turns cost"));
         assert!(rendered.contains("the session pauses at the whole"));
+    }
+
+    #[test]
+    fn a_raised_budget_names_the_new_limit_and_tells_the_agent_to_continue() {
+        let rendered = BudgetRaised {
+            limit: Usd::from_dollars(25).to_string(),
+        }
+        .render()
+        .expect("render");
+
+        assert!(rendered.starts_with("[flyco budget notice]"));
+        assert!(rendered.contains("$25.00"));
+        assert!(rendered.contains("carry on from where you were interrupted"));
     }
 
     #[test]

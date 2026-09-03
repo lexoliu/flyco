@@ -650,6 +650,18 @@ pub enum ApiError {
     )]
     InvalidBudget,
 
+    /// A `PATCH` body named nothing to change.
+    ///
+    /// Every field of an update is optional, so a body with none of them is
+    /// a caller that meant something and sent nothing. Answering it with an
+    /// unchanged session would report success for a request that had no
+    /// content.
+    #[error(
+        "an update must name at least one thing to change",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    EmptyUpdate,
+
     /// The submitted session cap is outside the allowed range.
     #[error(
         "a session cap must be between {min} and {max}",
@@ -941,6 +953,7 @@ impl ApiError {
             Self::InvalidEnvKey(_) => "invalid-env-key",
             Self::InvalidTitle { .. } => "invalid-title",
             Self::InvalidBudget => "invalid-budget",
+            Self::EmptyUpdate => "empty-update",
             Self::InvalidSessionCap { .. } => "invalid-session-cap",
             Self::EmptyMessage => "empty-message",
             Self::EmptyObservation => "empty-observation",

@@ -6,9 +6,9 @@
 //! no business knowing.
 
 use flyco_core::{
-    ARCHIVE_AFTER_IDLE_SECS, ApprovalState, BranchName, BudgetConfig, BudgetId, HarnessKind,
-    InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineOrigin, RepoSlug, SessionActivity,
-    SessionDetail, SessionId, SessionState, SessionSummary, UserId,
+    ARCHIVE_AFTER_IDLE_SECS, ApprovalState, BranchName, BudgetConfig, BudgetId, BudgetStage,
+    HarnessKind, InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineOrigin, RepoSlug,
+    SessionActivity, SessionDetail, SessionId, SessionState, SessionSummary, Usd, UserId,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -208,6 +208,62 @@ pub async fn rename(
     .await?;
 
     find(db, user, id).await
+}
+
+/// What changing a session's budget did to the session.
+#[derive(Debug)]
+pub struct BudgetRaise {
+    /// The session as it now stands.
+    pub session: SessionDetail,
+    /// Whether the new limit released a session paused on the old one.
+    ///
+    /// The daemon holds a pause of its own — it stops accepting work the
+    /// moment [`BudgetSignal::Pause`](flyco_core::BudgetSignal::Pause)
+    /// reaches it — and nothing in the database can lift that. So this is
+    /// what tells the caller a
+    /// [`ControlToDaemon::BudgetRaised`](flyco_core::ControlToDaemon::BudgetRaised)
+    /// is owed to the session's room.
+    pub resumed: bool,
+}
+
+/// Changes what one of the caller's sessions may spend, releasing it if it
+/// was paused on the old limit.
+///
+/// The ledger is untouched: the limit is re-read against the same history,
+/// and a session paused because that history exhausted the old limit is put
+/// back to [`SessionState::Active`] exactly when the replay no longer says
+/// [`BudgetStage::Exhausted`](flyco_core::BudgetStage::Exhausted). A limit
+/// raised to less than the session has already spent is accepted and leaves
+/// it paused, because it still is.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is not the
+/// caller's, [`ApiError::InvalidBudget`] if the limit is zero, or
+/// [`ApiError::InvalidTransition`] if the lifecycle refuses the release.
+pub async fn set_budget_limit(
+    db: &Db,
+    user: UserId,
+    id: SessionId,
+    limit: Usd,
+) -> Result<BudgetRaise, ApiError> {
+    // The row is loaded first so a session that is not the caller's is a
+    // 404 rather than a budget somebody else's session accounts against.
+    let row = load(db, user, id).await?;
+    let budget = budgets::set_limit(db, row.budget_id, limit).await?;
+
+    if row.state == SessionState::Paused && budget.stage != BudgetStage::Exhausted {
+        let session = transition(db, user, id, SessionState::Active).await?;
+        return Ok(BudgetRaise {
+            session,
+            resumed: true,
+        });
+    }
+
+    Ok(BudgetRaise {
+        session: find(db, user, id).await?,
+        resumed: false,
+    })
 }
 
 /// Lists the caller's sessions, newest first.

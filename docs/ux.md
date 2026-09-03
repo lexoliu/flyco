@@ -317,6 +317,17 @@ Title (editable inline; defaults to the first prompt's excerpt),
 context ring (`41k / 200k`). Actions: `Archive` and a `⋯` menu (stop
 machine, start machine, resize, edit `.env`, copy session id).
 
+The budget ring is a control and the context ring is not: one of its two
+numbers is something the user set. Clicking it opens the same slider the
+composer's budget chip does, floored at the first whole dollar above what
+the session has already spent, and an explicit `Set budget to $25` commits
+it. That is the only way out of `Paused · budget exhausted`: a limit above
+the spend puts the session back to `active` and tells its daemon to carry
+on from where the pause interrupted it. A paused session therefore also
+carries a notice above the transcript — "The $10.00 budget is spent. Raise
+it to continue." — with the same control as its action, because the header
+is not where a user looks when the page tells them the session stopped.
+
 ### 9.2 Transcript
 
 - User messages are right-aligned bubbles.

@@ -389,6 +389,18 @@ pub enum ControlToDaemon {
         /// The threshold that was crossed.
         signal: BudgetSignal,
     },
+    /// The user raised the budget past what the session has spent, and the
+    /// pause [`BudgetSignal::Pause`] imposed is lifted.
+    ///
+    /// The symmetric half of that signal, and the only thing that undoes
+    /// it: the daemon accepts work again and the agent is told, in the
+    /// conversation, that it may carry on from where it was interrupted.
+    /// Not a [`BudgetSignal`], because a signal is a threshold the ledger
+    /// crossed and this is a decision the user made.
+    BudgetRaised {
+        /// What the session may spend now, in total.
+        limit: crate::money::Usd,
+    },
     /// Raw input for the web terminal.
     TerminalInput {
         /// Bytes to write to the terminal, UTF-8.
@@ -867,6 +879,9 @@ mod tests {
             },
             ControlToDaemon::Budget {
                 signal: BudgetSignal::Pause,
+            },
+            ControlToDaemon::BudgetRaised {
+                limit: Usd::from_dollars(25),
             },
             ControlToDaemon::TerminalInput {
                 data: "ls\n".to_owned(),

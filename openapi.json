@@ -3348,8 +3348,8 @@
         }
       },
       "patch": {
-        "summary": "Renames one of the caller's sessions.",
-        "description": "Renames one of the caller's sessions.\n\nThe title opens as the excerpt of the prompt the session was created\nwith; this is how it becomes something the user chose.",
+        "summary": "Changes what one of the caller's sessions is called, what it may spend, or both.",
+        "description": "Changes what one of the caller's sessions is called, what it may spend,\nor both.\n\nThe title opens as the excerpt of the prompt the session was created\nwith; this is how it becomes something the user chose. The budget limit\nis the one thing that releases a session paused on an exhausted budget,\nand raising it past the spend both puts the session back to\n[`SessionState::Active`] and tells its daemon to carry on — the daemon\nstopped accepting work when the pause reached it and nothing in the\ndatabase can lift that.",
         "operationId": "flyco_api::app::update_session",
         "parameters": [
           {
@@ -3367,13 +3367,24 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "description": "Request body of `PATCH /v1/sessions/{id}`.",
-                "required": [
-                  "title"
-                ],
+                "description": "Request body of `PATCH /v1/sessions/{id}`.\n\nBoth fields are independently optional, because the two things a user\nchanges about a live session are changed from opposite ends of the\nheader and neither has any business restating the other's value. A body\ncarrying neither is refused rather than answered with a session nothing\nhappened to.",
                 "properties": {
+                  "budget_limit": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/Usd",
+                        "description": "What the session may spend on compute, in microdollars.\n\nThe one thing that releases a session paused on an exhausted\nbudget: a limit above what the ledger has already spent puts the\nsession back to [`SessionState::Active`] and tells its daemon to\ncarry on. A limit that is still under the spend is accepted and\nchanges nothing else — the session stays paused, because it is."
+                      }
+                    ]
+                  },
                   "title": {
-                    "type": "string",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
                     "description": "What to call the session, 1 to\n[`MAX_SESSION_TITLE_CHARS`] characters once trimmed."
                   }
                 }
@@ -9223,13 +9234,24 @@
       },
       "UpdateSession": {
         "type": "object",
-        "description": "Request body of `PATCH /v1/sessions/{id}`.",
-        "required": [
-          "title"
-        ],
+        "description": "Request body of `PATCH /v1/sessions/{id}`.\n\nBoth fields are independently optional, because the two things a user\nchanges about a live session are changed from opposite ends of the\nheader and neither has any business restating the other's value. A body\ncarrying neither is refused rather than answered with a session nothing\nhappened to.",
         "properties": {
+          "budget_limit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Usd",
+                "description": "What the session may spend on compute, in microdollars.\n\nThe one thing that releases a session paused on an exhausted\nbudget: a limit above what the ledger has already spent puts the\nsession back to [`SessionState::Active`] and tells its daemon to\ncarry on. A limit that is still under the spend is accepted and\nchanges nothing else — the session stays paused, because it is."
+              }
+            ]
+          },
           "title": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "What to call the session, 1 to\n[`MAX_SESSION_TITLE_CHARS`] characters once trimmed."
           }
         }

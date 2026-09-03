@@ -939,11 +939,17 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Renames one of the caller's sessions.
-         * @description Renames one of the caller's sessions.
+         * Changes what one of the caller's sessions is called, what it may spend, or both.
+         * @description Changes what one of the caller's sessions is called, what it may spend,
+         *     or both.
          *
          *     The title opens as the excerpt of the prompt the session was created
-         *     with; this is how it becomes something the user chose.
+         *     with; this is how it becomes something the user chose. The budget limit
+         *     is the one thing that releases a session paused on an exhausted budget,
+         *     and raising it past the spend both puts the session back to
+         *     [`SessionState::Active`] and tells its daemon to carry on — the daemon
+         *     stopped accepting work when the pause reached it and nothing in the
+         *     database can lift that.
          */
         patch: operations["flyco_api::app::update_session"];
         trace?: never;
@@ -3911,13 +3917,22 @@ export interface components {
             /** @description New title. */
             title?: string | null;
         };
-        /** @description Request body of `PATCH /v1/sessions/{id}`. */
+        /**
+         * @description Request body of `PATCH /v1/sessions/{id}`.
+         *
+         *     Both fields are independently optional, because the two things a user
+         *     changes about a live session are changed from opposite ends of the
+         *     header and neither has any business restating the other's value. A body
+         *     carrying neither is refused rather than answered with a session nothing
+         *     happened to.
+         */
         UpdateSession: {
+            budget_limit?: null | components["schemas"]["Usd"];
             /**
              * @description What to call the session, 1 to
              *     [`MAX_SESSION_TITLE_CHARS`] characters once trimmed.
              */
-            title: string;
+            title?: string | null;
         };
         /** @description What an uploaded zip is stored as. */
         UploadSkill: {
@@ -6051,11 +6066,12 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    budget_limit?: null | components["schemas"]["Usd"];
                     /**
                      * @description What to call the session, 1 to
                      *     [`MAX_SESSION_TITLE_CHARS`] characters once trimmed.
                      */
-                    title: string;
+                    title?: string | null;
                 };
             };
         };

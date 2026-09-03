@@ -45,7 +45,7 @@ use flyco_core::workdir::WorkdirRequest;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
     HarnessObservation, ProvisioningStage, RateLimitObservation, SessionId, SessionMachine,
-    ShellOutcome, ShellRunId, WIRE_PROTOCOL_VERSION, WorkdirRequestId,
+    ShellOutcome, ShellRunId, Usd, WIRE_PROTOCOL_VERSION, WorkdirRequestId,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
 use rand::Rng as _;
@@ -58,7 +58,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use crate::control::rest::{ControlApi, ControlApiError};
 use crate::git::{GitError, WorkingTree};
 use crate::harness::{HarnessSession, SessionOutput, ToolApproval};
-use crate::notice::{MachineChanged, MachineLine, OpeningMessage, SessionStart};
+use crate::notice::{BudgetRaised, MachineChanged, MachineLine, OpeningMessage, SessionStart};
 use crate::shell::{Shell, ShellEvent, ShellRun, ShellUpdate};
 use crate::spot::{Disk, Notices, SpotNotice};
 use crate::terminal::{TerminalError, TerminalSession};
@@ -547,9 +547,10 @@ struct Connection<S, T, A, W, D, H> {
     alive: Alive,
     /// Whether this machine's capacity has been announced as going away.
     ///
-    /// Set once and never cleared, like [`Self::paused`] and for the same
-    /// kind of reason: what ends a reclamation is the machine stopping, not
-    /// the daemon deciding it is over. While it is set no new turn may
+    /// Set once and never cleared, unlike [`Self::paused`], which a raised
+    /// budget lifts: what ends a reclamation is the machine stopping, not
+    /// the daemon deciding it is over and not a decision anybody can make
+    /// for it. While it is set no new turn may
     /// start — the transcript has already been flushed, and a turn opened
     /// after it would be work the next machine has no record of.
     reclaiming: bool,
@@ -564,9 +565,10 @@ struct Connection<S, T, A, W, D, H> {
     endpoint: Endpoint,
     /// Whether a budget pause has stopped this session accepting work.
     ///
-    /// Set once and never cleared: a paused session is resumed by the
-    /// control plane provisioning a new one, not by the daemon deciding the
-    /// pause is over.
+    /// Cleared by exactly one thing, and never by the daemon's own
+    /// judgement: [`ControlToDaemon::BudgetRaised`], which is the control
+    /// plane reporting that the user gave the session more money than it
+    /// has spent. What ends a budget pause is a decision, not a timeout.
     paused: bool,
     tree: Tree,
     /// When to auto-continue after a usage limit, if one is in force.
@@ -1012,33 +1014,10 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                 self.terminal.write(&data)?;
             }
             ControlToDaemon::ApprovalDecision { id, decision } => {
-                let Some(harness_id) = self.approvals.remove(&id) else {
-                    // Not every approval is a harness tool call waiting on a
-                    // permission. The daemon's own MCP server raises one for
-                    // a license-bound resize, and the control plane performs
-                    // *that* itself; the decision still reaches every daemon
-                    // because the room echoes it. Nothing here is blocked on
-                    // it, so it is noted rather than treated as a protocol
-                    // violation.
-                    tracing::debug!(%id, ?decision, "a decided approval was not a harness tool call");
-                    return Ok(Ended::Disconnected);
-                };
-                let answer = match decision {
-                    ApprovalDecision::Approved => ToolApproval::Allow {
-                        id: harness_id,
-                        updated_input: None,
-                    },
-                    ApprovalDecision::Denied => ToolApproval::Deny {
-                        id: harness_id,
-                        message: "Denied by the flyco user.".to_owned(),
-                    },
-                };
-                self.session
-                    .decide_approval(answer)
-                    .await
-                    .map_err(harness)?;
+                self.decide_approval(id, decision).await?;
             }
             ControlToDaemon::Budget { signal } => self.budget(signal).await?,
+            ControlToDaemon::BudgetRaised { limit } => self.budget_raised(limit).await?,
             ControlToDaemon::MachineChanged {
                 machine_type,
                 hourly,
@@ -1145,6 +1124,35 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
         self.continue_at = Some(tokio::time::Instant::now() + Duration::from_secs(wait));
     }
 
+    /// Hands the user's decision to the tool call waiting on it.
+    async fn decide_approval(
+        &mut self,
+        id: ApprovalId,
+        decision: ApprovalDecision,
+    ) -> Result<(), WireError> {
+        let Some(harness_id) = self.approvals.remove(&id) else {
+            // Not every approval is a harness tool call waiting on a
+            // permission. The daemon's own MCP server raises one for a
+            // license-bound resize, and the control plane performs *that*
+            // itself; the decision still reaches every daemon because the
+            // room echoes it. Nothing here is blocked on it, so it is noted
+            // rather than treated as a protocol violation.
+            tracing::debug!(%id, ?decision, "a decided approval was not a harness tool call");
+            return Ok(());
+        };
+        let answer = match decision {
+            ApprovalDecision::Approved => ToolApproval::Allow {
+                id: harness_id,
+                updated_input: None,
+            },
+            ApprovalDecision::Denied => ToolApproval::Deny {
+                id: harness_id,
+                message: "Denied by the flyco user.".to_owned(),
+            },
+        };
+        self.session.decide_approval(answer).await.map_err(harness)
+    }
+
     /// Applies a budget threshold.
     async fn budget(&mut self, signal: BudgetSignal) -> Result<(), WireError> {
         if signal == BudgetSignal::Pause {
@@ -1167,6 +1175,37 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
         tracing::info!(?signal, "relaying a budget threshold to the harness");
         self.session
             .send_user_message(format!("{BUDGET_NOTICE_PREFIX} {notice}."))
+            .await
+            .map_err(harness)
+    }
+
+    /// Lifts a budget pause the user paid to end.
+    ///
+    /// The only thing that clears [`Self::paused`]. Telling the harness is
+    /// not decoration: the pause interrupted a turn mid-thought and said
+    /// nothing, so an agent that is merely allowed to work again would sit
+    /// there waiting for a user who thinks they already restarted it. The
+    /// notice is a message in the conversation, which is what opens the
+    /// turn that continues the work.
+    async fn budget_raised(&mut self, limit: Usd) -> Result<(), WireError> {
+        if !self.paused {
+            // A budget raised on a session that was never paused is the
+            // ordinary case of a user topping one up early. There is
+            // nothing to lift and nothing the agent has to be told: it can
+            // read the new limit from `budget_status` whenever it prices
+            // its next move.
+            tracing::info!(%limit, "the budget was raised on a session that is not paused");
+            return Ok(());
+        }
+        tracing::info!(%limit, "the budget was raised: lifting the pause");
+        self.paused = false;
+        let notice = BudgetRaised {
+            limit: limit.to_string(),
+        }
+        .render()
+        .map_err(|error| notice_failed(&error))?;
+        self.session
+            .send_user_message(notice.trim_end().to_owned())
             .await
             .map_err(harness)
     }

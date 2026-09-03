@@ -23,6 +23,7 @@ import {
   Server,
   Wallet,
 } from "lucide-solid";
+import BudgetPicker, { DEFAULT_BUDGET } from "./BudgetPicker";
 import ComposerShell from "./ComposerShell";
 import MachineSlider from "./MachineSlider";
 import Popover from "./Popover";
@@ -52,11 +53,6 @@ import {
 import { billingMinimumSentence, entryKey, hourlyLabel } from "../lib/machines";
 import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./Composer.module.css";
-
-/** What the budget slider spans, in whole dollars. */
-const MIN_BUDGET = 1;
-const MAX_BUDGET = 200;
-const DEFAULT_BUDGET = 10;
 
 const HARNESS_LABEL: Record<HarnessKind, string> = {
   claude_code: "Claude Code",
@@ -581,8 +577,9 @@ function BranchChip(props: {
 /** What the session may spend on compute before flyco stops it. */
 function BudgetChip(props: { dollars: number; onChange: (dollars: number) => void }) {
   return (
-    <Popover
-      label="Budget"
+    <BudgetPicker
+      dollars={props.dollars}
+      onChange={props.onChange}
       trigger={(attrs) => (
         <button
           id={attrs.id}
@@ -596,30 +593,6 @@ function BudgetChip(props: { dollars: number; onChange: (dollars: number) => voi
           <span class={styles.chipLabel}>${props.dollars}</span>
         </button>
       )}
-    >
-      {() => (
-        <div class={styles.popover}>
-          <div class={styles.sliderRow}>
-            <span class={styles.amount}>${props.dollars}</span>
-            <span class={styles.note}>
-              ${MIN_BUDGET}–${MAX_BUDGET}
-            </span>
-          </div>
-          <input
-            class={styles.slider}
-            type="range"
-            min={MIN_BUDGET}
-            max={MAX_BUDGET}
-            step="1"
-            value={props.dollars}
-            aria-label="Session budget in dollars"
-            onInput={(event) => props.onChange(Number(event.currentTarget.value))}
-          />
-          <p class={styles.note}>
-            Covers the machine and its disk. Model tokens are billed by your Claude or Codex plan.
-          </p>
-        </div>
-      )}
-    </Popover>
+    />
   );
 }

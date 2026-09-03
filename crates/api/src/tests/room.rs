@@ -1079,6 +1079,29 @@ async fn a_budget_signal_reaches_the_daemon_without_disturbing_browsers() {
     assert_eq!(room.drain(), vec![to_daemon(&command)]);
 }
 
+#[skyzen::test]
+async fn a_raised_budget_reaches_the_daemon_the_way_the_pause_did() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    // The symmetric half of the pause takes the symmetric path: straight to
+    // the daemon, with nothing said to the browsers watching — what they
+    // render is the session's state, which the Worker wrote before it
+    // called the room.
+    let command = ControlToDaemon::BudgetRaised {
+        limit: flyco_core::Usd::from_dollars(25),
+    };
+    let (status, _) = room
+        .call(
+            Method::POST,
+            "/internal/command",
+            Some(serde_json::to_vec(&command).expect("serialize")),
+        )
+        .await;
+    assert_eq!(status, 204);
+    assert_eq!(room.drain(), vec![to_daemon(&command)]);
+}
+
 // ── The internal boundary ──
 
 #[skyzen::test]

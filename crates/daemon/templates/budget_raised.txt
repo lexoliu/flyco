@@ -1,0 +1,1 @@
+[flyco budget notice] The user raised this session's compute budget to {{ limit }}. The pause is lifted: carry on from where you were interrupted, and say what you are picking back up before you do. Call `budget_status` if you want to know what is left of the new limit.

@@ -20,12 +20,13 @@ import {
   SlidersHorizontal,
   Square,
 } from "lucide-solid";
+import { BudgetRaise } from "./BudgetPicker";
 import Popover from "./Popover";
 import Ring from "./Ring";
 import type { MachineView, SessionDetail } from "../api/client";
 import type { ConnectionState } from "../api/relay";
 import { cx } from "../lib/cx";
-import { formatUsd } from "../lib/money";
+import { formatUsd, usdMicrosToDollars } from "../lib/money";
 import { PROVIDER_LABEL } from "../lib/providers";
 import type { StatusView } from "../lib/status";
 import styles from "./SessionHeader.module.css";
@@ -88,6 +89,17 @@ export interface SessionHeaderProps {
   contextSize: number | undefined;
   /** Renames the session. */
   onRename: (title: string) => void;
+  /**
+   * Sets what the session may spend, in whole dollars.
+   *
+   * The one thing that releases a session paused on an exhausted budget,
+   * which is why the reading is a control rather than a readout: the header
+   * is where a user meets `Paused · budget exhausted` and it would be a
+   * strange place to be told to go somewhere else.
+   */
+  onSetBudget: (dollars: number) => void;
+  /** Whether a budget change is in flight. */
+  settingBudget: boolean;
   onArchive: () => void;
   archiving: boolean;
   onStartMachine: () => void;
@@ -115,6 +127,46 @@ export default function SessionHeader(props: SessionHeaderProps) {
       props.onRename(next);
     }
   }
+
+  /**
+   * The budget reading itself.
+   *
+   * A function rather than a constant so the two places it appears — inside
+   * the button that opens the picker, and alone where there is nothing to
+   * set — each render their own, instead of moving one element between two
+   * parents.
+   */
+  const budgetRing = () => (
+    <Ring
+      label="Budget"
+      value={props.budgetSpentUsd}
+      total={props.budgetLimitUsd}
+      readout={
+        props.budgetSpentUsd === undefined || props.budgetLimitUsd === undefined
+          ? UNKNOWN_READOUT
+          : `$${props.budgetSpentUsd.toFixed(2)} / $${props.budgetLimitUsd.toFixed(0)}`
+      }
+    />
+  );
+
+  /**
+   * The accounting the picker is set against, in whole dollars.
+   *
+   * The session's own budget, not the ring's reading: the ring prefers the
+   * harness's estimate of what the *tokens* cost where it has one, and the
+   * floor of the slider has to be the compute the ledger actually recorded
+   * — money the control plane will refuse to un-spend.
+   */
+  const budgetSpend = () => {
+    const budget = props.session?.budget;
+    return budget === undefined
+      ? undefined
+      : { limit: usdMicrosToDollars(budget.limit), spent: usdMicrosToDollars(budget.spent) };
+  };
+
+  /** Whether there is a budget here to change. An archived session has none. */
+  const budgetEditable = () =>
+    props.session !== undefined && props.session.state !== "archived";
 
   function copyId(): void {
     void navigator.clipboard.writeText(props.sessionId).then(
@@ -201,16 +253,35 @@ export default function SessionHeader(props: SessionHeaderProps) {
           {(chip) => <span class={styles.machine}>{chip()}</span>}
         </Show>
 
-        <Ring
-          label="Budget"
-          value={props.budgetSpentUsd}
-          total={props.budgetLimitUsd}
-          readout={
-            props.budgetSpentUsd === undefined || props.budgetLimitUsd === undefined
-              ? UNKNOWN_READOUT
-              : `$${props.budgetSpentUsd.toFixed(2)} / $${props.budgetLimitUsd.toFixed(0)}`
-          }
-        />
+        {/*
+          The budget reads as a ring like the context window does, and is a
+          button unlike it: one of the two numbers is something the user
+          sets, and raising it is the only way back from a budget pause.
+          Until the session has loaded there is no budget to change, so the
+          ring stands alone rather than opening an empty panel.
+        */}
+        <Show when={budgetEditable()} fallback={budgetRing()}>
+          <BudgetRaise
+            align="end"
+            limitUsd={budgetSpend()?.limit}
+            spentUsd={budgetSpend()?.spent}
+            saving={props.settingBudget}
+            onSet={(dollars) => props.onSetBudget(dollars)}
+            trigger={(attrs) => (
+              <button
+                id={attrs.id}
+                onClick={attrs.onClick}
+                aria-expanded={attrs.expanded()}
+                aria-haspopup="dialog"
+                type="button"
+                class={styles.budgetTrigger}
+                title="Set the compute budget"
+              >
+                {budgetRing()}
+              </button>
+            )}
+          />
+        </Show>
         <Ring
           label="Context"
           value={props.contextUsed}
