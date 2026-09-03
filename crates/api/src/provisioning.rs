@@ -238,9 +238,9 @@ pub async fn accounts_for(
 ) -> Result<Vec<LinkedAccount>, ApiError> {
     // A NULL filter matches every provider, which keeps one statement for
     // both callers rather than assembling SQL per request.
-    // A drained host is skipped rather than returned: its account row
-    // survives so the machines that ran there still name something, but it
-    // can offer no catalog and meter nothing.
+    // An unlinked account and a drained host are both skipped rather than
+    // returned: each keeps its row so the machines that ran there still
+    // name something, and neither can offer a catalog or meter anything.
     let removed = HostState::Removed;
     let rows: Vec<SealedRow> = sql!(
         db,
@@ -248,6 +248,7 @@ pub async fn accounts_for(
          hosts.state AS host_state, hosts.facts AS host_facts \
          FROM provider_accounts LEFT JOIN hosts ON hosts.id = provider_accounts.host_id \
          WHERE provider_accounts.user_id = {user} AND ({kind} IS NULL OR kind = {kind}) \
+         AND provider_accounts.unlinked_at_unix IS NULL \
          AND (host_id IS NULL OR hosts.state != {removed}) \
          ORDER BY linked_at_unix"
     )
@@ -276,19 +277,26 @@ pub async fn accounts_for(
 /// # Errors
 ///
 /// Returns [`ApiError::ProviderAccountNotFound`] when the account does not
-/// exist or belongs to somebody else — the two are indistinguishable.
+/// exist, belongs to somebody else, or has been unlinked — all three are
+/// indistinguishable, and all three mean the same thing to a caller about
+/// to provision: there is nothing here to provision through.
 pub async fn account(
     db: &Db,
     config: &ApiConfig,
     user: UserId,
     id: ProviderAccountId,
 ) -> Result<LinkedAccount, ApiError> {
+    // An unlinked account is not found, not "found without a credential":
+    // the caller is about to provision through it, and the honest answer to
+    // "use this account" once the user has withdrawn it is that there is no
+    // such account to use.
     let row: SealedRow = sql!(
         db,
         "SELECT provider_accounts.id, credentials_enc, resource_group, host_id, \
          hosts.state AS host_state, hosts.facts AS host_facts \
          FROM provider_accounts LEFT JOIN hosts ON hosts.id = provider_accounts.host_id \
-         WHERE provider_accounts.id = {id} AND provider_accounts.user_id = {user}"
+         WHERE provider_accounts.id = {id} AND provider_accounts.user_id = {user} \
+         AND provider_accounts.unlinked_at_unix IS NULL"
     )
     .fetch_optional()
     .await?

@@ -2950,7 +2950,7 @@
     "/v1/providers/{id}": {
       "delete": {
         "summary": "Unlinks a cloud-provider account.",
-        "description": "Unlinks a cloud-provider account.",
+        "description": "Unlinks a cloud-provider account.\n\nThe row survives the unlink and the credential does not. Every machine\nflyco ever built there still names this account — that is the spend\nhistory the budget ledger explains — so deleting the row would either\nfail the foreign key holding the history together or, if it cascaded,\nerase it. What is deleted is the only part that matters: the sealed\ncredential is scrubbed, the account is stamped unlinked, and it stops\nappearing anywhere flyco offers something to provision through.\n\nLinking the same cloud account again writes a new row. This one is\nhistory from here on, and reading it back by id is a 404 like any\naccount the caller does not have.",
         "operationId": "flyco_api::provider_accounts::unlink_provider",
         "parameters": [
           {

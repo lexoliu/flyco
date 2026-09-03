@@ -8,16 +8,19 @@
 
 use flyco_core::{
     AwsIamPolicy, CloudProviderKind, HostId, LinkProvider, MachineCatalogEntry, MachinePricing,
-    MachineSpec, Problem, ProviderCredentials,
+    MachineSpec, Problem, ProviderAccountView, ProviderCredentials,
 };
 use skyzen::sql;
+use skyzen_services::sql::Row;
 use skyzen_services::{Db, Kv};
 use skyzen_test::TestContext;
 
+use crate::error::ApiError;
 use crate::testing::{
     SSH_HOST, host_facts, migrated_router, seed_provider_account, seed_session, seed_user,
+    test_config,
 };
-use crate::{machines, session};
+use crate::{machines, provisioning, session};
 
 #[skyzen::test]
 async fn the_iam_policy_is_not_public(ctx: TestContext, db: Db) {
@@ -126,7 +129,7 @@ async fn unlinking_an_account_with_a_live_machine_counts_what_it_would_strand(
     let token = session::issue(&kv, user.id).await.expect("issue a session");
     let account = seed_provider_account(&db, user.id).await;
     let session = seed_session(&db, &user).await;
-    machines::reserve(
+    let machine = machines::reserve(
         &db,
         session,
         account,
@@ -170,18 +173,165 @@ async fn unlinking_an_account_with_a_live_machine_counts_what_it_would_strand(
     .await
     .expect("destroy the machine");
 
-    // Not asserted here: that the unlink then succeeds. It does not —
-    // `machines.provider_account_id` is a `NOT NULL REFERENCES`, so
-    // deleting an account any machine has ever run on fails the foreign key
-    // and answers 500 (issue #153). That is a bug of its own and this test
-    // is about the refusal, so it stops at proving the refusal has lifted.
-    let lifted: u32 = sql!(
+    client
+        .delete(&format!("/v1/providers/{account}"))
+        .bearer(&token)
+        .send()
+        .await
+        .assert_status(204);
+
+    // Gone from everywhere an account is offered…
+    let listed = client.get("/v1/providers").bearer(&token).send().await;
+    listed.assert_status(200);
+    assert!(listed.json::<Vec<ProviderAccountView>>().is_empty());
+
+    // …and gone as something to provision through, which is what the
+    // scrubbed credential means. Naming it by id is a 404 like any account
+    // the caller does not have.
+    assert!(matches!(
+        provisioning::account(&db, &test_config(), user.id, account).await,
+        Err(ApiError::ProviderAccountNotFound)
+    ));
+
+    // But the machine row still exists and still names it. That row is the
+    // spend history the budget ledger explains, and it would have nothing
+    // to point at if unlinking had deleted the account (issue #153).
+    let row: Row = sql!(
         db,
-        "SELECT COUNT(*) AS live FROM machines \
-         WHERE provider_account_id = {account} AND state != {destroyed}"
+        "SELECT provider_account_id, state FROM machines WHERE id = {machine}"
     )
-    .fetch_scalar()
+    .fetch_one()
     .await
-    .expect("count what is left running");
-    assert_eq!(lifted, 0);
+    .expect("the machine row outlives the account it ran on");
+    assert_eq!(
+        row.get::<String>("provider_account_id")
+            .expect("provider_account_id"),
+        account.to_string()
+    );
+
+    // What is left of the account is a name and a date, with no credential
+    // in it.
+    let kept: Row = sql!(
+        db,
+        "SELECT label, credentials_enc, unlinked_at_unix FROM provider_accounts \
+         WHERE id = {account}"
+    )
+    .fetch_one()
+    .await
+    .expect("the account row is kept as history");
+    assert_eq!(
+        kept.get::<String>("credentials_enc")
+            .expect("credentials_enc"),
+        "",
+        "the sealed credential is scrubbed, not kept beside a flag"
+    );
+    assert!(
+        kept.get::<i64>("unlinked_at_unix")
+            .expect("unlinked_at_unix")
+            > 0
+    );
+
+    // Unlinking it again is a 404: there is no credential left to withdraw,
+    // and reporting success would say one had just been.
+    client
+        .delete(&format!("/v1/providers/{account}"))
+        .bearer(&token)
+        .send()
+        .await
+        .assert_status(404);
+}
+
+#[skyzen::test]
+async fn an_unlinked_account_is_offered_by_nothing_that_provisions(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+    let account = seed_provider_account(&db, user.id).await;
+
+    // Everything the account feeds while it is linked: the catalog the
+    // machine slider is built from, and the machine flyco would pick.
+    let catalog = client
+        .get("/v1/machines/catalog")
+        .bearer(&token)
+        .send()
+        .await;
+    catalog.assert_status(200);
+    assert!(!catalog.json::<Vec<MachineCatalogEntry>>().is_empty());
+    client
+        .get("/v1/machines/default")
+        .bearer(&token)
+        .send()
+        .await
+        .assert_status(200);
+
+    client
+        .delete(&format!("/v1/providers/{account}"))
+        .bearer(&token)
+        .send()
+        .await
+        .assert_status(204);
+
+    // And afterwards the user reads exactly as one who linked nothing:
+    // there is no catalog to offer and no machine to pick, because the
+    // credential that would have answered for both is gone.
+    let catalog = client
+        .get("/v1/machines/catalog")
+        .bearer(&token)
+        .send()
+        .await;
+    catalog.assert_status(200);
+    assert!(catalog.json::<Vec<MachineCatalogEntry>>().is_empty());
+
+    let default = client
+        .get("/v1/machines/default")
+        .bearer(&token)
+        .send()
+        .await;
+    default.assert_status(422);
+    assert_eq!(
+        default.json::<Problem>().kind,
+        "https://flyco.dev/problems/no-deployable-linux-machine"
+    );
+
+    // Usage reads the same accounts, so an unlinked one meters nothing.
+    let usage = client.get("/v1/usage/cloud").bearer(&token).send().await;
+    usage.assert_status(200);
+    assert!(usage.json::<Vec<flyco_core::CloudUsageView>>().is_empty());
+}
+
+#[skyzen::test]
+async fn linking_the_same_account_again_is_a_new_row_beside_the_old_one(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+    let first = seed_provider_account(&db, user.id).await;
+
+    client
+        .delete(&format!("/v1/providers/{first}"))
+        .bearer(&token)
+        .send()
+        .await
+        .assert_status(204);
+
+    let second = seed_provider_account(&db, user.id).await;
+    assert_ne!(
+        second, first,
+        "relinking mints an account, it does not revive one"
+    );
+
+    let listed = client.get("/v1/providers").bearer(&token).send().await;
+    let listed: Vec<ProviderAccountView> = listed.json();
+    assert_eq!(
+        listed.iter().map(|account| account.id).collect::<Vec<_>>(),
+        vec![second],
+        "the history stays history: only the live account is offered"
+    );
 }

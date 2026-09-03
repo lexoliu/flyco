@@ -31,6 +31,17 @@ use crate::extract::path_id;
 use crate::problem::Outcome;
 use crate::respond::{Created, NoContent};
 
+/// What `credentials_enc` holds once an account has been unlinked.
+///
+/// The column is `NOT NULL` and cannot be relaxed without rebuilding a
+/// table every machine row references, so the scrub writes the one string
+/// that is not a sealed anything. Nothing ever unseals it — every read that
+/// resolves an account to provision through skips unlinked rows — and if
+/// one ever did, [`crate::crypto::TokenCipher::open`] rejects it as
+/// truncated. A missed filter is therefore a loud failure rather than a
+/// silent provision against a credential the user withdrew.
+const SCRUBBED_CREDENTIAL: &str = "";
+
 /// The columns every read on this path projects.
 ///
 /// `credentials_enc` is deliberately absent: a credential that is never
@@ -73,9 +84,11 @@ async fn list_providers(
 }
 
 async fn list(db: &Db, user: UserId) -> Result<Vec<ProviderAccountView>, ApiError> {
-    // A drained host keeps its account row, because the machines that ran
-    // there still point at it — but it is not an account anybody can
-    // provision through any more, so it is not one to list.
+    // Two ways an account row outlives the thing it provisions through, and
+    // neither is one to list. A drained host keeps its account because the
+    // machines that ran there still point at it; an unlinked account keeps
+    // its row for exactly the same reason, and is told apart by the stamp
+    // rather than by the credential it no longer holds.
     let removed = flyco_core::HostState::Removed;
     let rows: Vec<AccountRow> = sql!(
         db,
@@ -83,6 +96,7 @@ async fn list(db: &Db, user: UserId) -> Result<Vec<ProviderAccountView>, ApiErro
          FROM provider_accounts \
          LEFT JOIN hosts ON hosts.id = provider_accounts.host_id \
          WHERE provider_accounts.user_id = {user} \
+         AND provider_accounts.unlinked_at_unix IS NULL \
          AND (host_id IS NULL OR hosts.state != {removed}) \
          ORDER BY linked_at_unix DESC, provider_accounts.id"
     )
@@ -305,6 +319,18 @@ async fn create_with(
 }
 
 /// Unlinks a cloud-provider account.
+///
+/// The row survives the unlink and the credential does not. Every machine
+/// flyco ever built there still names this account — that is the spend
+/// history the budget ledger explains — so deleting the row would either
+/// fail the foreign key holding the history together or, if it cascaded,
+/// erase it. What is deleted is the only part that matters: the sealed
+/// credential is scrubbed, the account is stamped unlinked, and it stops
+/// appearing anywhere flyco offers something to provision through.
+///
+/// Linking the same cloud account again writes a new row. This one is
+/// history from here on, and reading it back by id is a 404 like any
+/// account the caller does not have.
 #[skyzen::openapi]
 async fn unlink_provider(
     State(user): State<CurrentUser>,
@@ -318,11 +344,15 @@ async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, Api
     let id: ProviderAccountId = path_id(params, "id")?;
 
     // Scoped by user so somebody else's account is indistinguishable from
-    // one that does not exist.
+    // one that does not exist — and by the stamp, so an account already
+    // unlinked is too. Unlinking twice is not idempotent success: the
+    // second call names a row nothing can be done with any more, and
+    // answering `204` would report that a credential had just been
+    // withdrawn when none was there to withdraw.
     let owned: Option<AccountRow> = sql!(
         db,
         "SELECT id, kind, label, linked_at_unix, host_id FROM provider_accounts \
-         WHERE id = {id} AND user_id = {user}"
+         WHERE id = {id} AND user_id = {user} AND unlinked_at_unix IS NULL"
     )
     .fetch_optional()
     .await?;
@@ -345,13 +375,19 @@ async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, Api
         return Err(ApiError::ProviderInUse { sessions: live });
     }
 
+    // Scrubbed and stamped in one statement, because a row that had lost
+    // its credential without being marked unlinked would be an account the
+    // API still offers and nothing can provision through.
     sql!(
         db,
-        "DELETE FROM provider_accounts WHERE id = {id} AND user_id = {user}"
+        "UPDATE provider_accounts \
+         SET credentials_enc = {SCRUBBED_CREDENTIAL}, unlinked_at_unix = {now_unix()} \
+         WHERE id = {id} AND user_id = {user}"
     )
     .execute()
     .await?;
 
+    tracing::info!(account = %id, "unlinked a provider account");
     Ok(NoContent)
 }
 

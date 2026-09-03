@@ -1,0 +1,24 @@
+-- Flyco control plane, issue #153: unlinking a cloud account stops deleting
+-- its row.
+--
+-- `machines.provider_account_id` is a `NOT NULL REFERENCES`, and a machine
+-- row outlives the machine: it is the spend history the budget ledger
+-- explains, so it has to keep naming the account it actually ran on. The
+-- delete therefore could not succeed once an account had ever provisioned
+-- anything — it failed the foreign key and answered 500 — and making it
+-- succeed by cascading would erase the history instead.
+--
+-- So an account is unlinked rather than deleted: the credential is scrubbed,
+-- this column is stamped, and every read that lists or resolves an account
+-- to provision through skips a stamped row. What survives is a name and a
+-- date for the machines to point at. Linking the same cloud account again
+-- writes a new row; this one is history from here on.
+--
+-- Additive on purpose. Relaxing `credentials_enc` to nullable would mean
+-- rebuilding the table, and `DROP TABLE provider_accounts` fails the
+-- foreign key while any machine still references it — the very constraint
+-- this migration exists to stop fighting. The scrub writes the empty
+-- string instead, which is not a sealed anything: `TokenCipher::open`
+-- rejects it as `Truncated`, so a read that forgot the filter fails loudly
+-- rather than provisioning against a credential the user withdrew.
+ALTER TABLE provider_accounts ADD COLUMN unlinked_at_unix INTEGER;
