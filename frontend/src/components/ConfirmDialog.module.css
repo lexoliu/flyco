@@ -1,0 +1,74 @@
+/*
+ * The one shape a destructive question takes (issue #139): what is about to
+ * happen, what it costs, and two ways out — one that does it and one that
+ * does not. Bordered in the colour of the outcome, because the difference
+ * between "this ends a session" and "this unlinks an account" is the point.
+ */
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.dialog[data-tone="danger"] {
+  border-color: var(--color-danger);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+}
+
+.body {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--line-normal);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.cancel,
+.confirm {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-full);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: transform var(--transition-fast);
+}
+
+/* Cancelling is the safe move, so it is the solid one: the button a user
+   presses without reading is the one that changes nothing. */
+.cancel {
+  border: none;
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  font-weight: var(--weight-medium);
+}
+
+.confirm {
+  border: var(--border-width) solid var(--color-danger);
+  background: transparent;
+  color: var(--color-danger);
+}
+
+.cancel:active,
+.confirm:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.confirm:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

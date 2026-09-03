@@ -12,6 +12,7 @@
  */
 import { For, Show, createSignal } from "solid-js";
 import { createQuery } from "../../lib/query";
+import ConfirmDialog from "../../components/ConfirmDialog";
 import Logomark, { HARNESS_MARK } from "../../components/Logomark";
 import { HarnessConnect } from "../../components/link/HarnessChooser";
 import ProblemNotice from "../../components/ProblemNotice";
@@ -43,14 +44,21 @@ export default function AgentsSection() {
   const [usage] = createQuery(listLlmUsage);
   const [linking, setLinking] = createSignal<HarnessKind | null>(null);
   const [actionError, setActionError] = createSignal<unknown>(null);
+  /** The account whose unlink has been asked about but not yet answered. */
+  const [unlinking, setUnlinking] = createSignal<HarnessAccountView | null>(null);
+  const [busy, setBusy] = createSignal(false);
 
   async function unlink(id: HarnessAccountView["id"]): Promise<void> {
     setActionError(null);
+    setBusy(true);
     try {
       await unlinkHarnessAccount(id);
+      setUnlinking(null);
       await readiness.refresh();
     } catch (err) {
       setActionError(err);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -72,7 +80,7 @@ export default function AgentsSection() {
         </p>
       </header>
 
-      <ProblemNotice error={readiness.error() ?? usage.error ?? actionError()} />
+      <ProblemNotice error={readiness.error() ?? usage.error} />
 
       <div class={cx(styles.cards, styles.cardsPaired)}>
         <For each={HARNESSES}>
@@ -139,12 +147,43 @@ export default function AgentsSection() {
                               <button
                                 type="button"
                                 class={styles.pillDanger}
-                                onClick={() => void unlink(account.id)}
+                                disabled={busy()}
+                                onClick={() => {
+                                  setActionError(null);
+                                  setUnlinking(account);
+                                }}
                               >
                                 Unlink
                               </button>
                             </div>
                           </div>
+                          {/*
+                            Unlinking is not undoable from here — the
+                            credential is forgotten and has to be signed in
+                            again — and it takes the token every running
+                            session refreshes with, so it asks first (issue
+                            #139).
+                          */}
+                          <Show when={unlinking()?.id === account.id}>
+                            <ConfirmDialog
+                              title={`Unlink ${account.label}?`}
+                              body={
+                                <>
+                                  Flyco forgets this credential and no new session can run{" "}
+                                  {harness.label} on it. A session already running keeps going
+                                  until its token needs refreshing, which flyco can no longer do.
+                                  Signing in again links it back.
+                                </>
+                              }
+                              confirmLabel="Unlink"
+                              cancelLabel="Keep it"
+                              busy={busy()}
+                              onConfirm={() => void unlink(account.id)}
+                              onCancel={() => setUnlinking(null)}
+                            >
+                              <ProblemNotice error={actionError()} />
+                            </ConfirmDialog>
+                          </Show>
                           <HarnessUsage row={usage()?.find((row) => row.account === account.id)} />
                         </div>
                       )}

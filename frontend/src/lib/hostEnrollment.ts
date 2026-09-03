@@ -154,27 +154,3 @@ export function secondsUntilExpiry(token: EnrollmentToken, now: number): number 
 export function hasExpired(state: Enrollment, now: number): boolean {
   return state.step === "waiting" && secondsUntilExpiry(state.token, now) === 0;
 }
-
-/**
- * How many sessions a refused removal named, or `null` when the refusal did
- * not say.
- *
- * `host-has-active-sessions` states the count as the `active_sessions`
- * extension member of its problem document (RFC 9457 §3.2), so this reads a
- * number rather than parsing the sentence in `detail` — which is written for
- * a person and free to be reworded. A refusal that carries no member yields
- * `null` and the card says that sessions are running without inventing a
- * number.
- */
-export function activeSessions(error: unknown): number | null {
-  const problem = problemOf(error);
-  if (problem === null || !problem.type.endsWith("/host-has-active-sessions")) {
-    return null;
-  }
-  return problem.active_sessions ?? null;
-}
-
-/** Whether `error` is the control plane refusing to remove a busy machine. */
-export function isBusyHost(error: unknown): boolean {
-  return problemType(error)?.endsWith("/host-has-active-sessions") === true;
-}

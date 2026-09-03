@@ -138,29 +138,8 @@
   padding-top: var(--space-3);
 }
 
-/* ── The dirty-tree archive confirmation ─────────────────────────────── */
-
-.archiveConfirm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  border: var(--border-width) solid var(--color-danger);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
-}
-
-.archiveTitle {
-  margin: 0;
-  font-size: var(--text-md);
-  font-weight: var(--weight-semibold);
-}
-
-.archiveBody {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
-}
+/* The `git status --short` a refused archive quoted back, inside the shared
+   confirmation dialog. */
 
 .archiveSummary {
   margin: 0;
@@ -171,43 +150,6 @@
   background: var(--color-surface-sunken);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-}
-
-.archiveActions {
-  display: flex;
-  gap: var(--space-2);
-}
-
-.keep,
-.discard {
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-full);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: transform var(--transition-fast);
-}
-
-.keep {
-  border: none;
-  background: var(--color-primary);
-  color: var(--color-primary-text);
-  font-weight: var(--weight-medium);
-}
-
-.discard {
-  border: var(--border-width) solid var(--color-danger);
-  background: transparent;
-  color: var(--color-danger);
-}
-
-.keep:active,
-.discard:active:not(:disabled) {
-  transform: scale(0.98);
-}
-
-.discard:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 @media (max-width: 900px) {

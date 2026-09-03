@@ -173,33 +173,18 @@
   border-color: var(--color-focus-ring);
 }
 
-/* What a refused removal says, before it is offered again with force. */
-.confirm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border: var(--border-width) solid var(--color-border-strong);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-sunken);
-}
-
-.confirmLine {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-text);
-  max-width: 62ch;
-}
-
-.confirmActions {
-  display: flex;
-  gap: var(--space-2);
-}
-
 .error {
   margin: 0;
   font-size: var(--text-sm);
   color: var(--color-danger);
+}
+
+/* The way out of a refused unlink: the sessions that have to be archived
+   first are one click away rather than named and left to be found. */
+.sessionsLink {
+  align-self: flex-start;
+  font-size: var(--text-sm);
+  color: var(--color-primary);
 }
 
 /* ── The three facts ─────────────────────────────────────────────────── */

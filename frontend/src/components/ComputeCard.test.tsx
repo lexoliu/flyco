@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { render } from "@solidjs/testing-library";
+import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import ComputeCard from "./ComputeCard";
+import { ApiProblem } from "../api/problem";
 import type { CloudUsageRow, MachineDefault, ProviderAccountView } from "../api/client";
 
 const DEFAULT_MACHINE_PATH = "/v1/machines/default";
@@ -100,6 +102,31 @@ function mount(account: ProviderAccountView, usage: CloudUsageRow | undefined) {
   ));
 }
 
+/**
+ * The card with an unlink on offer, under a router: a refused unlink links
+ * to the sessions that have to be archived first.
+ */
+function mountUnlinkable(onUnlink: () => Promise<void>) {
+  const history = createMemoryHistory();
+  history.set({ value: "/settings/compute", replace: true, scroll: false });
+  return render(() => (
+    <MemoryRouter history={history}>
+      <Route
+        path="/settings/compute"
+        component={() => (
+          <ComputeCard
+            account={AWS}
+            usage={undefined}
+            spot={true}
+            onSpot={vi.fn()}
+            onUnlink={onUnlink}
+          />
+        )}
+      />
+    </MemoryRouter>
+  ));
+}
+
 describe("ComputeCard", () => {
   it("names the default machine and says a cloud meter has read nothing yet", async () => {
     answerMachineWith(machineResponse);
@@ -135,5 +162,45 @@ describe("ComputeCard", () => {
     expect(
       await findByText("No deployable Linux machine in this account yet."),
     ).toBeInTheDocument();
+  });
+
+  it("asks before it forgets a credential", async () => {
+    // `Unlink` used to fire the DELETE on the first click (issue #139).
+    answerMachineWith(machineResponse);
+    const onUnlink = vi.fn(() => Promise.resolve());
+    const { getByRole, findByRole } = mountUnlinkable(onUnlink);
+
+    getByRole("button", { name: "Unlink" }).click();
+    const dialog = await findByRole("alertdialog");
+
+    expect(dialog).toHaveTextContent("Unlink AWS?");
+    expect(dialog).toHaveTextContent("you would paste it again to link it back");
+    expect(onUnlink).not.toHaveBeenCalled();
+
+    getByRole("button", { name: "Unlink" }).click();
+    expect(onUnlink).toHaveBeenCalled();
+  });
+
+  it("says what has to happen first when the account is still in use", async () => {
+    answerMachineWith(machineResponse);
+    const refusal = new ApiProblem({
+      type: "https://flyco.dev/problems/provider-in-use",
+      title: "Conflict",
+      status: 409,
+      detail: "2 session(s) still run on this account; archive them before unlinking",
+    });
+    const onUnlink = vi.fn(() => Promise.reject(refusal));
+    const { getByRole, findByText, queryByRole } = mountUnlinkable(onUnlink);
+
+    getByRole("button", { name: "Unlink" }).click();
+    getByRole("button", { name: "Unlink" }).click();
+
+    expect(
+      await findByText(/2 session\(s\) still run on this account/),
+    ).toBeInTheDocument();
+    // Nothing left to press: the sessions have to be archived first, and
+    // the way to them is on the dialog.
+    expect(queryByRole("button", { name: "Unlink" })).toBeNull();
+    expect(getByRole("link", { name: "Go to Sessions" })).toHaveAttribute("href", "/");
   });
 });

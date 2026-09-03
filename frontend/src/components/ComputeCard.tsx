@@ -20,14 +20,18 @@
  * frame of its own would make one machine look like a different kind of
  * thing from the account beside it.
  */
-import { Show, type JSX } from "solid-js";
+import { Show, createSignal, type JSX } from "solid-js";
 import { createQuery } from "../lib/query";
+import { A } from "@solidjs/router";
 import { Server } from "lucide-solid";
+import ConfirmDialog from "./ConfirmDialog";
 import Logomark, { PROVIDER_MARK } from "./Logomark";
+import ProblemNotice from "./ProblemNotice";
 import Toggle from "./Toggle";
 import { getDefaultMachine, type CloudUsageRow, type ProviderAccountView } from "../api/client";
 import { ApiProblem } from "../api/problem";
 import { formatDate } from "../lib/dates";
+import { inUseRefusal, sessionsStillRunning, type InUseRefusal } from "../lib/inUse";
 import { hourlyLabel } from "../lib/machines";
 import { formatUsd } from "../lib/money";
 import { PROVIDER_LABEL } from "../lib/providers";
@@ -96,11 +100,56 @@ export interface ComputeCardProps {
   /** Whether sessions on this account ask for interruptible capacity. */
   spot: boolean;
   onSpot: (spot: boolean) => void;
-  /** Unlinks the account. Omitted where unlinking is not on offer. */
-  onUnlink?: (() => void) | undefined;
+  /**
+   * Unlinks the account, and rejects the way the request did.
+   *
+   * The card asks before calling it and reads the refusal afterwards: an
+   * account with machines still on it is refused with `provider-in-use`,
+   * which is not an error but the control plane saying what has to happen
+   * first (issue #139). Omitted where unlinking is not on offer.
+   */
+  onUnlink?: (() => Promise<void>) | undefined;
 }
 
 export default function ComputeCard(props: ComputeCardProps) {
+  const [confirming, setConfirming] = createSignal(false);
+  const [busy, setBusy] = createSignal(false);
+  const [error, setError] = createSignal<unknown>(null);
+  /** What a refused unlink said, when the account is still in use. */
+  const [refused, setRefused] = createSignal<InUseRefusal | null>(null);
+
+  async function unlink(): Promise<void> {
+    const request = props.onUnlink;
+    if (request === undefined) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await request();
+      setConfirming(false);
+      setRefused(null);
+    } catch (failure) {
+      const inUse = inUseRefusal(failure);
+      if (inUse === null) {
+        setError(failure);
+      } else {
+        // There is no forcing this one: the machines are the user's, in
+        // their own account, and flyco will not strand them. The dialog
+        // keeps its place and says what ends the refusal instead.
+        setRefused(inUse);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function stopConfirming(): void {
+    setConfirming(false);
+    setRefused(null);
+    setError(null);
+  }
+
   // Keyed on both, because the machine flyco would pick and the price it
   // would pay both move with the capacity mode.
   const [machine] = createQuery(
@@ -130,12 +179,56 @@ export default function ComputeCard(props: ComputeCardProps) {
         </>
       }
       actions={
-        <Show when={props.onUnlink}>
-          {(unlink) => (
-            <button type="button" class={styles.danger} onClick={() => unlink()()}>
-              Unlink
-            </button>
-          )}
+        // Nothing else while the question is up: the dialog under the card
+        // is the one thing being answered, and a second `Unlink` beside it
+        // would be two buttons with one meaning.
+        <Show when={props.onUnlink !== undefined && !confirming()}>
+          <button
+            type="button"
+            class={styles.danger}
+            disabled={busy()}
+            onClick={() => setConfirming(true)}
+          >
+            Unlink
+          </button>
+        </Show>
+      }
+      footer={
+        <Show when={confirming()}>
+          <ConfirmDialog
+            title={`Unlink ${props.account.label}?`}
+            body={
+              <Show
+                when={refused()}
+                fallback={
+                  <>
+                    Flyco stops provisioning in this {PROVIDER_LABEL[props.account.kind]} account
+                    and forgets the credential; you would paste it again to link it back. Nothing
+                    in the account itself is deleted.
+                  </>
+                }
+              >
+                {(inUse) => (
+                  <>
+                    {sessionsStillRunning(inUse())} Unlinking would leave their machines running
+                    with nothing to stop them, so archive those sessions first.
+                  </>
+                )}
+              </Show>
+            }
+            confirmLabel="Unlink"
+            cancelLabel={refused() === null ? "Keep it" : "Close"}
+            busy={busy()}
+            {...(refused() === null ? { onConfirm: () => void unlink() } : {})}
+            onCancel={stopConfirming}
+          >
+            <ProblemNotice error={error()} />
+            <Show when={refused()}>
+              <A href="/" class={styles.sessionsLink}>
+                Go to Sessions
+              </A>
+            </Show>
+          </ConfirmDialog>
         </Show>
       }
     >

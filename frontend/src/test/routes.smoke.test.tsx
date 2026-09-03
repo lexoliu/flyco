@@ -425,6 +425,47 @@ describe("route smoke tests", () => {
     expect(getByLabelText("Session panels")).toBeInTheDocument();
   });
 
+  it("asks before unlinking the account every session's agent runs on", async () => {
+    // `Unlink` used to fire `DELETE /v1/harness-accounts/{id}` on the first
+    // click, with nothing said about what it costs (issue #139).
+    const base = vi.mocked(fetch).getMockImplementation();
+    const deletes: string[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "DELETE" && url.pathname.startsWith("/v1/harness-accounts/")) {
+        deletes.push(url.pathname);
+        return new Response(null, { status: 204 });
+      }
+      if (method === "GET" && url.pathname === "/v1/harness-accounts") {
+        return new Response(
+          JSON.stringify([
+            {
+              id: "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+              harness: "claude_code",
+              label: "lexo@lexo.cool",
+              linked_at_unix: 1_787_000_000,
+              expires_at_unix: null,
+            },
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return base!(input, init);
+    });
+
+    const { findByRole, getByRole } = renderAt("/settings/agents");
+
+    (await findByRole("button", { name: "Unlink" })).click();
+    const dialog = await findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Unlink lexo@lexo.cool?");
+    expect(dialog).toHaveTextContent("which flyco can no longer do");
+    expect(deletes).toEqual([]);
+
+    getByRole("button", { name: "Keep it" }).click();
+    expect(deletes).toEqual([]);
+  });
+
   it("renders /settings, redirecting to Agents", async () => {
     const { findByRole } = renderAt("/settings");
     expect(await findByRole("heading", { level: 2, name: "Agents" })).toBeInTheDocument();
