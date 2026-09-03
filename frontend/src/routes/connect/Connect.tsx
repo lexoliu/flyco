@@ -15,7 +15,7 @@
  */
 import { useNavigate, useSearchParams } from "@solidjs/router";
 import Flow from "../../components/flow/Flow";
-import { useReadiness } from "../../components/Readiness";
+import { ReadinessGate, useReadiness } from "../../components/Readiness";
 import type { HarnessKind } from "../../api/client";
 import { EVERY_AGENT, linkedAgents, type Stage } from "../../lib/flow";
 import { HARNESS_LABEL } from "../../lib/harnesses";
@@ -43,13 +43,15 @@ function ConnectStage(props: { stage: Stage; agents: readonly HarnessKind[] }) {
   const leave = () => navigate(returnPath(params.return));
 
   return (
-    <Flow
-      stages={[props.stage]}
-      agents={props.agents}
-      answers={{ agents: linkedAgents(readiness.harness()) }}
-      onDone={leave}
-      onLeave={leave}
-    />
+    <ReadinessGate>
+      <Flow
+        stages={[props.stage]}
+        agents={props.agents}
+        answers={{ agents: linkedAgents(readiness.harness()) }}
+        onDone={leave}
+        onLeave={leave}
+      />
+    </ReadinessGate>
   );
 }
 

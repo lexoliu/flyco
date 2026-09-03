@@ -8,7 +8,7 @@
  */
 import { useNavigate } from "@solidjs/router";
 import Flow from "../components/flow/Flow";
-import { useReadiness } from "../components/Readiness";
+import { ReadinessGate, useReadiness } from "../components/Readiness";
 import { linkedAgents } from "../lib/flow";
 import { dismissWelcome } from "../lib/localPreferences";
 
@@ -22,11 +22,15 @@ export default function Welcome() {
     navigate("/", { replace: true });
   }
 
+  // Behind the gate: the flow reads what is linked as it starts, so it
+  // must not start before readiness has been read.
   return (
-    <Flow
-      stages={["meet", "agent", "compute"]}
-      answers={{ agents: linkedAgents(readiness.harness()) }}
-      onDone={finish}
-    />
+    <ReadinessGate>
+      <Flow
+        stages={["meet", "agent", "compute"]}
+        answers={{ agents: linkedAgents(readiness.harness()) }}
+        onDone={finish}
+      />
+    </ReadinessGate>
   );
 }
