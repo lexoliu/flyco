@@ -9,6 +9,7 @@ import {
   stopSessionMachine,
   type MachineCatalogEntry,
 } from "../api/client";
+import { MACHINE_STATE_LABEL } from "../lib/machines";
 import { formatUsd } from "../lib/money";
 import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./MachinePanel.module.css";
@@ -87,7 +88,7 @@ export default function MachinePanel(props: { sessionId: string }) {
           {(view) => (
             <>
               <span class={styles.state} data-state={view().state}>
-                {view().state}
+                {MACHINE_STATE_LABEL[view().state]}
               </span>
               <div class={styles.facts}>
                 <div class={styles.factRow}>
