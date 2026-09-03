@@ -8,9 +8,9 @@
  * reset has passed. Nothing renders at all until there is something true to
  * render.
  *
- * Lives here rather than in Settings because the harness card is drawn in
- * three places — Settings, `/connect/harness`, and the welcome flow — and
- * they must all report usage the same way.
+ * A component of its own rather than a corner of the settings card, so
+ * that wherever a linked account is read out, usage is read out the same
+ * way.
  */
 import { Show } from "solid-js";
 import RatioBar from "./RatioBar";

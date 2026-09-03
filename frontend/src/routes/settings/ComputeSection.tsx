@@ -23,8 +23,8 @@
  * machine by the account's own label) find exactly one.
  *
  * Adding an account is a link to `/connect/compute` rather than a form here.
- * The wizards live on that route, and settings is not a second place to paste
- * a credential.
+ * That route walks the same pages the first run does (docs/ux.md §4), and
+ * settings is not a second place to paste a credential.
  */
 import { For, Show, createMemo, createSignal } from "solid-js";
 import { createQuery } from "../../lib/query";
@@ -37,6 +37,9 @@ import { useReadiness } from "../../components/Readiness";
 import { listCloudUsage, listHosts, unlinkProvider } from "../../api/client";
 import { setSpotPreference, spotPreference } from "../../lib/localPreferences";
 import styles from "./Settings.module.css";
+
+/** Where `Add compute` goes, and where the flow comes back to. */
+const ADD_COMPUTE = "/connect/compute?return=/settings/compute";
 
 export default function ComputeSection() {
   const readiness = useReadiness();
@@ -101,7 +104,7 @@ export default function ComputeSection() {
         fallback={
           <div class={styles.empty}>
             <p class={styles.emptyLine}>No compute is linked, so no session can start yet.</p>
-            <A href="/connect/compute" class={styles.pillPrimary}>
+            <A href={ADD_COMPUTE} class={styles.pillPrimary}>
               <Plus size={14} aria-hidden="true" />
               Add compute
             </A>
@@ -125,7 +128,7 @@ export default function ComputeSection() {
           </For>
         </div>
         <div>
-          <A href="/connect/compute" class={styles.pill}>
+          <A href={ADD_COMPUTE} class={styles.pill}>
             <Plus size={14} aria-hidden="true" />
             Add compute
           </A>

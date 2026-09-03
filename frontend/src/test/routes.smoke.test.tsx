@@ -6,8 +6,7 @@ import Login from "../routes/Login";
 import AuthComplete from "../routes/AuthComplete";
 import Home from "../routes/Home";
 import Welcome from "../routes/Welcome";
-import ConnectHarness from "../routes/connect/ConnectHarness";
-import ConnectCompute from "../routes/connect/ConnectCompute";
+import { ConnectCompute, ConnectHarness } from "../routes/connect/Connect";
 import SessionDetail from "../routes/SessionDetail";
 import SettingsLayout from "../routes/settings/SettingsLayout";
 import AgentsSection from "../routes/settings/AgentsSection";
@@ -134,53 +133,71 @@ describe("route smoke tests", () => {
     expect(await findByRole("heading", { level: 1, name: "Meet flyco" })).toBeInTheDocument();
   });
 
-  it("renders /welcome as the three-screen card", async () => {
+  it("renders /welcome as the first page of the linear flow", async () => {
     const { findByRole, getByRole } = renderAt("/welcome");
     expect(await findByRole("heading", { level: 1, name: "Meet flyco" })).toBeInTheDocument();
     expect(getByRole("button", { name: "Next" })).toBeInTheDocument();
   });
 
-  it("gates each welcome step on its prerequisite, with nothing to skip", async () => {
+  it("asks which agent next, with nothing to skip and Next gated on an answer", async () => {
     const { findByRole, getByRole, queryByRole } = renderAt("/welcome");
     await findByRole("heading", { level: 1, name: "Meet flyco" });
     expect(queryByRole("button", { name: "Skip for now" })).not.toBeInTheDocument();
     getByRole("button", { name: "Next" }).click();
 
-    // Nothing is linked in the fixture: Next says what is missing, is
+    // One page, one question: the primary says what is missing, is
     // disabled, and there is no way around it — a session needs an agent.
-    expect(await findByRole("heading", { level: 1, name: "Give it a brain" })).toBeInTheDocument();
+    expect(
+      await findByRole("heading", { level: 1, name: "Which agent do you use?" }),
+    ).toBeInTheDocument();
     expect(getByRole("button", { name: "Next" })).toBeDisabled();
     expect(getByRole("button", { name: "Next" })).toHaveAttribute(
       "title",
-      "Connect Claude Code or Codex to continue",
+      "Choose an agent to continue",
     );
     expect(queryByRole("button", { name: "Skip for now" })).not.toBeInTheDocument();
   });
 
-  it("renders /connect/harness as a working link page", async () => {
-    const { findByRole } = renderAt("/connect/harness");
+  it("renders /connect/harness as stage B on its own", async () => {
+    const { findByRole, getByRole } = renderAt("/connect/harness");
     expect(
-      await findByRole("heading", { level: 1, name: "Connect an agent" }),
+      await findByRole("heading", { level: 1, name: "Which agent do you use?" }),
+    ).toBeInTheDocument();
+    // Opened from somewhere else, so Back on the first page leads back there.
+    expect(getByRole("button", { name: "Back" })).toBeInTheDocument();
+  });
+
+  it("starts /connect/harness on the named agent's sign-in page", async () => {
+    const { findByRole } = renderAt("/connect/harness?agent=codex");
+    expect(
+      await findByRole("heading", { level: 1, name: "Sign in with ChatGPT" }),
     ).toBeInTheDocument();
   });
 
-  it("renders /connect/compute as a working link page", async () => {
+  it("renders /connect/compute as stage C on its own", async () => {
     const { findByRole } = renderAt("/connect/compute");
-    expect(await findByRole("heading", { level: 1, name: "Connect compute" })).toBeInTheDocument();
+    expect(
+      await findByRole("heading", { level: 1, name: "Where should sessions run?" }),
+    ).toBeInTheDocument();
   });
 
-  it("runs the host wizard on /connect/compute, command and all", async () => {
+  it("enrolls a machine on /connect/compute, command and all", async () => {
     const { findByRole, findByText, getByRole, getByText } = renderAt("/connect/compute");
-    await findByRole("heading", { level: 1, name: "Connect compute" });
+    await findByRole("heading", { level: 1, name: "Where should sessions run?" });
 
-    getByRole("button", { name: /Your own machine/ }).click();
+    getByRole("radio", { name: /Your own machine/ }).click();
+    getByRole("button", { name: "Next" }).click();
 
     // The command comes from the control plane, which is the only thing
     // that knows this deployment's own origin.
     expect(await findByText(HOST_ENROLL_COMMAND)).toBeInTheDocument();
-    expect(getByRole("button", { name: "Copy command" })).toBeInTheDocument();
+    expect(getByRole("button", { name: "Copy" })).toBeInTheDocument();
     expect(getByText(/needs Podman/)).toBeInTheDocument();
     expect(getByRole("status")).toHaveTextContent("Waiting for the machine…");
+    expect(getByRole("button", { name: "Next" })).toHaveAttribute(
+      "title",
+      "Run the command on the machine to continue",
+    );
   });
 
   it("renders /sessions/:id as a header, a transcript and a composer", async () => {

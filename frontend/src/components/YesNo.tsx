@@ -16,6 +16,13 @@ export interface YesNoProps {
   /** `null` while unanswered. */
   value: boolean | null;
   onChange: (answer: boolean) => void;
+  /**
+   * Whether the question is shown, or only read out.
+   *
+   * A page whose title *is* the question would ask it twice; the legend
+   * still names the group for assistive technology.
+   */
+  questionShown?: boolean | undefined;
 }
 
 const OPTIONS: readonly { value: boolean; label: string }[] = [
@@ -27,7 +34,9 @@ export default function YesNo(props: YesNoProps) {
   const name = createUniqueId();
   return (
     <fieldset class={styles.group}>
-      <legend class={styles.question}>{props.question}</legend>
+      <legend class={cx(styles.question, props.questionShown === false && styles.questionHidden)}>
+        {props.question}
+      </legend>
       <div class={styles.options} role="radiogroup" aria-label={props.question}>
         <For each={OPTIONS}>
           {(option) => (

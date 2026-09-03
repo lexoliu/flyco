@@ -50,8 +50,8 @@ color, radius, or size is defined. Component CSS reads tokens.
 ```
 /                       Home: composer + sessions
 /sessions/:id           Session
-/connect/harness        Connect Claude Code or Codex (wizard, also reachable from a chip)
-/connect/compute        Connect compute (wizard, also reachable from a chip)
+/connect/harness        Connect Claude Code or Codex (stage B of §4 alone, also reachable from a chip)
+/connect/compute        Connect compute (stage C of §4 alone, also reachable from a chip)
 /settings               Redirects to /settings/agents
 /settings/agents        Harness accounts, usage, capability matrix
 /settings/compute       Providers, spend, defaults
@@ -59,7 +59,7 @@ color, radius, or size is defined. Component CSS reads tokens.
 /settings/instructions  AGENTS.md, memory tree
 /settings/account       Identity, API keys, notifications, appearance
 /login                  GitHub sign-in
-/welcome                First-run introduction (three screens)
+/welcome                First run (§4): one linear sequence of pages
 ```
 
 The shell is a slim top bar: wordmark left; `Sessions` and `Settings`
@@ -69,20 +69,111 @@ The home page is the product; the top bar exists to get back to it.
 ## 4. First run
 
 After the first sign-in, and whenever readiness is incomplete and the user
-has never dismissed it, `/welcome` shows three screens in one card, Grok
-Bot style, with `Next` and `Back`:
+has never dismissed it, `/welcome` walks the user through one **linear
+sequence of pages**. The rules are absolute, and they are what the
+previous design broke by rendering the compute wizard *inside* a wizard
+step (two questions side by side, an inner `Continue` above an outer
+`Start building`):
 
-1. **Meet flyco.** "Flyco runs the official Claude Code and Codex on a
-   computer you own. You bring the agent and the machine; flyco runs the
-   session, keeps the budget, and gets out of the way."
-2. **Give it a brain.** The harness chooser from §8, inline. `Next` stays
-   disabled, with a title naming what is missing, until an agent is linked.
-   There is no skipping: a session cannot exist without one.
-3. **Give it a computer.** The compute chooser from §7, inline. Same rule:
-   `Start building` is disabled until compute is linked.
+- **One page, one question or one action.** A page asks exactly one thing
+  (a choice, a field, a paste, a file) or shows exactly one thing to do
+  (run a command, sign in). Nothing on a page has its own `Continue`.
+- **One primary button, always in the footer.** The footer is the only
+  navigation: `Back` on the left, the page's primary on the right. The
+  primary's label is the page's verb (`Next`, `Sign in with Claude`,
+  `Link Azure`, `Start building`), and it is disabled — styled as
+  disabled, with a `title` naming what is missing — until the page's
+  prerequisite is met. There is never a second primary anywhere on the
+  page, and there is no `Skip`.
+- **The sequence is data, not nesting.** The pages are a list computed
+  from the answers so far (`lib/flow.ts`); choosing Azure appends Azure's
+  pages, answering "student: yes" appends a credit page only when a
+  programme matches. `Back` goes one page back and keeps the answers. The
+  three progress bars are the three stages; each fills with the page
+  position inside its stage.
+- **Secondary paths are links to other pages**, never disclosures with
+  their own submit. "Use an API key instead" is a quiet link on the
+  sign-in page that leads to a page whose single question is the key.
 
-Finishing lands on `/`. The readiness cards on the home page (§5) exist for
-an account that later unlinks something, not as a way around this flow.
+The pages, by stage:
+
+**A. Meet flyco** — one page: "Flyco runs the official Claude Code and
+Codex on a computer you own. You bring the agent and the machine; flyco
+runs the session, keeps the budget, and gets out of the way." `Next`.
+
+**B. Give it a brain**
+
+1. *Which agent do you use?* Two selectable cards, Claude Code and Codex
+   (radio semantics; one line each; a card already linked says `Linked ·
+   lexo@lexo.cool` and choosing it goes straight to B-done). `Next`.
+2. Claude Code — *Sign in at Anthropic.* One sentence ("Flyco opens
+   Anthropic's own sign-in page. Your password never reaches flyco.") and
+   the quiet link *Use an API key instead*. Primary `Sign in with Claude`
+   (opens the OAuth page in a new tab and advances).
+3. Claude Code — *Paste the code Anthropic shows you.* One field. Primary
+   `Link Claude Code`, disabled until the field has a code; a rejected
+   code is an inline `ProblemNotice` under the field.
+2′. Codex — *Sign in with ChatGPT.* The one-time code is requested when the
+   page opens (no button to ask for it): the page shows the code with
+   `Copy code`, the link `Open auth.openai.com/codex/device`, and "Waiting
+   for you to approve in the browser…" while it polls; approval advances
+   by itself. An expired code turns the page's primary into `Get a new
+   code`; until then the primary is `Next`, disabled with "Approve the
+   code in the browser to continue". The quiet link *Use an API key
+   instead* is here too.
+2″. *Paste your API key* (either agent, reached only by the link). One
+   field. Primary `Link Claude Code` / `Link Codex`.
+4. *Claude Code is linked* (or Codex): the account label and the date, as
+   the settings card will show it. `Next`.
+
+**C. Give it a computer**
+
+1. *Where should sessions run?* Four selectable cards — Azure, AWS,
+   Google Cloud, Your own machine — one line each. `Next`.
+2. Cloud providers — *New to {provider}?* Yes / No pills (§4 of the
+   component rules: a radio group, never a toggle). `Next`.
+3. Cloud providers — *Are you a student?* Yes / No. `Next`.
+4. Cloud providers — *{provider} gives you credit* — only when
+   `POST /v1/providers/quickstart` matches a programme: its name, the
+   credit, the quiet link `Sign up` (new tab). `Next`. No page when
+   nothing matches.
+5. Azure — *Run this in Azure Cloud Shell.* The one command with `Copy`
+   and the sentence that it prints a JSON block. `Next`.
+6. Azure — *Paste the JSON block.* One textarea; the parsed `clientId`,
+   `tenantId`, `subscriptionId` appear as read-only rows under it once it
+   parses; a missing key is an inline error naming it. `Next`, disabled
+   until it parses.
+7. Azure — *Save the machine's admin SSH key.* Generated in the browser
+   on entry; `Download` and `Copy` for the private key, the fingerprint,
+   the quiet link *Use my own public key instead* (which swaps the page's
+   content for one paste field). Primary `Link Azure`, which validates the
+   credential live; a refusal is a `ProblemNotice` above the footer and
+   the primary stays.
+5′. AWS — *Create an access key.* The minimal IAM policy JSON with `Copy`
+   and the link to the IAM console page. `Next`.
+6′. AWS — *Enter the access key.* Two fields (Access key ID, Secret access
+   key); the quiet link *I have a session token* reveals the third field
+   in place. Primary `Link AWS`.
+5″. Google Cloud — *Create a service account.* The `gcloud` commands with
+   `Copy`. `Next`.
+6″. Google Cloud — *Drop the key file.* One drop zone; `project_id` and
+   `client_email` as confirmation rows. Primary `Link Google Cloud`.
+2‴. Your own machine — *Run this on the machine.* No bonus questions.
+   The one installer command with `Copy`, the Linux + Podman sentence, how
+   long the command has left, and "Waiting for the machine…" while it
+   polls; enrollment advances by itself. An expired command turns the
+   primary into `Mint a new command`; until then the primary is `Next`,
+   disabled with "Run the command on the machine to continue".
+8. *{Azure} is linked* (or the host's name): the compute card of §7 —
+   label, region, default machine and price, spot state, or the host's
+   facts. Primary `Start building`.
+
+Finishing lands on `/`. Settings › Agents › `Connect …` and Settings ›
+Compute › `Add compute` open the **same page sequences** (stage B or C
+alone) in the same frame, so the flow exists once; there is no second
+wizard implementation and no inline chooser anywhere else. The readiness
+cards on the home page (§5) exist for an account that later unlinks
+something, not as a way around this flow.
 
 ## 5. Home
 
@@ -174,11 +265,11 @@ and its hourly price, a spot toggle, and month-to-date spend from
 
 ### 7.1 Bonus programmes
 
-The first screen of every cloud wizard asks two questions with toggles:
-"New to {provider}?" and "Are you a student?". The answers go to
-`POST /v1/providers/quickstart` and any matching programme is shown as a
-card with its credit and a `Sign up` link. The user can continue without
-signing up.
+Every cloud flow opens with two pages, one question each (§4 C2, C3):
+"New to {provider}?" and "Are you a student?", both Yes / No radio pills.
+The answers go to `POST /v1/providers/quickstart`; a matching programme
+gets its own page with the credit and a quiet `Sign up` link, and nothing
+matching means no page at all. The user is never asked to sign up.
 
 ### 7.2 Azure
 
