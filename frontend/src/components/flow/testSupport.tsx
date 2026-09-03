@@ -7,18 +7,25 @@ import { expect, vi } from "vitest";
 import { fireEvent, render } from "@solidjs/testing-library";
 import Flow from "./Flow";
 import { ReadinessProvider } from "../Readiness";
+import type { HarnessKind } from "../../api/client";
 import type { FlowAnswers, Stage } from "../../lib/flow";
 import styles from "./Flow.module.css";
 
 export function renderFlow(
   stages: readonly Stage[],
-  options: { answers?: Partial<FlowAnswers>; position?: number; onLeave?: () => void } = {},
+  options: {
+    agents?: readonly HarnessKind[];
+    answers?: Partial<FlowAnswers>;
+    position?: number;
+    onLeave?: () => void;
+  } = {},
 ) {
   const onDone = vi.fn();
   const rendered = render(() => (
     <ReadinessProvider enabled={() => true}>
       <Flow
         stages={stages}
+        agents={options.agents}
         answers={options.answers}
         position={options.position}
         onDone={onDone}
@@ -30,9 +37,18 @@ export function renderFlow(
 }
 
 /** A problem document, in the shape the API answers with. */
-export function problem(status: number, slug: string, detail: string): Response {
+export function problem(
+  status: number,
+  slug: string,
+  detail: string,
+): Response {
   return new Response(
-    JSON.stringify({ type: `https://flyco.dev/problems/${slug}`, title: "Problem", status, detail }),
+    JSON.stringify({
+      type: `https://flyco.dev/problems/${slug}`,
+      title: "Problem",
+      status,
+      detail,
+    }),
     { status, headers: { "content-type": "application/problem+json" } },
   );
 }
@@ -58,7 +74,11 @@ export function route(
   }
   vi.mocked(fetch).mockImplementation((input, init) => {
     const url = new URL(
-      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url,
     );
     if (matches(url.pathname, (init?.method ?? "GET").toUpperCase())) {
       return Promise.resolve(respond(init));
@@ -71,7 +91,10 @@ export function route(
 export function postedTo(path: string): unknown {
   const call = vi
     .mocked(fetch)
-    .mock.calls.find(([input, init]) => String(input).endsWith(path) && init?.method === "POST");
+    .mock.calls.find(
+      ([input, init]) =>
+        String(input).endsWith(path) && init?.method === "POST",
+    );
   expect(call, `no POST to ${path}`).toBeDefined();
   return JSON.parse(String(call?.[1]?.body));
 }
@@ -83,7 +106,9 @@ export function type(field: HTMLElement, value: string): void {
 
 /** The frame's one primary, which is the only element of its class. */
 export function primary(container: HTMLElement): HTMLButtonElement {
-  const found = container.querySelectorAll<HTMLButtonElement>(`.${styles.primary}`);
+  const found = container.querySelectorAll<HTMLButtonElement>(
+    `.${styles.primary}`,
+  );
   expect(found, "exactly one primary on the page").toHaveLength(1);
   return found[0] as HTMLButtonElement;
 }
@@ -101,6 +126,8 @@ export function expectEveryButtonNamed(container: HTMLElement): void {
   const buttons = [...container.querySelectorAll("button")];
   expect(buttons.length).toBeGreaterThan(0);
   expect(
-    buttons.filter((button) => accessibleName(button) === "").map((button) => button.outerHTML),
+    buttons
+      .filter((button) => accessibleName(button) === "")
+      .map((button) => button.outerHTML),
   ).toEqual([]);
 }

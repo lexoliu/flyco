@@ -28,7 +28,11 @@ import ProblemNotice from "../../ProblemNotice";
 import { useReadiness } from "../../Readiness";
 import { linkProvider } from "../../../api/client";
 import { parseAzureServicePrincipal } from "../../../lib/azureCredentials";
-import { downloadPrivateKey, generateBreakGlassKey, type BreakGlassKey } from "../../../lib/sshKey";
+import {
+  downloadPrivateKey,
+  generateBreakGlassKey,
+  type BreakGlassKey,
+} from "../../../lib/sshKey";
 import { NEXT, type PageComponent, type Primary } from "../page";
 import { ConfirmRow, QuietLink } from "./shared";
 import styles from "./pages.module.css";
@@ -43,14 +47,16 @@ const SHOW_SUBSCRIPTION = "az account show --query id -o tsv";
 /** What the downloaded private key is called. */
 const KEY_FILENAME = "flyco_azure_ed25519";
 
-export const AzureCommand: PageComponent<{ id: "azure-command" }> = (props) => ({
+export const AzureCommand: PageComponent<{ id: "azure-command" }> = (
+  props,
+) => ({
   title: "Run this in Azure Cloud Shell",
   body: (
     <>
       <CommandBlock value={CREATE_PRINCIPAL} label="Copy" />
       <p class={styles.hint}>
-        Cloud Shell, or any terminal with the Azure CLI signed in. It prints a JSON block; the next
-        page asks for it.
+        Cloud Shell, or any terminal with the Azure CLI signed in. It prints a
+        JSON block; the next page asks for it.
       </p>
     </>
   ),
@@ -79,7 +85,11 @@ export const AzurePaste: PageComponent<{ id: "azure-paste" }> = (props) => {
       disabled: found === null ? "Paste the JSON block to continue" : null,
       onClick: () => {
         if (found !== null) {
-          props.advance({ azurePaste: pasted(), azurePrincipal: found, azureSubscription: null });
+          props.advance({
+            azurePaste: pasted(),
+            azurePrincipal: found,
+            azureSubscription: null,
+          });
         }
       },
     };
@@ -100,13 +110,18 @@ export const AzurePaste: PageComponent<{ id: "azure-paste" }> = (props) => {
           onInput={(event) => setPasted(event.currentTarget.value)}
           autofocus
         />
-        <Show when={parseError()}>{(message) => <p class={styles.error}>{message()}</p>}</Show>
+        <Show when={parseError()}>
+          {(message) => <p class={styles.error}>{message()}</p>}
+        </Show>
         <Show when={principal()}>
           {(found) => (
             <dl class={styles.confirm}>
               <ConfirmRow label="Client id" value={found().clientId} />
               <ConfirmRow label="Tenant id" value={found().tenantId} />
-              <ConfirmRow label="Client secret" value="held, and never shown again" />
+              <ConfirmRow
+                label="Client secret"
+                value="held, and never shown again"
+              />
               <Show when={found().subscriptionId}>
                 {(id) => <ConfirmRow label="Subscription" value={id()} />}
               </Show>
@@ -119,7 +134,9 @@ export const AzurePaste: PageComponent<{ id: "azure-paste" }> = (props) => {
   };
 };
 
-export const AzureSubscription: PageComponent<{ id: "azure-subscription" }> = (props) => {
+export const AzureSubscription: PageComponent<{ id: "azure-subscription" }> = (
+  props,
+) => {
   const [subscription, setSubscription] = createSignal(
     props.state().answers.azureSubscription ?? "",
   );
@@ -142,7 +159,8 @@ export const AzureSubscription: PageComponent<{ id: "azure-subscription" }> = (p
     body: (
       <>
         <p class={styles.lede}>
-          That block carries no subscription. Run this and paste the id it prints.
+          That block carries no subscription. Run this and paste the id it
+          prints.
         </p>
         <CommandBlock value={SHOW_SUBSCRIPTION} label="Copy" />
         <input
@@ -166,14 +184,18 @@ export const AzureKey: PageComponent<{ id: "azure-key" }> = (props) => {
   const answers = props.state().answers;
   const principal = answers.azurePrincipal;
   if (principal === null) {
-    throw new Error("the Azure key page was reached without a service principal");
+    throw new Error(
+      "the Azure key page was reached without a service principal",
+    );
   }
   const subscriptionId = principal.subscriptionId ?? answers.azureSubscription;
   if (subscriptionId === null) {
     throw new Error("the Azure key page was reached without a subscription");
   }
 
-  const [generated, setGenerated] = createSignal<BreakGlassKey | null>(answers.azureKey);
+  const [generated, setGenerated] = createSignal<BreakGlassKey | null>(
+    answers.azureKey,
+  );
   const [keyError, setKeyError] = createSignal<unknown>(null);
   const [own, setOwn] = createSignal<string | null>(null);
 
@@ -216,7 +238,7 @@ export const AzureKey: PageComponent<{ id: "azure-key" }> = (props) => {
         if (key === "") {
           return;
         }
-        const account = await linkProvider({
+        await linkProvider({
           label: "Azure",
           credentials: {
             kind: "azure",
@@ -228,7 +250,7 @@ export const AzureKey: PageComponent<{ id: "azure-key" }> = (props) => {
           },
         });
         await readiness.refresh();
-        props.advance({ computeAccount: account });
+        props.advance();
       },
     };
   };
@@ -241,8 +263,8 @@ export const AzureKey: PageComponent<{ id: "azure-key" }> = (props) => {
         fallback={
           <>
             <p class={styles.lede}>
-              Paste the public half of a key you already hold. Azure installs it as the login key of
-              every machine flyco builds.
+              Paste the public half of a key you already hold. Azure installs it
+              as the login key of every machine flyco builds.
             </p>
             <textarea
               class={styles.paste}
@@ -254,14 +276,17 @@ export const AzureKey: PageComponent<{ id: "azure-key" }> = (props) => {
               onInput={(event) => setOwn(event.currentTarget.value)}
               autofocus
             />
-            <QuietLink onClick={() => setOwn(null)}>Use the generated key instead</QuietLink>
+            <QuietLink onClick={() => setOwn(null)}>
+              Use the generated key instead
+            </QuietLink>
           </>
         }
       >
         <p class={styles.lede}>
-          Azure requires an SSH login key for every Linux machine it builds. Flyco made one in this
-          browser and keeps only the public half. Save the private key now if you ever want to SSH
-          into a session machine yourself; it is not shown again.
+          Azure requires an SSH login key for every Linux machine it builds.
+          Flyco made one in this browser and keeps only the public half. Save
+          the private key now if you ever want to SSH into a session machine
+          yourself; it is not shown again.
         </p>
         <ProblemNotice error={keyError()} />
         <Show when={generated()}>
@@ -276,7 +301,11 @@ export const AzureKey: PageComponent<{ id: "azure-key" }> = (props) => {
                   <Download size={13} aria-hidden="true" />
                   Download
                 </button>
-                <CopyButton value={key().privateKey} label="Copy" class={styles.pill} />
+                <CopyButton
+                  value={key().privateKey}
+                  label="Copy"
+                  class={styles.pill}
+                />
               </div>
               <span class={styles.fingerprint}>
                 <KeyRound size={13} aria-hidden="true" />
@@ -285,7 +314,9 @@ export const AzureKey: PageComponent<{ id: "azure-key" }> = (props) => {
             </>
           )}
         </Show>
-        <QuietLink onClick={() => setOwn("")}>Use my own public key instead</QuietLink>
+        <QuietLink onClick={() => setOwn("")}>
+          Use my own public key instead
+        </QuietLink>
       </Show>
     ),
     primary,

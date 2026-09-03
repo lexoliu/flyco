@@ -9,6 +9,7 @@
 import { For, Show, type JSX } from "solid-js";
 import { ArrowUpRight, Check } from "lucide-solid";
 import { cx } from "../../../lib/cx";
+import { formatDate } from "../../../lib/dates";
 import styles from "./pages.module.css";
 
 export interface Choice<K extends string> {
@@ -17,7 +18,8 @@ export interface Choice<K extends string> {
   /** One line under the title; a linked card says so here. */
   readonly line: string;
   readonly linked: boolean;
-  readonly mark: JSX.Element;
+  /** A logomark beside the title; a plain answer such as Yes / No has none. */
+  readonly mark?: JSX.Element | undefined;
 }
 
 export interface ChoiceCardsProps<K extends string> {
@@ -44,15 +46,26 @@ export function ChoiceCards<K extends string>(props: ChoiceCardsProps<K>) {
                 class={styles.choice}
                 onClick={() => props.onChange(choice.kind)}
               >
-                <span class={styles.choiceMark}>{choice.mark}</span>
+                <Show when={choice.mark}>
+                  {(mark) => <span class={styles.choiceMark}>{mark()}</span>}
+                </Show>
                 <span class={styles.choiceText}>
                   <span class={styles.choiceTitle}>{choice.title}</span>
-                  <span class={cx(styles.choiceLine, choice.linked && styles.choiceLinked)}>
+                  <span
+                    class={cx(
+                      styles.choiceLine,
+                      choice.linked && styles.choiceLinked,
+                    )}
+                  >
                     {choice.line}
                   </span>
                 </span>
                 <Show when={chosen()}>
-                  <Check size={16} aria-hidden="true" class={styles.choiceCheck ?? ""} />
+                  <Check
+                    size={16}
+                    aria-hidden="true"
+                    class={styles.choiceCheck ?? ""}
+                  />
                 </Show>
               </button>
             </li>
@@ -63,10 +76,38 @@ export function ChoiceCards<K extends string>(props: ChoiceCardsProps<K>) {
   );
 }
 
+/**
+ * What an agent's page shows once that agent is linked: the account, as
+ * the settings card names it, and nothing to do but move on.
+ */
+export function LinkedAgent(props: {
+  mark: JSX.Element;
+  label: string;
+  linkedAtUnix: number;
+}) {
+  return (
+    <div class={styles.linked}>
+      <span class={styles.choiceMark}>{props.mark}</span>
+      <span class={styles.choiceText}>
+        <span class={styles.choiceTitle}>{props.label}</span>
+        <span class={cx(styles.choiceLine, styles.choiceLinked)}>
+          Linked {formatDate(props.linkedAtUnix)}
+        </span>
+      </span>
+      <Check size={16} aria-hidden="true" class={styles.choiceCheck ?? ""} />
+    </div>
+  );
+}
+
 /** A quiet link that opens a vendor's page in a tab of its own. */
 export function ExternalLink(props: { href: string; children: JSX.Element }) {
   return (
-    <a class={styles.link} href={props.href} target="_blank" rel="noreferrer noopener">
+    <a
+      class={styles.link}
+      href={props.href}
+      target="_blank"
+      rel="noreferrer noopener"
+    >
       {props.children}
       <ArrowUpRight size={13} aria-hidden="true" />
     </a>
@@ -74,7 +115,10 @@ export function ExternalLink(props: { href: string; children: JSX.Element }) {
 }
 
 /** A quiet link that leads to another page of the flow, or swaps this one. */
-export function QuietLink(props: { onClick: () => void; children: JSX.Element }) {
+export function QuietLink(props: {
+  onClick: () => void;
+  children: JSX.Element;
+}) {
   return (
     <button type="button" class={styles.link} onClick={() => props.onClick()}>
       {props.children}

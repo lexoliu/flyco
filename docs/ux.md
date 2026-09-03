@@ -101,37 +101,59 @@ The pages, by stage:
 Codex on a computer you own. You bring the agent and the machine; flyco
 runs the session, keeps the budget, and gets out of the way." `Next`.
 
+**Answer controls fill the page.** A question page's answer is the page's
+body, not a widget under it: a single-choice question (Yes / No, the
+provider, an option) renders as full-width selectable cards — the same
+component as *Where should sessions run?*, radio semantics, one line each,
+a check on the chosen one — never as a row of small pills. A text answer is
+one full-width field. The card, the field and the footer share one width,
+so the eye has one column to read. Every page is screenshotted at 1100 px
+and 390 px wide and looked at before the flow is called done: a control
+that reads as an afterthought at either width is a defect.
+
 **B. Give it a brain**
 
-1. *Which agent do you use?* Two selectable cards, Claude Code and Codex
-   (radio semantics; one line each; a card already linked says `Linked ·
-   lexo@lexo.cool` and choosing it goes straight to B-done). `Next`.
-2. Claude Code — *Sign in at Anthropic.* One sentence ("Flyco opens
-   Anthropic's own sign-in page. Your password never reaches flyco.") and
-   the quiet link *Use an API key instead*. Primary `Sign in with Claude`
-   (opens the OAuth page in a new tab and advances).
-3. Claude Code — *Paste the code Anthropic shows you.* One field. Primary
-   `Link Claude Code`, disabled until the field has a code; a rejected
-   code is an inline `ProblemNotice` under the field.
-2′. Codex — *Sign in with ChatGPT.* The one-time code is requested when the
-   page opens (no button to ask for it): the page shows the code with
-   `Copy code`, the link `Open auth.openai.com/codex/device`, and "Waiting
-   for you to approve in the browser…" while it polls; approval advances
-   by itself. An expired code turns the page's primary into `Get a new
-   code`; until then the primary is `Next`, disabled with "Approve the
-   code in the browser to continue". The quiet link *Use an API key
-   instead* is here too.
-2″. *Paste your API key* (either agent, reached only by the link). One
-   field. Primary `Link Claude Code` / `Link Codex`.
-4. *Claude Code is linked* (or Codex): the account label and the date, as
-   the settings card will show it. `Next`.
+The agent is chosen **per task**, in the composer's agent chip, never
+here: flyco supports several agents at once, and this stage only links
+them. There is no "which agent do you use?" question, and there is no
+confirmation page after a link — the next page is the next thing to do.
+
+1. *Link Claude Code.* One sentence ("Runs on your Claude subscription.
+   Flyco opens Anthropic's own sign-in page; your password never reaches
+   flyco."). Already linked: the page shows `Linked · me@lexo.cool` and
+   the primary is `Next`. Otherwise the primary is `Sign in with Claude`
+   (opens the OAuth page in a new tab and advances to the paste page), with
+   the quiet links *Use an API key instead* and *I don't use Claude Code*
+   (which goes to the Codex page).
+2. *Paste the code Anthropic shows you.* One field; primary `Link Claude
+   Code`, disabled until the field has a code; a rejected code is an
+   inline `ProblemNotice` under the field. Success advances straight to
+   the Codex page.
+3. *Link Codex.* Same shape as the Claude page. The one-time code is
+   requested when the page opens (no button to ask for it): the code with
+   `Copy code`, the link `Open auth.openai.com/codex/device`, "Waiting for
+   you to approve in the browser…" while it polls; approval advances by
+   itself to stage C. An expired code turns the primary into `Get a new
+   code`; until then the primary is `Next`, disabled with "Approve the code
+   in the browser to continue" — except when an agent is already linked,
+   where `Next` is enabled and the quiet link *I don't use Codex* is
+   offered too. With nothing linked there is no way past this page other
+   than linking one agent or going `Back` to link Claude Code: a session
+   cannot exist without an agent.
+4. *Paste your API key* (either agent, reached only by the link). One
+   field that accepts an API key or a `claude setup-token`, told apart by
+   prefix. Primary `Link Claude Code` / `Link Codex`; success advances as
+   the sign-in path does.
+
+The agent chip on the home composer is where a task picks its agent; with
+one agent linked it states that agent, with two it is a choice.
 
 **C. Give it a computer**
 
 1. *Where should sessions run?* Four selectable cards — Azure, AWS,
    Google Cloud, Your own machine — one line each. `Next`.
-2. Cloud providers — *New to {provider}?* Yes / No pills (§4 of the
-   component rules: a radio group, never a toggle). `Next`.
+2. Cloud providers — *New to {provider}?* Yes / No pills (a radio group,
+   never a toggle). `Next`.
 3. Cloud providers — *Are you a student?* Yes / No. `Next`.
 4. Cloud providers — *{provider} gives you credit* — only when
    `POST /v1/providers/quickstart` matches a programme: its name, the
@@ -141,39 +163,41 @@ runs the session, keeps the budget, and gets out of the way." `Next`.
    and the sentence that it prints a JSON block. `Next`.
 6. Azure — *Paste the JSON block.* One textarea; the parsed `clientId`,
    `tenantId`, `subscriptionId` appear as read-only rows under it once it
-   parses; a missing key is an inline error naming it. `Next`, disabled
+   parses; a missing key is an inline error naming it (a block without a
+   subscription appends a *Which subscription?* page). `Next`, disabled
    until it parses.
 7. Azure — *Save the machine's admin SSH key.* Generated in the browser
    on entry; `Download` and `Copy` for the private key, the fingerprint,
    the quiet link *Use my own public key instead* (which swaps the page's
    content for one paste field). Primary `Link Azure`, which validates the
    credential live; a refusal is a `ProblemNotice` above the footer and
-   the primary stays.
+   the primary stays. Success **finishes the flow**: there is no "Azure is
+   linked" page; the home page's compute chip already states the account,
+   region, default machine and price.
 5′. AWS — *Create an access key.* The minimal IAM policy JSON with `Copy`
    and the link to the IAM console page. `Next`.
 6′. AWS — *Enter the access key.* Two fields (Access key ID, Secret access
    key); the quiet link *I have a session token* reveals the third field
-   in place. Primary `Link AWS`.
+   in place. Primary `Link AWS`; success finishes the flow.
 5″. Google Cloud — *Create a service account.* The `gcloud` commands with
    `Copy`. `Next`.
 6″. Google Cloud — *Drop the key file.* One drop zone; `project_id` and
-   `client_email` as confirmation rows. Primary `Link Google Cloud`.
+   `client_email` as confirmation rows. Primary `Link Google Cloud`;
+   success finishes the flow.
 2‴. Your own machine — *Run this on the machine.* No bonus questions.
    The one installer command with `Copy`, the Linux + Podman sentence, how
    long the command has left, and "Waiting for the machine…" while it
-   polls; enrollment advances by itself. An expired command turns the
-   primary into `Mint a new command`; until then the primary is `Next`,
-   disabled with "Run the command on the machine to continue".
-8. *{Azure} is linked* (or the host's name): the compute card of §7 —
-   label, region, default machine and price, spot state, or the host's
-   facts. Primary `Start building`.
+   polls; enrollment finishes the flow by itself. An expired command turns
+   the primary into `Mint a new command`; until then the primary is
+   `Next`, disabled with "Run the command on the machine to continue".
 
-Finishing lands on `/`. Settings › Agents › `Connect …` and Settings ›
-Compute › `Add compute` open the **same page sequences** (stage B or C
-alone) in the same frame, so the flow exists once; there is no second
-wizard implementation and no inline chooser anywhere else. The readiness
-cards on the home page (§5) exist for an account that later unlinks
-something, not as a way around this flow.
+Finishing lands on `/`. Settings › Agents › `Connect …` opens the agent's
+own page (stage B, that page alone, returning to settings on success) and
+Settings › Compute › `Add compute` opens stage C alone, in the same frame,
+so the flow exists once; there is no second wizard implementation and no
+inline chooser anywhere else. The readiness cards on the home page (§5)
+exist for an account that later unlinks something, not as a way around
+this flow.
 
 ## 5. Home
 

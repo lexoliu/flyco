@@ -1,6 +1,11 @@
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { render } from "@solidjs/testing-library";
-import { MemoryRouter, Navigate, Route, createMemoryHistory } from "@solidjs/router";
+import {
+  MemoryRouter,
+  Navigate,
+  Route,
+  createMemoryHistory,
+} from "@solidjs/router";
 import AppShell from "../components/AppShell";
 import Login from "../routes/Login";
 import AuthComplete from "../routes/AuthComplete";
@@ -51,7 +56,10 @@ function renderAt(url: string, signedIn = true, seenWelcome = true) {
       <Route path="/connect/compute" component={ConnectCompute} />
       <Route path="/sessions/:id" component={SessionDetail} />
       <Route path="/settings" component={SettingsLayout}>
-        <Route path="/" component={() => <Navigate href="/settings/agents" />} />
+        <Route
+          path="/"
+          component={() => <Navigate href="/settings/agents" />}
+        />
         <Route path="/agents" component={AgentsSection} />
         <Route path="/compute" component={ComputeSection} />
         <Route path="/tools" component={ToolsSection} />
@@ -73,7 +81,9 @@ describe("route smoke tests", () => {
     const { findByText, queryByRole } = renderAt("/", false);
 
     expect(await findByText("Sign in with GitHub")).toBeInTheDocument();
-    expect(queryByRole("heading", { level: 1 })?.textContent).not.toContain("What should we build");
+    expect(queryByRole("heading", { level: 1 })?.textContent).not.toContain(
+      "What should we build",
+    );
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -99,7 +109,10 @@ describe("route smoke tests", () => {
           status: 401,
           detail: "the session expired",
         }),
-        { status: 401, headers: { "content-type": "application/problem+json" } },
+        {
+          status: 401,
+          headers: { "content-type": "application/problem+json" },
+        },
       ),
     );
     const { findByText } = renderAt("/");
@@ -125,65 +138,80 @@ describe("route smoke tests", () => {
     const { findByRole } = renderAt("/");
     // Nothing is linked in the fixture, so the button says which of the
     // three prerequisites is missing rather than failing on submit.
-    expect(await findByRole("button", { name: "Connect an agent first" })).toBeDisabled();
+    expect(
+      await findByRole("button", { name: "Connect an agent first" }),
+    ).toBeDisabled();
   });
 
   it("sends a first visitor with nothing linked to the welcome flow", async () => {
     const { findByRole } = renderAt("/", true, false);
-    expect(await findByRole("heading", { level: 1, name: "Meet flyco" })).toBeInTheDocument();
+    expect(
+      await findByRole("heading", { level: 1, name: "Meet flyco" }),
+    ).toBeInTheDocument();
   });
 
   it("renders /welcome as the first page of the linear flow", async () => {
     const { findByRole, getByRole } = renderAt("/welcome");
-    expect(await findByRole("heading", { level: 1, name: "Meet flyco" })).toBeInTheDocument();
+    expect(
+      await findByRole("heading", { level: 1, name: "Meet flyco" }),
+    ).toBeInTheDocument();
     expect(getByRole("button", { name: "Next" })).toBeInTheDocument();
   });
 
-  it("asks which agent next, with nothing to skip and Next gated on an answer", async () => {
-    const { findByRole, getByRole, queryByRole } = renderAt("/welcome");
+  it("links Claude Code next, never asking which agent, with nothing to skip", async () => {
+    const { findByRole, getByRole, queryByRole, queryByText } =
+      renderAt("/welcome");
     await findByRole("heading", { level: 1, name: "Meet flyco" });
-    expect(queryByRole("button", { name: "Skip for now" })).not.toBeInTheDocument();
+    expect(
+      queryByRole("button", { name: "Skip for now" }),
+    ).not.toBeInTheDocument();
     getByRole("button", { name: "Next" }).click();
 
-    // One page, one question: the primary says what is missing, is
-    // disabled, and there is no way around it — a session needs an agent.
+    // The agent is chosen per task in the composer, so the first run only
+    // links agents: one page each, the sign-in as the page's one primary.
     expect(
-      await findByRole("heading", { level: 1, name: "Which agent do you use?" }),
+      await findByRole("heading", { level: 1, name: "Link Claude Code" }),
     ).toBeInTheDocument();
-    expect(getByRole("button", { name: "Next" })).toBeDisabled();
-    expect(getByRole("button", { name: "Next" })).toHaveAttribute(
-      "title",
-      "Choose an agent to continue",
-    );
-    expect(queryByRole("button", { name: "Skip for now" })).not.toBeInTheDocument();
+    expect(queryByText(/Which agent/)).not.toBeInTheDocument();
+    expect(getByRole("button", { name: "Sign in with Claude" })).toBeEnabled();
+    expect(
+      queryByRole("button", { name: "Skip for now" }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders /connect/harness as stage B on its own", async () => {
     const { findByRole, getByRole } = renderAt("/connect/harness");
     expect(
-      await findByRole("heading", { level: 1, name: "Which agent do you use?" }),
+      await findByRole("heading", { level: 1, name: "Link Claude Code" }),
     ).toBeInTheDocument();
     // Opened from somewhere else, so Back on the first page leads back there.
     expect(getByRole("button", { name: "Back" })).toBeInTheDocument();
   });
 
-  it("starts /connect/harness on the named agent's sign-in page", async () => {
+  it("walks only the named agent's page on /connect/harness?agent=", async () => {
     const { findByRole } = renderAt("/connect/harness?agent=codex");
     expect(
-      await findByRole("heading", { level: 1, name: "Sign in with ChatGPT" }),
+      await findByRole("heading", { level: 1, name: "Link Codex" }),
     ).toBeInTheDocument();
   });
 
   it("renders /connect/compute as stage C on its own", async () => {
     const { findByRole } = renderAt("/connect/compute");
     expect(
-      await findByRole("heading", { level: 1, name: "Where should sessions run?" }),
+      await findByRole("heading", {
+        level: 1,
+        name: "Where should sessions run?",
+      }),
     ).toBeInTheDocument();
   });
 
   it("enrolls a machine on /connect/compute, command and all", async () => {
-    const { findByRole, findByText, getByRole, getByText } = renderAt("/connect/compute");
-    await findByRole("heading", { level: 1, name: "Where should sessions run?" });
+    const { findByRole, findByText, getByRole, getByText } =
+      renderAt("/connect/compute");
+    await findByRole("heading", {
+      level: 1,
+      name: "Where should sessions run?",
+    });
 
     getByRole("radio", { name: /Your own machine/ }).click();
     getByRole("button", { name: "Next" }).click();
@@ -204,14 +232,18 @@ describe("route smoke tests", () => {
     const { findByText, getByLabelText } = renderAt("/sessions/abc-123");
 
     // The title, not the id: a session is identified by what it is for.
-    expect(await findByText("Audit the relay for dropped frames")).toBeInTheDocument();
+    expect(
+      await findByText("Audit the relay for dropped frames"),
+    ).toBeInTheDocument();
     expect(getByLabelText("Message the agent")).toBeInTheDocument();
     // The prompt already went out with `POST /v1/sessions` and the machine
     // is being built, so the empty transcript is the build itself — and
     // the one sentence a new user needs, which is that nothing is being
     // asked of them.
     expect(
-      await findByText("Your task is queued and will start as soon as the machine is ready."),
+      await findByText(
+        "Your task is queued and will start as soon as the machine is ready.",
+      ),
     ).toBeInTheDocument();
     expect(getByLabelText("Provisioning")).toBeInTheDocument();
     expect(await findByText("Reserving a machine on AWS")).toBeInTheDocument();
@@ -228,15 +260,20 @@ describe("route smoke tests", () => {
       // The same session, but with a machine that is up and an agent that
       // has nothing to do until someone speaks.
       const session = (await response.json()) as Record<string, unknown>;
-      return new Response(JSON.stringify({ ...session, state: "active", activity: "idle" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ ...session, state: "active", activity: "idle" }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
     });
     const { findByText, queryByLabelText } = renderAt("/sessions/abc-123");
 
     expect(
-      await findByText("Nothing has happened yet. Send a message to get the agent started."),
+      await findByText(
+        "Nothing has happened yet. Send a message to get the agent started.",
+      ),
     ).toBeInTheDocument();
     expect(queryByLabelText("Provisioning")).not.toBeInTheDocument();
   });
@@ -258,14 +295,20 @@ describe("route smoke tests", () => {
           status: 404,
           detail: "no session with that id",
         }),
-        { status: 404, headers: { "content-type": "application/problem+json" } },
+        {
+          status: 404,
+          headers: { "content-type": "application/problem+json" },
+        },
       );
     });
-    const { findByRole, getByRole, queryByText } = renderAt("/sessions/abc-123");
+    const { findByRole, getByRole, queryByText } =
+      renderAt("/sessions/abc-123");
 
     const notice = await findByRole("alert");
     expect(notice).toHaveTextContent("no session with that id");
-    expect(getByRole("button", { name: "Back to sessions" })).toBeInTheDocument();
+    expect(
+      getByRole("button", { name: "Back to sessions" }),
+    ).toBeInTheDocument();
     expect(queryByText("Reconnecting…")).not.toBeInTheDocument();
     expect(queryByText("Loading")).not.toBeInTheDocument();
   });
@@ -314,7 +357,10 @@ describe("route smoke tests", () => {
             : {
                 ...machine,
                 hourly: 163_200,
-                spec: { ...(machine["spec"] as object), machine_type: "m7g.xlarge" },
+                spec: {
+                  ...(machine["spec"] as object),
+                  machine_type: "m7g.xlarge",
+                },
               },
         ),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -338,7 +384,9 @@ describe("route smoke tests", () => {
       }),
     );
 
-    expect(await findByText("m7g.xlarge · $0.16/hr · spot")).toBeInTheDocument();
+    expect(
+      await findByText("m7g.xlarge · $0.16/hr · spot"),
+    ).toBeInTheDocument();
   });
 
   it("offers a failed session a resume, and takes it back to provisioning", async () => {
@@ -349,9 +397,15 @@ describe("route smoke tests", () => {
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const url = new URL(String(input instanceof Request ? input.url : input));
       const method = (init?.method ?? "GET").toUpperCase();
-      if (method === "POST" && /^\/v1\/sessions\/[^/]+\/resume$/.test(url.pathname)) {
+      if (
+        method === "POST" &&
+        /^\/v1\/sessions\/[^/]+\/resume$/.test(url.pathname)
+      ) {
         resumed = true;
-        const response = await base!(new URL(url.href.replace("/resume", "")).href, {});
+        const response = await base!(
+          new URL(url.href.replace("/resume", "")).href,
+          {},
+        );
         return response;
       }
       if (method !== "GET" || !/^\/v1\/sessions\/[^/]+$/.test(url.pathname)) {
@@ -367,28 +421,35 @@ describe("route smoke tests", () => {
                 ...session,
                 state: "failed",
                 activity: "idle",
-                failure: "AWS refused the reservation: InsufficientInstanceCapacity.",
+                failure:
+                  "AWS refused the reservation: InsufficientInstanceCapacity.",
               },
         ),
         { status: 200, headers: { "content-type": "application/json" } },
       );
     });
 
-    const { findByRole, findByText, getByRole, getByText } = renderAt("/sessions/abc-123");
+    const { findByRole, findByText, getByRole, getByText } =
+      renderAt("/sessions/abc-123");
 
     const state = await findByRole("region", { name: "Session state" });
     expect(state.textContent).toContain("Failed");
     expect(state.textContent).toContain("AWS refused the reservation");
     // And the composer says why it is not taking a message.
-    expect(getByText("This session failed. Resume it to pick the conversation back up."))
-      .toBeInTheDocument();
+    expect(
+      getByText(
+        "This session failed. Resume it to pick the conversation back up.",
+      ),
+    ).toBeInTheDocument();
 
     getByRole("button", { name: "Resume" }).click();
 
     // The answer is the session provisioning again, so the page comes back
     // as the build it now is rather than as the dead end it was.
     expect(
-      await findByText("Your task is queued and will start as soon as the machine is ready."),
+      await findByText(
+        "Your task is queued and will start as soon as the machine is ready.",
+      ),
     ).toBeInTheDocument();
     expect(resumed).toBe(true);
   });
@@ -399,7 +460,10 @@ describe("route smoke tests", () => {
     const base = vi.mocked(fetch).getMockImplementation();
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const url = new URL(String(input instanceof Request ? input.url : input));
-      if ((init?.method ?? "GET").toUpperCase() !== "GET" || !/^\/v1\/sessions\/[^/]+$/.test(url.pathname)) {
+      if (
+        (init?.method ?? "GET").toUpperCase() !== "GET" ||
+        !/^\/v1\/sessions\/[^/]+$/.test(url.pathname)
+      ) {
         return base!(input, init);
       }
       const response = await base!(input, init);
@@ -409,7 +473,12 @@ describe("route smoke tests", () => {
           ...session,
           state: "paused",
           activity: "idle",
-          budget: { limit: 10_000_000, spent: 10_000_000, remaining: 0, stage: "exhausted" },
+          budget: {
+            limit: 10_000_000,
+            spent: 10_000_000,
+            remaining: 0,
+            stage: "exhausted",
+          },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
@@ -419,20 +488,30 @@ describe("route smoke tests", () => {
 
     const state = await findByRole("region", { name: "Session state" });
     expect(state.textContent).toContain("Paused · budget exhausted");
-    expect(state.textContent).toContain("The $10.00 budget is spent. Raise it to continue.");
+    expect(state.textContent).toContain(
+      "The $10.00 budget is spent. Raise it to continue.",
+    );
 
     // The action is the picker itself, and its floor is the first whole
     // dollar above the spend.
     getByRole("button", { name: "Raise budget" }).click();
-    expect((getByRole("slider", { name: "Session budget in dollars" }) as HTMLInputElement).min)
-      .toBe("11");
     expect(
-      getByText("This session is paused: its budget is spent. Raise it to continue."),
+      (
+        getByRole("slider", {
+          name: "Session budget in dollars",
+        }) as HTMLInputElement
+      ).min,
+    ).toBe("11");
+    expect(
+      getByText(
+        "This session is paused: its budget is spent. Raise it to continue.",
+      ),
     ).toBeInTheDocument();
   });
 
   it("keeps the session's side panels behind the collapsed drawer", async () => {
-    const { findByText, queryByLabelText, getByLabelText } = renderAt("/sessions/abc-123");
+    const { findByText, queryByLabelText, getByLabelText } =
+      renderAt("/sessions/abc-123");
     await findByText("Audit the relay for dropped frames");
 
     // docs/ux.md §9.4: the drawer starts closed, so the transcript gets
@@ -452,7 +531,10 @@ describe("route smoke tests", () => {
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const url = new URL(String(input instanceof Request ? input.url : input));
       const method = (init?.method ?? "GET").toUpperCase();
-      if (method === "DELETE" && url.pathname.startsWith("/v1/harness-accounts/")) {
+      if (
+        method === "DELETE" &&
+        url.pathname.startsWith("/v1/harness-accounts/")
+      ) {
         deletes.push(url.pathname);
         if (refuse) {
           return new Response(
@@ -460,10 +542,14 @@ describe("route smoke tests", () => {
               type: "https://flyco.dev/problems/harness-account-in-use",
               title: "Conflict",
               status: 409,
-              detail: "2 session(s) still run on this account; archive them before unlinking",
+              detail:
+                "2 session(s) still run on this account; archive them before unlinking",
               active_sessions: 2,
             }),
-            { status: 409, headers: { "content-type": "application/problem+json" } },
+            {
+              status: 409,
+              headers: { "content-type": "application/problem+json" },
+            },
           );
         }
         return new Response(null, { status: 204 });
@@ -485,7 +571,8 @@ describe("route smoke tests", () => {
       return base!(input, init);
     });
 
-    const { findByRole, findByText, getByRole, queryByRole } = renderAt("/settings/agents");
+    const { findByRole, findByText, getByRole, queryByRole } =
+      renderAt("/settings/agents");
 
     (await findByRole("button", { name: "Unlink" })).click();
     const dialog = await findByRole("alertdialog");
@@ -503,27 +590,43 @@ describe("route smoke tests", () => {
     (await findByRole("button", { name: "Unlink" })).click();
     getByRole("button", { name: "Unlink" }).click();
 
-    expect(await findByText(/2 sessions are still running there/)).toBeInTheDocument();
+    expect(
+      await findByText(/2 sessions are still running there/),
+    ).toBeInTheDocument();
     expect(queryByRole("button", { name: "Unlink" })).toBeNull();
-    expect(getByRole("link", { name: "Go to Sessions" })).toHaveAttribute("href", "/");
+    expect(getByRole("link", { name: "Go to Sessions" })).toHaveAttribute(
+      "href",
+      "/",
+    );
   });
 
   it("renders /settings, redirecting to Agents", async () => {
     const { findByRole } = renderAt("/settings");
-    expect(await findByRole("heading", { level: 2, name: "Agents" })).toBeInTheDocument();
+    expect(
+      await findByRole("heading", { level: 2, name: "Agents" }),
+    ).toBeInTheDocument();
   });
 
   it("offers all five sections in the settings navigation", async () => {
     const { findByRole, getByRole } = renderAt("/settings/agents");
     await findByRole("heading", { level: 2, name: "Agents" });
-    for (const label of ["Agents", "Compute", "Tools", "Instructions", "Account"]) {
+    for (const label of [
+      "Agents",
+      "Compute",
+      "Tools",
+      "Instructions",
+      "Account",
+    ]) {
       expect(getByRole("link", { name: label })).toBeInTheDocument();
     }
   });
 
   it("renders /settings/agents with a card for each harness", async () => {
-    const { findByRole, getAllByText, getByText } = renderAt("/settings/agents");
-    expect(await findByRole("heading", { level: 2, name: "Agents" })).toBeInTheDocument();
+    const { findByRole, getAllByText, getByText } =
+      renderAt("/settings/agents");
+    expect(
+      await findByRole("heading", { level: 2, name: "Agents" }),
+    ).toBeInTheDocument();
     // Both harnesses are named twice: once on their card, once in the
     // capability matrix under the disclosure.
     expect(getAllByText("Claude Code").length).toBeGreaterThan(0);
@@ -534,7 +637,9 @@ describe("route smoke tests", () => {
 
   it("renders /settings/compute as an empty state with its one action", async () => {
     const { findByRole, getByRole } = renderAt("/settings/compute");
-    expect(await findByRole("heading", { level: 2, name: "Compute" })).toBeInTheDocument();
+    expect(
+      await findByRole("heading", { level: 2, name: "Compute" }),
+    ).toBeInTheDocument();
     expect(getByRole("link", { name: "Add compute" })).toBeInTheDocument();
   });
 
@@ -603,19 +708,27 @@ describe("route smoke tests", () => {
 
   it("renders /settings/tools with the skill drop zone", async () => {
     const { findByRole, getByRole } = renderAt("/settings/tools");
-    expect(await findByRole("heading", { level: 2, name: "Tools" })).toBeInTheDocument();
-    expect(getByRole("group", { name: "Which harness gets the skill" })).toBeInTheDocument();
+    expect(
+      await findByRole("heading", { level: 2, name: "Tools" }),
+    ).toBeInTheDocument();
+    expect(
+      getByRole("group", { name: "Which harness gets the skill" }),
+    ).toBeInTheDocument();
   });
 
   it("renders /settings/instructions with the AGENTS.md editor", async () => {
     const { findByRole, findByLabelText } = renderAt("/settings/instructions");
-    expect(await findByRole("heading", { level: 2, name: "Instructions" })).toBeInTheDocument();
+    expect(
+      await findByRole("heading", { level: 2, name: "Instructions" }),
+    ).toBeInTheDocument();
     expect(await findByLabelText("Content")).toBeInTheDocument();
   });
 
   it("renders /settings/account, handling an unconfigured VAPID key calmly", async () => {
     const { findByRole, findByText, getByRole } = renderAt("/settings/account");
-    expect(await findByRole("heading", { level: 2, name: "Account" })).toBeInTheDocument();
+    expect(
+      await findByRole("heading", { level: 2, name: "Account" }),
+    ).toBeInTheDocument();
     expect(getByRole("group", { name: "Theme" })).toBeInTheDocument();
     expect(getByRole("button", { name: "Sign out" })).toBeInTheDocument();
     // Push is unavailable in jsdom and the VAPID key is unconfigured; the

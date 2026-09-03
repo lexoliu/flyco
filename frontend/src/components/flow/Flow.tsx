@@ -22,22 +22,16 @@ import {
   progress,
   record as recordAnswers,
   startFlow,
+  type FlowStart,
   type FlowAnswers,
   type Page,
-  type Stage,
 } from "../../lib/flow";
 import { cx } from "../../lib/cx";
 import { PAGES } from "./pages";
 import type { PageComponent, PageView } from "./page";
 import styles from "./Flow.module.css";
 
-export interface FlowProps {
-  /** Which stages to walk: all three on `/welcome`, one from settings. */
-  readonly stages: readonly Stage[];
-  /** Answers known before the first page, e.g. the agent settings named. */
-  readonly answers?: Partial<FlowAnswers> | undefined;
-  /** Where to start, when the answers above make the first page moot. */
-  readonly position?: number | undefined;
+export interface FlowProps extends FlowStart {
   /** The last page's primary was pressed. */
   readonly onDone: () => void;
   /**
@@ -51,7 +45,12 @@ export interface FlowProps {
 
 export default function Flow(props: FlowProps) {
   const [state, setState] = createSignal(
-    startFlow(props.stages, props.answers ?? {}, props.position ?? 0),
+    startFlow({
+      stages: props.stages,
+      agents: props.agents,
+      answers: props.answers,
+      position: props.position,
+    }),
   );
   const [pending, setPending] = createSignal(false);
   const [failure, setFailure] = createSignal<unknown>(null);
@@ -120,7 +119,10 @@ export default function Flow(props: FlowProps) {
           <For each={bars()}>
             {(bar) => (
               <span class={cx(styles.bar, bar.current && styles.barCurrent)}>
-                <span class={styles.fill} style={{ width: `${Math.round(bar.fill * 100)}%` }} />
+                <span
+                  class={styles.fill}
+                  style={{ width: `${Math.round(bar.fill * 100)}%` }}
+                />
               </span>
             )}
           </For>
@@ -164,7 +166,10 @@ export default function Flow(props: FlowProps) {
  * is narrowed by hand: TypeScript cannot see that `PAGES[page.id]` takes
  * exactly `page`, so it is told.
  */
-function mount(page: Page, props: Omit<Parameters<PageComponent<Page>>[0], "page">): PageView {
+function mount(
+  page: Page,
+  props: Omit<Parameters<PageComponent<Page>>[0], "page">,
+): PageView {
   const component = PAGES[page.id] as PageComponent<Page>;
   return component({ page, ...props });
 }

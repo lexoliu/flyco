@@ -6,7 +6,15 @@
  * prerequisite is missing, and the composer's send button says which one is
  * in the way.
  */
-import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createMemo,
+  createSignal,
+  onCleanup,
+} from "solid-js";
 import { createQuery } from "../lib/query";
 import { A, Navigate, useNavigate } from "@solidjs/router";
 import { ChevronRight, Cpu, Sparkles } from "lucide-solid";
@@ -53,7 +61,10 @@ export default function Home() {
           session.title.toLowerCase().includes(needle) ||
           session.repo.toLowerCase().includes(needle),
       )
-      .map((session) => ({ session, status: deriveStatus(session, now()).status }));
+      .map((session) => ({
+        session,
+        status: deriveStatus(session, now()).status,
+      }));
   });
 
   const visible = createMemo(() =>
@@ -82,132 +93,168 @@ export default function Home() {
     navigate(`/sessions/${created.id}`);
   }
 
+  /**
+   * Where a first visit goes, decided only once readiness is known.
+   *
+   * The home page must not paint while that is still being read: a signed-in
+   * account with nothing linked would see the composer for a frame and then
+   * be thrown to `/welcome`, which reads as a glitch. A readiness read that
+   * failed is not "not ready" — it is a page that could not tell — so it
+   * shows the home page with the failure rather than the first run.
+   */
+  const gate = createMemo((): "undecided" | "home" | "welcome" => {
+    if (
+      readiness.ready() ||
+      welcomeDismissed() ||
+      readiness.error() !== undefined
+    ) {
+      return "home";
+    }
+    return readiness.loading() ? "undecided" : "welcome";
+  });
+
   return (
-    <Show
-      when={readiness.loading() || readiness.ready() || welcomeDismissed()}
-      fallback={<Navigate href="/welcome" />}
-    >
-      <section class={styles.page}>
-        <h1 class={styles.greeting}>
-          <Show when={me()} fallback="What should we build?">
-            {(user) => `Welcome back, ${user().login}`}
-          </Show>
-        </h1>
-
-        <Composer onSend={onSend} />
-
-        <Show when={!readiness.loading() && !readiness.ready()}>
-          <div class={styles.readiness}>
-            <Show when={readiness.harness().length === 0}>
-              <A href="/connect/harness" class={styles.readinessCard}>
-                <Sparkles size={18} aria-hidden="true" />
-                <span class={styles.readinessText}>
-                  <span class={styles.readinessTitle}>Give it a brain</span>
-                  <span class={styles.readinessDetail}>
-                    Link Claude Code or Codex. Sessions run on your own plan.
-                  </span>
-                </span>
-                <span class={styles.readinessAction}>
-                  Connect an agent
-                  <ChevronRight size={14} aria-hidden="true" />
-                </span>
-              </A>
+    <Switch>
+      <Match when={gate() === "welcome"}>
+        <Navigate href="/welcome" />
+      </Match>
+      <Match when={gate() === "undecided"}>
+        <section class={styles.page} aria-busy="true" aria-label="Loading" />
+      </Match>
+      <Match when={gate() === "home"}>
+        <section class={styles.page}>
+          <h1 class={styles.greeting}>
+            <Show when={me()} fallback="What should we build?">
+              {(user) => `Welcome back, ${user().login}`}
             </Show>
-            <Show when={readiness.compute().length === 0}>
-              <A href="/connect/compute" class={styles.readinessCard}>
-                <Cpu size={18} aria-hidden="true" />
-                <span class={styles.readinessText}>
-                  <span class={styles.readinessTitle}>Give it a computer</span>
-                  <span class={styles.readinessDetail}>
-                    Link Azure, AWS, Google Cloud or a machine you own. The machine stays yours.
+          </h1>
+
+          <Composer onSend={onSend} />
+
+          <Show when={!readiness.loading() && !readiness.ready()}>
+            <div class={styles.readiness}>
+              <Show when={readiness.harness().length === 0}>
+                <A href="/connect/harness" class={styles.readinessCard}>
+                  <Sparkles size={18} aria-hidden="true" />
+                  <span class={styles.readinessText}>
+                    <span class={styles.readinessTitle}>Give it a brain</span>
+                    <span class={styles.readinessDetail}>
+                      Link Claude Code or Codex. Sessions run on your own plan.
+                    </span>
                   </span>
-                </span>
-                <span class={styles.readinessAction}>
-                  Add compute
-                  <ChevronRight size={14} aria-hidden="true" />
-                </span>
-              </A>
-            </Show>
-          </div>
-        </Show>
-
-        <ProblemNotice error={sessions.error ?? me.error ?? readiness.error()} />
-
-        <div class={styles.sessions}>
-          <div class={styles.sessionsHeader}>
-            <div class={styles.tabs} role="group" aria-label="Filter sessions">
-              <button
-                type="button"
-                class={cx(styles.tab, !showArchived() && styles.tabActive)}
-                aria-pressed={!showArchived()}
-                onClick={() => setShowArchived(false)}
-              >
-                Sessions
-              </button>
-              <button
-                type="button"
-                class={cx(styles.tab, showArchived() && styles.tabActive)}
-                aria-pressed={showArchived()}
-                onClick={() => setShowArchived(true)}
-              >
-                Archived
-              </button>
+                  <span class={styles.readinessAction}>
+                    Connect an agent
+                    <ChevronRight size={14} aria-hidden="true" />
+                  </span>
+                </A>
+              </Show>
+              <Show when={readiness.compute().length === 0}>
+                <A href="/connect/compute" class={styles.readinessCard}>
+                  <Cpu size={18} aria-hidden="true" />
+                  <span class={styles.readinessText}>
+                    <span class={styles.readinessTitle}>
+                      Give it a computer
+                    </span>
+                    <span class={styles.readinessDetail}>
+                      Link Azure, AWS, Google Cloud or a machine you own. The
+                      machine stays yours.
+                    </span>
+                  </span>
+                  <span class={styles.readinessAction}>
+                    Add compute
+                    <ChevronRight size={14} aria-hidden="true" />
+                  </span>
+                </A>
+              </Show>
             </div>
-            <input
-              class={styles.search}
-              type="search"
-              placeholder="Search"
-              aria-label="Search sessions by title or repository"
-              value={query()}
-              onInput={(event) => setQuery(event.currentTarget.value)}
-            />
-          </div>
+          </Show>
 
-          <Show
-            when={visible().length > 0}
-            fallback={
-              <p class={styles.empty}>
-                <Show
-                  when={sessions.loading}
-                  fallback={
-                    showArchived()
-                      ? "No archived sessions."
-                      : "No sessions yet. Describe a task above to start one."
-                  }
+          <ProblemNotice
+            error={sessions.error ?? me.error ?? readiness.error()}
+          />
+
+          <div class={styles.sessions}>
+            <div class={styles.sessionsHeader}>
+              <div
+                class={styles.tabs}
+                role="group"
+                aria-label="Filter sessions"
+              >
+                <button
+                  type="button"
+                  class={cx(styles.tab, !showArchived() && styles.tabActive)}
+                  aria-pressed={!showArchived()}
+                  onClick={() => setShowArchived(false)}
                 >
-                  Loading sessions…
-                </Show>
-              </p>
-            }
-          >
-            <For each={groups()}>
-              {(group) => (
-                <div class={styles.group}>
-                  <Show when={group.heading}>
-                    {(heading) => <p class={styles.groupLabel}>{heading()}</p>}
-                  </Show>
-                  <ul class={styles.list}>
-                    <For each={group.rows}>
-                      {(session) => (
-                        <li>
-                          <SessionRow session={session} now={now()} />
-                        </li>
-                      )}
-                    </For>
-                  </ul>
-                </div>
-              )}
-            </For>
-          </Show>
+                  Sessions
+                </button>
+                <button
+                  type="button"
+                  class={cx(styles.tab, showArchived() && styles.tabActive)}
+                  aria-pressed={showArchived()}
+                  onClick={() => setShowArchived(true)}
+                >
+                  Archived
+                </button>
+              </div>
+              <input
+                class={styles.search}
+                type="search"
+                placeholder="Search"
+                aria-label="Search sessions by title or repository"
+                value={query()}
+                onInput={(event) => setQuery(event.currentTarget.value)}
+              />
+            </div>
 
-          {/* The cap is only worth saying when it is about to bite. */}
-          <Show when={nearCap()}>
-            <p class={styles.cap}>
-              {live()} of {me()?.session_cap} sessions in use.
-            </p>
-          </Show>
-        </div>
-      </section>
-    </Show>
+            <Show
+              when={visible().length > 0}
+              fallback={
+                <p class={styles.empty}>
+                  <Show
+                    when={sessions.loading}
+                    fallback={
+                      showArchived()
+                        ? "No archived sessions."
+                        : "No sessions yet. Describe a task above to start one."
+                    }
+                  >
+                    Loading sessions…
+                  </Show>
+                </p>
+              }
+            >
+              <For each={groups()}>
+                {(group) => (
+                  <div class={styles.group}>
+                    <Show when={group.heading}>
+                      {(heading) => (
+                        <p class={styles.groupLabel}>{heading()}</p>
+                      )}
+                    </Show>
+                    <ul class={styles.list}>
+                      <For each={group.rows}>
+                        {(session) => (
+                          <li>
+                            <SessionRow session={session} now={now()} />
+                          </li>
+                        )}
+                      </For>
+                    </ul>
+                  </div>
+                )}
+              </For>
+            </Show>
+
+            {/* The cap is only worth saying when it is about to bite. */}
+            <Show when={nearCap()}>
+              <p class={styles.cap}>
+                {live()} of {me()?.session_cap} sessions in use.
+              </p>
+            </Show>
+          </div>
+        </section>
+      </Match>
+    </Switch>
   );
 }
