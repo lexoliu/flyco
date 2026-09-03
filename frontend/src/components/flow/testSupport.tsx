@@ -131,3 +131,18 @@ export function expectEveryButtonNamed(container: HTMLElement): void {
       .map((button) => button.outerHTML),
   ).toEqual([]);
 }
+
+/**
+ * Matches the command block whose whole text is `expected`.
+ *
+ * A wrapped command is rendered as one span per token, so a plain text
+ * matcher — which reads one element's own text — never sees the command;
+ * this reads the block as the user does, as its whole text.
+ */
+export function command(expected: string | RegExp) {
+  return (_content: string, element: Element | null): boolean =>
+    element?.tagName === "PRE" &&
+    (typeof expected === "string"
+      ? element.textContent === expected
+      : expected.test(element.textContent ?? ""));
+}

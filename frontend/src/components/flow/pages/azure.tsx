@@ -34,8 +34,15 @@ import {
   type BreakGlassKey,
 } from "../../../lib/sshKey";
 import { NEXT, type PageComponent, type Primary } from "../page";
-import { ConfirmRow, QuietLink } from "./shared";
+import { ConfirmRow, ExternalLink, QuietLink } from "./shared";
 import styles from "./pages.module.css";
+
+/**
+ * Azure's terminal in the browser, signed in as the user already. The one
+ * place the flow sends anyone to run a command: a user is assumed to have
+ * a browser and nothing else installed.
+ */
+const AZURE_CLOUD_SHELL = "https://shell.azure.com";
 
 /** The one command the flow asks the user to run. */
 const CREATE_PRINCIPAL = `az ad sp create-for-rbac --name flyco --role Contributor \\
@@ -53,10 +60,17 @@ export const AzureCommand: PageComponent<{ id: "azure-command" }> = (
   title: "Run this in Azure Cloud Shell",
   body: (
     <>
-      <CommandBlock value={CREATE_PRINCIPAL} label="Copy" />
+      <p class={styles.lede}>
+        Cloud Shell is a terminal in your browser, already signed in to your
+        Azure account. Nothing to install.
+      </p>
+      <CommandBlock value={CREATE_PRINCIPAL} label="Copy" wrap />
+      <ExternalLink href={AZURE_CLOUD_SHELL}>
+        Open Azure Cloud Shell
+      </ExternalLink>
       <p class={styles.hint}>
-        Cloud Shell, or any terminal with the Azure CLI signed in. It prints a
-        JSON block; the next page asks for it.
+        Paste the command there and press Enter. It prints a JSON block; the
+        next page asks for it.
       </p>
     </>
   ),
@@ -159,10 +173,13 @@ export const AzureSubscription: PageComponent<{ id: "azure-subscription" }> = (
     body: (
       <>
         <p class={styles.lede}>
-          That block carries no subscription. Run this and paste the id it
-          prints.
+          That block carries no subscription. Run this in Cloud Shell and paste
+          the id it prints.
         </p>
-        <CommandBlock value={SHOW_SUBSCRIPTION} label="Copy" />
+        <CommandBlock value={SHOW_SUBSCRIPTION} label="Copy" wrap />
+        <ExternalLink href={AZURE_CLOUD_SHELL}>
+          Open Azure Cloud Shell
+        </ExternalLink>
         <input
           class={`${styles.input} ${styles.mono}`}
           aria-label="Subscription id"
