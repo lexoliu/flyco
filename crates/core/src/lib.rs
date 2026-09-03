@@ -108,4 +108,4 @@ pub use workdir::{
 /// Bumped on every incompatible change to [`wire`]; the control plane
 /// refuses daemons speaking a different version (fast fail, no
 /// best-effort compatibility).
-pub const WIRE_PROTOCOL_VERSION: u32 = 6;
+pub const WIRE_PROTOCOL_VERSION: u32 = 7;
