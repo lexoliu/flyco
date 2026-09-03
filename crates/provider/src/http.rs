@@ -297,6 +297,19 @@ fn transport(error: impl fmt::Display) -> HttpError {
     HttpError::Transport(error.to_string())
 }
 
+/// Response headers, lowercased, as [`HttpResponse`] carries them.
+fn lowercased(headers: &zenwave::header::HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_ascii_lowercase(), value.to_owned()))
+        })
+        .collect()
+}
+
 impl HttpTransport for LiveTransport {
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
         let mut client = zenwave::client();
@@ -309,19 +322,27 @@ impl HttpTransport for LiveTransport {
                 .map_err(transport)?;
         }
 
-        let response = builder.bytes_body(request.body).await.map_err(transport)?;
+        let response = match builder.bytes_body(request.body).await {
+            Ok(response) => response,
+            // zenwave reports a 4xx/5xx as an error carrying the response.
+            // For this transport that is not an error at all: OpenAI says
+            // "still pending" with a 403, Azure says "wrong secret" with a
+            // 401, and the driver is the one that reads them. Surfacing the
+            // status as a transport failure turned every provider refusal
+            // into an opaque 502 for the user.
+            Err(zenwave::Error::Http {
+                status, response, ..
+            }) => {
+                return Ok(HttpResponse {
+                    status: status.as_u16(),
+                    headers: lowercased(response.response.headers()),
+                    body: response.body_text.unwrap_or_default().into_bytes(),
+                });
+            }
+            Err(error) => return Err(transport(error)),
+        };
         let status = response.status().as_u16();
-        let headers = response
-            .headers()
-            .iter()
-            .filter_map(|(name, value)| {
-                value
-                    .to_str()
-                    .ok()
-                    .map(|value| (name.as_str().to_ascii_lowercase(), value.to_owned()))
-            })
-            .collect();
-
+        let headers = lowercased(response.headers());
         let body = response.into_bytes().await.map_err(transport)?;
         Ok(HttpResponse {
             status,
