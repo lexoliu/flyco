@@ -151,6 +151,15 @@ describe("route smoke tests", () => {
     ).toBeInTheDocument();
   });
 
+  it("sends a signed-out visit to /welcome through sign-in, and back", async () => {
+    const { findByText } = renderAt("/welcome", false);
+    expect(await findByText("Sign in with GitHub")).toBeInTheDocument();
+    // The first run belongs to an account: nothing of it was drawn, no
+    // protected call went out, and sign-in returns here.
+    expect(fetch).not.toHaveBeenCalled();
+    expect(consumePostLoginPath()).toBe("/welcome");
+  });
+
   it("renders /welcome as the first page of the linear flow", async () => {
     const { findByRole, getByRole } = renderAt("/welcome");
     expect(
