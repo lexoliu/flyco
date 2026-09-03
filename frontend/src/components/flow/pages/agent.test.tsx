@@ -250,6 +250,46 @@ describe("Claude Code, opened for it alone", () => {
     ).toBeInTheDocument();
   });
 
+  it("starts a fresh sign-in by the quiet link after a refusal, on the same page", async () => {
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    route(
+      (path, method) =>
+        method === "POST" &&
+        path === "/v1/harness-accounts/claude/oauth/complete",
+      () => problem(500, "internal", "The control plane failed."),
+    );
+    const { container, findByRole, findByLabelText, getByRole, queryByRole } =
+      renderFlow(["agent"], { agents: ["claude_code"] });
+    await findByRole("heading", { level: 1, name: "Link Claude Code" });
+    fireEvent.click(primary(container));
+    const field = await findByLabelText("Code from Anthropic");
+    type(field, "ac_spent-by-a-failure");
+    await waitFor(() => expect(primary(container)).toBeEnabled());
+    fireEvent.click(primary(container));
+    await findByRole("alert");
+
+    fireEvent.click(getByRole("button", { name: "Start the sign-in again" }));
+    await waitFor(() => expect(opened).toHaveBeenCalledTimes(2));
+    // A new attempt, not the old page reopened: a second start went out.
+    const starts = vi
+      .mocked(fetch)
+      .mock.calls.filter(
+        ([input, init]) =>
+          String(input).endsWith("/v1/harness-accounts/claude/oauth/start") &&
+          init?.method === "POST",
+      );
+    expect(starts).toHaveLength(2);
+    // The field and the refusal are cleared for the new code; the page stays.
+    expect(field).toHaveValue("");
+    expect(queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      getByRole("heading", {
+        level: 1,
+        name: "Paste the code Anthropic shows you",
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("leads by link to the API-key page, which links with an Anthropic key", async () => {
     const { container, findByRole, findByLabelText, getByRole, onDone } =
       renderFlow(["agent"], { agents: ["claude_code"] });
