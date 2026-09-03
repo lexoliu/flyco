@@ -64,3 +64,23 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo check -p flyco-api --target wasm32-unknown-unknown
+
+  frontend:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.4
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run build
+      # `src/api/schema.d.ts` is generated from the same `openapi.json` the
+      # rust job regenerates, so the two gates together mean the spec, the
+      # handlers and the typed client cannot drift apart in any direction.
+      - run: bun run api:check
