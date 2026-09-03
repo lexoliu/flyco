@@ -9,6 +9,7 @@
  * path: there is nowhere in a `PageView` to put a second one.
  */
 import type { JSX } from "solid-js";
+import type { HarnessAccountView, HarnessKind } from "../../api/client";
 import type { FlowAnswers, FlowState, Page } from "../../lib/flow";
 
 /** The footer button, as the page describes it on every render. */
@@ -40,6 +41,11 @@ export interface PageProps<P extends Page> {
   readonly advance: (answers?: Partial<FlowAnswers>) => void;
   /** Records answers and stays: for what the page must keep across `Back`. */
   readonly record: (answers: Partial<FlowAnswers>) => void;
+  /**
+   * An agent got linked: returns to the agents list, or finishes a flow
+   * opened for this one agent.
+   */
+  readonly linked: (agent: HarnessKind, account: HarnessAccountView) => void;
 }
 
 export interface PageView {

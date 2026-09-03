@@ -123,12 +123,7 @@ export const ApiKey: PageComponent<{ id: "api-key"; agent: HarnessKind }> = (
         }
         const account = await linkHarnessAccount(link);
         await readiness.refresh();
-        props.advance({
-          agents: {
-            ...props.state().answers.agents,
-            [props.page.agent]: account,
-          },
-        });
+        props.linked(props.page.agent, account);
       },
     };
   };

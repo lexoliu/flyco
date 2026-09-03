@@ -9,7 +9,6 @@
 import { For, Show, type JSX } from "solid-js";
 import { ArrowUpRight, Check } from "lucide-solid";
 import { cx } from "../../../lib/cx";
-import { formatDate } from "../../../lib/dates";
 import styles from "./pages.module.css";
 
 export interface Choice<K extends string> {
@@ -73,29 +72,6 @@ export function ChoiceCards<K extends string>(props: ChoiceCardsProps<K>) {
         }}
       </For>
     </ul>
-  );
-}
-
-/**
- * What an agent's page shows once that agent is linked: the account, as
- * the settings card names it, and nothing to do but move on.
- */
-export function LinkedAgent(props: {
-  mark: JSX.Element;
-  label: string;
-  linkedAtUnix: number;
-}) {
-  return (
-    <div class={styles.linked}>
-      <span class={styles.choiceMark}>{props.mark}</span>
-      <span class={styles.choiceText}>
-        <span class={styles.choiceTitle}>{props.label}</span>
-        <span class={cx(styles.choiceLine, styles.choiceLinked)}>
-          Linked {formatDate(props.linkedAtUnix)}
-        </span>
-      </span>
-      <Check size={16} aria-hidden="true" class={styles.choiceCheck ?? ""} />
-    </div>
   );
 }
 

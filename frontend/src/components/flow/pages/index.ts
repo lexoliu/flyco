@@ -6,6 +6,7 @@
  * the user.
  */
 import type { PageRegistry } from "../page";
+import { Agents } from "./agents";
 import { ApiKey } from "./apiKey";
 import { AwsKeys, AwsPolicy } from "./aws";
 import { AzureCommand, AzureKey, AzurePaste, AzureSubscription } from "./azure";
@@ -19,6 +20,7 @@ import { Meet } from "./meet";
 
 export const PAGES: PageRegistry = {
   meet: Meet,
+  agents: Agents,
   "claude-sign-in": ClaudeSignIn,
   "claude-paste": ClaudePaste,
   "codex-sign-in": CodexSignIn,

@@ -43,10 +43,13 @@ export type LinkedAgents = Readonly<
 export interface FlowAnswers {
   /**
    * What is linked. The agent is never chosen here — a task chooses its
-   * agent in the composer — so stage B links agents one page each, and a
-   * linked agent's pages collapse to that one page, which reads `Linked`.
+   * agent in the composer — so stage B is one page listing every agent
+   * with its status, and an agent's sign-in pages follow it only while
+   * that agent is the one being linked.
    */
   readonly agents: LinkedAgents;
+  /** The agent chosen on the list, whose sign-in pages follow it. */
+  readonly linking: HarnessKind | null;
   /** How each agent is being linked, until it is. */
   readonly routes: Readonly<Record<HarnessKind, AgentRoute>>;
   /**
@@ -75,6 +78,7 @@ export interface FlowAnswers {
 /** A flow that has asked nothing yet. */
 export const NO_ANSWERS: FlowAnswers = {
   agents: {},
+  linking: null,
   routes: { claude_code: "sign-in", codex: "sign-in" },
   claudeAttempt: null,
   compute: null,
@@ -118,6 +122,7 @@ export type CloudKind = Exclude<CloudProviderKind, "host">;
 /** One page of the sequence, with whatever it needs beyond the answers. */
 export type Page =
   | { readonly id: "meet" }
+  | { readonly id: "agents" }
   | { readonly id: "claude-sign-in" }
   | { readonly id: "claude-paste" }
   | { readonly id: "codex-sign-in" }
@@ -147,6 +152,7 @@ export function stageOf(page: Page): Stage {
   switch (page.id) {
     case "meet":
       return "meet";
+    case "agents":
     case "claude-sign-in":
     case "claude-paste":
     case "codex-sign-in":
@@ -170,18 +176,15 @@ export function stageOf(page: Page): Stage {
 }
 
 /**
- * One agent's pages: its sign-in page always, and behind it whatever its
- * route still needs — nothing once it is linked, the paste page while a
- * Claude sign-in is open, the key page behind *Use an API key instead*.
+ * One agent's sign-in pages: the vendor's own sign-in, and behind it
+ * whatever its route still needs — the paste page while a Claude sign-in
+ * is open, the key page behind *Use an API key instead*.
  */
 function agentPages(answers: FlowAnswers, agent: HarnessKind): Page[] {
   const signIn: Page =
     agent === "claude_code"
       ? { id: "claude-sign-in" }
       : { id: "codex-sign-in" };
-  if (answers.agents[agent] !== undefined) {
-    return [signIn];
-  }
   switch (answers.routes[agent]) {
     case "sign-in":
       return agent === "claude_code" && answers.claudeAttempt !== null
@@ -190,6 +193,27 @@ function agentPages(answers: FlowAnswers, agent: HarnessKind): Page[] {
     case "api-key":
       return [signIn, { id: "api-key", agent }];
   }
+}
+
+/**
+ * Stage B's pages.
+ *
+ * One page lists every agent with its status, however many agents there
+ * are; the sign-in pages of the one chosen there follow it until that
+ * agent is linked, when `finishLink` returns to the list. A flow opened
+ * for one agent by name — a settings card's `Connect` — has nothing to
+ * list and walks that agent's sign-in pages alone.
+ */
+function agentStagePages(state: FlowState): Page[] {
+  const only = state.agents.length === 1 ? state.agents[0] : undefined;
+  if (only !== undefined) {
+    return agentPages(state.answers, only);
+  }
+  const linking = state.answers.linking;
+  return [
+    { id: "agents" },
+    ...(linking === null ? [] : agentPages(state.answers, linking)),
+  ];
 }
 
 /** The programmes the quickstart matched for the chosen provider. */
@@ -252,7 +276,7 @@ function stagePages(stage: Stage, state: FlowState): Page[] {
     case "meet":
       return [{ id: "meet" }];
     case "agent":
-      return state.agents.flatMap((agent) => agentPages(state.answers, agent));
+      return agentStagePages(state);
     case "compute":
       return computePages(state.answers);
   }
@@ -365,6 +389,34 @@ export function record(
   answers: Partial<FlowAnswers>,
 ): FlowState {
   return settle(state, answers, false);
+}
+
+/**
+ * An agent got linked: its sign-in is over and its pages go.
+ *
+ * The flow returns to the list the agent was chosen on, which now reads
+ * `Linked` beside it. A flow with no list — one opened for this agent by
+ * name — has nothing to return to and moves on, which finishes it.
+ */
+export function finishLink(
+  state: FlowState,
+  agent: HarnessKind,
+  account: HarnessAccountView,
+): FlowState {
+  const answers: Partial<FlowAnswers> = {
+    agents: { ...state.answers.agents, [agent]: account },
+    linking: null,
+    claudeAttempt: null,
+    routes: { ...state.answers.routes, [agent]: "sign-in" },
+  };
+  const next: FlowState = {
+    ...state,
+    answers: { ...state.answers, ...answers },
+  };
+  const list = pagesFor(next).findIndex((page) => page.id === "agents");
+  return list === -1
+    ? settle(state, answers, true)
+    : { ...next, position: list };
 }
 
 /** Whether `advance` walked off the end, which is how the flow finishes. */

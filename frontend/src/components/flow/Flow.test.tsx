@@ -21,14 +21,12 @@ describe("Flow", () => {
     expect(container.querySelectorAll("button")).toHaveLength(1);
 
     fireEvent.click(primary(container));
-    await findByRole("heading", { level: 1, name: "Link Claude Code" });
-    expect(primary(container)).toHaveTextContent("Sign in with Claude");
-    // Back has arrived; the quiet links are the only other buttons, and
-    // none of them is a primary.
+    await findByRole("heading", { level: 1, name: "Link the agents you use" });
+    expect(primary(container)).toHaveTextContent("Next");
+    // Back has arrived; the agent rows are radios, and none of them is a
+    // primary.
     expect(getByRole("button", { name: "Back" })).toBeInTheDocument();
-    expect(
-      getByRole("button", { name: "I don't use Claude Code" }),
-    ).toBeInTheDocument();
+    expect(getByRole("radio", { name: /^Claude Code/ })).toBeInTheDocument();
   });
 
   it("disables the primary with the missing prerequisite as its title", async () => {

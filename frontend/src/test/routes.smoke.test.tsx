@@ -158,9 +158,8 @@ describe("route smoke tests", () => {
     expect(getByRole("button", { name: "Next" })).toBeInTheDocument();
   });
 
-  it("links Claude Code next, never asking which agent, with nothing to skip", async () => {
-    const { findByRole, getByRole, queryByRole, queryByText } =
-      renderAt("/welcome");
+  it("lists every agent next, never asking which one, with nothing to skip", async () => {
+    const { findByRole, getByRole, queryByRole } = renderAt("/welcome");
     await findByRole("heading", { level: 1, name: "Meet flyco" });
     expect(
       queryByRole("button", { name: "Skip for now" }),
@@ -168,12 +167,17 @@ describe("route smoke tests", () => {
     getByRole("button", { name: "Next" }).click();
 
     // The agent is chosen per task in the composer, so the first run only
-    // links agents: one page each, the sign-in as the page's one primary.
+    // links agents: one page listing them all, nothing to skip and no way
+    // past it with nothing linked.
     expect(
-      await findByRole("heading", { level: 1, name: "Link Claude Code" }),
+      await findByRole("heading", {
+        level: 1,
+        name: "Link the agents you use",
+      }),
     ).toBeInTheDocument();
-    expect(queryByText(/Which agent/)).not.toBeInTheDocument();
-    expect(getByRole("button", { name: "Sign in with Claude" })).toBeEnabled();
+    expect(getByRole("radio", { name: /^Claude Code/ })).toBeInTheDocument();
+    expect(getByRole("radio", { name: /^Codex/ })).toBeInTheDocument();
+    expect(getByRole("button", { name: "Next" })).toBeDisabled();
     expect(
       queryByRole("button", { name: "Skip for now" }),
     ).not.toBeInTheDocument();
@@ -182,7 +186,10 @@ describe("route smoke tests", () => {
   it("renders /connect/harness as stage B on its own", async () => {
     const { findByRole, getByRole } = renderAt("/connect/harness");
     expect(
-      await findByRole("heading", { level: 1, name: "Link Claude Code" }),
+      await findByRole("heading", {
+        level: 1,
+        name: "Link the agents you use",
+      }),
     ).toBeInTheDocument();
     // Opened from somewhere else, so Back on the first page leads back there.
     expect(getByRole("button", { name: "Back" })).toBeInTheDocument();

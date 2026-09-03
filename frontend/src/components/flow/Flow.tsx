@@ -18,6 +18,7 @@ import {
   advance as advanceFlow,
   back as backFlow,
   currentPage,
+  finishLink,
   isFinished,
   progress,
   record as recordAnswers,
@@ -26,6 +27,7 @@ import {
   type FlowAnswers,
   type Page,
 } from "../../lib/flow";
+import type { HarnessAccountView, HarnessKind } from "../../api/client";
 import { cx } from "../../lib/cx";
 import { PAGES } from "./pages";
 import type { PageComponent, PageView } from "./page";
@@ -71,6 +73,15 @@ export default function Flow(props: FlowProps) {
     setState(recordAnswers(state(), answers));
   }
 
+  function linked(agent: HarnessKind, account: HarnessAccountView): void {
+    const next = finishLink(state(), agent, account);
+    if (isFinished(next)) {
+      props.onDone();
+    } else {
+      setState(next);
+    }
+  }
+
   function back(): void {
     setFailure(null);
     if (state().position === 0) {
@@ -89,7 +100,7 @@ export default function Flow(props: FlowProps) {
       () => `${state().position}:${page().id}`,
       () => {
         setFailure(null);
-        return untrack(() => mount(page(), { state, advance, record }));
+        return untrack(() => mount(page(), { state, advance, record, linked }));
       },
     ),
   );

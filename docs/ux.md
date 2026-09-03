@@ -116,34 +116,45 @@ that reads as an afterthought at either width is a defect.
 The agent is chosen **per task**, in the composer's agent chip, never
 here: flyco supports several agents at once, and this stage only links
 them. There is no "which agent do you use?" question, and there is no
-confirmation page after a link — the next page is the next thing to do.
+confirmation page after a link — a finished link returns to the list,
+which now reads `Linked` beside the agent.
 
-1. *Link Claude Code.* One sentence ("Runs on your Claude subscription.
+1. *Link the agents you use.* **One page, however many agents flyco
+   runs**: a hundred harnesses would still be one page, never a hundred
+   steps. One sentence ("Each task picks its agent when you start it.
+   Link every agent you use; one is enough to begin."), then one
+   full-width selectable card per agent — the logomark, the name, and its
+   status on the line beneath: `Linked · me@lexo.cool`, or `Not linked · a
+   Claude subscription or an Anthropic API key`. Choosing an unlinked card
+   turns the primary into `Link Claude Code` / `Link Codex`, which walks
+   that agent's sign-in pages (2–4) and comes back here. Otherwise the
+   primary is `Next`, disabled with "Link at least one agent to continue"
+   until something is linked: a session cannot exist without an agent, so
+   there is no way past this page with nothing linked, and nothing to
+   skip.
+2. *Link Claude Code.* One sentence ("Runs on your Claude subscription.
    Flyco opens Anthropic's own sign-in page; your password never reaches
-   flyco."). Already linked: the page shows `Linked · me@lexo.cool` and
-   the primary is `Next`. Otherwise the primary is `Sign in with Claude`
-   (opens the OAuth page in a new tab and advances to the paste page), with
-   the quiet links *Use an API key instead* and *I don't use Claude Code*
-   (which goes to the Codex page).
-2. *Paste the code Anthropic shows you.* One field; primary `Link Claude
+   flyco."). Primary `Sign in with Claude` (opens the OAuth page in a new
+   tab and advances to the paste page), with the quiet link *Use an API
+   key instead*. `Back` returns to the list with the agent still chosen.
+3. *Paste the code Anthropic shows you.* One field; primary `Link Claude
    Code`, disabled until the field has a code; a rejected code is an
-   inline `ProblemNotice` under the field. Success advances straight to
-   the Codex page.
-3. *Link Codex.* Same shape as the Claude page. The one-time code is
-   requested when the page opens (no button to ask for it): the code with
-   `Copy code`, the link `Open auth.openai.com/codex/device`, "Waiting for
-   you to approve in the browser…" while it polls; approval advances by
-   itself to stage C. An expired code turns the primary into `Get a new
-   code`; until then the primary is `Next`, disabled with "Approve the code
-   in the browser to continue" — except when an agent is already linked,
-   where `Next` is enabled and the quiet link *I don't use Codex* is
-   offered too. With nothing linked there is no way past this page other
-   than linking one agent or going `Back` to link Claude Code: a session
-   cannot exist without an agent.
+   inline `ProblemNotice` under the field. Success returns to the list.
+2′. *Link Codex.* The one-time code is requested when the page opens (no
+   button to ask for it): the code with `Copy code`, the link `Open
+   auth.openai.com/codex/device`, "Waiting for you to approve in the
+   browser…" while it polls; approval returns to the list by itself. An
+   expired code turns the primary into `Get a new code`; until then the
+   primary is `Next`, disabled with "Approve the code in the browser to
+   continue". The quiet link *Use an API key instead* leads to page 4.
 4. *Paste your API key* (either agent, reached only by the link). One
    field that accepts an API key or a `claude setup-token`, told apart by
-   prefix. Primary `Link Claude Code` / `Link Codex`; success advances as
-   the sign-in path does.
+   prefix. Primary `Link Claude Code` / `Link Codex`; success returns to
+   the list as the sign-in path does.
+
+Settings › Agents › `Connect …` names one agent, and a flow opened for
+one agent has nothing to list: it walks that agent's pages (2–4) alone
+and a finished link ends it, back on settings.
 
 The agent chip on the home composer is where a task picks its agent; with
 one agent linked it states that agent, with two it is a choice.

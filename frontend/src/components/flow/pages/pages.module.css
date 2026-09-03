@@ -88,7 +88,9 @@
   background: var(--color-surface);
   color: var(--color-text);
   text-align: left;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .choice:hover {
@@ -387,7 +389,9 @@
   color: var(--color-text-muted);
   font-size: var(--text-md);
   cursor: pointer;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .drop:hover,
@@ -515,19 +519,4 @@
   color: var(--color-success);
   font-size: var(--text-xs);
   white-space: nowrap;
-}
-
-/* ── A linked agent ───────────────────────────────────────────────────── */
-
-/* The same row a choice card is, minus the choosing: the account, its
-   date, and the check, for a page whose only thing to do is move on. */
-.linked {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  width: 100%;
-  padding: var(--space-3) var(--space-4);
-  border: var(--border-width) solid var(--color-text);
-  border-radius: var(--radius-lg);
-  background: var(--color-bg);
 }
