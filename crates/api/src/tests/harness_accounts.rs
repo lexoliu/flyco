@@ -5,12 +5,14 @@
 //! list response has always carried a per-account id, and there was no way
 //! to name the second account with it.
 
-use flyco_core::{HarnessAccountView, HarnessKind, Problem};
+use flyco_core::{HarnessAccountView, HarnessKind, Problem, SessionState};
 use skyzen_services::{Db, Kv};
 use skyzen_test::TestContext;
 
-use crate::session;
-use crate::testing::{migrated_router, seed_harness_account, seed_other_user, seed_user};
+use crate::testing::{
+    migrated_router, seed_harness_account, seed_other_user, seed_session, seed_user,
+};
+use crate::{session, sessions};
 
 #[skyzen::test]
 async fn each_linked_account_is_unlinked_by_its_own_id(ctx: TestContext, kv: Kv, db: Db) {
@@ -75,6 +77,94 @@ async fn a_stranger_cannot_unlink_somebody_elses_account(ctx: TestContext, kv: K
         .send()
         .await
         .assert_status(404);
+}
+
+#[skyzen::test]
+async fn an_account_a_session_runs_on_is_not_unlinked_out_from_under_it(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let router = migrated_router(&db).await;
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+    let client = ctx.client(router);
+
+    let claude = seed_harness_account(&db, user.id, HarnessKind::ClaudeCode).await;
+    let codex = seed_harness_account(&db, user.id, HarnessKind::Codex).await;
+    // Seeded sessions run Claude Code, so this one is on `claude` and on
+    // nothing else.
+    let running = seed_session(&db, &user).await;
+
+    let refused = client
+        .delete(&format!("/v1/harness-accounts/{claude}"))
+        .bearer(&token)
+        .send()
+        .await;
+    refused.assert_status(409);
+    let problem = refused.json::<Problem>();
+    assert_eq!(
+        problem.kind,
+        "https://flyco.dev/problems/harness-account-in-use"
+    );
+    // The number the confirmation states is a member of the document, not a
+    // word in a sentence the browser would have to parse (RFC 9457 §3.2).
+    assert_eq!(problem.extensions.active_sessions, Some(1));
+
+    // The refusal is about the harness that is busy, not about the user:
+    // nothing runs on Codex, so that account unlinks.
+    client
+        .delete(&format!("/v1/harness-accounts/{codex}"))
+        .bearer(&token)
+        .send()
+        .await
+        .assert_status(204);
+
+    // And it lifts the moment the session lets go of the account. Archived
+    // is the only state that does: an interrupted or failed session is one
+    // the user can still resume onto this harness.
+    for state in [SessionState::Active, SessionState::Interrupted] {
+        sessions::transition(&db, user.id, running, state)
+            .await
+            .expect("move the session");
+        client
+            .delete(&format!("/v1/harness-accounts/{claude}"))
+            .bearer(&token)
+            .send()
+            .await
+            .assert_status(409);
+    }
+
+    sessions::transition(&db, user.id, running, SessionState::Archived)
+        .await
+        .expect("archive the session");
+    client
+        .delete(&format!("/v1/harness-accounts/{claude}"))
+        .bearer(&token)
+        .send()
+        .await
+        .assert_status(204);
+}
+
+#[skyzen::test]
+async fn somebody_elses_sessions_do_not_hold_this_account_open(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+    let account = seed_harness_account(&db, user.id, HarnessKind::ClaudeCode).await;
+
+    // A stranger running Claude Code is not a reason this user cannot
+    // unlink their own credential: the count is scoped to the owner, like
+    // every other read of the sessions table.
+    let stranger = seed_other_user(&db).await;
+    seed_session(&db, &stranger).await;
+
+    ctx.client(router)
+        .delete(&format!("/v1/harness-accounts/{account}"))
+        .bearer(&token)
+        .send()
+        .await
+        .assert_status(204);
 }
 
 #[skyzen::test]

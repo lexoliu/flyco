@@ -161,6 +161,27 @@ pub enum ApiError {
     #[error("harness account not found", status = StatusCode::NOT_FOUND)]
     HarnessAccountNotFound,
 
+    /// Unlinking would leave running sessions with no credential to renew.
+    ///
+    /// The account is what a session's daemon refreshes its token against,
+    /// and it is refreshed where it is *used* — so a session whose agent
+    /// runs on this harness keeps working right up to the moment its grant
+    /// expires, and then stops with nothing to explain it. The refusal
+    /// happens here instead, while there is still something the user can do
+    /// about it.
+    #[error(
+        "{sessions} session(s) still run on this account; archive them before unlinking",
+        status = StatusCode::CONFLICT
+    )]
+    HarnessAccountInUse {
+        /// How many non-archived sessions run on this harness.
+        ///
+        /// Repeated as the `active_sessions` extension member of the problem
+        /// document, so the confirmation a browser puts up states the count
+        /// without reading it back out of this sentence.
+        sessions: u32,
+    },
+
     /// The Claude sign-in attempt this code names is unknown, already
     /// redeemed, past its ten-minute lifetime, or another user's.
     ///
@@ -302,7 +323,11 @@ pub enum ApiError {
     )]
     ProviderInUse {
         /// How many sessions still hold a machine there.
-        sessions: u64,
+        ///
+        /// Repeated as the `active_sessions` extension member of the problem
+        /// document, so the confirmation a browser puts up states the count
+        /// without reading it back out of this sentence.
+        sessions: u32,
     },
 
     /// Flyco has no driver for this provider yet.
@@ -903,6 +928,7 @@ impl ApiError {
             Self::ProviderAccountNotFound => "provider-account-not-found",
             Self::InvalidHarnessCredential(_) => "invalid-harness-credential",
             Self::HarnessAccountNotFound => "harness-account-not-found",
+            Self::HarnessAccountInUse { .. } => "harness-account-in-use",
             Self::ClaudeOauthAttemptExpired => "claude-oauth-attempt-expired",
             Self::ClaudeOauthStateMismatch => "claude-oauth-state-mismatch",
             Self::ClaudeOauthRejected { .. } => "claude-oauth-rejected",
@@ -1035,9 +1061,16 @@ impl ApiError {
     /// "3 session(s) still run on this host" reads `active_sessions`
     /// instead of the words around it. Every other failure states its whole
     /// self in `detail` and carries none.
+    ///
+    /// All three "something is still running there" refusals carry it, and
+    /// they carry it for one reason: each is answered by the same dialog,
+    /// which has to say how much work ending would cost. A refusal that
+    /// counted only in prose would make that dialog parse English.
     fn extensions(&self) -> ProblemExtensions {
         match *self {
-            Self::HostHasActiveSessions { sessions } => ProblemExtensions {
+            Self::HostHasActiveSessions { sessions }
+            | Self::ProviderInUse { sessions }
+            | Self::HarnessAccountInUse { sessions } => ProblemExtensions {
                 active_sessions: Some(sessions),
             },
             _ => ProblemExtensions::default(),
@@ -1084,6 +1117,23 @@ mod tests {
         assert_eq!(problem.extensions.active_sessions, Some(3));
         let json = serde_json::to_value(&problem).expect("serialize");
         assert_eq!(json["active_sessions"], 3);
+    }
+
+    #[test]
+    fn every_in_use_refusal_states_its_count_as_a_typed_member() {
+        // One dialog answers all three, so all three have to hand it the
+        // number rather than a sentence about the number.
+        for error in [
+            ApiError::ProviderInUse { sessions: 2 },
+            ApiError::HarnessAccountInUse { sessions: 2 },
+        ] {
+            let problem = error.problem();
+
+            assert_eq!(problem.status, 409);
+            assert_eq!(problem.extensions.active_sessions, Some(2));
+            let json = serde_json::to_value(&problem).expect("serialize");
+            assert_eq!(json["active_sessions"], 2);
+        }
     }
 
     #[test]

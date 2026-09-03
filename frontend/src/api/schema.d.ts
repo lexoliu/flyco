@@ -343,6 +343,12 @@ export interface paths {
         /**
          * Unlinks one account owned by the caller.
          * @description Unlinks one account owned by the caller.
+         *
+         *     Refused with `harness-account-in-use` while any session of the caller's
+         *     still runs on that harness: the account is what those sessions renew
+         *     their grant against, so unlinking it would break them at whatever moment
+         *     the token happened to expire. The problem document carries the count as
+         *     its `active_sessions` member.
          */
         delete: operations["flyco_api::harness_accounts::unlink_harness_account"];
         options?: never;

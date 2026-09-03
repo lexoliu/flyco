@@ -601,3 +601,11 @@
   overflow-wrap: anywhere;
   min-width: 0;
 }
+
+/* The way out of a refused unlink: the sessions holding the credential open
+   are what has to be archived, and they are not on this page. */
+.sessionsLink {
+  align-self: flex-start;
+  font-size: var(--text-sm);
+  color: var(--color-primary);
+}

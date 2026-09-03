@@ -98,6 +98,28 @@ pub async fn live_count(db: &Db, user: UserId) -> Result<u32, ApiError> {
     .await?)
 }
 
+/// How many of the user's sessions still run on `harness`.
+///
+/// What `DELETE /v1/harness-accounts/{id}` refuses on. Archived is the only
+/// state excluded, and deliberately so: an interrupted or failed session is
+/// one the user can still resume, and it would resume onto a harness with
+/// no credential left to renew. Only a session that has released its
+/// machine for good has finished with the account.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn live_on_harness(db: &Db, user: UserId, harness: HarnessKind) -> Result<u32, ApiError> {
+    let archived = SessionState::Archived;
+    Ok(sql!(
+        db,
+        "SELECT COUNT(*) AS live FROM sessions \
+         WHERE user_id = {user} AND harness = {harness} AND state != {archived}"
+    )
+    .fetch_scalar()
+    .await?)
+}
+
 /// Everything `POST /v1/sessions` decided before a row could be written.
 ///
 /// One argument rather than six positional ones: `harness`, `repo`, and

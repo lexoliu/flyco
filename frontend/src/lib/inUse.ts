@@ -1,23 +1,29 @@
 /**
  * "Something is still running there", as the control plane says it.
  *
- * Two refusals mean it — `provider-in-use` when unlinking a cloud account
- * would strand machines, and `host-has-active-sessions` when removing an
- * enrolled machine would stop containers on it — and the browser answers
- * both the same way: say how much is still running, and offer the thing
- * that ends it. So the two are read here once rather than at each of the
- * places that has to explain one (issue #139).
+ * Three refusals mean it — `provider-in-use` when unlinking a cloud account
+ * would strand machines, `harness-account-in-use` when unlinking the
+ * credential a running agent renews its grant against, and
+ * `host-has-active-sessions` when removing an enrolled machine would stop
+ * containers on it — and the browser answers all three the same way: say
+ * how much is still running, and offer the thing that ends it. So they are
+ * read here once rather than at each of the places that has to explain one
+ * (issues #139, #152).
  *
- * The count is read as an RFC 9457 §3.2 extension member where the refusal
- * carries one, never parsed out of `detail`: that sentence is written for a
- * person and is free to be reworded. A refusal that states no member yields
+ * The count is read as an RFC 9457 §3.2 extension member, never parsed out
+ * of `detail`: that sentence is written for a person and is free to be
+ * reworded. All three carry the member; a refusal that states none yields
  * `null`, and the caller says that sessions are running without inventing a
  * number.
  */
 import { ApiProblem } from "../api/problem";
 
 /** Problem-type suffixes that mean "still in use", not "went wrong". */
-const IN_USE_SUFFIXES = ["/provider-in-use", "/host-has-active-sessions"];
+const IN_USE_SUFFIXES = [
+  "/provider-in-use",
+  "/harness-account-in-use",
+  "/host-has-active-sessions",
+];
 
 /** What a refusal of that kind carries. */
 export interface InUseRefusal {

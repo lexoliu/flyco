@@ -37,6 +37,7 @@ use crate::observations;
 use crate::openai::{self, CodexOauth as _, Grant};
 use crate::problem::Outcome;
 use crate::respond::{Created, NoContent};
+use crate::sessions;
 use crate::vendors::Vendors;
 
 /// How close to its end an access token is refreshed before it is used.
@@ -562,6 +563,12 @@ async fn renewed(
 }
 
 /// Unlinks one account owned by the caller.
+///
+/// Refused with `harness-account-in-use` while any session of the caller's
+/// still runs on that harness: the account is what those sessions renew
+/// their grant against, so unlinking it would break them at whatever moment
+/// the token happened to expire. The problem document carries the count as
+/// its `active_sessions` member.
 #[skyzen::openapi]
 async fn unlink_harness_account(
     State(user): State<CurrentUser>,
@@ -573,17 +580,36 @@ async fn unlink_harness_account(
 
 async fn unlink(db: &Db, user: UserId, params: &Params) -> Result<NoContent, ApiError> {
     let id: HarnessAccountId = path_id(params, "id")?;
-    let removed = sql!(
+    // Read before deleting: an account that is not the caller's has to be a
+    // 404 rather than a `DELETE` that quietly writes nothing, and the
+    // refusal below has to count sessions on the harness *this* account
+    // drives rather than on every harness the user has linked.
+    let harness: HarnessKind = sql!(
+        db,
+        "SELECT harness FROM harness_accounts WHERE id = {id} AND user_id = {user}"
+    )
+    .fetch_scalar_optional()
+    .await?
+    .ok_or(ApiError::HarnessAccountNotFound)?;
+
+    // The credential is what a running session's grant is renewed against,
+    // and it is renewed where it is used. Unlinking under a live session
+    // therefore breaks it at a moment nobody chose — whenever the token
+    // happens to expire — so it is refused while any session could still
+    // ask for one.
+    let running = sessions::live_on_harness(db, user, harness).await?;
+    if running > 0 {
+        return Err(ApiError::HarnessAccountInUse { sessions: running });
+    }
+
+    sql!(
         db,
         "DELETE FROM harness_accounts WHERE id = {id} AND user_id = {user}"
     )
     .execute()
     .await?;
 
-    if removed.rows_written == 0 {
-        return Err(ApiError::HarnessAccountNotFound);
-    }
-    tracing::info!(account = %id, "unlinked a harness account");
+    tracing::info!(account = %id, ?harness, "unlinked a harness account");
     Ok(NoContent)
 }
 
