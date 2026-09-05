@@ -38,7 +38,7 @@ use crate::rooms::Rooms;
 use crate::testing::{
     GITHUB_ACCESS_TOKEN, GITHUB_COMMIT_EMAIL, GITHUB_NAME, HARNESS_TOKEN, TEST_DEFAULT_BRANCH,
     TestGithub, machine_choice, migrated_router_on, seed_harness_account, seed_provider_account,
-    seed_user, test_config, test_rooms, test_vendors,
+    seed_user, test_config, test_host_rooms, test_rooms, test_vendors,
 };
 use crate::vendors::Vendors;
 use crate::{machines, session, sessions};
@@ -535,7 +535,7 @@ async fn a_machine_that_stops_making_progress_fails_instead_of_spinning(
     .await
     .expect("age the session past the deadline");
 
-    crate::app::fail_stalled_provisions(&db, &rooms, now)
+    crate::app::fail_stalled_provisions(&db, &test_config(), &rooms, &test_host_rooms(), now)
         .await
         .expect("sweep the stalled provisions");
 
@@ -546,6 +546,14 @@ async fn a_machine_that_stops_making_progress_fails_instead_of_spinning(
         reason.contains("never reported its agent ready"),
         "the reason names what did not happen: {reason}"
     );
+
+    // And the machine goes with it: a machine that never came up is still
+    // a machine running up a bill.
+    let machine = crate::machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("the session reserved a row");
+    assert_eq!(machine.state, flyco_core::MachineState::Destroyed);
 }
 
 #[skyzen::test]
@@ -577,7 +585,7 @@ async fn a_machine_still_making_progress_is_not_called_stalled(
         .await
         .expect("record a stage");
 
-    crate::app::fail_stalled_provisions(&db, &rooms, now)
+    crate::app::fail_stalled_provisions(&db, &test_config(), &rooms, &test_host_rooms(), now)
         .await
         .expect("sweep the stalled provisions");
 

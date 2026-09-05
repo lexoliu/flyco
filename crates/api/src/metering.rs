@@ -254,7 +254,7 @@ mod worker {
         catalog::refresh_stale(&db, &Kv::new(kv), &Queue::new(queue), at_unix)
             .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
-        app::fail_stalled_provisions(&db, &rooms, at_unix)
+        app::fail_stalled_provisions(&db, &config, &rooms, &hosts, at_unix)
             .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         app::archive_idle(&db, &config, &rooms, &hosts, at_unix)
