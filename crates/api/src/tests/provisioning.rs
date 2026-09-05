@@ -508,6 +508,87 @@ async fn a_redelivered_job_does_not_provision_a_second_machine(
 }
 
 #[skyzen::test]
+async fn a_machine_that_stops_making_progress_fails_instead_of_spinning(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let session = open(&client, &caller).await.summary.id;
+    let rooms = test_rooms();
+
+    // The machine was built and then went quiet: the daemon crash-loops,
+    // or it cannot reach the control plane, and nothing else will ever
+    // notice — the queue's job is done and the daemon is the thing that
+    // would report the failure.
+    let now = crate::clock::now_unix();
+    let stalled = now.saturating_sub(flyco_core::PROVISION_DEADLINE_SECS + 1);
+    sql!(
+        db,
+        "UPDATE sessions SET created_at_unix = {stalled}, last_active_unix = {stalled} \
+         WHERE id = {session}"
+    )
+    .execute()
+    .await
+    .expect("age the session past the deadline");
+
+    crate::app::fail_stalled_provisions(&db, &rooms, now)
+        .await
+        .expect("sweep the stalled provisions");
+
+    let failed = read(&client, &caller, session).await;
+    assert_eq!(failed.summary.state, SessionState::Failed);
+    let reason = failed.failure.expect("a failed session says why");
+    assert!(
+        reason.contains("never reported its agent ready"),
+        "the reason names what did not happen: {reason}"
+    );
+}
+
+#[skyzen::test]
+async fn a_machine_still_making_progress_is_not_called_stalled(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let session = open(&client, &caller).await.summary.id;
+    let rooms = test_rooms();
+
+    // Opened long ago, but a stage arrived a moment ago: a big repository
+    // on a cold image is slow, not broken.
+    let now = crate::clock::now_unix();
+    let opened = now.saturating_sub(flyco_core::PROVISION_DEADLINE_SECS + 1);
+    sql!(
+        db,
+        "UPDATE sessions SET created_at_unix = {opened}, last_active_unix = {opened} \
+         WHERE id = {session}"
+    )
+    .execute()
+    .await
+    .expect("age the session past the deadline");
+    crate::sessions::note_progress(&db, session)
+        .await
+        .expect("record a stage");
+
+    crate::app::fail_stalled_provisions(&db, &rooms, now)
+        .await
+        .expect("sweep the stalled provisions");
+
+    assert_eq!(
+        read(&client, &caller, session).await.summary.state,
+        SessionState::Provisioning,
+        "a machine that is still reporting stages keeps being built"
+    );
+}
+
+#[skyzen::test]
 async fn a_provision_that_fails_leaves_the_session_visibly_failed(
     ctx: TestContext,
     kv: Kv,

@@ -86,8 +86,8 @@ pub use repo::{BranchName, BranchNameError, RepoSlug, RepoStatus};
 pub use session::{
     ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, HarnessSessionView,
     InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS,
-    SendMessage, SessionActivity, SessionDetail, SessionState, SessionSummary,
-    SessionTransitionError, TurnPage, TurnSummary, UpdateSession, excerpt,
+    PROVISION_DEADLINE_SECS, SendMessage, SessionActivity, SessionDetail, SessionState,
+    SessionSummary, SessionTransitionError, TurnPage, TurnSummary, UpdateSession, excerpt,
 };
 pub use skills::{SkillScope, SkillView};
 pub use usage::{

@@ -7,8 +7,9 @@
 
 use flyco_core::{
     ARCHIVE_AFTER_IDLE_SECS, ApprovalState, BranchName, BudgetConfig, BudgetId, BudgetStage,
-    ClientEvent, HarnessKind, InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineOrigin, RepoSlug,
-    SessionActivity, SessionDetail, SessionId, SessionState, SessionSummary, Usd, UserId,
+    ClientEvent, HarnessKind, InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineOrigin,
+    PROVISION_DEADLINE_SECS, RepoSlug, SessionActivity, SessionDetail, SessionId, SessionState,
+    SessionSummary, Usd, UserId,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -879,6 +880,59 @@ pub struct IdleSession {
     pub id: SessionId,
     /// Owner, so archive can destroy their machine.
     pub user_id: UserId,
+}
+
+/// Records that a machine being built got somewhere.
+///
+/// Every provisioning milestone moves this clock, which is what makes
+/// [`stalled_provisions`] mean "stopped making progress" rather than
+/// "taking a while". Scoped to `provisioning` so a stage that arrives late
+/// cannot move a session that has since gone on with its life.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn note_progress(db: &Db, id: SessionId) -> Result<(), ApiError> {
+    let provisioning = SessionState::Provisioning;
+    sql!(
+        db,
+        "UPDATE sessions SET last_active_unix = {now_unix()} \
+         WHERE id = {id} AND state = {provisioning}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
+/// Sessions still being built past [`PROVISION_DEADLINE_SECS`].
+///
+/// The clock runs from the last thing that happened to the session, which
+/// a provisioning stage moves: a machine that is making progress is never
+/// in this list, and one whose daemon is crash-looping stops moving it and
+/// is.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn stalled_provisions(db: &Db, at_unix: u64) -> Result<Vec<SessionId>, ApiError> {
+    let cutoff = at_unix.saturating_sub(PROVISION_DEADLINE_SECS);
+    let provisioning = SessionState::Provisioning;
+    let stalled: Vec<StalledSession> = sql!(
+        db,
+        "SELECT id FROM sessions \
+         WHERE state = {provisioning} AND created_at_unix <= {cutoff} \
+         AND last_active_unix <= {cutoff}"
+    )
+    .fetch_all()
+    .await?;
+    Ok(stalled.into_iter().map(|row| row.id).collect())
+}
+
+/// One row of [`stalled_provisions`].
+#[derive(Debug, skyzen::FromRow)]
+struct StalledSession {
+    /// The session whose machine stopped making progress.
+    id: SessionId,
 }
 
 /// Sessions that have sat idle past [`ARCHIVE_AFTER_IDLE_SECS`] and still

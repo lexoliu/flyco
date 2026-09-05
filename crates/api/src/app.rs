@@ -8,10 +8,10 @@ use flyco_core::{
     ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, EnvDocument,
     HarnessFeature, HarnessObservation, HarnessSessionView, MAX_SESSION_TITLE_CHARS,
-    MachineCatalogEntry, MachineOrigin, MachineSpec, RepoSlug, RepoStatus, ReportProvisioningStage,
-    ReportSpotNotice, ResizeMachine, SendMessage, SessionActivity, SessionDetail, SessionId,
-    SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId,
-    wire::ApprovalPayload,
+    MachineCatalogEntry, MachineOrigin, MachineSpec, ProvisioningStage, RepoSlug, RepoStatus,
+    ReportProvisioningStage, ReportSpotNotice, ResizeMachine, SendMessage, SessionActivity,
+    SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe,
+    UpdateSession, UserId, wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -1540,18 +1540,57 @@ async fn report_provisioning_stage(
     State(session): State<DaemonSession>,
     Json(report): Json<ReportProvisioningStage>,
     rooms: Rooms,
+    db: Db,
 ) -> Outcome<NoContent> {
+    record_provisioning_stage(session.0, report.stage, &rooms, &db)
+        .await
+        .into()
+}
+
+async fn record_provisioning_stage(
+    session: SessionId,
+    stage: ProvisioningStage,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<NoContent, ApiError> {
+    sessions::note_progress(db, session).await?;
     rooms
         .broadcast(
-            session.0,
+            session,
             &ClientEvent::ProvisioningStage {
-                stage: report.stage,
+                stage,
                 at_unix: crate::clock::now_unix(),
             },
         )
         .await
         .map(|()| NoContent)
-        .into()
+}
+
+/// Fails the sessions whose machines stopped being built.
+///
+/// A machine that reserved, booted and installed and then went quiet is
+/// not slow: its daemon is crash-looping, or it cannot reach the control
+/// plane at all. Nothing else notices — the queue's job finished, and the
+/// daemon that would report a failure is the thing that is failing — so
+/// without this the page spins under a timeline that never advances
+/// (docs/ux.md §9.2). The session is told what happened and offered a
+/// resume, which builds it again.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn fail_stalled_provisions(db: &Db, rooms: &Rooms, at_unix: u64) -> Result<(), ApiError> {
+    for session in sessions::stalled_provisions(db, at_unix).await? {
+        sessions::fail(
+            db,
+            rooms,
+            session,
+            "the machine was built but never reported its agent ready, so flyco stopped \
+             waiting for it",
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 #[skyzen::openapi]
