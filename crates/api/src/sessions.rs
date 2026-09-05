@@ -7,7 +7,7 @@
 
 use flyco_core::{
     ARCHIVE_AFTER_IDLE_SECS, ApprovalState, BranchName, BudgetConfig, BudgetId, BudgetStage,
-    HarnessKind, InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineOrigin, RepoSlug,
+    ClientEvent, HarnessKind, InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineOrigin, RepoSlug,
     SessionActivity, SessionDetail, SessionId, SessionState, SessionSummary, Usd, UserId,
 };
 use skyzen::sql;
@@ -16,6 +16,8 @@ use skyzen_services::Db;
 use crate::budgets;
 use crate::clock::now_unix;
 use crate::error::ApiError;
+use crate::machines;
+use crate::rooms::Rooms;
 
 /// The session a caller may still archive, and its budget.
 #[derive(Debug, skyzen::FromRow)]
@@ -544,7 +546,7 @@ pub async fn machine_origin(db: &Db, id: SessionId) -> Result<MachineOrigin, Api
 ///
 /// Returns [`ApiError::SessionNotFound`] if the session is gone, or
 /// [`ApiError::InvalidTransition`] if it is not in a state that can fail.
-pub async fn fail(db: &Db, id: SessionId, reason: &str) -> Result<(), ApiError> {
+pub async fn fail(db: &Db, rooms: &Rooms, id: SessionId, reason: &str) -> Result<(), ApiError> {
     let state = provisioning_target(db, id)
         .await?
         .ok_or(ApiError::SessionNotFound)?
@@ -565,7 +567,28 @@ pub async fn fail(db: &Db, id: SessionId, reason: &str) -> Result<(), ApiError> 
     .execute()
     .await?;
 
+    // The row reserved for the machine that was never built is released
+    // with the session: left in `provisioning`, the page would keep calling
+    // a machine that does not exist `starting` under a `Failed` pill.
+    machines::release_unbuilt(db, id).await?;
     tracing::warn!(session = %id, %reason, "a session's machine could not be provisioned");
+
+    // The page learns of the failure the way it learns of everything else,
+    // from the room; without this it goes on drawing the provisioning
+    // timeline until somebody reloads. A room that cannot be reached costs
+    // the watcher a live update, not the session its (already recorded)
+    // failure, so it is logged rather than returned.
+    if let Err(error) = rooms
+        .broadcast(
+            id,
+            &ClientEvent::SessionStateChanged {
+                state: SessionState::Failed,
+            },
+        )
+        .await
+    {
+        tracing::warn!(session = %id, %error, "a session's failure did not reach its room");
+    }
     Ok(())
 }
 

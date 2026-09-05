@@ -80,15 +80,19 @@ export default function SessionDetail() {
   onCleanup(() => clearInterval(ticker));
 
   /**
-   * How many times the room has said something that changes the machine.
+   * How many times the room has said something that changes the machine
+   * or the session it serves.
    *
-   * The machine is fetched once and would otherwise stay as it was read:
-   * the header would go on quoting a rate for a machine the session was
-   * moved off, or one that was released when the session failed (issue
-   * #135). A `machine_changed` frame says the session moved; a
-   * `session_state_changed` frame says the lifecycle moved, and the machine
-   * follows it into `deallocated` or `destroyed`. Counting them rather than
-   * watching the last one means two changes in a row are two refetches.
+   * Both are fetched once and would otherwise stay as they were read: the
+   * header would go on quoting a rate for a machine the session was moved
+   * off, or one that was released when the session failed (issue #135),
+   * and a session that failed while the page was open would keep its
+   * provisioning timeline ticking until a reload. A `machine_changed`
+   * frame says the session moved; a `session_state_changed` frame says the
+   * lifecycle moved — the session row carries the new state and its
+   * failure reason, and the machine follows it into `deallocated` or
+   * `destroyed`. Counting them rather than watching the last one means two
+   * changes in a row are two refetches.
    */
   const machineNews = createMemo(
     () =>
@@ -96,7 +100,26 @@ export default function SessionDetail() {
         ({ event }) => event.type === "machine_changed" || event.type === "session_state_changed",
       ).length,
   );
-  createEffect(on(machineNews, () => void refetchMachine(), { defer: true }));
+  createEffect(
+    on(
+      machineNews,
+      () => {
+        void refetchMachine();
+        void refetchSession();
+      },
+      { defer: true },
+    ),
+  );
+
+  /**
+   * When the session failed, for the provisioning timeline to stop at.
+   * `fail` stamps `last_active_unix` as it records the reason, so that is
+   * the instant the machine stopped being built.
+   */
+  const failedAtUnix = createMemo(() => {
+    const current = session();
+    return current?.state === "failed" ? current.last_active_unix : null;
+  });
 
   const transcript = createMemo(() => foldTranscript(relay.events()));
   const waiting = createMemo(() => pendingApprovals(transcript()));
@@ -537,6 +560,7 @@ export default function SessionDetail() {
                         repo={current().repo}
                         provider={providerLabel()}
                         now={now()}
+                        failedAtUnix={failedAtUnix()}
                       />
                       <p class={styles.empty}>
                         Your task is queued and will start as soon as the machine is ready.
@@ -568,6 +592,7 @@ export default function SessionDetail() {
               }}
               deciding={deciding()}
               now={now()}
+              failedAtUnix={failedAtUnix()}
             />
           </Show>
 

@@ -329,6 +329,18 @@ impl<K: RoomKind> RoomsOf<K> {
             role.parse()
                 .map_err(|_| ApiError::CorruptRecord("a room header did not parse"))?,
         );
+        // The stub carries exactly the headers this request names, and the
+        // runtime refuses to hand a WebSocket back to a request that did
+        // not ask for one: without these two the room's 101 is an error,
+        // not an upgrade.
+        request.headers_mut().insert(
+            skyzen::header::UPGRADE,
+            skyzen::header::HeaderValue::from_static("websocket"),
+        );
+        request.headers_mut().insert(
+            skyzen::header::CONNECTION,
+            skyzen::header::HeaderValue::from_static("Upgrade"),
+        );
 
         let response = self
             .stub(room)?

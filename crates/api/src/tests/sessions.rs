@@ -320,7 +320,11 @@ async fn the_default_machine_is_the_one_a_session_would_be_given(ctx: TestContex
         answer.choice.provider_account, caller.account,
         "the choice names the account it would be provisioned through"
     );
-    assert!(answer.choice.spot);
+    // The caller asked for spot; a host quotes no spot price, so the choice
+    // is on demand rather than a capacity mode the machine cannot be held
+    // in (the same guard keeps a cloud type whose spot quota is short from
+    // being asked for as spot and failing minutes later in the queue).
+    assert!(!answer.choice.spot);
 }
 
 #[skyzen::test]

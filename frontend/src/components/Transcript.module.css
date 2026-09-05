@@ -345,6 +345,12 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The stage a failed provision stopped at: the notice above says why. */
+.stage[data-failed="true"],
+.stage[data-failed="true"] .stageMark {
+  color: var(--color-danger);
+}
+
 /* Provisioning is a neutral pulse: something is happening, nothing is wrong. */
 .spin {
   animation: spin 1.4s linear infinite;

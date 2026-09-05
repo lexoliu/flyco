@@ -219,16 +219,18 @@ async fn start_session(
         }
     };
     let account = provisioning::account(db, config, user.id, choice.provider_account).await?;
+    // Checked against the cached catalog, which is what the picker showed;
+    // the queue re-asks the provider when it actually builds the machine.
+    let entry = machines::deployable(db, config, kv, user.id, &choice).await?;
     let spec = MachineSpec {
         provider: account.kind(),
         machine_type: choice.machine_type,
         region: choice.region,
-        spot: choice.spot,
+        // Spot only where the catalog quoted it; a type the spot pool cannot
+        // fund is held on demand rather than refused at provisioning.
+        spot: choice.spot && entry.pricing.offers_spot(),
         disk_gib: choice.disk_gib,
     };
-    provisioning::deployable(&account, &spec)
-        .await
-        .map_err(undeployable)?;
 
     let session = sessions::create(
         db,
@@ -258,6 +260,7 @@ async fn start_session(
     // going to happen.
     fail_session_on(
         db,
+        rooms,
         id,
         "the session's room would not take its first prompt",
         rooms
@@ -267,6 +270,7 @@ async fn start_session(
     .await?;
     fail_session_on(
         db,
+        rooms,
         id,
         "the provisioning queue would not accept this session's job",
         provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await,
@@ -335,6 +339,7 @@ async fn resolve_branch(
 /// refused, and passes that refusal on.
 async fn fail_session_on<T>(
     db: &Db,
+    rooms: &Rooms,
     id: SessionId,
     reason: &str,
     step: Result<T, ApiError>,
@@ -342,23 +347,9 @@ async fn fail_session_on<T>(
     match step {
         Ok(value) => Ok(value),
         Err(error) => {
-            sessions::fail(db, id, reason).await?;
+            sessions::fail(db, rooms, id, reason).await?;
             Err(error)
         }
-    }
-}
-
-/// Turns a provider's refusal into the answer the caller can act on.
-///
-/// A machine the account cannot deploy is the caller's mistake and names
-/// which of the three gates it hit; anything else is the provider being
-/// unreachable, which is not.
-fn undeployable(error: flyco_provider::ProviderError) -> ApiError {
-    match error {
-        unavailable @ flyco_provider::ProviderError::Unavailable { .. } => {
-            ApiError::MachineUnavailable(unavailable.to_string())
-        }
-        other => ApiError::Provisioning(other.to_string()),
     }
 }
 
@@ -1055,15 +1046,19 @@ async fn resume_session(
     State(user): State<CurrentUser>,
     params: Params,
     queue: Queue,
+    rooms: Rooms,
     db: Db,
 ) -> Outcome<Json<SessionDetail>> {
-    restart_session(&user, &params, &queue, &db).await.into()
+    restart_session(&user, &params, &queue, &rooms, &db)
+        .await
+        .into()
 }
 
 async fn restart_session(
     user: &CurrentUser,
     params: &Params,
     queue: &Queue,
+    rooms: &Rooms,
     db: &Db,
 ) -> Result<Json<SessionDetail>, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
@@ -1075,6 +1070,7 @@ async fn restart_session(
     {
         sessions::fail(
             db,
+            rooms,
             id,
             "the provisioning queue would not accept this session's job",
         )

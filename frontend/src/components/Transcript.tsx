@@ -74,6 +74,12 @@ export interface TranscriptProps {
   deciding?: boolean | undefined;
   /** The instant elapsed times are measured against. */
   now: number;
+  /**
+   * When the session failed, so a timeline still waiting on a stage stops
+   * there — with the time that stage had run — instead of counting on
+   * under a `Failed` pill.
+   */
+  failedAtUnix: number | null;
 }
 
 export default function Transcript(props: TranscriptProps) {
@@ -150,6 +156,7 @@ export default function Transcript(props: TranscriptProps) {
                     repo={props.repo}
                     provider={props.provider}
                     now={props.now}
+                    failedAtUnix={props.failedAtUnix}
                   />
                 )}
               </Match>
@@ -301,9 +308,20 @@ export function ProvisioningTimeline(props: {
   repo: string;
   provider: string | null;
   now: number;
+  /** When the session failed with this timeline still open; see {@link TranscriptProps}. */
+  failedAtUnix: number | null;
 }) {
   const done = () => props.steps.some((step) => step.stage === "ready");
-  const label = () => (props.recovery ? "Migrating" : "Provisioning");
+  /**
+   * The stage in progress is where the failure landed: a timeline that
+   * reached `ready` belongs to an earlier, finished episode and keeps its
+   * ticks.
+   */
+  const failedAt = () => (done() ? null : props.failedAtUnix);
+  const label = () => {
+    const what = props.recovery ? "Migrating" : "Provisioning";
+    return failedAt() === null ? what : `${what} failed`;
+  };
 
   return (
     <div class={styles.timeline} aria-label={label()}>
@@ -316,6 +334,7 @@ export function ProvisioningTimeline(props: {
         {(step, index) => {
           const next = () => props.steps[index() + 1];
           const last = () => index() === props.steps.length - 1;
+          const failed = () => last() && failedAt() !== null;
           const took = () => {
             const following = next();
             if (following !== undefined) {
@@ -324,15 +343,28 @@ export function ProvisioningTimeline(props: {
             if (done()) {
               return null;
             }
-            return formatDuration(Math.floor(props.now / 1000) - step.atUnix);
+            const stoppedAt = failedAt();
+            // A failed stage says how long it ran before it failed; the
+            // clock stopped when the session did.
+            const until = stoppedAt === null ? Math.floor(props.now / 1000) : stoppedAt;
+            return formatDuration(Math.max(0, until - step.atUnix));
           };
 
           return (
-            <div class={styles.stage} data-active={last() && !done()}>
+            <div
+              class={styles.stage}
+              data-active={last() && !done() && !failed()}
+              data-failed={failed()}
+            >
               <span class={styles.stageMark} aria-hidden="true">
-                <Show when={last() && !done()} fallback={<Check size={12} />}>
-                  <CircleDashed size={12} class={cx(styles.spin)} />
-                </Show>
+                <Switch fallback={<Check size={12} />}>
+                  <Match when={failed()}>
+                    <X size={12} />
+                  </Match>
+                  <Match when={last() && !done()}>
+                    <CircleDashed size={12} class={cx(styles.spin)} />
+                  </Match>
+                </Switch>
               </span>
               <span class={styles.stageLabel}>
                 {stageLabel(step.stage, props.provider, props.repo)}
