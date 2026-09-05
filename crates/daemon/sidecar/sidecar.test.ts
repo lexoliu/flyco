@@ -50,6 +50,7 @@ function start(overrides: Partial<StartCommand> = {}): StartCommand {
     model: null,
     permission_mode: "default",
     resume_session_id: null,
+    strict_mcp_config: true,
     mcp_servers: {
       flyco: {
         type: "stdio",
@@ -235,6 +236,16 @@ describe("session options", () => {
     // the user settings and the plugin scopes — which is where a server the
     // agent wrote for itself would come from.
     expect(options.strictMcpConfig).toBe(true);
+  });
+
+  test("exclusivity is flycod's call, because only it knows about the managed policy", () => {
+    // On a provisioned machine a root-owned `managed-mcp.json` is already
+    // in force, and the CLI refuses to start when asked for that and
+    // `--strict-mcp-config` at once. The servers are still passed: the
+    // managed file makes the set exclusive, this makes it present.
+    const options = sessionOptions(start({ strict_mcp_config: false }), "id", callbacks);
+    expect(options.strictMcpConfig).toBe(false);
+    expect(Object.keys(options.mcpServers ?? {})).toEqual(["flyco"]);
   });
 });
 

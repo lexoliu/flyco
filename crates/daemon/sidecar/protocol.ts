@@ -117,6 +117,7 @@ export const sidecarCommandSchema = z.discriminatedUnion("type", [
     permission_mode: permissionModeSchema,
     resume_session_id: z.string().nullable(),
     mcp_servers: z.record(z.string(), claudeMcpServerSchema),
+    strict_mcp_config: z.boolean(),
   }),
   z.object({ type: z.literal("user_message"), text: z.string() }),
   z.object({ type: z.literal("interrupt") }),

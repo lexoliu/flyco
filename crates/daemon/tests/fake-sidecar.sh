@@ -39,9 +39,15 @@ esac
 
 say '{"type":"ready","sdk_version":"0.0.0-fake"}'
 
+# Every command received, verbatim, so a test can assert on what flycod
+# actually sent rather than on what it meant to send.
+received='commands.jsonl'
+: >"$received"
+
 answered_load=0
 
 while IFS= read -r line; do
+	printf '%s\n' "$line" >>"$received"
 	case "$line" in
 	*'"type":"start"'*)
 		# The session is identified as soon as the query is constructed —

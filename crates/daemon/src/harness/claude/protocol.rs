@@ -91,6 +91,17 @@ pub enum SidecarCommand {
         permission_mode: PermissionMode,
         /// Harness-native session id to resume, for cross-host History.
         resume_session_id: Option<String>,
+        /// Whether the CLI should be told to use only the servers below and
+        /// ignore every scope it would otherwise discover.
+        ///
+        /// False on a provisioned machine, and it has to be: the root-owned
+        /// `managed-mcp.json` there is an *enterprise* MCP config, and the
+        /// CLI refuses to start at all when one is present and
+        /// `--strict-mcp-config` is also asked for (issue #195). The two
+        /// are the same guarantee by different means — exclusivity the
+        /// agent cannot reach, and exclusivity on the command line — so
+        /// exactly one of them is ever in force.
+        strict_mcp_config: bool,
         /// Every MCP server this session may reach, keyed by the name the
         /// harness announces it under.
         ///
