@@ -560,7 +560,9 @@ is not where a user looks when the page tells them the session stopped.
   a machine on Azure` → `Booting` → `Installing flycod` → `Cloning
   owner/repo` → `Agent ready`, each with elapsed time, driven by
   `session_state_changed` and daemon events. "No turns yet" never
-  appears while a machine is being built. A session reclaimed from spot
+  appears while a machine is being built, and neither does a transcript
+  holding only the prompt: until the queue announces its first stage the
+  page holds the timeline's place from when the session was opened. A session reclaimed from spot
   gets **another timeline in the place it happened**, headed `Migrating`
   and holding only the stages a restart goes through — nothing is
   installed or cloned, because the disk already has both.
