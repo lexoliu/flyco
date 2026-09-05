@@ -160,7 +160,9 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
     return Promise.resolve(jsonResponse([]));
   }
   if (method === "GET" && path === "/v1/machines/catalog") {
-    return Promise.resolve(jsonResponse([]));
+    // Read, and offering nothing: a test that wants the other answer — an
+    // account flyco has not finished reading — routes this path itself.
+    return Promise.resolve(jsonResponse({ entries: [], pending_accounts: [] }));
   }
   if (method === "GET" && /^\/v1\/sessions\/[^/]+\/machine$/.test(path)) {
     const id = path.split("/")[3] ?? "";

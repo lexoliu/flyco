@@ -21,9 +21,10 @@ use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::sql;
 use skyzen::utils::{Json, State};
-use skyzen_services::Db;
+use skyzen_services::{Db, Kv, Queue};
 
 use crate::bonuses;
+use crate::catalog;
 use crate::clock::now_unix;
 use crate::clouds::{CloudLink as _, Clouds};
 use crate::config::ApiConfig;
@@ -115,8 +116,10 @@ async fn link_provider(
     State(clouds): State<Clouds>,
     Json(request): Json<LinkProvider>,
     db: Db,
+    kv: Kv,
+    queue: Queue,
 ) -> Outcome<Created<Json<ProviderAccountView>>> {
-    link(&db, &config, &clouds, user.id, request)
+    link(&db, &config, &clouds, &kv, &queue, user.id, request)
         .await
         .map(|view| Created(Json(view)))
         .into()
@@ -137,6 +140,8 @@ pub(crate) async fn link(
     db: &Db,
     config: &ApiConfig,
     clouds: &Clouds,
+    kv: &Kv,
+    queue: &Queue,
     user: UserId,
     request: LinkProvider,
 ) -> Result<ProviderAccountView, ApiError> {
@@ -144,7 +149,7 @@ pub(crate) async fn link(
     // nowhere to keep one.
     let login_key = LoginKey::generate();
     let resource_group = clouds.prepare(&request.credentials, &login_key).await?;
-    create_with(
+    let view = create_with(
         db,
         config,
         user,
@@ -156,7 +161,14 @@ pub(crate) async fn link(
         resource_group,
         None,
     )
-    .await
+    .await?;
+
+    // The account is linked and its catalog has never been read, so the
+    // read starts now rather than when somebody first looks: the next screen
+    // the user sees is the compute card, and it is asking what this account
+    // can deploy.
+    catalog::ask_for_refresh(kv, queue, user, view.id).await?;
+    Ok(view)
 }
 
 /// What `credentials_enc` seals: the credentials the user presented, and

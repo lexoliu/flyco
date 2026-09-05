@@ -3179,6 +3179,29 @@ export interface components {
             vcpus: number;
         };
         /**
+         * @description Answer of `GET /v1/machines/catalog`.
+         *
+         *     Not a bare list, because "no machines" and "no machines *yet*" are
+         *     different answers and a list can only say the first. A cloud account's
+         *     catalog is read in the background — it is thousands of SKUs, quotas and
+         *     price pages per region, which is minutes of work and far more than a
+         *     request may spend — so an account linked moments ago has nothing to
+         *     contribute and is named in [`pending_accounts`](Self::pending_accounts)
+         *     instead. A reader that ignored the difference would tell a user who has
+         *     just linked a subscription that it can deploy nothing.
+         */
+        MachineCatalog: {
+            /** @description The curated entries every account that has been read can offer. */
+            entries: components["schemas"]["MachineCatalogEntry"][];
+            /**
+             * @description The linked accounts whose catalog has not been read yet.
+             *
+             *     Empty is the steady state. While it is not, the answer is incomplete
+             *     rather than final, and a reader should say so and ask again.
+             */
+            pending_accounts: components["schemas"]["Uuid"][];
+        };
+        /**
          * @description One entry in the machine catalog the agent sees when deciding whether
          *     to keep, upgrade, or downgrade its machine.
          */
@@ -3253,6 +3276,14 @@ export interface components {
             choice: components["schemas"]["MachineChoice"];
             /** @description The catalog entry that choice points at, with its price and size. */
             entry: components["schemas"]["MachineCatalogEntry"];
+            /**
+             * @description The linked accounts still being read when this choice was made.
+             *
+             *     The choice is the best one flyco can make *from what it has read*.
+             *     While this is non-empty a cheaper machine may still arrive, so a
+             *     caller showing the answer as final would be overstating it.
+             */
+            pending_accounts: components["schemas"]["Uuid"][];
         };
         /**
          * @description Where a machine type sits in its provider's own line-up.
@@ -5363,27 +5394,16 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        account?: null | components["schemas"]["Uuid"];
-                        capacity?: null | components["schemas"]["MachineCapacity"];
-                        lineage?: null | components["schemas"]["MachineLineage"];
-                        /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
-                        machine_type: string;
-                        /** @description Operating system family. */
-                        os: components["schemas"]["OsFamily"];
-                        /** @description What it costs to run for an hour. */
-                        pricing: components["schemas"]["MachinePricing"];
-                        /** @description Which provider offers it. */
-                        provider: components["schemas"]["CloudProviderKind"];
+                        /** @description The curated entries every account that has been read can offer. */
+                        entries: components["schemas"]["MachineCatalogEntry"][];
                         /**
-                         * @description Provider-native region this entry is offered in.
+                         * @description The linked accounts whose catalog has not been read yet.
                          *
-                         *     A catalog spans every region an account may deploy into, so an entry
-                         *     without one would not say where the machine it describes can be
-                         *     created. A registered SSH host names itself here: it is its own
-                         *     region, and there is nowhere else to put it.
+                         *     Empty is the steady state. While it is not, the answer is incomplete
+                         *     rather than final, and a reader should say so and ask again.
                          */
-                        region: string;
-                    }[];
+                        pending_accounts: components["schemas"]["Uuid"][];
+                    };
                 };
             };
         };
@@ -5411,6 +5431,14 @@ export interface operations {
                         choice: components["schemas"]["MachineChoice"];
                         /** @description The catalog entry that choice points at, with its price and size. */
                         entry: components["schemas"]["MachineCatalogEntry"];
+                        /**
+                         * @description The linked accounts still being read when this choice was made.
+                         *
+                         *     The choice is the best one flyco can make *from what it has read*.
+                         *     While this is non-empty a cheaper machine may still arrive, so a
+                         *     caller showing the answer as final would be overstating it.
+                         */
+                        pending_accounts: components["schemas"]["Uuid"][];
                     };
                 };
             };

@@ -29,8 +29,10 @@ use flyco_core::money::Usd;
 use serde::Deserialize;
 
 use crate::ProviderError;
-use crate::clock::MonotonicClock;
-use crate::http::{HttpRequest, HttpTransport, Method};
+use crate::azure::arm::RETRY_AFTER_HEADER;
+use crate::clock::{MonotonicClock, Timer};
+use crate::http::{HttpRequest, HttpResponse, HttpTransport, Method};
+use crate::polling::poll_delay;
 
 /// The unauthenticated retail-prices endpoint.
 pub const RETAIL_PRICES_URL: &str = "https://prices.azure.com/api/retail/prices";
@@ -47,6 +49,20 @@ pub const PRICES_API_VERSION: &str = "2023-01-01-preview";
 /// six hours is short enough to pick up a republication the same day and
 /// long enough that a catalog read is not a page-walk every time.
 pub const CACHE_TTL_SECONDS: u64 = 6 * 60 * 60;
+
+/// The status `prices.azure.com` throttles with.
+const TOO_MANY_REQUESTS: u16 = 429;
+
+/// Longest one page read waits out throttling before it gives up.
+///
+/// The prices API is unauthenticated and shared, and it throttles a catalog
+/// read that walks tens of pages per region — which is what killed the
+/// in-request catalog this cache replaced. A minute is several `Retry-After`
+/// windows at the seconds Azure actually states, and it is bounded because a
+/// refresh is one queue message for one region: a region the API will not
+/// serve today has to fail as that one region rather than hold the message
+/// open until the platform kills it.
+pub const THROTTLE_BUDGET_SECONDS: u32 = 60;
 
 /// Suffix marking a spot meter.
 const SPOT_SUFFIX: &str = " Spot";
@@ -210,14 +226,15 @@ impl PriceCatalog {
     ///
     /// Returns [`ProviderError`] if the prices API refuses or answers with
     /// something that is not a price page.
-    pub async fn prices_for<T: HttpTransport, C: MonotonicClock>(
+    pub async fn prices_for<T: HttpTransport, C: MonotonicClock, K: Timer>(
         &mut self,
         transport: &T,
         clock: &C,
+        timer: &K,
         region: &str,
         machine_type: &str,
     ) -> Result<MachinePrices, ProviderError> {
-        self.region_prices(transport, clock, region)
+        self.region_prices(transport, clock, timer, region)
             .await
             .map(|prices| {
                 prices
@@ -240,10 +257,11 @@ impl PriceCatalog {
     /// Never in practice: the cache is filled immediately above the read
     /// that borrows it, and the borrow checker is what makes returning a
     /// reference to it need the `expect` at all.
-    pub async fn region_prices<T: HttpTransport, C: MonotonicClock>(
+    pub async fn region_prices<T: HttpTransport, C: MonotonicClock, K: Timer>(
         &mut self,
         transport: &T,
         clock: &C,
+        timer: &K,
         region: &str,
     ) -> Result<&[(String, MachinePrices)], ProviderError> {
         let now = clock.elapsed_seconds();
@@ -253,7 +271,7 @@ impl PriceCatalog {
             .is_some_and(|cached| cached.region == region && now < cached.expires_after);
 
         if !fresh {
-            let prices = read_region(transport, region).await?;
+            let prices = read_region(transport, timer, region).await?;
             self.cached = Some(CachedRegion {
                 region: region.to_owned(),
                 prices,
@@ -278,10 +296,11 @@ impl PriceCatalog {
     /// # Panics
     ///
     /// Never in practice: the cache is filled immediately before the borrow.
-    pub async fn storage_pricing<T: HttpTransport, C: MonotonicClock>(
+    pub async fn storage_pricing<T: HttpTransport, C: MonotonicClock, K: Timer>(
         &mut self,
         transport: &T,
         clock: &C,
+        timer: &K,
         region: &str,
     ) -> Result<&StoragePricing, ProviderError> {
         let now = clock.elapsed_seconds();
@@ -292,7 +311,7 @@ impl PriceCatalog {
         if !fresh {
             self.storage_cached = Some(CachedStorage {
                 region: region.to_owned(),
-                pricing: read_storage(transport, region).await?,
+                pricing: read_storage(transport, timer, region).await?,
                 expires_after: now.saturating_add(CACHE_TTL_SECONDS),
             });
         }
@@ -339,21 +358,70 @@ fn disk_capacity(sku_name: &str) -> Option<u32> {
     })
 }
 
-async fn read_storage<T: HttpTransport>(
+/// `Retry-After` in whole seconds, when the response states one that way.
+///
+/// The header also admits an HTTP date, which is not what Azure sends here
+/// and is deliberately not guessed at: an unparsable value leaves the
+/// decision to the shared backoff rather than to a date arithmetic that
+/// would be wrong in exactly the case it was reached for.
+fn retry_after(response: &HttpResponse) -> Option<u32> {
+    response
+        .header_value(RETRY_AFTER_HEADER)
+        .and_then(|value| value.trim().parse::<u32>().ok())
+}
+
+/// One page of the retail-prices API, waiting out throttling.
+///
+/// A `429` is not a failure of the read, it is the service asking for a
+/// pause, so it is honoured — the stated `Retry-After` first and the shared
+/// backoff when nothing is stated — until [`THROTTLE_BUDGET_SECONDS`] is
+/// spent. Past that the refusal is returned as itself, which is what makes
+/// one throttled region a hole in the catalog rather than a failed catalog.
+async fn read_page<T: HttpTransport, K: Timer>(
     transport: &T,
+    timer: &K,
+    url: &str,
+    what: &str,
+) -> Result<PricePage, ProviderError> {
+    let mut waited = 0_u32;
+    let mut attempt = 0_usize;
+    loop {
+        let response = transport
+            .send(HttpRequest::new(Method::Get, url.to_owned()))
+            .await?;
+        if response.is_success() {
+            return response.json().map_err(ProviderError::from);
+        }
+        if response.status != TOO_MANY_REQUESTS {
+            return Err(ProviderError::Rejected(format!(
+                "the Azure retail prices API answered HTTP {} for {what}",
+                response.status
+            )));
+        }
+
+        let delay = poll_delay(retry_after(&response), attempt);
+        if waited.saturating_add(delay) > THROTTLE_BUDGET_SECONDS {
+            return Err(ProviderError::Rejected(format!(
+                "the Azure retail prices API throttled {what} for more than \
+                 {THROTTLE_BUDGET_SECONDS}s"
+            )));
+        }
+        tracing::debug!(seconds = delay, %what, "the Azure prices API asked us to wait");
+        timer.sleep(delay).await;
+        waited = waited.saturating_add(delay);
+        attempt = attempt.saturating_add(1);
+    }
+}
+
+async fn read_storage<T: HttpTransport, K: Timer>(
+    transport: &T,
+    timer: &K,
     region: &str,
 ) -> Result<StoragePricing, ProviderError> {
     let mut tiers = Vec::new();
     let mut next = Some(storage_url(region));
     while let Some(url) = next {
-        let response = transport.send(HttpRequest::new(Method::Get, url)).await?;
-        if !response.is_success() {
-            return Err(ProviderError::Rejected(format!(
-                "Azure retail prices refused Standard SSD pricing with HTTP {}",
-                response.status
-            )));
-        }
-        let page: PricePage = response.json()?;
+        let page = read_page(transport, timer, &url, "Standard SSD pricing").await?;
         for row in &page.items {
             if row.unit_of_measure != "1/Month" || !row.meter_name.ends_with(" Disk") {
                 continue;
@@ -381,23 +449,16 @@ async fn read_storage<T: HttpTransport>(
 }
 
 /// Walks every page of one region's prices and folds them per machine type.
-async fn read_region<T: HttpTransport>(
+async fn read_region<T: HttpTransport, K: Timer>(
     transport: &T,
+    timer: &K,
     region: &str,
 ) -> Result<Vec<(String, MachinePrices)>, ProviderError> {
     let mut folded: Vec<(String, MachinePrices)> = Vec::new();
     let mut next = Some(price_url(region));
 
     while let Some(url) = next {
-        let response = transport.send(HttpRequest::new(Method::Get, url)).await?;
-        if !response.is_success() {
-            return Err(ProviderError::Rejected(format!(
-                "the Azure retail prices API answered HTTP {}",
-                response.status
-            )));
-        }
-
-        let page: PricePage = response.json()?;
+        let page = read_page(transport, timer, &url, "a region's machine prices").await?;
         for row in &page.items {
             let kind = row.kind();
             if kind == MeterKind::Ignored || row.arm_sku_name.is_empty() {
@@ -433,7 +494,8 @@ mod tests {
     use super::{MeterKind, PRICES_API_VERSION, PriceCatalog, PricePage, price_url};
     use crate::clock::ManualClock;
     use crate::http::{HttpResponse, Method};
-    use crate::testing::RecordedTransport;
+    use crate::polling::poll_delay;
+    use crate::testing::{RecordedTransport, RecordingTimer};
 
     const PRICES: &str = include_str!("../../fixtures/azure/retail_prices.json");
     /// A first page that names a `NextPageLink`; `PRICES` is the last page.
@@ -490,7 +552,13 @@ mod tests {
         let mut catalog = PriceCatalog::new();
 
         let prices = catalog
-            .prices_for(&transport, &clock, "northcentralus", "Standard_D2als_v6")
+            .prices_for(
+                &transport,
+                &clock,
+                &RecordingTimer::new(),
+                "northcentralus",
+                "Standard_D2als_v6",
+            )
             .await
             .expect("read prices");
 
@@ -506,7 +574,13 @@ mod tests {
         let mut catalog = PriceCatalog::new();
 
         let prices = catalog
-            .prices_for(&transport, &clock, "canadacentral", "Standard_D2pls_v5")
+            .prices_for(
+                &transport,
+                &clock,
+                &RecordingTimer::new(),
+                "canadacentral",
+                "Standard_D2pls_v5",
+            )
             .await
             .expect("read prices");
 
@@ -526,12 +600,24 @@ mod tests {
         let mut catalog = PriceCatalog::new();
 
         catalog
-            .prices_for(&transport, &clock, "northcentralus", "Standard_D2als_v6")
+            .prices_for(
+                &transport,
+                &clock,
+                &RecordingTimer::new(),
+                "northcentralus",
+                "Standard_D2als_v6",
+            )
             .await
             .expect("read prices");
         clock.advance(super::CACHE_TTL_SECONDS - 1);
         catalog
-            .prices_for(&transport, &clock, "northcentralus", "Standard_D2als_v6")
+            .prices_for(
+                &transport,
+                &clock,
+                &RecordingTimer::new(),
+                "northcentralus",
+                "Standard_D2als_v6",
+            )
             .await
             .expect("reuse prices");
         assert_eq!(transport.request_count(), 1);
@@ -539,7 +625,13 @@ mod tests {
         // Spot meters are republished monthly, so the cache must expire.
         clock.advance(1);
         catalog
-            .prices_for(&transport, &clock, "northcentralus", "Standard_D2als_v6")
+            .prices_for(
+                &transport,
+                &clock,
+                &RecordingTimer::new(),
+                "northcentralus",
+                "Standard_D2als_v6",
+            )
             .await
             .expect("re-read prices");
         assert_eq!(transport.request_count(), 2);
@@ -552,11 +644,23 @@ mod tests {
         let mut catalog = PriceCatalog::new();
 
         catalog
-            .prices_for(&transport, &clock, "northcentralus", "Standard_D2als_v6")
+            .prices_for(
+                &transport,
+                &clock,
+                &RecordingTimer::new(),
+                "northcentralus",
+                "Standard_D2als_v6",
+            )
             .await
             .expect("northcentralus");
         catalog
-            .prices_for(&transport, &clock, "canadacentral", "Standard_D2pls_v5")
+            .prices_for(
+                &transport,
+                &clock,
+                &RecordingTimer::new(),
+                "canadacentral",
+                "Standard_D2pls_v5",
+            )
             .await
             .expect("canadacentral");
 
@@ -571,10 +675,112 @@ mod tests {
         let mut catalog = PriceCatalog::new();
 
         let prices = catalog
-            .prices_for(&transport, &clock, "northcentralus", "Standard_NotReal")
+            .prices_for(
+                &transport,
+                &clock,
+                &RecordingTimer::new(),
+                "northcentralus",
+                "Standard_NotReal",
+            )
             .await
             .expect("read prices");
         assert_eq!(prices.on_demand, None);
         assert_eq!(prices.spot, None);
+    }
+
+    /// A throttled page, as the prices API answers one.
+    fn throttled(retry_after: Option<&str>) -> HttpResponse {
+        let response = HttpResponse::new(super::TOO_MANY_REQUESTS, Vec::new());
+        match retry_after {
+            Some(seconds) => response.header("Retry-After", seconds),
+            None => response,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_throttled_page_is_waited_out_for_exactly_as_long_as_azure_asked() {
+        let transport = RecordedTransport::new(vec![throttled(Some("7")), page(PRICES)]);
+        let clock = ManualClock::new();
+        let timer = RecordingTimer::new();
+        let mut catalog = PriceCatalog::new();
+
+        let prices = catalog
+            .prices_for(
+                &transport,
+                &clock,
+                &timer,
+                "northcentralus",
+                "Standard_D2als_v6",
+            )
+            .await
+            .expect("the read survives being throttled");
+
+        assert_eq!(prices.on_demand, Some(Usd::from_micros(76_400)));
+        assert_eq!(
+            timer.delays(),
+            vec![7],
+            "the service's own `Retry-After` is what is waited, not a guess"
+        );
+        assert_eq!(transport.request_count(), 2);
+        assert_eq!(
+            transport.request(1).url,
+            transport.request(0).url,
+            "the retry asks for the same page rather than skipping it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_throttle_without_a_retry_after_falls_back_to_the_shared_backoff() {
+        let transport = RecordedTransport::new(vec![throttled(None), page(PRICES)]);
+        let clock = ManualClock::new();
+        let timer = RecordingTimer::new();
+        let mut catalog = PriceCatalog::new();
+
+        catalog
+            .prices_for(
+                &transport,
+                &clock,
+                &timer,
+                "northcentralus",
+                "Standard_D2als_v6",
+            )
+            .await
+            .expect("read prices");
+
+        assert_eq!(timer.delays(), vec![poll_delay(None, 0)]);
+    }
+
+    #[tokio::test]
+    async fn a_region_that_never_stops_throttling_fails_as_that_one_region() {
+        // Far more refusals than the budget can pay for, so the read gives
+        // up rather than holding the message open.
+        let refusals = core::iter::repeat_with(|| throttled(Some("30")))
+            .take(8)
+            .collect();
+        let transport = RecordedTransport::new(refusals);
+        let clock = ManualClock::new();
+        let timer = RecordingTimer::new();
+        let mut catalog = PriceCatalog::new();
+
+        let error = catalog
+            .prices_for(
+                &transport,
+                &clock,
+                &timer,
+                "northcentralus",
+                "Standard_D2als_v6",
+            )
+            .await
+            .expect_err("a throttle that never lifts is an error");
+
+        assert!(
+            error.to_string().contains("throttled"),
+            "the refusal names throttling rather than a generic HTTP failure: {error}"
+        );
+        assert_eq!(
+            timer.delays().iter().sum::<u32>(),
+            60,
+            "waiting stops at the budget"
+        );
     }
 }

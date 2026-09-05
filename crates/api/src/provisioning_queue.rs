@@ -34,20 +34,28 @@
 //! redelivery counter, because that counter is not visible to the handler
 //! and a message Cloudflare quietly stops redelivering would leave the
 //! session stuck in exactly the state this is here to prevent.
+//!
+//! # The other thing this queue carries
+//!
+//! Reading a linked account's catalog is the same kind of work as building
+//! a machine — minutes of provider calls that a request must never make —
+//! so it runs here too rather than on a queue of its own. See
+//! [`crate::catalog`] for what the reads produce and who reads it back.
 
 use core::time::Duration;
 
 use askama::Template;
 use flyco_core::{
     BranchName, ClientEvent, ControlToDaemon, HarnessKind, MachineId, MachineOrigin,
-    PermissionMode, ProvisioningStage, RepoSlug, SessionId, SessionState, UserId,
+    PermissionMode, ProviderAccountId, ProvisioningStage, RepoSlug, SessionId, SessionState,
+    UserId,
 };
 use flyco_provider::{DaemonBootstrap, GitIdentity, ProviderError, ProvisionRequest, RepoCheckout};
 use serde::{Deserialize, Serialize};
 use skyzen_services::queue::{
     QueueBatch, QueueBatchDisposition, QueueMessageDisposition, QueueRetry, SendOptions,
 };
-use skyzen_services::{Db, Queue};
+use skyzen_services::{Db, Kv, Queue};
 
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
@@ -58,7 +66,7 @@ use crate::provisioning::Provisioner;
 use crate::rooms::Rooms;
 use crate::vendors::Vendors;
 use crate::{
-    budgets, daemon_tokens, harness_accounts, machines, mcp, provisioning, sessions, users,
+    budgets, catalog, daemon_tokens, harness_accounts, machines, mcp, provisioning, sessions, users,
 };
 
 /// How many times one machine is asked for before the session is failed.
@@ -80,13 +88,20 @@ const RETRY_DELAY: Duration = Duration::from_secs(30);
 /// the session no longer has is a job from a superseded attempt, and is
 /// dropped.
 ///
-/// Two variants, because there are two ways a session gets onto compute and
-/// they are not the same operation. A [`Provision`](Self::Provision) builds
-/// a machine that does not exist. A [`Recover`](Self::Recover) starts one
-/// that does — the disk is still there, with the checkout and the caches on
-/// it, and the whole point is to keep it — so it must never take the path
+/// Two variants for compute, because there are two ways a session gets onto
+/// it and they are not the same operation. A [`Provision`](Self::Provision)
+/// builds a machine that does not exist. A [`Recover`](Self::Recover) starts
+/// one that does — the disk is still there, with the checkout and the caches
+/// on it, and the whole point is to keep it — so it must never take the path
 /// that asks a provider for capacity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The other two read a linked account's catalog into
+/// [`crate::catalog`]'s cache. They name no session and no machine, which is
+/// why [`session`](Self::session) and [`machine`](Self::machine) answer with
+/// an [`Option`]: a catalog refresh is work for an *account*, and the
+/// session-shaped bookkeeping around a provision — the claim, the attempt
+/// counter, failing the session — is exactly what it must not go through.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "job", rename_all = "snake_case")]
 pub enum ProvisioningJob {
     /// Build a session's machine.
@@ -126,6 +141,33 @@ pub enum ProvisioningJob {
         /// delivery must not bill the replacement a second time.
         reclaimed_at_unix: u64,
     },
+    /// Read one linked account's catalog into the cache.
+    ///
+    /// The fan-out: it asks the provider how its catalog is shaped and
+    /// either reads the whole account in this message or enqueues one
+    /// [`RefreshCatalogRegion`](Self::RefreshCatalogRegion) per region. The
+    /// shape is the provider's answer rather than a constant, because an
+    /// Azure subscription's regions are its own allowed-regions policy.
+    RefreshCatalog {
+        /// Who owns the account, which is what unseals its credentials.
+        user: UserId,
+        /// The account to read.
+        account: ProviderAccountId,
+    },
+    /// Read one region of one linked account's catalog into the cache.
+    ///
+    /// One region per message because a region is what fits: a full SKU
+    /// list, its quotas and a page-walk of retail prices took twenty to
+    /// thirty seconds each against a live subscription, and three of those
+    /// in one invocation is what exceeded the Worker's CPU limit.
+    RefreshCatalogRegion {
+        /// Who owns the account.
+        user: UserId,
+        /// The account to read.
+        account: ProviderAccountId,
+        /// The provider-native region this message covers.
+        region: String,
+    },
 }
 
 impl ProvisioningJob {
@@ -150,32 +192,40 @@ impl ProvisioningJob {
         }
     }
 
-    /// The session this job is for.
+    /// The session this job is for, when it is for one at all.
     #[must_use]
-    pub const fn session(&self) -> SessionId {
+    pub const fn session(&self) -> Option<SessionId> {
         match self {
-            Self::Provision { session, .. } | Self::Recover { session, .. } => *session,
+            Self::Provision { session, .. } | Self::Recover { session, .. } => Some(*session),
+            Self::RefreshCatalog { .. } | Self::RefreshCatalogRegion { .. } => None,
         }
     }
 
-    /// The machine row this job is allowed to act on.
+    /// The machine row this job is allowed to act on, when it acts on one.
     #[must_use]
-    pub const fn machine(&self) -> MachineId {
+    pub const fn machine(&self) -> Option<MachineId> {
         match self {
-            Self::Provision { machine, .. } | Self::Recover { machine, .. } => *machine,
+            Self::Provision { machine, .. } | Self::Recover { machine, .. } => Some(*machine),
+            Self::RefreshCatalog { .. } | Self::RefreshCatalogRegion { .. } => None,
         }
     }
 
     /// Which attempt this delivery is, counting from one.
+    ///
+    /// Only a job that can fail a session counts attempts. A catalog
+    /// refresh records its own failure in the document instead, and the
+    /// scheduled sweep is what asks again — see
+    /// [`crate::catalog::FAILURE_TTL_SECONDS`].
     #[must_use]
-    pub const fn attempt(&self) -> u32 {
+    pub const fn attempt(&self) -> Option<u32> {
         match self {
-            Self::Provision { attempt, .. } | Self::Recover { attempt, .. } => *attempt,
+            Self::Provision { attempt, .. } | Self::Recover { attempt, .. } => Some(*attempt),
+            Self::RefreshCatalog { .. } | Self::RefreshCatalogRegion { .. } => None,
         }
     }
 
     /// The same job, asked for once more.
-    const fn again(self) -> Self {
+    fn again(self) -> Self {
         match self {
             Self::Provision {
                 session,
@@ -197,6 +247,9 @@ impl ProvisioningJob {
                 attempt: attempt.saturating_add(1),
                 reclaimed_at_unix,
             },
+            // A catalog refresh has no attempt to raise: nothing retries it
+            // here, and asking for it again is the scheduled sweep's job.
+            job @ (Self::RefreshCatalog { .. } | Self::RefreshCatalogRegion { .. }) => job,
         }
     }
 }
@@ -210,12 +263,7 @@ impl ProvisioningJob {
 /// never enqueued would wait for a consumer that is never going to run.
 pub async fn enqueue(queue: &Queue, job: ProvisioningJob) -> Result<(), ApiError> {
     queue.send_json(&job).await?;
-    tracing::info!(
-        session = %job.session(),
-        machine = %job.machine(),
-        attempt = job.attempt(),
-        "queued a provisioning job"
-    );
+    tracing::info!(job = ?job, "queued a provisioning job");
     Ok(())
 }
 
@@ -244,9 +292,7 @@ pub async fn enqueue_after(
         .await
         .map_err(ApiError::Queue)?;
     tracing::info!(
-        session = %job.session(),
-        machine = %job.machine(),
-        attempt = job.attempt(),
+        job = ?job,
         delay_secs = delay.as_secs(),
         "queued a recovery for after the provider takes the machine"
     );
@@ -297,6 +343,7 @@ pub struct Clients<'a, P: Provisioner, G: GithubOauth> {
 pub async fn consume(
     db: &Db,
     config: &ApiConfig,
+    kv: &Kv,
     queue: &Queue,
     rooms: &Rooms,
     clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
@@ -304,12 +351,13 @@ pub async fn consume(
 ) -> QueueBatchDisposition {
     let mut decisions = Vec::with_capacity(batch.messages.len());
     for message in batch.messages {
+        let job = message.body.clone();
         decisions.push(
-            match perform(db, config, queue, rooms, clients, message.body).await {
+            match perform(db, config, kv, queue, rooms, clients, message.body).await {
                 Settled::Done => QueueMessageDisposition::Ack,
                 Settled::Redeliver(error) => {
                     tracing::error!(
-                        session = %message.body.session(),
+                        job = ?job,
                         %error,
                         "holding a provisioning job for redelivery: nothing was decided"
                     );
@@ -329,13 +377,30 @@ pub async fn consume(
 async fn perform(
     db: &Db,
     config: &ApiConfig,
+    kv: &Kv,
     queue: &Queue,
     rooms: &Rooms,
     clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
     job: ProvisioningJob,
 ) -> Settled {
+    // A catalog refresh is decided entirely by itself: it never claims a
+    // machine row, never counts attempts, and never fails a session.
+    match &job {
+        ProvisioningJob::RefreshCatalog { user, account } => {
+            return settle(refresh_catalog(db, config, kv, queue, *user, *account).await);
+        }
+        ProvisioningJob::RefreshCatalogRegion {
+            user,
+            account,
+            region,
+        } => {
+            return settle(refresh_region(db, config, kv, *user, *account, region).await);
+        }
+        ProvisioningJob::Provision { .. } | ProvisioningJob::Recover { .. } => {}
+    }
+
     let outcome = match job {
-        ProvisioningJob::Provision { .. } => match claim(db, job).await {
+        ProvisioningJob::Provision { .. } => match claim(db, job.clone()).await {
             Ok(None) => return Settled::Done,
             Ok(Some(claimed)) => build(db, config, rooms, clients, &claimed).await,
             Err(error) => return Settled::Redeliver(error),
@@ -360,18 +425,159 @@ async fn perform(
             Ok(Recovered::Ran) => Ok(()),
             Err(failure) => Err(failure),
         },
+        // Answered above, before a machine job's bookkeeping was reached.
+        ProvisioningJob::RefreshCatalog { .. } | ProvisioningJob::RefreshCatalogRegion { .. } => {
+            return Settled::Done;
+        }
     };
 
+    // Unreachable: every arm above that produces an outcome is a job that
+    // names a session. Written as a disposition rather than an `expect`
+    // because a panic here kills the consumer for the whole batch.
+    let Some(session) = job.session() else {
+        return Settled::Done;
+    };
     match outcome {
         Ok(()) => Settled::Done,
-        Err(Provisioned::Failed(reason)) => {
-            match sessions::fail(db, job.session(), &reason).await {
-                Ok(()) => Settled::Done,
-                Err(error) => Settled::Redeliver(error),
-            }
-        }
+        Err(Provisioned::Failed(reason)) => match sessions::fail(db, session, &reason).await {
+            Ok(()) => Settled::Done,
+            Err(error) => Settled::Redeliver(error),
+        },
         Err(Provisioned::Retry(reason)) => retry(db, queue, job, &reason).await,
     }
+}
+
+/// A catalog refresh's disposition: it either wrote what it learned, or the
+/// store was unreachable and nothing was recorded.
+///
+/// Everything a *provider* said is written into the document, failures
+/// included, so only a flyco-side failure holds the message. A refresh that
+/// keeps failing therefore stops asking rather than looping.
+fn settle(outcome: Result<(), ApiError>) -> Settled {
+    match outcome {
+        Ok(()) => Settled::Done,
+        Err(error) => Settled::Redeliver(error),
+    }
+}
+
+/// Reads one account's catalog, or fans it out a region at a time.
+///
+/// Everything the provider says — including a refusal — ends up in the
+/// account's document, because "read, and it refused" is an answer the
+/// request path can serve and "not read yet" is not. Only a store failure
+/// is held for redelivery.
+async fn refresh_catalog(
+    db: &Db,
+    config: &ApiConfig,
+    kv: &Kv,
+    queue: &Queue,
+    user: UserId,
+    account: ProviderAccountId,
+) -> Result<(), ApiError> {
+    let linked = match provisioning::account(db, config, user, account).await {
+        Ok(linked) => linked,
+        // Unlinked between the ask and the read. There is nothing to write
+        // and nothing to keep: the document expires on its own.
+        Err(ApiError::ProviderAccountNotFound) => {
+            tracing::info!(%account, "dropping a catalog refresh for an account that is gone");
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    if !linked.catalog_is_remote() {
+        // A host's catalog is never cached, so there is nothing here to
+        // write; the account was enqueued by something that should not have.
+        tracing::warn!(%account, "ignoring a catalog refresh for a machine the user owns");
+        return Ok(());
+    }
+
+    let at_unix = now_unix();
+    let reads = match provisioning::catalog_reads(&linked).await {
+        Ok(reads) => reads,
+        Err(error) => {
+            tracing::warn!(%account, %error, "an account could not say how to read its catalog");
+            return catalog::record_failure(kv, account, error.to_string(), at_unix).await;
+        }
+    };
+
+    match reads {
+        provisioning::CatalogReads::PerRegion(regions) if !regions.is_empty() => {
+            for region in regions {
+                enqueue(
+                    queue,
+                    ProvisioningJob::RefreshCatalogRegion {
+                        user,
+                        account,
+                        region,
+                    },
+                )
+                .await?;
+            }
+            Ok(())
+        }
+        // A subscription whose policy allows no region flyco can read is a
+        // complete answer, not a pending one: without a document written
+        // here the account would stay pending for ever.
+        provisioning::CatalogReads::PerRegion(_) => {
+            tracing::info!(%account, "an account's policy leaves no region to read");
+            catalog::record_account(kv, account, Vec::new(), at_unix).await
+        }
+        provisioning::CatalogReads::Whole => match provisioning::catalog(&linked).await {
+            Ok(entries) => {
+                tracing::info!(%account, offered = entries.len(), "read an account's catalog");
+                catalog::record_account(kv, account, entries, at_unix).await
+            }
+            Err(error) => {
+                tracing::warn!(%account, %error, "an account's catalog could not be read");
+                catalog::record_failure(kv, account, error.to_string(), at_unix).await
+            }
+        },
+    }
+}
+
+/// Reads exactly one region of one account's catalog into the document.
+async fn refresh_region(
+    db: &Db,
+    config: &ApiConfig,
+    kv: &Kv,
+    user: UserId,
+    account: ProviderAccountId,
+    region: &str,
+) -> Result<(), ApiError> {
+    let linked = match provisioning::account(db, config, user, account).await {
+        Ok(linked) => linked,
+        Err(ApiError::ProviderAccountNotFound) => {
+            tracing::info!(%account, "dropping a catalog refresh for an account that is gone");
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+
+    let outcome = match provisioning::region_catalog(&linked, region).await {
+        Ok(entries) => {
+            tracing::info!(%account, %region, offered = entries.len(), "read a region's catalog");
+            catalog::RegionOutcome::Offered { entries }
+        }
+        // One region, one hole: a region the provider refuses must not take
+        // the regions beside it off the menu.
+        Err(error) => {
+            tracing::warn!(%account, %region, %error, "a region's catalog could not be read");
+            catalog::RegionOutcome::Failed {
+                error: error.to_string(),
+            }
+        }
+    };
+
+    catalog::record_region(
+        kv,
+        account,
+        catalog::RegionCatalog {
+            region: region.to_owned(),
+            read_at_unix: now_unix(),
+            outcome,
+        },
+    )
+    .await
 }
 
 /// A session and the machine row this job is allowed to fill in.
@@ -395,7 +601,12 @@ struct Claim {
 /// the machine already exists — and the message is acknowledged rather than
 /// redelivered into the same answer.
 async fn claim(db: &Db, job: ProvisioningJob) -> Result<Option<Claim>, ApiError> {
-    let session = job.session();
+    // Only a job that names a session and a machine reaches here; both
+    // reads are refusals rather than unwraps so a panic cannot take the
+    // batch down over a shape the type already rules out.
+    let (Some(session), Some(wanted)) = (job.session(), job.machine()) else {
+        return Ok(None);
+    };
     let Some(target) = sessions::provisioning_target(db, session).await? else {
         tracing::info!(%session, "dropping a job for a session that no longer exists");
         return Ok(None);
@@ -416,10 +627,10 @@ async fn claim(db: &Db, job: ProvisioningJob) -> Result<Option<Claim>, ApiError>
         sessions::fail(db, session, "this session has no machine row to fill in").await?;
         return Ok(None);
     };
-    if machine.id != job.machine() {
+    if machine.id != wanted {
         tracing::info!(
             %session,
-            job = %job.machine(),
+            job = %wanted,
             machine = %machine.id,
             "dropping a job superseded by a later attempt"
         );
@@ -846,10 +1057,16 @@ fn classify(error: &ProviderError) -> Provisioned {
 
 /// Asks for the same machine once more, or gives up and says why.
 async fn retry(db: &Db, queue: &Queue, job: ProvisioningJob, reason: &str) -> Settled {
-    if job.attempt() >= MAX_ATTEMPTS {
+    // Only a job that names a session reaches here, and only such a job
+    // counts attempts; both reads are written as refusals rather than
+    // unwraps because a panic would take the whole batch down.
+    let (Some(session), Some(attempt)) = (job.session(), job.attempt()) else {
+        return Settled::Done;
+    };
+    if attempt >= MAX_ATTEMPTS {
         let exhausted =
             format!("gave up after {MAX_ATTEMPTS} attempts to reach the provider: {reason}");
-        return match sessions::fail(db, job.session(), &exhausted).await {
+        return match sessions::fail(db, session, &exhausted).await {
             Ok(()) => Settled::Done,
             Err(error) => Settled::Redeliver(error),
         };
@@ -857,8 +1074,8 @@ async fn retry(db: &Db, queue: &Queue, job: ProvisioningJob, reason: &str) -> Se
 
     let next = job.again();
     tracing::warn!(
-        session = %job.session(),
-        attempt = next.attempt(),
+        %session,
+        attempt = attempt.saturating_add(1),
         %reason,
         "retrying a provision that could not reach the provider"
     );
@@ -901,7 +1118,7 @@ mod worker {
     )]
 
     use skyzen_services::queue::{QueueBatch, QueueBatchDisposition, QueueRetry};
-    use skyzen_services::{Db, Queue};
+    use skyzen_services::{Db, Kv, Queue};
 
     // `#[wasm_bindgen]` expands an async export into a `future_to_promise`
     // call written unqualified, so the crate it lives in has to be nameable
@@ -934,6 +1151,16 @@ mod worker {
                 return QueueBatchDisposition::retry_all(QueueRetry::new());
             }
         };
+        // The catalog cache lives in the same namespace the sessions and
+        // OAuth attempts do, and a consumer that cannot open it cannot
+        // record what it read.
+        let kv = match skyzen_cloudflare::CfKv::from_env(&env, binding::AUTH_KV) {
+            Ok(cf) => Kv::new(cf),
+            Err(error) => {
+                tracing::error!(%error, "the provisioning consumer could not open KV");
+                return QueueBatchDisposition::retry_all(QueueRetry::new());
+            }
+        };
         let config = match ApiConfig::from_worker_env(&env) {
             Ok(config) => config,
             Err(error) => {
@@ -950,6 +1177,7 @@ mod worker {
         consume(
             &db,
             &config,
+            &kv,
             &queue,
             &rooms,
             &mut Clients {

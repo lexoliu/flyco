@@ -504,6 +504,27 @@ pub struct MachineView {
     pub created_at_unix: u64,
 }
 
+/// Answer of `GET /v1/machines/catalog`.
+///
+/// Not a bare list, because "no machines" and "no machines *yet*" are
+/// different answers and a list can only say the first. A cloud account's
+/// catalog is read in the background — it is thousands of SKUs, quotas and
+/// price pages per region, which is minutes of work and far more than a
+/// request may spend — so an account linked moments ago has nothing to
+/// contribute and is named in [`pending_accounts`](Self::pending_accounts)
+/// instead. A reader that ignored the difference would tell a user who has
+/// just linked a subscription that it can deploy nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct MachineCatalog {
+    /// The curated entries every account that has been read can offer.
+    pub entries: Vec<MachineCatalogEntry>,
+    /// The linked accounts whose catalog has not been read yet.
+    ///
+    /// Empty is the steady state. While it is not, the answer is incomplete
+    /// rather than final, and a reader should say so and ask again.
+    pub pending_accounts: Vec<ProviderAccountId>,
+}
+
 /// Answer of `GET /v1/machines/default`.
 ///
 /// The machine flyco would provision right now, and the catalog entry it
@@ -518,6 +539,12 @@ pub struct MachineDefault {
     pub choice: crate::session::MachineChoice,
     /// The catalog entry that choice points at, with its price and size.
     pub entry: MachineCatalogEntry,
+    /// The linked accounts still being read when this choice was made.
+    ///
+    /// The choice is the best one flyco can make *from what it has read*.
+    /// While this is non-empty a cheaper machine may still arrive, so a
+    /// caller showing the answer as final would be overstating it.
+    pub pending_accounts: Vec<ProviderAccountId>,
 }
 
 /// Request body of `POST /v1/sessions/{id}/machine/resize`.

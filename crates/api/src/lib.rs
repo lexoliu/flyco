@@ -15,6 +15,7 @@ pub mod approvals;
 pub mod authenticator;
 pub mod bonuses;
 pub mod budgets;
+pub mod catalog;
 pub mod claude_oauth;
 pub mod clock;
 pub mod clouds;

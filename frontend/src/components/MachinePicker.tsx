@@ -46,6 +46,11 @@ export interface MachinePickerProps {
   onSpot?: ((spot: boolean) => void) | undefined;
   /** Why the catalog is missing, when the request for it failed. */
   error?: unknown;
+  /**
+   * What to say instead of the control, while flyco is still reading what
+   * the account can deploy. See [`MachineSliderProps.pending`].
+   */
+  pending?: string | undefined;
   /** The line under the slider: what choosing here means. */
   note?: JSX.Element | undefined;
   /** What commits the choice, for a caller whose choice is a request. */
@@ -70,6 +75,7 @@ export default function MachinePicker(props: MachinePickerProps) {
         chosenKey={props.chosenKey}
         onChoose={props.onChoose}
         onSpot={props.onSpot}
+        pending={props.pending}
       />
       <Show when={props.note}>{(note) => <p class={styles.note}>{note()}</p>}</Show>
       {props.children}

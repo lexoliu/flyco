@@ -4,6 +4,7 @@
 //! `testing` fixtures without exposing them in the public API.
 
 mod activity;
+mod catalog;
 mod claude_oauth;
 mod codex_oauth;
 mod contract;

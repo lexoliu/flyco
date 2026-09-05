@@ -63,6 +63,7 @@ const AUTOMATIC: MachineDefault = {
     disk_gib: 64,
   },
   entry: SMALL,
+  pending_accounts: [],
 };
 
 /** The single catalog entry an enrolled machine contributes. */
@@ -91,6 +92,7 @@ const HOST_AUTOMATIC: MachineDefault = {
     disk_gib: 64,
   },
   entry: HOST,
+  pending_accounts: [],
 };
 
 function mount(

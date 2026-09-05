@@ -20,7 +20,7 @@
  * frame of its own would make one machine look like a different kind of
  * thing from the account beside it.
  */
-import { Show, createSignal, type JSX } from "solid-js";
+import { Show, createEffect, createSignal, onCleanup, type JSX } from "solid-js";
 import { createQuery } from "../lib/query";
 import { A } from "@solidjs/router";
 import { Server } from "lucide-solid";
@@ -28,11 +28,21 @@ import ConfirmDialog from "./ConfirmDialog";
 import Logomark, { PROVIDER_MARK } from "./Logomark";
 import ProblemNotice from "./ProblemNotice";
 import Toggle from "./Toggle";
-import { getDefaultMachine, type CloudUsageRow, type ProviderAccountView } from "../api/client";
+import {
+  getDefaultMachine,
+  type CloudProviderKind,
+  type CloudUsageRow,
+  type ProviderAccountView,
+} from "../api/client";
 import { ApiProblem } from "../api/problem";
 import { formatDate } from "../lib/dates";
 import { inUseRefusal, sessionsStillRunning, type InUseRefusal } from "../lib/inUse";
-import { hourlyLabel } from "../lib/machines";
+import {
+  CATALOG_POLL_SECONDS,
+  catalogNotReady,
+  hourlyLabel,
+  readingMachines,
+} from "../lib/machines";
 import { formatUsd } from "../lib/money";
 import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./ComputeCard.module.css";
@@ -152,10 +162,28 @@ export default function ComputeCard(props: ComputeCardProps) {
 
   // Keyed on both, because the machine flyco would pick and the price it
   // would pay both move with the capacity mode.
-  const [machine] = createQuery(
+  const [machine, { refetch: reask }] = createQuery(
     () => ({ account: props.account.id, spot: props.spot }),
     ({ account, spot }) => getDefaultMachine(spot, account),
   );
+
+  /**
+   * Whether flyco is still reading what this account can deploy.
+   *
+   * A card opened moments after the account was linked is the ordinary case:
+   * reading a cloud account's machines happens on the provisioning queue and
+   * lands seconds later, so the cell says so and asks again rather than
+   * showing a skeleton that never resolves.
+   */
+  const reading = () => catalogNotReady(machine.error);
+
+  createEffect(() => {
+    if (!reading()) {
+      return;
+    }
+    const timer = setInterval(() => void reask(), CATALOG_POLL_SECONDS * 1000);
+    onCleanup(() => clearInterval(timer));
+  });
 
   const mark = () => PROVIDER_MARK[props.account.kind];
 
@@ -240,7 +268,11 @@ export default function ComputeCard(props: ComputeCardProps) {
         */}
         <Show
           when={machine.error === undefined}
-          fallback={<span class={styles.absent}>{machineAbsence(machine.error)}</span>}
+          fallback={
+            <span class={styles.absent}>
+              {machineAbsence(machine.error, props.account.kind)}
+            </span>
+          }
         >
           <Show
             when={machine()}
@@ -347,12 +379,16 @@ export function YourHardware() {
 /**
  * Why there is no machine to name, in words.
  *
- * The control plane refuses `GET /v1/machines/default` with one specific
- * problem when the account offers no Linux type flyco would pick on its
- * own; that is a fact about the account and is said as one. Anything else
- * is a failure, and its own message is the most honest thing to show.
+ * Three different answers, and collapsing any two of them would say
+ * something untrue. `catalog-not-ready` is a wait that ends by itself, so it
+ * describes what flyco is doing; `no-deployable-linux-machine` is a fact
+ * about an account that *was* read, so it is stated as one; anything else is
+ * a failure, and its own message is the most honest thing to show.
  */
-function machineAbsence(error: unknown): string {
+function machineAbsence(error: unknown, kind: CloudProviderKind): string {
+  if (catalogNotReady(error)) {
+    return readingMachines([kind]);
+  }
   if (error instanceof ApiProblem && error.type.endsWith("/no-deployable-linux-machine")) {
     return "No deployable Linux machine in this account yet.";
   }

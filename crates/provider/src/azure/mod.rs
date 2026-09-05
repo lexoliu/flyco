@@ -673,7 +673,17 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     /// narrows it. A region the caller named and the policy forbids is
     /// dropped here rather than producing an empty region report the user
     /// would have to interpret.
-    async fn catalog_regions(&mut self) -> Result<Vec<String>, ProviderError> {
+    ///
+    /// Public because a catalog is refreshed one region per queue message:
+    /// the control plane asks which regions this account has before it can
+    /// fan those messages out, and that answer is the subscription's own
+    /// policy rather than anything the caller may assume.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the subscription's policy assignments
+    /// cannot be read.
+    pub async fn catalog_regions(&mut self) -> Result<Vec<String>, ProviderError> {
         let policy = self.region_policy().await?;
         let asked: Vec<String> = self.workspace.regions.clone();
 
@@ -1055,12 +1065,12 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         let quotas = self.read_quotas(region).await?;
         let priced = self
             .prices
-            .region_prices(&self.transport, &self.clock, region)
+            .region_prices(&self.transport, &self.clock, &self.timer, region)
             .await?
             .to_vec();
         let storage = self
             .prices
-            .storage_pricing(&self.transport, &self.clock, region)
+            .storage_pricing(&self.transport, &self.clock, &self.timer, region)
             .await?
             .clone();
 
