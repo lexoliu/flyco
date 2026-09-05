@@ -148,6 +148,13 @@ impl ControlApi for RecordingApi {
         )
     }
 
+    fn report_startup_failure(
+        &self,
+        _message: String,
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        core::future::ready(Ok(()))
+    }
+
     fn report_spot_notice(
         &self,
         seconds_remaining: u32,
@@ -1777,6 +1784,15 @@ mod remote_store {
             _harness_session_id: &str,
         ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
             core::future::ready(Ok(()))
+        }
+
+        fn report_startup_failure(
+            &self,
+            _message: String,
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Err(ControlApiError::Transport(
+                "the transcript store reports no startup failures".to_owned(),
+            )))
         }
 
         fn report_spot_notice(

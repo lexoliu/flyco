@@ -49,6 +49,20 @@ pub struct PublishedBinary {
     pub checksum: PublishedObject,
 }
 
+/// Claude Code's managed-policy directory on Linux.
+///
+/// `managed-settings.json` and `managed-mcp.json` live here and outrank
+/// every other settings source, which is what makes flyco's MCP allowlist a
+/// fact about the filesystem rather than a request the agent can decline.
+/// The CLI reads this exact path, so it is not ours to move.
+///
+/// It lives beside the release because two published things have to agree
+/// about it: the provisioner writes it into a machine's configuration, and
+/// the unit has to let the daemon write into it. The unit runs under
+/// `ProtectSystem=strict`, which makes the whole hierarchy read-only, so a
+/// path missing from `ReadWritePaths` is a daemon that cannot start.
+pub const CLAUDE_MANAGED_DIR: &str = "/etc/claude-code";
+
 /// The 64-bit x86 build.
 pub const X86_64: PublishedBinary = PublishedBinary {
     uname: "x86_64",

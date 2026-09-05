@@ -199,7 +199,11 @@ async fn run(cli: Cli) -> Result<(), Failure> {
             if let Some(api) = api.as_ref() {
                 config.resume_session_id = Box::pin(conversation_to_continue(&config, api)).await;
             }
-            Box::pin(check_out(&config, api.as_ref())).await?;
+            report_failure_to(
+                api.as_ref(),
+                Box::pin(check_out(&config, api.as_ref())).await,
+            )
+            .await?;
             // Every server this session may reach: flyco's own, launched as
             // a second `flycod mcp` against this same file, and the ones
             // the user registered. Built once here because both harnesses
@@ -208,12 +212,37 @@ async fn run(cli: Cli) -> Result<(), Failure> {
                 FlycoServer::of(&path)?,
                 core::mem::take(&mut config.mcp_servers),
             );
-            match config.harness {
+            let driven = match config.harness {
                 HarnessKind::ClaudeCode => Box::pin(drive_claude_code(config, mount)).await,
                 HarnessKind::Codex => Box::pin(drive_codex(config, mount)).await,
-            }
+            };
+            report_failure_to(api.as_ref(), driven).await
         }
     }
+}
+
+/// Tells the control plane why this daemon is stopping, and passes the
+/// failure on.
+///
+/// `flycod` is restarted on failure, so a machine whose daemon cannot start
+/// says nothing at all otherwise: the relay is never opened, and the page
+/// waits on a timeline that will not advance. The report is best effort —
+/// a control plane that cannot be reached is exactly the kind of failure
+/// being reported, and shouting about it twice would replace the real
+/// reason with a network error.
+async fn report_failure_to<T>(
+    api: Option<&HttpControlApi>,
+    outcome: Result<T, Failure>,
+) -> Result<T, Failure> {
+    let Err(failure) = outcome else {
+        return outcome;
+    };
+    if let Some(api) = api
+        && let Err(error) = api.report_startup_failure(failure.to_string()).await
+    {
+        tracing::warn!(%error, "could not tell the control plane why flycod is stopping");
+    }
+    Err(failure)
 }
 
 /// Which harness conversation this daemon must continue.

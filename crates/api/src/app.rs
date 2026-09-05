@@ -9,9 +9,9 @@ use flyco_core::{
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, EnvDocument,
     HarnessFeature, HarnessObservation, HarnessSessionView, MAX_SESSION_TITLE_CHARS,
     MachineCatalogEntry, MachineOrigin, MachineSpec, ProvisioningStage, RepoSlug, RepoStatus,
-    ReportProvisioningStage, ReportSpotNotice, ResizeMachine, SendMessage, SessionActivity,
-    SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe,
-    UpdateSession, UserId, wire::ApprovalPayload,
+    ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure, ResizeMachine, SendMessage,
+    SessionActivity, SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv,
+    UpdateMe, UpdateSession, UserId, wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -1587,6 +1587,22 @@ pub async fn fail_stalled_provisions(
     at_unix: u64,
 ) -> Result<(), ApiError> {
     for stalled in sessions::stalled_provisions(db, at_unix).await? {
+        // The daemon's own sentence when it managed to send one, because
+        // "never reported its agent ready" is what flyco saw and not what
+        // happened.
+        let reason = sessions::startup_failure(db, stalled.id).await?.map_or_else(
+            || {
+                "the machine was built but never reported its agent ready, so flyco stopped \
+                 waiting for it and released it"
+                    .to_owned()
+            },
+            |failure| {
+                format!(
+                    "the machine was built but its agent never started: {failure}. flyco stopped \
+                     waiting for it and released it"
+                )
+            },
+        );
         // Destroyed first: a machine that never came up is still a machine
         // running up a bill, and a session flyco has given up on must not
         // go on paying for one. Resuming builds a new one on the same row.
@@ -1602,16 +1618,28 @@ pub async fn fail_stalled_provisions(
                 "a stalled session's machine could not be released"
             );
         }
-        sessions::fail(
-            db,
-            rooms,
-            stalled.id,
-            "the machine was built but never reported its agent ready, so flyco stopped \
-             waiting for it and released it",
-        )
-        .await?;
+        sessions::fail(db, rooms, stalled.id, &reason).await?;
     }
     Ok(())
+}
+
+/// Records why this session's daemon stopped before it could report in.
+///
+/// `flycod` is restarted on failure, so this is not itself a verdict: the
+/// next start may succeed, and a session that comes up keeps nothing of
+/// this. What it buys is the sentence — a machine that goes on failing is
+/// failed by the stall sweep with the daemon's own words instead of a
+/// guess (issue #186).
+#[skyzen::openapi]
+async fn report_startup_failure(
+    State(session): State<DaemonSession>,
+    Json(report): Json<ReportStartupFailure>,
+    db: Db,
+) -> Outcome<NoContent> {
+    sessions::note_startup_failure(&db, session.0, &report.message)
+        .await
+        .map(|()| NoContent)
+        .into()
 }
 
 #[skyzen::openapi]
@@ -1906,12 +1934,17 @@ fn host_routes() -> Vec<RouteNode> {
 }
 
 fn daemon_routes() -> Vec<RouteNode> {
-    Route::new((
+    // Two trees, one middleware: what the daemon reports about its session,
+    // and what it asks on the agent's behalf. Split because a route tuple
+    // holds sixteen and this is more than sixteen routes, so the seam is
+    // where the meaning changes rather than wherever the count ran out.
+    let reports = Route::new((
         "/v1/sessions/{id}/approvals".post(raise_approval),
         "/v1/sessions/{id}/harness-session"
             .at(get_harness_session)
             .put(put_harness_session),
         "/v1/sessions/{id}/spot-notice".post(report_spot_notice),
+        "/v1/sessions/{id}/startup-failure".post(report_startup_failure),
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),
         "/v1/sessions/{id}/turn-started".post(notify_turn_started),
         "/v1/sessions/{id}/turn-completed".post(notify_turn_completed),
@@ -1922,13 +1955,20 @@ fn daemon_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/workdir-patch"
             .at(get_workdir_patch)
             .put(put_workdir_patch),
+    ))
+    .middleware(RequireDaemon::new())
+    .into_route_nodes();
+
+    let agent = Route::new((
         "/v1/sessions/{id}/agent/machine".at(get_agent_machine),
         "/v1/sessions/{id}/agent/machine/catalog".at(get_agent_machine_catalog),
         "/v1/sessions/{id}/agent/machine/resize".post(agent_resize_machine),
         "/v1/sessions/{id}/agent/budget".at(get_agent_budget),
     ))
     .middleware(RequireDaemon::new())
-    .into_route_nodes()
+    .into_route_nodes();
+
+    reports.into_iter().chain(agent).collect()
 }
 
 /// The caller's own account, keys, and approvals.

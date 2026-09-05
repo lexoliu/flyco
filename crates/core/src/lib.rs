@@ -96,7 +96,8 @@ pub use usage::{
 };
 pub use wire::{
     ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-    ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ShellOutcome, ShellStream,
+    ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure,
+    ShellOutcome, ShellStream,
 };
 pub use workdir::{
     DIFF_PATCH_BYTES_MAX, DIRECTORY_ENTRIES_MAX, DirectoryEntry, DirectoryListing, EntryKind,

@@ -50,14 +50,11 @@ pub const CLAUDE_PROJECT_DIR_NAME: &str = "flyco-session";
 /// The isolated `CODEX_HOME` an injected Codex credential runs under.
 pub const CODEX_HOME: &str = "/var/lib/flyco/codex";
 
-/// Claude Code's managed-policy directory on Linux, which is root-owned.
-///
-/// `managed-settings.json` and `managed-mcp.json` live here and outrank
-/// every other settings source, which is what makes flyco's MCP allowlist a
-/// fact about the filesystem rather than a request the agent can decline.
-/// An absolute path outside `CLAUDE_CONFIG_DIR` on purpose: an isolated
-/// config tree is the session's, and this is the machine's.
-pub const CLAUDE_MANAGED_DIR: &str = "/etc/claude-code";
+/// Claude Code's managed-policy directory, declared with the release that
+/// has to make it writable. An absolute path outside `CLAUDE_CONFIG_DIR` on
+/// purpose: an isolated config tree is the session's, and this is the
+/// machine's.
+pub use flyco_core::release::CLAUDE_MANAGED_DIR;
 
 /// How the supervised `claude` CLI authenticates on a provisioned machine.
 ///
