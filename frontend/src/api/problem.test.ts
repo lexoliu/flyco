@@ -28,7 +28,9 @@ describe("problemFromResponse", () => {
     expect(problem.type).toBe("https://flyco.dev/problems/conflict");
     expect(problem.title).toBe("Conflict");
     expect(problem.detail).toBe("already exists");
-    expect(problem.message).toBe("Conflict: already exists");
+    // The message is the detail alone: the status phrase adds nothing a
+    // page has not already said.
+    expect(problem.message).toBe("already exists");
   });
 
   it("recognizes a /not-implemented suffix as NotImplementedError", async () => {
