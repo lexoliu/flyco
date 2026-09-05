@@ -292,6 +292,33 @@ describe("foldTranscript provisioning timeline", () => {
     ]);
   });
 
+  it("treats a whole build replayed after a reconnect as the build it already showed", () => {
+    // A reconnect's catch-up hands back frames the page has already seen.
+    // Every stage carries the instant it happened, so the same `reserving`
+    // at the same instant is that replay — not a machine being rebuilt,
+    // which is what a second timeline headed `Migrating` would claim.
+    const build = [
+      { stage: "reserving", at: T0 },
+      { stage: "booting", at: T0 + 40 },
+      { stage: "installing", at: T0 + 95 },
+    ] as const;
+    const frames = build.map((step, index) =>
+      at(100 + index, { type: "provisioning_stage", stage: step.stage, at_unix: step.at }),
+    );
+    const items = foldTranscript([...frames, ...frames]);
+
+    const timelines = items.filter((item) => item.kind === "provisioning");
+    expect(timelines).toHaveLength(1);
+    expect(timelines[0]).toMatchObject({
+      recovery: false,
+      steps: [
+        { stage: "reserving", atUnix: T0 },
+        { stage: "booting", atUnix: T0 + 40 },
+        { stage: "installing", atUnix: T0 + 95 },
+      ],
+    });
+  });
+
   it("ignores a stage delivered twice, which an at-least-once relay will do", () => {
     const items = foldTranscript([
       at(0, { type: "provisioning_stage", stage: "reserving", at_unix: T0 }),

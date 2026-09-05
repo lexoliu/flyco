@@ -566,6 +566,10 @@ is not where a user looks when the page tells them the session stopped.
   gets **another timeline in the place it happened**, headed `Migrating`
   and holding only the stages a restart goes through — nothing is
   installed or cloned, because the disk already has both.
+- A stage is identified by the instant it happened. A reconnect replays
+  frames the page has already shown, and a replayed `reserving` must never
+  open a second timeline headed `Migrating`: only a `reserving` at a new
+  instant is a new machine.
 - A machine that stops reporting stages for fifteen minutes is **failed**
   by the control plane, with `the machine was built but never reported its
   agent ready`. Nothing else would notice: the queue's job finished, and
