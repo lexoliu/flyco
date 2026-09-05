@@ -58,9 +58,9 @@ import {
   entryKey,
   hourlyLabel,
   readingMachines,
+  readingMachinesShort,
   shortMachineType,
 } from "../lib/machines";
-import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./Composer.module.css";
 
 const HARNESS_LABEL: Record<HarnessKind, string> = {
@@ -141,6 +141,11 @@ export default function Composer(props: ComposerProps) {
   /** The one sentence a pending catalog shows, or `null` once it is read. */
   const pending = createMemo(() =>
     pendingKinds().length === 0 ? null : readingMachines(pendingKinds()),
+  );
+
+  /** The same wait, in the few words the chip has room for. */
+  const pendingShort = createMemo(() =>
+    pendingKinds().length === 0 ? null : readingMachinesShort(pendingKinds()),
   );
 
   // A pending catalog ends by itself, seconds later, so the screen asks
@@ -299,6 +304,7 @@ export default function Composer(props: ComposerProps) {
             catalog={entries()}
             error={machineError()}
             pending={pending()}
+            pendingShort={pendingShort()}
             chosenKey={chosenKey()}
             spot={spot()}
             onChoose={setChosenKey}
@@ -435,6 +441,8 @@ function ComputeChip(props: {
    * would be stating a fact nobody has established yet.
    */
   pending: string | null;
+  /** The same wait as `pending`, sized for the chip. */
+  pendingShort: string | null;
   chosenKey: string | null;
   spot: boolean;
   onChoose: (key: string | null) => void;
@@ -445,14 +453,11 @@ function ComputeChip(props: {
     if (entry === undefined) {
       return null;
     }
-    // Provider, type and price: what decides whether to send. Region and
-    // spot are one click away in the popover, and on the chip they were
-    // what pushed the row onto a second line.
-    return [
-      PROVIDER_LABEL[entry.provider],
-      shortMachineType(entry.machine_type),
-      hourlyLabel(entry, props.spot),
-    ].join(" · ");
+    // Type and price: what decides whether to send. The logomark already
+    // names the provider; region, spot and account are one click away in
+    // the popover, and on the chip they were what pushed the row onto a
+    // second line.
+    return [shortMachineType(entry.machine_type), hourlyLabel(entry, props.spot)].join(" · ");
   });
 
   /** The sentence a license-bound machine has to show before send. */
@@ -494,7 +499,7 @@ function ComputeChip(props: {
               {(mark) => <Logomark mark={mark()} size={13} />}
             </Show>
             <span class={styles.chipLabel}>
-              {summary() ?? props.pending ?? "Choosing a machine\u2026"}
+              {summary() ?? props.pendingShort ?? "Choosing\u2026"}
             </span>
             <span class={styles.chipDim}>
               {props.chosenKey === null ? "Auto" : "Chosen"}
@@ -635,13 +640,11 @@ function BranchChip(props: {
   branch: string | null;
   onChoose: (branch: string | null) => void;
 }) {
-  const [browsed, setBrowsed] = createSignal(false);
-
-  // Keyed on the repository *and* on the chip having been opened at least
-  // once, so browsing one repository's branches is not a request made for
-  // every repository the user clicks past on the way to it.
+  // Read as soon as a repository is chosen, so the chip names the branch
+  // the session will start on instead of the words "Default branch": a
+  // name is shorter, and it is the fact the user is being shown.
   const [page] = createQuery(
-    () => (browsed() && props.slug !== null ? props.slug : undefined),
+    () => (props.slug !== null ? props.slug : undefined),
     (slug: string) => listBranches(slug),
   );
 
@@ -661,17 +664,14 @@ function BranchChip(props: {
         trigger={(attrs) => (
           <button
             id={attrs.id}
-            onClick={() => {
-              setBrowsed(true);
-              attrs.onClick();
-            }}
+            onClick={attrs.onClick}
             aria-expanded={attrs.expanded()}
             aria-haspopup="dialog"
             type="button"
             class={styles.chip}
           >
             <GitBranch size={13} aria-hidden="true" />
-            <span class={styles.chipLabel}>{effective() ?? "Default branch"}</span>
+            <span class={styles.chipLabel}>{effective() ?? "Branch\u2026"}</span>
           </button>
         )}
       >

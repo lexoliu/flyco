@@ -1137,6 +1137,9 @@ mod worker {
         batch: QueueBatch<ProvisioningJob>,
         env: skyzen::runtime::wasm::Env,
     ) -> QueueBatchDisposition {
+        // A fresh isolate may see a queue or cron event before any request,
+        // and without this it would log nothing of what it did.
+        crate::telemetry::install();
         let db = match skyzen_cloudflare::CfD1::from_env(&env, binding::DATABASE) {
             Ok(d1) => Db::new(d1),
             Err(error) => {

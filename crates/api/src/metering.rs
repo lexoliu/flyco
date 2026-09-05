@@ -215,6 +215,9 @@ mod worker {
         env: skyzen::runtime::wasm::Env,
         _context: skyzen_cloudflare::CfScheduleContext,
     ) -> Result<(), skyzen_cloudflare::CfEventError> {
+        // A fresh isolate may see a queue or cron event before any request,
+        // and without this it would log nothing of what it did.
+        crate::telemetry::install();
         let millis = event.scheduled_time_ms()?;
         let at_unix = u64::try_from(millis / 1_000).map_err(|_| {
             skyzen_cloudflare::CfEventError::Runtime(
