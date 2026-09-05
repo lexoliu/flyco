@@ -67,6 +67,12 @@
   min-height: 232px;
 }
 
+/* A page that is not one of a sequence has no height to keep steady with
+   its neighbours, so it takes only what it says. */
+.bodyShort {
+  min-height: 0;
+}
+
 .title {
   margin: 0;
   font-size: var(--text-xl);

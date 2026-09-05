@@ -208,6 +208,17 @@ pub enum ProviderOauthProgress {
         /// What that account may link, in the vendor's own order.
         choices: Vec<ProviderOauthChoice>,
     },
+    /// The browser came back, but without a sign-in: the user declined,
+    /// their organization wants an administrator to approve the app first,
+    /// or the vendor refused the exchange. The page that is polling is the
+    /// one place the user is still looking, so it is told rather than left
+    /// waiting for a callback that has already happened.
+    Failed {
+        /// The problem slug the return page was sent, e.g. `microsoft-rejected`.
+        problem: String,
+        /// What the vendor said, in its own words.
+        reason: String,
+    },
 }
 
 /// Request body of `POST /v1/providers/azure/oauth/{attempt_id}/finish`.

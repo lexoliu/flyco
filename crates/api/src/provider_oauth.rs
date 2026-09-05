@@ -78,6 +78,9 @@ const PROVIDER_PARAM: &str = "provider";
 /// Names what went wrong on the return page, when something did.
 const PROBLEM_PARAM: &str = "problem";
 
+/// Carries the vendor's own words about it, when there are any.
+const REASON_PARAM: &str = "reason";
+
 /// How long a browser has to complete the round trip.
 ///
 /// Longer than the GitHub sign-in's ten minutes: a first sign-in at a cloud
@@ -160,6 +163,15 @@ enum Stage {
         choices: Vec<ProviderOauthChoice>,
         /// What the finish will act with.
         secrets: Secrets,
+    },
+    /// The browser came back without a sign-in. Kept so the page polling
+    /// this attempt learns it is over, with the same problem the return
+    /// page was sent.
+    Failed {
+        /// The problem slug.
+        problem: String,
+        /// The vendor's own words.
+        reason: String,
     },
 }
 
@@ -250,7 +262,7 @@ impl ProviderCallback {
 ///
 /// The SPA's return route on the callback's own origin, naming the provider
 /// and — when something went wrong — the problem to explain.
-fn return_url(config: &ApiConfig, provider: Provider, problem: Option<&str>) -> Url {
+fn return_url(config: &ApiConfig, provider: Provider, problem: Option<&ApiError>) -> Url {
     let mut url = config
         .redirect_uri()
         .join(RETURN_PATH)
@@ -259,7 +271,8 @@ fn return_url(config: &ApiConfig, provider: Provider, problem: Option<&str>) -> 
         let mut query = url.query_pairs_mut();
         query.append_pair(PROVIDER_PARAM, provider.slug());
         if let Some(problem) = problem {
-            query.append_pair(PROBLEM_PARAM, problem);
+            query.append_pair(PROBLEM_PARAM, problem.slug());
+            query.append_pair(REASON_PARAM, &problem.to_string());
         }
     }
     url
@@ -277,7 +290,7 @@ fn returned(config: &ApiConfig, provider: Provider, outcome: Result<(), ApiError
         }
         Err(error) => {
             tracing::warn!(%error, provider = provider.slug(), "a cloud sign-in did not complete");
-            SeeOther(return_url(config, provider, Some(error.slug())))
+            SeeOther(return_url(config, provider, Some(&error)))
         }
     }
 }
@@ -378,7 +391,27 @@ async fn progress(
         Stage::Authorized {
             account, choices, ..
         } => ProviderOauthProgress::Authorized { account, choices },
+        Stage::Failed { problem, reason } => ProviderOauthProgress::Failed { problem, reason },
     })
+}
+
+/// Marks an attempt as over, so the poll stops waiting.
+///
+/// The failure is recorded beside the attempt rather than by deleting it:
+/// a deleted attempt polls as expired, which tells the user to start again
+/// without telling them why the last one ended.
+async fn record_failure(
+    kv: &Kv,
+    key: &str,
+    mut attempt: Attempt,
+    error: &ApiError,
+) -> Result<(), ApiError> {
+    attempt.stage = Stage::Failed {
+        problem: error.slug().to_owned(),
+        reason: error.to_string(),
+    };
+    expiring::put(kv, key, &attempt, ATTEMPT_TTL_SECONDS).await?;
+    Ok(())
 }
 
 /// What an authorized attempt holds, for the finish that spends it.
@@ -459,14 +492,13 @@ pub async fn azure_callback(
     Ok(returned(&config, Provider::Azure, outcome)).into()
 }
 
-async fn record_azure(
+/// Redeems what Microsoft sent back, or says why it cannot.
+async fn sign_in_azure(
     config: &ApiConfig,
     microsoft: &MicrosoftClient,
-    kv: &Kv,
     callback: &ProviderCallback,
-) -> Result<(), ApiError> {
-    let (key, mut attempt) = by_state(kv, Provider::Azure, &callback.state).await?;
-    let signed_in = microsoft
+) -> Result<microsoft::SignIn, ApiError> {
+    Ok(microsoft
         .sign_in(
             microsoft::OauthClient {
                 id: config.azure_oauth_client_id(),
@@ -475,7 +507,23 @@ async fn record_azure(
             callback.code(Provider::Azure)?,
             config.azure_oauth_redirect_uri().as_str(),
         )
-        .await?;
+        .await?)
+}
+
+async fn record_azure(
+    config: &ApiConfig,
+    microsoft: &MicrosoftClient,
+    kv: &Kv,
+    callback: &ProviderCallback,
+) -> Result<(), ApiError> {
+    let (key, mut attempt) = by_state(kv, Provider::Azure, &callback.state).await?;
+    let signed_in = match sign_in_azure(config, microsoft, callback).await {
+        Ok(signed_in) => signed_in,
+        Err(error) => {
+            record_failure(kv, &key, attempt, &error).await?;
+            return Err(error);
+        }
+    };
 
     attempt.stage = Stage::Authorized {
         account: signed_in.account,
@@ -606,14 +654,13 @@ pub async fn gcp_callback(
     Ok(returned(&config, Provider::Gcp, outcome)).into()
 }
 
-async fn record_gcp(
+/// Redeems what Google sent back, or says why it cannot.
+async fn sign_in_gcp(
     config: &ApiConfig,
     google: &GoogleClient,
-    kv: &Kv,
     callback: &ProviderCallback,
-) -> Result<(), ApiError> {
-    let (key, mut attempt) = by_state(kv, Provider::Gcp, &callback.state).await?;
-    let signed_in = google
+) -> Result<google::SignIn, ApiError> {
+    Ok(google
         .sign_in(
             google::OauthClient {
                 id: config.google_oauth_client_id(),
@@ -622,7 +669,23 @@ async fn record_gcp(
             callback.code(Provider::Gcp)?,
             config.gcp_oauth_redirect_uri().as_str(),
         )
-        .await?;
+        .await?)
+}
+
+async fn record_gcp(
+    config: &ApiConfig,
+    google: &GoogleClient,
+    kv: &Kv,
+    callback: &ProviderCallback,
+) -> Result<(), ApiError> {
+    let (key, mut attempt) = by_state(kv, Provider::Gcp, &callback.state).await?;
+    let signed_in = match sign_in_gcp(config, google, callback).await {
+        Ok(signed_in) => signed_in,
+        Err(error) => {
+            record_failure(kv, &key, attempt, &error).await?;
+            return Err(error);
+        }
+    };
 
     attempt.stage = Stage::Authorized {
         account: signed_in.account,

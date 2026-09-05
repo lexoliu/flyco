@@ -3020,6 +3020,31 @@
                           ]
                         }
                       }
+                    },
+                    {
+                      "type": "object",
+                      "description": "The browser came back, but without a sign-in: the user declined,\ntheir organization wants an administrator to approve the app first,\nor the vendor refused the exchange. The page that is polling is the\none place the user is still looking, so it is told rather than left\nwaiting for a callback that has already happened.",
+                      "required": [
+                        "problem",
+                        "reason",
+                        "state"
+                      ],
+                      "properties": {
+                        "problem": {
+                          "type": "string",
+                          "description": "The problem slug the return page was sent, e.g. `microsoft-rejected`."
+                        },
+                        "reason": {
+                          "type": "string",
+                          "description": "What the vendor said, in its own words."
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "failed"
+                          ]
+                        }
+                      }
                     }
                   ],
                   "description": "Answer of `GET /v1/providers/{azure|gcp}/oauth/{attempt_id}`.\n\nTwo states rather than one nullable body, for the reason\n[`CodexOauthPending`](crate::CodexOauthPending) is its own answer: a poll\nthat found nothing is a perfectly good `200` that says so, and the page\nasks again."
@@ -3277,6 +3302,31 @@
                           "type": "string",
                           "enum": [
                             "authorized"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "description": "The browser came back, but without a sign-in: the user declined,\ntheir organization wants an administrator to approve the app first,\nor the vendor refused the exchange. The page that is polling is the\none place the user is still looking, so it is told rather than left\nwaiting for a callback that has already happened.",
+                      "required": [
+                        "problem",
+                        "reason",
+                        "state"
+                      ],
+                      "properties": {
+                        "problem": {
+                          "type": "string",
+                          "description": "The problem slug the return page was sent, e.g. `microsoft-rejected`."
+                        },
+                        "reason": {
+                          "type": "string",
+                          "description": "What the vendor said, in its own words."
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "failed"
                           ]
                         }
                       }
@@ -9096,6 +9146,31 @@
                 "type": "string",
                 "enum": [
                   "authorized"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The browser came back, but without a sign-in: the user declined,\ntheir organization wants an administrator to approve the app first,\nor the vendor refused the exchange. The page that is polling is the\none place the user is still looking, so it is told rather than left\nwaiting for a callback that has already happened.",
+            "required": [
+              "problem",
+              "reason",
+              "state"
+            ],
+            "properties": {
+              "problem": {
+                "type": "string",
+                "description": "The problem slug the return page was sent, e.g. `microsoft-rejected`."
+              },
+              "reason": {
+                "type": "string",
+                "description": "What the vendor said, in its own words."
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "failed"
                 ]
               }
             }

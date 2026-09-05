@@ -3653,6 +3653,13 @@ export interface components {
             choices: components["schemas"]["ProviderOauthChoice"][];
             /** @enum {string} */
             state: "authorized";
+        } | {
+            /** @description The problem slug the return page was sent, e.g. `microsoft-rejected`. */
+            problem: string;
+            /** @description What the vendor said, in its own words. */
+            reason: string;
+            /** @enum {string} */
+            state: "failed";
         };
         /**
          * @description Answer of `POST /v1/providers/{azure|gcp}/oauth/start`.
@@ -6066,6 +6073,13 @@ export interface operations {
                         choices: components["schemas"]["ProviderOauthChoice"][];
                         /** @enum {string} */
                         state: "authorized";
+                    } | {
+                        /** @description The problem slug the return page was sent, e.g. `microsoft-rejected`. */
+                        problem: string;
+                        /** @description What the vendor said, in its own words. */
+                        reason: string;
+                        /** @enum {string} */
+                        state: "failed";
                     };
                 };
             };
@@ -6201,6 +6215,13 @@ export interface operations {
                         choices: components["schemas"]["ProviderOauthChoice"][];
                         /** @enum {string} */
                         state: "authorized";
+                    } | {
+                        /** @description The problem slug the return page was sent, e.g. `microsoft-rejected`. */
+                        problem: string;
+                        /** @description What the vendor said, in its own words. */
+                        reason: string;
+                        /** @enum {string} */
+                        state: "failed";
                     };
                 };
             };

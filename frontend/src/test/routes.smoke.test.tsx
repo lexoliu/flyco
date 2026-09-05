@@ -1,5 +1,5 @@
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { render } from "@solidjs/testing-library";
+import { fireEvent, render } from "@solidjs/testing-library";
 import {
   MemoryRouter,
   Navigate,
@@ -260,17 +260,26 @@ describe("route smoke tests", () => {
     expect(queryByRole("button")).not.toBeInTheDocument();
   });
 
-  it("names the problem when a vendor's consent could not be completed", async () => {
-    const { findByRole, getByText } = renderAt(
-      "/connect/return?provider=gcp&problem=google-rejected",
+  it("explains a refused consent and carries one action back into the flow", async () => {
+    const { findByRole, getByText, getByRole } = renderAt(
+      "/connect/return?provider=gcp&problem=google-rejected&reason=access_denied%3A%20denied",
     );
     expect(
       await findByRole("heading", {
         level: 1,
-        name: "Google Cloud could not finish the sign-in",
+        name: "Google Cloud did not complete the sign-in",
       }),
     ).toBeInTheDocument();
-    expect(getByText("google-rejected")).toBeInTheDocument();
+    expect(getByText(/Cloud Shell needs no approval/)).toBeInTheDocument();
+    expect(getByText("access_denied: denied")).toBeInTheDocument();
+    // The one action: back to the compute stage to pick another road.
+    fireEvent.click(getByRole("button", { name: "Try another way" }));
+    expect(
+      await findByRole("heading", {
+        level: 1,
+        name: "Where should sessions run?",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("renders /connect/compute as stage C on its own", async () => {
