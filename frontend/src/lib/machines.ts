@@ -233,3 +233,15 @@ export function readingMachines(kinds: readonly CloudProviderKind[]): string {
     ? "Reading your linked accounts’ machines…"
     : `Reading your ${PROVIDER_LABEL[only]} account’s machines…`;
 }
+
+/**
+ * The same wait as [`readingMachines`], sized for a chip: `Reading Azure…`.
+ *
+ * The chip has room for a few words and the picker under it carries the
+ * whole sentence, so the chip names only what is being read.
+ */
+export function readingMachinesShort(kinds: readonly CloudProviderKind[]): string {
+  const named = [...new Set(kinds)];
+  const only = named.length === 1 ? named[0] : undefined;
+  return only === undefined ? "Reading accounts…" : `Reading ${PROVIDER_LABEL[only]}…`;
+}

@@ -46,6 +46,8 @@ describe("Composer", () => {
     const { findByRole } = mount();
 
     expect(await findByRole("button", { name: /octocat\/hello-world/ })).toBeInTheDocument();
-    expect(await findByRole("button", { name: "Default branch" })).toBeInTheDocument();
+    // The branch is read as soon as the repository is known, so the chip
+    // names it rather than saying "Default branch".
+    expect(await findByRole("button", { name: "main" })).toBeInTheDocument();
   });
 });

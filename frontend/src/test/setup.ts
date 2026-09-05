@@ -159,6 +159,17 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
   if (method === "GET" && path === "/v1/github/repos") {
     return Promise.resolve(jsonResponse([]));
   }
+  if (method === "GET" && /^\/v1\/github\/repos\/[^/]+\/[^/]+\/branches$/.test(path)) {
+    return Promise.resolve(
+      jsonResponse({
+        branches: [
+          { name: "main", is_default: true },
+          { name: "dev", is_default: false },
+        ],
+        next_cursor: null,
+      }),
+    );
+  }
   if (method === "GET" && path === "/v1/machines/catalog") {
     // Read, and offering nothing: a test that wants the other answer — an
     // account flyco has not finished reading — routes this path itself.

@@ -295,10 +295,11 @@ pub async fn record_failure(
 /// Asks for a refresh of one account, unless one was asked for recently.
 ///
 /// Answers whether a job was enqueued, which is what the caller logs. The
-/// claim is taken before the message is sent: a claim held for a message
-/// that then failed to enqueue costs one delayed refresh, while a message
-/// sent before the claim would let a burst of pollers enqueue a burst of
-/// identical refreshes.
+/// claim is taken before the message is sent, because a message sent before
+/// the claim would let a burst of pollers enqueue a burst of identical
+/// refreshes. A send that then fails gives the claim back: otherwise every
+/// poller for the next [`REFRESH_CLAIM_SECONDS`] would be told a refresh is
+/// under way when nothing was ever queued.
 ///
 /// # Errors
 ///
@@ -314,7 +315,12 @@ pub async fn ask_for_refresh(
         return Ok(false);
     }
     expiring::put(kv, &key, &(), REFRESH_CLAIM_SECONDS).await?;
-    provisioning_queue::enqueue(queue, ProvisioningJob::RefreshCatalog { user, account }).await?;
+    if let Err(refused) =
+        provisioning_queue::enqueue(queue, ProvisioningJob::RefreshCatalog { user, account }).await
+    {
+        expiring::take::<()>(kv, &key).await?;
+        return Err(refused);
+    }
     Ok(true)
 }
 

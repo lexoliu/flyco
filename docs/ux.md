@@ -280,7 +280,7 @@ Every chip is both a status readout and the entry point to change it.
 | Chip | Ready | Not ready |
 |---|---|---|
 | Harness | logomark + `Claude Code` (or `Codex`); popover lists the linked agents with the chosen one marked, ending in `Connect another agent` → `/connect/harness` | `+ Connect an agent` → `/connect/harness` |
-| Compute | provider logomark + `Azure · B2s · $0.04/hr` and `Auto` or `Chosen`; region, spot and the account live in the popover | `+ Add compute` → `/connect/compute` |
+| Compute | provider logomark + `B2s · $0.04/hr` and `Auto` or `Chosen`; the logomark names the provider, and region, spot and the account live in the popover. While an account is still being read the chip says `Reading Azure…` and the popover carries the whole sentence | `+ Add compute` → `/connect/compute` |
 | Repository | `owner/name`; popover with a search box, recent repositories first | `Select repository` opens the same popover |
 | Budget | `$10`; popover with a slider (1–200) and the sentence "Covers the machine and its disk. Model tokens are billed by your Claude or Codex plan." | always shown, default `$10` |
 
