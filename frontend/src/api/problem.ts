@@ -38,7 +38,9 @@ export class ApiProblem extends Error {
   readonly document: Problem;
 
   constructor(problem: Problem) {
-    super(`${problem.title}: ${problem.detail}`);
+    // The detail is the sentence written for a person; the title is the
+    // status phrase, which says nothing a page has not already said.
+    super(problem.detail === "" ? problem.title : problem.detail);
     this.name = "ApiProblem";
     this.type = problem.type;
     this.title = problem.title;

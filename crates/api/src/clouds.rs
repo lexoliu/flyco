@@ -14,6 +14,7 @@ use core::future::Future;
 
 use flyco_core::ProviderCredentials;
 use flyco_provider::LoginKey;
+use flyco_provider::ProviderError;
 use flyco_provider::azure::RESOURCE_GROUP;
 
 use crate::error::ApiError;
@@ -109,23 +110,13 @@ async fn verify(credentials: &ProviderCredentials) -> Result<(), ApiError> {
         .map(|identity| {
             tracing::debug!(account = %identity.account, "an AWS access key checked out");
         })
-        .map_err(|error| ApiError::ProviderRejectedCredentials {
-            reason: error.to_string(),
-        }),
+        .map_err(rejected),
         ProviderCredentials::Gcp {
             service_account_json,
         } => {
             let mut provider =
-                crate::provisioning::gcp_driver(service_account_json).map_err(|error| {
-                    ApiError::ProviderRejectedCredentials {
-                        reason: error.to_string(),
-                    }
-                })?;
-            provider.mint_token().await.map(|_| ()).map_err(|error| {
-                ApiError::ProviderRejectedCredentials {
-                    reason: error.to_string(),
-                }
-            })
+                crate::provisioning::gcp_driver(service_account_json).map_err(rejected)?;
+            provider.mint_token().await.map(|_| ()).map_err(rejected)
         }
     }
 }
@@ -166,9 +157,7 @@ async fn azure_workspace(
     )
     .ensure_resource_group()
     .await
-    .map_err(|error| ApiError::ProviderRejectedCredentials {
-        reason: error.to_string(),
-    })?;
+    .map_err(rejected)?;
 
     tracing::info!(group = RESOURCE_GROUP, %region, "prepared an Azure subscription");
     Ok(Some(RESOURCE_GROUP.to_owned()))
@@ -216,5 +205,20 @@ impl CloudLink for Clouds {
             #[cfg(test)]
             Self::Fake(fake) => fake.prepare(credentials, login_key).await,
         }
+    }
+}
+
+/// A driver's refusal, as the problem the user reads.
+///
+/// A provider that *rejected* the credential said something worth
+/// repeating ("Client application has no configured keys"); that sentence
+/// is the reason, without the driver's own "provider rejected the request"
+/// wrapper in front of it. Any other failure keeps its full description.
+fn rejected(error: ProviderError) -> ApiError {
+    ApiError::ProviderRejectedCredentials {
+        reason: match error {
+            ProviderError::Rejected(reason) => reason,
+            other => other.to_string(),
+        },
     }
 }

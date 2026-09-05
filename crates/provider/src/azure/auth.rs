@@ -26,7 +26,7 @@ use serde::Deserialize;
 
 use crate::ProviderError;
 use crate::clock::MonotonicClock;
-use crate::http::{HttpRequest, HttpTransport, Method};
+use crate::http::{HttpRequest, HttpResponse, HttpTransport, Method};
 
 /// Microsoft Entra ID's public authority.
 pub const AUTHORITY: &str = "https://login.microsoftonline.com";
@@ -176,14 +176,7 @@ impl TokenCache {
 
         let response = transport.send(request).await?;
         if !response.is_success() {
-            // The body of a token failure names the tenant and the app; it
-            // is safe to surface and is the only way to tell "wrong secret"
-            // from "no such application" without guessing.
-            return Err(ProviderError::Rejected(format!(
-                "Entra ID refused the service principal (HTTP {}): {}",
-                response.status,
-                response.body_text()
-            )));
+            return Err(ProviderError::Rejected(refusal(&response)));
         }
 
         let token: TokenResponse = response.json()?;
@@ -348,5 +341,42 @@ mod tests {
     fn a_principal_never_debug_prints_its_client_secret() {
         assert!(!format!("{:?}", principal()).contains("app-secret"));
         assert!(!format!("{:?}", TokenCache::new(principal())).contains("app-secret"));
+    }
+}
+
+/// The body Entra ID sends with a refused token request.
+///
+/// Only the two fields a person can act on. The description also carries
+/// a trace id, a correlation id and a timestamp for Microsoft support,
+/// which are noise to the user and are cut off.
+#[derive(serde::Deserialize)]
+struct TokenRefusal {
+    error: String,
+    error_description: String,
+}
+
+/// What to tell the user when Entra ID refused the principal.
+///
+/// "Wrong secret" and "no such application" are different sentences from
+/// Microsoft, so the sentence is surfaced rather than the status; a body
+/// that is not Microsoft's refusal document is shown as it came.
+fn refusal(response: &HttpResponse) -> String {
+    match response.json::<TokenRefusal>() {
+        Ok(TokenRefusal {
+            error,
+            error_description,
+        }) => {
+            let sentence = error_description
+                .split(" Trace ID:")
+                .next()
+                .unwrap_or(&error_description)
+                .trim();
+            format!("Entra ID refused the service principal ({error}): {sentence}")
+        }
+        Err(_) => format!(
+            "Entra ID refused the service principal (HTTP {}): {}",
+            response.status,
+            response.body_text()
+        ),
     }
 }
