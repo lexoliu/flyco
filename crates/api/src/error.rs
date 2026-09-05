@@ -626,6 +626,30 @@ pub enum ApiError {
         memory_gib: u64,
     },
 
+    /// The caller asked flyco to pick a machine before it had finished
+    /// reading what their accounts can deploy.
+    ///
+    /// Not [`Self::NoDeployableLinuxMachine`], which says the catalog was
+    /// read and offers nothing big enough — a fact the user has to act on.
+    /// This says the opposite: nothing is wrong, the answer is coming, ask
+    /// again. A cloud catalog is thousands of SKUs, quotas and price pages
+    /// per region, read on the provisioning queue rather than in a request;
+    /// see [`crate::catalog`].
+    ///
+    /// `409` rather than `503`: the control plane is healthy and every other
+    /// route answers, and what is not ready is the state of *this* caller's
+    /// accounts, which is exactly the conflict-with-current-state a `409`
+    /// names. A `503` would state the service is unavailable, which would be
+    /// untrue and would tell a client to back away from the whole API.
+    #[error(
+        "flyco is still reading what your linked accounts can deploy;          {accounts} of them have not answered yet",
+        status = StatusCode::CONFLICT
+    )]
+    CatalogNotReady {
+        /// How many linked accounts have not been read yet.
+        accounts: usize,
+    },
+
     /// The requested lifecycle move is not part of the session state machine.
     #[error(
         "a session cannot move from {from:?} to {to:?}",
@@ -1100,6 +1124,7 @@ impl ApiError {
             Self::SessionNotActive { .. } => "session-not-active",
             Self::SessionCapReached { .. } => "session-cap-reached",
             Self::NoDeployableLinuxMachine { .. } => "no-deployable-linux-machine",
+            Self::CatalogNotReady { .. } => "catalog-not-ready",
             Self::InvalidTransition { .. } => "invalid-session-transition",
             Self::ApprovalAlreadyDecided { .. } => "approval-already-decided",
             Self::InvalidRepo(_) => "invalid-repo",

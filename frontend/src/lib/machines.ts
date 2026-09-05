@@ -7,8 +7,15 @@
  * the four facts the slider's label states, and the one sentence a
  * license-bound type has to say before anybody commits to it.
  */
-import type { MachineCatalogEntry, MachineState, MachineView } from "../api/client";
+import type {
+  CloudProviderKind,
+  MachineCatalogEntry,
+  MachineState,
+  MachineView,
+} from "../api/client";
+import { ApiProblem } from "../api/problem";
 import { formatUsd } from "./money";
+import { PROVIDER_LABEL } from "./providers";
 
 /** How many MiB are in a GiB. Catalog capacities are stated in MiB. */
 const MIB_PER_GIB = 1024;
@@ -186,4 +193,43 @@ export function machineChip(machine: MachineView): string {
     parts.push("spot");
   }
   return parts.join(" · ");
+}
+
+/**
+ * How often a catalog that is still being read is asked about again.
+ *
+ * Reading a cloud account's machines is thousands of machine types, their
+ * quotas and their published prices, and it happens on the control plane's
+ * provisioning queue rather than in the request that asked for it — so the
+ * answer arrives seconds after an account is linked. Five seconds is often
+ * enough that the wait reads as a wait, and rare enough that a screen left
+ * open is not asking every frame.
+ */
+export const CATALOG_POLL_SECONDS = 5;
+
+/**
+ * Whether a refusal means "flyco has not finished reading this yet".
+ *
+ * The one refusal that is not a problem with the account: it ends by itself,
+ * so the screen says what is happening and asks again rather than telling
+ * the user to act on something that is about to change.
+ */
+export function catalogNotReady(error: unknown): boolean {
+  return error instanceof ApiProblem && error.type.endsWith("/catalog-not-ready");
+}
+
+/**
+ * What a screen says while an account's machines are still being read.
+ *
+ * The vendor is named where exactly one account is waiting, because that is
+ * the account the user just linked and is looking at. Where several are,
+ * naming them all would be a list nobody needs to read to understand that
+ * the waiting is flyco's rather than theirs.
+ */
+export function readingMachines(kinds: readonly CloudProviderKind[]): string {
+  const named = [...new Set(kinds)];
+  const only = named.length === 1 ? named[0] : undefined;
+  return only === undefined
+    ? "Reading your linked accounts’ machines…"
+    : `Reading your ${PROVIDER_LABEL[only]} account’s machines…`;
 }

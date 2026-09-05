@@ -11,7 +11,7 @@
  * prerequisites are present. A disabled button that does not say why is a
  * dead end, so the tooltip names the missing one.
  */
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { createQuery } from "../lib/query";
 import { A } from "@solidjs/router";
 import {
@@ -51,7 +51,15 @@ import {
   setSpotPreference,
   spotPreference,
 } from "../lib/localPreferences";
-import { billingMinimumSentence, entryKey, hourlyLabel, shortMachineType } from "../lib/machines";
+import {
+  CATALOG_POLL_SECONDS,
+  billingMinimumSentence,
+  catalogNotReady,
+  entryKey,
+  hourlyLabel,
+  readingMachines,
+  shortMachineType,
+} from "../lib/machines";
 import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./Composer.module.css";
 
@@ -90,7 +98,7 @@ export default function Composer(props: ComposerProps) {
   // components/Readiness.tsx): with no account there is no catalog to merge
   // and no default to name, so asking produces an error whose only possible
   // rendering is "link an account" — which the chip already says.
-  const [automatic] = createQuery(
+  const [automatic, { refetch: reaskDefault }] = createQuery(
     () => (readiness.compute().length > 0 ? spot() : undefined),
     (wanted: boolean) => getDefaultMachine(wanted),
   );
@@ -98,10 +106,68 @@ export default function Composer(props: ComposerProps) {
   // disclosure offers architecture and OS, and curation groups by both — so
   // filtering here is exactly what filtering on the server would have done,
   // one request instead of one per combination.
-  const [catalog] = createQuery(
+  const [catalog, { refetch: reaskCatalog }] = createQuery(
     () => (readiness.compute().length > 0 ? true : undefined),
     () => getMachineCatalog(),
   );
+
+  /** The entries every account that has been read can offer. */
+  const entries = createMemo<MachineCatalogEntry[]>(() => catalog()?.entries ?? []);
+
+  /**
+   * The linked accounts flyco has not finished reading, as their vendors.
+   *
+   * Three things mean the same wait and are said the same way: the catalog
+   * naming accounts it has not read, the first request still being in
+   * flight, and `GET /v1/machines/default` refusing with `catalog-not-ready`
+   * because every account is still being read.
+   */
+  const pendingKinds = createMemo(() => {
+    const linked = readiness.compute();
+    if (linked.length === 0) {
+      return [];
+    }
+    const answered = catalog();
+    if (answered === undefined) {
+      return catalog.error === undefined ? linked.map((account) => account.kind) : [];
+    }
+    const waiting = new Set(answered.pending_accounts);
+    const named = linked.filter((account) => waiting.has(account.id));
+    return named.length > 0 || !catalogNotReady(automatic.error)
+      ? named.map((account) => account.kind)
+      : linked.map((account) => account.kind);
+  });
+
+  /** The one sentence a pending catalog shows, or `null` once it is read. */
+  const pending = createMemo(() =>
+    pendingKinds().length === 0 ? null : readingMachines(pendingKinds()),
+  );
+
+  // A pending catalog ends by itself, seconds later, so the screen asks
+  // again rather than making the user reload. The interval exists only
+  // while something is actually pending.
+  createEffect(() => {
+    if (pending() === null) {
+      return;
+    }
+    const timer = setInterval(() => {
+      void reaskCatalog();
+      void reaskDefault();
+    }, CATALOG_POLL_SECONDS * 1000);
+    onCleanup(() => clearInterval(timer));
+  });
+
+  /**
+   * Why there is no machine, when that is a failure.
+   *
+   * `catalog-not-ready` is deliberately not one: it is the wait, it is
+   * already on screen as a sentence, and rendering it as a problem would
+   * tell the user something is wrong when nothing is.
+   */
+  const machineError = createMemo(() => {
+    const failure = catalog.error ?? automatic.error;
+    return catalogNotReady(failure) ? undefined : failure;
+  });
 
   /**
    * The harness a session opens on: the one picked on the chip while it is
@@ -122,7 +188,7 @@ export default function Composer(props: ComposerProps) {
     if (key === null) {
       return automatic()?.entry;
     }
-    return (catalog() ?? []).find((entry) => entryKey(entry) === key);
+    return entries().find((entry) => entryKey(entry) === key);
   });
 
   /**
@@ -230,8 +296,9 @@ export default function Composer(props: ComposerProps) {
             accounts={readiness.compute()}
             automatic={automatic()}
             entry={chosen()}
-            catalog={catalog() ?? []}
-            error={catalog.error ?? automatic.error}
+            catalog={entries()}
+            error={machineError()}
+            pending={pending()}
             chosenKey={chosenKey()}
             spot={spot()}
             onChoose={setChosenKey}
@@ -359,6 +426,15 @@ function ComputeChip(props: {
   catalog: MachineCatalogEntry[];
   /** Why the catalog or the automatic pick is missing, when either failed. */
   error: unknown;
+  /**
+   * What flyco is still reading, when it is still reading something.
+   *
+   * The chip and the picker both say it. Until an account has been read it
+   * offers no machine, no region and no architecture, and a picker that
+   * showed empty selects and "this account offers no machine anywhere"
+   * would be stating a fact nobody has established yet.
+   */
+  pending: string | null;
   chosenKey: string | null;
   spot: boolean;
   onChoose: (key: string | null) => void;
@@ -417,7 +493,9 @@ function ComputeChip(props: {
             >
               {(mark) => <Logomark mark={mark()} size={13} />}
             </Show>
-            <span class={styles.chipLabel}>{summary() ?? "Choosing a machine\u2026"}</span>
+            <span class={styles.chipLabel}>
+              {summary() ?? props.pending ?? "Choosing a machine\u2026"}
+            </span>
             <span class={styles.chipDim}>
               {props.chosenKey === null ? "Auto" : "Chosen"}
             </span>
@@ -434,6 +512,7 @@ function ComputeChip(props: {
             onChoose={props.onChoose}
             onSpot={props.onSpot}
             error={props.error}
+            pending={props.pending ?? undefined}
             // What `Auto` picks is the slider's own line, under its track.
             // What is left for here is what choosing changes: who the
             // session records as having decided, and that the agent is told.

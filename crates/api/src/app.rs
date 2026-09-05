@@ -160,6 +160,10 @@ async fn revoke(user: &CurrentUser, params: &Params, db: &Db) -> Result<NoConten
 /// deploy is refused here rather than accepted and then failed minutes later
 /// by a queue consumer the caller is no longer watching.
 #[skyzen::openapi]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one session creation reaches every service the control plane has"
+)]
 async fn create_session(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
@@ -168,12 +172,17 @@ async fn create_session(
     rooms: Rooms,
     queue: Queue,
     db: Db,
+    kv: Kv,
 ) -> Outcome<Created<Json<SessionDetail>>> {
-    start_session(&user, request, &config, &github, &rooms, &queue, &db)
+    start_session(&user, request, &config, &github, &rooms, &queue, &db, &kv)
         .await
         .into()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one session creation reaches every service the control plane has"
+)]
 async fn start_session(
     user: &CurrentUser,
     request: CreateSession,
@@ -182,6 +191,7 @@ async fn start_session(
     rooms: &Rooms,
     queue: &Queue,
     db: &Db,
+    kv: &Kv,
 ) -> Result<Created<Json<SessionDetail>>, ApiError> {
     let prompt = request.prompt.trim();
     if prompt.is_empty() {
@@ -203,7 +213,7 @@ async fn start_session(
     let choice = match request.machine {
         Some(choice) => choice,
         None => {
-            machines::automatic(db, config, user.id, request.spot, None)
+            machines::automatic(db, config, kv, queue, user.id, request.spot, None)
                 .await?
                 .choice
         }
@@ -639,6 +649,11 @@ async fn list_approvals(
 
 /// Records the caller's decision on a pending approval.
 #[skyzen::openapi]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an approved license-bound resize is a decision and a machine \
+              change in one request"
+)]
 async fn decide_approval(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
@@ -647,12 +662,18 @@ async fn decide_approval(
     rooms: Rooms,
     hosts: HostRooms,
     db: Db,
+    kv: Kv,
 ) -> Outcome<Json<ApprovalView>> {
-    settle_approval(&user, &params, request, &config, &rooms, &hosts, &db)
+    settle_approval(&user, &params, request, &config, &rooms, &hosts, &db, &kv)
         .await
         .into()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an approved license-bound resize is a decision and a machine \
+              change in one request"
+)]
 async fn settle_approval(
     user: &CurrentUser,
     params: &Params,
@@ -661,6 +682,7 @@ async fn settle_approval(
     rooms: &Rooms,
     hosts: &HostRooms,
     db: &Db,
+    kv: &Kv,
 ) -> Result<Json<ApprovalView>, ApiError> {
     let id = path_id::<ApprovalId>(params, "id")?;
 
@@ -695,6 +717,7 @@ async fn settle_approval(
         rooms,
         hosts,
         db,
+        kv,
     )
     .await?;
 
@@ -713,6 +736,10 @@ async fn settle_approval(
 /// and a resize that fails answers with why rather than reporting success on
 /// a machine that did not change. The approval stays approved either way —
 /// the user did allow it — and the retry is the ordinary resize.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the resize an approval performs needs everything a resize does"
+)]
 async fn perform_approved(
     approval: &ApprovalView,
     decision: ApprovalDecision,
@@ -721,6 +748,7 @@ async fn perform_approved(
     rooms: &Rooms,
     hosts: &HostRooms,
     db: &Db,
+    kv: &Kv,
 ) -> Result<(), ApiError> {
     if decision != ApprovalDecision::Approved {
         return Ok(());
@@ -736,6 +764,7 @@ async fn perform_approved(
     machines::resize(
         db,
         config,
+        kv,
         rooms,
         hosts,
         user,
@@ -1695,8 +1724,9 @@ async fn get_agent_machine_catalog(
     State(session): State<DaemonSession>,
     State(config): State<ApiConfig>,
     db: Db,
+    kv: Kv,
 ) -> Outcome<Json<Vec<MachineCatalogEntry>>> {
-    read_agent_catalog(session.0, &config, &db)
+    read_agent_catalog(session.0, &config, &db, &kv)
         .await
         .map(Json)
         .into()
@@ -1706,9 +1736,10 @@ async fn read_agent_catalog(
     session: SessionId,
     config: &ApiConfig,
     db: &Db,
+    kv: &Kv,
 ) -> Result<Vec<MachineCatalogEntry>, ApiError> {
     let user = sessions::owner(db, session).await?;
-    machines::resize_catalog(db, config, user, session).await
+    machines::resize_catalog(db, config, kv, user, session).await
 }
 
 /// Moves the session onto another machine type, on the agent's own say-so.
@@ -1724,8 +1755,9 @@ async fn agent_resize_machine(
     rooms: Rooms,
     hosts: HostRooms,
     db: Db,
+    kv: Kv,
 ) -> Outcome<Accepted> {
-    run_agent_resize(session.0, &request, &config, &rooms, &hosts, &db)
+    run_agent_resize(session.0, &request, &config, &rooms, &hosts, &db, &kv)
         .await
         .into()
 }
@@ -1737,11 +1769,13 @@ async fn run_agent_resize(
     rooms: &Rooms,
     hosts: &HostRooms,
     db: &Db,
+    kv: &Kv,
 ) -> Result<Accepted, ApiError> {
     let user = sessions::owner(db, session).await?;
     machines::resize_for_agent(
         db,
         config,
+        kv,
         rooms,
         hosts,
         user,

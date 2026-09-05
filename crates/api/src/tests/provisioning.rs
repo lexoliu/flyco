@@ -250,16 +250,18 @@ async fn drain(queue: &Queue) -> QueueBatch<ProvisioningJob> {
 /// Runs whatever the queue is holding through the consumer.
 async fn run_queue(
     db: &Db,
+    kv: &Kv,
     queue: &Queue,
     provisioner: &mut RecordedHost,
 ) -> QueueBatchDisposition {
-    run_queue_as(db, queue, provisioner, TestGithub::default()).await
+    run_queue_as(db, kv, queue, provisioner, TestGithub::default()).await
 }
 
 /// The same, against a GitHub that says something else about the caller's
 /// stored token.
 async fn run_queue_as(
     db: &Db,
+    kv: &Kv,
     queue: &Queue,
     provisioner: &mut RecordedHost,
     github: TestGithub,
@@ -268,6 +270,7 @@ async fn run_queue_as(
     provisioning_queue::consume(
         db,
         &test_config(),
+        kv,
         queue,
         &test_rooms(),
         &mut clients(provisioner, &github, &test_vendors()),
@@ -279,6 +282,7 @@ async fn run_queue_as(
 /// The same, against rooms the caller keeps so it can read them back.
 async fn run_queue_watching(
     db: &Db,
+    kv: &Kv,
     queue: &Queue,
     rooms: &Rooms,
     provisioner: &mut RecordedHost,
@@ -287,6 +291,7 @@ async fn run_queue_watching(
     provisioning_queue::consume(
         db,
         &test_config(),
+        kv,
         queue,
         rooms,
         &mut clients(provisioner, &TestGithub::default(), &test_vendors()),
@@ -340,18 +345,20 @@ fn batch(job: ProvisioningJob) -> QueueBatch<ProvisioningJob> {
 /// Runs one job twice, which is what an at-least-once queue eventually does.
 async fn run_job_twice(
     db: &Db,
+    kv: &Kv,
     queue: &Queue,
     provisioner: &mut RecordedHost,
-    job: ProvisioningJob,
+    job: &ProvisioningJob,
 ) {
     for _ in 0..2 {
         provisioning_queue::consume(
             db,
             &test_config(),
+            kv,
             queue,
             &test_rooms(),
             &mut clients(provisioner, &TestGithub::default(), &test_vendors()),
-            batch(job),
+            batch(job.clone()),
         )
         .await;
     }
@@ -425,7 +432,7 @@ async fn a_created_session_gets_the_machine_it_asked_for(
 
     let session = open(&client, &caller).await.summary.id;
     let mut host = RecordedHost::healthy();
-    run_queue(&db, &queue, &mut host).await;
+    run_queue(&db, &kv, &queue, &mut host).await;
     assert_eq!(host.provisions, 1);
 
     let machine = machines::for_session(&db, session)
@@ -480,10 +487,10 @@ async fn a_redelivered_job_does_not_provision_a_second_machine(
     let client = ctx.client(router);
 
     let session = open(&client, &caller).await.summary.id;
-    let job = drain(&queue).await.messages[0].body;
+    let job = drain(&queue).await.messages.remove(0).body;
 
     let mut host = RecordedHost::healthy();
-    run_job_twice(&db, &queue, &mut host, job).await;
+    run_job_twice(&db, &kv, &queue, &mut host, &job).await;
 
     assert_eq!(
         host.provisions, 1,
@@ -513,7 +520,7 @@ async fn a_provision_that_fails_leaves_the_session_visibly_failed(
 
     let session = open(&client, &caller).await.summary.id;
     let mut host = RecordedHost::answering(Answer::Refused);
-    run_queue(&db, &queue, &mut host).await;
+    run_queue(&db, &kv, &queue, &mut host).await;
 
     let failed = read(&client, &caller, session).await;
     assert_eq!(
@@ -556,13 +563,14 @@ async fn an_unreachable_host_is_retried_a_bounded_number_of_times(
 
     let session = open(&client, &caller).await.summary.id;
     let mut host = RecordedHost::answering(Answer::Unreachable);
-    let mut job = drain(&queue).await.messages[0].body;
+    let mut job = drain(&queue).await.messages.remove(0).body;
 
     for attempt in 1..=MAX_ATTEMPTS {
-        assert_eq!(job.attempt(), attempt);
+        assert_eq!(job.attempt(), Some(attempt));
         provisioning_queue::consume(
             &db,
             &test_config(),
+            &kv,
             &queue,
             &test_rooms(),
             &mut clients(&mut host, &TestGithub::default(), &test_vendors()),
@@ -578,9 +586,10 @@ async fn an_unreachable_host_is_retried_a_bounded_number_of_times(
             SessionState::Provisioning,
             "attempt {attempt} failed transiently, so the session is still on its way"
         );
-        job = *queued(&backend)
+        job = queued(&backend)
             .last()
-            .expect("a transient failure queues the same machine again");
+            .expect("a transient failure queues the same machine again")
+            .clone();
     }
 
     assert_eq!(host.provisions, MAX_ATTEMPTS);
@@ -597,7 +606,7 @@ async fn an_unreachable_host_is_retried_a_bounded_number_of_times(
     assert!(
         queued(&backend)
             .iter()
-            .all(|job| job.attempt() <= MAX_ATTEMPTS),
+            .all(|job| job.attempt().is_none_or(|attempt| attempt <= MAX_ATTEMPTS)),
         "nothing was queued past the last attempt"
     );
 }
@@ -634,6 +643,7 @@ async fn an_archived_session_comes_back_through_the_same_queue(
     let disposition = provisioning_queue::consume(
         &db,
         &test_config(),
+        &kv,
         &queue,
         &test_rooms(),
         &mut clients(&mut host, &TestGithub::default(), &test_vendors()),
@@ -663,7 +673,7 @@ async fn an_archived_session_comes_back_through_the_same_queue(
     assert_eq!(queued.len(), 1);
     assert_eq!(
         queued.messages[0].body.machine(),
-        machine,
+        Some(machine),
         "a resume rebuilds the session's own machine rather than a second one \
          beside it"
     );
@@ -673,6 +683,7 @@ async fn an_archived_session_comes_back_through_the_same_queue(
     let disposition = provisioning_queue::consume(
         &db,
         &test_config(),
+        &kv,
         &queue,
         &test_rooms(),
         &mut clients(&mut host, &TestGithub::default(), &test_vendors()),
@@ -750,7 +761,7 @@ async fn a_stranger_cannot_resume_somebody_elses_session(
 // ── The queue nobody is holding ──
 
 #[skyzen::test]
-async fn a_job_for_a_session_that_is_gone_is_dropped(db: Db, queue: Queue) {
+async fn a_job_for_a_session_that_is_gone_is_dropped(kv: Kv, db: Db, queue: Queue) {
     crate::testing::migrate(&db).await;
 
     let mut host = RecordedHost::healthy();
@@ -761,6 +772,7 @@ async fn a_job_for_a_session_that_is_gone_is_dropped(db: Db, queue: Queue) {
     let disposition = provisioning_queue::consume(
         &db,
         &test_config(),
+        &kv,
         &queue,
         &test_rooms(),
         &mut clients(&mut host, &TestGithub::default(), &test_vendors()),
@@ -789,7 +801,7 @@ async fn a_machine_boots_already_holding_its_session_credentials(
 
     let session = open(&client, &caller).await.summary.id;
     let mut host = RecordedHost::healthy();
-    run_queue(&db, &queue, &mut host).await;
+    run_queue(&db, &kv, &queue, &mut host).await;
 
     let bootstrap = host.bootstrap.expect("the driver was handed a bootstrap");
     assert_eq!(bootstrap.session, session);
@@ -854,7 +866,7 @@ async fn a_machine_boots_holding_the_users_enabled_mcp_registry_and_nothing_else
 
     open(&client, &caller).await;
     let mut host = RecordedHost::healthy();
-    run_queue(&db, &queue, &mut host).await;
+    run_queue(&db, &kv, &queue, &mut host).await;
 
     let mounted = host
         .bootstrap
@@ -894,7 +906,7 @@ async fn a_machine_boots_knowing_what_to_check_out_and_who_to_commit_as(
 
     open(&client, &caller).await;
     let mut host = RecordedHost::healthy();
-    run_queue(&db, &queue, &mut host).await;
+    run_queue(&db, &kv, &queue, &mut host).await;
 
     let repo = host
         .bootstrap
@@ -953,7 +965,7 @@ async fn a_session_carries_the_branch_it_was_opened_on(
     );
 
     let mut host = RecordedHost::healthy();
-    run_queue(&db, &queue, &mut host).await;
+    run_queue(&db, &kv, &queue, &mut host).await;
     assert_eq!(
         host.bootstrap
             .expect("the driver was handed a bootstrap")
@@ -1066,7 +1078,14 @@ async fn a_stored_token_that_lost_the_repo_scope_fails_the_session_visibly(
 
     let session = open(&client, &caller).await.summary.id;
     let mut host = RecordedHost::healthy();
-    run_queue_as(&db, &queue, &mut host, TestGithub::without_repo_scope()).await;
+    run_queue_as(
+        &db,
+        &kv,
+        &queue,
+        &mut host,
+        TestGithub::without_repo_scope(),
+    )
+    .await;
 
     assert_eq!(
         host.provisions, 0,
@@ -1103,7 +1122,7 @@ async fn a_session_opened_before_flyco_tracked_branches_resolves_one_once(
         .expect("age the row back to before branches were recorded");
 
     let mut host = RecordedHost::healthy();
-    run_queue(&db, &queue, &mut host).await;
+    run_queue(&db, &kv, &queue, &mut host).await;
 
     assert_eq!(
         host.bootstrap
@@ -1137,7 +1156,7 @@ async fn a_session_with_no_linked_harness_account_still_gets_a_machine(
 
     open(&client, &caller).await;
     let mut host = RecordedHost::healthy();
-    run_queue(&db, &queue, &mut host).await;
+    run_queue(&db, &kv, &queue, &mut host).await;
 
     // Inheriting is the developer-machine mode: the harness comes up and
     // reports itself unauthenticated, which is a better answer than a
@@ -1174,11 +1193,12 @@ async fn provisioned(
     client: &TestClient<Router>,
     caller: &Caller,
     db: &Db,
+    kv: &Kv,
     queue: &Queue,
 ) -> (SessionId, String) {
     let session = open(client, caller).await.summary.id;
     let mut host = RecordedHost::healthy();
-    run_queue(db, queue, &mut host).await;
+    run_queue(db, kv, queue, &mut host).await;
     let token = pair(client, caller, session).await;
     (session, token)
 }
@@ -1197,7 +1217,7 @@ async fn the_bootstrap_tells_the_daemon_which_machine_and_who_chose_it(
     // `open` names a machine, which is what makes the choice the user's.
     open(&client, &caller).await;
     let mut host = RecordedHost::healthy();
-    run_queue(&db, &queue, &mut host).await;
+    run_queue(&db, &kv, &queue, &mut host).await;
 
     let bootstrap = host.bootstrap.expect("the driver was handed a bootstrap");
     assert_eq!(bootstrap.machine_origin, flyco_core::MachineOrigin::User);
@@ -1226,7 +1246,7 @@ async fn the_agent_reads_its_machine_and_who_chose_it(
     let router = migrated_router_on(&db, queue.clone()).await;
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
-    let (session, daemon) = provisioned(&client, &caller, &db, &queue).await;
+    let (session, daemon) = provisioned(&client, &caller, &db, &kv, &queue).await;
 
     let response = client
         .get(&format!("/v1/sessions/{session}/agent/machine"))
@@ -1254,7 +1274,7 @@ async fn the_agents_machine_routes_refuse_a_credential_that_is_not_its_own(
     let router = migrated_router_on(&db, queue.clone()).await;
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
-    let (session, _) = provisioned(&client, &caller, &db, &queue).await;
+    let (session, _) = provisioned(&client, &caller, &db, &kv, &queue).await;
 
     // A session token opens the user's own routes and none of the daemon's:
     // the agent is never handed a credential that could reach another
@@ -1277,7 +1297,7 @@ async fn the_agent_sees_only_the_types_its_session_can_become(
     let router = migrated_router_on(&db, queue.clone()).await;
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
-    let (session, daemon) = provisioned(&client, &caller, &db, &queue).await;
+    let (session, daemon) = provisioned(&client, &caller, &db, &kv, &queue).await;
 
     let response = client
         .get(&format!("/v1/sessions/{session}/agent/machine/catalog"))
@@ -1308,7 +1328,7 @@ async fn an_agent_may_not_resize_to_a_type_its_session_is_not_offered(
     let router = migrated_router_on(&db, queue.clone()).await;
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
-    let (session, daemon) = provisioned(&client, &caller, &db, &queue).await;
+    let (session, daemon) = provisioned(&client, &caller, &db, &kv, &queue).await;
 
     let response = client
         .post(&format!("/v1/sessions/{session}/agent/machine/resize"))
@@ -1335,7 +1355,7 @@ async fn approving_a_license_bound_resize_is_what_moves_the_machine(
     let router = migrated_router_on(&db, queue.clone()).await;
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
-    let (session, _) = provisioned(&client, &caller, &db, &queue).await;
+    let (session, _) = provisioned(&client, &caller, &db, &kv, &queue).await;
 
     // The approval the daemon raises instead of resizing, recorded the same
     // way the daemon's own `POST /v1/sessions/{id}/approvals` records it.
@@ -1386,7 +1406,7 @@ async fn denying_a_license_bound_resize_leaves_the_machine_alone(
     let router = migrated_router_on(&db, queue.clone()).await;
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
-    let (session, _) = provisioned(&client, &caller, &db, &queue).await;
+    let (session, _) = provisioned(&client, &caller, &db, &kv, &queue).await;
 
     let approval = crate::approvals::raise(
         &db,
@@ -1431,7 +1451,7 @@ async fn a_users_own_resize_is_not_gated_on_a_licence(
     let router = migrated_router_on(&db, queue.clone()).await;
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
-    let (session, _) = provisioned(&client, &caller, &db, &queue).await;
+    let (session, _) = provisioned(&client, &caller, &db, &kv, &queue).await;
 
     // The user's route reaches the same catalog check and the same refusal
     // for a type this session cannot become — the licence gate is the one
@@ -1500,7 +1520,7 @@ fn queued_recovery(backend: &InMemoryQueue) -> ProvisioningJob {
         .filter(|job| matches!(job, ProvisioningJob::Recover { .. }))
         .collect();
     assert_eq!(recoveries.len(), 1, "one notice queues one recovery");
-    recoveries[0]
+    recoveries.into_iter().next().expect("exactly one recovery")
 }
 
 /// Every `ClientEvent` the room recorded, in order.
@@ -1528,7 +1548,7 @@ async fn a_reclaimed_session_reads_as_interrupted_and_queues_its_own_recovery(
     let router = migrated_router_on(&db, queue.clone()).await;
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
-    let (session, daemon) = provisioned(&client, &caller, &db, &queue).await;
+    let (session, daemon) = provisioned(&client, &caller, &db, &kv, &queue).await;
     let machine = machines::for_session(&db, session)
         .await
         .expect("read the machine row")
@@ -1571,7 +1591,7 @@ async fn a_recovery_starts_the_same_machine_rather_than_building_another(
     let mut host = RecordedHost::healthy();
     let first = drain(&queue).await;
     let rooms = test_rooms();
-    run_queue_watching(&db, &queue, &rooms, &mut host, first).await;
+    run_queue_watching(&db, &kv, &queue, &rooms, &mut host, first).await;
     let daemon = pair(&client, &caller, session).await;
     let built = machines::for_session(&db, session)
         .await
@@ -1581,7 +1601,8 @@ async fn a_recovery_starts_the_same_machine_rather_than_building_another(
 
     report_reclaim(&client, &db, session, &daemon, 30).await;
     let recovery = queued_recovery(&backend);
-    let disposition = run_queue_watching(&db, &queue, &rooms, &mut host, batch(recovery)).await;
+    let disposition =
+        run_queue_watching(&db, &kv, &queue, &rooms, &mut host, batch(recovery)).await;
     assert!(matches!(
         disposition,
         QueueBatchDisposition::PerMessage(ref decisions)
@@ -1649,12 +1670,12 @@ async fn a_recovered_session_is_told_afterwards_and_the_ledger_names_the_replace
     let mut host = RecordedHost::healthy();
     let first = drain(&queue).await;
     let rooms = test_rooms();
-    run_queue_watching(&db, &queue, &rooms, &mut host, first).await;
+    run_queue_watching(&db, &kv, &queue, &rooms, &mut host, first).await;
     let daemon = pair(&client, &caller, session).await;
 
     report_reclaim(&client, &db, session, &daemon, 30).await;
     let recovery = queued_recovery(&backend);
-    run_queue_watching(&db, &queue, &rooms, &mut host, batch(recovery)).await;
+    run_queue_watching(&db, &kv, &queue, &rooms, &mut host, batch(recovery)).await;
 
     // The agent is told once, afterwards, as an ordinary message in the
     // conversation — which is also what puts it in the transcript.
@@ -1720,13 +1741,13 @@ async fn a_redelivered_recovery_neither_restarts_twice_nor_bills_twice(
     let mut host = RecordedHost::healthy();
     let first = drain(&queue).await;
     let rooms = test_rooms();
-    run_queue_watching(&db, &queue, &rooms, &mut host, first).await;
+    run_queue_watching(&db, &kv, &queue, &rooms, &mut host, first).await;
     let daemon = pair(&client, &caller, session).await;
 
     report_reclaim(&client, &db, session, &daemon, 30).await;
     let recovery = queued_recovery(&backend);
     for _ in 0..2 {
-        run_queue_watching(&db, &queue, &rooms, &mut host, batch(recovery)).await;
+        run_queue_watching(&db, &kv, &queue, &rooms, &mut host, batch(recovery.clone())).await;
     }
 
     assert_eq!(host.provisions, 1);
@@ -1752,7 +1773,7 @@ async fn a_daemon_that_comes_back_ends_the_migration(ctx: TestContext, kv: Kv, d
     let router = migrated_router_on(&db, queue.clone()).await;
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
-    let (session, daemon) = provisioned(&client, &caller, &db, &queue).await;
+    let (session, daemon) = provisioned(&client, &caller, &db, &kv, &queue).await;
 
     report_reclaim(&client, &db, session, &daemon, 30).await;
     sessions::recovering(&db, session)
@@ -1786,7 +1807,7 @@ async fn the_conversation_a_restarted_daemon_continues_comes_from_the_control_pl
     let router = migrated_router_on(&db, queue.clone()).await;
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
-    let (session, daemon) = provisioned(&client, &caller, &db, &queue).await;
+    let (session, daemon) = provisioned(&client, &caller, &db, &kv, &queue).await;
 
     let before = client
         .get(&format!("/v1/sessions/{session}/harness-session"))

@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::utils::{Json, State};
-use skyzen_services::{Db, Kv};
+use skyzen_services::{Db, Kv, Queue};
 use url::Url;
 
 use crate::clouds::Clouds;
@@ -563,25 +563,32 @@ pub async fn azure_finish(
     Json(request): Json<FinishAzureOauth>,
     kv: Kv,
     db: Db,
+    queue: Queue,
 ) -> Outcome<Created<Json<ProviderAccountView>>> {
     let attempt_id = match path_id(&params, "attempt_id") {
         Ok(id) => id,
         Err(error) => return Err(error).into(),
     };
     finish_azure(
-        &config, &microsoft, &clouds, &kv, &db, user.id, attempt_id, request,
+        &config, &microsoft, &clouds, &kv, &db, &queue, user.id, attempt_id, request,
     )
     .await
     .map(|view| Created(Json(view)))
     .into()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "finishing a sign-in names both vendors, both stores, and the \
+              attempt it is redeeming"
+)]
 async fn finish_azure(
     config: &ApiConfig,
     microsoft: &MicrosoftClient,
     clouds: &Clouds,
     kv: &Kv,
     db: &Db,
+    queue: &Queue,
     user: UserId,
     attempt_id: ProviderOauthAttemptId,
     request: FinishAzureOauth,
@@ -605,6 +612,8 @@ async fn finish_azure(
         db,
         config,
         clouds,
+        kv,
+        queue,
         user,
         LinkProvider {
             label: chosen_label(&attempt.choices, &request.subscription_id),
@@ -724,25 +733,32 @@ pub async fn gcp_finish(
     Json(request): Json<FinishGcpOauth>,
     kv: Kv,
     db: Db,
+    queue: Queue,
 ) -> Outcome<Created<Json<ProviderAccountView>>> {
     let attempt_id = match path_id(&params, "attempt_id") {
         Ok(id) => id,
         Err(error) => return Err(error).into(),
     };
     finish_gcp(
-        &config, &google, &clouds, &kv, &db, user.id, attempt_id, request,
+        &config, &google, &clouds, &kv, &db, &queue, user.id, attempt_id, request,
     )
     .await
     .map(|view| Created(Json(view)))
     .into()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "finishing a sign-in names both vendors, both stores, and the \
+              attempt it is redeeming"
+)]
 async fn finish_gcp(
     config: &ApiConfig,
     google: &GoogleClient,
     clouds: &Clouds,
     kv: &Kv,
     db: &Db,
+    queue: &Queue,
     user: UserId,
     attempt_id: ProviderOauthAttemptId,
     request: FinishGcpOauth,
@@ -764,6 +780,8 @@ async fn finish_gcp(
         db,
         config,
         clouds,
+        kv,
+        queue,
         user,
         LinkProvider {
             label: chosen_label(&attempt.choices, &request.project_id),

@@ -7,7 +7,7 @@
 //! resize sees. Both would be easy to hardcode and quietly wrong afterwards.
 
 use flyco_core::{
-    AwsIamPolicy, CloudProviderKind, HostId, LinkProvider, MachineCatalogEntry, MachinePricing,
+    AwsIamPolicy, CloudProviderKind, HostId, LinkProvider, MachineCatalog, MachinePricing,
     MachineSpec, Problem, ProviderAccountView, ProviderCredentials,
 };
 use skyzen::sql;
@@ -77,7 +77,7 @@ async fn curation_never_drops_the_machine_the_user_already_owns(ctx: TestContext
         .send()
         .await;
     response.assert_status(200);
-    let catalog: Vec<MachineCatalogEntry> = response.json();
+    let catalog = response.json::<MachineCatalog>().entries;
 
     // No price to rank it by, and it survives anyway: curation removes
     // machines that are known to be worse, and a machine flyco does not
@@ -260,7 +260,7 @@ async fn an_unlinked_account_is_offered_by_nothing_that_provisions(
         .send()
         .await;
     catalog.assert_status(200);
-    assert!(!catalog.json::<Vec<MachineCatalogEntry>>().is_empty());
+    assert!(!catalog.json::<MachineCatalog>().entries.is_empty());
     client
         .get("/v1/machines/default")
         .bearer(&token)
@@ -284,7 +284,7 @@ async fn an_unlinked_account_is_offered_by_nothing_that_provisions(
         .send()
         .await;
     catalog.assert_status(200);
-    assert!(catalog.json::<Vec<MachineCatalogEntry>>().is_empty());
+    assert!(catalog.json::<MachineCatalog>().entries.is_empty());
 
     let default = client
         .get("/v1/machines/default")

@@ -157,7 +157,7 @@ export default function MachinePanel(props: MachinePanelProps) {
                   already on. */}
               <Show when={resizing()}>
                 <MachineResize
-                  catalog={catalog() ?? []}
+                  catalog={catalog()?.entries ?? []}
                   accounts={providers() ?? []}
                   error={catalog.error ?? providers.error}
                   current={view()}

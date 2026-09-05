@@ -50,6 +50,7 @@ const DEFAULT: MachineDefault = {
       storage: { kind: "per_gib_hourly", rate: 137 },
     },
   },
+  pending_accounts: [],
 };
 
 /** A meter that is running and has read nothing yet. */
@@ -79,6 +80,22 @@ function noMachineResponse(): Response {
       detail: "No linked account offers a Linux type big enough to choose on its own.",
     }),
     { status: 422, headers: { "content-type": "application/problem+json" } },
+  );
+}
+
+/**
+ * The control plane saying it has not read this account yet, as
+ * `flyco_api::machines::automatic` does while a refresh is on the queue.
+ */
+function notReadyResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      type: "https://flyco.dev/problems/catalog-not-ready",
+      title: "Conflict",
+      status: 409,
+      detail: "flyco is still reading what your linked accounts can deploy.",
+    }),
+    { status: 409, headers: { "content-type": "application/problem+json" } },
   );
 }
 
@@ -162,6 +179,20 @@ describe("ComputeCard", () => {
     expect(
       await findByText("No deployable Linux machine in this account yet."),
     ).toBeInTheDocument();
+  });
+
+  it("says what it is doing while the account has not been read yet", async () => {
+    // The two are not the same fact, and the card must not tell a user who
+    // linked an account seconds ago that it can deploy nothing: reading a
+    // cloud account's machines happens on the provisioning queue and lands
+    // seconds later.
+    answerMachineWith(notReadyResponse);
+    const { findByText, queryByText } = mount(AWS, undefined);
+
+    expect(await findByText("Reading your AWS account\u2019s machines\u2026")).toBeInTheDocument();
+    expect(
+      queryByText("No deployable Linux machine in this account yet."),
+    ).not.toBeInTheDocument();
   });
 
   it("asks before it forgets a credential", async () => {

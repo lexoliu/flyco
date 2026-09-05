@@ -1,4 +1,5 @@
-//! Scheduled compute and persistent-storage budget accounting.
+//! Scheduled compute and persistent-storage budget accounting, and the
+//! sweep that keeps every linked account's catalog current.
 //!
 //! Meter windows are at most one minute and carry a deterministic unique key.
 //! Cloudflare may overlap or retry cron invocations; two invocations that see
@@ -198,12 +199,13 @@ mod worker {
         reason = "`#[skyzen::scheduled]` generates the exported wrapper, docs and all"
     )]
 
-    use skyzen_services::Db;
+    use skyzen_services::{Db, Kv, Queue};
 
     use skyzen::wasm_bindgen_futures;
 
     use super::{accrue, deliver};
     use crate::app;
+    use crate::catalog;
     use crate::config::{ApiConfig, binding};
     use crate::rooms::{HostRooms, Rooms};
 
@@ -227,13 +229,26 @@ mod worker {
         // One environment, two namespaces: archiving a session releases its
         // machine, and a machine the user owns is released by asking the
         // machine.
+        let env_for_services = env.clone();
         let wasm = skyzen::runtime::wasm::WasmEnv::new(env);
         let rooms = Rooms::from_wasm_env(wasm.clone());
         let hosts = HostRooms::from_wasm_env(wasm);
+        // The catalog sweep rides this cron rather than adding a second
+        // one: a Worker has one scheduled handler, and reading what every
+        // linked account can deploy is exactly the periodic background work
+        // this trigger exists for.
+        let kv = skyzen_cloudflare::CfKv::from_env(&env_for_services, binding::AUTH_KV)
+            .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
+        let queue = skyzen_cloudflare::CfQueue::from_env(&env_for_services, binding::PROVISIONING)
+            .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
+
         accrue(&db, at_unix)
             .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         deliver(&db, &rooms)
+            .await
+            .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
+        catalog::refresh_stale(&db, &Kv::new(kv), &Queue::new(queue), at_unix)
             .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         app::archive_idle(&db, &config, &rooms, &hosts, at_unix)

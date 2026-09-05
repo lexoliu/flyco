@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@solidjs/testing-library";
-import { MachineResize } from "./MachinePicker";
+import MachinePicker, { MachineResize } from "./MachinePicker";
 import type { MachineCatalogEntry, MachineView, ProviderAccountView } from "../api/client";
 
 const ACCOUNT = "0b4a1f2c-3d5e-4a6b-8c9d-0e1f2a3b4c5d";
@@ -116,5 +116,44 @@ describe("MachineResize", () => {
       "aria-valuetext",
       "m7i-flex.xlarge · 4 vCPU / 16 GiB · $0.15/hr",
     );
+  });
+});
+
+describe("MachinePicker, before the catalog has been read", () => {
+  function mountPicker(pending: string | undefined, catalog: MachineCatalogEntry[]) {
+    return render(() => (
+      <MachinePicker
+        catalog={catalog}
+        accounts={ACCOUNTS}
+        spot={true}
+        chosenKey={null}
+        onChoose={vi.fn()}
+        pending={pending}
+      />
+    ));
+  }
+
+  it("says what flyco is doing instead of showing empty controls", () => {
+    // An account nobody has read offers no machine, no region and no
+    // architecture — so every `Advanced` select would be empty, and the
+    // empty-track sentence would tell the user to try another region that
+    // is not offered either. Both are claims about an account that has not
+    // been read (owner's screenshot, 2026-09-05).
+    const { getByText, queryByText, queryByLabelText } = mountPicker(
+      "Reading your AWS account\u2019s machines\u2026",
+      [],
+    );
+
+    expect(getByText("Reading your AWS account\u2019s machines\u2026")).toBeInTheDocument();
+    expect(queryByText(/offers no machine/)).not.toBeInTheDocument();
+    expect(queryByLabelText("Machine")).not.toBeInTheDocument();
+    for (const filter of ["Account", "Region", "Architecture", "OS"]) {
+      expect(queryByText(filter)).not.toBeInTheDocument();
+    }
+  });
+
+  it("states the refusal once the account has been read and offers nothing", () => {
+    const { getByText } = mountPicker(undefined, []);
+    expect(getByText(/offers no machine/)).toBeInTheDocument();
   });
 });

@@ -144,6 +144,18 @@ export interface MachineSliderProps {
   onChoose: (key: string | null) => void;
   /** Changes the capacity mode. Absent where `spot` is not offered. */
   onSpot?: ((spot: boolean) => void) | undefined;
+  /**
+   * What to say instead of the control, while there is nothing to choose
+   * from *yet*.
+   *
+   * An account whose catalog flyco is still reading has no machines, no
+   * regions and no architectures — so every `Advanced` select would be
+   * empty and the empty-track sentence would tell the user to try another
+   * region that is not offered either. Both are claims about an account
+   * that has not been read, so while this is set the slider says this one
+   * sentence and nothing else.
+   */
+  pending?: string | undefined;
 }
 
 export default function MachineSlider(props: MachineSliderProps) {
@@ -291,6 +303,7 @@ export default function MachineSlider(props: MachineSliderProps) {
 
   return (
     <div class={styles.slider}>
+      <Show when={props.pending === undefined} fallback={<p class={styles.empty}>{props.pending}</p>}>
       {/*
         Only the dimensions the caller can act on: a filter whose change the
         request cannot carry is a control that lies.
@@ -435,6 +448,7 @@ export default function MachineSlider(props: MachineSliderProps) {
 
           <p class={cx(styles.note, bound() && styles.noteBound)}>{note()}</p>
         </div>
+      </Show>
       </Show>
     </div>
   );

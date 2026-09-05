@@ -9,7 +9,7 @@
 use flyco_core::host::{HOST_TOKEN_PREFIX, JobOutcome};
 use flyco_core::{
     CreateSession, EnrollHost, EnrolledHost, Enrollment, EnrollmentToken, HarnessKind, HostFacts,
-    HostId, HostState, HostView, MachineCatalogEntry, MachineState, Problem, ProviderAccountView,
+    HostId, HostState, HostView, MachineCatalog, MachineState, Problem, ProviderAccountView,
     ReportJobResult, SessionDetail, SessionId, SessionState, UpdateHost, Usd, UserId,
 };
 use flyco_provider::host::{container_name, volume_name};
@@ -239,7 +239,7 @@ async fn an_enrolled_machine_is_a_provider_account_offering_itself(
         .bearer(&session)
         .send()
         .await;
-    assert!(catalog.json::<Vec<MachineCatalogEntry>>().is_empty());
+    assert!(catalog.json::<MachineCatalog>().entries.is_empty());
 
     // The relay upgrade is where the control plane sees it arrive.
     connect(&client, enrolled.host_id, &enrolled.host_token).await;
@@ -250,7 +250,7 @@ async fn an_enrolled_machine_is_a_provider_account_offering_itself(
         .bearer(&session)
         .send()
         .await;
-    let catalog: Vec<MachineCatalogEntry> = catalog.json();
+    let catalog = catalog.json::<MachineCatalog>().entries;
     assert_eq!(catalog.len(), 1);
     assert_eq!(catalog[0].machine_type, SSH_HOST);
     assert_eq!(catalog[0].account, Some(accounts[0].id));
@@ -461,7 +461,7 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
 
 /// Runs whatever the queue is holding through the real consumer, with the
 /// real provisioner over the host rooms the caller keeps.
-async fn run_queue(db: &Db, queue: &Queue, hosts: &HostRooms) {
+async fn run_queue(db: &Db, kv: &Kv, queue: &Queue, hosts: &HostRooms) {
     let taken = queue
         .receive_json::<ProvisioningJob>(ReceiveOptions::new().with_max_messages(16))
         .await
@@ -482,6 +482,7 @@ async fn run_queue(db: &Db, queue: &Queue, hosts: &HostRooms) {
     provisioning_queue::consume(
         db,
         &test_config(),
+        kv,
         queue,
         &test_rooms(),
         &mut provisioning_queue::Clients {
@@ -510,7 +511,7 @@ async fn a_session_on_a_machine_you_own_becomes_a_container_job(
     let client = ctx.client(router);
 
     let session = open(&client, &caller).await.summary.id;
-    run_queue(&db, &queue, &hosts).await;
+    run_queue(&db, &kv, &queue, &hosts).await;
 
     // The job is in the machine's room, durably, whether or not the socket
     // happened to be up at that instant.
@@ -556,7 +557,7 @@ async fn a_running_container_completes_the_machine_row(
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
     let session = open(&client, &caller).await.summary.id;
-    run_queue(&db, &queue, &hosts).await;
+    run_queue(&db, &kv, &queue, &hosts).await;
     let machine = machines::for_session(&db, session)
         .await
         .expect("read the machine row")
@@ -604,7 +605,7 @@ async fn a_container_that_would_not_start_fails_the_session(
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
     let session = open(&client, &caller).await.summary.id;
-    run_queue(&db, &queue, &hosts).await;
+    run_queue(&db, &kv, &queue, &hosts).await;
     let machine = machines::for_session(&db, session)
         .await
         .expect("read the machine row")
@@ -700,7 +701,7 @@ async fn removing_a_machine_with_a_session_on_it_is_refused_until_forced(
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
     let session = open(&client, &caller).await.summary.id;
-    run_queue(&db, &queue, &hosts).await;
+    run_queue(&db, &kv, &queue, &hosts).await;
     let path = format!("/v1/hosts/{}", caller.host);
 
     let refused = client.delete(&path).bearer(&caller.token).send().await;
@@ -772,7 +773,8 @@ async fn removing_a_machine_with_a_session_on_it_is_refused_until_forced(
             .bearer(&caller.token)
             .send()
             .await
-            .json::<Vec<MachineCatalogEntry>>()
+            .json::<MachineCatalog>()
+            .entries
             .is_empty()
     );
 }
@@ -817,7 +819,7 @@ async fn a_machine_that_is_not_connected_refuses_the_operations_a_user_watches(
     let caller = sign_in(&kv, &db).await;
     let client = ctx.client(router);
     let session = open(&client, &caller).await.summary.id;
-    run_queue(&db, &queue, &hosts).await;
+    run_queue(&db, &kv, &queue, &hosts).await;
 
     // Nothing holds a socket in a native control plane, so the room reports
     // exactly what a machine that was unplugged reports.

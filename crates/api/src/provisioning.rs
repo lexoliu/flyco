@@ -124,6 +124,19 @@ impl LinkedAccount {
             .map(|host| Host::new(host.id, host.facts.clone()))
     }
 
+    /// Whether this account's catalog has to be fetched from the provider.
+    ///
+    /// True for every cloud, and false for a machine the user enrolled: a
+    /// host's catalog is [`Host::catalog`], a pure function of the
+    /// [`HostSnapshot`] the same query already loaded. That is the whole
+    /// reason it is never cached — there is no read to move off the request
+    /// path, and a cached copy would keep offering a machine after it went
+    /// offline, which [`catalog_of`] refuses to do.
+    #[must_use]
+    pub const fn catalog_is_remote(&self) -> bool {
+        !matches!(self.credentials, ProviderCredentials::Host { .. })
+    }
+
     /// The resource group an Azure driver for this account must use.
     ///
     /// # Errors
@@ -358,6 +371,123 @@ pub async fn catalog(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>
     // A driver holds credentials, not the row they came from, so the
     // account is stamped here — otherwise a choice from the merged list
     // could not name the account it must be provisioned through.
+    for entry in &mut entries {
+        entry.account = Some(account.id);
+    }
+    Ok(entries)
+}
+
+/// The driver name a provider kind appears under in a [`ProviderError`].
+const fn provider_name(kind: CloudProviderKind) -> &'static str {
+    match kind {
+        CloudProviderKind::Azure => flyco_provider::azure::PROVIDER,
+        CloudProviderKind::Aws => flyco_provider::aws::PROVIDER,
+        CloudProviderKind::Gcp => flyco_provider::gcp::PROVIDER,
+        CloudProviderKind::Host => flyco_provider::host::PROVIDER,
+    }
+}
+
+/// How many calls one account's catalog costs, and where they go.
+///
+/// The provisioning queue reads a catalog one message at a time, and the two
+/// shapes are genuinely different work rather than a tuning knob. Azure is
+/// a full SKU list, a quota read and a page-walk of retail prices *per
+/// region*, which is why a region is the unit; AWS and GCP answer for every
+/// region they were asked about in one pass, so splitting them would be
+/// three times the work for the same answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogReads {
+    /// One read per region, and these are the regions this account has.
+    PerRegion(Vec<String>),
+    /// One read for the whole account.
+    Whole,
+}
+
+/// How this account's catalog has to be read, and where.
+///
+/// The region list is the provider's own answer — for Azure the
+/// subscription's allowed-regions policy, narrowed by nothing flyco
+/// invented — so it is a call rather than a constant.
+///
+/// # Errors
+///
+/// Returns [`ProviderError`] if the provider refuses the credentials or the
+/// question, and [`ProviderError::Unsupported`] for a host account, whose
+/// catalog is never read remotely — see
+/// [`LinkedAccount::catalog_is_remote`].
+pub async fn catalog_reads(account: &LinkedAccount) -> Result<CatalogReads, ProviderError> {
+    match &account.credentials {
+        ProviderCredentials::Azure {
+            tenant_id,
+            client_id,
+            client_secret,
+            subscription_id,
+        } => Ok(CatalogReads::PerRegion(
+            azure_driver(
+                tenant_id,
+                client_id,
+                client_secret,
+                subscription_id,
+                account.azure_workspace()?,
+                &account.machine_login_key,
+            )
+            .catalog_regions()
+            .await?,
+        )),
+        ProviderCredentials::Aws { .. } | ProviderCredentials::Gcp { .. } => {
+            Ok(CatalogReads::Whole)
+        }
+        ProviderCredentials::Host { .. } => Err(ProviderError::Unsupported {
+            provider: flyco_provider::host::PROVIDER,
+            operation: "reading a catalog from the provider",
+            reason: "an enrolled machine answers for itself, from the row flyco already holds",
+        }),
+    }
+}
+
+/// Reads what an account can deploy in exactly one region.
+///
+/// The unit the provisioning queue refreshes an Azure catalog in. Only the
+/// providers [`catalog_reads`] answers [`CatalogReads::PerRegion`] for can
+/// be asked this; the rest are read whole, through [`catalog`].
+///
+/// # Errors
+///
+/// Returns [`ProviderError`] if the provider refuses the read, and
+/// [`ProviderError::Unsupported`] for a provider whose catalog is not read
+/// a region at a time.
+pub async fn region_catalog(
+    account: &LinkedAccount,
+    region: &str,
+) -> Result<Vec<MachineCatalogEntry>, ProviderError> {
+    let ProviderCredentials::Azure {
+        tenant_id,
+        client_id,
+        client_secret,
+        subscription_id,
+    } = &account.credentials
+    else {
+        return Err(ProviderError::Unsupported {
+            provider: provider_name(account.kind()),
+            operation: "reading one region of a catalog",
+            reason: "this provider answers for every region it was asked about in one read",
+        });
+    };
+
+    let mut entries = azure_driver(
+        tenant_id,
+        client_id,
+        client_secret,
+        subscription_id,
+        account.azure_workspace()?,
+        &account.machine_login_key,
+    )
+    .region_report(region)
+    .await?
+    .offered;
+    // Stamped here for the same reason `catalog` stamps it: a driver holds
+    // credentials, not the row they came from, and an entry that cannot
+    // name its account cannot be provisioned through.
     for entry in &mut entries {
         entry.account = Some(account.id);
     }

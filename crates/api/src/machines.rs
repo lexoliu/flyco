@@ -11,17 +11,18 @@
 use flyco_core::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, ClientEvent,
     CloudProviderKind, ControlToDaemon, CurrentUser, DEFAULT_DISK_GIB, MachineCapacity,
-    MachineCatalogEntry, MachineChoice, MachineDefault, MachineId, MachineSpec, MachineState,
-    MachineView, OsFamily, ProviderAccountId, ResizeMachine, SessionId, SessionMachine, Usd,
-    UserId, auto_linux_choice, curate,
+    MachineCatalog, MachineCatalogEntry, MachineChoice, MachineDefault, MachineId, MachineSpec,
+    MachineState, MachineView, OsFamily, ProviderAccountId, ResizeMachine, SessionId,
+    SessionMachine, Usd, UserId, auto_linux_choice, curate,
 };
 use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::sql;
 use skyzen::utils::{Json, State};
-use skyzen_services::Db;
+use skyzen_services::{Db, Kv, Queue};
 
+use crate::catalog;
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
@@ -256,23 +257,35 @@ fn resize_filter(row: &MachineRow) -> CatalogFilter {
 pub(crate) async fn resize_catalog(
     db: &Db,
     config: &ApiConfig,
+    kv: &Kv,
     user: UserId,
     session: SessionId,
 ) -> Result<Vec<MachineCatalogEntry>, ApiError> {
     let row = load(db, user, session).await?;
-    catalog(db, config, user, &resize_filter(&row)).await
+    Ok(catalog(
+        db,
+        config,
+        kv,
+        Refresh::ReadOnly,
+        user,
+        &resize_filter(&row),
+    )
+    .await?
+    .entries)
 }
 
 /// Resolves a requested type against the catalog the session may move within.
 async fn offered(
     db: &Db,
     config: &ApiConfig,
+    kv: &Kv,
     user: UserId,
     row: &MachineRow,
     machine_type: &str,
 ) -> Result<MachineCatalogEntry, ApiError> {
-    catalog(db, config, user, &resize_filter(row))
+    catalog(db, config, kv, Refresh::ReadOnly, user, &resize_filter(row))
         .await?
+        .entries
         .into_iter()
         .find(|entry| entry.machine_type == machine_type)
         .ok_or_else(|| ApiError::MachineTypeNotOffered(machine_type.to_owned()))
@@ -288,9 +301,15 @@ async fn offered(
 ///
 /// Returns [`ApiError::MachineTypeNotOffered`] if the type is not one this
 /// machine can become, or [`ApiError`] if the provider refuses the resize.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a resize names the session, the caller, the type, and every \
+              service it touches"
+)]
 pub(crate) async fn resize(
     db: &Db,
     config: &ApiConfig,
+    kv: &Kv,
     rooms: &Rooms,
     hosts: &HostRooms,
     user: UserId,
@@ -298,7 +317,7 @@ pub(crate) async fn resize(
     machine_type: &str,
 ) -> Result<(), ApiError> {
     let row = load(db, user, session).await?;
-    let entry = offered(db, config, user, &row, machine_type).await?;
+    let entry = offered(db, config, kv, user, &row, machine_type).await?;
     apply(db, config, rooms, hosts, user, session, &row, &entry).await
 }
 
@@ -319,9 +338,14 @@ pub(crate) async fn resize(
 /// machine cannot become, or [`ApiError`] if the provider refuses.
 ///
 /// [`ApprovalPayload::MachineResizeLicenseBound`]: flyco_core::ApprovalPayload::MachineResizeLicenseBound
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the agent's resize names the same services the user's does"
+)]
 pub(crate) async fn resize_for_agent(
     db: &Db,
     config: &ApiConfig,
+    kv: &Kv,
     rooms: &Rooms,
     hosts: &HostRooms,
     user: UserId,
@@ -329,7 +353,7 @@ pub(crate) async fn resize_for_agent(
     machine_type: &str,
 ) -> Result<(), ApiError> {
     let row = load(db, user, session).await?;
-    let entry = offered(db, config, user, &row, machine_type).await?;
+    let entry = offered(db, config, kv, user, &row, machine_type).await?;
     on_the_agents_authority(&entry)?;
     apply(db, config, rooms, hosts, user, session, &row, &entry).await
 }
@@ -529,6 +553,22 @@ async fn load(db: &Db, user: UserId, session: SessionId) -> Result<MachineRow, A
     .ok_or(ApiError::MachineNotFound)
 }
 
+/// Whether reading the catalog may also ask for it to be brought up to date.
+///
+/// A read that finds an account unread or stale can put a refresh on the
+/// provisioning queue — but only the reads a *person* is waiting on should.
+/// A resize resolving the type it is moving to reads the catalog of an
+/// account that was read long before the machine it is resizing existed, and
+/// asking for a refresh there would put a message on the queue for every
+/// resize and every `machine_catalog` call an agent makes in a loop.
+#[derive(Debug, Clone, Copy)]
+pub enum Refresh<'a> {
+    /// Ask the provisioning queue to read anything missing or stale.
+    Ask(&'a Queue),
+    /// Read what is there, and ask for nothing.
+    ReadOnly,
+}
+
 /// Narrows the machine catalog.
 ///
 /// Every field is optional: an unfiltered catalog is the honest default,
@@ -557,8 +597,10 @@ async fn get_catalog(
     State(config): State<ApiConfig>,
     Query(filter): Query<CatalogFilter>,
     db: Db,
-) -> Outcome<Json<Vec<MachineCatalogEntry>>> {
-    catalog(&db, &config, user.id, &filter)
+    kv: Kv,
+    queue: Queue,
+) -> Outcome<Json<MachineCatalog>> {
+    catalog(&db, &config, &kv, Refresh::Ask(&queue), user.id, &filter)
         .await
         .map(Json)
         .into()
@@ -584,26 +626,50 @@ async fn get_catalog(
 pub(crate) async fn catalog(
     db: &Db,
     config: &ApiConfig,
+    kv: &Kv,
+    refresh: Refresh<'_>,
     user: UserId,
     filter: &CatalogFilter,
-) -> Result<Vec<MachineCatalogEntry>, ApiError> {
+) -> Result<MachineCatalog, ApiError> {
     let mut accounts = provisioning::accounts_for(db, config, user, filter.provider).await?;
-    // Narrowed before the reads rather than after: asking a provider for a
-    // catalog nobody will look at is a round trip and, on a large
-    // subscription, several.
+    // Narrowed before the reads rather than after: reading the document of
+    // an account nobody will look at is a round trip for nothing, and
+    // asking for its refresh would put a message on the queue for nothing.
     accounts.retain(|account| filter.account.is_none_or(|wanted| account.id == wanted));
 
+    let now = now_unix();
     let mut entries = Vec::new();
+    let mut pending_accounts = Vec::new();
     for account in accounts {
-        match provisioning::catalog(&account).await {
-            Ok(mut offered) => entries.append(&mut offered),
-            Err(error) => {
-                tracing::warn!(
+        if !account.catalog_is_remote() {
+            // Hardware the user owns answers from the row this request has
+            // already loaded, and its online/offline state changes by the
+            // minute — see `provisioning::catalog_of`. There is no read to
+            // cache and nothing a cache could do but go stale.
+            match provisioning::catalog(&account).await {
+                Ok(mut offered) => entries.append(&mut offered),
+                Err(error) => tracing::warn!(
                     account = %account.id,
                     %error,
-                    "skipping a provider account whose catalog could not be read"
-                );
+                    "skipping a machine the user owns that could not describe itself"
+                ),
             }
+            continue;
+        }
+
+        // Nothing read yet is "not yet" rather than "nothing", and the
+        // caller is told which; either way the account is due to be read.
+        let due = if let Some(document) = catalog::read(kv, account.id).await? {
+            entries.extend(document.entries().cloned());
+            document.is_stale(now)
+        } else {
+            pending_accounts.push(account.id);
+            true
+        };
+        if let (true, Refresh::Ask(queue)) = (due, refresh)
+            && catalog::ask_for_refresh(kv, queue, user, account.id).await?
+        {
+            tracing::info!(account = %account.id, "asked for a catalog refresh");
         }
     }
 
@@ -619,7 +685,10 @@ pub(crate) async fn catalog(
     // over every region and then narrowed to one would hide types that are
     // on the frontier *of that region*, which is the only frontier a user
     // choosing a region can act on.
-    Ok(curate(entries))
+    Ok(MachineCatalog {
+        entries: curate(entries),
+        pending_accounts,
+    })
 }
 
 /// Whether a caller who names no machine wants interruptible capacity.
@@ -648,10 +717,14 @@ async fn get_default_machine(
     State(config): State<ApiConfig>,
     Query(query): Query<DefaultMachineQuery>,
     db: Db,
+    kv: Kv,
+    queue: Queue,
 ) -> Outcome<Json<MachineDefault>> {
     automatic(
         &db,
         &config,
+        &kv,
+        &queue,
         user.id,
         query.spot.unwrap_or(true),
         query.account,
@@ -665,18 +738,29 @@ async fn get_default_machine(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError::NoDeployableLinuxMachine`] if no linked account
-/// offers a Linux type big enough for flyco to choose on its own.
+/// Returns [`ApiError::CatalogNotReady`] while an account that could still
+/// offer one has not been read, and
+/// [`ApiError::NoDeployableLinuxMachine`] once every account has been read
+/// and none offers a Linux type big enough for flyco to choose on its own.
+/// The two are deliberately different: the first ends by itself in seconds,
+/// and the second is a fact the user has to act on.
 pub(crate) async fn automatic(
     db: &Db,
     config: &ApiConfig,
+    kv: &Kv,
+    queue: &Queue,
     user: UserId,
     spot: bool,
     account: Option<ProviderAccountId>,
 ) -> Result<MachineDefault, ApiError> {
-    let entries = catalog(
+    let MachineCatalog {
+        entries,
+        pending_accounts,
+    } = catalog(
         db,
         config,
+        kv,
+        Refresh::Ask(queue),
         user,
         &CatalogFilter {
             provider: None,
@@ -686,7 +770,16 @@ pub(crate) async fn automatic(
         },
     )
     .await?;
-    let entry = auto_linux_choice(&entries, spot).ok_or(nothing_big_enough())?;
+    let nothing_yet = || {
+        if pending_accounts.is_empty() {
+            nothing_big_enough()
+        } else {
+            ApiError::CatalogNotReady {
+                accounts: pending_accounts.len(),
+            }
+        }
+    };
+    let entry = auto_linux_choice(&entries, spot).ok_or_else(nothing_yet)?;
     // `auto_linux_choice` only ever returns an entry with an account; the
     // read is written as a refusal rather than an unwrap so the invariant
     // is enforced here too, where it is used.
@@ -700,6 +793,7 @@ pub(crate) async fn automatic(
             disk_gib: DEFAULT_DISK_GIB,
         },
         entry: entry.clone(),
+        pending_accounts,
     })
 }
 
@@ -731,6 +825,11 @@ async fn read_machine(db: &Db, user: UserId, params: &Params) -> Result<MachineV
 /// Answers `202`: the provider destroys and recreates the compute half
 /// asynchronously, and the session's daemon reconnects when it is back.
 #[skyzen::openapi]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a resize names the session, the caller, the type, and every \
+              service it touches"
+)]
 async fn resize_session_machine(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
@@ -739,15 +838,24 @@ async fn resize_session_machine(
     rooms: Rooms,
     hosts: HostRooms,
     db: Db,
+    kv: Kv,
 ) -> Outcome<Accepted> {
-    user_resize(&db, &config, &rooms, &hosts, user.id, &params, &request)
-        .await
-        .into()
+    user_resize(
+        &db, &config, &kv, &rooms, &hosts, user.id, &params, &request,
+    )
+    .await
+    .into()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a resize names the session, the caller, the type, and every \
+              service it touches"
+)]
 async fn user_resize(
     db: &Db,
     config: &ApiConfig,
+    kv: &Kv,
     rooms: &Rooms,
     hosts: &HostRooms,
     user: UserId,
@@ -758,6 +866,7 @@ async fn user_resize(
     resize(
         db,
         config,
+        kv,
         rooms,
         hosts,
         user,

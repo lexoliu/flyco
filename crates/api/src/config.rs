@@ -85,6 +85,12 @@ pub mod binding {
     /// Queue binding the provisioning jobs are produced to and consumed
     /// from.
     pub const PROVISIONING: &str = "PROVISIONING";
+    /// KV binding holding sessions, OAuth attempts and the catalog cache.
+    ///
+    /// Named here for the handlers that open it themselves — the queue
+    /// consumer and the scheduled worker — because neither is a request and
+    /// neither gets `#[skyzen::main]`'s service wiring.
+    pub const AUTH_KV: &str = "AUTH_KV";
 }
 
 /// Why the control plane refused to start.
