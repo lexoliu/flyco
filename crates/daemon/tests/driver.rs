@@ -413,3 +413,38 @@ fn nothing_bun_prints_reaches_the_structured_output_stream() {
         "the failure must name the install: {stderr}"
     );
 }
+
+#[tokio::test]
+async fn a_sidecar_that_dies_mid_turn_reports_what_it_said_before_it_went() {
+    // The scratch's name is what tells the stand-in sidecar to write to
+    // stderr and exit instead of answering the turn.
+    let scratch = Scratch::new("dies");
+    let (session, mut outputs) = start(&scratch).await;
+
+    // The write may well succeed: a pipe buffers, and the child is dying
+    // rather than dead. What matters is what the driver does next.
+    let _ = session.send_user_message("go".to_owned()).await;
+
+    let fatal = loop {
+        if let SessionOutput::Fatal { error } = next(&mut outputs, "the agent's death notice").await
+        {
+            break error;
+        }
+    };
+
+    // Both halves, because neither alone is diagnosable: a process killed
+    // by the OOM killer and one whose credential was refused both just
+    // close their stdout.
+    assert!(
+        fatal.contains("exit") && fatal.contains('3'),
+        "the notice must name the exit status, not just the fact: {fatal}"
+    );
+    assert!(
+        fatal.contains("the credential was refused"),
+        "the notice must quote what the process last said: {fatal}"
+    );
+    assert!(
+        fatal.contains("sidecar.ts:42"),
+        "the tail is more than one line, so a stack trace survives: {fatal}"
+    );
+}

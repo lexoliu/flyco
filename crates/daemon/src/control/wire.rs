@@ -512,9 +512,19 @@ async fn collect<A: ControlApi>(
                 )
             }
             SessionOutput::Fatal { error } => {
-                // The harness is done; the room learns why through the
-                // turn's own failure event, and the daemon stops.
+                // The harness is done, and this is the only account of why.
+                // Reported over REST rather than queued as a frame: the
+                // queue is drained by the pump, and the pump is about to
+                // stop — a frame put there now is a frame nobody sends.
+                //
+                // Best effort. A session whose agent died and whose report
+                // also failed is one the control plane must still stop
+                // waiting on, and the stall sweep is what does that; an
+                // error here would only replace one silence with another.
                 tracing::error!(error, "the harness session ended fatally");
+                if let Err(refused) = api.report_startup_failure(error).await {
+                    tracing::error!(%refused, "the control plane did not take the failure report");
+                }
                 return Ok(());
             }
         };

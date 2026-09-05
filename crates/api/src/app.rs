@@ -1635,11 +1635,43 @@ async fn report_startup_failure(
     State(session): State<DaemonSession>,
     Json(report): Json<ReportStartupFailure>,
     db: Db,
+    rooms: Rooms,
 ) -> Outcome<NoContent> {
-    sessions::note_startup_failure(&db, session.0, &report.message)
+    take_failure_report(&db, &rooms, session.0, &report.message)
         .await
         .map(|()| NoContent)
         .into()
+}
+
+/// Records why a daemon is stopping, and fails the session if that is what
+/// it means.
+///
+/// The two cases differ by whether the session ever went live, which is a
+/// fact the control plane holds and the dying daemon does not:
+///
+/// - **Still provisioning.** `flycod` did not get as far as reporting in,
+///   and it is `Restart=on-failure`, so the next attempt may well work. The
+///   reason is recorded and said only if the machine never does come up,
+///   which is the stall sweep's job.
+/// - **Already live.** The agent process is gone, and a `flycod` that
+///   reaches this point exits cleanly — so systemd will not restart it and
+///   nothing else is coming. Failing now is the whole difference between a
+///   session that says what happened and one that spins for fifteen minutes
+///   before a sweep notices (docs/ux.md §9.6).
+async fn take_failure_report(
+    db: &Db,
+    rooms: &Rooms,
+    id: SessionId,
+    message: &str,
+) -> Result<(), ApiError> {
+    sessions::note_startup_failure(db, id, message).await?;
+    let target = sessions::provisioning_target(db, id)
+        .await?
+        .ok_or(ApiError::SessionNotFound)?;
+    if target.state == SessionState::Provisioning {
+        return Ok(());
+    }
+    sessions::fail(db, rooms, id, message).await
 }
 
 #[skyzen::openapi]

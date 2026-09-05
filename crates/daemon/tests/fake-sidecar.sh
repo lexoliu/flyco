@@ -9,9 +9,10 @@
 #
 # The one thing a test can vary is the directory it is run in, which is the
 # scratch directory the test named: a scratch called `unmounted` gets a
-# sidecar that reports a flyco server missing `machine_status`. The driver
-# gives a sidecar no other channel, and a second copy of this script would
-# be a second copy of the whole protocol.
+# sidecar that reports a flyco server missing `machine_status`, and one
+# called `dies` gets a sidecar that writes to stderr and exits in the middle
+# of a turn. The driver gives a sidecar no other channel, and a second copy
+# of this script would be a second copy of the whole protocol.
 set -eu
 
 say() {
@@ -20,6 +21,13 @@ say() {
 
 # `pwd` rather than `$PWD`: the driver changes the child's directory after
 # the fork, and an inherited PWD would still name the test runner's.
+dies=0
+case "$(pwd)" in
+*dies*)
+	dies=1
+	;;
+esac
+
 case "$(pwd)" in
 *unmounted*)
 	mounted='{"type":"mcp_servers","servers":[{"name":"flyco","status":"connected","state":"connected","tools":["budget_status","machine_resize"]}]}'
@@ -53,6 +61,14 @@ while IFS= read -r line; do
 		fi
 		;;
 	*'"type":"user_message"'*)
+		if [ "$dies" -eq 1 ]; then
+			# What a sidecar that cannot go on actually does: it says why
+			# on stderr, which nothing parses, and stops. Nothing arrives
+			# on stdout, so the driver learns of it only as an EOF.
+			echo 'TypeError: the credential was refused' >&2
+			echo '    at start (sidecar.ts:42)' >&2
+			exit 3
+		fi
 		# `system/init` rides the first turn, so this is the earliest the
 		# CLI can name what it supports.
 		say '{"type":"capabilities","capabilities":["interrupt_receipt_v1"]}'

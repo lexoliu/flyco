@@ -649,6 +649,14 @@ Nothing a browser sends is discarded in silence. A user message waits in the mai
 
 The same rule governs the drawer: `Files` and `Diff` are answered live by the machine, so with no daemon connected they say the machine is not connected. They never report it as a control-plane failure, which sends the user looking in the wrong place for a problem that is not there.
 
+### 9.7 When the agent process dies
+
+The agent runs as a process on the machine, and a process can stop: a refused credential, an out-of-memory kill, a crash. When it does, the session is over — `flycod` has nothing left to drive — and the user is owed the reason rather than a spinner.
+
+So the daemon keeps the last lines the agent process wrote to its stderr and the status it exited with, and says both on its way out. It says them however it stopped: the agent closing its output, a protocol error, or a command that could not be written to a process already gone are three ways of learning the same thing, and all three end with one sentence. The machine's own journal does not count as having said it — `flycod` is stopping too, and a log on a machine nobody can reach is not an explanation.
+
+What the control plane does with that sentence depends on whether the session had gone live, which is a fact only it holds. A session still provisioning may yet be saved, because `flycod` is restarted on failure: the reason is recorded and shown only if the machine never does come up. A session that had gone live will not be, because a daemon that reports this exits cleanly and systemd does not restart a clean exit — so the session fails there and then, releases its machine, and reads `Failed` with the sentence. A session whose agent died must never bill for a machine nobody is using.
+
 ## 10. Settings
 
 Left-hand vertical navigation, five sections. Each section is built from
