@@ -8,6 +8,7 @@
   top: calc(100% + var(--space-2));
   left: 0;
   z-index: 20;
+  overflow-y: auto;
   min-width: 240px;
   max-width: min(360px, calc(100vw - var(--space-6)));
   padding: var(--space-3);

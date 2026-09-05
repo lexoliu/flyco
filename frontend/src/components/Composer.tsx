@@ -42,6 +42,7 @@ import {
   type ProviderAccountView,
   type RepoSummary,
 } from "../api/client";
+import { beginGithubLogin, githubTokenRevoked } from "../api/auth";
 import type { NewSessionInput } from "../api/sessions";
 import { cx } from "../lib/cx";
 import {
@@ -62,6 +63,17 @@ import {
   shortMachineType,
 } from "../lib/machines";
 import styles from "./Composer.module.css";
+
+/**
+ * The one thing to do about GitHub refusing flyco's access: authorize it
+ * again, from here. The flyco session stays; only the GitHub grant is
+ * renewed, and the browser comes back to this page signed in.
+ */
+function reconnectGithub(error: unknown): { label: string; onClick: () => void } | undefined {
+  return githubTokenRevoked(error)
+    ? { label: "Reconnect GitHub", onClick: () => void beginGithubLogin() }
+    : undefined;
+}
 
 const HARNESS_LABEL: Record<HarnessKind, string> = {
   claude_code: "Claude Code",
@@ -620,7 +632,7 @@ function RepoChip(props: { slug: string | null; onChoose: (slug: string) => void
               </For>
             </ul>
           </Show>
-          <ProblemNotice error={results.error} />
+          <ProblemNotice error={results.error} action={reconnectGithub(results.error)} />
         </div>
       )}
     </Popover>
@@ -711,7 +723,7 @@ function BranchChip(props: {
                 </ul>
               )}
             </Show>
-            <ProblemNotice error={page.error} />
+            <ProblemNotice error={page.error} action={reconnectGithub(page.error)} />
           </div>
         )}
       </Popover>

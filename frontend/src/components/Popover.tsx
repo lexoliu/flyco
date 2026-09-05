@@ -53,6 +53,12 @@ export interface PopoverProps {
   anchorClass?: string | undefined;
 }
 
+/** Room left between an open panel and the bottom of the viewport. */
+const VIEWPORT_MARGIN_PX = 16;
+
+/** Below this a panel is unusable however little room there is. */
+const MIN_PANEL_PX = 160;
+
 export default function Popover(props: PopoverProps) {
   const [open, setOpen] = createSignal(false);
   const triggerId = createUniqueId();
@@ -70,6 +76,22 @@ export default function Popover(props: PopoverProps) {
     // Focus lands inside the panel so the keyboard can reach its contents
     // and so blurring out of it is a meaningful "done here".
     panel?.focus();
+
+    // The panel hangs below its anchor, so what it may not do is hang
+    // below the viewport: a picker whose bottom half is off screen, on a
+    // page that does not scroll, is a control nobody can reach. The panel
+    // gets the room between its top edge and the viewport's bottom, and
+    // scrolls inside that; re-measured when the window changes size.
+    function fit(): void {
+      if (panel === undefined) {
+        return;
+      }
+      const top = panel.getBoundingClientRect().top;
+      panel.style.maxHeight = `${Math.max(window.innerHeight - top - VIEWPORT_MARGIN_PX, MIN_PANEL_PX)}px`;
+    }
+    fit();
+    window.addEventListener("resize", fit);
+    onCleanup(() => window.removeEventListener("resize", fit));
 
     function onPointerDown(event: PointerEvent): void {
       if (anchor !== undefined && !anchor.contains(event.target as Node)) {
