@@ -54,11 +54,34 @@
    send button in the middle of a row is not a send button. */
 .chips {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
   flex: 1;
+}
+
+/* One line at desktop widths, with the compute chip as the one that gives
+   way. Narrower, the row wraps and the compute chip takes a whole line, so
+   that its label changing length (every slider detent rewrites it) never
+   reflows the chips under an open popover. */
+@media (max-width: 900px) {
+  .chips {
+    flex-wrap: wrap;
+  }
+
+  .anchorShrink {
+    flex-basis: 100%;
+  }
+}
+
+.anchorShrink {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.chipShrink {
+  min-width: 0;
 }
 
 .send {
@@ -139,6 +162,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 48ch;
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 .chipDim {
@@ -226,6 +251,8 @@
   color: var(--color-text);
   font-size: var(--text-md);
   text-align: left;
+  text-decoration: none;
+  box-sizing: border-box;
 }
 
 .option:hover {

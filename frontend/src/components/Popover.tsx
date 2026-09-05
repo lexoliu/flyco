@@ -46,6 +46,11 @@ export interface PopoverProps {
   align?: "start" | "end" | undefined;
   /** Extra class on the panel, for callers that need a width. */
   panelClass?: string | undefined;
+  /**
+   * Extra class on the anchor, for a trigger that has to be allowed to
+   * shrink inside its row instead of taking its content's width.
+   */
+  anchorClass?: string | undefined;
 }
 
 export default function Popover(props: PopoverProps) {
@@ -90,7 +95,7 @@ export default function Popover(props: PopoverProps) {
 
   return (
     <div
-      class={styles.anchor}
+      class={cx(styles.anchor, props.anchorClass)}
       ref={anchor}
       onFocusOut={(event) => {
         const next = event.relatedTarget;

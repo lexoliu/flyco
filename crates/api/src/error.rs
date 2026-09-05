@@ -13,7 +13,7 @@ use skyzen_services::{DbError, KvError, StorageError};
 
 use crate::anthropic::AnthropicError;
 use crate::crypto::CryptoError;
-use crate::github::GithubError;
+use crate::github::{GithubCall, GithubError};
 use crate::google::GoogleError;
 use crate::microsoft::MicrosoftError;
 use crate::openai::{DEVICE_AUTH_SETTINGS_URL, OpenAiError};
@@ -861,6 +861,19 @@ pub enum ApiError {
     #[error("{0}", status = StatusCode::BAD_REQUEST)]
     GithubCodeRejected(String),
 
+    /// GitHub no longer accepts the token flyco holds for this user.
+    ///
+    /// A `401` from `GET /user/repos` or any other call made with the
+    /// user's token means the token was revoked — by the user, or by GitHub
+    /// retiring an older grant — and nothing but a new sign-in can replace
+    /// it. Answered as a `401` of flyco's own, deliberately: the browser
+    /// treats a `401` as "sign in again", which is exactly the fix.
+    #[error(
+        "GitHub no longer accepts flyco's sign-in for your account; sign in with GitHub again",
+        status = StatusCode::UNAUTHORIZED
+    )]
+    GithubTokenRevoked,
+
     /// GitHub answered one of flyco's calls with a status it cannot use.
     ///
     /// Still a `502` — flyco cannot serve the request — but the status and
@@ -961,6 +974,15 @@ impl From<GithubError> for ApiError {
             rejected @ GithubError::Rejected { .. } => {
                 Self::GithubCodeRejected(rejected.to_string())
             }
+            // A 401 to a call made with the user's *stored* token is the
+            // token's death, not GitHub's unavailability. The exchange and
+            // the profile read that follows it happen during a sign-in,
+            // with a token just minted; their 401 stays GitHub's refusal.
+            GithubError::Status {
+                call: GithubCall::Repositories | GithubCall::Repository | GithubCall::Branches,
+                status: 401,
+                ..
+            } => Self::GithubTokenRevoked,
             refused @ GithubError::Status { .. } => Self::GithubStatus(refused.to_string()),
             unreachable => Self::Github(unreachable),
         }
@@ -1124,6 +1146,7 @@ impl ApiError {
             Self::RelayUnavailable(_) => "relay-unavailable",
             Self::Room(_) => "session-room-unavailable",
             Self::GithubCodeRejected(_) => "github-code-rejected",
+            Self::GithubTokenRevoked => "github-token-revoked",
             Self::GithubStatus(_) => "github-status",
             Self::Github(_) => "github-unavailable",
             Self::CorruptRecord(_)
@@ -1302,17 +1325,45 @@ mod tests {
     }
 
     #[test]
+    fn a_401_to_a_call_made_with_the_users_token_asks_for_a_new_sign_in() {
+        let problem = ApiError::from(GithubError::Status {
+            call: GithubCall::Repositories,
+            status: 401,
+            reason: "Bad credentials".to_owned(),
+        })
+        .problem();
+
+        assert_eq!(problem.status, 401);
+        assert_eq!(
+            problem.kind,
+            "https://flyco.dev/problems/github-token-revoked"
+        );
+
+        // A sign-in's own calls carry no stored token: their 401 is GitHub
+        // refusing flyco, and stays the 502 it was.
+        let exchange = ApiError::from(GithubError::Status {
+            call: GithubCall::TokenExchange,
+            status: 401,
+            reason: "Bad credentials".to_owned(),
+        })
+        .problem();
+        assert_eq!(exchange.status, 502);
+    }
+
+    #[test]
     fn a_status_github_refused_with_names_the_call_it_refused() {
         let problem = ApiError::from(GithubError::Status {
             call: GithubCall::UserProfile,
             status: 401,
+            reason: "Bad credentials".to_owned(),
         })
         .problem();
 
         assert_eq!(problem.status, 502);
         assert_eq!(problem.kind, "https://flyco.dev/problems/github-status");
         assert_eq!(
-            problem.detail, "GitHub answered HTTP 401 to the account profile request",
+            problem.detail,
+            "GitHub answered HTTP 401 to the account profile request: Bad credentials",
             "a 5xx that is GitHub's own answer is stated, not blanked"
         );
     }

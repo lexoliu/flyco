@@ -35,6 +35,7 @@ import {
   getMachineCatalog,
   listBranches,
   listRepos,
+  type HarnessAccountView,
   type HarnessKind,
   type MachineCatalogEntry,
   type MachineDefault,
@@ -57,6 +58,7 @@ import {
   entryKey,
   hourlyLabel,
   readingMachines,
+  shortMachineType,
 } from "../lib/machines";
 import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./Composer.module.css";
@@ -84,6 +86,7 @@ export default function Composer(props: ComposerProps) {
   const [budget, setBudget] = createSignal(DEFAULT_BUDGET);
   const [spot, setSpot] = createSignal(spotPreference());
   const [chosenKey, setChosenKey] = createSignal<string | null>(null);
+  const [harnessChoice, setHarnessChoice] = createSignal<HarnessKind | null>(null);
   const [sending, setSending] = createSignal(false);
   const [error, setError] = createSignal<unknown>(null);
 
@@ -273,7 +276,11 @@ export default function Composer(props: ComposerProps) {
       submitOn="mod-enter"
       controls={
         <div class={styles.chips}>
-          <HarnessChip harness={harness()} linked={readiness.harness().length > 0} />
+          <HarnessChip
+            harness={harness()}
+            accounts={readiness.harness()}
+            onChoose={setHarnessChoice}
+          />
           <ComputeChip
             linked={readiness.compute().length > 0}
             accounts={readiness.compute()}
@@ -318,11 +325,21 @@ export default function Composer(props: ComposerProps) {
   );
 }
 
-/** Which agent will drive the session, or the way to link one. */
-function HarnessChip(props: { harness: HarnessKind; linked: boolean }) {
+/**
+ * Which agent will drive the session, or the way to link one.
+ *
+ * Linked, the chip is a picker of the linked agents with the connect flow
+ * as its last row — a readout that leaves the page when clicked is not a
+ * chip, it is a link wearing one.
+ */
+function HarnessChip(props: {
+  harness: HarnessKind;
+  accounts: HarnessAccountView[];
+  onChoose: (harness: HarnessKind) => void;
+}) {
   return (
     <Show
-      when={props.linked}
+      when={props.accounts.length > 0}
       fallback={
         <A href="/connect/harness" class={cx(styles.chip, styles.chipMissing)}>
           <Plus size={13} aria-hidden="true" />
@@ -330,10 +347,55 @@ function HarnessChip(props: { harness: HarnessKind; linked: boolean }) {
         </A>
       }
     >
-      <A href="/connect/harness" class={styles.chip}>
-        <Logomark mark={HARNESS_MARK[props.harness]} size={13} />
-        <span class={styles.chipLabel}>{HARNESS_LABEL[props.harness]}</span>
-      </A>
+      <Popover
+        label="Agent"
+        trigger={(attrs) => (
+          <button
+            id={attrs.id}
+            onClick={attrs.onClick}
+            aria-expanded={attrs.expanded()}
+            aria-haspopup="dialog"
+            type="button"
+            class={styles.chip}
+          >
+            <Logomark mark={HARNESS_MARK[props.harness]} size={13} />
+            <span class={styles.chipLabel}>{HARNESS_LABEL[props.harness]}</span>
+          </button>
+        )}
+      >
+        {(close) => (
+          <div class={styles.popover}>
+            <p class={styles.popoverTitle}>Your agents</p>
+            <ul class={styles.options}>
+              <For each={props.accounts}>
+                {(account) => (
+                  <li>
+                    <button
+                      type="button"
+                      class={cx(
+                        styles.option,
+                        account.harness === props.harness && styles.optionChosen,
+                      )}
+                      onClick={() => {
+                        props.onChoose(account.harness);
+                        close();
+                      }}
+                    >
+                      <Logomark mark={HARNESS_MARK[account.harness]} size={13} />
+                      {HARNESS_LABEL[account.harness]}
+                      <span class={styles.optionMeta}>{account.label}</span>
+                    </button>
+                  </li>
+                )}
+              </For>
+            </ul>
+            <A href="/connect/harness" class={styles.option}>
+              <Plus size={13} aria-hidden="true" />
+              Connect another agent
+            </A>
+          </div>
+        )}
+      </Popover>
     </Show>
   );
 }
@@ -373,16 +435,14 @@ function ComputeChip(props: {
     if (entry === undefined) {
       return null;
     }
-    const parts = [
+    // Provider, type and price: what decides whether to send. Region and
+    // spot are one click away in the popover, and on the chip they were
+    // what pushed the row onto a second line.
+    return [
       PROVIDER_LABEL[entry.provider],
-      entry.region,
-      entry.machine_type,
+      shortMachineType(entry.machine_type),
       hourlyLabel(entry, props.spot),
-    ];
-    if (props.spot && entry.pricing.kind === "metered") {
-      parts.push("spot");
-    }
-    return parts.join(" · ");
+    ].join(" · ");
   });
 
   /** The sentence a license-bound machine has to show before send. */
@@ -403,6 +463,11 @@ function ComputeChip(props: {
       <Popover
         label="Compute"
         panelClass={styles.popoverWide}
+        // The one chip that gives way: its label shrinks to an ellipsis so
+        // the row never wraps, and dragging the slider — which rewrites
+        // this label on every detent — never moves the panel under the
+        // pointer.
+        anchorClass={styles.anchorShrink}
         trigger={(attrs) => (
           <button
             id={attrs.id}
@@ -410,7 +475,7 @@ function ComputeChip(props: {
             aria-expanded={attrs.expanded()}
             aria-haspopup="dialog"
             type="button"
-            class={cx(styles.chip, warning() !== null && styles.chipBound)}
+            class={cx(styles.chip, styles.chipShrink, warning() !== null && styles.chipBound)}
           >
             <Show
               when={props.entry !== undefined && PROVIDER_MARK[props.entry.provider]}
@@ -422,7 +487,7 @@ function ComputeChip(props: {
               {summary() ?? props.pending ?? "Choosing a machine\u2026"}
             </span>
             <span class={styles.chipDim}>
-              {props.chosenKey === null ? "Auto" : "Chosen by you"}
+              {props.chosenKey === null ? "Auto" : "Chosen"}
             </span>
           </button>
         )}
