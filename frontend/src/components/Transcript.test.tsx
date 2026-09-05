@@ -23,14 +23,14 @@ function shell(overrides: Partial<Extract<TranscriptItem, { kind: "shell" }>> = 
   return item;
 }
 
-function show(item: TranscriptItem, failedAtUnix: number | null = null) {
+function show(item: TranscriptItem, stoppedAtUnix: number | null = null) {
   return render(() => (
     <Transcript
       items={[item]}
       repo="lexoliu/flyco"
       provider="Azure"
       now={T0 * 1000}
-      failedAtUnix={failedAtUnix}
+      stoppedAtUnix={stoppedAtUnix}
     />
   ));
 }
@@ -53,11 +53,11 @@ describe("Transcript provisioning timeline", () => {
     expect(container.textContent).toContain("10m");
   });
 
-  it("stops at the stage a failed session was on, with the time it had run", () => {
+  it("stops at the stage the build was on when the session stopped, with the time it had run", () => {
     // The session failed two minutes in; eight more have passed since.
     const { container, getByLabelText } = show(reserving, T0 - 480);
 
-    getByLabelText("Provisioning failed");
+    getByLabelText("Provisioning stopped");
     expect(container.querySelector('[data-active="true"]')).toBeNull();
     expect(container.querySelector('[data-failed="true"]')).not.toBeNull();
     expect(container.textContent).toContain("Reserving a machine on Azure");

@@ -75,11 +75,11 @@ export interface TranscriptProps {
   /** The instant elapsed times are measured against. */
   now: number;
   /**
-   * When the session failed, so a timeline still waiting on a stage stops
-   * there — with the time that stage had run — instead of counting on
-   * under a `Failed` pill.
+   * When the session stopped being built, so a timeline still waiting on a
+   * stage stops there — with the time that stage had run — instead of
+   * counting on under a `Failed` or `Archived` pill.
    */
-  failedAtUnix: number | null;
+  stoppedAtUnix: number | null;
 }
 
 export default function Transcript(props: TranscriptProps) {
@@ -156,7 +156,7 @@ export default function Transcript(props: TranscriptProps) {
                     repo={props.repo}
                     provider={props.provider}
                     now={props.now}
-                    failedAtUnix={props.failedAtUnix}
+                    stoppedAtUnix={props.stoppedAtUnix}
                   />
                 )}
               </Match>
@@ -308,8 +308,8 @@ export function ProvisioningTimeline(props: {
   repo: string;
   provider: string | null;
   now: number;
-  /** When the session failed with this timeline still open; see {@link TranscriptProps}. */
-  failedAtUnix: number | null;
+  /** When the build stopped with this timeline still open; see {@link TranscriptProps}. */
+  stoppedAtUnix: number | null;
 }) {
   const done = () => props.steps.some((step) => step.stage === "ready");
   /**
@@ -317,10 +317,12 @@ export function ProvisioningTimeline(props: {
    * reached `ready` belongs to an earlier, finished episode and keeps its
    * ticks.
    */
-  const failedAt = () => (done() ? null : props.failedAtUnix);
+  const stoppedAt = () => (done() ? null : props.stoppedAtUnix);
   const label = () => {
     const what = props.recovery ? "Migrating" : "Provisioning";
-    return failedAt() === null ? what : `${what} failed`;
+    // What stopped it — failed, archived — is the notice's sentence, not
+    // this one's: the timeline says only that it did.
+    return stoppedAt() === null ? what : `${what} stopped`;
   };
 
   return (
@@ -334,7 +336,7 @@ export function ProvisioningTimeline(props: {
         {(step, index) => {
           const next = () => props.steps[index() + 1];
           const last = () => index() === props.steps.length - 1;
-          const failed = () => last() && failedAt() !== null;
+          const stopped = () => last() && stoppedAt() !== null;
           const took = () => {
             const following = next();
             if (following !== undefined) {
@@ -343,22 +345,21 @@ export function ProvisioningTimeline(props: {
             if (done()) {
               return null;
             }
-            const stoppedAt = failedAt();
-            // A failed stage says how long it ran before it failed; the
-            // clock stopped when the session did.
-            const until = stoppedAt === null ? Math.floor(props.now / 1000) : stoppedAt;
+            // A stage that never finished says how long it ran before the
+            // session stopped, not how long ago that session was opened.
+            const until = stoppedAt() ?? Math.floor(props.now / 1000);
             return formatDuration(Math.max(0, until - step.atUnix));
           };
 
           return (
             <div
               class={styles.stage}
-              data-active={last() && !done() && !failed()}
-              data-failed={failed()}
+              data-active={last() && !done() && !stopped()}
+              data-failed={stopped()}
             >
               <span class={styles.stageMark} aria-hidden="true">
                 <Switch fallback={<Check size={12} />}>
-                  <Match when={failed()}>
+                  <Match when={stopped()}>
                     <X size={12} />
                   </Match>
                   <Match when={last() && !done()}>
