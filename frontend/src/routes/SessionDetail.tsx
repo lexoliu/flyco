@@ -156,6 +156,13 @@ export default function SessionDetail() {
     return current === undefined ? undefined : deriveStatus(current, now(), signals());
   });
 
+  // The status is also what decides whether the composer offers Stop.
+  // `turnInFlight` alone is a fold over frames that *stopped arriving*: an
+  // archived session whose last turn never completed goes on offering to
+  // stop it, and so does one whose machine fell off the room, where the
+  // interrupt would reach nobody. `working` is the one state where there
+  // is genuinely something running to stop.
+
   /**
    * The one failure that makes the whole page moot: the session could not
    * be read, or the relay stopped for good (a 404, a 403 — see
@@ -630,7 +637,7 @@ export default function SessionDetail() {
 
           <div class={styles.composer}>
             <SessionComposer
-              turnInFlight={signals().turnInFlight === true}
+              turnInFlight={status()?.status === "working"}
               refusal={refusal()}
               onSend={onSend}
               onStop={onStop}

@@ -180,7 +180,7 @@ fn the_session_unit_can_write_the_managed_policy_the_daemon_writes() {
 
     let script = asset(INSTALLER.name);
     assert!(
-        script.contains(&format!("/etc/claude-code\n")) || script.contains(CLAUDE_MANAGED_DIR),
+        script.contains(CLAUDE_MANAGED_DIR),
         "the installer creates it before the unit runs: {script}"
     );
 }

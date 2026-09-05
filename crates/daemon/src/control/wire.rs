@@ -85,6 +85,71 @@ pub const BACKOFF_MIN: Duration = Duration::from_secs(1);
 /// Longest wait between reconnect attempts.
 pub const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
+/// How often a daemon with nothing to say says so anyway.
+///
+/// A session relay carries nothing at all while the agent is thinking, and
+/// a flow with no packets on it is what a cloud NAT reclaims: Azure's
+/// outbound idle timeout is four minutes by default, and it drops the flow
+/// without a FIN, so neither end learns the socket is gone. Thirty seconds
+/// is comfortably inside every such timeout flyco has met and costs one
+/// small frame a minute in each direction.
+pub const HEARTBEAT: Duration = Duration::from_secs(30);
+
+/// How many unanswered heartbeats mean the socket is gone.
+///
+/// The room answers every [`DaemonToControl::Heartbeat`], so three in a row
+/// with nothing back is a path that no longer carries packets, whatever the
+/// socket still claims. Three rather than one because a single answer can
+/// be late; abandoning is always safe — the frames waiting are held, the
+/// loop reconnects, and the room replays the mailbox — but abandoning on
+/// every hiccup would reconnect a working session all day.
+pub const MISSES_BEFORE_DEAD: u32 = 3;
+
+/// How a relay proves its socket is still there, and when it gives up.
+///
+/// One value rather than two constants because the two are only meaningful
+/// together: a deadline shorter than a couple of intervals abandons a
+/// socket before the answer it is waiting for could possibly have arrived,
+/// so the deadline is *derived* from the interval and cannot be set to
+/// contradict it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Keepalive {
+    /// How often a daemon with nothing to say says so anyway.
+    interval: Duration,
+    /// How long the room may say nothing before its socket is abandoned.
+    silence_limit: Duration,
+}
+
+impl Keepalive {
+    /// A keepalive that beats every `interval` and gives up after `misses`
+    /// unanswered beats.
+    #[must_use]
+    pub const fn every(interval: Duration, misses: u32) -> Self {
+        Self {
+            interval,
+            silence_limit: interval.saturating_mul(misses),
+        }
+    }
+
+    /// How often to beat.
+    #[must_use]
+    pub const fn interval(self) -> Duration {
+        self.interval
+    }
+
+    /// How long silence may last before the socket is presumed dead.
+    #[must_use]
+    pub const fn silence_limit(self) -> Duration {
+        self.silence_limit
+    }
+}
+
+impl Default for Keepalive {
+    fn default() -> Self {
+        Self::every(HEARTBEAT, MISSES_BEFORE_DEAD)
+    }
+}
+
 /// What the harness is told when a budget threshold is crossed.
 ///
 /// The agent decides how to spend its budget, so a threshold is information
@@ -582,6 +647,8 @@ struct Connection<S, T, A, W, D, H> {
     /// noise it has to read every turn — `machine_status` is there for when
     /// it wants to know.
     opening: Option<String>,
+    /// How this connection proves its socket is still there.
+    keepalive: Keepalive,
 }
 
 /// Why one connection ended.
@@ -597,6 +664,52 @@ enum Ended {
 impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Disk, H: Shell>
     Connection<S, T, A, W, D, H>
 {
+    /// Writes one frame, parking it for the next connection if the socket
+    /// dies mid-write.
+    ///
+    /// `false` means the socket is gone. The frame is never dropped on the
+    /// way out: a send that failed hands it to `in_flight`, and the next
+    /// connection starts by writing it — without that, a socket dying
+    /// mid-write silently truncates the tail a browser replays from.
+    async fn relay(
+        frame: DaemonToControl,
+        socket: &mut Socket,
+        in_flight: &mut Option<DaemonToControl>,
+    ) -> bool {
+        if let Err(error) = send(socket, &frame).await {
+            tracing::warn!(
+                %error,
+                "a frame did not reach the room; retrying it on the next connection"
+            );
+            *in_flight = Some(frame);
+            return false;
+        }
+        true
+    }
+
+    /// Writes one heartbeat, and says whether the socket is worth keeping.
+    ///
+    /// `false` means abandon it: either the room has been silent for longer
+    /// than [`Keepalive::silence_limit`] — a path that no longer carries
+    /// packets, whatever the socket still claims — or the write itself
+    /// failed. Both are the same instruction to the caller, because both
+    /// are answered the same way: drop it and dial again.
+    async fn beat(&self, socket: &mut Socket, last_heard: tokio::time::Instant) -> bool {
+        let silent_for = last_heard.elapsed();
+        if silent_for > self.keepalive.silence_limit() {
+            tracing::warn!(
+                ?silent_for,
+                "the session room stopped answering; abandoning the socket"
+            );
+            return false;
+        }
+        if let Err(error) = send(socket, &DaemonToControl::Heartbeat).await {
+            tracing::warn!(%error, "a heartbeat did not reach the room");
+            return false;
+        }
+        true
+    }
+
     /// Pumps one connection until it ends.
     ///
     /// `in_flight` holds the one frame that has left the queue but has not
@@ -619,6 +732,13 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
             return Ok(Ended::Disconnected);
         }
 
+        // The socket has just been greeted, so it counts as heard from now:
+        // a connection is never abandoned for silence it predates.
+        let mut last_heard = tokio::time::Instant::now();
+        let mut heartbeat = tokio::time::interval(self.keepalive.interval());
+        // The first tick is immediate and a `Hello` has just been written.
+        heartbeat.tick().await;
+
         loop {
             tokio::select! {
                 outbound = queue.recv(), if self.alive.harness => {
@@ -630,8 +750,17 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                     let Some(command) = inbound? else {
                         return Ok(Ended::Disconnected);
                     };
+                    // Any frame at all proves the path is live, so the
+                    // deadline is reset here rather than only on a
+                    // heartbeat answer: a busy turn is its own keepalive.
+                    last_heard = tokio::time::Instant::now();
                     if matches!(self.dispatch(command).await?, Ended::Archived) {
                         return Ok(Ended::Archived);
+                    }
+                }
+                _ = heartbeat.tick() => {
+                    if !self.beat(socket, last_heard).await {
+                        return Ok(Ended::Disconnected);
                     }
                 }
                 output = self.terminal_out.recv() => {
@@ -639,9 +768,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                         return Ok(Ended::Disconnected);
                     };
                     let frame = DaemonToControl::TerminalOutput { data };
-                    if let Err(error) = send(socket, &frame).await {
-                        tracing::warn!(%error, "a terminal frame did not reach the room; retrying it on the next connection");
-                        *in_flight = Some(frame);
+                    if !Self::relay(frame, socket, in_flight).await {
                         return Ok(Ended::Disconnected);
                     }
                 }
@@ -650,9 +777,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                     // channel outlives every run and never closes.
                     let update = update.expect("the relay holds the shell's own sender");
                     let frame = self.shell_frame(update);
-                    if let Err(error) = send(socket, &frame).await {
-                        tracing::warn!(%error, "a shell frame did not reach the room; retrying it on the next connection");
-                        *in_flight = Some(frame);
+                    if !Self::relay(frame, socket, in_flight).await {
                         return Ok(Ended::Disconnected);
                     }
                 }
@@ -687,9 +812,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                         // cannot spin this loop.
                         return Ok(Ended::Disconnected);
                     };
-                    if let Err(error) = send(socket, &frame).await {
-                        tracing::warn!(%error, "a workdir reply did not reach the room; retrying it on the next connection");
-                        *in_flight = Some(frame);
+                    if !Self::relay(frame, socket, in_flight).await {
                         return Ok(Ended::Disconnected);
                     }
                 }
@@ -958,6 +1081,10 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
         match command {
             ControlToDaemon::Welcome => {
                 tracing::debug!("the room welcomed an already-welcomed daemon");
+            }
+            ControlToDaemon::Heartbeat => {
+                // Nothing to do: arriving at all is the whole of what this
+                // frame carries, and the pump has already taken that.
             }
             ControlToDaemon::UserMessage { text } => {
                 if self.refuse_while_paused("a user message")
@@ -1276,6 +1403,8 @@ pub struct SessionRelay<S, A, T, W, D, H> {
     pub machine: flyco_core::SessionMachine,
     /// Whether flyco or the user chose that machine.
     pub machine_origin: flyco_core::MachineOrigin,
+    /// How this relay keeps its socket alive and notices when it is not.
+    pub keepalive: Keepalive,
 }
 
 impl<S, A, T, W, D, H> core::fmt::Debug for SessionRelay<S, A, T, W, D, H> {
@@ -1349,6 +1478,7 @@ where
         continue_at: None,
         approvals: BTreeMap::new(),
         opening: Some(opening),
+        keepalive: relay.keepalive,
     };
     let mut attempt = 0_u32;
     let mut in_flight = None;

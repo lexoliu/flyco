@@ -105,6 +105,27 @@ impl Room {
             .expect("the room handled the frame");
     }
 
+    /// Ends a socket, exactly as the runtime would when a peer goes away.
+    async fn disconnect(&mut self, which: Which) {
+        let context = self.context();
+        let socket = match which {
+            Which::Daemon => &self.daemon,
+            Which::Client => &self.client,
+        };
+        self.object
+            .websocket(
+                socket,
+                WebSocketEvent::Close {
+                    code: 1006,
+                    reason: "the machine stopped answering".to_owned(),
+                    was_clean: false,
+                },
+                &context,
+            )
+            .await
+            .expect("the room handled the disconnect");
+    }
+
     async fn deliver_json<T: serde::Serialize + Sync>(&mut self, from: Which, frame: &T) {
         let text = serde_json::to_string(frame).expect("serialize");
         self.deliver(from, &text).await;
@@ -130,8 +151,9 @@ impl Room {
         self.hello().await;
         assert_eq!(
             self.drain(),
-            vec![welcome()],
-            "a good hello with an empty mailbox is answered with exactly one welcome"
+            vec![welcome(), attached()],
+            "a good hello with an empty mailbox is one welcome and one \
+             announcement that the machine is on the room"
         );
     }
 
@@ -211,6 +233,16 @@ impl Room {
 enum Which {
     Daemon,
     Client,
+}
+
+/// What every browser is told when a daemon greets the room.
+fn attached() -> Sent {
+    to_client(&ClientEvent::MachineConnection { connected: true })
+}
+
+/// What every browser is told when no daemon is holding the room.
+fn detached() -> Sent {
+    to_client(&ClientEvent::MachineConnection { connected: false })
 }
 
 fn to_client(event: &ClientEvent) -> Sent {
@@ -644,9 +676,15 @@ async fn a_shell_command_with_no_daemon_to_run_it_is_answered_rather_than_droppe
     .await;
 
     let sent = room.drain();
-    let [asked, answered] = sent.as_slice() else {
+    let [asked, detached_now, answered] = sent.as_slice() else {
         panic!("an unrunnable command is echoed and then closed off, not {sent:?}");
     };
+    assert_eq!(
+        detached_now,
+        &detached(),
+        "the run failed because the machine is not on the room, and that is \
+         the part the user has to be told"
+    );
     let ClientEvent::ShellCommand { run, .. } = event_in(asked) else {
         panic!("the command is still recorded");
     };
@@ -1222,8 +1260,9 @@ async fn a_message_sent_before_the_daemon_arrives_is_delivered_on_its_hello() {
     room.hello().await;
     assert_eq!(
         room.drain(),
-        vec![welcome(), to_daemon(&command)],
-        "the greeting is answered with everything the daemon missed"
+        vec![welcome(), to_daemon(&command), attached()],
+        "the greeting is answered with everything the daemon missed, and \
+         then browsers are told the machine is back"
     );
 
     // A reconnect does not replay it a second time: the cursor moved.
@@ -1258,6 +1297,7 @@ async fn messages_held_for_a_daemon_are_replayed_in_the_order_they_were_written(
                 text: text.to_owned(),
             })
         }))
+        .chain(core::iter::once(attached()))
         .collect();
     assert_eq!(
         room.drain(),
@@ -1305,4 +1345,69 @@ async fn only_user_messages_wait_for_a_daemon() {
     room.drain();
 
     room.greet().await;
+}
+
+// ── Liveness ──
+
+#[skyzen::test]
+async fn a_heartbeat_is_answered_and_is_not_part_of_the_session() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    room.deliver_json(Which::Daemon, &DaemonToControl::Heartbeat)
+        .await;
+
+    assert_eq!(
+        room.drain(),
+        vec![to_daemon(&ControlToDaemon::Heartbeat)],
+        "a heartbeat is answered on the daemon's own socket and nothing \
+         else: the answer is what lets a daemon tell a live socket from one \
+         a NAT dropped, and browsers have no use for either"
+    );
+}
+
+#[skyzen::test]
+async fn a_daemon_that_falls_off_the_room_is_announced_to_every_browser() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    room.disconnect(Which::Daemon).await;
+
+    assert_eq!(
+        room.drain(),
+        vec![detached()],
+        "a browser cannot tell an agent that is thinking from a machine \
+         that went away, so the room is the one that has to say"
+    );
+}
+
+#[skyzen::test]
+async fn a_browser_leaving_says_nothing_about_the_machine() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    room.disconnect(Which::Client).await;
+
+    assert_eq!(
+        room.drain(),
+        vec![],
+        "one browser closing a tab is not the machine going away"
+    );
+}
+
+#[skyzen::test]
+async fn an_interrupt_with_no_daemon_to_take_it_is_not_silently_dropped() {
+    let mut room = Room::open().await;
+
+    // No handshake: whatever this interrupt was aimed at, nothing is going
+    // to stop.
+    room.deliver_json(Which::Client, &ControlToDaemon::Interrupt)
+        .await;
+
+    assert_eq!(
+        room.drain(),
+        vec![detached()],
+        "a browser that pressed Stop and was told nothing goes on showing a \
+         turn that nobody is running"
+    );
 }

@@ -479,6 +479,7 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
       case "started":
       case "capabilities":
       case "session_state_changed":
+      case "machine_connection":
       case "usage":
       case "terminal_output":
         // Rendered elsewhere (the header's status pill and rings, the

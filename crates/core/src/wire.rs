@@ -240,6 +240,17 @@ pub enum DaemonToControl {
         /// Session this daemon serves.
         session: SessionId,
     },
+    /// Proof that this daemon and its socket are both still alive.
+    ///
+    /// A session relay is quiet for as long as the agent is thinking, and a
+    /// quiet TCP flow is exactly what a cloud NAT reclaims — Azure's
+    /// outbound idle timeout is four minutes by default. The frame is
+    /// therefore sent on a timer rather than when there is news, and the
+    /// room answers every one with [`ControlToDaemon::Heartbeat`]: an
+    /// answer is what makes inbound silence mean something, so a
+    /// half-open socket is abandoned and reconnected instead of read
+    /// forever.
+    Heartbeat,
     /// The harness is identified and warming.
     ///
     /// Arrives before any user message, so the room can record the
@@ -353,6 +364,13 @@ pub enum DaemonToControl {
 pub enum ControlToDaemon {
     /// Acknowledges [`DaemonToControl::Hello`]; the session is live.
     Welcome,
+    /// Answers [`DaemonToControl::Heartbeat`].
+    ///
+    /// The room has nothing to say on its own schedule, so this is the only
+    /// frame a daemon can count on receiving while a turn runs. That is the
+    /// point: it is what lets the daemon tell a live socket from one a NAT
+    /// dropped without a FIN.
+    Heartbeat,
     /// A user message to feed the harness.
     UserMessage {
         /// Message text.
@@ -617,6 +635,19 @@ pub enum ClientEvent {
         /// The state it moved to.
         state: SessionState,
     },
+    /// The session's machine attached to the room, or fell off it.
+    ///
+    /// The one fact a browser cannot deduce from anything else it is sent.
+    /// Everything the page shows about a running turn — the spinner, the
+    /// Stop button, the terminal — is only meaningful while a daemon is
+    /// there to act on it, and a session whose daemon has gone otherwise
+    /// looks exactly like one whose agent is thinking. Sent on the daemon's
+    /// `Hello`, on its socket closing, and whenever a command finds nobody
+    /// to take it (docs/ux.md §9.6).
+    MachineConnection {
+        /// Whether a greeted daemon holds the room right now.
+        connected: bool,
+    },
     /// A usage snapshot for the UI meters.
     Usage {
         /// The snapshot.
@@ -680,7 +711,9 @@ impl ClientEvent {
     #[must_use]
     pub fn from_daemon(frame: DaemonToControl) -> Option<Self> {
         match frame {
-            DaemonToControl::Hello { .. } | DaemonToControl::WorkdirReply { .. } => None,
+            DaemonToControl::Hello { .. }
+            | DaemonToControl::Heartbeat
+            | DaemonToControl::WorkdirReply { .. } => None,
             DaemonToControl::Started { harness_session_id } => {
                 Some(Self::Started { harness_session_id })
             }
