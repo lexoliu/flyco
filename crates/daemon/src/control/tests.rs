@@ -263,6 +263,18 @@ impl Harness {
     }
 
     async fn with_capacity(greeting: Greeting, outputs: usize) -> Self {
+        Self::build(greeting, outputs, wire::Keepalive::default()).await
+    }
+
+    /// A harness whose relay beats fast enough to watch.
+    ///
+    /// The production interval is thirty seconds, which is a keepalive and
+    /// not a test; the loop under test is the same one either way.
+    async fn with_keepalive(greeting: Greeting, keepalive: wire::Keepalive) -> Self {
+        Self::build(greeting, 32, keepalive).await
+    }
+
+    async fn build(greeting: Greeting, outputs: usize, keepalive: wire::Keepalive) -> Self {
         let room = Room::start(greeting).await;
         let session = SessionId::generate();
         let endpoint = Endpoint::from_base(&room.base, session, TOKEN.to_owned())
@@ -292,6 +304,7 @@ impl Harness {
         let checkout_dir = scratch_checkout();
         let run = tokio::spawn(wire::run(SessionRelay {
             endpoint,
+            keepalive,
             session: fake,
             outputs: receiver,
             api,
@@ -972,6 +985,90 @@ async fn the_agent_ready_stage_is_announced_once_and_not_on_every_reconnect() {
 
 // ── Reconnection ──
 
+/// A keepalive short enough to watch in a test, with the production shape:
+/// beat, then give up after [`wire::MISSES_BEFORE_DEAD`] unanswered beats.
+fn brisk() -> wire::Keepalive {
+    wire::Keepalive::every(Duration::from_millis(50), wire::MISSES_BEFORE_DEAD)
+}
+
+#[tokio::test]
+async fn an_idle_socket_is_kept_alive_by_a_heartbeat() {
+    let mut harness = Harness::with_keepalive(Greeting::Welcome, brisk()).await;
+    harness.handshake().await;
+
+    // Nothing has happened in the session at all, and the daemon still
+    // writes: an idle flow is what a cloud NAT reclaims.
+    assert_eq!(harness.room.next_frame().await, DaemonToControl::Heartbeat);
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_room_that_answers_keeps_its_socket() {
+    let mut harness = Harness::with_keepalive(Greeting::Welcome, brisk()).await;
+    harness.handshake().await;
+
+    // Well past the silence limit, one answered beat at a time.
+    for _ in 0..3 * wire::MISSES_BEFORE_DEAD {
+        assert_eq!(harness.room.next_frame().await, DaemonToControl::Heartbeat);
+        harness
+            .room
+            .directives
+            .send(Directive::Send(ControlToDaemon::Heartbeat))
+            .expect("the room is live");
+    }
+
+    // Still the same connection: an answered beat is not a reconnect, and
+    // the daemon never re-greeted.
+    harness
+        .emit(SessionOutput::Event {
+            event: delta("still here"),
+        })
+        .await;
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness {
+            event: delta("still here")
+        }
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_room_that_stops_answering_loses_its_socket_and_the_daemon_returns() {
+    let mut harness = Harness::with_keepalive(Greeting::Welcome, brisk()).await;
+    harness.handshake().await;
+
+    // This room never answers, which is what a socket a NAT dropped without
+    // a FIN looks like from the daemon's end: writes still appear to
+    // succeed and nothing ever arrives. The daemon must not read it
+    // forever.
+    loop {
+        match harness.room.next().await.expect("the daemon went quiet") {
+            Seen::Disconnected => break,
+            Seen::Frame(DaemonToControl::Heartbeat) | Seen::Connected(_) => {}
+            Seen::Frame(other) => panic!("an idle relay sent {other:?}"),
+        }
+    }
+
+    // And it dials again rather than sitting on a dead session.
+    harness.handshake().await;
+    harness
+        .emit(SessionOutput::Event {
+            event: delta("back"),
+        })
+        .await;
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness {
+            event: delta("back")
+        }
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
 #[tokio::test]
 async fn a_dropped_socket_is_reconnected_and_re_greeted() {
     let mut harness = Harness::start(Greeting::Welcome).await;
@@ -1063,6 +1160,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
     let (workdir, _, repo_status) = FakeWorkdir::pair();
     let run = tokio::spawn(wire::run(SessionRelay {
         endpoint,
+        keepalive: wire::Keepalive::default(),
         session: fake,
         outputs: receiver,
         api,

@@ -1188,9 +1188,22 @@ impl ApiError {
     /// says which call GitHub refused and with what — neither of which is
     /// a flyco internal, and both of which are the difference between a
     /// user who can act and one staring at a bare `502`.
+    ///
+    /// [`SessionDaemonOffline`](Self::SessionDaemonOffline) and
+    /// [`WorkdirTimeout`](Self::WorkdirTimeout) are there for the same
+    /// reason and are the sharper case: they are `5xx` because the machine
+    /// is not answering, which is a state of the *session* rather than a
+    /// fault in the control plane. Telling a user their machine is not
+    /// connected is the whole answer; telling them flyco failed is a lie
+    /// that sends them looking in the wrong place.
     fn is_opaque(&self) -> bool {
-        !matches!(self, Self::RelayUnavailable(_) | Self::GithubStatus(_))
-            && skyzen::HttpError::status(self).is_server_error()
+        !matches!(
+            self,
+            Self::RelayUnavailable(_)
+                | Self::GithubStatus(_)
+                | Self::SessionDaemonOffline
+                | Self::WorkdirTimeout
+        ) && skyzen::HttpError::status(self).is_server_error()
     }
 
     /// The RFC 9457 document describing this failure.
@@ -1269,6 +1282,24 @@ mod tests {
         assert_eq!(problem.status, 500);
         assert_eq!(problem.kind, "https://flyco.dev/problems/internal");
         assert!(!problem.detail.contains("users.id"));
+    }
+
+    #[test]
+    fn a_machine_that_is_not_answering_says_so_rather_than_blaming_flyco() {
+        // Both are `5xx` because the machine is not answering, which is a
+        // state of the session and not a fault in the control plane: a user
+        // told "the control plane failed" goes looking in the wrong place.
+        for error in [ApiError::SessionDaemonOffline, ApiError::WorkdirTimeout] {
+            let problem = error.problem();
+
+            assert!(problem.status >= 500);
+            assert!(
+                problem.detail.contains("daemon"),
+                "a {} problem says only: {}",
+                problem.status,
+                problem.detail
+            );
+        }
     }
 
     #[test]

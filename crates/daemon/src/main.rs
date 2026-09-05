@@ -427,6 +427,7 @@ async fn drive_claude_code(config: DaemonConfig, mount: Mount) -> Result<(), Fai
     let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
     Box::pin(wire::run(SessionRelay {
         endpoint,
+        keepalive: wire::Keepalive::default(),
         session: started.session,
         outputs: started.outputs,
         api,
@@ -489,6 +490,7 @@ async fn report<S: HarnessSession + 'static>(
     let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
     Box::pin(wire::run(SessionRelay {
         endpoint,
+        keepalive: wire::Keepalive::default(),
         session: started.session,
         outputs: started.outputs,
         api,

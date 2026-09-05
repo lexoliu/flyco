@@ -191,7 +191,10 @@ describe("deriveStatus, from the summary's activity", () => {
 describe("STATUS_ORDER", () => {
   it("puts what needs the user first, then what is running, then what is at rest", () => {
     // docs/ux.md §5: `Needs input` → `Working` → `Idle` → the rest.
-    expect(STATUS_ORDER.slice(0, 3)).toEqual(["needs_input", "working", "idle"]);
+    // `Disconnected` sits between them: it is not the agent asking for
+    // anything, but it is the one thing a user can act on that stops a
+    // session dead.
+    expect(STATUS_ORDER.slice(0, 4)).toEqual(["needs_input", "disconnected", "working", "idle"]);
     expect(STATUS_ORDER[STATUS_ORDER.length - 1]).toBe("archived");
   });
 
@@ -209,6 +212,7 @@ const EVERY_STATUS: readonly SessionStatus[] = [
   "provisioning",
   "migrating",
   "working",
+  "disconnected",
   "needs_input",
   "idle",
   "paused",
@@ -522,5 +526,40 @@ describe("composerRefusal", () => {
     expect(composerRefusal("paused")).toBe(
       "This session is paused: its budget is spent. Raise it to continue.",
     );
+  });
+});
+
+describe("a machine that fell off the room", () => {
+  it("reads as Disconnected rather than as a turn that never ends", () => {
+    // The frames stopped arriving, so every other signal still says a turn
+    // is running: that is exactly the state this exists to correct.
+    const view = deriveStatus(session("active"), NOW, {
+      turnInFlight: true,
+      machineOffline: true,
+    });
+
+    expect(view.status).toBe("disconnected");
+    expect(view.breathing).toBe(false);
+  });
+
+  it("goes back to what it was doing once the machine is back", () => {
+    const view = deriveStatus(session("active"), NOW, {
+      turnInFlight: true,
+      machineOffline: false,
+    });
+
+    expect(view.status).toBe("working");
+  });
+
+  it("is read off the room's own announcement, and is absent until it says", () => {
+    expect(liveSignalsFrom([]).machineOffline).toBeUndefined();
+    expect(
+      liveSignalsFrom(stream({ type: "machine_connection", connected: false })).machineOffline,
+    ).toBe(true);
+    expect(
+      liveSignalsFrom(
+        stream({ type: "machine_connection", connected: false }, { type: "machine_connection", connected: true }),
+      ).machineOffline,
+    ).toBe(false);
   });
 });

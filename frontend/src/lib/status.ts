@@ -35,6 +35,7 @@ export type SessionStatus =
   | "provisioning"
   | "migrating"
   | "working"
+  | "disconnected"
   | "needs_input"
   | "idle"
   | "paused"
@@ -65,6 +66,14 @@ export interface LiveSignals {
   turnInFlight?: boolean;
   /** Whether the agent is blocked on a decision from the user. */
   awaitingUser?: boolean;
+  /**
+   * Whether the session's machine has fallen off the room.
+   *
+   * Undefined until the room has said either way, which is most of the
+   * time: only a page with a live socket ever hears it, and a list of
+   * sessions never does.
+   */
+  machineOffline?: boolean;
 }
 
 const BASE: Record<Exclude<SessionState, "active">, StatusView> = {
@@ -117,6 +126,24 @@ function lostItsMachine(reason: InterruptedReason | null | undefined): string | 
   return reason === "spot_reclaimed" ? "spot reclaimed" : undefined;
 }
 
+/**
+ * What an active session reads as while nothing is holding its machine.
+ *
+ * Outranks every activity, because activity is inferred from frames that
+ * have stopped arriving: a turn that started and never finished reads as
+ * `Working` forever once the daemon is gone, which is the page telling the
+ * user to keep waiting for something nobody is doing. Attention rather than
+ * failure — the daemon reconnects on its own within a couple of heartbeats
+ * — and not breathing, because nothing is happening (docs/ux.md §9.6).
+ */
+const DISCONNECTED: StatusView = {
+  status: "disconnected",
+  label: "Disconnected",
+  tone: "attention",
+  breathing: false,
+  detail: "machine not reachable",
+};
+
 /** What an `active` session reads as, one view per activity. */
 const ACTIVE: Record<SessionActivity, StatusView> = {
   working: { status: "working", label: "Working", tone: "working", breathing: true },
@@ -165,6 +192,9 @@ export function deriveStatus(
   if (session.state !== "active") {
     return BASE[session.state];
   }
+  if (live.machineOffline === true) {
+    return DISCONNECTED;
+  }
   // A relay that has said something is the freshest answer there is, so it
   // is read first. One that has said nothing — a list with no socket, a
   // page whose catch-up has not landed — falls through to the fact the
@@ -179,13 +209,16 @@ export function deriveStatus(
 }
 
 /**
- * Reads the two live facts a status needs off a session's relay stream.
+ * Reads the live facts a status needs off a session's relay stream.
  *
  * docs/ux.md §6 defines them in terms of what has happened, not of what the
  * lifecycle enum says, so both are folded from the events themselves:
  *
  * - **A turn is in flight** when a turn started and neither completed nor
  *   failed. Turns do not nest, so the last one seen is the answer.
+ * - **The machine is off the room** when the room last said so. Only a
+ *   page with a live socket ever hears this, so it is absent rather than
+ *   false on a stream that has not been told.
  * - **The agent is waiting on the user** when an approval is pending, or
  *   when the last turn completed and no user message followed it. The
  *   second half is what makes a finished session read as `Needs input`
@@ -201,6 +234,12 @@ export function liveSignalsFrom(events: readonly TimedEvent[]): LiveSignals {
   let turnInFlight = false;
   /** Whether the most recent conversational move was the agent finishing. */
   let agentSpokeLast = false;
+  /**
+   * What the room last said about the machine. `undefined` until it says
+   * anything: a stream that predates the announcement must not be read as
+   * a machine that is off.
+   */
+  let machineOffline: boolean | undefined;
 
   for (const { event } of events) {
     switch (event.type) {
@@ -212,6 +251,9 @@ export function liveSignalsFrom(events: readonly TimedEvent[]): LiveSignals {
         break;
       case "approval_decided":
         undecided.delete(event.id);
+        break;
+      case "machine_connection":
+        machineOffline = !event.connected;
         break;
       case "harness":
         switch (event.event.type) {
@@ -233,7 +275,15 @@ export function liveSignalsFrom(events: readonly TimedEvent[]): LiveSignals {
     }
   }
 
-  return { turnInFlight, awaitingUser: undecided.size > 0 || agentSpokeLast };
+  const signals: LiveSignals = {
+    turnInFlight,
+    awaitingUser: undecided.size > 0 || agentSpokeLast,
+  };
+  // Omitted rather than set to `undefined`: "the room has not said" and
+  // "the room said the machine is on" are different answers, and a status
+  // derived from the second when only the first is true would clear a
+  // disconnection nobody reported the end of.
+  return machineOffline === undefined ? signals : { ...signals, machineOffline };
 }
 
 /**
@@ -392,6 +442,7 @@ export function composerRefusal(status: SessionStatus): string | null {
  */
 export const STATUS_ORDER: readonly SessionStatus[] = [
   "needs_input",
+  "disconnected",
   "working",
   "idle",
   "failed",

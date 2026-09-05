@@ -639,6 +639,16 @@ When the agent resizes, the transcript shows a notice: `Switched to Standard_D8s
 
 What the agent sees of all this is `flycod`'s local MCP server (§11): `machine_status` reports the machine and who chose it, `budget_status` reports what is left, and `machine_resize` moves the session. The resize tool's description states that resizing restarts the machine, lists only the curated catalog of §7.6 with each entry's hourly price and — for a license-bound type — the minimum charge in dollars, and refuses while the working tree is dirty unless it is called again with `force` and a reason. A resize to a license-bound type is never performed on the agent's own authority: the daemon raises the approval, the tool answers that the request is pending the user's decision, and the control plane performs the resize if the user approves. When the machine was the user's choice, every one of those places says so in the same words: "The user chose this machine themselves; do not switch it unless the task cannot proceed on it, and say why when you do."
 
+### 9.6 When the machine stops answering
+
+The relay is quiet for as long as the agent is thinking, and a quiet TCP flow is what a cloud NAT reclaims — Azure's outbound idle timeout is four minutes and it drops the flow without a FIN. So `flycod` beats every thirty seconds whether or not it has news, the room answers every beat, and a daemon that has heard nothing for three beats abandons the socket and dials again. Neither end may ever wait on a socket it cannot prove is alive.
+
+The user is told. The room is the only party that knows whether a daemon is holding it — a browser sees frames arrive and stop, and cannot tell an agent that is thinking from a machine that fell off the network — so it announces the machine attaching and detaching, and the header reads `Disconnected · machine not reachable` instead of a `Working` pill that breathes forever over a turn nobody is running. Attention, not failure: the daemon comes back on its own, and the pill goes back to what the session was doing when it does.
+
+Nothing a browser sends is discarded in silence. A user message waits in the mailbox and is delivered on the daemon's next `Hello`. An interrupt, a compaction and a terminal keystroke are worth nothing to a daemon that is not there and are not held — but the browser that sent one is told the machine is off the room, rather than being left watching a Stop button that did nothing. A `!` command answers immediately with `Offline`.
+
+The same rule governs the drawer: `Files` and `Diff` are answered live by the machine, so with no daemon connected they say the machine is not connected. They never report it as a control-plane failure, which sends the user looking in the wrong place for a problem that is not there.
+
 ## 10. Settings
 
 Left-hand vertical navigation, five sections. Each section is built from

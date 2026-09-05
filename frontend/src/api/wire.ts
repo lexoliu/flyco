@@ -86,6 +86,7 @@ export type ClientEvent =
   | { type: "approval_pending"; id: string; payload: ApprovalPayload }
   | { type: "approval_decided"; id: string; decision: ApprovalDecision }
   | { type: "session_state_changed"; state: SessionState }
+  | { type: "machine_connection"; connected: boolean }
   | { type: "usage"; usage: UsageReport }
   | { type: "terminal_output"; data: string }
   | { type: "repo_dirty"; summary: string }
@@ -145,6 +146,7 @@ const CLIENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "approval_pending",
   "approval_decided",
   "session_state_changed",
+  "machine_connection",
   "usage",
   "terminal_output",
   "repo_dirty",

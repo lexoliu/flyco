@@ -192,10 +192,16 @@ impl DurableObject for SessionRoom {
         ctx: &DurableContext,
     ) -> Result<(), DurableObjectError> {
         let WebSocketEvent::Message(message) = event else {
-            // A close or an error needs no bookkeeping: Cloudflare has
-            // already removed the socket from the connection set, so the
-            // next broadcast simply reaches one fewer peer.
+            // Cloudflare has already removed the socket from the connection
+            // set, so a departing *browser* needs no bookkeeping: the next
+            // broadcast simply reaches one fewer peer. A departing daemon is
+            // the opposite — every browser left is watching a session that
+            // will never say anything again unless it is told — so that one
+            // is announced (docs/ux.md §9.6).
             log_disconnect(&event);
+            if role_of(ws)? == Role::Daemon {
+                return announce_machine(ctx.connections(), false);
+            }
             return Ok(());
         };
 
@@ -241,6 +247,20 @@ impl Role {
             Self::Client => ROLE_CLIENT,
         }
     }
+}
+
+/// Tells every browser whether a daemon is holding this room.
+///
+/// The room is the only place that knows: a browser sees frames arrive and
+/// stop, and cannot tell an agent that is thinking from a machine that fell
+/// off the network. Broadcast rather than appended — it is the *current*
+/// state of a connection, so a replay of it would be a page announcing an
+/// outage that ended an hour ago.
+fn announce_machine(
+    connections: &DurableConnections,
+    connected: bool,
+) -> Result<(), DurableObjectError> {
+    broadcast(connections, &ClientEvent::MachineConnection { connected })
 }
 
 fn log_disconnect(event: &WebSocketEvent) {
@@ -324,11 +344,22 @@ async fn on_daemon_frame(
         // machine changed *after* a user message would answer that message
         // believing it is somewhere else.
         replay_held_commands(ws, ctx.db()).await?;
-        return replay_mailbox(ws, ctx.db()).await;
+        replay_mailbox(ws, ctx.db()).await?;
+        // Last, because it is the room telling browsers the machine is
+        // back: a page that heard it before the replay would show a live
+        // session that then filled in behind it.
+        return announce_machine(ctx.connections(), true);
     }
 
     if greeted.is_none() {
         return refuse(ws, "the first frame must be `hello`");
+    }
+
+    // Answered, not recorded: a heartbeat is not something that happened
+    // to the session, and the answer is the whole point of it — silence is
+    // how the daemon learns its socket died (`flycod`'s `SILENCE_LIMIT`).
+    if matches!(frame, DaemonToControl::Heartbeat) {
+        return ws.send_json(&ControlToDaemon::Heartbeat);
     }
 
     // Addressed rather than broadcast: one browser is waiting on the HTTP
@@ -377,7 +408,21 @@ async fn on_client_frame(
         ControlToDaemon::ShellCommand { command } => {
             deliver_shell_command(ctx.db(), ctx.connections(), command).await
         }
-        _ => forward_to_daemon(ctx.connections(), &command).map(drop),
+        // An interrupt, a compaction or a keystroke is worthless to a
+        // daemon that is not there, so none of them is held — but a browser
+        // that pressed Stop and was told nothing waits on a turn no longer
+        // being run. Whoever sent it, and everyone else watching, is told
+        // the machine is off the room instead.
+        _ => {
+            if forward_to_daemon(ctx.connections(), &command)? {
+                return Ok(());
+            }
+            tracing::warn!(
+                ?command,
+                "dropped a client command: this session has no daemon connected"
+            );
+            announce_machine(ctx.connections(), false)
+        }
     }
 }
 
@@ -478,6 +523,9 @@ async fn deliver_shell_command(
         %run,
         "a shell command arrived while this session had no daemon connected"
     );
+    // Both halves of the truth: this run is over before it started, and the
+    // reason is that the machine is not on the room.
+    announce_machine(connections, false)?;
     let offline = ClientEvent::ShellExited {
         run,
         outcome: flyco_core::ShellOutcome::Offline,
@@ -972,6 +1020,7 @@ async fn dispatch_command(
                 ?command,
                 "dropped a command: this session has no daemon connected"
             );
+            announce_machine(connections, false).map_err(|error| room_failed(&error))?;
         }
     }
     if let Some(event) = echo {
