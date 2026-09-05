@@ -38,15 +38,23 @@ const POLL_MS = 2000;
 /** What each vendor's consent screen is called, and what it hands over. */
 const VENDOR: Record<
   ConsentCloud,
-  { signIn: string; lede: string; choice: string; choiceLede: string }
+  {
+    name: string;
+    signIn: string;
+    lede: string;
+    choice: string;
+    choiceLede: string;
+  }
 > = {
   azure: {
+    name: "Microsoft",
     signIn: "Sign in with Microsoft",
     lede: "Microsoft's own sign-in page opens in a new tab. Sign in with the account that owns your Azure subscription; if Microsoft asks whether it is a personal or a work account, choose work or school, because that is the identity your Azure directory knows. Flyco creates its own limited identity in the subscription you pick and never keeps your password or your sign-in.",
     choice: "Which subscription?",
     choiceLede: "Flyco creates its identity here and builds machines in it.",
   },
   gcp: {
+    name: "Google",
     signIn: "Sign in with Google",
     lede: "Google's own sign-in page opens in a new tab. Flyco creates its own service account in the project you pick and never keeps your password or your sign-in.",
     choice: "Which project?",
@@ -62,6 +70,8 @@ export const CloudSignIn: PageComponent<{
   const vendor = VENDOR[props.page.provider];
   const [attempt, setAttempt] = createSignal<string | null>(null);
   const [failure, setFailure] = createSignal<unknown>(null);
+  /** What the vendor said when the browser came back without a sign-in. */
+  const [refusal, setRefusal] = createSignal<string | null>(null);
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
@@ -86,6 +96,13 @@ export const CloudSignIn: PageComponent<{
         props.advance({ cloudConsent: consent, cloudChoice: null });
         return;
       }
+      if (progress.state === "failed") {
+        // The vendor's tab has already said this; this tab is the one that
+        // can act on it.
+        setAttempt(null);
+        setRefusal(progress.reason);
+        return;
+      }
       timer = setTimeout(() => void ask(attemptId), POLL_MS);
     } catch (error) {
       if (!closed) {
@@ -105,11 +122,13 @@ export const CloudSignIn: PageComponent<{
       };
     }
     return {
-      label: failure() === null ? vendor.signIn : "Try again",
+      label:
+        failure() === null && refusal() === null ? vendor.signIn : "Try again",
       busy: "Opening…",
       disabled: null,
       onClick: async () => {
         setFailure(null);
+        setRefusal(null);
         const started = await startProviderOauth(props.page.provider);
         openInNewTab(started.authorize_url);
         setAttempt(started.attempt_id);
@@ -128,6 +147,19 @@ export const CloudSignIn: PageComponent<{
         </Show>
         <Show when={failure()}>
           {(error) => <ProblemNotice error={error()} />}
+        </Show>
+        <Show when={refusal()}>
+          {(reason) => (
+            <>
+              <p class={styles.error} role="alert">
+                {vendor.name} did not grant the sign-in: {reason()}
+              </p>
+              <p class={styles.hint}>
+                If your organization needs an administrator to approve apps like
+                flyco, Cloud Shell needs no approval.
+              </p>
+            </>
+          )}
         </Show>
         <QuietLink
           onClick={() =>

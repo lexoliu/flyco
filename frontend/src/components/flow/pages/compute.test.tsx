@@ -741,6 +741,26 @@ describe("the consent road", () => {
     expect(primary(container)).toBeEnabled();
   });
 
+  it("reports a refused consent on the same page and points at Cloud Shell", async () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
+    consentComesBack("azure", {
+      state: "failed",
+      problem: "microsoft-rejected",
+      reason: "access_denied: AADSTS65004: User declined to consent.",
+    });
+    const flow = await choosePlace(/Azure/);
+    const { container, findByRole, getByText } = flow;
+    await answerBonus(flow, "Azure", { newcomer: false, student: false });
+    await findByRole("heading", { level: 1, name: "Sign in with Microsoft" });
+    fireEvent.click(primary(container));
+    expect(await findByRole("alert", {}, { timeout: 6000 })).toHaveTextContent(
+      "Microsoft did not grant the sign-in: access_denied: AADSTS65004",
+    );
+    expect(getByText(/Cloud Shell needs no approval/)).toBeInTheDocument();
+    expect(primary(container)).toHaveTextContent("Try again");
+    expect(primary(container)).toBeEnabled();
+  });
+
   it("keeps the vendor's terminal behind a quiet link", async () => {
     noProgrammes();
     const flow = await choosePlace(/Google Cloud/);

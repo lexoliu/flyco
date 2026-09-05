@@ -189,7 +189,13 @@ one agent linked it states that agent, with two it is a choice.
    the attempt; the consent's own tab lands on `/connect/return`, which
    says the tab can be closed. When the consent is back the flow moves on
    by itself. A lost attempt is a `ProblemNotice` and the primary becomes
-   `Try again`. The quiet link *Use Cloud Shell instead* leads to pages
+   `Try again`. A consent the vendor refused (declined, or an organization
+   that needs an administrator to approve apps) is reported by the poll as
+   `failed`: this page shows the vendor's words, says Cloud Shell needs no
+   approval, and the primary becomes `Try again`; the vendor's own tab
+   lands on `/connect/return?problem=…&reason=…`, which explains the same
+   and carries one action, `Try another way`, back to the compute stage.
+   The quiet link *Use Cloud Shell instead* leads to pages
    5a–5b, for a tenant whose administrator has switched consent off.
 6. Azure — *Which subscription?* "Signed in as me@lexo.cool." The
    subscriptions the account may link, as selectable cards (name, id).

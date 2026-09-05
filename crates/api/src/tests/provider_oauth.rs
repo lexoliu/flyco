@@ -352,6 +352,28 @@ async fn a_user_who_declined_consent_is_told_so_rather_than_shown_an_extractor_f
         query(&landed, "problem").as_deref(),
         Some("google-rejected")
     );
+    // The vendor's own words travel with the slug, so the return page can
+    // say what happened rather than that something did.
+    assert!(
+        query(&landed, "reason").is_some_and(|reason| reason.contains("denied")),
+        "the reason should carry the vendor's text"
+    );
+
+    // The page that opened the vendor's tab is still polling; it is told
+    // the sign-in is over rather than left to wait out the attempt.
+    let polled = client
+        .get(&poll_path("gcp", &started))
+        .bearer(&token)
+        .send()
+        .await;
+    polled.assert_status(200);
+    match polled.json::<ProviderOauthProgress>() {
+        ProviderOauthProgress::Failed { problem, reason } => {
+            assert_eq!(problem, "google-rejected");
+            assert!(reason.contains("denied"), "reason: {reason}");
+        }
+        other => panic!("expected the poll to report the failure, got {other:?}"),
+    }
 }
 
 // ── Polling ──
