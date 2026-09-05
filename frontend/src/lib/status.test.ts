@@ -563,3 +563,15 @@ describe("a machine that fell off the room", () => {
     ).toBe(false);
   });
 });
+
+describe("a session that cannot be running a turn", () => {
+  it("never reads as Working, however the stream ended", () => {
+    // What makes the composer's Stop button correct: `turnInFlight` is a
+    // fold over frames that stopped arriving, so a session archived or
+    // failed mid-turn folds to "a turn is running" forever. The lifecycle
+    // is what settles it, and the page reads Stop off this.
+    for (const state of ["archived", "failed", "interrupted", "paused"] as const) {
+      expect(deriveStatus(session(state), NOW, { turnInFlight: true }).status).not.toBe("working");
+    }
+  });
+});
