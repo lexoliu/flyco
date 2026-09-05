@@ -50,14 +50,14 @@ const VENDOR: Record<
   azure: {
     name: "Microsoft",
     signIn: "Sign in with Microsoft",
-    lede: "Microsoft's own sign-in page opens in a new tab. Sign in with the account that owns your Azure subscription; if Microsoft asks whether it is a personal or a work account, choose work or school, because that is the identity your Azure directory knows. Flyco creates its own limited identity in the subscription you pick and never keeps your password or your sign-in.",
+    lede: "Microsoft's own sign-in page opens in a new tab. Use the account that owns your Azure subscription, and choose work or school if asked. Flyco creates its own limited identity in the subscription you pick and never keeps your sign-in.",
     choice: "Which subscription?",
     choiceLede: "Flyco creates its identity here and builds machines in it.",
   },
   gcp: {
     name: "Google",
     signIn: "Sign in with Google",
-    lede: "Google's own sign-in page opens in a new tab. Flyco creates its own service account in the project you pick and never keeps your password or your sign-in.",
+    lede: "Google's own sign-in page opens in a new tab. Flyco creates its own service account in the project you pick and never keeps your sign-in.",
     choice: "Which project?",
     choiceLede:
       "Flyco creates its service account here and builds machines in it.",
