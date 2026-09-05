@@ -293,7 +293,14 @@ The chips sit on one line at desktop widths. The compute chip is the one
 that gives way (its label shrinks to an ellipsis), so choosing a machine —
 which rewrites that label on every slider detent — never reflows the row
 under the open popover. Below 900px the row wraps and the compute chip takes
-a whole line for the same reason. A chip never leaves the page: a linked
+a whole line for the same reason. A popover never hangs below the viewport:
+it takes the room between its top edge and the bottom of the window and
+scrolls inside it.
+
+GitHub refusing the token flyco holds (`424 github-token-revoked`) is not a
+sign-out. The repository and branch chips show the refusal as a notice with
+`Reconnect GitHub`, which runs the GitHub authorization again and returns to
+the page; the flyco session is untouched. A chip never leaves the page: a linked
 harness or compute chip opens its picker, and only the missing-prerequisite
 form of a chip is a link.
 

@@ -864,13 +864,15 @@ pub enum ApiError {
     /// GitHub no longer accepts the token flyco holds for this user.
     ///
     /// A `401` from `GET /user/repos` or any other call made with the
-    /// user's token means the token was revoked — by the user, or by GitHub
-    /// retiring an older grant — and nothing but a new sign-in can replace
-    /// it. Answered as a `401` of flyco's own, deliberately: the browser
-    /// treats a `401` as "sign in again", which is exactly the fix.
+    /// user's token means GitHub stopped honouring that token, and only a
+    /// new GitHub authorization can replace it. The flyco session is not
+    /// the thing that failed, so this is deliberately not a `401` of
+    /// flyco's own: a `424` names a dependency the request needed and could
+    /// not use, the client keeps the user signed in, and the repository
+    /// chip offers to reconnect GitHub in place.
     #[error(
-        "GitHub no longer accepts flyco's sign-in for your account; sign in with GitHub again",
-        status = StatusCode::UNAUTHORIZED
+        "GitHub no longer accepts flyco's access to your account; reconnect GitHub",
+        status = StatusCode::FAILED_DEPENDENCY
     )]
     GithubTokenRevoked,
 
@@ -981,8 +983,14 @@ impl From<GithubError> for ApiError {
             GithubError::Status {
                 call: GithubCall::Repositories | GithubCall::Repository | GithubCall::Branches,
                 status: 401,
-                ..
-            } => Self::GithubTokenRevoked,
+                reason,
+            } => {
+                // GitHub's own sentence is the only record of *why* a token
+                // it issued stopped working; the problem the user sees says
+                // what to do, so the reason is kept here.
+                tracing::warn!(%reason, "GitHub refused the user's stored token");
+                Self::GithubTokenRevoked
+            }
             refused @ GithubError::Status { .. } => Self::GithubStatus(refused.to_string()),
             unreachable => Self::Github(unreachable),
         }
@@ -1325,7 +1333,7 @@ mod tests {
     }
 
     #[test]
-    fn a_401_to_a_call_made_with_the_users_token_asks_for_a_new_sign_in() {
+    fn a_401_to_a_call_made_with_the_users_token_asks_to_reconnect_github() {
         let problem = ApiError::from(GithubError::Status {
             call: GithubCall::Repositories,
             status: 401,
@@ -1333,7 +1341,10 @@ mod tests {
         })
         .problem();
 
-        assert_eq!(problem.status, 401);
+        // Not a 401 of flyco's own: the session is fine, the credential
+        // flyco holds for GitHub is what died, and the client must not
+        // sign the user out over it.
+        assert_eq!(problem.status, 424);
         assert_eq!(
             problem.kind,
             "https://flyco.dev/problems/github-token-revoked"
