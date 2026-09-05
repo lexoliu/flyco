@@ -17,7 +17,7 @@ import { ChoiceCards, type Choice } from "./shared";
 const PLACES: readonly { kind: CloudProviderKind; line: string }[] = [
   {
     kind: "azure",
-    line: "One command in Cloud Shell, then paste what it printed.",
+    line: "Sign in with Microsoft and pick a subscription.",
   },
   {
     kind: "aws",
@@ -25,7 +25,7 @@ const PLACES: readonly { kind: CloudProviderKind; line: string }[] = [
   },
   {
     kind: "gcp",
-    line: "A Compute Admin service account, dropped in as its key file.",
+    line: "Sign in with Google and pick a project.",
   },
   { kind: "host", line: "Enroll a Linux machine you own with one command." },
 ];

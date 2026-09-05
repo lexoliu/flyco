@@ -35,12 +35,16 @@ use crate::jwt;
 
 /// Where the browser approves the grant.
 ///
-/// The `common` tenant, so a personal account and a work account both reach
-/// their own directory without flyco knowing which they have.
-const AUTHORIZE_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
+/// The `organizations` authority rather than `common`: Azure Resource
+/// Manager refuses a consumer sign-in outright, and `common` signs a
+/// personal address in as a consumer first. Every Azure subscription lives
+/// in a directory, and `organizations` signs the same address in as the
+/// directory identity that owns it — for a personal account, the "work or
+/// school" identity Microsoft made when the subscription was created.
+const AUTHORIZE_URL: &str = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize";
 
 /// Where an authorization code and a refresh token are both redeemed.
-const TOKEN_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+const TOKEN_URL: &str = "https://login.microsoftonline.com/organizations/oauth2/v2.0/token";
 
 /// What the user consents to, once, for both resources.
 ///
@@ -887,7 +891,7 @@ mod tests {
         let url = authorize_url("the-client-id", REDIRECT_URI, "the-state");
 
         assert_eq!(url.host_str(), Some("login.microsoftonline.com"));
-        assert_eq!(url.path(), "/common/oauth2/v2.0/authorize");
+        assert_eq!(url.path(), "/organizations/oauth2/v2.0/authorize");
         assert_eq!(query(&url, "client_id"), "the-client-id");
         assert_eq!(query(&url, "response_type"), "code");
         assert_eq!(query(&url, "redirect_uri"), REDIRECT_URI);
@@ -918,7 +922,7 @@ mod tests {
         assert_eq!(exchange.method.as_str(), "POST");
         assert_eq!(
             exchange.url,
-            "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+            "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
         );
         let body = exchange.body_text().expect("UTF-8");
         assert_eq!(field(body, "grant_type"), "authorization_code");

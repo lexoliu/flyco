@@ -80,10 +80,13 @@ const PROBLEM_PARAM: &str = "problem";
 
 /// How long a browser has to complete the round trip.
 ///
-/// The same ten minutes the GitHub sign-in allows: it is one consent screen,
-/// and an attempt that outlived the tab it belongs to would be a set of
-/// vendor tokens sitting in the store for no reason.
-const ATTEMPT_TTL_SECONDS: u64 = 10 * 60;
+/// Longer than the GitHub sign-in's ten minutes: a first sign-in at a cloud
+/// vendor routinely runs through a password, a second factor, an account
+/// picker and a consent screen, and the first live run expired at exactly
+/// ten minutes with the user still on the vendor's pages. Before the
+/// callback the attempt holds nothing but a state; after it, the vendor
+/// tokens sit in the store only until the finish spends them.
+const ATTEMPT_TTL_SECONDS: u64 = 30 * 60;
 
 /// Prefix every attempt is stored under.
 const ATTEMPT_KEY_PREFIX: &str = "auth:provider-oauth:";

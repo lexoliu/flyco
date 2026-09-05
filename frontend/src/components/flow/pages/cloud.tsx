@@ -42,7 +42,7 @@ const VENDOR: Record<
 > = {
   azure: {
     signIn: "Sign in with Microsoft",
-    lede: "Microsoft's own sign-in page opens in a new tab. Flyco creates its own limited identity in the subscription you pick and never keeps your password or your sign-in.",
+    lede: "Microsoft's own sign-in page opens in a new tab. Sign in with the account that owns your Azure subscription; if Microsoft asks whether it is a personal or a work account, choose work or school, because that is the identity your Azure directory knows. Flyco creates its own limited identity in the subscription you pick and never keeps your password or your sign-in.",
     choice: "Which subscription?",
     choiceLede: "Flyco creates its identity here and builds machines in it.",
   },
