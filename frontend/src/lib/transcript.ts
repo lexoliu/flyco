@@ -241,12 +241,26 @@ function appendChunk(block: Shell, stream: ShellStream, data: string): void {
  * own place in the conversation — so a stage that the open timeline has
  * already been through starts a new one, and every timeline after the first
  * is a migration.
+ *
+ * A stage is identified by when it happened, not by its name: the relay
+ * delivers at least once and replays what it already sent after a
+ * reconnect, and a second `reserving` bearing the *same* instant is that
+ * replay. Only a `reserving` at a new instant is a new machine, so this
+ * answers `null` for the replay rather than opening a migration the
+ * session never had.
  */
-function provisioningTimeline(items: TranscriptItem[], stage: ProvisioningStage): Provisioning {
+function provisioningTimeline(
+  items: TranscriptItem[],
+  stage: ProvisioningStage,
+  atUnix: number,
+): Provisioning | null {
   let open: Provisioning | undefined;
   let episodes = 0;
   for (const item of items) {
     if (item.kind === "provisioning") {
+      if (item.steps.some((step) => step.stage === stage && step.atUnix === atUnix)) {
+        return null;
+      }
       open = item;
       episodes += 1;
     }
@@ -425,11 +439,11 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
         break;
       }
       case "provisioning_stage": {
-        const timeline = provisioningTimeline(items, event.stage);
         // The stage carries its own time: it is when the milestone was
         // reached, which is not when the room recorded the frame — the
         // queue and the daemon are both minutes away from the room.
-        if (!timeline.steps.some((step) => step.stage === event.stage)) {
+        const timeline = provisioningTimeline(items, event.stage, event.at_unix);
+        if (timeline !== null && !timeline.steps.some((step) => step.stage === event.stage)) {
           timeline.steps.push({ stage: event.stage, atUnix: event.at_unix });
         }
         break;
