@@ -61,10 +61,20 @@
   flex: 1;
 }
 
+.anchorShrink {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.chipShrink {
+  min-width: 0;
+}
+
 /* One line at desktop widths, with the compute chip as the one that gives
    way. Narrower, the row wraps and the compute chip takes a whole line, so
    that its label changing length (every slider detent rewrites it) never
-   reflows the chips under an open popover. */
+   reflows the chips under an open popover. After the base rule, because
+   `flex` above resets the basis this overrides. */
 @media (max-width: 900px) {
   .chips {
     flex-wrap: wrap;
@@ -73,15 +83,6 @@
   .anchorShrink {
     flex-basis: 100%;
   }
-}
-
-.anchorShrink {
-  min-width: 0;
-  flex: 0 1 auto;
-}
-
-.chipShrink {
-  min-width: 0;
 }
 
 .send {
@@ -136,7 +137,10 @@
   align-items: center;
   gap: var(--space-2);
   max-width: 100%;
-  padding: var(--space-1) var(--space-3);
+  /* Tighter than the app's other pills: five of these share one line with
+     the send button, and the price on the compute chip is what the row
+     must never cut. */
+  padding: var(--space-1) var(--space-2);
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-full);
   background: var(--color-bg);
