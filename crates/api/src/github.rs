@@ -256,12 +256,16 @@ pub enum GithubError {
         description: String,
     },
     /// GitHub answered with a non-success status.
-    #[error("GitHub answered HTTP {status} to the {call} request")]
+    #[error("GitHub answered HTTP {status} to the {call} request: {reason}")]
     Status {
         /// The call GitHub refused.
         call: GithubCall,
         /// The status it refused with.
         status: u16,
+        /// What GitHub's error document said, so that a stored token GitHub
+        /// no longer accepts ("Bad credentials") can be told apart from a
+        /// scope or SSO refusal in the retained logs.
+        reason: String,
     },
 }
 
@@ -544,6 +548,31 @@ fn transport<E: core::fmt::Display>(call: GithubCall) -> impl Fn(E) -> GithubErr
     }
 }
 
+/// The longest a refusal reason taken from a non-JSON body may be.
+const REASON_MAX_CHARS: usize = 200;
+
+/// GitHub's error document: every refusal carries a `message`.
+#[derive(Deserialize)]
+struct RefusalBody {
+    message: String,
+}
+
+/// The sentence a refused call is reported with: GitHub's own `message`
+/// when the body is its error document, else the body's first line, else a
+/// note that it sent none.
+fn refusal_reason(body: &str) -> String {
+    if let Ok(refusal) = serde_json::from_str::<RefusalBody>(body) {
+        return refusal.message;
+    }
+    body.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map_or_else(
+            || "no error document".to_owned(),
+            |line| line.chars().take(REASON_MAX_CHARS).collect(),
+        )
+}
+
 /// Reads a native JSON body, but only after the status line says the call
 /// worked — otherwise a GitHub outage page would surface as a deserialization
 /// error.
@@ -554,9 +583,11 @@ async fn json_body<T: serde::de::DeserializeOwned>(
 ) -> Result<T, GithubError> {
     let status = response.status();
     if !status.is_success() {
+        let body = response.into_string().await.map_err(transport(call))?;
         return Err(GithubError::Status {
             call,
             status: status.as_u16(),
+            reason: refusal_reason(&body),
         });
     }
     response.into_json::<T>().await.map_err(transport(call))
@@ -721,7 +752,12 @@ async fn worker_json_body<T: serde::de::DeserializeOwned>(
 ) -> Result<T, GithubError> {
     let status = response.status_code();
     if !(200..300).contains(&status) {
-        return Err(GithubError::Status { call, status });
+        let body = response.text().into_send().await.map_err(transport(call))?;
+        return Err(GithubError::Status {
+            call,
+            status,
+            reason: refusal_reason(&body),
+        });
     }
     response
         .json::<T>()
@@ -862,7 +898,7 @@ mod tests {
     use super::{
         BRANCHES_PER_PAGE, GithubBranch, GithubCall, GithubError, GithubIdentity, GithubOauthError,
         GithubToken, GithubUser, TokenResponse, branch_listing, branches_url, parse_scopes,
-        repo_url, token_response, transport, unusable_repo,
+        refusal_reason, repo_url, token_response, transport, unusable_repo,
     };
 
     fn identity(scopes: Option<Vec<String>>) -> GithubIdentity {
@@ -1011,12 +1047,28 @@ mod tests {
         let error = GithubError::Status {
             call: GithubCall::UserProfile,
             status: 401,
+            reason: "Bad credentials".to_owned(),
         };
 
         assert_eq!(
             error.to_string(),
-            "GitHub answered HTTP 401 to the account profile request"
+            "GitHub answered HTTP 401 to the account profile request: Bad credentials"
         );
+    }
+
+    #[test]
+    fn a_refusal_reason_is_githubs_message_or_the_bodys_first_line() {
+        assert_eq!(
+            refusal_reason(
+                r#"{"message":"Bad credentials","documentation_url":"https://docs.github.com/rest"}"#
+            ),
+            "Bad credentials"
+        );
+        assert_eq!(
+            refusal_reason("\n<html>outage</html>\n"),
+            "<html>outage</html>"
+        );
+        assert_eq!(refusal_reason(""), "no error document");
     }
 
     #[test]
