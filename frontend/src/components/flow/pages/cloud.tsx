@@ -16,6 +16,7 @@ import Logomark, { PROVIDER_MARK } from "../../Logomark";
 import ProblemNotice from "../../ProblemNotice";
 import { useReadiness } from "../../Readiness";
 import {
+  finishAzureOauth,
   finishGcpOauth,
   pollProviderOauth,
   startProviderOauth,
@@ -212,27 +213,23 @@ export const CloudChoice: PageComponent<{
       choice === null
         ? `Choose a ${props.page.provider === "azure" ? "subscription" : "project"} to continue`
         : null;
-    // Azure's key page follows; Google Cloud has nothing left to ask.
-    if (props.page.provider === "azure") {
-      return {
-        label: "Next",
-        disabled: missing,
-        onClick: () => {
-          if (choice !== null) {
-            props.advance({ cloudChoice: choice });
-          }
-        },
-      };
-    }
+    // Nothing is left to ask either vendor: the control plane creates the
+    // identity, mints the machine key, and links.
     return {
-      label: `Link ${PROVIDER_LABEL.gcp}`,
+      label: `Link ${PROVIDER_LABEL[props.page.provider]}`,
       busy: "Linking…",
       disabled: missing,
       onClick: async () => {
         if (choice === null) {
           return;
         }
-        await finishGcpOauth(consent.attemptId, { project_id: choice });
+        if (props.page.provider === "azure") {
+          await finishAzureOauth(consent.attemptId, {
+            subscription_id: choice,
+          });
+        } else {
+          await finishGcpOauth(consent.attemptId, { project_id: choice });
+        }
         await readiness.refresh();
         props.advance({ cloudChoice: choice });
       },

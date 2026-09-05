@@ -37,15 +37,6 @@ pub enum ProviderCredentials {
         client_secret: String,
         /// Subscription machines are provisioned into.
         subscription_id: String,
-        /// The `OpenSSH` public key a machine's break-glass login is created
-        /// with.
-        ///
-        /// Azure refuses to create a Linux machine with neither a password
-        /// nor a key and flyco sets no passwords, so one is required. It is
-        /// the *user's* key: the wizard generates the pair in their browser,
-        /// offers them the private half once, and sends only this. Flyco
-        /// never holds a private key for a machine it provisions.
-        admin_ssh_public_key: String,
     },
     /// An AWS IAM access key.
     Aws {
@@ -226,9 +217,6 @@ pub enum ProviderOauthProgress {
 pub struct FinishAzureOauth {
     /// Which of the authorized subscriptions to provision into.
     pub subscription_id: String,
-    /// The `OpenSSH` public key a machine's break-glass login is created
-    /// with, exactly as [`ProviderCredentials::Azure`] carries it.
-    pub admin_ssh_public_key: String,
 }
 
 /// Request body of `POST /v1/providers/gcp/oauth/{attempt_id}/finish`.
@@ -305,7 +293,6 @@ mod tests {
                 client_id: "client".to_owned(),
                 client_secret: "secret".to_owned(),
                 subscription_id: "subscription".to_owned(),
-                admin_ssh_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA lexo@flyco".to_owned(),
             },
         };
 

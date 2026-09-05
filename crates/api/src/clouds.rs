@@ -13,6 +13,7 @@
 use core::future::Future;
 
 use flyco_core::ProviderCredentials;
+use flyco_provider::LoginKey;
 use flyco_provider::azure::RESOURCE_GROUP;
 
 use crate::error::ApiError;
@@ -39,6 +40,7 @@ pub trait CloudLink: Send + Sync + Clone + 'static {
     fn prepare(
         &self,
         credentials: &ProviderCredentials,
+        login_key: &LoginKey,
     ) -> impl Future<Output = Result<Option<String>, ApiError>>;
 }
 
@@ -140,13 +142,15 @@ async fn verify(credentials: &ProviderCredentials) -> Result<(), ApiError> {
 /// Answers with the group's name, which is stored on the account so a
 /// subscription linked today keeps the group it owns if flyco's default name
 /// ever changes.
-async fn azure_workspace(credentials: &ProviderCredentials) -> Result<Option<String>, ApiError> {
+async fn azure_workspace(
+    credentials: &ProviderCredentials,
+    login_key: &LoginKey,
+) -> Result<Option<String>, ApiError> {
     let ProviderCredentials::Azure {
         tenant_id,
         client_id,
         client_secret,
         subscription_id,
-        admin_ssh_public_key,
     } = credentials
     else {
         return Ok(None);
@@ -158,7 +162,7 @@ async fn azure_workspace(credentials: &ProviderCredentials) -> Result<Option<Str
         client_secret,
         subscription_id,
         RESOURCE_GROUP,
-        admin_ssh_public_key,
+        login_key,
     )
     .ensure_resource_group()
     .await
@@ -171,9 +175,13 @@ async fn azure_workspace(credentials: &ProviderCredentials) -> Result<Option<Str
 }
 
 impl CloudLink for LiveClouds {
-    async fn prepare(&self, credentials: &ProviderCredentials) -> Result<Option<String>, ApiError> {
+    async fn prepare(
+        &self,
+        credentials: &ProviderCredentials,
+        login_key: &LoginKey,
+    ) -> Result<Option<String>, ApiError> {
         verify(credentials).await?;
-        azure_workspace(credentials).await
+        azure_workspace(credentials, login_key).await
     }
 }
 
@@ -198,11 +206,15 @@ impl Default for Clouds {
 }
 
 impl CloudLink for Clouds {
-    async fn prepare(&self, credentials: &ProviderCredentials) -> Result<Option<String>, ApiError> {
+    async fn prepare(
+        &self,
+        credentials: &ProviderCredentials,
+        login_key: &LoginKey,
+    ) -> Result<Option<String>, ApiError> {
         match self {
-            Self::Live(live) => live.prepare(credentials).await,
+            Self::Live(live) => live.prepare(credentials, login_key).await,
             #[cfg(test)]
-            Self::Fake(fake) => fake.prepare(credentials).await,
+            Self::Fake(fake) => fake.prepare(credentials, login_key).await,
         }
     }
 }

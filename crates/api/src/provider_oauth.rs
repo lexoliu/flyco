@@ -613,7 +613,6 @@ async fn finish_azure(
                 client_id: identity.client_id,
                 client_secret: identity.client_secret,
                 subscription_id: request.subscription_id,
-                admin_ssh_public_key: request.admin_ssh_public_key,
             },
         },
     )

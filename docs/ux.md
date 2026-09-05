@@ -209,18 +209,15 @@ one agent linked it states that agent, with two it is a choice.
    `clientId`, `tenantId`, `subscriptionId` appear as read-only rows
    under it once it parses; a missing key is an inline error naming it (a
    block without a subscription appends a *Which subscription?* page that
-   asks for the id). `Next`, disabled until it parses.
-7. Azure — *Save the machine's admin SSH key.* Both roads end here.
-   Generated in the browser on entry; `Download` and `Copy` for the
-   private key, the fingerprint, the quiet link *Use my own public key
-   instead* (which swaps the page's content for one paste field). Primary
-   `Link Azure`: behind the consent it asks the control plane to create
-   flyco's service principal in the chosen subscription and link it;
-   behind Cloud Shell it links the pasted principal. Either validates the
-   credential live; a refusal is a `ProblemNotice` above the footer and
-   the primary stays. Success **finishes the flow**: there is no "Azure is
-   linked" page; the home page's compute chip already states the account,
-   region, default machine and price.
+   asks for the id). `Link Azure`, disabled until it parses; a block
+   without a subscription shows `Next` and the *Which subscription?* page
+   links instead. Behind the consent, *Which subscription?* is the page
+   that links. Either validates the credential live; a refusal is a
+   `ProblemNotice` above the footer and the primary stays. Success
+   **finishes the flow**: there is no "Azure is linked" page; the home
+   page's compute chip already states the account, region, default machine
+   and price. There is no key page: the machine login key is flyco's,
+   minted and sealed by the control plane when the account links.
 5′. AWS — *Create an access key.* The minimal IAM policy JSON with `Copy`
    and the link to the IAM console page. `Next`.
 6′. AWS — *Enter the access key.* Two fields (Access key ID, Secret access
@@ -367,9 +364,9 @@ The road is Microsoft's consent screen; Cloud Shell is the quiet link.
    enabled subscriptions, stores them on the attempt, and sends that tab
    to `/connect/return?provider=azure`.
 3. The poll answers `authorized` with the account and the subscriptions;
-   the page asks which, then shows the key page.
-4. `POST /v1/providers/azure/oauth/{attempt}/finish` with the subscription
-   and the admin public key: the control plane creates the `flyco`
+   the page asks which, and links from there.
+4. `POST /v1/providers/azure/oauth/{attempt}/finish` with the subscription:
+   the control plane creates the `flyco`
    application and service principal through Graph, assigns it
    Contributor on the subscription (retrying while the new principal is
    not yet visible to ARM), and links the resulting credential through
@@ -391,11 +388,13 @@ The service principal is scoped to the subscription, so flyco creates and
 owns the resource group itself (`flyco`, in the account's default region)
 at link time. The user never names a resource group.
 
-The break-glass SSH key is generated **in the browser** (Ed25519 via a
-library, never hand-rolled): the private key is offered once as a download
-and a copy button, the public key is sent with the credentials. Flyco
-never holds the private key, which keeps the existing design stance. A
-quiet link lets a user paste their own public key instead.
+The machine login key is **flyco's**. Azure refuses a Linux machine with
+neither a password nor a key, and flyco sets no passwords; the user has a
+browser and signs in from anywhere, so there is nobody to hand a private key
+to and nowhere to keep it. The control plane mints an Ed25519 pair per
+linked account (`ssh-key`, never hand-rolled), seals the private half beside
+the account's credentials, installs the public half on every machine it
+builds, and shows the browser nothing.
 
 ### 7.3 AWS
 

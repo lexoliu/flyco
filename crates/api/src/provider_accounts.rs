@@ -14,8 +14,9 @@ use flyco_core::{
     ProviderAccountId, ProviderAccountView, ProviderBonusHint, ProviderCredentials,
     QuickstartAnswers, UserId,
 };
+use flyco_provider::LoginKey;
 use flyco_provider::aws::iam;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::sql;
@@ -139,17 +140,41 @@ pub(crate) async fn link(
     user: UserId,
     request: LinkProvider,
 ) -> Result<ProviderAccountView, ApiError> {
-    let resource_group = clouds.prepare(&request.credentials).await?;
+    // Flyco's, minted here: the browser never sees a key, and the user has
+    // nowhere to keep one.
+    let login_key = LoginKey::generate();
+    let resource_group = clouds.prepare(&request.credentials, &login_key).await?;
     create_with(
         db,
         config,
         user,
         request.label,
-        &request.credentials,
+        SealedSecrets {
+            credentials: &request.credentials,
+            machine_login_key: &login_key,
+        },
         resource_group,
         None,
     )
     .await
+}
+
+/// What `credentials_enc` seals: the credentials the user presented, and
+/// the machine login key flyco minted for the account.
+///
+/// Borrowed for sealing, so a link does not clone secrets it is about to
+/// encrypt; [`StoredSecrets`] is the same document read back.
+#[derive(Serialize)]
+struct SealedSecrets<'a> {
+    credentials: &'a ProviderCredentials,
+    machine_login_key: &'a LoginKey,
+}
+
+/// [`SealedSecrets`], unsealed.
+#[derive(Deserialize)]
+pub(crate) struct StoredSecrets {
+    pub(crate) credentials: ProviderCredentials,
+    pub(crate) machine_login_key: LoginKey,
 }
 
 /// Writes the account row a set of credentials opens.
@@ -171,7 +196,20 @@ pub(crate) async fn create(
     credentials: &ProviderCredentials,
     host: Option<HostId>,
 ) -> Result<ProviderAccountView, ApiError> {
-    create_with(db, config, user, label, credentials, None, host).await
+    let login_key = LoginKey::generate();
+    create_with(
+        db,
+        config,
+        user,
+        label,
+        SealedSecrets {
+            credentials,
+            machine_login_key: &login_key,
+        },
+        None,
+        host,
+    )
+    .await
 }
 
 async fn create_with(
@@ -179,13 +217,13 @@ async fn create_with(
     config: &ApiConfig,
     user: UserId,
     label: String,
-    credentials: &ProviderCredentials,
+    secrets: SealedSecrets<'_>,
     resource_group: Option<String>,
     host: Option<HostId>,
 ) -> Result<ProviderAccountView, ApiError> {
-    let kind = credentials.kind();
+    let kind = secrets.credentials.kind();
     let sealed = config.token_cipher().seal(
-        &serde_json::to_string(credentials)
+        &serde_json::to_string(&secrets)
             .map_err(|_| ApiError::CorruptRecord("credentials could not be encoded"))?,
     )?;
 

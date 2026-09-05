@@ -23,7 +23,6 @@ import type {
   ProviderOauthChoice,
 } from "../api/client";
 import type { AzureServicePrincipal } from "./azureCredentials";
-import type { BreakGlassKey } from "./sshKey";
 
 /** The three stages of the first run; a settings-launched flow covers one. */
 export type Stage = "meet" | "agent" | "compute";
@@ -97,11 +96,6 @@ export interface FlowAnswers {
   readonly azurePrincipal: AzureServicePrincipal | null;
   /** The subscription typed in when the pasted block carried none. */
   readonly azureSubscription: string | null;
-  /**
-   * The break-glass key minted for Azure, kept so that `Back` and forward
-   * again shows the same key the user may already have downloaded.
-   */
-  readonly azureKey: BreakGlassKey | null;
 }
 
 /** A flow that has asked nothing yet. */
@@ -120,7 +114,6 @@ export const NO_ANSWERS: FlowAnswers = {
   azurePaste: "",
   azurePrincipal: null,
   azureSubscription: null,
-  azureKey: null,
 };
 
 /** The accounts a readiness read found, keyed by agent, for `FlowAnswers.agents`. */
@@ -172,7 +165,6 @@ export type Page =
   | { readonly id: "azure-command" }
   | { readonly id: "azure-paste" }
   | { readonly id: "azure-subscription" }
-  | { readonly id: "azure-key" }
   | { readonly id: "aws-policy" }
   | { readonly id: "aws-keys" }
   | { readonly id: "gcp-commands" }
@@ -201,7 +193,6 @@ export function stageOf(page: Page): Stage {
     case "azure-command":
     case "azure-paste":
     case "azure-subscription":
-    case "azure-key":
     case "aws-policy":
     case "aws-keys":
     case "gcp-commands":
@@ -277,7 +268,7 @@ function providerPages(answers: FlowAnswers, provider: CloudKind): Page[] {
   switch (provider) {
     case "azure": {
       if (answers.cloudRoute === "sign-in") {
-        return [...consentPages(answers, "azure"), { id: "azure-key" }];
+        return consentPages(answers, "azure");
       }
       const pages: Page[] = [{ id: "azure-command" }, { id: "azure-paste" }];
       // The CLI's default output names no subscription; the page that asks
@@ -288,7 +279,6 @@ function providerPages(answers: FlowAnswers, provider: CloudKind): Page[] {
       ) {
         pages.push({ id: "azure-subscription" });
       }
-      pages.push({ id: "azure-key" });
       return pages;
     }
     case "aws":

@@ -210,40 +210,31 @@ describe("Azure", () => {
     expect(primary(container)).toBeDisabled();
     type(getByLabelText("Subscription id"), "sub-1");
     await waitFor(() => expect(primary(container)).toBeEnabled());
-    fireEvent.click(primary(container));
-
-    await findByRole("heading", {
-      level: 1,
-      name: "Save the machine's admin SSH key",
-    });
-    expect(await findByText(/Fingerprint/)).toBeInTheDocument();
-    expect(getByRole("button", { name: "Download" })).toBeInTheDocument();
-    expect(getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    // The subscription page is the last one: it links.
     expect(primary(container)).toHaveTextContent("Link Azure");
-    await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
-    // No "is linked" page: the link is the last thing to do, and it finishes the flow.
+    // No key page and no "is linked" page: the link finishes the flow, and
+    // the machine's login key is flyco's, minted on the control plane.
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     const posted = postedTo("/v1/providers") as {
       label: string;
       credentials: Record<string, string>;
     };
     expect(posted.label).toBe("Azure");
-    expect(posted.credentials).toMatchObject({
+    expect(posted.credentials).toEqual({
       kind: "azure",
       client_id: "app-1",
       client_secret: "s3cret",
       tenant_id: "tenant-1",
       subscription_id: "sub-1",
     });
-    expect(posted.credentials["admin_ssh_public_key"]).toMatch(/^ssh-ed25519 /);
   });
 
-  it("takes the user's own public key instead of the generated one", async () => {
+  it("links straight from the paste when the block names its subscription", async () => {
     cloud([], linkedAccount("azure", "Azure"));
     const flow = await choosePlace(/Azure/);
-    const { onDone, container, findByRole, getByRole, getByLabelText } = flow;
+    const { onDone, container, findByRole, getByLabelText } = flow;
     await answerBonus(flow, "Azure", { newcomer: false, student: false });
     await useCloudShell(flow);
 
@@ -259,32 +250,20 @@ describe("Azure", () => {
       '{"clientId": "app-1", "clientSecret": "s3cret", "tenantId": "tenant-1", "subscriptionId": "sub-1"}',
     );
     await waitFor(() => expect(primary(container)).toBeEnabled());
-    fireEvent.click(primary(container));
-
-    // A complete block: no subscription page.
-    await findByRole("heading", {
-      level: 1,
-      name: "Save the machine's admin SSH key",
-    });
-    fireEvent.click(
-      getByRole("button", { name: "Use my own public key instead" }),
-    );
-    expect(primary(container)).toBeDisabled();
-    expect(primary(container)).toHaveAttribute(
-      "title",
-      "Paste a public key to continue",
-    );
-    type(getByLabelText("Your own public key"), "ssh-ed25519 AAAAC3Nza mine");
-    await waitFor(() => expect(primary(container)).toBeEnabled());
+    // A complete block: no subscription page, the paste page links.
+    expect(primary(container)).toHaveTextContent("Link Azure");
     fireEvent.click(primary(container));
 
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(
       (postedTo("/v1/providers") as { credentials: Record<string, string> })
         .credentials,
-    ).toMatchObject({
+    ).toEqual({
+      kind: "azure",
+      client_id: "app-1",
+      client_secret: "s3cret",
+      tenant_id: "tenant-1",
       subscription_id: "sub-1",
-      admin_ssh_public_key: "ssh-ed25519 AAAAC3Nza mine",
     });
   });
 
@@ -315,22 +294,13 @@ describe("Azure", () => {
     );
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
-    await findByRole("heading", {
-      level: 1,
-      name: "Save the machine's admin SSH key",
-    });
-    await waitFor(() => expect(primary(container)).toBeEnabled());
-    fireEvent.click(primary(container));
 
     expect(await findByRole("alert")).toHaveTextContent(
       "Azure refused the service principal.",
     );
     expect(primary(container)).toHaveTextContent("Link Azure");
     expect(
-      getByRole("heading", {
-        level: 1,
-        name: "Save the machine's admin SSH key",
-      }),
+      getByRole("heading", { level: 1, name: "Paste the JSON block" }),
     ).toBeInTheDocument();
   });
 });
@@ -651,23 +621,14 @@ describe("the consent road", () => {
     expect(primary(container)).toBeDisabled();
     fireEvent.click(getByRole("radio", { name: /Visual Studio/ }));
     await waitFor(() => expect(primary(container)).toBeEnabled());
-    fireEvent.click(primary(container));
-
-    await findByRole("heading", {
-      level: 1,
-      name: "Save the machine's admin SSH key",
-    });
-    await waitFor(() => expect(primary(container)).toBeEnabled());
+    // The choice page links: no key page, the machine key is flyco's.
     expect(primary(container)).toHaveTextContent("Link Azure");
     fireEvent.click(primary(container));
 
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
-    const finish = postedTo("/v1/providers/azure/oauth/attempt-1/finish") as {
-      subscription_id: string;
-      admin_ssh_public_key: string;
-    };
-    expect(finish.subscription_id).toBe("1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f");
-    expect(finish.admin_ssh_public_key).toMatch(/^ssh-ed25519 /);
+    expect(postedTo("/v1/providers/azure/oauth/attempt-1/finish")).toEqual({
+      subscription_id: "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+    });
   });
 
   it("signs in with Google, asks which project, and links from that page", async () => {

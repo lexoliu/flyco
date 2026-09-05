@@ -643,10 +643,6 @@ pub const AZURE_APP_CLIENT_ID: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 /// The client secret it mints for it.
 pub const AZURE_APP_CLIENT_SECRET: &str = "the-minted-client-secret";
 
-/// The `OpenSSH` public key an Azure link is finished with.
-pub const ADMIN_SSH_PUBLIC_KEY: &str =
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFlycoFixtureKeyForTests lexo@flyco";
-
 /// The Google account [`TestGoogle`] reports.
 pub const GCP_ACCOUNT: &str = "me@lexo.cool";
 
@@ -853,6 +849,7 @@ impl CloudLink for TestClouds {
     fn prepare(
         &self,
         credentials: &ProviderCredentials,
+        _login_key: &flyco_provider::LoginKey,
     ) -> impl Future<Output = Result<Option<String>, ApiError>> {
         ready(match credentials {
             ProviderCredentials::Azure { .. } => {

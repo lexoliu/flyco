@@ -23,7 +23,6 @@
 //! export FLYCO_AZURE_CLIENT_SECRET=…    FLYCO_AZURE_SUBSCRIPTION_ID=…
 //! export FLYCO_AZURE_RESOURCE_GROUP=flyco-rg
 //! export FLYCO_AZURE_REGION=northcentralus
-//! export FLYCO_AZURE_SSH_PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)"
 //! cargo test -p flyco-provider --features azure-live -- --ignored --nocapture
 //! ```
 //!
@@ -39,6 +38,7 @@ use super::{
     ADMIN_USERNAME, AzureProvider, ExclusionReason, IMAGE_SKU_ARM64, IMAGE_SKU_X64,
     SPOT_UNSUPPORTED_CODES, Workspace, names,
 };
+use crate::LoginKey;
 use crate::azure::auth::ServicePrincipal;
 use crate::clock::ManualClock;
 use crate::cloud_init::CONFIG_PATH;
@@ -52,7 +52,6 @@ use crate::{
 const SUBSCRIPTION: &str = "e47d07d8-2715-4909-aa56-1bfde801bdf0";
 const TENANT: &str = "f9dd8f4f-3b8b-4768-aba7-bbd379e0736b";
 const RESOURCE_GROUP: &str = "flyco-rg";
-const SSH_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFlycoTestKey lexo@flyco";
 
 /// A region the reference subscription's policy allows.
 const REGION: &str = "northcentralus";
@@ -102,7 +101,10 @@ fn principal() -> ServicePrincipal {
 }
 
 fn provider(responses: Vec<HttpResponse>) -> Recorded {
-    provider_over(Workspace::new(RESOURCE_GROUP, SSH_KEY), responses)
+    provider_over(
+        Workspace::new(RESOURCE_GROUP, LoginKey::generate()),
+        responses,
+    )
 }
 
 fn provider_over(workspace: Workspace, responses: Vec<HttpResponse>) -> Recorded {
@@ -586,10 +588,13 @@ async fn the_machine_body_is_the_measured_shape() {
         os["linuxConfiguration"]["disablePasswordAuthentication"],
         true
     );
-    assert_eq!(
-        os["linuxConfiguration"]["ssh"]["publicKeys"][0]["keyData"],
-        SSH_KEY
-    );
+    // Flyco's own login key for this account's machines: a real OpenSSH
+    // Ed25519 public key rather than a placeholder Azure would refuse.
+    let key_data = os["linuxConfiguration"]["ssh"]["publicKeys"][0]["keyData"]
+        .as_str()
+        .expect("the machine carries one public key");
+    let parsed = ssh_key::PublicKey::from_openssh(key_data).expect("a valid OpenSSH public key");
+    assert_eq!(parsed.algorithm(), ssh_key::Algorithm::Ed25519);
     assert!(
         os.get("adminPassword").is_none(),
         "flyco never sets a password on a machine it provisions"
@@ -1120,7 +1125,7 @@ async fn destroying_removes_the_machine_then_everything_detach_kept() {
 // ── The catalog ──
 
 fn one_region() -> Workspace {
-    Workspace::new(RESOURCE_GROUP, SSH_KEY).with_regions(vec![REGION.to_owned()])
+    Workspace::new(RESOURCE_GROUP, LoginKey::generate()).with_regions(vec![REGION.to_owned()])
 }
 
 fn catalog_script() -> Vec<HttpResponse> {
@@ -1279,7 +1284,7 @@ async fn the_catalogs_regions_come_from_the_subscriptions_own_policy() {
 
 #[tokio::test]
 async fn a_named_region_the_policy_forbids_is_dropped_rather_than_attempted() {
-    let workspace = Workspace::new(RESOURCE_GROUP, SSH_KEY)
+    let workspace = Workspace::new(RESOURCE_GROUP, LoginKey::generate())
         .with_regions(vec![FORBIDDEN_REGION.to_owned(), REGION.to_owned()]);
     let mut azure = provider_over(workspace, catalog_script());
 
@@ -1315,11 +1320,8 @@ async fn live_provision_and_destroy() {
     // The resource group's own region, which the subscription's policy must
     // already allow — the group exists, so it does.
     let region = required("FLYCO_AZURE_REGION");
-    let workspace = Workspace::new(
-        required("FLYCO_AZURE_RESOURCE_GROUP"),
-        required("FLYCO_AZURE_SSH_PUBLIC_KEY"),
-    )
-    .with_regions(vec![region.clone()]);
+    let workspace = Workspace::new(required("FLYCO_AZURE_RESOURCE_GROUP"), LoginKey::generate())
+        .with_regions(vec![region.clone()]);
 
     let mut azure = AzureProvider::with_parts(
         LiveTransport::new(),
