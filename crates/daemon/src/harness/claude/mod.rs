@@ -208,6 +208,12 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
                 permission_mode: self.claude.permission_mode,
                 resume_session_id: request.resume_session_id,
                 mcp_servers: self.mount.claude_sdk_servers(),
+                // Exactly one of the two exclusivity mechanisms, never
+                // both: a managed policy directory means a root-owned
+                // `managed-mcp.json` the CLI reads as enterprise policy,
+                // and it refuses to start if `--strict-mcp-config` is also
+                // asked for (issue #195).
+                strict_mcp_config: self.claude.managed_dir.is_none(),
             },
         )
         .await?;

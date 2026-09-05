@@ -76,6 +76,29 @@ fn script(name: &str) -> PathBuf {
 
 /// Starts a session whose "bun" is the stand-in sidecar.
 async fn start(scratch: &Scratch) -> (ClaudeSession, mpsc::Receiver<SessionOutput>) {
+    start_with(scratch, None).await
+}
+
+/// Every command flycod sent the stand-in sidecar, as raw JSON.
+///
+/// The sidecar writes them into its own directory, so a test asserts on
+/// what actually went on the wire rather than on what the caller meant.
+fn commands_sent(scratch: &Scratch) -> Vec<serde_json::Value> {
+    let path = scratch.join("sidecar").join("commands.jsonl");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} must exist: {error}", path.display()));
+    text.lines()
+        .map(|line| serde_json::from_str(line).expect("the sidecar was sent JSON"))
+        .collect()
+}
+
+/// Starts a session, optionally on a machine that has a managed policy
+/// directory — which is what a provisioned machine has and a developer's
+/// own does not.
+async fn start_with(
+    scratch: &Scratch,
+    managed_dir: Option<PathBuf>,
+) -> (ClaudeSession, mpsc::Receiver<SessionOutput>) {
     let sidecar_dir = scratch.join("sidecar");
     // `prepare` skips `bun install` when the tree is already there, which
     // is what keeps this test free of a network and a Bun toolchain.
@@ -85,7 +108,7 @@ async fn start(scratch: &Scratch) -> (ClaudeSession, mpsc::Receiver<SessionOutpu
         ClaudeConfig {
             model: None,
             permission_mode: PermissionMode::Default,
-            managed_dir: None,
+            managed_dir,
             auth: ClaudeAuth::Inherit,
         },
         SidecarConfig {
@@ -447,4 +470,39 @@ async fn a_sidecar_that_dies_mid_turn_reports_what_it_said_before_it_went() {
         fatal.contains("sidecar.ts:42"),
         "the tail is more than one line, so a stack trace survives: {fatal}"
     );
+}
+
+#[tokio::test]
+async fn a_managed_policy_and_strict_mcp_config_are_never_both_asked_for() {
+    // The CLI refuses to start at all when it finds an enterprise
+    // `managed-mcp.json` and is also passed `--strict-mcp-config`, and a
+    // provisioned machine always has the first (issue #195). The servers
+    // are still named either way: the managed file makes the set
+    // exclusive, naming them makes it present.
+    let provisioned = Scratch::new("provisioned");
+    let (_session, mut outputs) = start_with(&provisioned, Some(provisioned.join("managed"))).await;
+    // The command is written before it is read: waiting for the session to
+    // announce itself is what says the sidecar has it.
+    next(&mut outputs, "the session to announce itself").await;
+    let start = start_command(&provisioned);
+    assert_eq!(start["strict_mcp_config"], serde_json::json!(false));
+    assert!(start["mcp_servers"]["flyco"].is_object());
+
+    // A developer's own flycod is not root and writes no managed file, so
+    // the command line is the only thing that can make the set exclusive.
+    let own = Scratch::new("own");
+    let (_session, mut outputs) = start_with(&own, None).await;
+    next(&mut outputs, "the session to announce itself").await;
+    assert_eq!(
+        start_command(&own)["strict_mcp_config"],
+        serde_json::json!(true)
+    );
+}
+
+/// The `start` command flycod sent, or a panic if it sent none.
+fn start_command(scratch: &Scratch) -> serde_json::Value {
+    commands_sent(scratch)
+        .into_iter()
+        .find(|command| command["type"] == "start")
+        .expect("flycod starts every session with a `start` command")
 }

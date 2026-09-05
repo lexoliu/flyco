@@ -307,9 +307,11 @@ export function sessionOptions(
     // user settings and the plugin scopes the CLI would otherwise
     // auto-discover. On a provisioned machine the root-owned
     // `managed-mcp.json` says the same thing at a scope the agent cannot
-    // reach; this is what says it on a machine that has no such file.
+    // reach, and the CLI refuses to start when asked for both at once
+    // (issue #195) — so flycod decides which of the two is in force and
+    // says so here.
     mcpServers: command.mcp_servers,
-    strictMcpConfig: true,
+    strictMcpConfig: command.strict_mcp_config,
     ...callbacks,
     // Assistant text reaches flyco only as partial-message deltas, so the
     // normalizer never has to choose between a delta and the complete
