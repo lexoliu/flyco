@@ -45,6 +45,16 @@ export function hourlyLabel(entry: MachineCatalogEntry, spot: boolean): string {
   return hourly === null ? "your hardware" : `${formatUsd(hourly)}/hr`;
 }
 
+/**
+ * The machine type as the composer chip reads it.
+ *
+ * Azure's `Standard_` prefix says nothing on a chip that already names the
+ * provider, and it is the part that pushed the chip row onto a second line.
+ */
+export function shortMachineType(machineType: string): string {
+  return machineType.replace(/^Standard_/u, "");
+}
+
 /** `4 vCPU / 16 GiB`, or nothing for a machine flyco has not measured. */
 export function capacityLabel(entry: MachineCatalogEntry): string | null {
   const capacity = entry.capacity;

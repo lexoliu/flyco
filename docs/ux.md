@@ -279,8 +279,8 @@ Every chip is both a status readout and the entry point to change it.
 
 | Chip | Ready | Not ready |
 |---|---|---|
-| Harness | logomark + `Claude Code` (or `Codex`), plus a thin usage bar when usage is known | `+ Connect an agent` → `/connect/harness` |
-| Compute | provider logomark + `Azure · eastus · Standard_B2s · $0.04/hr · spot` | `+ Add compute` → `/connect/compute` |
+| Harness | logomark + `Claude Code` (or `Codex`); popover lists the linked agents with the chosen one marked, ending in `Connect another agent` → `/connect/harness` | `+ Connect an agent` → `/connect/harness` |
+| Compute | provider logomark + `Azure · B2s · $0.04/hr` and `Auto` or `Chosen`; region, spot and the account live in the popover | `+ Add compute` → `/connect/compute` |
 | Repository | `owner/name`; popover with a search box, recent repositories first | `Select repository` opens the same popover |
 | Budget | `$10`; popover with a slider (1–200) and the sentence "Covers the machine and its disk. Model tokens are billed by your Claude or Codex plan." | always shown, default `$10` |
 
@@ -288,6 +288,14 @@ The compute chip shows the machine flyco will actually choose
 (`GET /v1/machines/default?spot=`), not a dropdown of the catalog. A
 popover lets the user switch account, region, spot, or pick another
 curated type (§7.5).
+
+The chips sit on one line at desktop widths. The compute chip is the one
+that gives way (its label shrinks to an ellipsis), so choosing a machine —
+which rewrites that label on every slider detent — never reflows the row
+under the open popover. Below 900px the row wraps and the compute chip takes
+a whole line for the same reason. A chip never leaves the page: a linked
+harness or compute chip opens its picker, and only the missing-prerequisite
+form of a chip is a link.
 
 ### Sending
 

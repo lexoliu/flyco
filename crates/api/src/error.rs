@@ -957,6 +957,7 @@ impl From<GithubError> for ApiError {
             GithubError::Status {
                 call: GithubCall::Repositories | GithubCall::Repository | GithubCall::Branches,
                 status: 401,
+                ..
             } => Self::GithubTokenRevoked,
             refused @ GithubError::Status { .. } => Self::GithubStatus(refused.to_string()),
             unreachable => Self::Github(unreachable),
@@ -1303,6 +1304,7 @@ mod tests {
         let problem = ApiError::from(GithubError::Status {
             call: GithubCall::Repositories,
             status: 401,
+            reason: "Bad credentials".to_owned(),
         })
         .problem();
 
@@ -1317,6 +1319,7 @@ mod tests {
         let exchange = ApiError::from(GithubError::Status {
             call: GithubCall::TokenExchange,
             status: 401,
+            reason: "Bad credentials".to_owned(),
         })
         .problem();
         assert_eq!(exchange.status, 502);
@@ -1327,13 +1330,15 @@ mod tests {
         let problem = ApiError::from(GithubError::Status {
             call: GithubCall::UserProfile,
             status: 401,
+            reason: "Bad credentials".to_owned(),
         })
         .problem();
 
         assert_eq!(problem.status, 502);
         assert_eq!(problem.kind, "https://flyco.dev/problems/github-status");
         assert_eq!(
-            problem.detail, "GitHub answered HTTP 401 to the account profile request",
+            problem.detail,
+            "GitHub answered HTTP 401 to the account profile request: Bad credentials",
             "a 5xx that is GitHub's own answer is stated, not blanked"
         );
     }
