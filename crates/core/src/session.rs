@@ -240,6 +240,17 @@ const fn default_spot() -> bool {
 /// and short enough that forgotten machines do not sit on a disk forever.
 pub const ARCHIVE_AFTER_IDLE_SECS: u64 = 7 * 24 * 60 * 60;
 
+/// How long a session may be built for before flyco calls it failed.
+///
+/// A machine that is reserved, booted, installed and cloned and still has
+/// not said its agent is ready is not slow, it is broken: the daemon is
+/// crash-looping, the image is wrong, or the machine cannot reach the
+/// control plane. Fifteen minutes is several times the worst honest
+/// provision — a cold image plus a large repository — so nothing legitimate
+/// is cut short, and a session past it is told what happened rather than
+/// left spinning under a timeline that never advances.
+pub const PROVISION_DEADLINE_SECS: u64 = 15 * 60;
+
 /// Disk a session gets when the request names no size.
 ///
 /// Big enough for a repository, a toolchain and a build cache, which is what

@@ -704,7 +704,7 @@ async fn build(
         .map_err(|error| classify(&error))?;
 
     let bootstrap = bootstrap(db, config, clients, claim, &entry, spec.spot).await?;
-    announce(rooms, claim.session, ProvisioningStage::Reserving).await;
+    announce(db, rooms, claim.session, ProvisioningStage::Reserving).await;
     let machine = clients
         .provisioner
         .provision(
@@ -718,7 +718,7 @@ async fn build(
         .await
         .map_err(|error| classify(&error))?;
     // The provider handed back a machine, so it exists and is powering on.
-    announce(rooms, claim.session, ProvisioningStage::Booting).await;
+    announce(db, rooms, claim.session, ProvisioningStage::Booting).await;
 
     // What the machine turned out to be, priced at the capacity it actually
     // holds — which is what the budget meters and what the agent's
@@ -743,7 +743,7 @@ async fn build(
     // is its bootstrap fetching and running the `flycod` installer. That is
     // the last stage the control plane can see — everything after it is
     // announced by the daemon on the machine itself.
-    announce(rooms, claim.session, ProvisioningStage::Installing).await;
+    announce(db, rooms, claim.session, ProvisioningStage::Installing).await;
 
     tracing::info!(
         session = %claim.session,
@@ -851,7 +851,7 @@ async fn recover(
     sessions::recovering(db, session)
         .await
         .map_err(Provisioned::from)?;
-    announce(rooms, session, ProvisioningStage::Reserving).await;
+    announce(db, rooms, session, ProvisioningStage::Reserving).await;
 
     let account = provisioning::account(db, config, target.user_id, row.provider_account_id)
         .await
@@ -859,7 +859,7 @@ async fn recover(
     let started = machines::restart(db, clients.provisioner, &account, &row)
         .await
         .map_err(|error| classify(&error))?;
-    announce(rooms, session, ProvisioningStage::Booting).await;
+    announce(db, rooms, session, ProvisioningStage::Booting).await;
 
     // The gap is what the user is being asked to pay for twice, so it is
     // named in the ledger rather than folded into the next metering window.
@@ -1034,7 +1034,14 @@ async fn checkout(
 /// is logged and stepped over rather than failing a provision that is
 /// otherwise going fine. Losing a line of the timeline costs the user a
 /// progress report; failing the job over it costs them the machine.
-async fn announce(rooms: &Rooms, session: SessionId, stage: ProvisioningStage) {
+async fn announce(db: &Db, rooms: &Rooms, session: SessionId, stage: ProvisioningStage) {
+    // The stage is progress, and progress is what the stall sweep counts:
+    // a session whose machine is still moving is never called stalled. A
+    // clock that cannot be written is logged rather than raised — the same
+    // reason the broadcast below is.
+    if let Err(error) = sessions::note_progress(db, session).await {
+        tracing::warn!(%session, %error, "a provisioning stage did not move the session's clock");
+    }
     if let Err(error) = rooms
         .broadcast(
             session,
