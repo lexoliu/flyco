@@ -51,7 +51,7 @@ use crate::error::ApiError;
 use crate::extract::{Headers, path_id};
 use crate::problem::Outcome;
 use crate::respond::{Created, NoContent};
-use crate::rooms::HostRooms;
+use crate::rooms::{HostRooms, Rooms};
 use crate::{machines, provider_accounts, sessions};
 
 /// The columns every read on this path projects.
@@ -648,6 +648,7 @@ async fn account_of(db: &Db, host: HostId) -> Result<ProviderAccountId, ApiError
 /// not on this host, and [`ApiError`] if a write fails.
 pub async fn record_job_result(
     db: &Db,
+    rooms: &Rooms,
     host: &HostRow,
     report: &ReportJobResult,
 ) -> Result<(), ApiError> {
@@ -670,7 +671,7 @@ pub async fn record_job_result(
             // never came up is exactly the failure a cloud provision reports
             // the same way: with the reason, in the state the user can act
             // on.
-            sessions::fail(db, machine.session(), message).await?;
+            sessions::fail(db, rooms, machine.session(), message).await?;
             tracing::warn!(host = %host.id, machine = %machine.id, message, "a container job failed");
         }
     }
@@ -852,9 +853,10 @@ async fn report_job_result(
     params: Params,
     headers: Headers,
     Json(report): Json<ReportJobResult>,
+    rooms: Rooms,
     db: Db,
 ) -> Outcome<NoContent> {
-    accept_job_result(&params, &headers, &report, &db)
+    accept_job_result(&params, &headers, &report, &rooms, &db)
         .await
         .into()
 }
@@ -863,10 +865,11 @@ async fn accept_job_result(
     params: &Params,
     headers: &Headers,
     report: &ReportJobResult,
+    rooms: &Rooms,
     db: &Db,
 ) -> Result<NoContent, ApiError> {
     let host = authenticated(params, headers, db).await?;
-    record_job_result(db, &host, report).await?;
+    record_job_result(db, rooms, &host, report).await?;
     Ok(NoContent)
 }
 

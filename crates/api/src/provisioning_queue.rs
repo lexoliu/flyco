@@ -400,7 +400,7 @@ async fn perform(
     }
 
     let outcome = match job {
-        ProvisioningJob::Provision { .. } => match claim(db, job.clone()).await {
+        ProvisioningJob::Provision { .. } => match claim(db, rooms, job.clone()).await {
             Ok(None) => return Settled::Done,
             Ok(Some(claimed)) => build(db, config, rooms, clients, &claimed).await,
             Err(error) => return Settled::Redeliver(error),
@@ -439,11 +439,13 @@ async fn perform(
     };
     match outcome {
         Ok(()) => Settled::Done,
-        Err(Provisioned::Failed(reason)) => match sessions::fail(db, session, &reason).await {
-            Ok(()) => Settled::Done,
-            Err(error) => Settled::Redeliver(error),
-        },
-        Err(Provisioned::Retry(reason)) => retry(db, queue, job, &reason).await,
+        Err(Provisioned::Failed(reason)) => {
+            match sessions::fail(db, rooms, session, &reason).await {
+                Ok(()) => Settled::Done,
+                Err(error) => Settled::Redeliver(error),
+            }
+        }
+        Err(Provisioned::Retry(reason)) => retry(db, queue, rooms, job, &reason).await,
     }
 }
 
@@ -600,7 +602,7 @@ struct Claim {
 /// waiting for a machine, the job names a machine that was superseded, or
 /// the machine already exists — and the message is acknowledged rather than
 /// redelivered into the same answer.
-async fn claim(db: &Db, job: ProvisioningJob) -> Result<Option<Claim>, ApiError> {
+async fn claim(db: &Db, rooms: &Rooms, job: ProvisioningJob) -> Result<Option<Claim>, ApiError> {
     // Only a job that names a session and a machine reaches here; both
     // reads are refusals rather than unwraps so a panic cannot take the
     // batch down over a shape the type already rules out.
@@ -624,7 +626,13 @@ async fn claim(db: &Db, job: ProvisioningJob) -> Result<Option<Claim>, ApiError>
         // Creation reserves the row before it enqueues, so there is no
         // ordering in which this is a race. It is a session that was written
         // by something other than `POST /v1/sessions`.
-        sessions::fail(db, session, "this session has no machine row to fill in").await?;
+        sessions::fail(
+            db,
+            rooms,
+            session,
+            "this session has no machine row to fill in",
+        )
+        .await?;
         return Ok(None);
     };
     if machine.id != wanted {
@@ -1056,7 +1064,13 @@ fn classify(error: &ProviderError) -> Provisioned {
 }
 
 /// Asks for the same machine once more, or gives up and says why.
-async fn retry(db: &Db, queue: &Queue, job: ProvisioningJob, reason: &str) -> Settled {
+async fn retry(
+    db: &Db,
+    queue: &Queue,
+    rooms: &Rooms,
+    job: ProvisioningJob,
+    reason: &str,
+) -> Settled {
     // Only a job that names a session reaches here, and only such a job
     // counts attempts; both reads are written as refusals rather than
     // unwraps because a panic would take the whole batch down.
@@ -1066,7 +1080,7 @@ async fn retry(db: &Db, queue: &Queue, job: ProvisioningJob, reason: &str) -> Se
     if attempt >= MAX_ATTEMPTS {
         let exhausted =
             format!("gave up after {MAX_ATTEMPTS} attempts to reach the provider: {reason}");
-        return match sessions::fail(db, session, &exhausted).await {
+        return match sessions::fail(db, rooms, session, &exhausted).await {
             Ok(()) => Settled::Done,
             Err(error) => Settled::Redeliver(error),
         };

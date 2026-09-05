@@ -202,6 +202,23 @@ pub enum MachinePricing {
 }
 
 impl MachinePricing {
+    /// Whether the provider quoted this type as spot at all.
+    ///
+    /// A type without a spot price is one the account cannot hold as spot —
+    /// on Azure, one whose cores exceed the region's `lowPriorityCores`
+    /// quota — so a session that asked for spot has to hold it on demand,
+    /// and say so, rather than ask the provider for capacity it will refuse.
+    #[must_use]
+    pub const fn offers_spot(&self) -> bool {
+        matches!(
+            self,
+            Self::Metered {
+                spot_hourly: Some(_),
+                ..
+            }
+        )
+    }
+
     /// What one hour costs at the given capacity mode, when flyco bills for
     /// it at all.
     #[must_use]

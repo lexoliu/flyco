@@ -435,6 +435,15 @@ describe("sessionNotice", () => {
     expect(noticeFor("provisioning")).toBeNull();
   });
 
+  it("ends the provider's reason before its own sentence begins", () => {
+    const notice = noticeFor(
+      "failed",
+      "lowPriorityCores in westeurope allows 3 and 0 are in use, which does not cover 4 more",
+    );
+
+    expect(notice?.body).toContain("does not cover 4 more. Resuming builds");
+  });
+
   it("gives a failed session the provider's reason and a way on from it", () => {
     const notice = noticeFor("failed", "AWS refused the reservation: InsufficientInstanceCapacity.");
 

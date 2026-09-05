@@ -23,11 +23,62 @@ function shell(overrides: Partial<Extract<TranscriptItem, { kind: "shell" }>> = 
   return item;
 }
 
-function show(item: TranscriptItem) {
+function show(item: TranscriptItem, failedAtUnix: number | null = null) {
   return render(() => (
-    <Transcript items={[item]} repo="lexoliu/flyco" provider="Azure" now={T0 * 1000} />
+    <Transcript
+      items={[item]}
+      repo="lexoliu/flyco"
+      provider="Azure"
+      now={T0 * 1000}
+      failedAtUnix={failedAtUnix}
+    />
   ));
 }
+
+describe("Transcript provisioning timeline", () => {
+  /** A first machine still being reserved, ten minutes before `now`. */
+  const reserving: TranscriptItem = {
+    kind: "provisioning",
+    key: "provisioning-0",
+    steps: [{ stage: "reserving", atUnix: T0 - 600 }],
+    recovery: false,
+  };
+
+  it("counts a stage that is still in progress against the clock", () => {
+    const { container, getByLabelText } = show(reserving);
+
+    getByLabelText("Provisioning");
+    expect(container.querySelector('[data-active="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-failed="true"]')).toBeNull();
+    expect(container.textContent).toContain("10m");
+  });
+
+  it("stops at the stage a failed session was on, with the time it had run", () => {
+    // The session failed two minutes in; eight more have passed since.
+    const { container, getByLabelText } = show(reserving, T0 - 480);
+
+    getByLabelText("Provisioning failed");
+    expect(container.querySelector('[data-active="true"]')).toBeNull();
+    expect(container.querySelector('[data-failed="true"]')).not.toBeNull();
+    expect(container.textContent).toContain("Reserving a machine on Azure");
+    expect(container.textContent).toContain("2m");
+    expect(container.textContent).not.toContain("10m");
+  });
+
+  it("leaves a finished episode alone when a later one failed", () => {
+    const ready: TranscriptItem = {
+      ...reserving,
+      steps: [
+        { stage: "reserving", atUnix: T0 - 600 },
+        { stage: "ready", atUnix: T0 - 540 },
+      ],
+    };
+    const { container, getByLabelText } = show(ready, T0 - 480);
+
+    getByLabelText("Provisioning");
+    expect(container.querySelector('[data-failed="true"]')).toBeNull();
+  });
+});
 
 describe("Transcript shell block", () => {
   it("shows the command, its output and its exit status", () => {

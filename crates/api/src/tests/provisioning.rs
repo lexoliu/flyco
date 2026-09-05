@@ -520,7 +520,8 @@ async fn a_provision_that_fails_leaves_the_session_visibly_failed(
 
     let session = open(&client, &caller).await.summary.id;
     let mut host = RecordedHost::answering(Answer::Refused);
-    run_queue(&db, &kv, &queue, &mut host).await;
+    let rooms = test_rooms();
+    run_queue_watching(&db, &kv, &queue, &rooms, &mut host, drain(&queue).await).await;
 
     let failed = read(&client, &caller, session).await;
     assert_eq!(
@@ -528,6 +529,26 @@ async fn a_provision_that_fails_leaves_the_session_visibly_failed(
         SessionState::Failed,
         "a session whose machine could not be built must not sit in `provisioning`"
     );
+
+    // The page is watching the room, not polling the row: the failure has
+    // to arrive as an event or the timeline spins until a reload.
+    assert!(
+        recorded(&rooms, session).await.iter().any(|event| matches!(
+            event,
+            flyco_core::ClientEvent::SessionStateChanged {
+                state: SessionState::Failed
+            }
+        )),
+        "the room is told the session failed"
+    );
+
+    // The reservation is released with the session: a machine that was
+    // never built is not `starting`.
+    let machine = crate::machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("the session reserved a row");
+    assert_eq!(machine.state, flyco_core::MachineState::Destroyed);
     let reason = failed.failure.expect("a failed session says why");
     assert!(
         reason.contains("refused"),

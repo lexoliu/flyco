@@ -533,6 +533,31 @@ pub async fn destroy_for_archive(
     Ok(())
 }
 
+/// Releases the row of a machine that was never built.
+///
+/// A session that fails before its provider handed anything over has a
+/// row in `provisioning` with no native id: a reservation, not a machine.
+/// A row that names a real resource is left alone — it is torn down
+/// through its own account on archive — so a stray `UPDATE` here can never
+/// make the database forget a machine that is still running up a bill.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn release_unbuilt(db: &Db, session: SessionId) -> Result<(), ApiError> {
+    let destroyed = MachineState::Destroyed;
+    let provisioning = MachineState::Provisioning;
+    sql!(
+        db,
+        "UPDATE machines SET state = {destroyed}, hourly_micros = NULL, \
+         storage_hourly_micros = NULL WHERE session_id = {session} \
+         AND state = {provisioning} AND native_id IS NULL"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
 /// Loads the machine a session runs on, scoped to its owner.
 ///
 /// The join through `sessions` is what enforces ownership: a machine is
@@ -789,12 +814,66 @@ pub(crate) async fn automatic(
             provider_account: account,
             machine_type: entry.machine_type.clone(),
             region: entry.region.clone(),
-            spot,
+            // Spot only where the catalog quoted it: the cheapest type may
+            // be one the spot pool cannot fund, and asking the provider for
+            // that is a machine that fails minutes later in the queue.
+            spot: spot && entry.pricing.offers_spot(),
             disk_gib: DEFAULT_DISK_GIB,
         },
         entry: entry.clone(),
         pending_accounts,
     })
+}
+
+/// Resolves a session's chosen machine against the cached catalog.
+///
+/// What `POST /v1/sessions` checks before it reserves anything. The cached
+/// document is the authority here — it is what the picker offered — and it
+/// is read, never refreshed: asking the provider for a region in the
+/// request is the twelve seconds the send button used to hang for.
+///
+/// # Errors
+///
+/// Returns [`ApiError::CatalogNotReady`] while the account has not been
+/// read, and [`ApiError::MachineUnavailable`] when the account's catalog
+/// does not offer this type in this region.
+pub(crate) async fn deployable(
+    db: &Db,
+    config: &ApiConfig,
+    kv: &Kv,
+    user: UserId,
+    choice: &MachineChoice,
+) -> Result<MachineCatalogEntry, ApiError> {
+    let MachineCatalog {
+        entries,
+        pending_accounts,
+    } = catalog(
+        db,
+        config,
+        kv,
+        Refresh::ReadOnly,
+        user,
+        &CatalogFilter {
+            provider: None,
+            account: Some(choice.provider_account),
+            region: Some(choice.region.clone()),
+            os: None,
+        },
+    )
+    .await?;
+    entries
+        .into_iter()
+        .find(|entry| entry.machine_type == choice.machine_type)
+        .ok_or_else(|| {
+            if pending_accounts.contains(&choice.provider_account) {
+                ApiError::CatalogNotReady { accounts: 1 }
+            } else {
+                ApiError::MachineUnavailable(format!(
+                    "{} in {} is not something this account can deploy",
+                    choice.machine_type, choice.region
+                ))
+            }
+        })
 }
 
 /// The refusal a catalog with nothing flyco may pick answers with.

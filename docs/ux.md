@@ -564,6 +564,13 @@ is not where a user looks when the page tells them the session stopped.
   gets **another timeline in the place it happened**, headed `Migrating`
   and holding only the stages a restart goes through — nothing is
   installed or cloned, because the disk already has both.
+- A provision that **fails** stops the timeline where it was: the stage
+  in progress turns red with an ✕ and the time it had run, its clock
+  frozen at the failure, and nothing on the page still spins or reads
+  `starting`. The failed notice (§6) says why, as its own sentence, with
+  `Resume` beside it; the control plane releases the machine reservation
+  and tells the room, so an open page learns of the failure without a
+  reload.
 - Approvals appear inline as an **action card** (title, the exact
   operation, `Approve` / `Deny`) and, while any is pending, as a sticky
   amber banner at the top of the transcript.

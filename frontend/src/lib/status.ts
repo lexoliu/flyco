@@ -292,6 +292,18 @@ export interface NoticeFacts {
  * timeline in the transcript is already that story told better
  * (docs/ux.md §9.2).
  */
+/**
+ * `text` as a sentence of its own.
+ *
+ * A provider's reason ends where the provider ended it, which is often
+ * without a full stop, and the sentence that follows it in the notice is
+ * flyco's: the two must not run into one another.
+ */
+function sentence(text: string): string {
+  const trimmed = text.trimEnd();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
 export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNotice | null {
   const title = view.detail === undefined ? view.label : `${view.label} · ${view.detail}`;
   const notice = (body: string, action?: SessionNoticeAction): SessionNotice => ({
@@ -304,7 +316,7 @@ export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNoti
   switch (view.status) {
     case "failed":
       return notice(
-        `${facts.failure ?? "The session stopped and said nothing about why."} Resuming builds the machine again and reopens the same conversation.`,
+        `${sentence(facts.failure ?? "The session stopped and said nothing about why.")} Resuming builds the machine again and reopens the same conversation.`,
         RESUME,
       );
     case "interrupted":
