@@ -17,7 +17,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=read-only
 ProtectSystem=strict
-ReadWritePaths=/home/flyco /srv/flyco /var/lib/flyco
+# /etc/claude-code is Claude Code's managed-policy directory: the daemon
+# writes the MCP allowlist there on every start, and ProtectSystem=strict
+# makes the rest of /etc read-only, which is the point.
+ReadWritePaths=/home/flyco /srv/flyco /var/lib/flyco /etc/claude-code
 
 [Install]
 WantedBy=multi-user.target

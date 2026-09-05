@@ -5624,6 +5624,49 @@
         }
       }
     },
+    "/v1/sessions/{id}/startup-failure": {
+      "post": {
+        "summary": "Records why this session's daemon stopped before it could report in.",
+        "description": "Records why this session's daemon stopped before it could report in.\n\n`flycod` is restarted on failure, so this is not itself a verdict: the\nnext start may succeed, and a session that comes up keeps nothing of\nthis. What it buys is the sentence — a machine that goes on failing is\nfailed by the stall sweep with the daemon's own words instead of a\nguess (issue #186).",
+        "operationId": "flyco_api::app::report_startup_failure",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions/{id}/startup-failure`.\n\nWhat a daemon says on its way out. `flycod` is restarted on failure, so\na machine whose daemon cannot start is a machine that says nothing at\nall: the queue's job finished, the relay was never opened, and the page\nwaits on a timeline that will not advance. This is the one thing the\ndying process can still do, and it is recorded rather than acted on —\nthe restart may yet succeed, and the sentence is what the session says\nif it does not.",
+                "required": [
+                  "message"
+                ],
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "description": "Why the daemon stopped, in its own words."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/transcript/{stream}": {
       "get": {
         "summary": "app::get_transcript",
@@ -9437,6 +9480,19 @@
             "format": "int32",
             "description": "Seconds until reclamation, as the provider announced them.\n\nWhat the recovery is scheduled against: the machine is still up for\nthis long, and a replacement started before it goes would find the\ndisk still attached to a running instance.",
             "minimum": 0
+          }
+        }
+      },
+      "ReportStartupFailure": {
+        "type": "object",
+        "description": "Request body of `POST /v1/sessions/{id}/startup-failure`.\n\nWhat a daemon says on its way out. `flycod` is restarted on failure, so\na machine whose daemon cannot start is a machine that says nothing at\nall: the queue's job finished, the relay was never opened, and the page\nwaits on a timeline that will not advance. This is the one thing the\ndying process can still do, and it is recorded rather than acted on —\nthe restart may yet succeed, and the sentence is what the session says\nif it does not.",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Why the daemon stopped, in its own words."
           }
         }
       },

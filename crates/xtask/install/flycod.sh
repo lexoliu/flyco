@@ -106,6 +106,10 @@ install_session() {
   create_runtime_user /usr/bin/fish
 
   install -d -o "$runtime_user" -g "$runtime_group" /srv/flyco/work /var/lib/flyco/transcripts /var/lib/flyco/sidecar /var/lib/flyco/claude /var/lib/flyco/codex
+  # Claude Code reads its managed policy from here and the daemon writes it
+  # on every start, so it exists before the unit does and belongs to the
+  # user the unit runs as.
+  install -d -o "$runtime_user" -g "$runtime_group" /etc/claude-code
   chgrp "$runtime_group" /etc/flycod/config.toml
   chmod 0640 /etc/flycod/config.toml
 

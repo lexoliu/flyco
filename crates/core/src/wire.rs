@@ -130,6 +130,21 @@ pub struct ReportProvisioningStage {
     pub stage: ProvisioningStage,
 }
 
+/// Request body of `POST /v1/sessions/{id}/startup-failure`.
+///
+/// What a daemon says on its way out. `flycod` is restarted on failure, so
+/// a machine whose daemon cannot start is a machine that says nothing at
+/// all: the queue's job finished, the relay was never opened, and the page
+/// waits on a timeline that will not advance. This is the one thing the
+/// dying process can still do, and it is recorded rather than acted on —
+/// the restart may yet succeed, and the sentence is what the session says
+/// if it does not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ReportStartupFailure {
+    /// Why the daemon stopped, in its own words.
+    pub message: String,
+}
+
 /// Request body of `POST /v1/sessions/{id}/spot-notice`.
 ///
 /// The relay frame beside it ([`DaemonToControl::SpotNotice`]) is what puts

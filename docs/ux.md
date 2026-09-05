@@ -571,8 +571,10 @@ is not where a user looks when the page tells them the session stopped.
   open a second timeline headed `Migrating`: only a `reserving` at a new
   instant is a new machine.
 - A machine that stops reporting stages for fifteen minutes is **failed**
-  by the control plane, with `the machine was built but never reported its
-  agent ready`, and the machine is released with it: a machine that never
+  by the control plane, in the daemon's own words when it managed to send
+  any (`its agent never started: …`) and otherwise with `the machine was
+  built but never reported its agent ready`, and the machine is released
+  with it: a machine that never
   came up is still a machine running up a bill. Nothing else would notice:
   the queue's job finished, and the daemon that would report the failure
   is the thing that is failing.

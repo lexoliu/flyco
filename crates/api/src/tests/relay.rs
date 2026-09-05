@@ -141,6 +141,63 @@ async fn a_daemon_announces_the_stage_that_cannot_ride_the_relay(ctx: TestContex
 }
 
 #[skyzen::test]
+async fn a_daemon_that_cannot_start_says_why_and_the_session_says_it_later(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // `flycod` is restarted on failure, so a machine whose daemon cannot
+    // start would otherwise say nothing at all: the relay is never opened,
+    // and the page waits on a timeline that will not advance (issue #186).
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+    let token = pair(&client, &caller, session).await;
+
+    client
+        .post(&format!("/v1/sessions/{session}/startup-failure"))
+        .bearer(&token)
+        .json(&flyco_core::ReportStartupFailure {
+            message: "could not materialize the sidecar at /var/lib/flyco/sidecar".to_owned(),
+        })
+        .send()
+        .await
+        .assert_status(204);
+
+    // Recorded, not acted on: the next restart may succeed, so the session
+    // is still being built and says nothing of this yet.
+    let detail: flyco_core::SessionDetail = client
+        .get(&format!("/v1/sessions/{session}"))
+        .bearer(&caller.token)
+        .send()
+        .await
+        .json();
+    assert_eq!(detail.summary.state, flyco_core::SessionState::Provisioning);
+    assert_eq!(detail.failure, None);
+
+    // And it is the sentence the session gives when the machine never does
+    // come up, rather than the control plane guessing from silence.
+    assert_eq!(
+        crate::sessions::startup_failure(&db, session)
+            .await
+            .expect("read the recorded failure")
+            .as_deref(),
+        Some("could not materialize the sidecar at /var/lib/flyco/sidecar")
+    );
+
+    // A user's own credential is not a daemon's, here as everywhere else.
+    client
+        .post(&format!("/v1/sessions/{session}/startup-failure"))
+        .bearer(&caller.token)
+        .json(&flyco_core::ReportStartupFailure {
+            message: "not mine to send".to_owned(),
+        })
+        .send()
+        .await
+        .assert_status(401);
+}
+
+#[skyzen::test]
 async fn a_user_credential_does_not_open_a_daemon_route(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
     let caller = sign_in(&kv, &db, seed_user(&db).await).await;

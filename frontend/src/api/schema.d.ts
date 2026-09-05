@@ -1836,6 +1836,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/startup-failure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Records why this session's daemon stopped before it could report in.
+         * @description Records why this session's daemon stopped before it could report in.
+         *
+         *     `flycod` is restarted on failure, so this is not itself a verdict: the
+         *     next start may succeed, and a session that comes up keeps nothing of
+         *     this. What it buys is the sentence — a machine that goes on failing is
+         *     failed by the stall sweep with the daemon's own words instead of a
+         *     guess (issue #186).
+         */
+        post: operations["flyco_api::app::report_startup_failure"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/transcript/{stream}": {
         parameters: {
             query?: never;
@@ -3895,6 +3921,21 @@ export interface components {
              *     disk still attached to a running instance.
              */
             seconds_remaining: number;
+        };
+        /**
+         * @description Request body of `POST /v1/sessions/{id}/startup-failure`.
+         *
+         *     What a daemon says on its way out. `flycod` is restarted on failure, so
+         *     a machine whose daemon cannot start is a machine that says nothing at
+         *     all: the queue's job finished, the relay was never opened, and the page
+         *     waits on a timeline that will not advance. This is the one thing the
+         *     dying process can still do, and it is recorded rather than acted on —
+         *     the restart may yet succeed, and the sentence is what the session says
+         *     if it does not.
+         */
+        ReportStartupFailure: {
+            /** @description Why the daemon stopped, in its own words. */
+            message: string;
         };
         /**
          * @description Request body of `POST /v1/sessions/{id}/machine/resize`.
@@ -7635,6 +7676,34 @@ export interface operations {
         responses: {
             /** @description Recorded. The outcome arrives on the session relay, not in this response. */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::report_startup_failure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Why the daemon stopped, in its own words. */
+                    message: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };

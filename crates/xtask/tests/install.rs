@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use flyco_core::release::{ASSETS, HOST_UNIT, INSTALLER, UNIT};
+use flyco_core::release::{ASSETS, CLAUDE_MANAGED_DIR, HOST_UNIT, INSTALLER, UNIT};
 
 /// Where the assets live, relative to this crate.
 fn install_dir() -> PathBuf {
@@ -151,6 +151,37 @@ fn the_installer_and_the_host_unit_name_the_same_configuration() {
             "ExecStart=/usr/local/bin/flycod host run --config {path}"
         )),
         "the unit runs `flycod host run` against {path}: {unit}"
+    );
+}
+
+/// The daemon writes Claude Code's managed policy on every start, and the
+/// unit runs under `ProtectSystem=strict`. A managed directory the unit does
+/// not name is a daemon that exits before it ever reaches its harness, and
+/// `Restart=on-failure` turns that into a session stuck at `Cloning` for
+/// ever (issue #186).
+#[test]
+fn the_session_unit_can_write_the_managed_policy_the_daemon_writes() {
+    let unit = asset(UNIT.name);
+    let writable = unit
+        .lines()
+        .find_map(|line| line.strip_prefix("ReadWritePaths="))
+        .expect("the session unit names its writable paths");
+
+    assert!(
+        unit.contains("ProtectSystem=strict"),
+        "the rest of the filesystem stays read-only: {unit}"
+    );
+    assert!(
+        writable
+            .split_whitespace()
+            .any(|path| path == CLAUDE_MANAGED_DIR),
+        "{CLAUDE_MANAGED_DIR} is writable: {writable}"
+    );
+
+    let script = asset(INSTALLER.name);
+    assert!(
+        script.contains(&format!("/etc/claude-code\n")) || script.contains(CLAUDE_MANAGED_DIR),
+        "the installer creates it before the unit runs: {script}"
     );
 }
 

@@ -34,7 +34,7 @@ use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
     AgentMachineView, ApprovalId, ApprovalView, BudgetView, HarnessObservation, HarnessSessionView,
     MachineCatalogEntry, Problem, ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
-    ResizeMachine, SessionId,
+    ReportStartupFailure, ResizeMachine, SessionId,
 };
 use url::Url;
 use zenwave::{Client as _, ResponseExt as _};
@@ -229,6 +229,22 @@ pub trait ControlApi: ApprovalRaiser {
     fn harness_session_id(
         &self,
     ) -> impl Future<Output = Result<Option<String>, ControlApiError>> + Send;
+
+    /// Reports why this daemon is stopping before it could report in.
+    ///
+    /// The last thing a dying `flycod` does. It is restarted on failure, so
+    /// this is not a verdict — it is the sentence the session says if the
+    /// machine never does come up, instead of the control plane guessing
+    /// from silence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or refused the report.
+    fn report_startup_failure(
+        &self,
+        message: String,
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 
     /// Reports that this machine's capacity is being reclaimed.
     ///
@@ -444,6 +460,22 @@ impl ControlApi for HttpControlApi {
         self.get_json::<HarnessSessionView>("harness-session")
             .await
             .map(|view| view.harness_session_id)
+    }
+
+    async fn report_startup_failure(&self, message: String) -> Result<(), ControlApiError> {
+        let url = self.url("startup-failure")?;
+        let mut client = zenwave::client();
+        let response = client
+            .post(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(&ReportStartupFailure { message })
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("POST", &url, &error))?;
+
+        debug_assert!(response.status().is_success());
+        Ok(())
     }
 
     async fn report_spot_notice(&self, seconds_remaining: u32) -> Result<(), ControlApiError> {

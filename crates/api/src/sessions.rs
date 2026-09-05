@@ -904,6 +904,50 @@ pub async fn note_progress(db: &Db, id: SessionId) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Records why a session's daemon stopped before it reported in.
+///
+/// Written into `failure_reason` while the session is still
+/// `provisioning`, which is not yet a failure: `detail_from` reports that
+/// column only for a session that actually failed, and a daemon that
+/// restarts successfully leaves it behind. It is the sentence the stall
+/// sweep uses if the machine never does come up.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn note_startup_failure(db: &Db, id: SessionId, message: &str) -> Result<(), ApiError> {
+    let provisioning = SessionState::Provisioning;
+    sql!(
+        db,
+        "UPDATE sessions SET failure_reason = {message.to_owned()} \
+         WHERE id = {id} AND state = {provisioning}"
+    )
+    .execute()
+    .await?;
+    tracing::warn!(session = %id, message, "a session's daemon reported that it could not start");
+    Ok(())
+}
+
+/// What [`note_startup_failure`] last recorded for a session, if anything.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn startup_failure(db: &Db, id: SessionId) -> Result<Option<String>, ApiError> {
+    let row: Option<StartupFailure> =
+        sql!(db, "SELECT failure_reason FROM sessions WHERE id = {id}")
+            .fetch_optional()
+            .await?;
+    Ok(row.and_then(|row| row.failure_reason))
+}
+
+/// One row of [`startup_failure`].
+#[derive(Debug, skyzen::FromRow)]
+struct StartupFailure {
+    /// The daemon's sentence, when it sent one.
+    failure_reason: Option<String>,
+}
+
 /// Sessions still being built past [`PROVISION_DEADLINE_SECS`].
 ///
 /// The clock runs from the last thing that happened to the session, which
