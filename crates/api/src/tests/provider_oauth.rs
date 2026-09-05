@@ -26,10 +26,10 @@ use crate::microsoft::MicrosoftClient;
 use crate::openai::CodexClient;
 use crate::session;
 use crate::testing::{
-    ADMIN_SSH_PUBLIC_KEY, AZURE_APP_CLIENT_SECRET, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID,
-    AZURE_SUBSCRIPTION_NAME, CLOUD_CODE, GCP_ACCOUNT, GCP_PROJECT_ID, GCP_PROJECT_NAME,
-    GCP_SERVICE_ACCOUNT_JSON, GOOGLE_CLIENT_ID, REDIRECT_URI, TestClaude, TestCodex, TestGithub,
-    TestGoogle, TestMicrosoft, migrate, seed_other_user, seed_user, test_router_with,
+    AZURE_APP_CLIENT_SECRET, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID, AZURE_SUBSCRIPTION_NAME,
+    CLOUD_CODE, GCP_ACCOUNT, GCP_PROJECT_ID, GCP_PROJECT_NAME, GCP_SERVICE_ACCOUNT_JSON,
+    GOOGLE_CLIENT_ID, REDIRECT_URI, TestClaude, TestCodex, TestGithub, TestGoogle, TestMicrosoft,
+    migrate, seed_other_user, seed_user, test_router_with,
 };
 use crate::vendors::Vendors;
 
@@ -459,7 +459,6 @@ async fn finishing_before_the_browser_comes_back_is_refused(ctx: TestContext, kv
         .bearer(&token)
         .json(&FinishAzureOauth {
             subscription_id: AZURE_SUBSCRIPTION_ID.to_owned(),
-            admin_ssh_public_key: ADMIN_SSH_PUBLIC_KEY.to_owned(),
         })
         .send()
         .await;
@@ -490,7 +489,6 @@ async fn finishing_an_azure_sign_in_links_the_subscription_the_user_chose(
         .bearer(&token)
         .json(&FinishAzureOauth {
             subscription_id: AZURE_SUBSCRIPTION_ID.to_owned(),
-            admin_ssh_public_key: ADMIN_SSH_PUBLIC_KEY.to_owned(),
         })
         .send()
         .await;

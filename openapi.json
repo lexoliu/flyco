@@ -3078,14 +3078,9 @@
                 "type": "object",
                 "description": "Request body of `POST /v1/providers/azure/oauth/{attempt_id}/finish`.",
                 "required": [
-                  "subscription_id",
-                  "admin_ssh_public_key"
+                  "subscription_id"
                 ],
                 "properties": {
-                  "admin_ssh_public_key": {
-                    "type": "string",
-                    "description": "The `OpenSSH` public key a machine's break-glass login is created\nwith, exactly as [`ProviderCredentials::Azure`] carries it."
-                  },
                   "subscription_id": {
                     "type": "string",
                     "description": "Which of the authorized subscriptions to provision into."
@@ -7661,14 +7656,9 @@
         "type": "object",
         "description": "Request body of `POST /v1/providers/azure/oauth/{attempt_id}/finish`.",
         "required": [
-          "subscription_id",
-          "admin_ssh_public_key"
+          "subscription_id"
         ],
         "properties": {
-          "admin_ssh_public_key": {
-            "type": "string",
-            "description": "The `OpenSSH` public key a machine's break-glass login is created\nwith, exactly as [`ProviderCredentials::Azure`] carries it."
-          },
           "subscription_id": {
             "type": "string",
             "description": "Which of the authorized subscriptions to provision into."
@@ -8973,14 +8963,9 @@
               "client_id",
               "client_secret",
               "subscription_id",
-              "admin_ssh_public_key",
               "kind"
             ],
             "properties": {
-              "admin_ssh_public_key": {
-                "type": "string",
-                "description": "The `OpenSSH` public key a machine's break-glass login is created\nwith.\n\nAzure refuses to create a Linux machine with neither a password\nnor a key and flyco sets no passwords, so one is required. It is\nthe *user's* key: the wizard generates the pair in their browser,\noffers them the private half once, and sends only this. Flyco\nnever holds a private key for a machine it provisions."
-              },
               "client_id": {
                 "type": "string",
                 "description": "Application (client) id of the service principal."

@@ -72,7 +72,6 @@ export const ComputeChoice: PageComponent<{ id: "compute-choice" }> = (
           azurePaste: "",
           azurePrincipal: null,
           azureSubscription: null,
-          azureKey: null,
         });
       },
     };

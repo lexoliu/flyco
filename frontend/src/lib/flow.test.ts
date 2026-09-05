@@ -163,7 +163,6 @@ describe("pagesFor", () => {
       "new-to-provider",
       "student",
       "cloud-sign-in",
-      "azure-key",
     ]);
     const aws = advance(startFlow({ stages: ["compute"] }), { compute: "aws" });
     expect(ids(aws)).toEqual([
@@ -206,15 +205,12 @@ describe("pagesFor", () => {
       "student",
       "cloud-sign-in",
       "cloud-choice",
-      "azure-key",
     ]);
     expect(currentPage(back)).toEqual({
       id: "cloud-choice",
       provider: "azure",
     });
-    expect(currentPage(advance(back, { cloudChoice: "sub-1" })).id).toBe(
-      "azure-key",
-    );
+    expect(isFinished(advance(back, { cloudChoice: "sub-1" }))).toBe(true);
 
     const gcp = advance(
       advance(advance(startFlow({ stages: ["compute"] }), { compute: "gcp" }), {
@@ -245,7 +241,6 @@ describe("pagesFor", () => {
       "student",
       "azure-command",
       "azure-paste",
-      "azure-key",
     ]);
     expect(currentPage(shell).id).toBe("azure-command");
     const gcpShell = advance(
@@ -298,7 +293,6 @@ describe("pagesFor", () => {
       "student",
       "credit",
       "cloud-sign-in",
-      "azure-key",
     ]);
     expect(currentPage(answered)).toEqual({
       id: "credit",
@@ -350,7 +344,7 @@ describe("pagesFor", () => {
       azurePrincipal: { ...principal, subscriptionId: "sub" },
     });
     expect(ids(complete)).not.toContain("azure-subscription");
-    expect(currentPage(complete).id).toBe("azure-key");
+    expect(isFinished(complete)).toBe(true);
   });
 
   it("finishes the compute stage when the credential links, with no linked page after", () => {

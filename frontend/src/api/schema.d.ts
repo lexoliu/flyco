@@ -2832,11 +2832,6 @@ export interface components {
         };
         /** @description Request body of `POST /v1/providers/azure/oauth/{attempt_id}/finish`. */
         FinishAzureOauth: {
-            /**
-             * @description The `OpenSSH` public key a machine's break-glass login is created
-             *     with, exactly as [`ProviderCredentials::Azure`] carries it.
-             */
-            admin_ssh_public_key: string;
             /** @description Which of the authorized subscriptions to provision into. */
             subscription_id: string;
         };
@@ -3564,17 +3559,6 @@ export interface components {
          *     an AWS key pair.
          */
         ProviderCredentials: {
-            /**
-             * @description The `OpenSSH` public key a machine's break-glass login is created
-             *     with.
-             *
-             *     Azure refuses to create a Linux machine with neither a password
-             *     nor a key and flyco sets no passwords, so one is required. It is
-             *     the *user's* key: the wizard generates the pair in their browser,
-             *     offers them the private half once, and sends only this. Flyco
-             *     never holds a private key for a machine it provisions.
-             */
-            admin_ssh_public_key: string;
             /** @description Application (client) id of the service principal. */
             client_id: string;
             /** @description Client secret issued for that application. */
@@ -6098,11 +6082,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /**
-                     * @description The `OpenSSH` public key a machine's break-glass login is created
-                     *     with, exactly as [`ProviderCredentials::Azure`] carries it.
-                     */
-                    admin_ssh_public_key: string;
                     /** @description Which of the authorized subscriptions to provision into. */
                     subscription_id: string;
                 };

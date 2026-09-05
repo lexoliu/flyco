@@ -43,6 +43,8 @@
 
 pub mod aws;
 pub mod azure;
+mod login_key;
+pub use login_key::{LoginKey, LoginKeyError};
 pub mod clock;
 pub mod cloud_init;
 pub mod datetime;

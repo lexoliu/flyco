@@ -12,6 +12,7 @@ use flyco_core::{
     CloudProviderKind, CloudSpend, HostFacts, HostId, HostState, MachineCatalogEntry, MachineSpec,
     ProviderAccountId, ProviderCredentials, UserId,
 };
+use flyco_provider::LoginKey;
 use flyco_provider::aws::sigv4::AccessKey;
 use flyco_provider::aws::{AwsProvider, AwsWorkspace};
 use flyco_provider::azure::auth::ServicePrincipal;
@@ -25,6 +26,7 @@ use skyzen_services::Db;
 
 use crate::config::ApiConfig;
 use crate::error::ApiError;
+use crate::provider_accounts::StoredSecrets;
 use crate::rooms::HostRooms;
 
 /// One linked account, with its credentials unsealed for immediate use.
@@ -45,6 +47,9 @@ pub struct LinkedAccount {
     /// unsealing. An Azure account without one is a row no driver can be
     /// built from — see [`LinkedAccount::azure_workspace`].
     resource_group: Option<String>,
+    /// The login key flyco minted for this account's machines, unsealed
+    /// with the credentials. See [`LoginKey`].
+    machine_login_key: LoginKey,
     /// The enrolled machine this account provisions onto, for a host
     /// account.
     ///
@@ -137,6 +142,25 @@ impl LinkedAccount {
     }
 }
 
+/// Reads the sealed document back.
+///
+/// A row from before flyco minted machine login keys holds bare
+/// credentials; it is named as such rather than read with a key it does not
+/// have, because a machine built without the account's key is one nobody,
+/// not even flyco, could ever reach.
+fn unseal(plain: &str) -> Result<StoredSecrets, ApiError> {
+    serde_json::from_str(plain).map_err(|_| {
+        if serde_json::from_str::<ProviderCredentials>(plain).is_ok() {
+            ApiError::CorruptRecord(
+                "this account was linked before flyco kept machine login keys; unlink it and \
+                 link it again",
+            )
+        } else {
+            ApiError::CorruptRecord("provider_accounts.credentials_enc is not credentials")
+        }
+    })
+}
+
 /// The Azure driver one set of Azure credentials opens.
 ///
 /// Every dispatch below needs the same construction, so it is written once:
@@ -148,7 +172,7 @@ pub(crate) fn azure_driver(
     client_secret: &str,
     subscription_id: &str,
     resource_group: &str,
-    admin_ssh_public_key: &str,
+    login_key: &LoginKey,
 ) -> AzureProvider {
     AzureProvider::new(
         ServicePrincipal {
@@ -157,7 +181,7 @@ pub(crate) fn azure_driver(
             client_secret: client_secret.to_owned(),
             subscription_id: subscription_id.to_owned(),
         },
-        Workspace::new(resource_group, admin_ssh_public_key),
+        Workspace::new(resource_group, login_key.clone()),
     )
 }
 
@@ -258,13 +282,14 @@ pub async fn accounts_for(
     let cipher = config.token_cipher();
     rows.into_iter()
         .map(|row| {
-            let credentials: ProviderCredentials =
-                serde_json::from_str(&cipher.open(&row.credentials_enc)?).map_err(|_| {
-                    ApiError::CorruptRecord("provider_accounts.credentials_enc is not credentials")
-                })?;
+            let StoredSecrets {
+                credentials,
+                machine_login_key,
+            } = unseal(&cipher.open(&row.credentials_enc)?)?;
             Ok(LinkedAccount {
                 id: row.id,
                 credentials,
+                machine_login_key,
                 host: row.host(),
                 resource_group: row.resource_group,
             })
@@ -302,14 +327,15 @@ pub async fn account(
     .await?
     .ok_or(ApiError::ProviderAccountNotFound)?;
 
-    let credentials: ProviderCredentials =
-        serde_json::from_str(&config.token_cipher().open(&row.credentials_enc)?).map_err(|_| {
-            ApiError::CorruptRecord("provider_accounts.credentials_enc is not credentials")
-        })?;
+    let StoredSecrets {
+        credentials,
+        machine_login_key,
+    } = unseal(&config.token_cipher().open(&row.credentials_enc)?)?;
 
     Ok(LinkedAccount {
         id,
         credentials,
+        machine_login_key,
         host: row.host(),
         resource_group: row.resource_group,
     })
@@ -345,7 +371,6 @@ async fn catalog_of(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>,
             client_id,
             client_secret,
             subscription_id,
-            admin_ssh_public_key,
         } => {
             azure_driver(
                 tenant_id,
@@ -353,7 +378,7 @@ async fn catalog_of(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>,
                 client_secret,
                 subscription_id,
                 account.azure_workspace()?,
-                admin_ssh_public_key,
+                &account.machine_login_key,
             )
             .catalog()
             .await
@@ -417,14 +442,13 @@ pub async fn cloud_usage(
             client_id,
             client_secret,
             subscription_id,
-            admin_ssh_public_key,
         } => azure_driver(
             tenant_id,
             client_id,
             client_secret,
             subscription_id,
             account.azure_workspace()?,
-            admin_ssh_public_key,
+            &account.machine_login_key,
         )
         .billing_period_cost(now_unix)
         .await
@@ -477,7 +501,6 @@ pub async fn operate(
             client_id,
             client_secret,
             subscription_id,
-            admin_ssh_public_key,
         } => {
             operation
                 .run(
@@ -487,7 +510,7 @@ pub async fn operate(
                         client_secret,
                         subscription_id,
                         account.azure_workspace()?,
-                        admin_ssh_public_key,
+                        &account.machine_login_key,
                     ),
                     machine,
                 )
@@ -677,7 +700,6 @@ fn azure_driver_for(account: &LinkedAccount) -> Result<Option<AzureProvider>, Pr
         client_id,
         client_secret,
         subscription_id,
-        admin_ssh_public_key,
     } = account.credentials()
     else {
         return Ok(None);
@@ -689,7 +711,7 @@ fn azure_driver_for(account: &LinkedAccount) -> Result<Option<AzureProvider>, Pr
         client_secret,
         subscription_id,
         account.azure_workspace()?,
-        admin_ssh_public_key,
+        &account.machine_login_key,
     )))
 }
 

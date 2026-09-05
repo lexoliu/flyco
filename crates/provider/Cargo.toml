@@ -17,6 +17,7 @@ base64.workspace = true
 futures-timer.workspace = true
 quick-xml.workspace = true
 rsa.workspace = true
+rand_core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Quoting the values that go into a host's podman script. Pure Rust and
@@ -24,6 +25,7 @@ serde_json.workspace = true
 # Worker, in a test, and on the machine that runs it.
 shell-escape.workspace = true
 sha2.workspace = true
+ssh-key.workspace = true
 thiserror.workspace = true
 time.workspace = true
 toml.workspace = true

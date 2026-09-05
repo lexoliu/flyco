@@ -117,6 +117,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 base64 = "0.22"
 getrandom = { version = "0.4", features = ["wasm_js"] }
+# The throwaway login key every Azure machine is created with: Azure refuses
+# a Linux machine that has neither a password nor a key, and flyco sets no
+# passwords and keeps no private keys, so one is minted per machine and its
+# private half dropped on the floor. `rand_core` 0.6 is what `ssh-key` 0.6
+# draws from; its `getrandom` feature reaches the 0.2 line above on wasm32.
+ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "std"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 # `rsa` reaches `getrandom` through the 0.2 line, which refuses to compile for
 # wasm32 at all unless its `js` feature is on — a `compile_error!`, not a
 # runtime failure. Nothing calls it (PKCS#1 v1.5 signing is deterministic and

@@ -80,6 +80,7 @@ use flyco_core::{CloudSpend, MachineId};
 
 use crate::clock::{MonotonicClock, SystemClock, SystemTimer, Timer};
 use crate::http::{HttpRequest, HttpResponse, HttpTransport, Method};
+use crate::login_key::LoginKey;
 use crate::polling::{MAX_POLL_ATTEMPTS, poll_delay};
 use crate::{
     CapacityMode, CloudProvider, LiveTransport, Machine, ProviderError, ProvisionRequest,
@@ -272,13 +273,10 @@ pub struct Workspace {
     /// creates it. Carried here rather than assumed so an account linked
     /// under a different name still resolves to the group it owns.
     pub resource_group: String,
-    /// The OpenSSH public key the machine's break-glass login is created
-    /// with.
+    /// The login key installed on every machine this workspace builds.
     ///
-    /// Azure will not create a Linux machine with neither a password nor a
-    /// key, and flyco sets no passwords. It is the *user's* key: flyco never
-    /// holds a private key for a machine it provisions.
-    pub admin_ssh_public_key: String,
+    /// Flyco's, not the user's: see [`LoginKey`].
+    pub login_key: LoginKey,
     /// Where a machine fetches `flycod` from on first boot.
     pub flycod_installer_url: String,
     /// Regions [`AzureProvider::catalog`] reports on.
@@ -294,10 +292,10 @@ impl Workspace {
     /// A workspace covering whatever regions the subscription allows,
     /// installing `flycod` from [`DEFAULT_FLYCOD_INSTALLER_URL`].
     #[must_use]
-    pub fn new(resource_group: impl Into<String>, admin_ssh_public_key: impl Into<String>) -> Self {
+    pub fn new(resource_group: impl Into<String>, login_key: LoginKey) -> Self {
         Self {
             resource_group: resource_group.into(),
-            admin_ssh_public_key: admin_ssh_public_key.into(),
+            login_key,
             flycod_installer_url: cloud_init::DEFAULT_FLYCOD_INSTALLER_URL.to_owned(),
             regions: Vec::new(),
         }
@@ -853,7 +851,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
                         ssh: bodies::SshConfiguration {
                             public_keys: vec![bodies::SshPublicKey {
                                 path: format!("/home/{ADMIN_USERNAME}/.ssh/authorized_keys"),
-                                key_data: self.workspace.admin_ssh_public_key.clone(),
+                                key_data: self.workspace.login_key.public_openssh(),
                             }],
                         },
                     },

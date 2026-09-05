@@ -9,7 +9,7 @@ import type { PageRegistry } from "../page";
 import { Agents } from "./agents";
 import { ApiKey } from "./apiKey";
 import { AwsKeys, AwsPolicy } from "./aws";
-import { AzureCommand, AzureKey, AzurePaste, AzureSubscription } from "./azure";
+import { AzureCommand, AzurePaste, AzureSubscription } from "./azure";
 import { Credit, NewToProvider, Student } from "./bonus";
 import { ClaudePaste, ClaudeSignIn } from "./claude";
 import { CloudChoice, CloudSignIn } from "./cloud";
@@ -35,7 +35,6 @@ export const PAGES: PageRegistry = {
   "azure-command": AzureCommand,
   "azure-paste": AzurePaste,
   "azure-subscription": AzureSubscription,
-  "azure-key": AzureKey,
   "aws-policy": AwsPolicy,
   "aws-keys": AwsKeys,
   "gcp-commands": GcpCommands,
