@@ -169,8 +169,18 @@ export default function Composer(props: ComposerProps) {
     return catalogNotReady(failure) ? undefined : failure;
   });
 
-  /** The harness a session opens on: the one linked account, or Claude. */
-  const harness = createMemo<HarnessKind>(() => readiness.harness()[0]?.harness ?? "claude_code");
+  /**
+   * The harness a session opens on: the one picked on the chip while it is
+   * still linked, else the first linked account, else Claude.
+   */
+  const harness = createMemo<HarnessKind>(() => {
+    const linked = readiness.harness();
+    const wanted = harnessChoice();
+    if (wanted !== null && linked.some((account) => account.harness === wanted)) {
+      return wanted;
+    }
+    return linked[0]?.harness ?? "claude_code";
+  });
 
   /** The catalog entry the compute chip is showing. */
   const chosen = createMemo<MachineCatalogEntry | undefined>(() => {
