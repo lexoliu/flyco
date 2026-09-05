@@ -23,6 +23,7 @@ use skyzen::{HttpError as _, Response};
 use skyzen_services::{Db, Kv, Queue, Storage};
 
 use crate::authenticator::FlycoAuthenticator;
+use crate::clouds::Clouds;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::{Headers, path_id, path_segment};
@@ -38,8 +39,8 @@ use crate::vendors::Vendors;
 use crate::{
     agents_md, api_keys, approvals, claude_oauth, codex_oauth, daemon_tokens, env,
     harness_accounts, hosts, machines, mcp, memory, oauth, observations, problem,
-    provider_accounts, provisioning, push, relay, releases, repos, responses, sessions, skills,
-    transcripts, turns, users, webhooks, workdirs,
+    provider_accounts, provider_oauth, provisioning, push, relay, releases, repos, responses,
+    sessions, skills, transcripts, turns, users, webhooks, workdirs,
 };
 
 /// Health probe response.
@@ -1782,6 +1783,7 @@ fn public_routes() -> Vec<RouteNode> {
     nodes.extend(push::public_routes());
     nodes.extend(webhooks::routes());
     nodes.extend(hosts::public_routes());
+    nodes.extend(provider_oauth::public_routes());
     nodes
 }
 
@@ -1906,6 +1908,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
     nodes.extend(mcp::routes());
     nodes.extend(memory::routes());
     nodes.extend(provider_accounts::routes());
+    nodes.extend(provider_oauth::routes());
     nodes.extend(push::routes());
     nodes.extend(repos::routes());
     nodes.extend(skills::routes());
@@ -2000,10 +2003,11 @@ pub fn router(
     config: ApiConfig,
     github: GithubClient,
     vendors: Vendors,
+    clouds: Clouds,
     db: Db,
     queue: Queue,
 ) -> Router {
-    configured(config, github, vendors)
+    configured(config, github, vendors, clouds)
         .with(db)
         .with(queue)
         .build()
@@ -2017,13 +2021,16 @@ pub fn router(
 /// [`ClaudeClient`], the Codex routes ask for [`CodexClient`], and the one
 /// place that may renew either — the provisioning consumer — asks for
 /// [`Vendors`].
-fn configured(config: ApiConfig, github: GithubClient, vendors: Vendors) -> Route {
+fn configured(config: ApiConfig, github: GithubClient, vendors: Vendors, clouds: Clouds) -> Route {
     with_error_handling(
         with_rooms(Route::new((routes(), frontend())))
             .with(State(config))
             .with(State(github))
+            .with(State(clouds))
             .with(State(vendors.claude.clone()))
             .with(State(vendors.codex.clone()))
+            .with(State(vendors.microsoft.clone()))
+            .with(State(vendors.google.clone()))
             .with(State(vendors)),
     )
 }
@@ -2031,13 +2038,16 @@ fn configured(config: ApiConfig, github: GithubClient, vendors: Vendors) -> Rout
 /// Worker path: configuration is read from the request's `env`, not at
 /// isolate startup. See [`crate::middleware::LoadApiConfig`].
 #[cfg(target_arch = "wasm32")]
-fn configured_from_request(github: GithubClient, vendors: Vendors) -> Route {
+fn configured_from_request(github: GithubClient, vendors: Vendors, clouds: Clouds) -> Route {
     with_error_handling(
         with_rooms(Route::new((routes(), frontend())))
             .with(crate::middleware::LoadApiConfig)
             .with(State(github))
+            .with(State(clouds))
             .with(State(vendors.claude.clone()))
             .with(State(vendors.codex.clone()))
+            .with(State(vendors.microsoft.clone()))
+            .with(State(vendors.google.clone()))
             .with(State(vendors)),
     )
 }
@@ -2079,11 +2089,22 @@ pub fn router_from_environment() -> Router {
     {
         let config = ApiConfig::from_environment()
             .unwrap_or_else(|error| panic!("flyco control plane is misconfigured: {error}"));
-        configured(config, GithubClient::default(), Vendors::default()).build()
+        configured(
+            config,
+            GithubClient::default(),
+            Vendors::default(),
+            Clouds::default(),
+        )
+        .build()
     }
     #[cfg(target_arch = "wasm32")]
     {
-        configured_from_request(GithubClient::default(), Vendors::default()).build()
+        configured_from_request(
+            GithubClient::default(),
+            Vendors::default(),
+            Clouds::default(),
+        )
+        .build()
     }
 }
 

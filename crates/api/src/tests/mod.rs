@@ -13,6 +13,7 @@ mod hosts;
 mod mcp;
 mod memory;
 mod metering;
+mod provider_oauth;
 mod providers;
 mod provisioning;
 mod push;

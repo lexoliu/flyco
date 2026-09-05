@@ -32,7 +32,7 @@ import styles from "./AppShell.module.css";
 const PUBLIC_ROUTES = new Set(["/login", "/auth/complete"]);
 
 /** Routes that render their own full-page layout, with no top bar. */
-const BARE_ROUTES = new Set([...PUBLIC_ROUTES, "/welcome"]);
+const BARE_ROUTES = new Set([...PUBLIC_ROUTES, "/welcome", "/connect/return"]);
 
 const THEMES: readonly {
   value: ThemePreference;

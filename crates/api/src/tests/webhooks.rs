@@ -19,7 +19,7 @@ use crate::app::router;
 use crate::github::GithubClient;
 use crate::room::EventPage;
 use crate::testing::{
-    GITHUB_WEBHOOK_SECRET, TestGithub, migrate, seed_user, test_config, test_vendors,
+    GITHUB_WEBHOOK_SECRET, TestGithub, migrate, seed_user, test_clouds, test_config, test_vendors,
 };
 use crate::webhooks::{EVENT_HEADER, SIGNATURE_HEADER};
 
@@ -46,6 +46,7 @@ async fn configured_router(db: &Db) -> Router {
         test_config(),
         GithubClient::Fake(TestGithub::default()),
         test_vendors(),
+        test_clouds(),
         db.clone(),
         Queue::new(InMemoryQueue::new()),
     )

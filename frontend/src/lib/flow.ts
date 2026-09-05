@@ -20,6 +20,7 @@ import type {
   HarnessAccountView,
   HarnessKind,
   ProviderBonusHint,
+  ProviderOauthChoice,
 } from "../api/client";
 import type { AzureServicePrincipal } from "./azureCredentials";
 import type { BreakGlassKey } from "./sshKey";
@@ -33,6 +34,21 @@ export type AgentRoute =
   | "sign-in"
   /** The one-field page behind *Use an API key instead*. */
   | "api-key";
+
+/** How a cloud with a consent screen is being linked. */
+export type CloudRoute = "sign-in" | "cloud-shell";
+
+/** The clouds whose own sign-in flyco can hand a link to. */
+export type ConsentCloud = "azure" | "gcp";
+
+/** What a vendor's consent screen handed back. */
+export interface CloudConsent {
+  readonly attemptId: string;
+  /** Who signed in, as the vendor names them. */
+  readonly account: string;
+  /** What that account may link: subscriptions, or projects. */
+  readonly choices: readonly ProviderOauthChoice[];
+}
 
 /** The accounts linked, by agent: before the flow opened, or during it. */
 export type LinkedAgents = Readonly<
@@ -58,6 +74,19 @@ export interface FlowAnswers {
    */
   readonly claudeAttempt: ClaudeOauthStart | null;
   readonly compute: CloudProviderKind | null;
+  /**
+   * How Azure or Google Cloud is being linked: the vendor's own consent
+   * screen, which is the road, or their terminal in the browser, which is
+   * the quiet link for a tenant that blocks consent.
+   */
+  readonly cloudRoute: CloudRoute;
+  /**
+   * The consent that came back: who signed in and what they may link. The
+   * choice page exists only while there is one.
+   */
+  readonly cloudConsent: CloudConsent | null;
+  /** The subscription or project chosen from that consent. */
+  readonly cloudChoice: string | null;
   readonly newToProvider: boolean | null;
   readonly student: boolean | null;
   /** What `POST /v1/providers/quickstart` matched, for every provider it named. */
@@ -82,6 +111,9 @@ export const NO_ANSWERS: FlowAnswers = {
   routes: { claude_code: "sign-in", codex: "sign-in" },
   claudeAttempt: null,
   compute: null,
+  cloudRoute: "sign-in",
+  cloudConsent: null,
+  cloudChoice: null,
   newToProvider: null,
   student: null,
   programmes: [],
@@ -135,6 +167,8 @@ export type Page =
       readonly provider: CloudKind;
       readonly programmes: readonly ProviderBonusHint[];
     }
+  | { readonly id: "cloud-sign-in"; readonly provider: ConsentCloud }
+  | { readonly id: "cloud-choice"; readonly provider: ConsentCloud }
   | { readonly id: "azure-command" }
   | { readonly id: "azure-paste" }
   | { readonly id: "azure-subscription" }
@@ -162,6 +196,8 @@ export function stageOf(page: Page): Stage {
     case "new-to-provider":
     case "student":
     case "credit":
+    case "cloud-sign-in":
+    case "cloud-choice":
     case "azure-command":
     case "azure-paste":
     case "azure-subscription":
@@ -223,10 +259,26 @@ export function matchingProgrammes(
   return answers.programmes.filter((hint) => hint.provider === answers.compute);
 }
 
+/**
+ * The consent road for Azure or Google Cloud: the vendor's sign-in, then
+ * the choice of what to link once the consent is back. Azure's key page
+ * follows separately, because it belongs to both roads.
+ */
+function consentPages(answers: FlowAnswers, provider: ConsentCloud): Page[] {
+  const pages: Page[] = [{ id: "cloud-sign-in", provider }];
+  if (answers.cloudConsent !== null) {
+    pages.push({ id: "cloud-choice", provider });
+  }
+  return pages;
+}
+
 /** One cloud provider's own pages, after the bonus questions. */
 function providerPages(answers: FlowAnswers, provider: CloudKind): Page[] {
   switch (provider) {
     case "azure": {
+      if (answers.cloudRoute === "sign-in") {
+        return [...consentPages(answers, "azure"), { id: "azure-key" }];
+      }
       const pages: Page[] = [{ id: "azure-command" }, { id: "azure-paste" }];
       // The CLI's default output names no subscription; the page that asks
       // for one exists only when the paste turned out to lack it.
@@ -242,7 +294,9 @@ function providerPages(answers: FlowAnswers, provider: CloudKind): Page[] {
     case "aws":
       return [{ id: "aws-policy" }, { id: "aws-keys" }];
     case "gcp":
-      return [{ id: "gcp-commands" }, { id: "gcp-key-file" }];
+      return answers.cloudRoute === "sign-in"
+        ? consentPages(answers, "gcp")
+        : [{ id: "gcp-commands" }, { id: "gcp-key-file" }];
   }
 }
 

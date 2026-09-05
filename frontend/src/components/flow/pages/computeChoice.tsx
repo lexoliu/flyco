@@ -66,6 +66,9 @@ export const ComputeChoice: PageComponent<{ id: "compute-choice" }> = (
         }
         props.advance({
           compute,
+          cloudRoute: "sign-in",
+          cloudConsent: null,
+          cloudChoice: null,
           azurePaste: "",
           azurePrincipal: null,
           azureSubscription: null,

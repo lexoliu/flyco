@@ -794,6 +794,173 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/providers/azure/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /v1/providers/azure/oauth/callback` — records what Microsoft said.
+         * @description `GET /v1/providers/azure/oauth/callback` — records what Microsoft said.
+         *
+         *     Public, because the browser arrives from `login.microsoftonline.com` with
+         *     no flyco credential. It authenticates itself with the `state` it carries.
+         */
+        get: operations["flyco_api::provider_oauth::azure_callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/azure/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/providers/azure/oauth/start` — begins a Microsoft sign-in.
+         * @description `POST /v1/providers/azure/oauth/start` — begins a Microsoft sign-in.
+         */
+        post: operations["flyco_api::provider_oauth::azure_start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/azure/oauth/{attempt_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /v1/providers/azure/oauth/{attempt_id}` — polls it once.
+         * @description `GET /v1/providers/azure/oauth/{attempt_id}` — polls it once.
+         */
+        get: operations["flyco_api::provider_oauth::azure_poll"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/azure/oauth/{attempt_id}/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/providers/azure/oauth/{attempt_id}/finish` — links the chosen subscription.
+         * @description `POST /v1/providers/azure/oauth/{attempt_id}/finish` — links the chosen
+         *     subscription.
+         */
+        post: operations["flyco_api::provider_oauth::azure_finish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/gcp/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /v1/providers/gcp/oauth/callback` — records what Google said.
+         * @description `GET /v1/providers/gcp/oauth/callback` — records what Google said.
+         *
+         *     Public, for the reason [`azure_callback`] is.
+         */
+        get: operations["flyco_api::provider_oauth::gcp_callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/gcp/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/providers/gcp/oauth/start` — begins a Google sign-in.
+         * @description `POST /v1/providers/gcp/oauth/start` — begins a Google sign-in.
+         */
+        post: operations["flyco_api::provider_oauth::gcp_start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/gcp/oauth/{attempt_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /v1/providers/gcp/oauth/{attempt_id}` — polls it once.
+         * @description `GET /v1/providers/gcp/oauth/{attempt_id}` — polls it once.
+         */
+        get: operations["flyco_api::provider_oauth::gcp_poll"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/gcp/oauth/{attempt_id}/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/providers/gcp/oauth/{attempt_id}/finish` — links the chosen project.
+         * @description `POST /v1/providers/gcp/oauth/{attempt_id}/finish` — links the chosen
+         *     project.
+         */
+        post: operations["flyco_api::provider_oauth::gcp_finish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/providers/quickstart": {
         parameters: {
             query?: never;
@@ -2663,6 +2830,21 @@ export interface components {
              */
             removed_lines: number;
         };
+        /** @description Request body of `POST /v1/providers/azure/oauth/{attempt_id}/finish`. */
+        FinishAzureOauth: {
+            /**
+             * @description The `OpenSSH` public key a machine's break-glass login is created
+             *     with, exactly as [`ProviderCredentials::Azure`] carries it.
+             */
+            admin_ssh_public_key: string;
+            /** @description Which of the authorized subscriptions to provision into. */
+            subscription_id: string;
+        };
+        /** @description Request body of `POST /v1/providers/gcp/oauth/{attempt_id}/finish`. */
+        FinishGcpOauth: {
+            /** @description Which of the authorized projects to provision into. */
+            project_id: string;
+        };
         /**
          * @description A Claude or Codex account the user has linked, as `GET
          *     /v1/harness-accounts` lists it.
@@ -3357,6 +3539,24 @@ export interface components {
             url: string;
         };
         /**
+         * @description The query string a vendor appends when it returns the browser.
+         *
+         *     Every field but `state` is optional because a refusal is a redirect too:
+         *     a user who closes the consent screen comes back with `error` and no
+         *     `code`, and that has to reach the return page as a problem rather than
+         *     as an extractor failure.
+         */
+        ProviderCallback: {
+            /** @description The single-use authorization code. */
+            code?: string | null;
+            /** @description The vendor's machine-readable refusal, when it refused. */
+            error?: string | null;
+            /** @description Its explanation. */
+            error_description?: string | null;
+            /** @description The `state` this control plane minted in the matching `start`. */
+            state: string;
+        };
+        /**
          * @description Provider-native credentials, tagged by the provider they open.
          *
          *     The tag *is* the provider: an account's kind is read off the variant
@@ -3421,6 +3621,53 @@ export interface components {
             host: components["schemas"]["Uuid"];
             /** @enum {string} */
             kind: "host";
+        };
+        /**
+         * @description One thing the signed-in account may link.
+         *
+         *     An Azure subscription or a Google project — the account holds many and
+         *     flyco provisions into exactly one, so the choice is the user's and this
+         *     is what they choose between.
+         */
+        ProviderOauthChoice: {
+            /** @description What the finish request names it by: a subscription id, a project id. */
+            id: string;
+            /** @description What the vendor calls it, which is what the user recognises. */
+            name: string;
+        };
+        /**
+         * @description Answer of `GET /v1/providers/{azure|gcp}/oauth/{attempt_id}`.
+         *
+         *     Two states rather than one nullable body, for the reason
+         *     [`CodexOauthPending`](crate::CodexOauthPending) is its own answer: a poll
+         *     that found nothing is a perfectly good `200` that says so, and the page
+         *     asks again.
+         */
+        ProviderOauthProgress: {
+            /** @enum {string} */
+            state: "pending";
+        } | {
+            /** @description The account that signed in, as the vendor names it. */
+            account: string;
+            /** @description What that account may link, in the vendor's own order. */
+            choices: components["schemas"]["ProviderOauthChoice"][];
+            /** @enum {string} */
+            state: "authorized";
+        };
+        /**
+         * @description Answer of `POST /v1/providers/{azure|gcp}/oauth/start`.
+         *
+         *     The browser is sent to [`authorize_url`](Self::authorize_url) and the
+         *     page keeps [`attempt_id`](Self::attempt_id) to poll with: the sign-in
+         *     finishes at the vendor and comes back through a public callback that
+         *     carries no flyco credential, so the attempt id is the only thing tying
+         *     the two halves together.
+         */
+        ProviderOauthStart: {
+            /** @description Names this sign-in for the poll and the finish that end it. */
+            attempt_id: components["schemas"]["Uuid"];
+            /** @description Where the browser approves the grant. */
+            authorize_url: string;
         };
         /**
          * @description How far a session's machine has got towards running an agent.
@@ -5739,6 +5986,271 @@ export interface operations {
                         actions: string[];
                         /** @description The policy document, exactly as it is to be pasted into IAM. */
                         document: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::azure_callback": {
+        parameters: {
+            query: {
+                code?: string | null;
+                error?: string | null;
+                error_description?: string | null;
+                state: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The browser is sent on to the flyco web app. */
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::provider_oauth::azure_start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Names this sign-in for the poll and the finish that end it. */
+                        attempt_id: components["schemas"]["Uuid"];
+                        /** @description Where the browser approves the grant. */
+                        authorize_url: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::azure_poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        state: "pending";
+                    } | {
+                        /** @description The account that signed in, as the vendor names it. */
+                        account: string;
+                        /** @description What that account may link, in the vendor's own order. */
+                        choices: components["schemas"]["ProviderOauthChoice"][];
+                        /** @enum {string} */
+                        state: "authorized";
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::azure_finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description The `OpenSSH` public key a machine's break-glass login is created
+                     *     with, exactly as [`ProviderCredentials::Azure`] carries it.
+                     */
+                    admin_ssh_public_key: string;
+                    /** @description Which of the authorized subscriptions to provision into. */
+                    subscription_id: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        host_id?: null | components["schemas"]["Uuid"];
+                        /** @description Identifier used to unlink the account. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Which provider it is. */
+                        kind: components["schemas"]["CloudProviderKind"];
+                        /**
+                         * @description Label supplied when it was linked.
+                         *
+                         *     For a machine the user owns this is the host's own label, kept in
+                         *     step by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so
+                         *     a rename that moved only one of them would leave the compute chip
+                         *     calling a machine something its card no longer does.
+                         */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When it was linked, seconds since the Unix epoch.
+                         */
+                        linked_at_unix: number;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::gcp_callback": {
+        parameters: {
+            query: {
+                code?: string | null;
+                error?: string | null;
+                error_description?: string | null;
+                state: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The browser is sent on to the flyco web app. */
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::provider_oauth::gcp_start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Names this sign-in for the poll and the finish that end it. */
+                        attempt_id: components["schemas"]["Uuid"];
+                        /** @description Where the browser approves the grant. */
+                        authorize_url: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::gcp_poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        state: "pending";
+                    } | {
+                        /** @description The account that signed in, as the vendor names it. */
+                        account: string;
+                        /** @description What that account may link, in the vendor's own order. */
+                        choices: components["schemas"]["ProviderOauthChoice"][];
+                        /** @enum {string} */
+                        state: "authorized";
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::gcp_finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Which of the authorized projects to provision into. */
+                    project_id: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        host_id?: null | components["schemas"]["Uuid"];
+                        /** @description Identifier used to unlink the account. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Which provider it is. */
+                        kind: components["schemas"]["CloudProviderKind"];
+                        /**
+                         * @description Label supplied when it was linked.
+                         *
+                         *     For a machine the user owns this is the host's own label, kept in
+                         *     step by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so
+                         *     a rename that moved only one of them would leave the compute chip
+                         *     calling a machine something its card no longer does.
+                         */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When it was linked, seconds since the Unix epoch.
+                         */
+                        linked_at_unix: number;
                     };
                 };
             };

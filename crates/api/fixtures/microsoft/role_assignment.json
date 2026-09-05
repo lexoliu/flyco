@@ -1,0 +1,11 @@
+{
+  "id": "/subscriptions/00000000-1111-4222-8333-444444444444/providers/Microsoft.Authorization/roleAssignments/dddddddd-eeee-4fff-8000-111111111111",
+  "type": "Microsoft.Authorization/roleAssignments",
+  "name": "dddddddd-eeee-4fff-8000-111111111111",
+  "properties": {
+    "roleDefinitionId": "/subscriptions/00000000-1111-4222-8333-444444444444/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c",
+    "principalId": "the-principal-object-id",
+    "principalType": "ServicePrincipal",
+    "scope": "/subscriptions/00000000-1111-4222-8333-444444444444"
+  }
+}

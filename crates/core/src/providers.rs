@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::id::{HostId, ProviderAccountId};
+use crate::id::{HostId, ProviderAccountId, ProviderOauthAttemptId};
 use crate::machine::CloudProviderKind;
 use crate::money::Usd;
 
@@ -160,6 +160,71 @@ pub struct AwsIamPolicy {
     /// Beside the document rather than only inside it, so a caller can list
     /// or count the permissions without parsing JSON back out of a string.
     pub actions: Vec<String>,
+}
+
+/// Answer of `POST /v1/providers/{azure|gcp}/oauth/start`.
+///
+/// The browser is sent to [`authorize_url`](Self::authorize_url) and the
+/// page keeps [`attempt_id`](Self::attempt_id) to poll with: the sign-in
+/// finishes at the vendor and comes back through a public callback that
+/// carries no flyco credential, so the attempt id is the only thing tying
+/// the two halves together.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProviderOauthStart {
+    /// Names this sign-in for the poll and the finish that end it.
+    pub attempt_id: ProviderOauthAttemptId,
+    /// Where the browser approves the grant.
+    pub authorize_url: String,
+}
+
+/// One thing the signed-in account may link.
+///
+/// An Azure subscription or a Google project — the account holds many and
+/// flyco provisions into exactly one, so the choice is the user's and this
+/// is what they choose between.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProviderOauthChoice {
+    /// What the finish request names it by: a subscription id, a project id.
+    pub id: String,
+    /// What the vendor calls it, which is what the user recognises.
+    pub name: String,
+}
+
+/// Answer of `GET /v1/providers/{azure|gcp}/oauth/{attempt_id}`.
+///
+/// Two states rather than one nullable body, for the reason
+/// [`CodexOauthPending`](crate::CodexOauthPending) is its own answer: a poll
+/// that found nothing is a perfectly good `200` that says so, and the page
+/// asks again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ProviderOauthProgress {
+    /// The browser has not come back from the vendor yet.
+    Pending,
+    /// The vendor said who signed in and what they may link.
+    Authorized {
+        /// The account that signed in, as the vendor names it.
+        account: String,
+        /// What that account may link, in the vendor's own order.
+        choices: Vec<ProviderOauthChoice>,
+    },
+}
+
+/// Request body of `POST /v1/providers/azure/oauth/{attempt_id}/finish`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FinishAzureOauth {
+    /// Which of the authorized subscriptions to provision into.
+    pub subscription_id: String,
+    /// The `OpenSSH` public key a machine's break-glass login is created
+    /// with, exactly as [`ProviderCredentials::Azure`] carries it.
+    pub admin_ssh_public_key: String,
+}
+
+/// Request body of `POST /v1/providers/gcp/oauth/{attempt_id}/finish`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FinishGcpOauth {
+    /// Which of the authorized projects to provision into.
+    pub project_id: String,
 }
 
 /// Request body of `POST /v1/providers/quickstart`.

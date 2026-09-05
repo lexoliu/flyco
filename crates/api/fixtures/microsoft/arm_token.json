@@ -1,0 +1,8 @@
+{
+  "token_type": "Bearer",
+  "scope": "https://management.azure.com/user_impersonation",
+  "expires_in": 3599,
+  "access_token": "the-arm-access-token",
+  "refresh_token": "the-refresh-token",
+  "id_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImZseWNvLWZpeHR1cmUifQ.eyJpc3MiOiJodHRwczovL2xvZ2luLm1pY3Jvc29mdG9ubGluZS5jb20vMTExMTExMTEtMjIyMi00MzMzLTg0NDQtNTU1NTU1NTU1NTU1L3YyLjAiLCJzdWIiOiJhLXN1YmplY3QiLCJ0aWQiOiIxMTExMTExMS0yMjIyLTQzMzMtODQ0NC01NTU1NTU1NTU1NTUiLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJtZUBsZXhvLmNvb2wiLCJuYW1lIjoiTGV4byBMaXUiLCJleHAiOjE3ODcwOTAwMDB9.Zmx5Y28tZml4dHVyZS1zaWduYXR1cmUtbm90LXZlcmlmaWVk"
+}

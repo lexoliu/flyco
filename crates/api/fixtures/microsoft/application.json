@@ -1,0 +1,6 @@
+{
+  "id": "the-application-object-id",
+  "appId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "displayName": "flyco",
+  "signInAudience": "AzureADMyOrg"
+}

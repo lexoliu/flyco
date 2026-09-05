@@ -42,6 +42,9 @@ http.workspace = true
 sha2.workspace = true
 url.workspace = true
 utoipa.workspace = true
+# The GUID a role assignment is addressed by: Azure creates one by `PUT`ting
+# to a name the caller mints, so a fresh v4 UUID is how one is created.
+uuid.workspace = true
 jwt-compact.workspace = true
 web-push-native.workspace = true
 serde_urlencoded = "0.7"

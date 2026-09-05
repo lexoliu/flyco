@@ -40,7 +40,10 @@ const COLLECTION_PLACEHOLDER: &str = "Vec";
 /// * `204` and `202` answers — a revocation, a delete, a command handed to a
 ///   session's daemon — carry a status and nothing else.
 /// * `oauth::callback` answers `303`: the body of a redirect is not what the
-///   caller reads.
+///   caller reads. So do `provider_oauth::azure_callback` and
+///   `provider_oauth::gcp_callback`, which additionally answer `303` when
+///   they *fail* — their caller is a browser mid-navigation, and a problem
+///   document rendered into a tab is a dead end.
 /// * `app::open_daemon_relay`, `app::open_client_relay` and
 ///   `app::open_host_relay` answer `101` with a WebSocket attached, which the
 ///   response model has no way to describe.
@@ -84,6 +87,8 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::memory::delete_memory_node",
     "flyco_api::oauth::callback",
     "flyco_api::provider_accounts::unlink_provider",
+    "flyco_api::provider_oauth::azure_callback",
+    "flyco_api::provider_oauth::gcp_callback",
     "flyco_api::push::unsubscribe_push",
     "flyco_api::skills::delete_skill",
     "flyco_api::webhooks::receive_github_webhook",

@@ -12,6 +12,7 @@ import AuthComplete from "../routes/AuthComplete";
 import Home from "../routes/Home";
 import Welcome from "../routes/Welcome";
 import { ConnectCompute, ConnectHarness } from "../routes/connect/Connect";
+import ConnectReturn from "../routes/connect/Return";
 import SessionDetail from "../routes/SessionDetail";
 import SettingsLayout from "../routes/settings/SettingsLayout";
 import AgentsSection from "../routes/settings/AgentsSection";
@@ -55,6 +56,7 @@ function renderAt(url: string, signedIn = true, seenWelcome = true) {
       <Route path="/welcome" component={Welcome} />
       <Route path="/connect/harness" component={ConnectHarness} />
       <Route path="/connect/compute" component={ConnectCompute} />
+      <Route path="/connect/return" component={ConnectReturn} />
       <Route path="/sessions/:id" component={SessionDetail} />
       <Route path="/settings" component={SettingsLayout}>
         <Route
@@ -244,6 +246,31 @@ describe("route smoke tests", () => {
     expect(
       await findByRole("heading", { level: 1, name: "Link Codex" }),
     ).toBeInTheDocument();
+  });
+
+  it("tells the tab a vendor sent back that flyco carries on elsewhere", async () => {
+    const { findByRole, getByText, queryByRole } = renderAt(
+      "/connect/return?provider=azure",
+    );
+    expect(
+      await findByRole("heading", { level: 1, name: "Signed in with Azure" }),
+    ).toBeInTheDocument();
+    expect(getByText(/You can close this tab/)).toBeInTheDocument();
+    // Nothing to press: this tab is not where the flow is.
+    expect(queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("names the problem when a vendor's consent could not be completed", async () => {
+    const { findByRole, getByText } = renderAt(
+      "/connect/return?provider=gcp&problem=google-rejected",
+    );
+    expect(
+      await findByRole("heading", {
+        level: 1,
+        name: "Google Cloud could not finish the sign-in",
+      }),
+    ).toBeInTheDocument();
+    expect(getByText("google-rejected")).toBeInTheDocument();
   });
 
   it("renders /connect/compute as stage C on its own", async () => {

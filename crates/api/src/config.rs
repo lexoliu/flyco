@@ -14,6 +14,7 @@ use url::Url;
 use web_push_native::p256::ecdsa::SigningKey;
 
 use crate::crypto::{KEY_LEN, TokenCipher};
+use crate::provider_oauth::{AZURE_CALLBACK_PATH, GCP_CALLBACK_PATH};
 
 /// Names of the bindings the control plane reads.
 ///
@@ -38,6 +39,21 @@ pub mod var {
     /// configuration rather than a secret, and a deployment presenting its
     /// own registered client sets this one variable.
     pub const CODEX_OAUTH_CLIENT_ID: &str = "FLYCO_CODEX_OAUTH_CLIENT_ID";
+    /// Microsoft OAuth application client id. Public; lives in
+    /// `[cloudflare.vars]`.
+    ///
+    /// Unlike the harness clients this one is a *confidential* client:
+    /// "Sign in with Microsoft" is a redirect flow with a callback flyco
+    /// serves, so Microsoft issues a client secret and the id alone is not
+    /// enough to redeem anything.
+    pub const AZURE_OAUTH_CLIENT_ID: &str = "FLYCO_AZURE_OAUTH_CLIENT_ID";
+    /// Microsoft OAuth application client secret. Secret;
+    /// `wrangler secret put`.
+    pub const AZURE_OAUTH_CLIENT_SECRET: &str = "FLYCO_AZURE_OAUTH_CLIENT_SECRET";
+    /// Google OAuth client id. Public; lives in `[cloudflare.vars]`.
+    pub const GOOGLE_OAUTH_CLIENT_ID: &str = "FLYCO_GOOGLE_OAUTH_CLIENT_ID";
+    /// Google OAuth client secret. Secret; `wrangler secret put`.
+    pub const GOOGLE_OAUTH_CLIENT_SECRET: &str = "FLYCO_GOOGLE_OAUTH_CLIENT_SECRET";
     /// Absolute URL GitHub redirects back to. Public.
     pub const REDIRECT_URI: &str = "FLYCO_REDIRECT_URI";
     /// AES-256 key for sealing third-party tokens, hex-encoded. Secret.
@@ -106,7 +122,13 @@ pub struct ApiConfig {
     github_client_secret: String,
     claude_oauth_client_id: String,
     codex_oauth_client_id: String,
+    azure_oauth_client_id: String,
+    azure_oauth_client_secret: String,
+    google_oauth_client_id: String,
+    google_oauth_client_secret: String,
     redirect_uri: Url,
+    azure_oauth_redirect_uri: Url,
+    gcp_oauth_redirect_uri: Url,
     encryption_key: [u8; KEY_LEN],
     vapid: VapidConfig,
     github_webhook_secret: String,
@@ -135,6 +157,8 @@ impl core::fmt::Debug for ApiConfig {
             .field("github_client_id", &self.github_client_id)
             .field("claude_oauth_client_id", &self.claude_oauth_client_id)
             .field("codex_oauth_client_id", &self.codex_oauth_client_id)
+            .field("azure_oauth_client_id", &self.azure_oauth_client_id)
+            .field("google_oauth_client_id", &self.google_oauth_client_id)
             .field("redirect_uri", &self.redirect_uri.as_str())
             .finish_non_exhaustive()
     }
@@ -154,6 +178,14 @@ pub struct ApiSettings {
     pub claude_oauth_client_id: String,
     /// [`var::CODEX_OAUTH_CLIENT_ID`].
     pub codex_oauth_client_id: String,
+    /// [`var::AZURE_OAUTH_CLIENT_ID`].
+    pub azure_oauth_client_id: String,
+    /// [`var::AZURE_OAUTH_CLIENT_SECRET`].
+    pub azure_oauth_client_secret: String,
+    /// [`var::GOOGLE_OAUTH_CLIENT_ID`].
+    pub google_oauth_client_id: String,
+    /// [`var::GOOGLE_OAUTH_CLIENT_SECRET`].
+    pub google_oauth_client_secret: String,
     /// [`var::REDIRECT_URI`].
     pub redirect_uri: String,
     /// [`var::ENCRYPTION_KEY`], hex-encoded.
@@ -172,6 +204,8 @@ impl core::fmt::Debug for ApiSettings {
             .field("github_client_id", &self.github_client_id)
             .field("claude_oauth_client_id", &self.claude_oauth_client_id)
             .field("codex_oauth_client_id", &self.codex_oauth_client_id)
+            .field("azure_oauth_client_id", &self.azure_oauth_client_id)
+            .field("google_oauth_client_id", &self.google_oauth_client_id)
             .field("redirect_uri", &self.redirect_uri)
             .finish_non_exhaustive()
     }
@@ -192,11 +226,29 @@ impl ApiConfig {
             reject_empty(var::CLAUDE_OAUTH_CLIENT_ID, settings.claude_oauth_client_id)?;
         let codex_oauth_client_id =
             reject_empty(var::CODEX_OAUTH_CLIENT_ID, settings.codex_oauth_client_id)?;
+        let azure_oauth_client_id =
+            reject_empty(var::AZURE_OAUTH_CLIENT_ID, settings.azure_oauth_client_id)?;
+        let azure_oauth_client_secret = reject_empty(
+            var::AZURE_OAUTH_CLIENT_SECRET,
+            settings.azure_oauth_client_secret,
+        )?;
+        let google_oauth_client_id =
+            reject_empty(var::GOOGLE_OAUTH_CLIENT_ID, settings.google_oauth_client_id)?;
+        let google_oauth_client_secret = reject_empty(
+            var::GOOGLE_OAUTH_CLIENT_SECRET,
+            settings.google_oauth_client_secret,
+        )?;
         let redirect_uri =
             Url::parse(&settings.redirect_uri).map_err(|source| ConfigError::NotAUrl {
                 name: var::REDIRECT_URI,
                 source,
             })?;
+        // Derived from the one configured origin rather than configured
+        // twice: a callback URI that named a different host would be a
+        // sign-in that never comes back, and there is nothing a second
+        // variable could say that this one does not.
+        let azure_oauth_redirect_uri = callback_uri(&redirect_uri, AZURE_CALLBACK_PATH);
+        let gcp_oauth_redirect_uri = callback_uri(&redirect_uri, GCP_CALLBACK_PATH);
 
         let mut encryption_key = [0_u8; KEY_LEN];
         hex::decode_to_slice(&settings.encryption_key_hex, &mut encryption_key)
@@ -225,7 +277,13 @@ impl ApiConfig {
             github_client_secret: settings.github_client_secret,
             claude_oauth_client_id,
             codex_oauth_client_id,
+            azure_oauth_client_id,
+            azure_oauth_client_secret,
+            google_oauth_client_id,
+            google_oauth_client_secret,
             redirect_uri,
+            azure_oauth_redirect_uri,
+            gcp_oauth_redirect_uri,
             encryption_key,
         })
     }
@@ -272,6 +330,10 @@ impl ApiConfig {
             github_client_secret: read(var::GITHUB_CLIENT_SECRET)?,
             claude_oauth_client_id: read(var::CLAUDE_OAUTH_CLIENT_ID)?,
             codex_oauth_client_id: read(var::CODEX_OAUTH_CLIENT_ID)?,
+            azure_oauth_client_id: read(var::AZURE_OAUTH_CLIENT_ID)?,
+            azure_oauth_client_secret: read(var::AZURE_OAUTH_CLIENT_SECRET)?,
+            google_oauth_client_id: read(var::GOOGLE_OAUTH_CLIENT_ID)?,
+            google_oauth_client_secret: read(var::GOOGLE_OAUTH_CLIENT_SECRET)?,
             redirect_uri: read(var::REDIRECT_URI)?,
             encryption_key_hex: read(var::ENCRYPTION_KEY)?,
             vapid_private_key: read(var::VAPID_PRIVATE_KEY)?,
@@ -315,6 +377,42 @@ impl ApiConfig {
     #[must_use]
     pub fn codex_oauth_client_id(&self) -> &str {
         &self.codex_oauth_client_id
+    }
+
+    /// Microsoft OAuth client id this deployment presents.
+    #[must_use]
+    pub fn azure_oauth_client_id(&self) -> &str {
+        &self.azure_oauth_client_id
+    }
+
+    /// Microsoft OAuth client secret this deployment presents.
+    #[must_use]
+    pub fn azure_oauth_client_secret(&self) -> &str {
+        &self.azure_oauth_client_secret
+    }
+
+    /// Google OAuth client id this deployment presents.
+    #[must_use]
+    pub fn google_oauth_client_id(&self) -> &str {
+        &self.google_oauth_client_id
+    }
+
+    /// Google OAuth client secret this deployment presents.
+    #[must_use]
+    pub fn google_oauth_client_secret(&self) -> &str {
+        &self.google_oauth_client_secret
+    }
+
+    /// Absolute URL Microsoft redirects the browser back to.
+    #[must_use]
+    pub const fn azure_oauth_redirect_uri(&self) -> &Url {
+        &self.azure_oauth_redirect_uri
+    }
+
+    /// Absolute URL Google redirects the browser back to.
+    #[must_use]
+    pub const fn gcp_oauth_redirect_uri(&self) -> &Url {
+        &self.gcp_oauth_redirect_uri
     }
 
     /// Absolute URL GitHub redirects the browser back to.
@@ -378,6 +476,18 @@ fn read_var(name: &'static str) -> Result<String, ConfigError> {
 fn read_var(name: &'static str) -> Result<String, ConfigError> {
     let value = std::env::var(name).map_err(|_| ConfigError::Missing(name))?;
     reject_empty(name, value)
+}
+
+/// One of this deployment's own callback URIs, on the configured origin.
+///
+/// # Panics
+///
+/// Panics if `path` is not rooted, which would mean one of this crate's own
+/// route constants was edited into a relative path.
+fn callback_uri(origin: &Url, path: &str) -> Url {
+    origin
+        .join(path)
+        .expect("a rooted path always resolves against an absolute redirect URI")
 }
 
 fn reject_empty(name: &'static str, value: String) -> Result<String, ConfigError> {
@@ -452,6 +562,48 @@ mod tests {
             error,
             ConfigError::Missing(var::CODEX_OAUTH_CLIENT_ID)
         ));
+    }
+
+    #[test]
+    fn an_empty_microsoft_client_secret_is_rejected() {
+        let error = ApiConfig::new(super::ApiSettings {
+            azure_oauth_client_secret: String::new(),
+            ..test_settings()
+        })
+        .expect_err("a deployment cannot run the Microsoft flow without a client secret");
+        assert!(matches!(
+            error,
+            ConfigError::Missing(var::AZURE_OAUTH_CLIENT_SECRET)
+        ));
+    }
+
+    #[test]
+    fn an_empty_google_client_id_is_rejected() {
+        let error = ApiConfig::new(super::ApiSettings {
+            google_oauth_client_id: String::new(),
+            ..test_settings()
+        })
+        .expect_err("a deployment cannot run the Google flow without a client id");
+        assert!(matches!(
+            error,
+            ConfigError::Missing(var::GOOGLE_OAUTH_CLIENT_ID)
+        ));
+    }
+
+    #[test]
+    fn the_cloud_callbacks_share_the_configured_origin() {
+        let config = test_config();
+        let origin = config.redirect_uri().origin();
+        assert_eq!(config.azure_oauth_redirect_uri().origin(), origin);
+        assert_eq!(
+            config.azure_oauth_redirect_uri().path(),
+            "/v1/providers/azure/oauth/callback"
+        );
+        assert_eq!(config.gcp_oauth_redirect_uri().origin(), origin);
+        assert_eq!(
+            config.gcp_oauth_redirect_uri().path(),
+            "/v1/providers/gcp/oauth/callback"
+        );
     }
 
     #[test]

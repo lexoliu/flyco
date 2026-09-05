@@ -1,0 +1,18 @@
+{
+  "projects": [
+    {
+      "projectNumber": "482911037465",
+      "projectId": "flyco-dev-4821",
+      "lifecycleState": "ACTIVE",
+      "name": "flyco dev",
+      "createTime": "2026-02-11T09:14:22.000Z"
+    },
+    {
+      "projectNumber": "119384756201",
+      "projectId": "an-old-project-1193",
+      "lifecycleState": "DELETE_REQUESTED",
+      "name": "an old project",
+      "createTime": "2024-05-02T11:02:00.000Z"
+    }
+  ]
+}

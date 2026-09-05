@@ -18,6 +18,8 @@
 #   skyzen secret set FLYCO_ENCRYPTION_KEY          # 32 bytes, hex-encoded
 #   skyzen secret set FLYCO_VAPID_PRIVATE_KEY       # raw P-256 base64url
 #   skyzen secret set FLYCO_GITHUB_WEBHOOK_SECRET
+#   skyzen secret set FLYCO_AZURE_OAUTH_CLIENT_SECRET
+#   skyzen secret set FLYCO_GOOGLE_OAUTH_CLIENT_SECRET
 # FLYCO_GITHUB_CLIENT_ID is shared across dev/nightly/production: one GitHub
 # OAuth app with a callback URI per hostname.
 #
@@ -115,6 +117,15 @@ FLYCO_CLAUDE_OAUTH_CLIENT_ID = "${FLYCO_CLAUDE_OAUTH_CLIENT_ID}"
 # secret for it. `.env.example` carries the default — the Codex CLI's own
 # client id.
 FLYCO_CODEX_OAUTH_CLIENT_ID = "${FLYCO_CODEX_OAUTH_CLIENT_ID}"
+# The application "Sign in with Microsoft" presents. Unlike the harness
+# clients this one is confidential — the flow is a redirect with a callback
+# flyco serves, so Microsoft issues a client secret, and only the id is a
+# var. Register the callback as
+# `<FLYCO_REDIRECT_URI origin>/v1/providers/azure/oauth/callback`.
+FLYCO_AZURE_OAUTH_CLIENT_ID = "${FLYCO_AZURE_OAUTH_CLIENT_ID}"
+# The client "Sign in with Google" presents, with its callback at
+# `<FLYCO_REDIRECT_URI origin>/v1/providers/gcp/oauth/callback`.
+FLYCO_GOOGLE_OAUTH_CLIENT_ID = "${FLYCO_GOOGLE_OAUTH_CLIENT_ID}"
 
 # wrangler 4 custom hostname. `route` is the older workers-route form and
 # does not create DNS; this does. skyzen-cli 0.2.1 does not model

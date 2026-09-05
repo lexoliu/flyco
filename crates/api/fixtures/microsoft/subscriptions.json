@@ -1,0 +1,22 @@
+{
+  "value": [
+    {
+      "id": "/subscriptions/00000000-1111-4222-8333-444444444444",
+      "subscriptionId": "00000000-1111-4222-8333-444444444444",
+      "displayName": "Visual Studio Enterprise",
+      "state": "Enabled",
+      "tenantId": "11111111-2222-4333-8444-555555555555"
+    },
+    {
+      "id": "/subscriptions/99999999-8888-4777-8666-555555555555",
+      "subscriptionId": "99999999-8888-4777-8666-555555555555",
+      "displayName": "An expired trial",
+      "state": "Disabled",
+      "tenantId": "11111111-2222-4333-8444-555555555555"
+    }
+  ],
+  "count": {
+    "type": "Total",
+    "value": 2
+  }
+}

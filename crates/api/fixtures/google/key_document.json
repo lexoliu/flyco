@@ -1,0 +1,9 @@
+{
+  "type": "service_account",
+  "project_id": "flyco-dev-4821",
+  "private_key_id": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nZmx5Y28tZml4dHVyZS1rZXk=\n-----END PRIVATE KEY-----\n",
+  "client_email": "flyco@flyco-dev-4821.iam.gserviceaccount.com",
+  "client_id": "108273645019283746501",
+  "token_uri": "https://oauth2.googleapis.com/token"
+}
