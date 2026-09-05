@@ -31,6 +31,9 @@ esac
 case "$(pwd)" in
 *unmounted*)
 	mounted='{"type":"mcp_servers","servers":[{"name":"flyco","status":"connected","state":"connected","tools":["budget_status","machine_resize"]}]}'
+	# A CLI that will not mount something says why on stderr and nowhere
+	# else, which is the half flyco cannot work out for itself.
+	echo 'Warning: MCP server blocked by enterprise policy: flyco' >&2
 	;;
 *)
 	mounted='{"type":"mcp_servers","servers":[{"name":"flyco","status":"connected","state":"connected","tools":["machine_status","budget_status","machine_resize"]}]}'

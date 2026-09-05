@@ -162,6 +162,12 @@ async fn a_harness_that_came_up_without_flycos_tools_fails_the_session() {
         error.contains("does not expose"),
         "the refusal must say the server answered but not with the tools: {error}"
     );
+    // And with the CLI's own account of it: flyco knows *that* the server
+    // did not come up the way it asked, and only the CLI knows why.
+    assert!(
+        error.contains("blocked by enterprise policy"),
+        "the refusal must quote what the agent said about it: {error}"
+    );
     assert!(
         outputs.recv().await.is_none(),
         "a fatal ends the session rather than pausing it"
