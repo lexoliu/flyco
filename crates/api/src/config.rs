@@ -318,9 +318,9 @@ impl ApiConfig {
     #[cfg(target_arch = "wasm32")]
     pub fn from_worker_env(env: &skyzen::runtime::wasm::Env) -> Result<Self, ConfigError> {
         Self::read_with(|name| {
-            let value = skyzen_cloudflare::required_secret(env, name)
+            let value = skyzen_cloudflare::CfSecret::classic(env, name)
                 .map_err(|_| ConfigError::Missing(name))?;
-            reject_empty(name, value)
+            reject_empty(name, value.expose().to_owned())
         })
     }
 
@@ -474,8 +474,8 @@ impl VapidConfig {
 fn read_var(name: &'static str) -> Result<String, ConfigError> {
     let env = skyzen::runtime::wasm::current_env().ok_or(ConfigError::NoEnvironment)?;
     let value =
-        skyzen_cloudflare::required_secret(&env, name).map_err(|_| ConfigError::Missing(name))?;
-    reject_empty(name, value)
+        skyzen_cloudflare::CfSecret::classic(&env, name).map_err(|_| ConfigError::Missing(name))?;
+    reject_empty(name, value.expose().to_owned())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
