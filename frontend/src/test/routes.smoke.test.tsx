@@ -336,6 +336,40 @@ describe("route smoke tests", () => {
     expect(await findByText("Reserving a machine on AWS")).toBeInTheDocument();
   });
 
+  it("holds the timeline's place over a prompt the queue has not answered yet", async () => {
+    // The prompt reaches the room before the queue reaches the job, so
+    // the first thing a new session's transcript holds is the user's own
+    // message and nothing about the machine. The build is still the story
+    // of that page, and it must not go blank between the two.
+    const base = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      if (!/^\/v1\/sessions\/[^/]+\/events$/.test(url.pathname)) {
+        return base!(input, init);
+      }
+      return new Response(
+        JSON.stringify({
+          events: [
+            {
+              seq: 1,
+              at_unix: 1_800_000_000,
+              event: { type: "user_message", text: "Audit the relay for dropped frames" },
+            },
+          ],
+          more: false,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    const { findByText, findByLabelText, queryByText } = renderAt("/sessions/abc-123");
+
+    expect(await findByLabelText("Provisioning")).toBeInTheDocument();
+    expect(await findByText("Reserving a machine on AWS")).toBeInTheDocument();
+    expect(
+      queryByText("Your task is queued and will start as soon as the machine is ready."),
+    ).not.toBeInTheDocument();
+  });
+
   it("asks a running session with no events for a message", async () => {
     const base = vi.mocked(fetch).getMockImplementation();
     vi.mocked(fetch).mockImplementation(async (input, init) => {

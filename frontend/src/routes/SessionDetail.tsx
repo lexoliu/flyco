@@ -121,6 +121,20 @@ export default function SessionDetail() {
     return current?.state === "failed" ? current.last_active_unix : null;
   });
 
+  /**
+   * Whether a machine is being built and the room has not yet said so.
+   *
+   * The prompt reaches the room before the queue reaches the job, so for
+   * the first seconds the transcript holds the user's message and nothing
+   * else; a page that showed the timeline only over an empty transcript
+   * went blank exactly then.
+   */
+  const awaitingFirstStage = createMemo(
+    () =>
+      session()?.state === "provisioning" &&
+      !transcript().some((item) => item.kind === "provisioning"),
+  );
+
   const transcript = createMemo(() => foldTranscript(relay.events()));
   const waiting = createMemo(() => pendingApprovals(transcript()));
   const signals = createMemo(() => liveSignalsFrom(relay.events()));
@@ -551,22 +565,10 @@ export default function SessionDetail() {
             when={transcript().length > 0}
             fallback={
               <Switch>
-                <Match when={session()?.state === "provisioning" && session()}>
-                  {(current) => (
-                    <>
-                      <ProvisioningTimeline
-                        steps={[{ stage: "reserving", atUnix: current().created_at_unix }]}
-                        recovery={status()?.status === "migrating"}
-                        repo={current().repo}
-                        provider={providerLabel()}
-                        now={now()}
-                        failedAtUnix={failedAtUnix()}
-                      />
-                      <p class={styles.empty}>
-                        Your task is queued and will start as soon as the machine is ready.
-                      </p>
-                    </>
-                  )}
+                <Match when={session()?.state === "provisioning"}>
+                  <p class={styles.empty}>
+                    Your task is queued and will start as soon as the machine is ready.
+                  </p>
                 </Match>
                 <Match when={session()?.state === "active"}>
                   <p class={styles.empty}>
@@ -594,6 +596,27 @@ export default function SessionDetail() {
               now={now()}
               failedAtUnix={failedAtUnix()}
             />
+          </Show>
+
+          {/*
+            Until the queue announces its first stage, the page holds the
+            timeline's place from the one fact it has — when the session was
+            opened — whether the transcript is empty or already carries the
+            prompt the session was opened with. The first `reserving` event
+            takes over, in the same place, without the page having gone
+            blank in between.
+          */}
+          <Show when={awaitingFirstStage() && session()}>
+            {(current) => (
+              <ProvisioningTimeline
+                steps={[{ stage: "reserving", atUnix: current().created_at_unix }]}
+                recovery={status()?.status === "migrating"}
+                repo={current().repo}
+                provider={providerLabel()}
+                now={now()}
+                failedAtUnix={failedAtUnix()}
+              />
+            )}
           </Show>
 
           <div class={styles.composer}>
