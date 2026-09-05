@@ -1496,6 +1496,7 @@ dependencies = [
  "tracing-web",
  "url",
  "utoipa",
+ "uuid",
  "wasm-bindgen",
  "web-push-native",
  "zenwave",

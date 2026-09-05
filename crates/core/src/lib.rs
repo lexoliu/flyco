@@ -62,8 +62,8 @@ pub use host::{
 pub use id::{
     ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, ClaudeOauthAttemptId, CodexOauthAttemptId,
     EnrollmentTokenId, HarnessAccountId, HarnessObservationId, HostId, Id, MachineId, McpServerId,
-    MemoryNodeId, ProviderAccountId, PushSubscriptionId, SessionId, ShellRunId, SkillId,
-    SpendEventId, UserId, WorkdirRequestId,
+    MemoryNodeId, ProviderAccountId, ProviderOauthAttemptId, PushSubscriptionId, SessionId,
+    ShellRunId, SkillId, SpendEventId, UserId, WorkdirRequestId,
 };
 pub use machine::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, CloudProviderKind,
@@ -76,8 +76,9 @@ pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};
 pub use money::Usd;
 pub use problem::{Problem, ProblemExtensions};
 pub use providers::{
-    AwsIamPolicy, LinkProvider, ProviderAccountView, ProviderBonusHint, ProviderCredentials,
-    QuickstartAnswers,
+    AwsIamPolicy, FinishAzureOauth, FinishGcpOauth, LinkProvider, ProviderAccountView,
+    ProviderBonusHint, ProviderCredentials, ProviderOauthChoice, ProviderOauthProgress,
+    ProviderOauthStart, QuickstartAnswers,
 };
 pub use push::{PushKeys, PushSubscription, PushSubscriptionView, VapidPublicKey};
 pub use release::{PublishedBinary, PublishedObject};

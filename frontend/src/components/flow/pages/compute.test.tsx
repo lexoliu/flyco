@@ -5,7 +5,7 @@
  * card at the end is what settings will show. The credit page is asserted
  * both present and absent, since its existence is the quickstart's answer.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, waitFor } from "@solidjs/testing-library";
 import type {
   AwsIamPolicy,
@@ -113,6 +113,16 @@ async function answerBonus(
   fireEvent.click(primary(flow.container));
 }
 
+/** Leaves the consent road for the vendor's terminal, by its quiet link. */
+async function useCloudShell(
+  flow: Awaited<ReturnType<typeof choosePlace>>,
+): Promise<void> {
+  await flow.findByRole("heading", { level: 1, name: /^Sign in with/ });
+  fireEvent.click(
+    flow.getByRole("button", { name: "Use Cloud Shell instead" }),
+  );
+}
+
 describe("the choice", () => {
   it("offers the four places docs/ux.md §7 names, as radios", async () => {
     const { findByRole, getByRole } = renderFlow(["compute"]);
@@ -158,6 +168,7 @@ describe("Azure", () => {
     );
     expect(primary(container)).toHaveTextContent("Next");
     fireEvent.click(primary(container));
+    await useCloudShell(flow);
 
     await findByRole("heading", {
       level: 1,
@@ -234,6 +245,7 @@ describe("Azure", () => {
     const flow = await choosePlace(/Azure/);
     const { onDone, container, findByRole, getByRole, getByLabelText } = flow;
     await answerBonus(flow, "Azure", { newcomer: false, student: false });
+    await useCloudShell(flow);
 
     // Nothing matched: no credit page, straight to the command.
     await findByRole("heading", {
@@ -290,6 +302,7 @@ describe("Azure", () => {
     const flow = await choosePlace(/Azure/);
     const { container, findByRole, getByLabelText, getByRole } = flow;
     await answerBonus(flow, "Azure", { newcomer: false, student: false });
+    await useCloudShell(flow);
     await findByRole("heading", {
       level: 1,
       name: "Run this in Azure Cloud Shell",
@@ -436,6 +449,7 @@ describe("Google Cloud", () => {
       getByText,
     } = flow;
     await answerBonus(flow, "Google Cloud", { newcomer: false, student: true });
+    await useCloudShell(flow);
 
     await findByRole("heading", {
       level: 1,
@@ -561,5 +575,185 @@ describe("Your own machine", () => {
     ).toBeInTheDocument();
     expect(primary(container)).toHaveTextContent("Mint a new command");
     expect(primary(container)).toBeEnabled();
+  });
+});
+
+describe("the consent road", () => {
+  const CONSENT_AZURE = {
+    state: "authorized",
+    account: "me@lexo.cool",
+    choices: [
+      { id: "0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e", name: "Pay-As-You-Go" },
+      { id: "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f", name: "Visual Studio" },
+    ],
+  };
+
+  /** The quickstart matched nothing, so no credit page comes between the questions and the sign-in. */
+  function noProgrammes(): void {
+    route(
+      (path, method) =>
+        method === "POST" && path === "/v1/providers/quickstart",
+      () => json([]),
+    );
+  }
+
+  /** Opens the vendor's page and answers the polls: pending once, then the consent. */
+  function consentComesBack(cloud: "azure" | "gcp", consent: unknown) {
+    noProgrammes();
+    let polls = 0;
+    route(
+      (path, method) =>
+        (method === "POST" && path === `/v1/providers/${cloud}/oauth/start`) ||
+        (method === "GET" && path === `/v1/providers/${cloud}/oauth/attempt-1`),
+      (init) =>
+        init?.method === "POST"
+          ? json({
+              attempt_id: "attempt-1",
+              authorize_url: `https://consent.${cloud}.invalid/authorize`,
+            })
+          : json(++polls === 1 ? { state: "pending" } : consent),
+    );
+  }
+
+  it("signs in with Microsoft in a new tab, waits, asks which subscription, then the key, and links", async () => {
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    consentComesBack("azure", CONSENT_AZURE);
+    route(
+      (path, method) =>
+        method === "POST" &&
+        path === "/v1/providers/azure/oauth/attempt-1/finish",
+      () => json(linkedAccount("azure", "Pay-As-You-Go"), 201),
+    );
+    const flow = await choosePlace(/Azure/);
+    const { container, findByRole, findByText, getByRole, onDone } = flow;
+    await answerBonus(flow, "Azure", { newcomer: false, student: false });
+
+    await findByRole("heading", { level: 1, name: "Sign in with Microsoft" });
+    expect(primary(container)).toHaveTextContent("Sign in with Microsoft");
+    fireEvent.click(primary(container));
+    expect(
+      await findByText(/Waiting for you to finish in the other tab/),
+    ).toBeInTheDocument();
+    expect(opened).toHaveBeenCalledWith(
+      "https://consent.azure.invalid/authorize",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(primary(container)).toBeDisabled();
+
+    // The consent came back on the second poll: the choice page, by itself.
+    await findByRole(
+      "heading",
+      { level: 1, name: "Which subscription?" },
+      { timeout: 6000 },
+    );
+    expect(await findByText(/Signed in as/)).toHaveTextContent("me@lexo.cool");
+    expect(primary(container)).toBeDisabled();
+    fireEvent.click(getByRole("radio", { name: /Visual Studio/ }));
+    await waitFor(() => expect(primary(container)).toBeEnabled());
+    fireEvent.click(primary(container));
+
+    await findByRole("heading", {
+      level: 1,
+      name: "Save the machine's admin SSH key",
+    });
+    await waitFor(() => expect(primary(container)).toBeEnabled());
+    expect(primary(container)).toHaveTextContent("Link Azure");
+    fireEvent.click(primary(container));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    const finish = postedTo("/v1/providers/azure/oauth/attempt-1/finish") as {
+      subscription_id: string;
+      admin_ssh_public_key: string;
+    };
+    expect(finish.subscription_id).toBe("1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f");
+    expect(finish.admin_ssh_public_key).toMatch(/^ssh-ed25519 /);
+  });
+
+  it("signs in with Google, asks which project, and links from that page", async () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
+    consentComesBack("gcp", {
+      state: "authorized",
+      account: "me@lexo.cool",
+      choices: [{ id: "flyco-dev-1234", name: "flyco dev" }],
+    });
+    route(
+      (path, method) =>
+        method === "POST" &&
+        path === "/v1/providers/gcp/oauth/attempt-1/finish",
+      () => json(linkedAccount("gcp", "flyco-dev-1234"), 201),
+    );
+    const flow = await choosePlace(/Google Cloud/);
+    const { container, findByRole, getByRole, onDone } = flow;
+    await answerBonus(flow, "Google Cloud", {
+      newcomer: false,
+      student: false,
+    });
+
+    await findByRole("heading", { level: 1, name: "Sign in with Google" });
+    fireEvent.click(primary(container));
+    await findByRole(
+      "heading",
+      { level: 1, name: "Which project?" },
+      { timeout: 6000 },
+    );
+    fireEvent.click(getByRole("radio", { name: /flyco dev/ }));
+    await waitFor(() =>
+      expect(primary(container)).toHaveTextContent("Link Google Cloud"),
+    );
+    fireEvent.click(primary(container));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(postedTo("/v1/providers/gcp/oauth/attempt-1/finish")).toEqual({
+      project_id: "flyco-dev-1234",
+    });
+  });
+
+  it("turns a consent the control plane lost into Try again, on the same page", async () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
+    noProgrammes();
+    route(
+      (path, method) =>
+        (method === "POST" && path === "/v1/providers/azure/oauth/start") ||
+        (method === "GET" && path === "/v1/providers/azure/oauth/attempt-1"),
+      (init) =>
+        init?.method === "POST"
+          ? json({
+              attempt_id: "attempt-1",
+              authorize_url: "https://consent.azure.invalid/a",
+            })
+          : problem(
+              404,
+              "provider-oauth-attempt-expired",
+              "That sign-in has expired.",
+            ),
+    );
+    const flow = await choosePlace(/Azure/);
+    const { container, findByRole } = flow;
+    await answerBonus(flow, "Azure", { newcomer: false, student: false });
+    await findByRole("heading", { level: 1, name: "Sign in with Microsoft" });
+    fireEvent.click(primary(container));
+
+    expect(await findByRole("alert", {}, { timeout: 6000 })).toHaveTextContent(
+      "That sign-in has expired.",
+    );
+    expect(primary(container)).toHaveTextContent("Try again");
+    expect(primary(container)).toBeEnabled();
+  });
+
+  it("keeps the vendor's terminal behind a quiet link", async () => {
+    noProgrammes();
+    const flow = await choosePlace(/Google Cloud/);
+    const { findByRole, getByRole } = flow;
+    await answerBonus(flow, "Google Cloud", {
+      newcomer: false,
+      student: false,
+    });
+    await findByRole("heading", { level: 1, name: "Sign in with Google" });
+    fireEvent.click(getByRole("button", { name: "Use Cloud Shell instead" }));
+    await findByRole("heading", {
+      level: 1,
+      name: "Run this in Google Cloud Shell",
+    });
   });
 });

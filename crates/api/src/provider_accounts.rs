@@ -15,7 +15,6 @@ use flyco_core::{
     QuickstartAnswers, UserId,
 };
 use flyco_provider::aws::iam;
-use flyco_provider::azure::RESOURCE_GROUP;
 use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
@@ -25,6 +24,7 @@ use skyzen_services::Db;
 
 use crate::bonuses;
 use crate::clock::now_unix;
+use crate::clouds::{CloudLink as _, Clouds};
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::path_id;
@@ -111,141 +111,35 @@ async fn list(db: &Db, user: UserId) -> Result<Vec<ProviderAccountView>, ApiErro
 async fn link_provider(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(clouds): State<Clouds>,
     Json(request): Json<LinkProvider>,
     db: Db,
 ) -> Outcome<Created<Json<ProviderAccountView>>> {
-    link(&db, &config, user.id, request)
+    link(&db, &config, &clouds, user.id, request)
         .await
         .map(|view| Created(Json(view)))
         .into()
 }
 
-/// Proves the credentials work before storing them.
+/// Links one account: prove the credentials, prepare what flyco owns inside
+/// the account, seal, store.
 ///
-/// A credential that only fails at the first provision strands a session
-/// half-created, so the check happens where the mistake was made. Each
-/// provider is asked for the cheapest call that exercises the whole
-/// credential and creates nothing:
+/// The one store path, shared by `POST /v1/providers` and by both
+/// "Sign in with…" flows, so validation and storage stay one rule rather
+/// than three that drift.
 ///
-/// * **Azure** — nothing here. Linking an Azure subscription creates the
-///   resource group flyco owns inside it, and that write is a stronger check
-///   than any read: a token proves the client secret is right, while the
-///   `PUT` proves the principal is also scoped widely enough to be useful.
-///   See [`provision_azure_workspace`].
-/// * **AWS** — `sts:GetCallerIdentity`, which no IAM policy can deny, costs
-///   nothing, and answers with the account the key opens.
-/// * **GCP** — a token mint, which is the whole credential: a service
-///   account proves itself by signing an assertion with its private key and
-///   having Google check it.
+/// # Errors
 ///
-/// None of them proves the credential may *provision*: what a policy grants
-/// is only knowable by trying, and a link-time simulation would be a second,
-/// weaker opinion about a question the first provision answers exactly.
-///
-/// A machine the user owns is not linkable here at all: it is enrolled, and
-/// enrolling is what proves it exists.
-async fn verify(credentials: &ProviderCredentials) -> Result<(), ApiError> {
-    match credentials {
-        // Azure is checked by [`provision_azure_workspace`] instead, which
-        // has to run anyway and proves strictly more: a token proves the
-        // secret is right, and creating the resource group proves the
-        // principal is scoped widely enough to be useful.
-        ProviderCredentials::Azure { .. } => Ok(()),
-        // A machine somebody owns is linked by *enrolling* it, which is
-        // what mints its token and proves it answers. There is nothing to
-        // check here because there is nothing a caller could present: the
-        // host id in these credentials is written by
-        // `POST /v1/hosts/enroll`, never by a request to this route.
-        ProviderCredentials::Host { .. } => Err(ApiError::HostNotLinkable),
-        ProviderCredentials::Aws {
-            access_key_id,
-            secret_access_key,
-            session_token,
-            key_name,
-        } => crate::provisioning::aws_driver(
-            access_key_id,
-            secret_access_key,
-            session_token.as_deref(),
-            key_name.as_deref(),
-        )
-        .caller_identity()
-        .await
-        .map(|identity| {
-            tracing::debug!(account = %identity.account, "an AWS access key checked out");
-        })
-        .map_err(|error| ApiError::ProviderRejectedCredentials {
-            reason: error.to_string(),
-        }),
-        ProviderCredentials::Gcp {
-            service_account_json,
-        } => {
-            let mut provider =
-                crate::provisioning::gcp_driver(service_account_json).map_err(|error| {
-                    ApiError::ProviderRejectedCredentials {
-                        reason: error.to_string(),
-                    }
-                })?;
-            provider.mint_token().await.map(|_| ()).map_err(|error| {
-                ApiError::ProviderRejectedCredentials {
-                    reason: error.to_string(),
-                }
-            })
-        }
-    }
-}
-
-/// Creates the resource group flyco owns inside a freshly linked Azure
-/// subscription.
-///
-/// The user never names one. The service principal the wizard mints is
-/// `Contributor` on the whole subscription, which is exactly the scope a
-/// resource-group creation needs, so flyco makes the group itself — and the
-/// `PUT` doubles as the credential check, because it exercises the token
-/// *and* the role assignment rather than only the secret.
-///
-/// Answers with the group's name, which is stored on the account so a
-/// subscription linked today keeps the group it owns if flyco's default name
-/// ever changes.
-async fn provision_azure_workspace(
-    credentials: &ProviderCredentials,
-) -> Result<Option<String>, ApiError> {
-    let ProviderCredentials::Azure {
-        tenant_id,
-        client_id,
-        client_secret,
-        subscription_id,
-        admin_ssh_public_key,
-    } = credentials
-    else {
-        return Ok(None);
-    };
-
-    let region = crate::provisioning::azure_driver(
-        tenant_id,
-        client_id,
-        client_secret,
-        subscription_id,
-        RESOURCE_GROUP,
-        admin_ssh_public_key,
-    )
-    .ensure_resource_group()
-    .await
-    .map_err(|error| ApiError::ProviderRejectedCredentials {
-        reason: error.to_string(),
-    })?;
-
-    tracing::info!(group = RESOURCE_GROUP, %region, "prepared an Azure subscription");
-    Ok(Some(RESOURCE_GROUP.to_owned()))
-}
-
-async fn link(
+/// Returns [`ApiError`] if the provider refuses the credentials, the
+/// credentials cannot be sealed, or the write fails.
+pub(crate) async fn link(
     db: &Db,
     config: &ApiConfig,
+    clouds: &Clouds,
     user: UserId,
     request: LinkProvider,
 ) -> Result<ProviderAccountView, ApiError> {
-    verify(&request.credentials).await?;
-    let resource_group = provision_azure_workspace(&request.credentials).await?;
+    let resource_group = clouds.prepare(&request.credentials).await?;
     create_with(
         db,
         config,

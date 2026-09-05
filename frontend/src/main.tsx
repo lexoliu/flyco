@@ -9,6 +9,7 @@ import AuthComplete from "./routes/AuthComplete";
 import Home from "./routes/Home";
 import Welcome from "./routes/Welcome";
 import { ConnectCompute, ConnectHarness } from "./routes/connect/Connect";
+import ConnectReturn from "./routes/connect/Return";
 import SessionDetail from "./routes/SessionDetail";
 import SettingsLayout from "./routes/settings/SettingsLayout";
 import AgentsSection from "./routes/settings/AgentsSection";
@@ -37,9 +38,13 @@ render(
       <Route path="/welcome" component={Welcome} />
       <Route path="/connect/harness" component={ConnectHarness} />
       <Route path="/connect/compute" component={ConnectCompute} />
+      <Route path="/connect/return" component={ConnectReturn} />
       <Route path="/sessions/:id" component={SessionDetail} />
       <Route path="/settings" component={SettingsLayout}>
-        <Route path="/" component={() => <Navigate href="/settings/agents" />} />
+        <Route
+          path="/"
+          component={() => <Navigate href="/settings/agents" />}
+        />
         <Route path="/agents" component={AgentsSection} />
         <Route path="/compute" component={ComputeSection} />
         <Route path="/tools" component={ToolsSection} />

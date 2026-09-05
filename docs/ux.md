@@ -180,20 +180,37 @@ one agent linked it states that agent, with two it is a choice.
    `POST /v1/providers/quickstart` matches a programme: its name, the
    credit, the quiet link `Sign up` (new tab). `Next`. No page when
    nothing matches.
-5. Azure — *Run this in Azure Cloud Shell.* "Cloud Shell is a terminal
-   in your browser, already signed in to your Azure account. Nothing to
-   install." The one command with `Copy`, shown whole, the link *Open
-   Azure Cloud Shell* (new tab), and the sentence that it prints a JSON
-   block the next page asks for. `Next`.
-6. Azure — *Paste the JSON block.* One textarea; the parsed `clientId`,
-   `tenantId`, `subscriptionId` appear as read-only rows under it once it
-   parses; a missing key is an inline error naming it (a block without a
-   subscription appends a *Which subscription?* page). `Next`, disabled
-   until it parses.
-7. Azure — *Save the machine's admin SSH key.* Generated in the browser
-   on entry; `Download` and `Copy` for the private key, the fingerprint,
-   the quiet link *Use my own public key instead* (which swaps the page's
-   content for one paste field). Primary `Link Azure`, which validates the
+5. Azure — *Sign in with Microsoft.* The road: the consent screen
+   Microsoft offers, like GitHub's. One sentence ("Microsoft's own sign-in
+   page opens in a new tab. Flyco creates its own limited identity in the
+   subscription you pick and never keeps your password or your sign-in.").
+   Primary `Sign in with Microsoft`: opens the consent in a new tab and
+   the page waits ("Waiting for you to finish in the other tab…"), polling
+   the attempt; the consent's own tab lands on `/connect/return`, which
+   says the tab can be closed. When the consent is back the flow moves on
+   by itself. A lost attempt is a `ProblemNotice` and the primary becomes
+   `Try again`. The quiet link *Use Cloud Shell instead* leads to pages
+   5a–5b, for a tenant whose administrator has switched consent off.
+6. Azure — *Which subscription?* "Signed in as me@lexo.cool." The
+   subscriptions the account may link, as selectable cards (name, id).
+   `Next`.
+5a. Azure, Cloud Shell — *Run this in Azure Cloud Shell.* "Cloud Shell is
+   a terminal in your browser, already signed in to your Azure account.
+   Nothing to install." The one command with `Copy`, shown whole, the
+   link *Open Azure Cloud Shell* (new tab), and the sentence that it
+   prints a JSON block the next page asks for. `Next`.
+5b. Azure, Cloud Shell — *Paste the JSON block.* One textarea; the parsed
+   `clientId`, `tenantId`, `subscriptionId` appear as read-only rows
+   under it once it parses; a missing key is an inline error naming it (a
+   block without a subscription appends a *Which subscription?* page that
+   asks for the id). `Next`, disabled until it parses.
+7. Azure — *Save the machine's admin SSH key.* Both roads end here.
+   Generated in the browser on entry; `Download` and `Copy` for the
+   private key, the fingerprint, the quiet link *Use my own public key
+   instead* (which swaps the page's content for one paste field). Primary
+   `Link Azure`: behind the consent it asks the control plane to create
+   flyco's service principal in the chosen subscription and link it;
+   behind Cloud Shell it links the pasted principal. Either validates the
    credential live; a refusal is a `ProblemNotice` above the footer and
    the primary stays. Success **finishes the flow**: there is no "Azure is
    linked" page; the home page's compute chip already states the account,
@@ -203,14 +220,22 @@ one agent linked it states that agent, with two it is a choice.
 6′. AWS — *Enter the access key.* Two fields (Access key ID, Secret access
    key); the quiet link *I have a session token* reveals the third field
    in place. Primary `Link AWS`; success finishes the flow.
-5″. Google Cloud — *Run this in Google Cloud Shell.* The same shape as
-   Azure's: the `gcloud` commands with `Copy`, ending in `cloudshell
-   download flyco-key.json` so the key lands in the browser's downloads,
-   the link *Open Google Cloud Shell*, and the sentence that the next page
-   asks for that file. `Next`.
-6″. Google Cloud — *Drop the key file.* One drop zone; `project_id` and
-   `client_email` as confirmation rows. Primary `Link Google Cloud`;
-   success finishes the flow.
+5″. Google Cloud — *Sign in with Google.* The same shape as Azure's
+   consent page: Google's own sign-in in a new tab, the wait, the return
+   tab, `Try again` on a lost attempt, and *Use Cloud Shell instead* as
+   the quiet link to 5″a–6″a.
+6″. Google Cloud — *Which project?* "Signed in as me@lexo.cool." The
+   active projects as selectable cards. Primary `Link Google Cloud`: the
+   control plane creates flyco's service account in the project with the
+   Compute Admin role, links it, and the flow finishes.
+5″a. Google Cloud, Cloud Shell — *Run this in Google Cloud Shell.* The
+   `gcloud` commands with `Copy`, ending in `cloudshell download
+   flyco-key.json` so the key lands in the browser's downloads, the link
+   *Open Google Cloud Shell*, and the sentence that the next page asks for
+   that file. `Next`.
+6″a. Google Cloud, Cloud Shell — *Drop the key file.* One drop zone;
+   `project_id` and `client_email` as confirmation rows. Primary `Link
+   Google Cloud`; success finishes the flow.
 2‴. Your own machine — *Run this on the machine.* No bonus questions.
    The one installer command with `Copy`, the Linux + Podman sentence, how
    long the command has left, and "Waiting for the machine…" while it
@@ -324,20 +349,37 @@ matching means no page at all. The user is never asked to sign up.
 
 ### 7.2 Azure
 
-Two fields, not six.
+The road is Microsoft's consent screen; Cloud Shell is the quiet link.
 
-1. Show one command with a copy button:
+1. `POST /v1/providers/azure/oauth/start` mints an attempt and the
+   Microsoft authorize URL (`common` tenant, scopes `openid
+   offline_access`, Azure Service Management `user_impersonation`,
+   Microsoft Graph `Application.ReadWrite.All`). The page opens it in a
+   new tab and polls `GET /v1/providers/azure/oauth/{attempt}`.
+2. `GET /v1/providers/azure/oauth/callback` (public) exchanges the code,
+   reads who signed in and their tenant from the id token, lists the
+   enabled subscriptions, stores them on the attempt, and sends that tab
+   to `/connect/return?provider=azure`.
+3. The poll answers `authorized` with the account and the subscriptions;
+   the page asks which, then shows the key page.
+4. `POST /v1/providers/azure/oauth/{attempt}/finish` with the subscription
+   and the admin public key: the control plane creates the `flyco`
+   application and service principal through Graph, assigns it
+   Contributor on the subscription (retrying while the new principal is
+   not yet visible to ARM), and links the resulting credential through
+   the same path `POST /v1/providers` uses. The user's own tokens are
+   discarded with the attempt: nothing runs as the user afterwards.
+
+Cloud Shell, behind the quiet link, is the older two-field path: one
+command with a copy button —
    ```
    az ad sp create-for-rbac --name flyco --role Contributor \
-     --scopes /subscriptions/$(az account show --query id -o tsv) --sdk-auth
+     --scopes /subscriptions/$(az account show --query id -o tsv) --json-auth
    ```
-   with the link that opens Azure Cloud Shell in the browser and the
-   sentence that it prints a JSON block. No terminal or CLI is assumed.
-2. One textarea: "Paste the JSON block." The frontend parses `clientId`,
-   `clientSecret`, `tenantId`, `subscriptionId` from it and shows them as
-   read-only confirmation rows. Malformed input is an inline error naming
-   which key is missing.
-3. `Link Azure`.
+— with the link that opens Azure Cloud Shell in the browser, then one
+textarea for the JSON block it prints (`clientId`, `clientSecret`,
+`tenantId`, `subscriptionId` read out as confirmation rows), then `Link
+Azure`. No terminal or CLI is ever assumed.
 
 The service principal is scoped to the subscription, so flyco creates and
 owns the resource group itself (`flyco`, in the account's default region)
@@ -346,8 +388,8 @@ at link time. The user never names a resource group.
 The break-glass SSH key is generated **in the browser** (Ed25519 via a
 library, never hand-rolled): the private key is offered once as a download
 and a copy button, the public key is sent with the credentials. Flyco
-never holds the private key, which keeps the existing design stance. An
-`Advanced` disclosure lets a user paste their own public key instead.
+never holds the private key, which keeps the existing design stance. A
+quiet link lets a user paste their own public key instead.
 
 ### 7.3 AWS
 
@@ -362,11 +404,26 @@ The break-glass key pair is optional on AWS and stays under `Advanced`.
 
 ### 7.4 Google Cloud
 
-1. Show the `gcloud` commands that create a service account with the
-   Compute Admin role and download its key file.
-2. A file drop zone that accepts one `.json` file; the frontend reads it
-   and shows `project_id` and `client_email` as confirmation.
-3. `Link Google Cloud`.
+The road is Google's consent screen; Cloud Shell is the quiet link.
+
+1. `POST /v1/providers/gcp/oauth/start` mints an attempt and the Google
+   authorize URL (scopes `cloud-platform` and `userinfo.email`). The page
+   opens it in a new tab and polls `GET /v1/providers/gcp/oauth/{attempt}`.
+2. `GET /v1/providers/gcp/oauth/callback` (public) exchanges the code,
+   reads the email from the id token, lists the active projects, stores
+   them on the attempt, and sends that tab to
+   `/connect/return?provider=gcp`.
+3. The poll answers `authorized`; the page asks which project.
+4. `POST /v1/providers/gcp/oauth/{attempt}/finish` with the project: the
+   control plane creates the `flyco` service account, binds it to
+   `roles/compute.admin` on the project, mints a key, and links the key
+   file through the same path `POST /v1/providers` uses. The user's own
+   token is discarded with the attempt.
+
+Cloud Shell, behind the quiet link: the `gcloud` commands that create the
+service account, bind the role, mint the key and `cloudshell download` it,
+then a drop zone for the file (`project_id`, `client_email` as
+confirmation), then `Link Google Cloud`.
 
 ### 7.5 Your own machine
 

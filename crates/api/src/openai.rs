@@ -371,15 +371,11 @@ impl Grant {
 
 /// Reads one token's custom claims without checking its signature.
 ///
-/// See this module's own documentation for why that is the right thing
-/// here and would not be elsewhere.
+/// One helper for all three vendors that hand flyco an id token — see
+/// [`crate::jwt`], which states once why reading one unverified is the right
+/// thing here and would not be elsewhere.
 fn claims<T: serde::de::DeserializeOwned>(jwt: &str) -> Result<T, OpenAiError> {
-    let token = UntrustedToken::new(jwt)
-        .map_err(|_| OpenAiError::Malformed("the id token is not a JWT"))?;
-    Ok(token
-        .deserialize_claims_unchecked::<T>()
-        .map_err(|_| OpenAiError::Malformed("the id token's claims are not readable"))?
-        .custom)
+    crate::jwt::claims(jwt).map_err(|error| OpenAiError::Malformed(error.detail()))
 }
 
 /// The OAuth error document a refusal carries.

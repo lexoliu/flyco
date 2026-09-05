@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "PrincipalNotFound",
+    "message": "Principal the-principal-object-id does not exist in the directory 11111111-2222-4333-8444-555555555555. Check that you have the correct principal ID."
+  }
+}

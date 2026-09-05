@@ -162,8 +162,7 @@ describe("pagesFor", () => {
       "compute-choice",
       "new-to-provider",
       "student",
-      "azure-command",
-      "azure-paste",
+      "cloud-sign-in",
       "azure-key",
     ]);
     const aws = advance(startFlow({ stages: ["compute"] }), { compute: "aws" });
@@ -176,6 +175,90 @@ describe("pagesFor", () => {
     ]);
     const gcp = advance(startFlow({ stages: ["compute"] }), { compute: "gcp" });
     expect(ids(gcp)).toEqual([
+      "compute-choice",
+      "new-to-provider",
+      "student",
+      "cloud-sign-in",
+    ]);
+  });
+
+  it("walks the vendor's consent: the choice page appears once the consent is back", () => {
+    const signIn = advance(
+      advance(
+        advance(startFlow({ stages: ["compute"] }), { compute: "azure" }),
+        { newToProvider: false },
+      ),
+      { student: false, programmes: [] },
+    );
+    expect(currentPage(signIn)).toEqual({
+      id: "cloud-sign-in",
+      provider: "azure",
+    });
+    const consent = {
+      attemptId: "attempt-1",
+      account: "me@lexo.cool",
+      choices: [{ id: "sub-1", name: "Pay-As-You-Go" }],
+    };
+    const back = advance(signIn, { cloudConsent: consent, cloudChoice: null });
+    expect(ids(back)).toEqual([
+      "compute-choice",
+      "new-to-provider",
+      "student",
+      "cloud-sign-in",
+      "cloud-choice",
+      "azure-key",
+    ]);
+    expect(currentPage(back)).toEqual({
+      id: "cloud-choice",
+      provider: "azure",
+    });
+    expect(currentPage(advance(back, { cloudChoice: "sub-1" })).id).toBe(
+      "azure-key",
+    );
+
+    const gcp = advance(
+      advance(advance(startFlow({ stages: ["compute"] }), { compute: "gcp" }), {
+        newToProvider: false,
+      }),
+      { student: false, programmes: [] },
+    );
+    const chosen = advance(gcp, { cloudConsent: consent, cloudChoice: null });
+    expect(currentPage(chosen)).toEqual({
+      id: "cloud-choice",
+      provider: "gcp",
+    });
+    expect(isFinished(advance(chosen, { cloudChoice: "proj-1" }))).toBe(true);
+  });
+
+  it("swaps the consent for the vendor's terminal behind the quiet link", () => {
+    const signIn = advance(
+      advance(
+        advance(startFlow({ stages: ["compute"] }), { compute: "azure" }),
+        { newToProvider: false },
+      ),
+      { student: false, programmes: [] },
+    );
+    const shell = advance(signIn, { cloudRoute: "cloud-shell" });
+    expect(ids(shell)).toEqual([
+      "compute-choice",
+      "new-to-provider",
+      "student",
+      "azure-command",
+      "azure-paste",
+      "azure-key",
+    ]);
+    expect(currentPage(shell).id).toBe("azure-command");
+    const gcpShell = advance(
+      advance(
+        advance(
+          advance(startFlow({ stages: ["compute"] }), { compute: "gcp" }),
+          { newToProvider: false },
+        ),
+        { student: false, programmes: [] },
+      ),
+      { cloudRoute: "cloud-shell" },
+    );
+    expect(ids(gcpShell)).toEqual([
       "compute-choice",
       "new-to-provider",
       "student",
@@ -214,8 +297,7 @@ describe("pagesFor", () => {
       "new-to-provider",
       "student",
       "credit",
-      "azure-command",
-      "azure-paste",
+      "cloud-sign-in",
       "azure-key",
     ]);
     expect(currentPage(answered)).toEqual({
@@ -229,20 +311,23 @@ describe("pagesFor", () => {
       programmes: [AWS_ACTIVATE],
     });
     expect(ids(nothing)).not.toContain("credit");
-    expect(currentPage(nothing).id).toBe("azure-command");
+    expect(currentPage(nothing).id).toBe("cloud-sign-in");
   });
 
   it("asks for the subscription only when the pasted Azure block lacked one", () => {
     const paste = advance(
       advance(
         advance(
-          advance(startFlow({ stages: ["compute"] }), { compute: "azure" }),
-          { newToProvider: false },
+          advance(
+            advance(startFlow({ stages: ["compute"] }), { compute: "azure" }),
+            { newToProvider: false },
+          ),
+          {
+            student: false,
+            programmes: [],
+          },
         ),
-        {
-          student: false,
-          programmes: [],
-        },
+        { cloudRoute: "cloud-shell" },
       ),
     );
     expect(currentPage(paste).id).toBe("azure-paste");

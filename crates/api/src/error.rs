@@ -14,6 +14,8 @@ use skyzen_services::{DbError, KvError, StorageError};
 use crate::anthropic::AnthropicError;
 use crate::crypto::CryptoError;
 use crate::github::GithubError;
+use crate::google::GoogleError;
+use crate::microsoft::MicrosoftError;
 use crate::openai::{DEVICE_AUTH_SETTINGS_URL, OpenAiError};
 use crate::problem::{self, Challenge};
 
@@ -248,6 +250,48 @@ pub enum ApiError {
     #[error("OpenAI refused this Codex sign-in: {reason}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     CodexOauthRejected {
         /// `OpenAI`'s own error code and description.
+        reason: String,
+    },
+
+    /// The cloud sign-in this call names is unknown, already finished, past
+    /// its ten-minute lifetime, another vendor's, or another user's.
+    ///
+    /// One variant for all five, for the reason
+    /// [`CodexOauthAttemptExpired`](Self::CodexOauthAttemptExpired) is one:
+    /// the attempt id is the only thing that names an attempt, and telling a
+    /// caller which of the five theirs is would be a free oracle over
+    /// somebody else's sign-in.
+    #[error(
+        "this cloud sign-in has expired or was already completed; start it again",
+        status = StatusCode::NOT_FOUND
+    )]
+    ProviderOauthAttemptExpired,
+
+    /// The sign-in exists, but the browser has not come back from the vendor
+    /// yet, so there is nothing to link.
+    ///
+    /// A state rather than a mistake: the page polls until the callback has
+    /// landed, and finishing before that is a request made too early.
+    #[error(
+        "this cloud sign-in has not come back from the provider yet",
+        status = StatusCode::CONFLICT
+    )]
+    ProviderOauthNotAuthorized,
+
+    /// Microsoft refused, and said why.
+    ///
+    /// A caller error rather than an outage: consent was declined, the code
+    /// expired, or the account may not do what flyco asked of it.
+    #[error("Microsoft refused this sign-in: {reason}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    MicrosoftRejected {
+        /// Microsoft's own code and description.
+        reason: String,
+    },
+
+    /// Google refused, and said why.
+    #[error("Google refused this sign-in: {reason}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    GoogleRejected {
+        /// Google's own status and message.
         reason: String,
     },
 
@@ -829,6 +873,23 @@ pub enum ApiError {
     #[error("OpenAI call failed: {0}", status = StatusCode::BAD_GATEWAY)]
     OpenAi(OpenAiError),
 
+    /// Microsoft could not be reached, or answered with something flyco
+    /// cannot interpret.
+    ///
+    /// A refusal is not one of these — that is
+    /// [`MicrosoftRejected`](Self::MicrosoftRejected), which the caller can
+    /// act on.
+    #[error("Microsoft call failed: {0}", status = StatusCode::BAD_GATEWAY)]
+    Microsoft(MicrosoftError),
+
+    /// Google could not be reached, or answered with something flyco cannot
+    /// interpret.
+    ///
+    /// A refusal is not one of these — that is
+    /// [`GoogleRejected`](Self::GoogleRejected).
+    #[error("Google call failed: {0}", status = StatusCode::BAD_GATEWAY)]
+    Google(GoogleError),
+
     /// The key-value store failed.
     #[error("key-value store failed: {0}")]
     Kv(#[from] KvError),
@@ -902,10 +963,50 @@ impl From<OpenAiError> for ApiError {
     }
 }
 
+/// Sorts a Microsoft failure into what the caller can act on and what they
+/// can only wait out.
+///
+/// The same split [`From<AnthropicError>`](ApiError::from) makes, and for
+/// the same reason: a refusal is a `422` naming what Microsoft objected to,
+/// and everything else is a `502` the user can do nothing about.
+impl From<MicrosoftError> for ApiError {
+    fn from(error: MicrosoftError) -> Self {
+        match error {
+            rejected @ MicrosoftError::Rejected { .. } => Self::MicrosoftRejected {
+                reason: rejected.to_string(),
+            },
+            unavailable => Self::Microsoft(unavailable),
+        }
+    }
+}
+
+/// The same split, for Google.
+impl From<GoogleError> for ApiError {
+    fn from(error: GoogleError) -> Self {
+        match error {
+            rejected @ GoogleError::Rejected { .. } => Self::GoogleRejected {
+                reason: rejected.to_string(),
+            },
+            unavailable => Self::Google(unavailable),
+        }
+    }
+}
+
 impl ApiError {
     /// The slug this failure is documented under, below
     /// [`TYPE_BASE`](flyco_core::problem::TYPE_BASE).
-    const fn slug(&self) -> &'static str {
+    ///
+    /// `pub(crate)` because one route answers with it rather than with a
+    /// problem document: the cloud OAuth callbacks are browser navigations,
+    /// so they carry the slug on the redirect they send the browser to —
+    /// see [`crate::provider_oauth`].
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per variant, which is the point: the match is exhaustive, so a \
+                  variant added without a slug is a compile error rather than an untyped \
+                  problem document"
+    )]
+    pub(crate) const fn slug(&self) -> &'static str {
         match self {
             Self::MissingCredential => "missing-credential",
             Self::InvalidCredential => "invalid-credential",
@@ -937,6 +1038,12 @@ impl ApiError {
             Self::CodexDeviceAuthDisabled { .. } => "codex-device-auth-disabled",
             Self::CodexOauthRejected { .. } => "codex-oauth-rejected",
             Self::OpenAi(_) => "openai-unavailable",
+            Self::ProviderOauthAttemptExpired => "provider-oauth-attempt-expired",
+            Self::ProviderOauthNotAuthorized => "provider-oauth-not-authorized",
+            Self::MicrosoftRejected { .. } => "microsoft-rejected",
+            Self::Microsoft(_) => "microsoft-unavailable",
+            Self::GoogleRejected { .. } => "google-rejected",
+            Self::Google(_) => "google-unavailable",
             Self::MachineNotFound => "machine-not-found",
             Self::MachineTypeNotOffered(_) => "machine-type-not-offered",
             Self::LicenseBoundResizeNeedsApproval { .. } => "license-bound-resize-needs-approval",

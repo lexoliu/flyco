@@ -1,0 +1,8 @@
+{
+  "error": "invalid_grant",
+  "error_description": "AADSTS54005: OAuth2 Authorization code was already redeemed or has expired.",
+  "error_codes": [
+    54005
+  ],
+  "trace_id": "00000000-0000-0000-0000-000000000000"
+}

@@ -1,0 +1,7 @@
+{
+  "token_type": "Bearer",
+  "scope": "https://graph.microsoft.com/Application.ReadWrite.All",
+  "expires_in": 3599,
+  "access_token": "the-graph-access-token",
+  "refresh_token": "the-rotated-refresh-token"
+}

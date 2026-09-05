@@ -100,12 +100,13 @@ type JsonBody<Op extends keyof operations> = operations[Op] extends {
   : never;
 
 /** Extracts an operation's JSON response body type for one status code. */
-type JsonResponse<Op extends keyof operations, Status extends number> = operations[Op]["responses"] extends Record<
-  Status,
-  { content: { "application/json": infer R } }
->
-  ? R
-  : void;
+type JsonResponse<Op extends keyof operations, Status extends number> =
+  operations[Op]["responses"] extends Record<
+    Status,
+    { content: { "application/json": infer R } }
+  >
+    ? R
+    : void;
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
@@ -151,7 +152,11 @@ interface SendOptions {
 }
 
 /** Issues one HTTP request, attaching auth and translating any failure. */
-async function send(method: string, path: string, options: SendOptions = {}): Promise<Response> {
+async function send(
+  method: string,
+  path: string,
+  options: SendOptions = {},
+): Promise<Response> {
   const url = apiUrl(path);
   applyQuery(url, options.query);
 
@@ -186,12 +191,20 @@ async function send(method: string, path: string, options: SendOptions = {}): Pr
   return response;
 }
 
-async function requestJson<T>(method: string, path: string, options: SendOptions = {}): Promise<T> {
+async function requestJson<T>(
+  method: string,
+  path: string,
+  options: SendOptions = {},
+): Promise<T> {
   const response = await send(method, path, options);
   return (await response.json()) as T;
 }
 
-async function requestVoid(method: string, path: string, options: SendOptions = {}): Promise<void> {
+async function requestVoid(
+  method: string,
+  path: string,
+  options: SendOptions = {},
+): Promise<void> {
   await send(method, path, options);
 }
 
@@ -204,7 +217,9 @@ export function getMe(): Promise<JsonResponse<"flyco_api::app::me", 200>> {
 export function updateMe(
   sessionCap: number | null,
 ): Promise<JsonResponse<"flyco_api::app::update_me", 200>> {
-  const body: JsonBody<"flyco_api::app::update_me"> = { session_cap: sessionCap };
+  const body: JsonBody<"flyco_api::app::update_me"> = {
+    session_cap: sessionCap,
+  };
   return requestJson("PATCH", "/v1/me", { json: body });
 }
 
@@ -216,7 +231,9 @@ export function listHarnessFeatures(): Promise<
   return requestJson("GET", "/v1/harness-features");
 }
 
-export function listSessions(): Promise<JsonResponse<"flyco_api::app::list_sessions", 200>> {
+export function listSessions(): Promise<
+  JsonResponse<"flyco_api::app::list_sessions", 200>
+> {
   return requestJson("GET", "/v1/sessions");
 }
 
@@ -226,7 +243,9 @@ export function createSession(
   return requestJson("POST", "/v1/sessions", { json: input });
 }
 
-export function getSession(id: string): Promise<JsonResponse<"flyco_api::app::get_session", 200>> {
+export function getSession(
+  id: string,
+): Promise<JsonResponse<"flyco_api::app::get_session", 200>> {
   return requestJson("GET", `/v1/sessions/${id}`);
 }
 
@@ -244,7 +263,9 @@ export function updateSession(
 ): Promise<JsonResponse<"flyco_api::app::update_session", 200>> {
   const body: JsonBody<"flyco_api::app::update_session"> = {
     ...(changes.title === undefined ? {} : { title: changes.title }),
-    ...(changes.budgetLimit === undefined ? {} : { budget_limit: changes.budgetLimit }),
+    ...(changes.budgetLimit === undefined
+      ? {}
+      : { budget_limit: changes.budgetLimit }),
   };
   return requestJson("PATCH", `/v1/sessions/${id}`, { json: body });
 }
@@ -268,11 +289,15 @@ export function archiveSession(
   options: { discardUncommitted?: boolean } = {},
 ): Promise<JsonResponse<"flyco_api::app::archive_session", 200>> {
   return requestJson("POST", `/v1/sessions/${id}/archive`, {
-    query: { discard_uncommitted: options.discardUncommitted === true ? true : null },
+    query: {
+      discard_uncommitted: options.discardUncommitted === true ? true : null,
+    },
   });
 }
 
-export function getSessionBudget(id: string): Promise<JsonResponse<"flyco_api::app::get_session_budget", 200>> {
+export function getSessionBudget(
+  id: string,
+): Promise<JsonResponse<"flyco_api::app::get_session_budget", 200>> {
   return requestJson("GET", `/v1/sessions/${id}/budget`);
 }
 
@@ -280,7 +305,9 @@ export function getSessionEvents(
   id: string,
   after?: number,
 ): Promise<JsonResponse<"flyco_api::app::get_session_events", 200>> {
-  return requestJson("GET", `/v1/sessions/${id}/events`, { query: { after: after ?? null } });
+  return requestJson("GET", `/v1/sessions/${id}/events`, {
+    query: { after: after ?? null },
+  });
 }
 
 export function createRelayTicket(
@@ -289,7 +316,9 @@ export function createRelayTicket(
   return requestJson("POST", `/v1/sessions/${id}/relay-ticket`);
 }
 
-export function getSessionEnv(id: string): Promise<JsonResponse<"flyco_api::app::get_session_env", 200>> {
+export function getSessionEnv(
+  id: string,
+): Promise<JsonResponse<"flyco_api::app::get_session_env", 200>> {
   return requestJson("GET", `/v1/sessions/${id}/env`);
 }
 
@@ -301,7 +330,9 @@ export function putSessionEnv(
   return requestJson("PUT", `/v1/sessions/${id}/env`, { json: body });
 }
 
-export function getRepoStatus(id: string): Promise<JsonResponse<"flyco_api::app::get_repo_status", 200>> {
+export function getRepoStatus(
+  id: string,
+): Promise<JsonResponse<"flyco_api::app::get_repo_status", 200>> {
   return requestJson("GET", `/v1/sessions/${id}/repo-status`);
 }
 
@@ -323,7 +354,9 @@ export function readSessionFile(
   id: string,
   path: string,
 ): Promise<JsonResponse<"flyco_api::app::read_session_file", 200>> {
-  return requestJson("GET", `/v1/sessions/${id}/files/content`, { query: { path } });
+  return requestJson("GET", `/v1/sessions/${id}/files/content`, {
+    query: { path },
+  });
 }
 
 /** Diffs a session's working tree against the branch it started from. */
@@ -377,9 +410,16 @@ export function stopSessionMachine(id: string): Promise<void> {
 }
 
 /** Moves compute to a different catalog machine type; the disk survives. */
-export function resizeSessionMachine(id: string, machineType: string): Promise<void> {
-  const body: JsonBody<"flyco_api::machines::resize_session_machine"> = { machine_type: machineType };
-  return requestVoid("POST", `/v1/sessions/${id}/machine/resize`, { json: body });
+export function resizeSessionMachine(
+  id: string,
+  machineType: string,
+): Promise<void> {
+  const body: JsonBody<"flyco_api::machines::resize_session_machine"> = {
+    machine_type: machineType,
+  };
+  return requestVoid("POST", `/v1/sessions/${id}/machine/resize`, {
+    json: body,
+  });
 }
 
 // --- /v1/machines/catalog -----------------------------------------------------
@@ -408,7 +448,9 @@ export function getDefaultMachine(
   spot: boolean,
   account?: string,
 ): Promise<JsonResponse<"flyco_api::machines::get_default_machine", 200>> {
-  return requestJson("GET", "/v1/machines/default", { query: { spot, account } });
+  return requestJson("GET", "/v1/machines/default", {
+    query: { spot, account },
+  });
 }
 
 // --- /v1/approvals ----------------------------------------------------------
@@ -466,7 +508,9 @@ export function listCloudUsage(
 
 // --- /v1/mcp-servers ---------------------------------------------------------
 
-export function listMcpServers(): Promise<JsonResponse<"flyco_api::mcp::list_mcp_servers", 200>> {
+export function listMcpServers(): Promise<
+  JsonResponse<"flyco_api::mcp::list_mcp_servers", 200>
+> {
   return requestJson("GET", "/v1/mcp-servers");
 }
 
@@ -489,7 +533,9 @@ export function deleteMcpServer(id: string): Promise<void> {
 
 // --- /v1/skills ---------------------------------------------------------------
 
-export function listSkills(): Promise<JsonResponse<"flyco_api::skills::list_skills", 200>> {
+export function listSkills(): Promise<
+  JsonResponse<"flyco_api::skills::list_skills", 200>
+> {
   return requestJson("GET", "/v1/skills");
 }
 
@@ -498,7 +544,10 @@ export function uploadSkill(
   scope: SkillScope,
   bundle: Blob,
 ): Promise<JsonResponse<"flyco_api::skills::upload_skill", 201>> {
-  return requestJson("POST", "/v1/skills", { query: { name, scope }, octetStream: bundle });
+  return requestJson("POST", "/v1/skills", {
+    query: { name, scope },
+    octetStream: bundle,
+  });
 }
 
 export function deleteSkill(id: string): Promise<void> {
@@ -507,7 +556,9 @@ export function deleteSkill(id: string): Promise<void> {
 
 // --- /v1/providers -------------------------------------------------------------
 
-export function listProviders(): Promise<JsonResponse<"flyco_api::provider_accounts::list_providers", 200>> {
+export function listProviders(): Promise<
+  JsonResponse<"flyco_api::provider_accounts::list_providers", 200>
+> {
   return requestJson("GET", "/v1/providers");
 }
 
@@ -523,7 +574,9 @@ export function unlinkProvider(id: string): Promise<void> {
 
 export function providerQuickstart(
   input: JsonBody<"flyco_api::provider_accounts::provider_quickstart">,
-): Promise<JsonResponse<"flyco_api::provider_accounts::provider_quickstart", 200>> {
+): Promise<
+  JsonResponse<"flyco_api::provider_accounts::provider_quickstart", 200>
+> {
   return requestJson("POST", "/v1/providers/quickstart", { json: input });
 }
 
@@ -569,7 +622,9 @@ export function getEnrollment(
 }
 
 /** The caller's enrolled machines, each refreshed from its own room. */
-export function listHosts(): Promise<JsonResponse<"flyco_api::hosts::list_hosts", 200>> {
+export function listHosts(): Promise<
+  JsonResponse<"flyco_api::hosts::list_hosts", 200>
+> {
   return requestJson("GET", "/v1/hosts");
 }
 
@@ -596,7 +651,10 @@ export function renameHost(
  * there; `force` stops their containers and keeps the volumes, so the work
  * is still on the disk the user owns.
  */
-export function removeHost(id: HostView["id"], options: { force?: boolean } = {}): Promise<void> {
+export function removeHost(
+  id: HostView["id"],
+  options: { force?: boolean } = {},
+): Promise<void> {
   return requestVoid("DELETE", `/v1/hosts/${id}`, {
     query: { force: options.force === true ? true : null },
   });
@@ -604,11 +662,15 @@ export function removeHost(id: HostView["id"], options: { force?: boolean } = {}
 
 // --- /v1/api-keys ---------------------------------------------------------------
 
-export function listApiKeys(): Promise<JsonResponse<"flyco_api::app::list_api_keys", 200>> {
+export function listApiKeys(): Promise<
+  JsonResponse<"flyco_api::app::list_api_keys", 200>
+> {
   return requestJson("GET", "/v1/api-keys");
 }
 
-export function createApiKey(label: string): Promise<JsonResponse<"flyco_api::app::create_api_key", 200>> {
+export function createApiKey(
+  label: string,
+): Promise<JsonResponse<"flyco_api::app::create_api_key", 200>> {
   const body: JsonBody<"flyco_api::app::create_api_key"> = { label };
   return requestJson("POST", "/v1/api-keys", { json: body });
 }
@@ -627,11 +689,15 @@ export function listHarnessAccounts(): Promise<
 
 export function linkHarnessAccount(
   input: JsonBody<"flyco_api::harness_accounts::link_harness_account">,
-): Promise<JsonResponse<"flyco_api::harness_accounts::link_harness_account", 201>> {
+): Promise<
+  JsonResponse<"flyco_api::harness_accounts::link_harness_account", 201>
+> {
   return requestJson("POST", "/v1/harness-accounts", { json: input });
 }
 
-export function unlinkHarnessAccount(id: HarnessAccountView["id"]): Promise<void> {
+export function unlinkHarnessAccount(
+  id: HarnessAccountView["id"],
+): Promise<void> {
   return requestVoid("DELETE", `/v1/harness-accounts/${id}`);
 }
 
@@ -651,7 +717,9 @@ export function startClaudeOauth(): Promise<
 export function completeClaudeOauth(
   input: JsonBody<"flyco_api::claude_oauth::complete">,
 ): Promise<JsonResponse<"flyco_api::claude_oauth::complete", 201>> {
-  return requestJson("POST", "/v1/harness-accounts/claude/oauth/complete", { json: input });
+  return requestJson("POST", "/v1/harness-accounts/claude/oauth/complete", {
+    json: input,
+  });
 }
 
 /**
@@ -662,14 +730,15 @@ export function completeClaudeOauth(
  * approved. OpenAI's `device_auth_id`, the half that redeems the grant,
  * stays in the control plane.
  */
-export function startCodexOauth(): Promise<JsonResponse<"flyco_api::codex_oauth::start", 200>> {
+export function startCodexOauth(): Promise<
+  JsonResponse<"flyco_api::codex_oauth::start", 200>
+> {
   return requestJson("POST", "/v1/harness-accounts/codex/oauth/start");
 }
 
 /** How far one poll of a Codex sign-in got. */
 export type CodexOauthProgress =
-  | { state: "pending" }
-  | { state: "linked"; account: HarnessAccountView };
+  { state: "pending" } | { state: "linked"; account: HarnessAccountView };
 
 /**
  * Asks once whether the user has approved the code yet.
@@ -681,12 +750,65 @@ export type CodexOauthProgress =
 export async function pollCodexOauth(
   attemptId: CodexOauthStart["attempt_id"],
 ): Promise<CodexOauthProgress> {
-  const response = await send("GET", `/v1/harness-accounts/codex/oauth/${attemptId}`);
+  const response = await send(
+    "GET",
+    `/v1/harness-accounts/codex/oauth/${attemptId}`,
+  );
   if (response.status === 201) {
-    const account = (await response.json()) as JsonResponse<"flyco_api::codex_oauth::poll", 201>;
+    const account = (await response.json()) as JsonResponse<
+      "flyco_api::codex_oauth::poll",
+      201
+    >;
     return { state: "linked", account };
   }
   return { state: "pending" };
+}
+
+// --- /v1/providers/{azure,gcp}/oauth ---------------------------------------------
+
+/** The clouds whose own consent screen links an account. */
+export type ConsentCloudKind = "azure" | "gcp";
+
+/** `POST /v1/providers/{cloud}/oauth/start`. */
+export type ProviderOauthStart = Schemas["ProviderOauthStart"];
+
+/** One thing the signed-in account may link: a subscription, or a project. */
+export type ProviderOauthChoice = Schemas["ProviderOauthChoice"];
+
+/** `GET /v1/providers/{cloud}/oauth/{attempt}`: where the consent stands. */
+export type ProviderOauthProgress = Schemas["ProviderOauthProgress"];
+
+export async function startProviderOauth(
+  cloud: ConsentCloudKind,
+): Promise<ProviderOauthStart> {
+  return requestJson("POST", `/v1/providers/${cloud}/oauth/start`);
+}
+
+export async function pollProviderOauth(
+  cloud: ConsentCloudKind,
+  attemptId: string,
+): Promise<ProviderOauthProgress> {
+  return requestJson("GET", `/v1/providers/${cloud}/oauth/${attemptId}`);
+}
+
+/** Creates flyco's own identity in the chosen subscription and links it. */
+export async function finishAzureOauth(
+  attemptId: string,
+  body: Schemas["FinishAzureOauth"],
+): Promise<ProviderAccountView> {
+  return requestJson("POST", `/v1/providers/azure/oauth/${attemptId}/finish`, {
+    json: body,
+  });
+}
+
+/** Creates flyco's own service account in the chosen project and links it. */
+export async function finishGcpOauth(
+  attemptId: string,
+  body: Schemas["FinishGcpOauth"],
+): Promise<ProviderAccountView> {
+  return requestJson("POST", `/v1/providers/gcp/oauth/${attemptId}/finish`, {
+    json: body,
+  });
 }
 
 // --- /v1/memory ----------------------------------------------------------------
@@ -695,7 +817,9 @@ export function listMemory(filter?: {
   parent?: string;
   repo?: string;
 }): Promise<JsonResponse<"flyco_api::memory::list_memory", 200>> {
-  return requestJson("GET", "/v1/memory", { query: { parent: filter?.parent, repo: filter?.repo } });
+  return requestJson("GET", "/v1/memory", {
+    query: { parent: filter?.parent, repo: filter?.repo },
+  });
 }
 
 export function createMemoryNode(
@@ -717,18 +841,24 @@ export function deleteMemoryNode(id: string): Promise<void> {
 
 // --- /v1/agents-md ---------------------------------------------------------------
 
-export function getAgentsMd(): Promise<JsonResponse<"flyco_api::agents_md::get_agents_md", 200>> {
+export function getAgentsMd(): Promise<
+  JsonResponse<"flyco_api::agents_md::get_agents_md", 200>
+> {
   return requestJson("GET", "/v1/agents-md");
 }
 
-export function putAgentsMd(content: string): Promise<JsonResponse<"flyco_api::agents_md::put_agents_md", 200>> {
+export function putAgentsMd(
+  content: string,
+): Promise<JsonResponse<"flyco_api::agents_md::put_agents_md", 200>> {
   const body: JsonBody<"flyco_api::agents_md::put_agents_md"> = { content };
   return requestJson("PUT", "/v1/agents-md", { json: body });
 }
 
 // --- /v1/push --------------------------------------------------------------------
 
-export function getVapidPublicKey(): Promise<JsonResponse<"flyco_api::push::vapid_public_key", 200>> {
+export function getVapidPublicKey(): Promise<
+  JsonResponse<"flyco_api::push::vapid_public_key", 200>
+> {
   return requestJson("GET", "/v1/push/vapid-public-key");
 }
 
@@ -744,11 +874,15 @@ export function unsubscribePush(id: string): Promise<void> {
 
 // --- Auth and repo picker ---------------------------------------------------------
 
-export function startGithubLogin(): Promise<JsonResponse<"flyco_api::oauth::start", 200>> {
+export function startGithubLogin(): Promise<
+  JsonResponse<"flyco_api::oauth::start", 200>
+> {
   return requestJson("POST", "/v1/auth/github/start");
 }
 
-export function listRepos(q?: string): Promise<JsonResponse<"flyco_api::repos::list_repos", 200>> {
+export function listRepos(
+  q?: string,
+): Promise<JsonResponse<"flyco_api::repos::list_repos", 200>> {
   return requestJson("GET", "/v1/github/repos", { query: { q } });
 }
 
@@ -766,5 +900,7 @@ export function listBranches(
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/");
-  return requestJson("GET", `/v1/github/repos/${path}/branches`, { query: { cursor } });
+  return requestJson("GET", `/v1/github/repos/${path}/branches`, {
+    query: { cursor },
+  });
 }

@@ -21,15 +21,18 @@ use skyzen_test::{TestClient, TestContext};
 
 use crate::anthropic::ClaudeClient;
 use crate::clock::now_unix;
+use crate::google::GoogleClient;
 use crate::harness_accounts::{self, REFRESH_WINDOW_SECONDS, StoredCredential};
+use crate::microsoft::MicrosoftClient;
 use crate::openai::CodexClient;
 use crate::session;
 use crate::testing::{
     CODEX_ACCESS_TOKEN, CODEX_ACCOUNT_EMAIL, CODEX_ACCOUNT_ID, CODEX_ID_TOKEN,
     CODEX_POLL_INTERVAL_SECONDS, CODEX_REFRESH_TOKEN, CODEX_RENEWED_ACCESS_TOKEN,
     CODEX_RENEWED_REFRESH_TOKEN, CODEX_RENEWED_TOKEN_EXPIRY, CODEX_TOKEN_EXPIRY, CODEX_USER_CODE,
-    TestClaude, TestCodex, TestGithub, migrate, migrated_router, seed_codex_oauth_account,
-    seed_other_user, seed_user, test_config, test_router_with, test_vendors,
+    TestClaude, TestCodex, TestGithub, TestGoogle, TestMicrosoft, migrate, migrated_router,
+    seed_codex_oauth_account, seed_other_user, seed_user, test_config, test_router_with,
+    test_vendors,
 };
 use crate::vendors::Vendors;
 
@@ -53,7 +56,12 @@ async fn signed_in_with(
         db.clone(),
         Queue::new(InMemoryQueue::new()),
         TestGithub::default(),
-        Vendors::new(ClaudeClient::Fake(TestClaude), CodexClient::Fake(codex)),
+        Vendors::new(
+            ClaudeClient::Fake(TestClaude),
+            CodexClient::Fake(codex),
+            MicrosoftClient::Fake(TestMicrosoft::succeeding()),
+            GoogleClient::Fake(TestGoogle::succeeding()),
+        ),
     );
     let user = seed_user(db).await;
     let token = session::issue(kv, user.id).await.expect("issue a session");

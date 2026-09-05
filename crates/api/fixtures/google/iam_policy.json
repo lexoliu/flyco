@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "etag": "BwYcQ1s2ZkE=",
+  "bindings": [
+    {
+      "role": "roles/owner",
+      "members": [
+        "user:me@lexo.cool"
+      ]
+    },
+    {
+      "role": "roles/compute.admin",
+      "members": [
+        "user:me@lexo.cool"
+      ]
+    }
+  ],
+  "auditConfigs": [
+    {
+      "service": "allServices",
+      "auditLogConfigs": [
+        {
+          "logType": "ADMIN_READ"
+        }
+      ]
+    }
+  ]
+}

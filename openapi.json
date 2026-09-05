@@ -2863,6 +2863,521 @@
         }
       }
     },
+    "/v1/providers/azure/oauth/callback": {
+      "get": {
+        "summary": "`GET /v1/providers/azure/oauth/callback` — records what Microsoft said.",
+        "description": "`GET /v1/providers/azure/oauth/callback` — records what Microsoft said.\n\nPublic, because the browser arrives from `login.microsoftonline.com` with\nno flyco credential. It authenticates itself with the `state` it carries.",
+        "operationId": "flyco_api::provider_oauth::azure_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The single-use authorization code."
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The vendor's machine-readable refusal, when it refused."
+            }
+          },
+          {
+            "name": "error_description",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Its explanation."
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The `state` this control plane minted in the matching `start`."
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "The browser is sent on to the flyco web app."
+          }
+        }
+      }
+    },
+    "/v1/providers/azure/oauth/start": {
+      "post": {
+        "summary": "`POST /v1/providers/azure/oauth/start` — begins a Microsoft sign-in.",
+        "description": "`POST /v1/providers/azure/oauth/start` — begins a Microsoft sign-in.",
+        "operationId": "flyco_api::provider_oauth::azure_start",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Answer of `POST /v1/providers/{azure|gcp}/oauth/start`.\n\nThe browser is sent to [`authorize_url`](Self::authorize_url) and the\npage keeps [`attempt_id`](Self::attempt_id) to poll with: the sign-in\nfinishes at the vendor and comes back through a public callback that\ncarries no flyco credential, so the attempt id is the only thing tying\nthe two halves together.",
+                  "required": [
+                    "attempt_id",
+                    "authorize_url"
+                  ],
+                  "properties": {
+                    "attempt_id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Names this sign-in for the poll and the finish that end it."
+                    },
+                    "authorize_url": {
+                      "type": "string",
+                      "description": "Where the browser approves the grant."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers/azure/oauth/{attempt_id}": {
+      "get": {
+        "summary": "`GET /v1/providers/azure/oauth/{attempt_id}` — polls it once.",
+        "description": "`GET /v1/providers/azure/oauth/{attempt_id}` — polls it once.",
+        "operationId": "flyco_api::provider_oauth::azure_poll",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "description": "The browser has not come back from the vendor yet.",
+                      "required": [
+                        "state"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "pending"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "description": "The vendor said who signed in and what they may link.",
+                      "required": [
+                        "account",
+                        "choices",
+                        "state"
+                      ],
+                      "properties": {
+                        "account": {
+                          "type": "string",
+                          "description": "The account that signed in, as the vendor names it."
+                        },
+                        "choices": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ProviderOauthChoice"
+                          },
+                          "description": "What that account may link, in the vendor's own order."
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "authorized"
+                          ]
+                        }
+                      }
+                    }
+                  ],
+                  "description": "Answer of `GET /v1/providers/{azure|gcp}/oauth/{attempt_id}`.\n\nTwo states rather than one nullable body, for the reason\n[`CodexOauthPending`](crate::CodexOauthPending) is its own answer: a poll\nthat found nothing is a perfectly good `200` that says so, and the page\nasks again."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers/azure/oauth/{attempt_id}/finish": {
+      "post": {
+        "summary": "`POST /v1/providers/azure/oauth/{attempt_id}/finish` — links the chosen subscription.",
+        "description": "`POST /v1/providers/azure/oauth/{attempt_id}/finish` — links the chosen\nsubscription.",
+        "operationId": "flyco_api::provider_oauth::azure_finish",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/providers/azure/oauth/{attempt_id}/finish`.",
+                "required": [
+                  "subscription_id",
+                  "admin_ssh_public_key"
+                ],
+                "properties": {
+                  "admin_ssh_public_key": {
+                    "type": "string",
+                    "description": "The `OpenSSH` public key a machine's break-glass login is created\nwith, exactly as [`ProviderCredentials::Azure`] carries it."
+                  },
+                  "subscription_id": {
+                    "type": "string",
+                    "description": "Which of the authorized subscriptions to provision into."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One row of `GET /v1/providers`.",
+                  "required": [
+                    "id",
+                    "kind",
+                    "label",
+                    "linked_at_unix"
+                  ],
+                  "properties": {
+                    "host_id": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/Uuid",
+                          "description": "The enrolled machine this account *is*, when it is one.\n\n`None` for every cloud account. A host is a provider account\n(docs/host-enrollment.md), which is what keeps the catalog, session\ncreation and the usage panel free of a special case for it — but a\nclient holding both `GET /v1/hosts` and `GET /v1/providers` still has\nto know which account is which machine, and an id is the only honest\nway to say so. Inferring it from [`CloudProviderKind::Host`] would\nname the kind and not the machine."
+                        }
+                      ]
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier used to unlink the account."
+                    },
+                    "kind": {
+                      "$ref": "#/components/schemas/CloudProviderKind",
+                      "description": "Which provider it is."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "Label supplied when it was linked.\n\nFor a machine the user owns this is the host's own label, kept in\nstep by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so\na rename that moved only one of them would leave the compute chip\ncalling a machine something its card no longer does."
+                    },
+                    "linked_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was linked, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers/gcp/oauth/callback": {
+      "get": {
+        "summary": "`GET /v1/providers/gcp/oauth/callback` — records what Google said.",
+        "description": "`GET /v1/providers/gcp/oauth/callback` — records what Google said.\n\nPublic, for the reason [`azure_callback`] is.",
+        "operationId": "flyco_api::provider_oauth::gcp_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The single-use authorization code."
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The vendor's machine-readable refusal, when it refused."
+            }
+          },
+          {
+            "name": "error_description",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Its explanation."
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The `state` this control plane minted in the matching `start`."
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "The browser is sent on to the flyco web app."
+          }
+        }
+      }
+    },
+    "/v1/providers/gcp/oauth/start": {
+      "post": {
+        "summary": "`POST /v1/providers/gcp/oauth/start` — begins a Google sign-in.",
+        "description": "`POST /v1/providers/gcp/oauth/start` — begins a Google sign-in.",
+        "operationId": "flyco_api::provider_oauth::gcp_start",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Answer of `POST /v1/providers/{azure|gcp}/oauth/start`.\n\nThe browser is sent to [`authorize_url`](Self::authorize_url) and the\npage keeps [`attempt_id`](Self::attempt_id) to poll with: the sign-in\nfinishes at the vendor and comes back through a public callback that\ncarries no flyco credential, so the attempt id is the only thing tying\nthe two halves together.",
+                  "required": [
+                    "attempt_id",
+                    "authorize_url"
+                  ],
+                  "properties": {
+                    "attempt_id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Names this sign-in for the poll and the finish that end it."
+                    },
+                    "authorize_url": {
+                      "type": "string",
+                      "description": "Where the browser approves the grant."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers/gcp/oauth/{attempt_id}": {
+      "get": {
+        "summary": "`GET /v1/providers/gcp/oauth/{attempt_id}` — polls it once.",
+        "description": "`GET /v1/providers/gcp/oauth/{attempt_id}` — polls it once.",
+        "operationId": "flyco_api::provider_oauth::gcp_poll",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "description": "The browser has not come back from the vendor yet.",
+                      "required": [
+                        "state"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "pending"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "description": "The vendor said who signed in and what they may link.",
+                      "required": [
+                        "account",
+                        "choices",
+                        "state"
+                      ],
+                      "properties": {
+                        "account": {
+                          "type": "string",
+                          "description": "The account that signed in, as the vendor names it."
+                        },
+                        "choices": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ProviderOauthChoice"
+                          },
+                          "description": "What that account may link, in the vendor's own order."
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "authorized"
+                          ]
+                        }
+                      }
+                    }
+                  ],
+                  "description": "Answer of `GET /v1/providers/{azure|gcp}/oauth/{attempt_id}`.\n\nTwo states rather than one nullable body, for the reason\n[`CodexOauthPending`](crate::CodexOauthPending) is its own answer: a poll\nthat found nothing is a perfectly good `200` that says so, and the page\nasks again."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers/gcp/oauth/{attempt_id}/finish": {
+      "post": {
+        "summary": "`POST /v1/providers/gcp/oauth/{attempt_id}/finish` — links the chosen project.",
+        "description": "`POST /v1/providers/gcp/oauth/{attempt_id}/finish` — links the chosen\nproject.",
+        "operationId": "flyco_api::provider_oauth::gcp_finish",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/providers/gcp/oauth/{attempt_id}/finish`.",
+                "required": [
+                  "project_id"
+                ],
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Which of the authorized projects to provision into."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One row of `GET /v1/providers`.",
+                  "required": [
+                    "id",
+                    "kind",
+                    "label",
+                    "linked_at_unix"
+                  ],
+                  "properties": {
+                    "host_id": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/Uuid",
+                          "description": "The enrolled machine this account *is*, when it is one.\n\n`None` for every cloud account. A host is a provider account\n(docs/host-enrollment.md), which is what keeps the catalog, session\ncreation and the usage panel free of a special case for it — but a\nclient holding both `GET /v1/hosts` and `GET /v1/providers` still has\nto know which account is which machine, and an id is the only honest\nway to say so. Inferring it from [`CloudProviderKind::Host`] would\nname the kind and not the machine."
+                        }
+                      ]
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier used to unlink the account."
+                    },
+                    "kind": {
+                      "$ref": "#/components/schemas/CloudProviderKind",
+                      "description": "Which provider it is."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "Label supplied when it was linked.\n\nFor a machine the user owns this is the host's own label, kept in\nstep by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so\na rename that moved only one of them would leave the compute chip\ncalling a machine something its card no longer does."
+                    },
+                    "linked_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was linked, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/providers/quickstart": {
       "post": {
         "summary": "Suggests free-credit programmes the caller qualifies for.",
@@ -7092,6 +7607,37 @@
           }
         }
       },
+      "FinishAzureOauth": {
+        "type": "object",
+        "description": "Request body of `POST /v1/providers/azure/oauth/{attempt_id}/finish`.",
+        "required": [
+          "subscription_id",
+          "admin_ssh_public_key"
+        ],
+        "properties": {
+          "admin_ssh_public_key": {
+            "type": "string",
+            "description": "The `OpenSSH` public key a machine's break-glass login is created\nwith, exactly as [`ProviderCredentials::Azure`] carries it."
+          },
+          "subscription_id": {
+            "type": "string",
+            "description": "Which of the authorized subscriptions to provision into."
+          }
+        }
+      },
+      "FinishGcpOauth": {
+        "type": "object",
+        "description": "Request body of `POST /v1/providers/gcp/oauth/{attempt_id}/finish`.",
+        "required": [
+          "project_id"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "Which of the authorized projects to provision into."
+          }
+        }
+      },
       "HarnessAccountView": {
         "type": "object",
         "description": "A Claude or Codex account the user has linked, as `GET\n/v1/harness-accounts` lists it.\n\nNo representation of an account carries its credential; the sealed value\nleaves the control plane only when it is provisioned onto a session machine.",
@@ -8333,6 +8879,40 @@
           }
         }
       },
+      "ProviderCallback": {
+        "type": "object",
+        "description": "The query string a vendor appends when it returns the browser.\n\nEvery field but `state` is optional because a refusal is a redirect too:\na user who closes the consent screen comes back with `error` and no\n`code`, and that has to reach the return page as a problem rather than\nas an extractor failure.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The single-use authorization code."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The vendor's machine-readable refusal, when it refused."
+          },
+          "error_description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its explanation."
+          },
+          "state": {
+            "type": "string",
+            "description": "The `state` this control plane minted in the matching `start`."
+          }
+        }
+      },
       "ProviderCredentials": {
         "oneOf": [
           {
@@ -8456,6 +9036,90 @@
           }
         ],
         "description": "Provider-native credentials, tagged by the provider they open.\n\nThe tag *is* the provider: an account's kind is read off the variant\nrather than carried beside it, so a request cannot name Azure and enclose\nan AWS key pair."
+      },
+      "ProviderOauthChoice": {
+        "type": "object",
+        "description": "One thing the signed-in account may link.\n\nAn Azure subscription or a Google project — the account holds many and\nflyco provisions into exactly one, so the choice is the user's and this\nis what they choose between.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "What the finish request names it by: a subscription id, a project id."
+          },
+          "name": {
+            "type": "string",
+            "description": "What the vendor calls it, which is what the user recognises."
+          }
+        }
+      },
+      "ProviderOauthProgress": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The browser has not come back from the vendor yet.",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "pending"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The vendor said who signed in and what they may link.",
+            "required": [
+              "account",
+              "choices",
+              "state"
+            ],
+            "properties": {
+              "account": {
+                "type": "string",
+                "description": "The account that signed in, as the vendor names it."
+              },
+              "choices": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ProviderOauthChoice"
+                },
+                "description": "What that account may link, in the vendor's own order."
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "authorized"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Answer of `GET /v1/providers/{azure|gcp}/oauth/{attempt_id}`.\n\nTwo states rather than one nullable body, for the reason\n[`CodexOauthPending`](crate::CodexOauthPending) is its own answer: a poll\nthat found nothing is a perfectly good `200` that says so, and the page\nasks again."
+      },
+      "ProviderOauthStart": {
+        "type": "object",
+        "description": "Answer of `POST /v1/providers/{azure|gcp}/oauth/start`.\n\nThe browser is sent to [`authorize_url`](Self::authorize_url) and the\npage keeps [`attempt_id`](Self::attempt_id) to poll with: the sign-in\nfinishes at the vendor and comes back through a public callback that\ncarries no flyco credential, so the attempt id is the only thing tying\nthe two halves together.",
+        "required": [
+          "attempt_id",
+          "authorize_url"
+        ],
+        "properties": {
+          "attempt_id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "Names this sign-in for the poll and the finish that end it."
+          },
+          "authorize_url": {
+            "type": "string",
+            "description": "Where the browser approves the grant."
+          }
+        }
       },
       "ProvisioningStage": {
         "type": "string",

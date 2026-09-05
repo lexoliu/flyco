@@ -15,9 +15,15 @@ use crate::anthropic::{
     Account, AnthropicError, ClaudeClient, ClaudeOauth, TokenRequest, TokenSet,
 };
 use crate::app::router;
+use crate::clouds::{CloudLink, Clouds};
 use crate::config::{ApiConfig, ApiSettings};
+use crate::error::ApiError;
 use crate::github::{GithubClient, GithubError, GithubOauth, GithubToken, GithubUser};
+use crate::google::{self, GoogleClient, GoogleError, GoogleOauth};
 use crate::harness_accounts::StoredCredential;
+use crate::microsoft::{
+    self, AzureIdentity, AzureTokens, MicrosoftClient, MicrosoftError, MicrosoftOauth,
+};
 use crate::openai::{
     self, CodexClient, CodexOauth, DeviceAuth, DeviceCode, DevicePoll, OpenAiError,
 };
@@ -92,6 +98,18 @@ pub const CLAUDE_CLIENT_ID: &str = "flyco-test-claude-client";
 /// Client id the test configuration presents to `OpenAI`.
 pub const CODEX_CLIENT_ID: &str = "app_flyco-test-codex-client";
 
+/// Client id the test configuration presents to Microsoft.
+pub const AZURE_CLIENT_ID: &str = "flyco-test-microsoft-client";
+
+/// Client secret the test configuration presents to Microsoft.
+pub const AZURE_CLIENT_SECRET: &str = "flyco-test-microsoft-secret";
+
+/// Client id the test configuration presents to Google.
+pub const GOOGLE_CLIENT_ID: &str = "flyco-test.apps.googleusercontent.com";
+
+/// Client secret the test configuration presents to Google.
+pub const GOOGLE_CLIENT_SECRET: &str = "flyco-test-google-secret";
+
 /// The bindings the test configuration is read from.
 pub fn test_settings() -> ApiSettings {
     ApiSettings {
@@ -99,6 +117,10 @@ pub fn test_settings() -> ApiSettings {
         github_client_secret: CLIENT_SECRET.to_owned(),
         claude_oauth_client_id: CLAUDE_CLIENT_ID.to_owned(),
         codex_oauth_client_id: CODEX_CLIENT_ID.to_owned(),
+        azure_oauth_client_id: AZURE_CLIENT_ID.to_owned(),
+        azure_oauth_client_secret: AZURE_CLIENT_SECRET.to_owned(),
+        google_oauth_client_id: GOOGLE_CLIENT_ID.to_owned(),
+        google_oauth_client_secret: GOOGLE_CLIENT_SECRET.to_owned(),
         redirect_uri: REDIRECT_URI.to_owned(),
         encryption_key_hex: ENCRYPTION_KEY_HEX.to_owned(),
         vapid_private_key: VAPID_PRIVATE_KEY.to_owned(),
@@ -594,12 +616,268 @@ impl CodexOauth for TestCodex {
     }
 }
 
+// ── The two cloud sign-ins ──
+
+/// The authorization code [`TestMicrosoft`] and [`TestGoogle`] will redeem.
+///
+/// One constant for both: what a fake is asked to distinguish is the code it
+/// was given from anything else, and two spellings of "the right code" would
+/// only be two things to keep in step.
+pub const CLOUD_CODE: &str = "the-authorization-code";
+
+/// The Microsoft account [`TestMicrosoft`] reports.
+pub const AZURE_ACCOUNT: &str = "me@lexo.cool";
+
+/// The subscription [`TestMicrosoft`] offers.
+pub const AZURE_SUBSCRIPTION_ID: &str = "00000000-1111-4222-8333-444444444444";
+
+/// What it is called.
+pub const AZURE_SUBSCRIPTION_NAME: &str = "Visual Studio Enterprise";
+
+/// The directory the signed-in Microsoft account belongs to.
+pub const AZURE_TENANT_ID: &str = "11111111-2222-4333-8444-555555555555";
+
+/// The application id of the service principal [`TestMicrosoft`] creates.
+pub const AZURE_APP_CLIENT_ID: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+
+/// The client secret it mints for it.
+pub const AZURE_APP_CLIENT_SECRET: &str = "the-minted-client-secret";
+
+/// The `OpenSSH` public key an Azure link is finished with.
+pub const ADMIN_SSH_PUBLIC_KEY: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFlycoFixtureKeyForTests lexo@flyco";
+
+/// The Google account [`TestGoogle`] reports.
+pub const GCP_ACCOUNT: &str = "me@lexo.cool";
+
+/// The project [`TestGoogle`] offers.
+pub const GCP_PROJECT_ID: &str = "flyco-dev-4821";
+
+/// What it is called.
+pub const GCP_PROJECT_NAME: &str = "flyco dev";
+
+/// The service-account key document [`TestGoogle`] mints.
+pub const GCP_SERVICE_ACCOUNT_JSON: &str = include_str!("../fixtures/google/key_document.json");
+
+/// What a cloud vendor does when a sign-in reaches it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CloudBehaviour {
+    /// It signs the user in and creates what it is asked for.
+    #[default]
+    Succeeds,
+    /// It refuses everything, the way it does when consent was declined.
+    Refused,
+}
+
+/// A [`MicrosoftOauth`] that answers without a network.
+///
+/// It asserts the deployment's own client credentials rather than recording
+/// them, for the reason [`TestClaude`] does: what actually goes on the wire
+/// is pinned separately, against recorded exchanges, in
+/// [`crate::microsoft`]. What varies here is only which of Microsoft's two
+/// answers a test wants.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TestMicrosoft {
+    /// Which answer this client gives.
+    pub behaviour: CloudBehaviour,
+}
+
+impl TestMicrosoft {
+    /// A Microsoft that signs the user in.
+    #[must_use]
+    pub const fn succeeding() -> Self {
+        Self {
+            behaviour: CloudBehaviour::Succeeds,
+        }
+    }
+
+    /// A Microsoft that refuses.
+    #[must_use]
+    pub const fn refusing() -> Self {
+        Self {
+            behaviour: CloudBehaviour::Refused,
+        }
+    }
+
+    /// Microsoft's own answer to something it will not take.
+    fn refusal() -> MicrosoftError {
+        MicrosoftError::Rejected {
+            code: "invalid_grant".to_owned(),
+            description: "The authorization code is invalid or has expired.".to_owned(),
+        }
+    }
+}
+
+impl MicrosoftOauth for TestMicrosoft {
+    fn sign_in(
+        &self,
+        client: microsoft::OauthClient<'_>,
+        code: &str,
+        redirect_uri: &str,
+    ) -> impl Future<Output = Result<microsoft::SignIn, MicrosoftError>> + Send {
+        assert_eq!(client.id, AZURE_CLIENT_ID);
+        assert_eq!(client.secret, AZURE_CLIENT_SECRET);
+        assert!(
+            redirect_uri.ends_with("/v1/providers/azure/oauth/callback"),
+            "the exchange is bound to flyco's own callback: {redirect_uri}"
+        );
+        ready(
+            if self.behaviour == CloudBehaviour::Succeeds && code == CLOUD_CODE {
+                Ok(microsoft::SignIn {
+                    account: AZURE_ACCOUNT.to_owned(),
+                    choices: vec![flyco_core::ProviderOauthChoice {
+                        id: AZURE_SUBSCRIPTION_ID.to_owned(),
+                        name: AZURE_SUBSCRIPTION_NAME.to_owned(),
+                    }],
+                    tokens: AzureTokens {
+                        tenant_id: AZURE_TENANT_ID.to_owned(),
+                        arm_token: "the-arm-token".to_owned(),
+                        graph_token: "the-graph-token".to_owned(),
+                    },
+                })
+            } else {
+                Err(Self::refusal())
+            },
+        )
+    }
+
+    fn create_identity(
+        &self,
+        tokens: &AzureTokens,
+        subscription_id: &str,
+    ) -> impl Future<Output = Result<AzureIdentity, MicrosoftError>> + Send {
+        assert_eq!(tokens.tenant_id, AZURE_TENANT_ID);
+        let tenant_id = tokens.tenant_id.clone();
+        let chosen = subscription_id == AZURE_SUBSCRIPTION_ID;
+        ready(if self.behaviour == CloudBehaviour::Succeeds && chosen {
+            Ok(AzureIdentity {
+                tenant_id,
+                client_id: AZURE_APP_CLIENT_ID.to_owned(),
+                client_secret: AZURE_APP_CLIENT_SECRET.to_owned(),
+            })
+        } else {
+            Err(Self::refusal())
+        })
+    }
+}
+
+/// A [`GoogleOauth`] that answers without a network.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TestGoogle {
+    /// Which answer this client gives.
+    pub behaviour: CloudBehaviour,
+}
+
+impl TestGoogle {
+    /// A Google that signs the user in.
+    #[must_use]
+    pub const fn succeeding() -> Self {
+        Self {
+            behaviour: CloudBehaviour::Succeeds,
+        }
+    }
+
+    /// A Google that refuses.
+    #[must_use]
+    pub const fn refusing() -> Self {
+        Self {
+            behaviour: CloudBehaviour::Refused,
+        }
+    }
+
+    /// Google's own answer to something it will not take.
+    fn refusal() -> GoogleError {
+        GoogleError::Rejected {
+            status: "PERMISSION_DENIED".to_owned(),
+            message: "The caller does not have permission.".to_owned(),
+        }
+    }
+}
+
+impl GoogleOauth for TestGoogle {
+    fn sign_in(
+        &self,
+        client: google::OauthClient<'_>,
+        code: &str,
+        redirect_uri: &str,
+    ) -> impl Future<Output = Result<google::SignIn, GoogleError>> + Send {
+        assert_eq!(client.id, GOOGLE_CLIENT_ID);
+        assert_eq!(client.secret, GOOGLE_CLIENT_SECRET);
+        assert!(
+            redirect_uri.ends_with("/v1/providers/gcp/oauth/callback"),
+            "the exchange is bound to flyco's own callback: {redirect_uri}"
+        );
+        ready(
+            if self.behaviour == CloudBehaviour::Succeeds && code == CLOUD_CODE {
+                Ok(google::SignIn {
+                    account: GCP_ACCOUNT.to_owned(),
+                    choices: vec![flyco_core::ProviderOauthChoice {
+                        id: GCP_PROJECT_ID.to_owned(),
+                        name: GCP_PROJECT_NAME.to_owned(),
+                    }],
+                    access_token: "the-google-token".to_owned(),
+                })
+            } else {
+                Err(Self::refusal())
+            },
+        )
+    }
+
+    fn create_identity(
+        &self,
+        token: &str,
+        project_id: &str,
+    ) -> impl Future<Output = Result<String, GoogleError>> + Send {
+        assert_eq!(token, "the-google-token");
+        ready(
+            if self.behaviour == CloudBehaviour::Succeeds && project_id == GCP_PROJECT_ID {
+                Ok(GCP_SERVICE_ACCOUNT_JSON.to_owned())
+            } else {
+                Err(Self::refusal())
+            },
+        )
+    }
+}
+
+/// A [`CloudLink`] that checks a credential without a cloud account.
+///
+/// It reproduces the two answers the live one gives that anything depends
+/// on: an Azure link owns the resource group flyco creates in the
+/// subscription, and an enrolled machine is not linkable by presenting a
+/// credential at all. Whether a *real* credential works is pinned where it
+/// can be — against the recorded exchanges in `flyco_provider`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TestClouds;
+
+impl CloudLink for TestClouds {
+    fn prepare(
+        &self,
+        credentials: &ProviderCredentials,
+    ) -> impl Future<Output = Result<Option<String>, ApiError>> {
+        ready(match credentials {
+            ProviderCredentials::Azure { .. } => {
+                Ok(Some(flyco_provider::azure::RESOURCE_GROUP.to_owned()))
+            }
+            ProviderCredentials::Host { .. } => Err(ApiError::HostNotLinkable),
+            ProviderCredentials::Aws { .. } | ProviderCredentials::Gcp { .. } => Ok(None),
+        })
+    }
+}
+
+/// The cloud side of linking, as every test router carries it.
+#[must_use]
+pub fn test_clouds() -> Clouds {
+    Clouds::Fake(TestClouds)
+}
+
 /// The vendor clients every test router carries.
 #[must_use]
 pub fn test_vendors() -> Vendors {
     Vendors::new(
         ClaudeClient::Fake(TestClaude),
         CodexClient::Fake(TestCodex::approved()),
+        MicrosoftClient::Fake(TestMicrosoft::succeeding()),
+        GoogleClient::Fake(TestGoogle::succeeding()),
     )
 }
 
@@ -621,6 +899,7 @@ pub fn test_router_with(db: Db, queue: Queue, github: TestGithub, vendors: Vendo
         test_config(),
         GithubClient::Fake(github),
         vendors,
+        test_clouds(),
         db,
         queue,
     )

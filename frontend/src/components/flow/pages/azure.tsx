@@ -26,7 +26,11 @@ import CommandBlock from "../../CommandBlock";
 import CopyButton from "../../CopyButton";
 import ProblemNotice from "../../ProblemNotice";
 import { useReadiness } from "../../Readiness";
-import { linkProvider } from "../../../api/client";
+import {
+  finishAzureOauth,
+  linkProvider,
+  type ProviderAccountView,
+} from "../../../api/client";
 import { parseAzureServicePrincipal } from "../../../lib/azureCredentials";
 import {
   downloadPrivateKey,
@@ -199,16 +203,51 @@ export const AzureSubscription: PageComponent<{ id: "azure-subscription" }> = (
 export const AzureKey: PageComponent<{ id: "azure-key" }> = (props) => {
   const readiness = useReadiness();
   const answers = props.state().answers;
-  const principal = answers.azurePrincipal;
-  if (principal === null) {
-    throw new Error(
-      "the Azure key page was reached without a service principal",
-    );
-  }
-  const subscriptionId = principal.subscriptionId ?? answers.azureSubscription;
-  if (subscriptionId === null) {
-    throw new Error("the Azure key page was reached without a subscription");
-  }
+  // The page belongs to both roads: behind the consent it links through
+  // the attempt, behind Cloud Shell through the pasted principal.
+  const link = ((): { run: (key: string) => Promise<ProviderAccountView> } => {
+    if (answers.cloudRoute === "sign-in") {
+      const consent = answers.cloudConsent;
+      const subscriptionId = answers.cloudChoice;
+      if (consent === null || subscriptionId === null) {
+        throw new Error(
+          "the Azure key page was reached without a consent and a subscription",
+        );
+      }
+      return {
+        run: (key) =>
+          finishAzureOauth(consent.attemptId, {
+            subscription_id: subscriptionId,
+            admin_ssh_public_key: key,
+          }),
+      };
+    }
+    const principal = answers.azurePrincipal;
+    if (principal === null) {
+      throw new Error(
+        "the Azure key page was reached without a service principal",
+      );
+    }
+    const subscriptionId =
+      principal.subscriptionId ?? answers.azureSubscription;
+    if (subscriptionId === null) {
+      throw new Error("the Azure key page was reached without a subscription");
+    }
+    return {
+      run: (key) =>
+        linkProvider({
+          label: "Azure",
+          credentials: {
+            kind: "azure",
+            tenant_id: principal.tenantId,
+            client_id: principal.clientId,
+            client_secret: principal.clientSecret,
+            subscription_id: subscriptionId,
+            admin_ssh_public_key: key,
+          },
+        }),
+    };
+  })();
 
   const [generated, setGenerated] = createSignal<BreakGlassKey | null>(
     answers.azureKey,
@@ -255,17 +294,7 @@ export const AzureKey: PageComponent<{ id: "azure-key" }> = (props) => {
         if (key === "") {
           return;
         }
-        await linkProvider({
-          label: "Azure",
-          credentials: {
-            kind: "azure",
-            tenant_id: principal.tenantId,
-            client_id: principal.clientId,
-            client_secret: principal.clientSecret,
-            subscription_id: subscriptionId,
-            admin_ssh_public_key: key,
-          },
-        });
+        await link.run(key);
         await readiness.refresh();
         props.advance();
       },

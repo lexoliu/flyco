@@ -12,6 +12,7 @@ import { AwsKeys, AwsPolicy } from "./aws";
 import { AzureCommand, AzureKey, AzurePaste, AzureSubscription } from "./azure";
 import { Credit, NewToProvider, Student } from "./bonus";
 import { ClaudePaste, ClaudeSignIn } from "./claude";
+import { CloudChoice, CloudSignIn } from "./cloud";
 import { CodexSignIn } from "./codex";
 import { ComputeChoice } from "./computeChoice";
 import { GcpCommands, GcpKeyFile } from "./gcp";
@@ -29,6 +30,8 @@ export const PAGES: PageRegistry = {
   "new-to-provider": NewToProvider,
   student: Student,
   credit: Credit,
+  "cloud-sign-in": CloudSignIn,
+  "cloud-choice": CloudChoice,
   "azure-command": AzureCommand,
   "azure-paste": AzurePaste,
   "azure-subscription": AzureSubscription,
