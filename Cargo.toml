@@ -16,7 +16,7 @@ flyco-provider = { path = "crates/provider" }
 # Includes the Worker response fix from zen-rs/skyzen#38. Skyzen's traits and
 # macros cross crate boundaries, so the family must come from one revision.
 # Keep the exact revision until the next crates.io release contains it.
-skyzen = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923ecff14b42c5b6fbf9ad16" }
+skyzen = { git = "https://github.com/zen-rs/skyzen", rev = "94de92d542d5934cb6348ec490c7031d9d59a2a7" }
 # Backend-free: `skyzen-services` defaults to every native sqlx driver
 # (postgres, mysql, sqlite), and the Worker build has no business compiling
 # any of them — its database is D1. The one target that needs a real driver,
@@ -24,9 +24,9 @@ skyzen = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923e
 # `sqlite` itself in `crates/api`. Declared here rather than per member
 # because a member may not turn a workspace dependency's default features
 # off, only leave them off.
-skyzen-services = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923ecff14b42c5b6fbf9ad16", default-features = false }
-skyzen-test = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923ecff14b42c5b6fbf9ad16" }
-skyzen-cloudflare = { git = "https://github.com/zen-rs/skyzen", rev = "ee225eb24d94c36f923ecff14b42c5b6fbf9ad16" }
+skyzen-services = { git = "https://github.com/zen-rs/skyzen", rev = "94de92d542d5934cb6348ec490c7031d9d59a2a7", default-features = false }
+skyzen-test = { git = "https://github.com/zen-rs/skyzen", rev = "94de92d542d5934cb6348ec490c7031d9d59a2a7" }
+skyzen-cloudflare = { git = "https://github.com/zen-rs/skyzen", rev = "94de92d542d5934cb6348ec490c7031d9d59a2a7" }
 # Select the native TLS backend in native crates below. Keeping the shared
 # dependency backend-free lets the Worker use Zenwave's built-in Fetch backend
 # without compiling an inapplicable native TLS stack.
