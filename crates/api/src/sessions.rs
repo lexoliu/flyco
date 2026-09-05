@@ -914,25 +914,17 @@ pub async fn note_progress(db: &Db, id: SessionId) -> Result<(), ApiError> {
 /// # Errors
 ///
 /// Returns [`ApiError`] if the database fails.
-pub async fn stalled_provisions(db: &Db, at_unix: u64) -> Result<Vec<SessionId>, ApiError> {
+pub async fn stalled_provisions(db: &Db, at_unix: u64) -> Result<Vec<IdleSession>, ApiError> {
     let cutoff = at_unix.saturating_sub(PROVISION_DEADLINE_SECS);
     let provisioning = SessionState::Provisioning;
-    let stalled: Vec<StalledSession> = sql!(
+    Ok(sql!(
         db,
-        "SELECT id FROM sessions \
+        "SELECT id, user_id FROM sessions \
          WHERE state = {provisioning} AND created_at_unix <= {cutoff} \
          AND last_active_unix <= {cutoff}"
     )
     .fetch_all()
-    .await?;
-    Ok(stalled.into_iter().map(|row| row.id).collect())
-}
-
-/// One row of [`stalled_provisions`].
-#[derive(Debug, skyzen::FromRow)]
-struct StalledSession {
-    /// The session whose machine stopped making progress.
-    id: SessionId,
+    .await?)
 }
 
 /// Sessions that have sat idle past [`ARCHIVE_AFTER_IDLE_SECS`] and still

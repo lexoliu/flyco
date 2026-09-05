@@ -572,8 +572,10 @@ is not where a user looks when the page tells them the session stopped.
   instant is a new machine.
 - A machine that stops reporting stages for fifteen minutes is **failed**
   by the control plane, with `the machine was built but never reported its
-  agent ready`. Nothing else would notice: the queue's job finished, and
-  the daemon that would report the failure is the thing that is failing.
+  agent ready`, and the machine is released with it: a machine that never
+  came up is still a machine running up a bill. Nothing else would notice:
+  the queue's job finished, and the daemon that would report the failure
+  is the thing that is failing.
 - A provision that **fails** stops the timeline where it was: the stage
   in progress turns red with an ✕ and the time it had run, its clock
   frozen at the failure, and nothing on the page still spins or reads

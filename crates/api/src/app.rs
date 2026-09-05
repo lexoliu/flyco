@@ -1579,14 +1579,35 @@ async fn record_provisioning_stage(
 /// # Errors
 ///
 /// Returns [`ApiError`] if the database fails.
-pub async fn fail_stalled_provisions(db: &Db, rooms: &Rooms, at_unix: u64) -> Result<(), ApiError> {
-    for session in sessions::stalled_provisions(db, at_unix).await? {
+pub async fn fail_stalled_provisions(
+    db: &Db,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    hosts: &HostRooms,
+    at_unix: u64,
+) -> Result<(), ApiError> {
+    for stalled in sessions::stalled_provisions(db, at_unix).await? {
+        // Destroyed first: a machine that never came up is still a machine
+        // running up a bill, and a session flyco has given up on must not
+        // go on paying for one. Resuming builds a new one on the same row.
+        // A provider that refuses is logged rather than raised — the
+        // session is failed either way, and a machine left behind is a
+        // cost to report, not a reason to keep the page spinning.
+        if let Err(error) =
+            machines::destroy_for_archive(db, config, hosts, stalled.user_id, stalled.id).await
+        {
+            tracing::warn!(
+                session = %stalled.id,
+                %error,
+                "a stalled session's machine could not be released"
+            );
+        }
         sessions::fail(
             db,
             rooms,
-            session,
+            stalled.id,
             "the machine was built but never reported its agent ready, so flyco stopped \
-             waiting for it",
+             waiting for it and released it",
         )
         .await?;
     }
