@@ -564,6 +564,23 @@ impl<S: TranscriptStore> Driver<S> {
         self.announced = true;
     }
 
+    /// The message, plus whatever the agent process last wrote to stderr.
+    ///
+    /// For the failures flyco detects itself: flyco knows *that* the CLI
+    /// did not do what was asked, and only the CLI knows why.
+    fn with_recent_stderr(&self, message: String) -> String {
+        if self.stderr_tail.is_empty() {
+            return message;
+        }
+        let said = self
+            .stderr_tail
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("{message} The agent's last output was:\n{said}")
+    }
+
     /// Keeps one stderr line, oldest dropped first.
     fn remember_stderr(&mut self, line: String) {
         if self.stderr_tail.len() == STDERR_TAIL {
@@ -684,8 +701,13 @@ impl<S: TranscriptStore> Driver<S> {
                 // it is spending; one that cannot is stopped here rather
                 // than left to find out by trying.
                 if let Err(error) = crate::mount::verify(&servers) {
-                    self.fatal(ClaudeError::Mount(error.into()).to_string())
-                        .await;
+                    // With the CLI's own words attached: a mount that came
+                    // up short is nearly always the CLI refusing a server
+                    // for a reason it states on stderr and nowhere else,
+                    // and the machine's journal goes with the machine.
+                    let refusal =
+                        self.with_recent_stderr(ClaudeError::Mount(error.into()).to_string());
+                    self.fatal(refusal).await;
                     return false;
                 }
                 true
