@@ -69,6 +69,13 @@ impl SessionState {
     /// it a recovery that ran out of attempts would leave the session
     /// looking like one that is still coming back.
     ///
+    /// `Active -> Failed` is the same fact arriving a different way: the
+    /// agent process on a live machine died, and the daemon said so on its
+    /// way out (issue #193). The session is not paused, not interrupted and
+    /// not archived — it stopped, for a reason worth reading — and only
+    /// [`Failed`](Self::Failed) both releases the machine and carries the
+    /// sentence explaining it.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionTransitionError`] when the move is not part of the
@@ -82,7 +89,7 @@ impl SessionState {
             ) | (Self::Paused, Self::Active | Self::Archived)
                 | (
                     Self::Active,
-                    Self::Paused | Self::Interrupted | Self::Archived
+                    Self::Paused | Self::Interrupted | Self::Archived | Self::Failed
                 )
                 | (
                     Self::Interrupted,

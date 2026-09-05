@@ -141,6 +141,55 @@ async fn a_daemon_announces_the_stage_that_cannot_ride_the_relay(ctx: TestContex
 }
 
 #[skyzen::test]
+async fn a_live_session_whose_agent_died_fails_with_what_the_agent_said(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // The other half of the rule below. A daemon that reports a failure
+    // *after* the session went live is a daemon whose agent process is
+    // gone, and one that reaches that point exits cleanly — so systemd does
+    // not restart it and nothing else is coming. Recording the reason and
+    // waiting would leave the page spinning for fifteen minutes over a
+    // session that is already over (issue #193).
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+    let token = pair(&client, &caller, session).await;
+    crate::sessions::daemon_arrived(&db, session)
+        .await
+        .expect("the session goes live when its daemon greets");
+
+    client
+        .post(&format!("/v1/sessions/{session}/startup-failure"))
+        .bearer(&token)
+        .json(&flyco_core::ReportStartupFailure {
+            message: "the agent process exited (exit status: 3). Its last output was:\nTypeError"
+                .to_owned(),
+        })
+        .send()
+        .await
+        .assert_status(204);
+
+    let detail: flyco_core::SessionDetail = client
+        .get(&format!("/v1/sessions/{session}"))
+        .bearer(&caller.token)
+        .send()
+        .await
+        .json();
+
+    assert_eq!(detail.summary.state, flyco_core::SessionState::Failed);
+    assert!(
+        detail
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.contains("exit status: 3")),
+        "the session says what the agent said, not that something went wrong: {:?}",
+        detail.failure
+    );
+}
+
+#[skyzen::test]
 async fn a_daemon_that_cannot_start_says_why_and_the_session_says_it_later(
     ctx: TestContext,
     kv: Kv,

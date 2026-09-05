@@ -48,6 +48,7 @@ pub mod protocol;
 pub mod sidecar;
 pub mod store;
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
@@ -185,9 +186,12 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
             .take()
             .ok_or(ClaudeError::MissingStdio { stream: "stderr" })?;
 
+        let (commands, inbox) = mpsc::channel(CHANNEL_DEPTH);
+
         // Bun's own diagnostics and anything the SDK writes to stderr are
-        // logged, never parsed.
-        tokio::spawn(log_stderr(stderr));
+        // logged, never parsed — and kept, because when the sidecar dies
+        // they are the only account of why.
+        tokio::spawn(log_stderr(stderr, commands.clone()));
 
         let mut lines = BufReader::new(stdout).lines();
         handshake(&mut lines).await?;
@@ -208,7 +212,6 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
         )
         .await?;
 
-        let (commands, inbox) = mpsc::channel(CHANNEL_DEPTH);
         let (outputs, output_rx) = mpsc::channel(CHANNEL_DEPTH);
 
         tokio::spawn(read_sidecar(lines, commands.clone()));
@@ -221,6 +224,10 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
                 outputs,
                 capabilities: None,
                 stopped: false,
+                deliberate: false,
+                announced: false,
+                exit: None,
+                stderr_tail: VecDeque::new(),
             }
             .run(inbox),
         );
@@ -320,6 +327,8 @@ enum DriverCommand {
     },
     /// From the reader: one event off the sidecar's stdout.
     Sidecar(Box<SidecarEvent>),
+    /// From the stderr reader: one line the sidecar wrote to stderr.
+    SidecarStderr { line: String },
     /// From the reader: the sidecar's stdout ended.
     SidecarClosed,
     /// From the reader: a line that is not a [`SidecarEvent`].
@@ -375,11 +384,39 @@ async fn write_command(
     })
 }
 
-async fn log_stderr(stderr: tokio::process::ChildStderr) {
+/// How many of the sidecar's last stderr lines are kept to explain a death.
+///
+/// Enough for a stack trace or a credential refusal, short enough that the
+/// sentence a session shows stays a sentence.
+const STDERR_TAIL: usize = 20;
+
+/// How long the driver waits for stderr already in flight when it stops.
+///
+/// Short: the child is reaped by then, so this is a handful of lines
+/// crossing a channel, not a read that could block.
+const STDERR_SETTLE: Duration = Duration::from_millis(250);
+
+/// Logs the sidecar's stderr, and hands each line to the driver.
+///
+/// Both, not either: the journal is what an operator on the machine reads,
+/// and the driver's copy is what a person looking at the session reads when
+/// the process dies — which is the case where the journal is unreachable,
+/// because `flycod` is stopping too.
+async fn log_stderr(stderr: tokio::process::ChildStderr, commands: mpsc::Sender<DriverCommand>) {
     let mut lines = BufReader::new(stderr).lines();
     loop {
         match lines.next_line().await {
-            Ok(Some(line)) => tracing::debug!(target: "flycod::sidecar", "{line}"),
+            Ok(Some(line)) => {
+                tracing::debug!(target: "flycod::sidecar", "{line}");
+                if commands
+                    .send(DriverCommand::SidecarStderr { line })
+                    .await
+                    .is_err()
+                {
+                    // The driver is gone, so nobody is left to tell.
+                    break;
+                }
+            }
             Ok(None) => break,
             Err(error) => {
                 tracing::warn!(%error, "lost the sidecar's stderr");
@@ -441,6 +478,25 @@ struct Driver<S> {
     /// command reaps it to report the outcome, and the loop's exit path
     /// reaps whatever is left, so the two must not both wait.
     stopped: bool,
+    /// What the sidecar exited with, once it has been reaped.
+    ///
+    /// Kept because the status is half of what a person needs to read: a
+    /// process killed by the OOM killer and one that refused its
+    /// credentials both close their stdout, and only the status and the
+    /// stderr together tell them apart.
+    exit: Option<std::process::ExitStatus>,
+    /// Whether this driver was asked to stop, rather than stopping because
+    /// the sidecar did. Only a deliberate stop is silent.
+    deliberate: bool,
+    /// Whether a [`SessionOutput::Fatal`] has already been emitted, so the
+    /// loop's exit path does not write a second, vaguer one over it.
+    announced: bool,
+    /// The last [`STDERR_TAIL`] lines the sidecar wrote to stderr.
+    ///
+    /// A ring rather than the whole stream: a session that runs for hours
+    /// writes a great deal of it, and what explains a death is always at
+    /// the end.
+    stderr_tail: VecDeque<String>,
 }
 
 impl<S: TranscriptStore> Driver<S> {
@@ -455,7 +511,59 @@ impl<S: TranscriptStore> Driver<S> {
         if let Err(error) = self.stop().await {
             tracing::error!(%error, "the sidecar did not stop cleanly");
         }
+
+        // Every way of stopping that nobody asked for ends here with a
+        // sentence. Putting it after the loop rather than in the arms is
+        // the point: the driver stops on a closed stdout, on a protocol
+        // error, and on any command whose write fails — and a session whose
+        // agent died in the third way is no less dead than the other two
+        // (issue #193).
+        if !self.deliberate && !self.announced {
+            self.collect_late_stderr(&mut inbox).await;
+            self.fatal(self.death_notice()).await;
+        }
         tracing::debug!("the Claude Code driver task finished");
+    }
+
+    /// Takes the stderr lines that were still in flight when the driver
+    /// stopped.
+    ///
+    /// stdout and stderr are read by two tasks, so a sidecar that writes its
+    /// last words and exits can have its stdout EOF handled first, leaving
+    /// exactly the lines that explain the death sitting in the channel. The
+    /// child has been reaped by the time this runs, so its pipe is closed
+    /// and whatever remains is already on its way rather than merely
+    /// possible.
+    async fn collect_late_stderr(&mut self, inbox: &mut mpsc::Receiver<DriverCommand>) {
+        while let Ok(Some(command)) = tokio::time::timeout(STDERR_SETTLE, inbox.recv()).await {
+            // Anything else queued behind them is skipped rather than
+            // stopping the drain: the stdout EOF is usually the very thing
+            // sitting in front of the lines that explain it, and a command
+            // from the handle is one the dying driver could not have served
+            // anyway.
+            if let DriverCommand::SidecarStderr { line } = command {
+                self.remember_stderr(line);
+            }
+        }
+    }
+
+    /// Says why the session is over, once.
+    ///
+    /// Every fatal goes through here so that `announced` cannot be
+    /// forgotten at a call site: the loop's exit path writes a notice only
+    /// when nothing else has, and a second, vaguer sentence written over a
+    /// precise one would be worse than none.
+    async fn fatal(&mut self, error: String) {
+        emit(&self.outputs, SessionOutput::Fatal { error }).await;
+        self.announced = true;
+    }
+
+    /// Keeps one stderr line, oldest dropped first.
+    fn remember_stderr(&mut self, line: String) {
+        if self.stderr_tail.len() == STDERR_TAIL {
+            self.stderr_tail.pop_front();
+        }
+        self.stderr_tail.push_back(line);
     }
 
     /// Handles one command; returns whether the driver should keep running.
@@ -517,21 +625,21 @@ impl<S: TranscriptStore> Driver<S> {
                 let written = write_command(&mut self.stdin, &SidecarCommand::Shutdown).await;
                 let stopped = self.stop().await;
                 let _ = ack.send(written.and(stopped));
+                self.deliberate = true;
                 false
             }
             DriverCommand::Sidecar(event) => self.on_sidecar(*event).await,
+            DriverCommand::SidecarStderr { line } => {
+                self.remember_stderr(line);
+                true
+            }
             DriverCommand::SidecarClosed => {
                 tracing::info!("the sidecar closed its output stream");
                 false
             }
             DriverCommand::SidecarProtocolError { detail } => {
-                emit(
-                    &self.outputs,
-                    SessionOutput::Fatal {
-                        error: ClaudeError::Protocol { detail }.to_string(),
-                    },
-                )
-                .await;
+                self.fatal(ClaudeError::Protocol { detail }.to_string())
+                    .await;
                 false
             }
         }
@@ -540,14 +648,9 @@ impl<S: TranscriptStore> Driver<S> {
     async fn on_sidecar(&mut self, event: SidecarEvent) -> bool {
         match event {
             SidecarEvent::Ready { sdk_version } => {
-                emit(
-                    &self.outputs,
-                    SessionOutput::Fatal {
-                        error: format!(
-                            "the sidecar announced itself ready twice (version {sdk_version})"
-                        ),
-                    },
-                )
+                self.fatal(format!(
+                    "the sidecar announced itself ready twice (version {sdk_version})"
+                ))
                 .await;
                 false
             }
@@ -575,13 +678,8 @@ impl<S: TranscriptStore> Driver<S> {
                 // it is spending; one that cannot is stopped here rather
                 // than left to find out by trying.
                 if let Err(error) = crate::mount::verify(&servers) {
-                    emit(
-                        &self.outputs,
-                        SessionOutput::Fatal {
-                            error: ClaudeError::Mount(error.into()).to_string(),
-                        },
-                    )
-                    .await;
+                    self.fatal(ClaudeError::Mount(error.into()).to_string())
+                        .await;
                     return false;
                 }
                 true
@@ -614,7 +712,7 @@ impl<S: TranscriptStore> Driver<S> {
             }
             SidecarEvent::StoreRequest { id, op } => self.on_store_request(id, op).await,
             SidecarEvent::Fatal { error } => {
-                emit(&self.outputs, SessionOutput::Fatal { error }).await;
+                self.fatal(error).await;
                 false
             }
         }
@@ -646,13 +744,7 @@ impl<S: TranscriptStore> Driver<S> {
         let result = match result {
             Ok(result) => result,
             Err(error) => {
-                emit(
-                    &self.outputs,
-                    SessionOutput::Fatal {
-                        error: ClaudeError::Store(error).to_string(),
-                    },
-                )
-                .await;
+                self.fatal(ClaudeError::Store(error).to_string()).await;
                 return false;
             }
         };
@@ -665,6 +757,28 @@ impl<S: TranscriptStore> Driver<S> {
     }
 
     /// Waits for the child to exit, killing it if it overstays. Idempotent.
+    /// What this session says when the agent process is gone.
+    ///
+    /// The exit status and the last thing the process said, because a
+    /// person reading it has neither: `flycod` is stopping, so the journal
+    /// on the machine is about to be as unreachable as the machine.
+    fn death_notice(&self) -> String {
+        let status = self.exit.map_or_else(
+            || "the agent process ended without a status".to_owned(),
+            |status| format!("the agent process exited ({status})"),
+        );
+        if self.stderr_tail.is_empty() {
+            return format!("{status} and said nothing about why");
+        }
+        let said = self
+            .stderr_tail
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("{status}. Its last output was:\n{said}")
+    }
+
     async fn stop(&mut self) -> Result<(), ClaudeError> {
         if self.stopped {
             return Ok(());
@@ -673,6 +787,7 @@ impl<S: TranscriptStore> Driver<S> {
         match tokio::time::timeout(SHUTDOWN_GRACE, self.child.wait()).await {
             Ok(Ok(status)) => {
                 tracing::info!(%status, "the sidecar exited");
+                self.exit = Some(status);
                 Ok(())
             }
             Ok(Err(source)) => Err(ClaudeError::Io {
