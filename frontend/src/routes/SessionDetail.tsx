@@ -112,13 +112,22 @@ export default function SessionDetail() {
   );
 
   /**
-   * When the session failed, for the provisioning timeline to stop at.
-   * `fail` stamps `last_active_unix` as it records the reason, so that is
-   * the instant the machine stopped being built.
+   * When the session stopped being built, for the timeline to stop at.
+   *
+   * A session that is no longer provisioning and never reached `ready` did
+   * not finish: failing stamps `last_active_unix` as it records the
+   * reason, and archiving stamps it as it releases the machine, so either
+   * way that is the instant the build ended. A spinner past it is the page
+   * claiming something is still happening.
    */
-  const failedAtUnix = createMemo(() => {
+  const stoppedAtUnix = createMemo(() => {
     const current = session();
-    return current?.state === "failed" ? current.last_active_unix : null;
+    if (current === undefined || current.state === "provisioning") {
+      return null;
+    }
+    return current.state === "active" || current.state === "paused"
+      ? null
+      : current.last_active_unix;
   });
 
   /**
@@ -594,7 +603,7 @@ export default function SessionDetail() {
               }}
               deciding={deciding()}
               now={now()}
-              failedAtUnix={failedAtUnix()}
+              stoppedAtUnix={stoppedAtUnix()}
             />
           </Show>
 
@@ -614,7 +623,7 @@ export default function SessionDetail() {
                 repo={current().repo}
                 provider={providerLabel()}
                 now={now()}
-                failedAtUnix={failedAtUnix()}
+                stoppedAtUnix={stoppedAtUnix()}
               />
             )}
           </Show>

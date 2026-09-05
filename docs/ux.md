@@ -576,10 +576,11 @@ is not where a user looks when the page tells them the session stopped.
   came up is still a machine running up a bill. Nothing else would notice:
   the queue's job finished, and the daemon that would report the failure
   is the thing that is failing.
-- A provision that **fails** stops the timeline where it was: the stage
-  in progress turns red with an ✕ and the time it had run, its clock
-  frozen at the failure, and nothing on the page still spins or reads
-  `starting`. The failed notice (§6) says why, as its own sentence, with
+- A build that **stops** — failed, or archived before it finished — stops
+  the timeline where it was: the stage in progress turns red with an ✕ and
+  the time it had run, its clock frozen at the moment the session stopped,
+  and nothing on the page still spins or reads `starting`. What stopped it
+  is the notice's sentence, not the timeline's. The failed notice (§6) says why, as its own sentence, with
   `Resume` beside it; the control plane releases the machine reservation
   and tells the room, so an open page learns of the failure without a
   reload.
