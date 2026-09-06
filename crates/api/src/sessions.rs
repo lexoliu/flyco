@@ -977,6 +977,38 @@ pub async fn stalled_provisions(db: &Db, at_unix: u64) -> Result<Vec<IdleSession
     .await?)
 }
 
+/// Sessions flyco has stopped that still name a machine it is paying for.
+///
+/// The invariant the release paths are supposed to keep, checked rather
+/// than assumed. Every one of those paths — archive, the stall sweep, a
+/// daemon's failure report — is a request that can be cut short partway
+/// through, and the one that is cut short is exactly the one whose caller
+/// was dying: a daemon reporting why it cannot start is gone the moment it
+/// has said so. A machine outliving its session is silent and expensive, so
+/// it is swept rather than left to whoever failed to tear it down.
+///
+/// Reservations a provider never filled in are selected too: destroying
+/// one is a row update and no provider call, and a predicate that had to
+/// tell the two apart would be one more place for them to disagree.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn ended_holding_a_machine(db: &Db) -> Result<Vec<IdleSession>, ApiError> {
+    let failed = SessionState::Failed;
+    let archived = SessionState::Archived;
+    let destroyed = flyco_core::machine::MachineState::Destroyed;
+    Ok(sql!(
+        db,
+        "SELECT sessions.id AS id, sessions.user_id AS user_id FROM sessions \
+         JOIN machines ON machines.session_id = sessions.id \
+         WHERE (sessions.state = {failed} OR sessions.state = {archived}) \
+         AND machines.state != {destroyed}"
+    )
+    .fetch_all()
+    .await?)
+}
+
 /// Sessions that have sat idle past [`ARCHIVE_AFTER_IDLE_SECS`] and still
 /// hold an environment.
 ///

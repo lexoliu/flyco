@@ -557,6 +557,54 @@ async fn a_machine_that_stops_making_progress_fails_instead_of_spinning(
 }
 
 #[skyzen::test]
+async fn a_machine_that_outlives_its_session_is_released_by_the_sweep(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let session = open(&client, &caller).await.summary.id;
+    let rooms = test_rooms();
+
+    // A built machine whose session then ended without it: the shape every
+    // interrupted release path leaves behind, and the one a daemon's
+    // failure report leaves when its own process stops mid-request.
+    let running = flyco_core::MachineState::Running;
+    sql!(
+        db,
+        "UPDATE machines SET state = {running} WHERE session_id = {session}"
+    )
+    .execute()
+    .await
+    .expect("mark the machine built");
+    crate::sessions::fail(
+        &db,
+        &rooms,
+        session,
+        "the harness never mounted flyco's server",
+    )
+    .await
+    .expect("fail the session");
+
+    crate::app::release_ended_machines(&db, &test_config(), &test_host_rooms())
+        .await
+        .expect("sweep the machines of ended sessions");
+
+    let machine = crate::machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("the session reserved a row");
+    assert_eq!(
+        machine.state,
+        flyco_core::MachineState::Destroyed,
+        "no session flyco has stopped may go on holding a machine"
+    );
+}
+
+#[skyzen::test]
 async fn a_machine_still_making_progress_is_not_called_stalled(
     ctx: TestContext,
     kv: Kv,

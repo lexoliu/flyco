@@ -1645,6 +1645,49 @@ async fn report_startup_failure(
         .into()
 }
 
+/// Destroys the machines of sessions that are already over.
+///
+/// The backstop for every release path. Archive, the stall sweep and a
+/// daemon's failure report each destroy the machine inline, and each of
+/// them is a request that can end early — most of all the failure report,
+/// whose caller is a daemon that stops as soon as it has spoken. A machine
+/// that outlives its session bills silently and forever, so the invariant
+/// is checked here every minute instead of being trusted to whoever should
+/// have kept it.
+///
+/// Idempotent: a row already `Destroyed` is not selected, and destroying a
+/// machine a provider has already released is a no-op.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails. A provider that refuses one
+/// machine is logged and the sweep goes on to the next: one account whose
+/// credentials expired must not stop every other user's machine from being
+/// released.
+pub async fn release_ended_machines(
+    db: &Db,
+    config: &ApiConfig,
+    hosts: &HostRooms,
+) -> Result<(), ApiError> {
+    for ended in sessions::ended_holding_a_machine(db).await? {
+        if let Err(error) =
+            machines::destroy_for_archive(db, config, hosts, ended.user_id, ended.id).await
+        {
+            tracing::warn!(
+                session = %ended.id,
+                %error,
+                "a machine outliving its session could not be released"
+            );
+        } else {
+            tracing::info!(
+                session = %ended.id,
+                "released a machine that outlived its session"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Records why a daemon is stopping, and fails the session if that is what
 /// it means.
 ///
@@ -1675,14 +1718,20 @@ async fn take_failure_report(
     if target.state == SessionState::Provisioning {
         return Ok(());
     }
-    // Destroyed first, like the stall sweep does it: this session's machine
-    // was actually built and is running right now, and a session flyco has
-    // given up on must not go on paying for one (issue #199).
-    // `sessions::fail` releases only a machine that was never built, which
-    // was the whole story while `Failed` was reachable from `Provisioning`
-    // alone. A provider that refuses is logged rather than raised — the
-    // session failed either way, and a machine left behind is a cost to
-    // report, not a reason to keep the page spinning.
+    // Failed first, and only then the machine. The caller here is a daemon
+    // saying why it cannot go on, and a process that has said that is about
+    // to stop: its connection can close mid-request, and a handler that
+    // spent its first seconds tearing down a machine would be cut off
+    // before it ever wrote the sentence the page is waiting for. The state
+    // change is one row and a broadcast; the teardown is a provider call
+    // measured in tens of seconds.
+    //
+    // `sessions::fail` releases only a machine that was never built, so
+    // this session's — which is running right now — is destroyed after
+    // (issue #199). A provider that refuses is logged rather than raised:
+    // the session failed either way, and `release_ended_machines` sweeps
+    // whatever this attempt did not finish.
+    sessions::fail(db, rooms, id, message).await?;
     if let Err(error) = machines::destroy_for_archive(db, config, hosts, target.user_id, id).await {
         tracing::warn!(
             session = %id,
@@ -1690,7 +1739,7 @@ async fn take_failure_report(
             "a failed session's machine could not be released"
         );
     }
-    sessions::fail(db, rooms, id, message).await
+    Ok(())
 }
 
 #[skyzen::openapi]
