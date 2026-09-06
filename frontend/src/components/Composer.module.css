@@ -44,9 +44,13 @@
   outline: none;
 }
 
+/* Send is at the right of the row whether or not there are chips to push
+   it there: the session composer has none, and the button was landing at
+   the left edge, which is not where anybody looks for send. */
 .controls {
   display: flex;
   align-items: flex-end;
+  justify-content: flex-end;
   gap: var(--space-2);
 }
 
@@ -56,6 +60,7 @@
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
+  margin-right: auto;
   gap: var(--space-2);
   min-width: 0;
   flex: 1;
