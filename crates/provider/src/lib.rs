@@ -335,6 +335,33 @@ impl MachineOperation {
     }
 }
 
+/// What a quota's numbers count.
+///
+/// Every provider states its compute quotas in one of these two, and which
+/// one it is decides whether `allows 1` means one machine or sixty-four
+/// cores. Carried as a field rather than assumed, because AWS states the
+/// Mac families in whole hosts and everything else in vCPUs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaUnit {
+    /// Virtual CPUs, the unit of every core quota.
+    Vcpus,
+    /// Whole dedicated hosts, which is how the Mac families are sold.
+    Hosts,
+}
+
+impl QuotaUnit {
+    /// The noun to put after a count, agreeing with it.
+    #[must_use]
+    pub const fn noun(self, count: u32) -> &'static str {
+        match (self, count) {
+            (Self::Vcpus, 1) => "vCPU",
+            (Self::Vcpus, _) => "vCPUs",
+            (Self::Hosts, 1) => "dedicated host",
+            (Self::Hosts, _) => "dedicated hosts",
+        }
+    }
+}
+
 /// An error from a provider operation.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
@@ -359,15 +386,30 @@ pub enum ProviderError {
     NoCapacity(String),
     /// The account's quota does not cover the request, so it was refused
     /// before it was attempted.
+    ///
+    /// The message is read by the person whose session just failed, so it
+    /// says what the numbers count. `StandardDpsv6Family in westeurope
+    /// allows 10 and 8 are in use` was three bare integers and a
+    /// provider-internal identifier, and left a reader to guess whether the
+    /// unit was machines, cores or dollars.
+    ///
+    /// The provider-native quota name stays, because it is the string the
+    /// user types into Azure's or AWS's own increase request: the way out of
+    /// this error runs through the provider's console, and a name flyco
+    /// prettified would not be findable there.
     #[error(
-        "{quota} in {region} allows {limit} and {used} are in use, \
-         which does not cover {requested} more"
+        "the {quota} quota in {region} allows {limit} {unit} and {used} \
+         are already in use, so there is no room for the {requested} this \
+         machine needs",
+        unit = unit.noun(*limit),
     )]
     QuotaExceeded {
         /// Provider-native name of the quota that binds.
         quota: String,
         /// Region the quota applies to.
         region: String,
+        /// What the three numbers count.
+        unit: QuotaUnit,
         /// The limit.
         limit: u32,
         /// How much of it is already used.
@@ -377,7 +419,7 @@ pub enum ProviderError {
     },
     /// The requested machine type cannot be deployed into that region on
     /// this account at all.
-    #[error("{machine_type} is not available to this account in {region}: {reason}")]
+    #[error("this account cannot start {machine_type} in {region}: {reason}")]
     Unavailable {
         /// Machine type that was asked for.
         machine_type: String,
@@ -499,8 +541,50 @@ pub mod testing;
 
 #[cfg(test)]
 mod tests {
-    use super::{CapacityMode, DaemonBootstrap};
+    use super::{CapacityMode, DaemonBootstrap, ProviderError, QuotaUnit};
     use flyco_core::SessionId;
+
+    #[test]
+    fn a_refused_quota_reads_as_a_sentence_with_a_unit_in_it() {
+        // What the session page showed before this: `Standard_D4ps_v6 is not
+        // available to this account in westeurope: StandardDpsv6Family in
+        // westeurope allows 10 and 8 are in use, which does not cover 4
+        // more.` Three bare integers counting nothing a reader could name.
+        let quota = ProviderError::QuotaExceeded {
+            quota: "StandardDpsv6Family".to_owned(),
+            region: "westeurope".to_owned(),
+            unit: QuotaUnit::Vcpus,
+            limit: 10,
+            used: 8,
+            requested: 4,
+        };
+        assert_eq!(
+            quota.to_string(),
+            "the StandardDpsv6Family quota in westeurope allows 10 vCPUs and 8 \
+             are already in use, so there is no room for the 4 this machine needs"
+        );
+
+        let unavailable = ProviderError::Unavailable {
+            machine_type: "Standard_D4ps_v6".to_owned(),
+            region: "westeurope".to_owned(),
+            reason: quota.to_string(),
+        };
+        assert!(
+            unavailable
+                .to_string()
+                .starts_with("this account cannot start Standard_D4ps_v6 in westeurope: the ")
+        );
+    }
+
+    #[test]
+    fn a_quota_counted_in_hosts_does_not_claim_to_count_cores() {
+        // AWS states the Mac families in whole dedicated hosts, so the unit
+        // is carried rather than assumed — and it agrees with its count.
+        assert_eq!(QuotaUnit::Hosts.noun(1), "dedicated host");
+        assert_eq!(QuotaUnit::Hosts.noun(2), "dedicated hosts");
+        assert_eq!(QuotaUnit::Vcpus.noun(1), "vCPU");
+        assert_eq!(QuotaUnit::Vcpus.noun(4), "vCPUs");
+    }
 
     #[test]
     fn a_bootstrap_never_debug_prints_the_credentials_it_carries() {

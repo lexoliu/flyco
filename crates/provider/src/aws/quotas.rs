@@ -25,7 +25,7 @@
 
 use serde::Deserialize;
 
-use crate::{CapacityMode, ProviderError};
+use crate::{CapacityMode, ProviderError, QuotaUnit};
 
 use super::ec2::InstanceTypeInfo;
 
@@ -78,21 +78,6 @@ pub struct Quota {
     pub value: Option<f64>,
 }
 
-/// What a quota is counted in, which decides what "one more machine" costs
-/// against it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Unit {
-    /// Virtual CPUs, which is how both instance-launch quotas are counted.
-    Vcpus,
-    /// Whole dedicated hosts, which is how the Mac families are counted.
-    ///
-    /// Flyco does not enumerate the hosts already allocated, so a limit
-    /// above zero is entitlement rather than headroom; EC2 answers
-    /// `InsufficientHostCapacity` — an actionable refusal naming the real
-    /// problem — when the entitlement is real but spent.
-    Hosts,
-}
-
 /// Which launch a quota governs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Market {
@@ -121,7 +106,14 @@ pub struct Coverage {
     /// Which market.
     pub market: Market,
     /// What it counts.
-    pub unit: Unit,
+    /// What this quota counts. AWS states the Mac families in whole
+    /// dedicated hosts and everything else in vCPUs, which decides what
+    /// "one more machine" costs against it. Flyco does not enumerate the
+    /// hosts already allocated, so a host limit above zero is entitlement
+    /// rather than headroom; EC2 answers `InsufficientHostCapacity` — an
+    /// actionable refusal naming the real problem — when the entitlement is
+    /// real but spent.
+    pub unit: QuotaUnit,
 }
 
 /// Prefix of an on-demand instance-launch quota's name.
@@ -172,23 +164,23 @@ fn families_of(class: &str) -> Vec<String> {
 /// Three shapes govern a launch and nothing else does, so anything that
 /// matches none of them answers `None` rather than being forced into the
 /// model.
-fn classify(name: &str) -> Option<(&str, Market, Unit)> {
+fn classify(name: &str) -> Option<(&str, Market, QuotaUnit)> {
     if let Some(class) = name
         .strip_prefix(ON_DEMAND_PREFIX)
         .and_then(|rest| rest.strip_suffix(ON_DEMAND_SUFFIX))
     {
-        return Some((class, Market::OnDemand, Unit::Vcpus));
+        return Some((class, Market::OnDemand, QuotaUnit::Vcpus));
     }
     if let Some(class) = name
         .strip_prefix(SPOT_PREFIX)
         .and_then(|rest| rest.strip_suffix(SPOT_SUFFIX))
     {
-        return Some((class, Market::Spot, Unit::Vcpus));
+        return Some((class, Market::Spot, QuotaUnit::Vcpus));
     }
     let class = name
         .strip_prefix(HOST_PREFIX)
         .and_then(|rest| rest.strip_suffix(HOST_SUFFIX))?;
-    Some((class, Market::OnDemand, Unit::Hosts))
+    Some((class, Market::OnDemand, QuotaUnit::Hosts))
 }
 
 impl Quota {
@@ -359,7 +351,7 @@ impl Quotas {
         };
 
         let (used, requested) = match coverage.unit {
-            Unit::Vcpus => {
+            QuotaUnit::Vcpus => {
                 let family = family_tokens(name)
                     .into_iter()
                     .find(|token| coverage.families.contains(token))
@@ -370,7 +362,7 @@ impl Quotas {
                 )
             }
             // One host, and an allocation flyco does not enumerate.
-            Unit::Hosts => (0, 1),
+            QuotaUnit::Hosts => (0, 1),
         };
 
         if used.saturating_add(requested) <= *limit {
@@ -378,6 +370,7 @@ impl Quotas {
         }
 
         Err(ProviderError::QuotaExceeded {
+            unit: coverage.unit,
             quota: code.clone(),
             region: region.to_owned(),
             limit: *limit,
@@ -394,15 +387,16 @@ impl Quotas {
     #[must_use]
     pub fn needs_dedicated_host(&self, instance_type: &str) -> bool {
         self.binding(instance_type, Market::OnDemand)
-            .is_some_and(|(coverage, _, _)| coverage.unit == Unit::Hosts)
+            .is_some_and(|(coverage, _, _)| coverage.unit == QuotaUnit::Hosts)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Market, QuotaPage, Quotas, Unit, family_tokens};
+    use super::{Market, QuotaPage, Quotas, family_tokens};
     use crate::CapacityMode;
     use crate::ProviderError;
+    use crate::QuotaUnit;
     use crate::aws::ec2::{
         ArchitectureSet, DescribeInstanceTypesResponse, InstanceTypeInfo, ProcessorInfo,
     };
@@ -459,7 +453,7 @@ mod tests {
             .expect("an on-demand launch quota");
         assert!(standard.families.contains(&"t".to_owned()));
         assert_eq!(standard.market, Market::OnDemand);
-        assert_eq!(standard.unit, Unit::Vcpus);
+        assert_eq!(standard.unit, QuotaUnit::Vcpus);
 
         let spot = coverage("All Standard (A, C, D, H, I, M, R, T, Z) Spot Instance Requests")
             .expect("a spot launch quota");
@@ -467,7 +461,7 @@ mod tests {
 
         let hosts = coverage("Running Dedicated mac2 Hosts").expect("a dedicated-host quota");
         assert_eq!(hosts.families, vec!["mac2".to_owned()]);
-        assert_eq!(hosts.unit, Unit::Hosts);
+        assert_eq!(hosts.unit, QuotaUnit::Hosts);
 
         // A quota that has nothing to do with starting a machine stays out
         // of the model rather than being forced into it.
