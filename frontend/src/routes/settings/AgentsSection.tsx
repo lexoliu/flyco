@@ -11,7 +11,7 @@
  * from, not a second copy of it. The card names the agent, so the flow
  * starts on that agent's sign-in page and comes back here when it is done.
  */
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createSignal, onCleanup } from "solid-js";
 import { A } from "@solidjs/router";
 import { createQuery } from "../../lib/query";
 import ConfirmDialog from "../../components/ConfirmDialog";
@@ -28,6 +28,7 @@ import {
   type HarnessKind,
 } from "../../api/client";
 import { formatDate } from "../../lib/dates";
+import { credentialExpiry } from "../../lib/expiry";
 import { cx } from "../../lib/cx";
 import { inUseRefusal, sessionsStillRunning, type InUseRefusal } from "../../lib/inUse";
 import styles from "./Settings.module.css";
@@ -41,8 +42,17 @@ const HARNESSES: readonly { kind: HarnessKind; label: string; runsOn: string }[]
   { kind: "codex", label: "Codex", runsOn: "Runs on your ChatGPT subscription, or an OpenAI API key." },
 ];
 
+/** How often the clock this page reads against moves. */
+const TICK_MS = 60_000;
+
 export default function AgentsSection() {
   const readiness = useReadiness();
+  // An expiry is a distance from now, and a settings page can be left open
+  // across the day it falls due. A minute is finer than anything measured
+  // in whole days needs, and cheaper than the page's own polling.
+  const [now, setNow] = createSignal(Math.floor(Date.now() / 1000));
+  const ticker = setInterval(() => setNow(Math.floor(Date.now() / 1000)), TICK_MS);
+  onCleanup(() => clearInterval(ticker));
   const [usage] = createQuery(listLlmUsage);
   const [actionError, setActionError] = createSignal<unknown>(null);
   /** The account whose unlink has been asked about but not yet answered. */
@@ -103,6 +113,17 @@ export default function AgentsSection() {
         <For each={HARNESSES}>
           {(harness) => {
             const accounts = () => accountsFor(harness.kind);
+            /**
+             * The one account on this card whose credential is running out,
+             * so the card's own pill can say so. A harness with two accounts
+             * linked is still one row in the sidebar and one answer to "can
+             * flyco run this for me", and that answer is no the moment any of
+             * them stops refreshing.
+             */
+            const soonest = () =>
+              accounts()
+                .map((account) => credentialExpiry(account.expires_at_unix, now()))
+                .find((expiry) => expiry !== null && expiry.level !== "fine") ?? null;
             return (
               <article class={styles.card}>
                 <div class={styles.cardTop}>
@@ -114,8 +135,16 @@ export default function AgentsSection() {
                     <span class={styles.cardMeta}>{harness.runsOn}</span>
                   </div>
                   <div class={styles.actions}>
-                    <span class={cx(styles.status, accounts().length > 0 && styles.statusOn)}>
-                      {accounts().length > 0 ? "Linked" : "Not linked"}
+                    <span
+                      class={cx(
+                        styles.status,
+                        soonest() === null && accounts().length > 0 && styles.statusOn,
+                        soonest() !== null && styles.statusWarn,
+                      )}
+                    >
+                      {accounts().length === 0
+                        ? "Not linked"
+                        : (soonest()?.status ?? "Linked")}
                     </span>
                   </div>
                 </div>
@@ -132,21 +161,46 @@ export default function AgentsSection() {
                 >
                   <div class={styles.cardBody}>
                     <For each={accounts()}>
-                      {(account) => (
+                      {(account) => {
+                        const expiry = () => credentialExpiry(account.expires_at_unix, now());
+                        return (
                         <div class={styles.cardBody}>
                           <div class={styles.cardTop}>
                             <div class={styles.identity}>
                               <span class={styles.cardTitle}>{account.label}</span>
                               <span class={styles.cardMeta}>
                                 Linked {formatDate(account.linked_at_unix)}
-                                {account.expires_at_unix !== null &&
-                                account.expires_at_unix !== undefined
-                                  ? ` · expires ${formatDate(account.expires_at_unix)}`
-                                  : ""}
+                                <Show when={expiry()}>
+                                  {(due) => (
+                                    <>
+                                      {" · "}
+                                      <span
+                                        class={cx(
+                                          due().level !== "fine" && styles.metaUrgent,
+                                        )}
+                                      >
+                                        {due().sentence}
+                                      </span>
+                                    </>
+                                  )}
+                                </Show>
                               </span>
                             </div>
                             <div class={styles.actions}>
-                              <A href={connectPath(harness.kind)} class={styles.pill}>
+                              {/*
+                                Relinking is the only thing that fixes an
+                                expiry, so once one is close it stops being
+                                one of two equal pills and becomes the card's
+                                action.
+                              */}
+                              <A
+                                href={connectPath(harness.kind)}
+                                class={
+                                  expiry()?.level !== undefined && expiry()?.level !== "fine"
+                                    ? styles.pillPrimary
+                                    : styles.pill
+                                }
+                              >
                                 Relink
                               </A>
                               {/*
@@ -218,7 +272,8 @@ export default function AgentsSection() {
                           </Show>
                           <HarnessUsage row={usage()?.find((row) => row.account === account.id)} />
                         </div>
-                      )}
+                        );
+                      }}
                     </For>
                   </div>
                 </Show>

@@ -71,6 +71,12 @@ foot the account row — avatar and login, opening a menu upward with
 `Settings`, appearance, and `Sign out`. The rail is the only region that
 scrolls independently of the page.
 
+In settings the rail becomes the settings nav: `Sessions` in the slot
+`New session` occupies everywhere else, then the five sections of §10. There
+is never a second column of links beside the first — a person in settings
+came to change one thing and leave, and the list they left is one click away
+at the top of the same column.
+
 Below 900px the rail is off-canvas: a floating button opens it over the
 page behind a scrim, and choosing anything closes it.
 
@@ -262,6 +268,11 @@ inline chooser anywhere else. The readiness cards on the home page (§5)
 exist for an account that later unlinks something, not as a way around
 this flow.
 
+The stepper across the top of the card has one bar per stage. It is drawn
+only when there is more than one: the same pages reached from settings are a
+single stage, and one bar is a dark rule that reads as a divider — or as a
+finished flow — rather than as progress.
+
 ## 5. Home
 
 Layout, top to bottom, centered at 720px:
@@ -355,6 +366,12 @@ for `Provisioning` and `Migrating`, gray for the rest, red for `Failed`.
 `interrupted_reason` is cleared when the session's daemon reaches the
 control plane again, which is the moment a migration is genuinely over and
 the session goes back to whatever status it had before.
+
+A refusal from a provider is copy, not a log line. Every number a message
+carries names what it counts — `allows 10 vCPUs`, never `allows 10` — and
+the provider's own quota identifier stays verbatim, because the way out runs
+through that provider's console and a name flyco prettified would not be
+findable there.
 
 ## 7. Connect compute
 
@@ -699,6 +716,14 @@ cards, not from forms mirroring database rows.
 | Tools | MCP servers as cards with an enable toggle and `Edit`; skills as cards with scope, version, and a drop zone for a zip |
 | Instructions | `AGENTS.md` editor with save; pending change requests from agents render as diffs with `Accept` / `Reject`; memory as an outliner tree |
 | Account | GitHub identity, API keys (create shows the key once), notifications with a single `Enable push` button, appearance, sign out |
+
+A linked credential with an expiry says how near it is rather than printing
+a date the reader has to subtract from today. Within a week the card's pill
+reads `Expires soon` (or `Expired`), the meta line reads `Expires tomorrow`
+or `Expires in 4 days` in the warning colour, and `Relink` — the only thing
+that fixes it — becomes the card's primary rather than one of two equal
+pills. A credential with no expiry says nothing at all: an API key does not
+run out, and a reassurance that never changes is one more thing to read.
 
 ## 11. API changes this specification requires
 
