@@ -2,7 +2,6 @@
   "allowManagedMcpServersOnly": true,
   "allowedMcpServers": [
     {
-      "serverName": "flyco",
       "serverCommand": [
         "/usr/local/bin/flycod",
         "mcp",

@@ -261,8 +261,8 @@ impl Mount {
             allow_managed_mcp_servers_only: true,
             allowed_mcp_servers: self
                 .servers()
-                .into_iter()
-                .map(|(name, server)| server.claude_allowlist_entry(name))
+                .into_values()
+                .map(Server::claude_allowlist_entry)
                 .collect(),
         })
     }
@@ -383,23 +383,21 @@ impl Server<'_> {
 
     /// One `allowedMcpServers` entry.
     ///
-    /// A stdio server is pinned to its exact command line rather than to its
-    /// name alone, so re-registering the name against a different executable
-    /// is not a way past the allowlist.
-    fn claude_allowlist_entry(self, name: &str) -> AllowedMcpServer {
-        let (command, url) = match self {
-            Self::Flyco(flyco) => (Some(flyco.command_line()), None),
+    /// Pinned to the exact command line or URL rather than to the name: the
+    /// schema admits one key per entry, and the name is the weakest of the
+    /// three — re-registering it against a different executable would walk
+    /// straight through an allowlist that only knew the name.
+    fn claude_allowlist_entry(self) -> AllowedMcpServer {
+        match self {
+            Self::Flyco(flyco) => AllowedMcpServer::ServerCommand(flyco.command_line()),
             Self::Registered(McpServerConfig::Stdio { command, args, .. }) => {
                 let mut line = vec![command.clone()];
                 line.extend(args.iter().cloned());
-                (Some(line), None)
+                AllowedMcpServer::ServerCommand(line)
             }
-            Self::Registered(McpServerConfig::Http { url, .. }) => (None, Some(url.clone())),
-        };
-        AllowedMcpServer {
-            server_name: name.to_owned(),
-            server_command: command,
-            server_url: url,
+            Self::Registered(McpServerConfig::Http { url, .. }) => {
+                AllowedMcpServer::ServerUrl(url.clone())
+            }
         }
     }
 
@@ -516,18 +514,22 @@ struct ManagedSettings {
 /// The `server_` prefixes are Claude Code's own field names, not a habit:
 /// this structure is a foreign document's schema and renaming its fields
 /// would produce a file the CLI ignores.
+///
+/// An enum because the schema admits **exactly one** of the three keys:
+/// "Entry must have exactly one of `serverName`, `serverCommand`, or
+/// `serverUrl`". An entry that names two fails validation and is dropped,
+/// and a dropped entry is not a loosened allowlist but an emptied one —
+/// with `allowManagedMcpServersOnly` in force, an empty `allowedMcpServers`
+/// allows nothing at all, so every server on the machine is refused,
+/// flyco's own included (issue #205). Making that unrepresentable is worth
+/// more than the struct's convenience.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[expect(
-    clippy::struct_field_names,
-    reason = "the field names are Claude Code's managed-settings schema"
-)]
-struct AllowedMcpServer {
-    server_name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    server_command: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    server_url: Option<String>,
+enum AllowedMcpServer {
+    /// A stdio server, pinned to its exact `[command, ...args]`.
+    ServerCommand(Vec<String>),
+    /// A remote server, pinned to its URL.
+    ServerUrl(String),
 }
 
 /// One `[mcp_servers.<id>]` table of Codex's `config.toml`.
