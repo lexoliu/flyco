@@ -608,15 +608,22 @@ longer carries a `refusal` of its own.
   one of them.
 - A completed turn ends with `Worked for 8m 23s`.
 - Provisioning renders **inside** the transcript as a timeline: `Reserving
-  a machine on Azure` → `Booting` → `Installing flycod` → `Cloning
+  a machine on Azure` → `Booting and installing flycod` → `Cloning
   owner/repo` → `Agent ready`, each with elapsed time, driven by
-  `session_state_changed` and daemon events. "No turns yet" never
+  `session_state_changed` and daemon events. Every row on it has a real
+  interval behind it, which is why boot and install are one: nothing can see
+  where one ends and the other begins — the control plane hears nothing
+  between handing the request to the provider and the daemon calling in, and
+  the daemon exists only once the install has finished. Announced as two,
+  the boot timed at `0s` on every session, which is a row that teaches
+  nothing and reads as broken. "No turns yet" never
   appears while a machine is being built, and neither does a transcript
   holding only the prompt: until the queue announces its first stage the
   page holds the timeline's place from when the session was opened. A session reclaimed from spot
   gets **another timeline in the place it happened**, headed `Migrating`
-  and holding only the stages a restart goes through — nothing is
-  installed or cloned, because the disk already has both.
+  and holding only the stages a restart goes through — its second row reads
+  `Starting the machine`, because nothing is installed or cloned there: the
+  disk already has both.
 - A stage is identified by the instant it happened. A reconnect replays
   frames the page has already shown, and a replayed `reserving` must never
   open a second timeline headed `Migrating`: only a `reserving` at a new

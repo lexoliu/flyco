@@ -339,7 +339,7 @@ describe("foldTranscript provisioning timeline", () => {
     const items = foldTranscript([
       at(100, { type: "provisioning_stage", stage: "reserving", at_unix: T0 }),
       at(101, { type: "provisioning_stage", stage: "booting", at_unix: T0 + 40 }),
-      at(102, { type: "provisioning_stage", stage: "installing", at_unix: T0 + 95 }),
+      at(102, { type: "provisioning_stage", stage: "cloning", at_unix: T0 + 95 }),
       at(103, { type: "provisioning_stage", stage: "ready", at_unix: T0 + 210 }),
     ]);
 
@@ -351,7 +351,7 @@ describe("foldTranscript provisioning timeline", () => {
       steps: [
         { stage: "reserving", atUnix: T0 },
         { stage: "booting", atUnix: T0 + 40 },
-        { stage: "installing", atUnix: T0 + 95 },
+        { stage: "cloning", atUnix: T0 + 95 },
         { stage: "ready", atUnix: T0 + 210 },
       ],
     });
@@ -398,7 +398,7 @@ describe("foldTranscript provisioning timeline", () => {
     const build = [
       { stage: "reserving", at: T0 },
       { stage: "booting", at: T0 + 40 },
-      { stage: "installing", at: T0 + 95 },
+      { stage: "cloning", at: T0 + 95 },
     ] as const;
     const frames = build.map((step, index) =>
       at(100 + index, { type: "provisioning_stage", stage: step.stage, at_unix: step.at }),
@@ -412,7 +412,7 @@ describe("foldTranscript provisioning timeline", () => {
       steps: [
         { stage: "reserving", atUnix: T0 },
         { stage: "booting", atUnix: T0 + 40 },
-        { stage: "installing", atUnix: T0 + 95 },
+        { stage: "cloning", atUnix: T0 + 95 },
       ],
     });
   });

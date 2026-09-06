@@ -3731,7 +3731,7 @@ export interface components {
          *     daemon on that machine owns everything after it boots.
          * @enum {string}
          */
-        ProvisioningStage: "reserving" | "booting" | "installing" | "cloning" | "ready";
+        ProvisioningStage: "reserving" | "booting" | "cloning" | "ready";
         /**
          * @description The two keys a browser derives for message encryption ([RFC 8291]).
          *
