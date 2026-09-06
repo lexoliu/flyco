@@ -95,6 +95,21 @@ pub const BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// small frame a minute in each direction.
 pub const HEARTBEAT: Duration = Duration::from_secs(30);
 
+/// How long one command may spend inside the harness before the session is
+/// treated as wedged.
+///
+/// Every command the room sends resolves to a channel send and an
+/// acknowledgement — milliseconds when the agent process is healthy. A
+/// minute is therefore not a budget, it is a diagnosis: the harness has
+/// stopped reading, and nothing about waiting longer will change that.
+///
+/// It exists because the pump awaits the harness *inside* its own loop, so
+/// a command that never returns takes the socket read and the heartbeat
+/// down with it: the daemon stops answering, stops reconnecting, and stops
+/// being able to say why — which is precisely the silence issue #201
+/// describes.
+pub const HARNESS_DEADLINE: Duration = Duration::from_secs(60);
+
 /// How many unanswered heartbeats mean the socket is gone.
 ///
 /// The room answers every [`DaemonToControl::Heartbeat`], so three in a row
@@ -118,6 +133,8 @@ pub struct Keepalive {
     interval: Duration,
     /// How long the room may say nothing before its socket is abandoned.
     silence_limit: Duration,
+    /// How long one command may spend inside the harness.
+    harness_deadline: Duration,
 }
 
 impl Keepalive {
@@ -128,6 +145,16 @@ impl Keepalive {
         Self {
             interval,
             silence_limit: interval.saturating_mul(misses),
+            harness_deadline: HARNESS_DEADLINE,
+        }
+    }
+
+    /// The same keepalive with a different harness deadline.
+    #[must_use]
+    pub const fn waiting_on_the_harness(self, harness_deadline: Duration) -> Self {
+        Self {
+            harness_deadline,
+            ..self
         }
     }
 
@@ -141,6 +168,16 @@ impl Keepalive {
     #[must_use]
     pub const fn silence_limit(self) -> Duration {
         self.silence_limit
+    }
+
+    /// How long one command may spend inside the harness.
+    ///
+    /// Kept beside the other two because it answers the same question they
+    /// do — how long may nothing happen before flyco calls it broken — and
+    /// because a test that wants a brisk relay wants all three brisk.
+    #[must_use]
+    pub const fn harness_deadline(self) -> Duration {
+        self.harness_deadline
     }
 }
 
@@ -764,7 +801,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                     // deadline is reset here rather than only on a
                     // heartbeat answer: a busy turn is its own keepalive.
                     last_heard = tokio::time::Instant::now();
-                    if matches!(self.dispatch(command).await?, Ended::Archived) {
+                    if matches!(self.dispatch_before(command).await?, Ended::Archived) {
                         return Ok(Ended::Archived);
                     }
                 }
@@ -1087,6 +1124,24 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
     }
 
     /// Acts on one command from the control plane.
+    /// Dispatches one command, or gives up on the harness.
+    ///
+    /// A wedged harness must not be able to take the relay with it. Failing
+    /// here ends the daemon with a sentence the session can show, which is
+    /// the whole difference between a page that says what went wrong and
+    /// one that spins for ever (issue #201).
+    async fn dispatch_before(&mut self, command: ControlToDaemon) -> Result<Ended, WireError> {
+        let named = command.name();
+        match tokio::time::timeout(self.keepalive.harness_deadline(), self.dispatch(command)).await
+        {
+            Ok(dispatched) => dispatched,
+            Err(_elapsed) => Err(WireError::Harness(format!(
+                "the agent did not take `{named}` within {:?}; it has stopped accepting commands",
+                self.keepalive.harness_deadline()
+            ))),
+        }
+    }
+
     async fn dispatch(&mut self, command: ControlToDaemon) -> Result<Ended, WireError> {
         match command {
             ControlToDaemon::Welcome => {
