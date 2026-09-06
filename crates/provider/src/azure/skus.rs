@@ -33,7 +33,7 @@
 use flyco_core::machine::{CpuArchitecture, MachineLineage};
 use serde::Deserialize;
 
-use crate::{CapacityMode, ProviderError};
+use crate::{CapacityMode, ProviderError, QuotaUnit};
 
 /// Resource type the driver cares about in the SKUs list.
 pub const VIRTUAL_MACHINES: &str = "virtualMachines";
@@ -398,6 +398,7 @@ impl Quotas {
         }
 
         Err(ProviderError::QuotaExceeded {
+            unit: QuotaUnit::Vcpus,
             quota: quota.to_owned(),
             region: region.to_owned(),
             limit: u32::try_from(limit).unwrap_or(u32::MAX),

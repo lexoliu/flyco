@@ -12,77 +12,14 @@
 .page {
   flex: 1;
   width: 100%;
-  max-width: 940px;
-  margin: 0 auto;
-  padding: var(--space-6) var(--space-4) var(--space-8);
-  display: grid;
-  grid-template-columns: 172px minmax(0, 1fr);
-  gap: var(--space-6);
-  align-items: start;
-}
-
-.rail {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  position: sticky;
-  top: calc(48px + var(--space-6));
-}
-
-.railLink {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-full);
-  color: var(--color-text-muted);
-  text-decoration: none;
-  white-space: nowrap;
-  transition: color var(--transition-fast), background var(--transition-fast);
-}
-
-.railLink:hover {
-  color: var(--color-text);
-  background: var(--color-surface-sunken);
-}
-
-.railLinkActive {
-  color: var(--color-text) !important;
-  background: var(--color-surface-sunken);
-  font-weight: var(--weight-medium);
+  max-width: 760px;
+  margin: 0;
+  padding: var(--space-6) var(--space-6) var(--space-8);
 }
 
 .content {
   min-width: 0;
 }
-
-@media (max-width: 720px) {
-  .page {
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-4);
-    padding-top: var(--space-4);
-  }
-
-  .rail {
-    position: static;
-    flex-direction: row;
-    gap: var(--space-1);
-    overflow-x: auto;
-    scrollbar-width: none;
-    padding-bottom: var(--space-1);
-    margin: 0 calc(-1 * var(--space-4));
-    padding-inline: var(--space-4);
-  }
-
-  .rail::-webkit-scrollbar {
-    display: none;
-  }
-
-  .railLink {
-    border: var(--border-width) solid var(--color-border);
-  }
-}
-
 /* ── Section frame ───────────────────────────────────────────────────── */
 
 .section {
@@ -367,6 +304,11 @@
   resize: vertical;
 }
 
+.field textarea::placeholder,
+.field input::placeholder {
+  color: var(--color-text-faint);
+}
+
 .formActions {
   display: flex;
   align-items: center;
@@ -608,4 +550,11 @@
   align-self: flex-start;
   font-size: var(--text-sm);
   color: var(--color-primary);
+}
+
+/* A meta line that has stopped being background: a credential a week from
+   expiring is the one thing on its card worth reading. */
+.metaUrgent {
+  color: var(--color-warning);
+  font-weight: var(--weight-medium);
 }

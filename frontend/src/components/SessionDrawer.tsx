@@ -105,6 +105,16 @@ export default function SessionDrawer(props: SessionDrawerProps) {
         <Show when={open()} fallback={<PanelRightOpen size={16} aria-hidden="true" />}>
           <PanelRightClose size={16} aria-hidden="true" />
         </Show>
+        {/*
+          On a phone the drawer drops under the transcript, and a lone 32px
+          glyph sitting at the foot of the page is a button nobody can name.
+          Below the breakpoint it takes the width and says what it opens; on
+          a wide screen the handle is beside the panel it belongs to and the
+          label would be a caption on a hinge.
+        */}
+        <Show when={!open()}>
+          <span class={styles.handleLabel}>Terminal, files and the machine</span>
+        </Show>
       </button>
 
       <Show when={open()}>

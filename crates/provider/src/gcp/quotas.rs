@@ -11,7 +11,7 @@
 //! and `usage`, in one read, exactly as an Azure usage list does. So there
 //! is nothing to count and nothing to infer.
 
-use crate::{CapacityMode, ProviderError};
+use crate::{CapacityMode, ProviderError, QuotaUnit};
 
 use super::compute::{Quota, RegionInfo};
 
@@ -86,6 +86,7 @@ impl Quotas {
         }
 
         Err(ProviderError::QuotaExceeded {
+            unit: QuotaUnit::Vcpus,
             quota: metric.to_owned(),
             region: region.to_owned(),
             limit,

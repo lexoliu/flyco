@@ -23,6 +23,7 @@ import Popover from "./Popover";
 import ProblemNotice from "./ProblemNotice";
 import { ReadinessProvider } from "./Readiness";
 import SessionNav from "./SessionNav";
+import SettingsNav from "./SettingsNav";
 import { getMe } from "../api/client";
 import { isSignedIn, onSessionChanged } from "../lib/session";
 import { signOut } from "../lib/signOut";
@@ -78,6 +79,13 @@ export default function AppShell(props: { children?: JSX.Element }) {
   const [signedIn, setSignedIn] = createSignal(isSignedIn());
   const [railOpen, setRailOpen] = createSignal(false);
   const isBareRoute = createMemo(() => BARE_ROUTES.has(location.pathname));
+  /**
+   * Settings takes the rail over rather than standing a second nav column
+   * beside it. A person in settings is not switching sessions; they came to
+   * change one thing and leave, and the list they left is one click away at
+   * the top of the same column.
+   */
+  const inSettings = createMemo(() => location.pathname.startsWith("/settings"));
   const isPublicRoute = createMemo(() => PUBLIC_ROUTES.has(location.pathname));
   const loginHref = createMemo(() => {
     const destination = `${location.pathname}${location.search}${location.hash}`;
@@ -145,11 +153,20 @@ export default function AppShell(props: { children?: JSX.Element }) {
                     <PanelLeftClose size={16} aria-hidden="true" />
                   </button>
                 </div>
-                <A href="/" end class={styles.newSession}>
-                  <SquarePen size={15} aria-hidden="true" />
-                  New session
-                </A>
-                <SessionNav onNavigate={() => setRailOpen(false)} />
+                <Show
+                  when={inSettings()}
+                  fallback={
+                    <>
+                      <A href="/" end class={styles.newSession}>
+                        <SquarePen size={15} aria-hidden="true" />
+                        New session
+                      </A>
+                      <SessionNav onNavigate={() => setRailOpen(false)} />
+                    </>
+                  }
+                >
+                  <SettingsNav onNavigate={() => setRailOpen(false)} />
+                </Show>
                 <AccountMenu onSignOut={() => signOut(navigate)} />
               </nav>
             </Show>

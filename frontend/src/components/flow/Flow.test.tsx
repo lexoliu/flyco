@@ -6,6 +6,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, waitFor } from "@solidjs/testing-library";
 import { primary, problem, renderFlow, route, type } from "./testSupport";
+import styles from "./Flow.module.css";
 
 describe("Flow", () => {
   it("renders exactly one primary, in the footer, on every page", async () => {
@@ -27,6 +28,22 @@ describe("Flow", () => {
     // primary.
     expect(getByRole("button", { name: "Back" })).toBeInTheDocument();
     expect(getByRole("radio", { name: /^Claude Code/ })).toBeInTheDocument();
+  });
+
+  it("draws a stepper only when there is more than one stage to step through", async () => {
+    // Reached from settings the flow is one stage, and a lone bar is a dark
+    // rule across the top of the card: not progress, just a divider.
+    const alone = renderFlow(["compute"]);
+    await alone.findByRole("heading", {
+      level: 1,
+      name: "Where should sessions run?",
+    });
+    expect(alone.container.querySelector(`.${styles.bars}`)).toBeNull();
+    alone.unmount();
+
+    const { container, findByRole } = renderFlow(["meet", "agent", "compute"]);
+    await findByRole("heading", { level: 1, name: "Meet flyco" });
+    expect(container.querySelectorAll(`.${styles.bar}`)).toHaveLength(3);
   });
 
   it("disables the primary with the missing prerequisite as its title", async () => {
