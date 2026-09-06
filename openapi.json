@@ -9225,7 +9225,6 @@
         "enum": [
           "reserving",
           "booting",
-          "installing",
           "cloning",
           "ready"
         ]

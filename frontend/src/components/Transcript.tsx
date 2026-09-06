@@ -37,14 +37,21 @@ import { machineChangePrice, machineChangeSummary, TURN_FAILED_NOTE } from "../l
 import styles from "./Transcript.module.css";
 
 /** How a stage reads, given what the session is actually provisioning. */
-function stageLabel(stage: ProvisioningStage, provider: string | null, repo: string): string {
+function stageLabel(
+  stage: ProvisioningStage,
+  provider: string | null,
+  repo: string,
+  recovery: boolean,
+): string {
   switch (stage) {
     case "reserving":
       return provider === null ? "Reserving a machine" : `Reserving a machine on ${provider}`;
     case "booting":
-      return "Booting";
-    case "installing":
-      return "Installing flycod";
+      // One stage covers boot and install, because nothing can see where
+      // one ends and the other begins. A recovered machine installs
+      // nothing — `flycod` is already on its disk — so it does not claim
+      // to (issue #225).
+      return recovery ? "Starting the machine" : "Booting and installing flycod";
     case "cloning":
       return `Cloning ${repo}`;
     case "ready":
@@ -428,7 +435,7 @@ export function ProvisioningTimeline(props: {
                 </Switch>
               </span>
               <span class={styles.stageLabel}>
-                {stageLabel(step.stage, props.provider, props.repo)}
+                {stageLabel(step.stage, props.provider, props.repo, props.recovery)}
               </span>
               <Show when={took()}>
                 {(elapsed) => <span class={styles.stageElapsed}>{elapsed()}</span>}

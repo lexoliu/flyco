@@ -43,11 +43,13 @@ export type HarnessEvent =
 /**
  * How far a session's machine has got towards running an agent.
  *
- * Mirrors `flyco_core::wire::ProvisioningStage`: the five milestones flyco
- * can observe, in the order they happen. The session page renders them as a
- * timeline inside the transcript (docs/ux.md §9.2).
+ * Mirrors `flyco_core::wire::ProvisioningStage`: the milestones flyco can
+ * observe, in the order they happen. The session page renders them as a
+ * timeline inside the transcript (docs/ux.md §9.2). Only milestones that
+ * something can actually see are here — boot and install are one, because
+ * nothing watches the seam between them.
  */
-export type ProvisioningStage = "reserving" | "booting" | "installing" | "cloning" | "ready";
+export type ProvisioningStage = "reserving" | "booting" | "cloning" | "ready";
 
 /**
  * Which of a shell command's two output streams a chunk came from, mirroring

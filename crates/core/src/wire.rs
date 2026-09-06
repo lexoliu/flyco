@@ -103,10 +103,17 @@ pub enum ApprovalPayload {
 pub enum ProvisioningStage {
     /// The provider is being asked for capacity.
     Reserving,
-    /// The provider handed back a machine and it is powering on.
+    /// The machine is powering on and its bootstrap is installing `flycod`.
+    ///
+    /// One stage and not two, because nothing can see where the boot ends
+    /// and the install begins: the control plane hears nothing between
+    /// handing the request to the provider and the daemon calling in, and
+    /// the daemon only exists once the install has finished. A separate
+    /// `Installing` was announced microseconds after this one and so timed
+    /// every session's boot at `0s` — a row on the timeline with no
+    /// interval behind it, which teaches a reader nothing and reads as
+    /// broken.
     Booting,
-    /// The machine's bootstrap is fetching and installing `flycod`.
-    Installing,
     /// The session's repository is being checked out.
     ///
     /// Announced by the daemon over `POST

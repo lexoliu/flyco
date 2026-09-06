@@ -717,9 +717,6 @@ async fn build(
         )
         .await
         .map_err(|error| classify(&error))?;
-    // The provider handed back a machine, so it exists and is powering on.
-    announce(db, rooms, claim.session, ProvisioningStage::Booting).await;
-
     // What the machine turned out to be, priced at the capacity it actually
     // holds — which is what the budget meters and what the agent's
     // `machine_status` reads back.
@@ -739,11 +736,12 @@ async fn build(
         ),
     };
     machines::record(db, &machine, &built, storage_hourly).await?;
-    // Recorded, so the machine is durably flyco's; what happens on it next
-    // is its bootstrap fetching and running the `flycod` installer. That is
-    // the last stage the control plane can see — everything after it is
-    // announced by the daemon on the machine itself.
-    announce(db, rooms, claim.session, ProvisioningStage::Installing).await;
+    // Recorded, so the machine is durably flyco's and is powering on; what
+    // happens on it next is its bootstrap fetching and running the `flycod`
+    // installer. That is the last thing the control plane can see —
+    // everything after it is announced by the daemon on the machine itself,
+    // which is why boot and install are one stage rather than two.
+    announce(db, rooms, claim.session, ProvisioningStage::Booting).await;
 
     tracing::info!(
         session = %claim.session,
@@ -802,9 +800,11 @@ enum Recovered {
 /// 4. The ledger records the replacement, and the agent is told — once,
 ///    afterwards, as an ordinary message in the conversation.
 ///
-/// `installing` is deliberately not announced: nothing is installed. The
-/// image on the disk already has `flycod` on it, and claiming otherwise
-/// would put a step in the user's timeline that never happens.
+/// Nothing is installed on this path: the image on the disk already has
+/// `flycod` on it. `booting` covers boot and install on a fresh machine and
+/// the restart alone here, and the timeline says which it is — a recovery
+/// reads `Starting the machine` rather than claiming an install that never
+/// happens.
 async fn recover(
     db: &Db,
     config: &ApiConfig,
