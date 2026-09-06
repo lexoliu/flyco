@@ -259,6 +259,10 @@ mod worker {
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         app::archive_idle(&db, &config, &rooms, &hosts, at_unix)
             .await
+            .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
+        // Last, so it sees what the sweeps above have just ended.
+        app::release_ended_machines(&db, &config, &hosts)
+            .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))
     }
 }
