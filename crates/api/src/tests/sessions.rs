@@ -584,7 +584,7 @@ async fn an_idle_session_is_archived_automatically(ctx: TestContext, kv: Kv, db:
     let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
     let id = session.summary.id;
 
-    sessions::daemon_arrived(&db, id)
+    sessions::daemon_arrived(&db, &crate::testing::test_rooms(), id)
         .await
         .expect("the session is live");
     let cutoff = crate::clock::now_unix() - flyco_core::ARCHIVE_AFTER_IDLE_SECS - 1;
@@ -627,7 +627,7 @@ async fn an_active_session_cannot_be_archived_before_the_daemon_reports_its_tree
     let client = ctx.client(router);
     let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
     let id = session.summary.id;
-    sessions::daemon_arrived(&db, id)
+    sessions::daemon_arrived(&db, &crate::testing::test_rooms(), id)
         .await
         .expect("the session is live");
 
