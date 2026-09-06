@@ -156,7 +156,7 @@ async fn a_live_session_whose_agent_died_fails_with_what_the_agent_said(
     let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
     let token = pair(&client, &caller, session).await;
-    crate::sessions::daemon_arrived(&db, session)
+    crate::sessions::daemon_arrived(&db, &crate::testing::test_rooms(), session)
         .await
         .expect("the session goes live when its daemon greets");
 

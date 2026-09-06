@@ -857,7 +857,7 @@ pub async fn harness_session_id(db: &Db, id: SessionId) -> Result<Option<String>
 /// # Errors
 ///
 /// Returns [`ApiError`] if the database fails.
-pub async fn daemon_arrived(db: &Db, id: SessionId) -> Result<(), ApiError> {
+pub async fn daemon_arrived(db: &Db, rooms: &Rooms, id: SessionId) -> Result<(), ApiError> {
     let provisioning = SessionState::Provisioning;
     let active = SessionState::Active;
     // The reason the session lost its machine is cleared with the same
@@ -875,6 +875,24 @@ pub async fn daemon_arrived(db: &Db, id: SessionId) -> Result<(), ApiError> {
 
     if written.rows_written > 0 {
         tracing::info!(session = %id, "a session went live: its daemon reached the control plane");
+        // The one lifecycle move every session makes, and the one the page
+        // cannot deduce: the timeline's last stage says the agent is up,
+        // not that the session is. Without this frame the header goes on
+        // counting the provisioning clock while the agent answers below it
+        // (issue #209). Logged rather than raised for the same reason
+        // `fail` logs it: the transition is already durable, and a room
+        // that cannot be reached costs a watcher a live update.
+        if let Err(error) = rooms
+            .broadcast(
+                id,
+                &ClientEvent::SessionStateChanged {
+                    state: SessionState::Active,
+                },
+            )
+            .await
+        {
+            tracing::warn!(session = %id, %error, "a session going live did not reach its room");
+        }
     }
     Ok(())
 }

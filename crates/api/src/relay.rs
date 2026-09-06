@@ -171,7 +171,7 @@ pub async fn open_daemon(
     // validates on the socket this upgrade becomes — and a Durable Object
     // cannot reach D1, so the durable half of it happens here, on the
     // authenticated hop that carries the daemon into the room.
-    sessions::daemon_arrived(db, session).await?;
+    sessions::daemon_arrived(db, rooms, session).await?;
 
     tracing::info!(%session, "a daemon joined its session room");
     join(rooms, session, Role::Daemon).await

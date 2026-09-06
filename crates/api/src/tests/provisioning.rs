@@ -1647,6 +1647,50 @@ struct LedgerLine {
     detail: String,
 }
 
+#[skyzen::test]
+async fn a_session_going_live_tells_the_room_it_did(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let session = open(&client, &caller).await.summary.id;
+    let rooms = test_rooms();
+
+    sessions::daemon_arrived(&db, &rooms, session)
+        .await
+        .expect("the session's daemon reached the control plane");
+
+    // The page is watching the room, not polling the row: the last
+    // provisioning stage says the agent is up, not that the session is, so
+    // without this frame the header goes on counting a provisioning clock
+    // while the agent answers below it (issue #209).
+    assert!(
+        recorded(&rooms, session).await.iter().any(|event| matches!(
+            event,
+            flyco_core::ClientEvent::SessionStateChanged {
+                state: SessionState::Active
+            }
+        )),
+        "the room is told the session went live"
+    );
+
+    // A daemon reconnects after every eviction, redeploy and dropped
+    // socket, and none of those is a lifecycle event to announce again.
+    let after_first = recorded(&rooms, session).await.len();
+    sessions::daemon_arrived(&db, &rooms, session)
+        .await
+        .expect("a daemon reconnects");
+    assert_eq!(
+        recorded(&rooms, session).await.len(),
+        after_first,
+        "a reconnect is not a second transition"
+    );
+}
+
 /// Reports a reclamation the way the session's own daemon does.
 ///
 /// The session is taken live first, because that is the only state a
@@ -1659,7 +1703,7 @@ async fn report_reclaim(
     daemon_token: &str,
     seconds_remaining: u32,
 ) {
-    sessions::daemon_arrived(db, session)
+    sessions::daemon_arrived(db, &test_rooms(), session)
         .await
         .expect("the session's daemon reached the control plane");
     let response = client
@@ -1939,7 +1983,7 @@ async fn a_daemon_that_comes_back_ends_the_migration(ctx: TestContext, kv: Kv, d
         .expect("the recovery moves the session back to provisioning");
     // What the daemon on the restarted machine does when it reaches the
     // control plane.
-    sessions::daemon_arrived(&db, session)
+    sessions::daemon_arrived(&db, &test_rooms(), session)
         .await
         .expect("the daemon reached the control plane");
 
