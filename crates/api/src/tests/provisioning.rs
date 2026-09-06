@@ -1740,6 +1740,47 @@ async fn recorded(rooms: &Rooms, session: SessionId) -> Vec<flyco_core::ClientEv
 }
 
 #[skyzen::test]
+async fn every_stage_the_queue_announces_is_one_something_can_time(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // `Booting` and `Installing` used to be announced microseconds apart,
+    // with nothing between them but a struct and a D1 write, so every
+    // session's timeline read `Booting  0s` — a row with no interval behind
+    // it (issue #225). The control plane can see exactly two moments: when
+    // it asks the provider, and when the provider has handed back a machine
+    // that is durably flyco's. So it announces exactly two stages.
+    let queue = Queue::new(InMemoryQueue::new());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let session = open(&client, &caller).await.summary.id;
+
+    let mut host = RecordedHost::healthy();
+    let job = drain(&queue).await;
+    let rooms = test_rooms();
+    run_queue_watching(&db, &kv, &queue, &rooms, &mut host, job).await;
+
+    let stages: Vec<flyco_core::ProvisioningStage> = recorded(&rooms, session)
+        .await
+        .into_iter()
+        .filter_map(|event| match event {
+            flyco_core::ClientEvent::ProvisioningStage { stage, .. } => Some(stage),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        stages,
+        vec![
+            flyco_core::ProvisioningStage::Reserving,
+            flyco_core::ProvisioningStage::Booting,
+        ],
+        "the queue announces only what it can time; the rest is the daemon's"
+    );
+}
+
+#[skyzen::test]
 async fn a_reclaimed_session_reads_as_interrupted_and_queues_its_own_recovery(
     ctx: TestContext,
     kv: Kv,
