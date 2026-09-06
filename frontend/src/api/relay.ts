@@ -19,11 +19,15 @@
  * 1. A reconnect's catch-up call can return a `Harness` event that was
  *    already shown live, moments before the socket dropped — the seq log
  *    and the live broadcast are two independent deliveries of the same
- *    fact. Guarded by a bounded ring buffer of already-shown events'
- *    canonicalized JSON (byte-identical, since both are `serde_json`
- *    output of the same struct — a catch-up row's `event` field is parsed
- *    then re-stringified for the comparison, and the live socket text needs
- *    no re-serialization at all). The buffer is bounded, not unbounded: a
+ *    fact. Guarded by a bounded ring buffer of already-shown
+ *    events' canonicalized JSON — {@link canonicalKey}, which sorts object
+ *    keys. Comparing the two deliveries byte for byte does not work: a live
+ *    frame is `serde_json` output of the event struct, with its `type` tag
+ *    first, while a catch-up row is read back into a `serde_json::Value`
+ *    and re-serialized out of a `BTreeMap`, so its keys come back in
+ *    alphabetical order. Nothing ever matched, and every event was rendered
+ *    twice: a doubled answer, and a phantom tool row that never finished.
+ *    The buffer is bounded, not unbounded: a
  *    burst of more than [`RECENT_WINDOW`] live events between two
  *    reconnects could in principle scroll a duplicate back into view. That
  *    trade-off (bounded memory vs. perfect dedup over an unbounded gap) is
@@ -43,6 +47,29 @@ import { ApiProblem, NotImplementedError } from "./problem";
 import { parseClientEvent, type ClientCommand, type ClientEvent } from "./wire";
 
 const RECENT_WINDOW = 256;
+
+/**
+ * A key for an event that does not depend on how its JSON was ordered.
+ *
+ * Two deliveries of the same fact reach this client through two
+ * serializers, and only the values are guaranteed to agree. Sorting the
+ * keys makes the comparison about the event rather than about whichever
+ * code path emitted it.
+ */
+export function canonicalKey(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalKey).join(",")}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(
+      ([left], [right]) => (left < right ? -1 : left > right ? 1 : 0),
+    );
+    return `{${entries
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalKey(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
 
 /**
  * One event and when it happened.
@@ -74,7 +101,7 @@ const systemClock: Clock = () => Math.floor(Date.now() / 1000);
  */
 export class EventStream {
   private lastSeq: number | null = null;
-  private readonly recentRaw: string[] = [];
+  private readonly recentKeys: string[] = [];
   private readonly clock: Clock;
 
   constructor(clock: Clock = systemClock) {
@@ -88,8 +115,8 @@ export class EventStream {
 
   /**
    * Feeds one catch-up page (events ascending by `seq`). Skips anything at
-   * or below the cursor already reached, and anything byte-identical to an
-   * event already shown (because it arrived live first).
+   * or below the cursor already reached, and anything already shown
+   * (because it arrived live first).
    */
   ingestCatchUp(events: StoredEvent[]): TimedEvent[] {
     const out: TimedEvent[] = [];
@@ -98,8 +125,7 @@ export class EventStream {
         continue;
       }
       this.lastSeq = stored.seq;
-      const raw = JSON.stringify(stored.event);
-      if (this.remember(raw)) {
+      if (this.remember(canonicalKey(stored.event))) {
         out.push({ event: parseClientEvent(stored.event), atUnix: stored.at_unix });
       }
     }
@@ -112,20 +138,21 @@ export class EventStream {
    * frame) rather than emitting it twice.
    */
   ingestLive(raw: string): TimedEvent | null {
-    if (!this.remember(raw)) {
+    const parsed: unknown = JSON.parse(raw);
+    if (!this.remember(canonicalKey(parsed))) {
       return null;
     }
-    return { event: parseClientEvent(JSON.parse(raw)), atUnix: this.clock() };
+    return { event: parseClientEvent(parsed), atUnix: this.clock() };
   }
 
-  /** Records `raw` as shown; returns whether it was new. */
-  private remember(raw: string): boolean {
-    if (this.recentRaw.includes(raw)) {
+  /** Records `key` as shown; returns whether it was new. */
+  private remember(key: string): boolean {
+    if (this.recentKeys.includes(key)) {
       return false;
     }
-    this.recentRaw.push(raw);
-    if (this.recentRaw.length > RECENT_WINDOW) {
-      this.recentRaw.shift();
+    this.recentKeys.push(key);
+    if (this.recentKeys.length > RECENT_WINDOW) {
+      this.recentKeys.shift();
     }
     return true;
   }

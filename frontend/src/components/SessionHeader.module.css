@@ -312,3 +312,37 @@
 .budgetTrigger:hover {
   color: var(--color-text);
 }
+
+/*
+ * On a phone the header was four rows — title, status, machine and budget,
+ * then the actions — before the first message. That is the stack of bands
+ * this header exists to avoid.
+ *
+ * Two rows: what the session is, then whether it is working and what it has
+ * spent, with its actions on the same line. The machine's name and state
+ * drop out; they are in the drawer's Machine tab and in the ⋯ menu, and a
+ * SKU name is not what anyone checks while reading a conversation.
+ */
+@media (max-width: 640px) {
+  .header {
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-4) 0 var(--space-3);
+  }
+
+  .machine {
+    display: none;
+  }
+
+  .identity {
+    flex: 1 1 100%;
+  }
+
+  .readouts {
+    flex: 1 1 auto;
+    gap: var(--space-3);
+  }
+
+  .title {
+    font-size: var(--text-lg);
+  }
+}

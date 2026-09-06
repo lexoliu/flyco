@@ -23,6 +23,34 @@ function usage() {
   return { input_tokens: 10, output_tokens: 20, estimated_cost: null, context: null };
 }
 
+describe("foldTranscript, on a delivery that repeated itself", () => {
+  it("keeps one row per call id rather than one per delivery", () => {
+    // A call id names one call. Replaying `tool_started` used to append a
+    // second row that no completion ever reached, so it spun under the
+    // finished one forever.
+    const call = {
+      type: "tool_started" as const,
+      turn_id: TURN,
+      call_id: "toolu_1",
+      tool: "Bash",
+      input: { command: "ls" },
+    };
+    const items = foldTranscript([
+      at(0, { type: "harness", event: { type: "turn_started", turn_id: TURN } }),
+      at(1, { type: "harness", event: call }),
+      at(1, { type: "harness", event: call }),
+      at(2, {
+        type: "harness",
+        event: { type: "tool_completed", turn_id: TURN, call_id: "toolu_1", ok: true },
+      }),
+    ]);
+
+    const turn = items.find((item) => item.kind === "turn");
+    expect(turn?.kind === "turn" ? turn.tools : []).toHaveLength(1);
+    expect(turn?.kind === "turn" ? turn.tools[0]?.ok : null).toBe(true);
+  });
+});
+
 describe("foldTranscript notices", () => {
   it("distinguishes a compaction that worked from one that did not", () => {
     const items = foldTranscript([
