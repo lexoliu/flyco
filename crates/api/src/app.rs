@@ -1633,11 +1633,13 @@ pub async fn fail_stalled_provisions(
 #[skyzen::openapi]
 async fn report_startup_failure(
     State(session): State<DaemonSession>,
+    State(config): State<ApiConfig>,
     Json(report): Json<ReportStartupFailure>,
     db: Db,
     rooms: Rooms,
+    hosts: HostRooms,
 ) -> Outcome<NoContent> {
-    take_failure_report(&db, &rooms, session.0, &report.message)
+    take_failure_report(&db, &config, &rooms, &hosts, session.0, &report.message)
         .await
         .map(|()| NoContent)
         .into()
@@ -1660,7 +1662,9 @@ async fn report_startup_failure(
 ///   before a sweep notices (docs/ux.md §9.6).
 async fn take_failure_report(
     db: &Db,
+    config: &ApiConfig,
     rooms: &Rooms,
+    hosts: &HostRooms,
     id: SessionId,
     message: &str,
 ) -> Result<(), ApiError> {
@@ -1670,6 +1674,21 @@ async fn take_failure_report(
         .ok_or(ApiError::SessionNotFound)?;
     if target.state == SessionState::Provisioning {
         return Ok(());
+    }
+    // Destroyed first, like the stall sweep does it: this session's machine
+    // was actually built and is running right now, and a session flyco has
+    // given up on must not go on paying for one (issue #199).
+    // `sessions::fail` releases only a machine that was never built, which
+    // was the whole story while `Failed` was reachable from `Provisioning`
+    // alone. A provider that refuses is logged rather than raised — the
+    // session failed either way, and a machine left behind is a cost to
+    // report, not a reason to keep the page spinning.
+    if let Err(error) = machines::destroy_for_archive(db, config, hosts, target.user_id, id).await {
+        tracing::warn!(
+            session = %id,
+            %error,
+            "a failed session's machine could not be released"
+        );
     }
     sessions::fail(db, rooms, id, message).await
 }
