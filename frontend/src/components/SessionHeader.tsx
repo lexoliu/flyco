@@ -288,16 +288,20 @@ export default function SessionHeader(props: SessionHeaderProps) {
             )}
           />
         </Show>
-        <Ring
-          label="Context"
-          value={props.contextUsed}
-          total={props.contextSize}
-          readout={
-            props.contextUsed === undefined || props.contextSize === undefined
-              ? UNKNOWN_READOUT
-              : `${tokens(props.contextUsed)} / ${tokens(props.contextSize)}`
-          }
-        />
+        {/*
+          Only once the harness has reported a turn. Before that there is no
+          context to show, and a ring drawn empty beside an em dash is a
+          shape the eye stops on to learn nothing — the header should carry
+          what the reader can act on and be otherwise silent.
+        */}
+        <Show when={props.contextUsed !== undefined && props.contextSize !== undefined}>
+          <Ring
+            label="Context"
+            value={props.contextUsed}
+            total={props.contextSize}
+            readout={`${tokens(props.contextUsed ?? 0)} / ${tokens(props.contextSize ?? 0)}`}
+          />
+        </Show>
       </div>
 
       <div class={styles.actions}>

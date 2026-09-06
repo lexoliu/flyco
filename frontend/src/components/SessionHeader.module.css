@@ -2,14 +2,24 @@
  * One row, wrapping to three on a narrow screen: what the session is, what
  * it is doing, and what can be done to it. Nothing here is a card — the
  * header is chrome, and chrome carries no accent colour (docs/ux.md §2).
+ *
+ * It is the page's top edge and it stays there. A transcript is the one
+ * thing in flyco long enough to scroll for minutes, and the two facts a
+ * reader checks while scrolling — is it still working, what is it costing —
+ * are both in this row; a header that scrolled away would send them to the
+ * top of the page to read a number that changes every second.
  */
 .header {
+  position: sticky;
+  top: 0;
+  z-index: 8;
   display: flex;
   align-items: center;
   gap: var(--space-4);
   flex-wrap: wrap;
-  padding-bottom: var(--space-4);
+  padding: var(--space-5) 0 var(--space-4);
   border-bottom: var(--border-width) solid var(--color-border);
+  background: var(--color-bg);
 }
 
 .identity {

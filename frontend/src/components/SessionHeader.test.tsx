@@ -48,7 +48,7 @@ function mount(overrides: Partial<SessionHeaderProps>) {
 
 describe("SessionHeader", () => {
   it("holds the title's place while the session loads, without showing the id", () => {
-    const { getByLabelText, getByRole, queryByText } = mount({});
+    const { getByLabelText, getByRole, queryByRole, queryByText } = mount({});
 
     expect(getByLabelText("Loading the session")).toBeInTheDocument();
     expect(queryByText(SESSION_ID)).not.toBeInTheDocument();
@@ -56,10 +56,13 @@ describe("SessionHeader", () => {
     // to report, and a pill is a claim (issue #137).
     expect(queryByText("Loading")).not.toBeInTheDocument();
 
-    // The rings keep their names and read a dash: what is unknown is the
-    // number, and the header has no business explaining its plumbing.
+    // The budget ring keeps its name and reads a dash: the session has one
+    // from the moment it is opened, and what is unknown is only the number.
     expect(getByRole("img", { name: "Budget: —" })).toBeInTheDocument();
-    expect(getByRole("img", { name: "Context: —" })).toBeInTheDocument();
+    // Context has no such promise. Nothing has run, so there is nothing to
+    // draw, and an empty ring beside an em dash is a shape the eye stops on
+    // to learn nothing.
+    expect(queryByRole("img", { name: /^Context/ })).not.toBeInTheDocument();
     expect(queryByText(/not loaded/)).not.toBeInTheDocument();
     expect(queryByText(/not reported/)).not.toBeInTheDocument();
   });

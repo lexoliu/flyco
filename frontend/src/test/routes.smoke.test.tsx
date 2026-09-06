@@ -129,12 +129,14 @@ describe("route smoke tests", () => {
     expect(getByRole("alert")).toBeInTheDocument();
   });
 
-  it("renders / as the composer over an empty session list", async () => {
+  it("renders / as the composer, with the session list in the rail beside it", async () => {
     const { getByLabelText, findByText } = renderAt("/");
     expect(getByLabelText("Describe a task")).toBeInTheDocument();
-    expect(
-      await findByText("No sessions yet. Describe a task above to start one."),
-    ).toBeInTheDocument();
+    // The list is the rail's, not the page's: home asks one question, and
+    // repeating the list under it would be the same list one navigation
+    // further from where it is used.
+    expect(getByLabelText("Search sessions by title or repository")).toBeInTheDocument();
+    expect(await findByText("No sessions yet.")).toBeInTheDocument();
   });
 
   it("refuses to send until every prerequisite is present", async () => {
@@ -550,18 +552,15 @@ describe("route smoke tests", () => {
       );
     });
 
-    const { findByRole, findByText, getByRole, getByText } =
+    const { findByRole, findByText, getByRole, queryByLabelText } =
       renderAt("/sessions/abc-123");
 
     const state = await findByRole("region", { name: "Session state" });
     expect(state.textContent).toContain("Failed");
     expect(state.textContent).toContain("AWS refused the reservation");
-    // And the composer says why it is not taking a message.
-    expect(
-      getByText(
-        "This session failed. Resume it to pick the conversation back up.",
-      ),
-    ).toBeInTheDocument();
+    // And it stands where the composer would be, rather than above a box
+    // that would refuse every message typed into it (issue #133).
+    expect(queryByLabelText("Message the agent")).not.toBeInTheDocument();
 
     getByRole("button", { name: "Resume" }).click();
 
@@ -605,7 +604,7 @@ describe("route smoke tests", () => {
       );
     });
 
-    const { findByRole, getByRole, getByText } = renderAt("/sessions/abc-123");
+    const { findByRole, getByRole, queryByLabelText } = renderAt("/sessions/abc-123");
 
     const state = await findByRole("region", { name: "Session state" });
     expect(state.textContent).toContain("Paused · budget exhausted");
@@ -623,11 +622,10 @@ describe("route smoke tests", () => {
         }) as HTMLInputElement
       ).min,
     ).toBe("11");
-    expect(
-      getByText(
-        "This session is paused: its budget is spent. Raise it to continue.",
-      ),
-    ).toBeInTheDocument();
+    // The notice is the whole slot: a paused session has nowhere to type
+    // until the budget is raised, and a box that says so is a box that
+    // should not be there.
+    expect(queryByLabelText("Message the agent")).not.toBeInTheDocument();
   });
 
   it("keeps the session's side panels behind the collapsed drawer", async () => {

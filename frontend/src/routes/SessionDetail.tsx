@@ -42,7 +42,7 @@ import { PROVIDER_LABEL } from "../lib/providers";
 import { dollarsToUsdMicros, usdMicrosToDollars } from "../lib/money";
 import { shellCommandIn } from "../lib/shell";
 import {
-  composerRefusal,
+  REFUSING,
   deriveStatus,
   liveSignalsFrom,
   sessionNotice,
@@ -214,10 +214,16 @@ export default function SessionDetail() {
         });
   });
 
-  /** Why the composer will not send, or `null` when it will. */
-  const refusal = createMemo(() => {
+  /**
+   * Whether this session can be written to at all.
+   *
+   * A composer that would refuse every message is not a composer, so the
+   * state notice takes its place rather than sitting above a box nobody
+   * can use (issue #133).
+   */
+  const refused = createMemo(() => {
     const view = status();
-    return view === undefined ? null : composerRefusal(view.status);
+    return view !== undefined && REFUSING.has(view.status);
   });
 
   const [error, setError] = createSignal<unknown>(null);
@@ -496,65 +502,6 @@ export default function SessionDetail() {
       <div class={styles.body}>
         <div class={styles.column}>
           {/*
-            Above the transcript rather than in the header, because it is
-            not a label: it is the page telling the reader what happened and
-            handing them the way on from it.
-          */}
-          <Show when={notice()}>
-            {(state) => (
-              <section class={styles.stateNotice} data-tone={state().tone} aria-label="Session state">
-                <h2 class={styles.stateTitle}>{state().title}</h2>
-                <p class={styles.stateBody}>{state().body}</p>
-                {/*
-                  Each way out is the control it actually is: a resume is a
-                  button because it is one request, and a budget raise is
-                  the picker of docs/ux.md §9.1 because the user has to say
-                  how much before there is a request at all.
-                */}
-                <Show when={state().action}>
-                  {(action) => (
-                    <Switch>
-                      <Match when={action().kind === "resume"}>
-                        <button
-                          type="button"
-                          class={styles.stateAction}
-                          disabled={resuming()}
-                          onClick={() => void onResume()}
-                        >
-                          {resuming() ? "Resuming…" : action().label}
-                        </button>
-                      </Match>
-                      <Match when={action().kind === "raise_budget" && session()}>
-                        {(current) => (
-                          <BudgetRaise
-                            limitUsd={usdMicrosToDollars(current().budget.limit)}
-                            spentUsd={usdMicrosToDollars(current().budget.spent)}
-                            saving={settingBudget()}
-                            onSet={(dollars) => void onSetBudget(dollars)}
-                            label="Raise the session budget"
-                            trigger={(attrs) => (
-                              <button
-                                id={attrs.id}
-                                onClick={attrs.onClick}
-                                aria-expanded={attrs.expanded()}
-                                aria-haspopup="dialog"
-                                type="button"
-                                class={styles.stateAction}
-                              >
-                                {action().label}
-                              </button>
-                            )}
-                          />
-                        )}
-                      </Match>
-                    </Switch>
-                  )}
-                </Show>
-              </section>
-            )}
-          </Show>
-
-          {/*
             The banner is sticky so an approval raised a hundred rows ago is
             still one click away, and amber because it is the one thing on
             the page holding everything else up.
@@ -635,14 +582,75 @@ export default function SessionDetail() {
             )}
           </Show>
 
+          {/*
+            The state notice and the composer are the same slot, because
+            they answer the same question — what can I do next. A session
+            that cannot be written to shows why instead of showing a box
+            that will refuse; one that can, and has something to say about
+            itself first, says it directly above the box.
+          */}
           <div class={styles.composer}>
-            <SessionComposer
-              turnInFlight={status()?.status === "working"}
-              refusal={refusal()}
-              onSend={onSend}
-              onStop={onStop}
-              onCommand={onCommand}
-            />
+          <Show when={notice()}>
+              {(state) => (
+                <section class={styles.stateNotice} data-tone={state().tone} aria-label="Session state">
+                  <h2 class={styles.stateTitle}>{state().title}</h2>
+                  <p class={styles.stateBody}>{state().body}</p>
+                  {/*
+                    Each way out is the control it actually is: a resume is a
+                    button because it is one request, and a budget raise is
+                    the picker of docs/ux.md §9.1 because the user has to say
+                    how much before there is a request at all.
+                  */}
+                  <Show when={state().action}>
+                    {(action) => (
+                      <Switch>
+                        <Match when={action().kind === "resume"}>
+                          <button
+                            type="button"
+                            class={styles.stateAction}
+                            disabled={resuming()}
+                            onClick={() => void onResume()}
+                          >
+                            {resuming() ? "Resuming…" : action().label}
+                          </button>
+                        </Match>
+                        <Match when={action().kind === "raise_budget" && session()}>
+                          {(current) => (
+                            <BudgetRaise
+                              limitUsd={usdMicrosToDollars(current().budget.limit)}
+                              spentUsd={usdMicrosToDollars(current().budget.spent)}
+                              saving={settingBudget()}
+                              onSet={(dollars) => void onSetBudget(dollars)}
+                              label="Raise the session budget"
+                              trigger={(attrs) => (
+                                <button
+                                  id={attrs.id}
+                                  onClick={attrs.onClick}
+                                  aria-expanded={attrs.expanded()}
+                                  aria-haspopup="dialog"
+                                  type="button"
+                                  class={styles.stateAction}
+                                >
+                                  {action().label}
+                                </button>
+                              )}
+                            />
+                          )}
+                        </Match>
+                      </Switch>
+                    )}
+                  </Show>
+                </section>
+              )}
+            </Show>
+            <Show when={!refused()}>
+              <SessionComposer
+                turnInFlight={status()?.status === "working"}
+                onSend={onSend}
+                onStop={onStop}
+                onCommand={onCommand}
+              />
+            </Show>
           </div>
         </div>
 

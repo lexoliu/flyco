@@ -1,78 +1,33 @@
 /**
- * Home: the composer and the sessions it produced (docs/ux.md §5).
+ * Home: one question, and what has to be true before it can be answered
+ * (docs/ux.md §5).
  *
- * The whole page is one column at 720px. Nothing here is a form the user
- * could submit and have refused: the readiness cards appear only while a
- * prerequisite is missing, and the composer's send button says which one is
- * in the way.
+ * The whole page is one column at 720px, and the only thing on it is the
+ * composer that opens a session. The list of sessions lives in the rail,
+ * where it is reachable from inside a session too; a page that repeated it
+ * would be a second copy of the same list, one navigation further away.
+ *
+ * Nothing here is a form the user could submit and have refused: the
+ * readiness cards appear only while a prerequisite is missing, and the
+ * composer's send button says which one is in the way.
  */
-import {
-  For,
-  Match,
-  Show,
-  Switch,
-  createMemo,
-  createSignal,
-  onCleanup,
-} from "solid-js";
+import { Match, Show, Switch, createMemo } from "solid-js";
 import { createQuery } from "../lib/query";
 import { A, Navigate, useNavigate } from "@solidjs/router";
 import { ChevronRight, Cpu, Sparkles } from "lucide-solid";
 import Composer from "../components/Composer";
 import ProblemNotice from "../components/ProblemNotice";
-import SessionRow from "../components/SessionRow";
 import { useReadiness } from "../components/Readiness";
 import { getMe, listSessions } from "../api/client";
 import { requestNewSession, type NewSessionInput } from "../api/sessions";
-import { cx } from "../lib/cx";
 import { welcomeDismissed } from "../lib/localPreferences";
-import { deriveStatus, groupSessions, isArchived } from "../lib/status";
 import styles from "./Home.module.css";
-
-/**
- * How often the clock the list renders against advances.
- *
- * A provisioning session counts its wait in the row, so the page needs a
- * tick — but a coarse one: the labels are in seconds, minutes and hours,
- * and re-rendering faster than the smallest unit is motion with no
- * information in it.
- */
-const TICK_MS = 1000;
 
 export default function Home() {
   const navigate = useNavigate();
   const readiness = useReadiness();
   const [sessions, { refetch }] = createQuery(listSessions);
   const [me] = createQuery(getMe);
-  const [query, setQuery] = createSignal("");
-  const [showArchived, setShowArchived] = createSignal(false);
-
-  const [now, setNow] = createSignal(Date.now());
-  const ticker = setInterval(() => setNow(Date.now()), TICK_MS);
-  onCleanup(() => clearInterval(ticker));
-
-  /** Sessions matching the search, with the status each one reads as. */
-  const matching = createMemo(() => {
-    const needle = query().trim().toLowerCase();
-    return (sessions() ?? [])
-      .filter(
-        (session) =>
-          needle === "" ||
-          session.title.toLowerCase().includes(needle) ||
-          session.repo.toLowerCase().includes(needle),
-      )
-      .map((session) => ({
-        session,
-        status: deriveStatus(session, now()).status,
-      }));
-  });
-
-  const visible = createMemo(() =>
-    matching().filter(({ status }) => isArchived(status) === showArchived()),
-  );
-
-  /** The visible sessions, under the headings docs/ux.md §5 divides them by. */
-  const groups = createMemo(() => groupSessions(visible()));
 
   /** Sessions still holding a machine, which is what the cap counts. */
   const live = createMemo(
@@ -173,86 +128,12 @@ export default function Home() {
             error={sessions.error ?? me.error ?? readiness.error()}
           />
 
-          <div class={styles.sessions}>
-            <div class={styles.sessionsHeader}>
-              <div
-                class={styles.tabs}
-                role="group"
-                aria-label="Filter sessions"
-              >
-                <button
-                  type="button"
-                  class={cx(styles.tab, !showArchived() && styles.tabActive)}
-                  aria-pressed={!showArchived()}
-                  onClick={() => setShowArchived(false)}
-                >
-                  Sessions
-                </button>
-                <button
-                  type="button"
-                  class={cx(styles.tab, showArchived() && styles.tabActive)}
-                  aria-pressed={showArchived()}
-                  onClick={() => setShowArchived(true)}
-                >
-                  Archived
-                </button>
-              </div>
-              <input
-                class={styles.search}
-                type="search"
-                placeholder="Search"
-                aria-label="Search sessions by title or repository"
-                value={query()}
-                onInput={(event) => setQuery(event.currentTarget.value)}
-              />
-            </div>
-
-            <Show
-              when={visible().length > 0}
-              fallback={
-                <p class={styles.empty}>
-                  <Show
-                    when={sessions.loading}
-                    fallback={
-                      showArchived()
-                        ? "No archived sessions."
-                        : "No sessions yet. Describe a task above to start one."
-                    }
-                  >
-                    Loading sessions…
-                  </Show>
-                </p>
-              }
-            >
-              <For each={groups()}>
-                {(group) => (
-                  <div class={styles.group}>
-                    <Show when={group.heading}>
-                      {(heading) => (
-                        <p class={styles.groupLabel}>{heading()}</p>
-                      )}
-                    </Show>
-                    <ul class={styles.list}>
-                      <For each={group.rows}>
-                        {(session) => (
-                          <li>
-                            <SessionRow session={session} now={now()} />
-                          </li>
-                        )}
-                      </For>
-                    </ul>
-                  </div>
-                )}
-              </For>
-            </Show>
-
-            {/* The cap is only worth saying when it is about to bite. */}
-            <Show when={nearCap()}>
-              <p class={styles.cap}>
-                {live()} of {me()?.session_cap} sessions in use.
-              </p>
-            </Show>
-          </div>
+          {/* The cap is only worth saying when it is about to bite. */}
+          <Show when={nearCap()}>
+            <p class={styles.cap}>
+              {live()} of {me()?.session_cap} sessions in use.
+            </p>
+          </Show>
         </section>
       </Match>
     </Switch>

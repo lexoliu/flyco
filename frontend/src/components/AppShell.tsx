@@ -8,10 +8,21 @@ import {
 } from "solid-js";
 import { createQuery } from "../lib/query";
 import { A, Navigate, useLocation, useNavigate } from "@solidjs/router";
-import { Check, LogOut, Monitor, Moon, Sun } from "lucide-solid";
+import {
+  Check,
+  LogOut,
+  Menu,
+  Monitor,
+  Moon,
+  PanelLeftClose,
+  Settings as SettingsIcon,
+  SquarePen,
+  Sun,
+} from "lucide-solid";
 import Popover from "./Popover";
 import ProblemNotice from "./ProblemNotice";
 import { ReadinessProvider } from "./Readiness";
+import SessionNav from "./SessionNav";
 import { getMe } from "../api/client";
 import { isSignedIn, onSessionChanged } from "../lib/session";
 import { signOut } from "../lib/signOut";
@@ -31,7 +42,7 @@ import styles from "./AppShell.module.css";
  */
 const PUBLIC_ROUTES = new Set(["/login", "/auth/complete"]);
 
-/** Routes that render their own full-page layout, with no top bar. */
+/** Routes that render their own full-page layout, with no rail. */
 const BARE_ROUTES = new Set([...PUBLIC_ROUTES, "/welcome", "/connect/return"]);
 
 const THEMES: readonly {
@@ -65,6 +76,7 @@ export default function AppShell(props: { children?: JSX.Element }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [signedIn, setSignedIn] = createSignal(isSignedIn());
+  const [railOpen, setRailOpen] = createSignal(false);
   const isBareRoute = createMemo(() => BARE_ROUTES.has(location.pathname));
   const isPublicRoute = createMemo(() => PUBLIC_ROUTES.has(location.pathname));
   const loginHref = createMemo(() => {
@@ -78,6 +90,7 @@ export default function AppShell(props: { children?: JSX.Element }) {
   createEffect(() => {
     location.pathname;
     setSignedIn(isSignedIn());
+    setRailOpen(false);
   });
 
   const stopListening = onSessionChanged(() => setSignedIn(isSignedIn()));
@@ -95,20 +108,50 @@ export default function AppShell(props: { children?: JSX.Element }) {
         <ReadinessProvider enabled={signedIn}>
           <div class={styles.shell}>
             <Show when={!isBareRoute()}>
-              <header class={styles.header}>
-                <A href="/" class={styles.brand}>
-                  flyco
+              {/* The opener floats over the page rather than sitting in a
+                  band of its own, so a phone spends its height on the work
+                  and not on a bar that only holds a hamburger. */}
+              <button
+                type="button"
+                class={styles.railOpen}
+                aria-label="Open navigation"
+                aria-expanded={railOpen()}
+                onClick={() => setRailOpen(true)}
+              >
+                <Menu size={16} aria-hidden="true" />
+              </button>
+              <Show when={railOpen()}>
+                <button
+                  type="button"
+                  class={styles.scrim}
+                  aria-label="Close navigation"
+                  onClick={() => setRailOpen(false)}
+                />
+              </Show>
+              <nav
+                class={cx(styles.rail, railOpen() && styles.railOpened)}
+                aria-label="Primary"
+              >
+                <div class={styles.brandRow}>
+                  <A href="/" class={styles.brand}>
+                    flyco
+                  </A>
+                  <button
+                    type="button"
+                    class={styles.railClose}
+                    aria-label="Close navigation"
+                    onClick={() => setRailOpen(false)}
+                  >
+                    <PanelLeftClose size={16} aria-hidden="true" />
+                  </button>
+                </div>
+                <A href="/" end class={styles.newSession}>
+                  <SquarePen size={15} aria-hidden="true" />
+                  New session
                 </A>
-                <nav class={styles.nav} aria-label="Primary">
-                  <A href="/" end activeClass={styles.navActive}>
-                    Sessions
-                  </A>
-                  <A href="/settings" activeClass={styles.navActive}>
-                    Settings
-                  </A>
-                </nav>
+                <SessionNav onNavigate={() => setRailOpen(false)} />
                 <AccountMenu onSignOut={() => signOut(navigate)} />
-              </header>
+              </nav>
             </Show>
             <main class={styles.main}>{props.children}</main>
           </div>
@@ -119,11 +162,12 @@ export default function AppShell(props: { children?: JSX.Element }) {
 }
 
 /**
- * The avatar and everything behind it.
+ * The account row at the foot of the rail, and everything behind it.
  *
- * The top bar carries navigation and identity and nothing else; appearance
- * and signing out are account business, so they live under the avatar
- * rather than as two more buttons competing with `Sessions`.
+ * Settings live here rather than beside the session list because they are
+ * not a place the work goes: a person opens them to link an account or
+ * change a default and then leaves. Putting them in the list would give a
+ * page visited monthly the same standing as the sessions visited hourly.
  */
 function AccountMenu(props: { onSignOut: () => void }) {
   const [me] = createQuery(getMe);
@@ -143,7 +187,8 @@ function AccountMenu(props: { onSignOut: () => void }) {
   return (
     <Popover
       label="Account"
-      align="end"
+      align="start"
+      side="top"
       panelClass={styles.menu}
       trigger={(attrs) => (
         <button
@@ -152,17 +197,20 @@ function AccountMenu(props: { onSignOut: () => void }) {
           aria-expanded={attrs.expanded()}
           aria-haspopup="dialog"
           type="button"
-          class={styles.avatar}
+          class={styles.account}
           aria-label={
             me() === undefined ? "Account" : `Account: ${me()?.login ?? ""}`
           }
         >
-          <Show
-            when={initials()}
-            fallback={<span class={styles.avatarBlank} />}
-          >
-            {initials()}
-          </Show>
+          <span class={styles.avatar} aria-hidden="true">
+            <Show
+              when={initials()}
+              fallback={<span class={styles.avatarBlank} />}
+            >
+              {initials()}
+            </Show>
+          </span>
+          <span class={styles.accountName}>{me()?.login ?? "Account"}</span>
         </button>
       )}
     >
@@ -179,6 +227,10 @@ function AccountMenu(props: { onSignOut: () => void }) {
               </p>
             )}
           </Show>
+          <A href="/settings" class={styles.menuLink} onClick={() => close()}>
+            <SettingsIcon size={14} aria-hidden="true" />
+            Settings
+          </A>
           <p class={styles.menuLabel} id="appearance-label">
             Appearance
           </p>
