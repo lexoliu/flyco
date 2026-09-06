@@ -142,7 +142,9 @@ async fn a_harness_that_came_up_without_flycos_tools_fails_the_session() {
     // The scratch's name is what tells the stand-in sidecar to report a
     // flyco server with `machine_status` missing.
     let scratch = Scratch::new("unmounted");
-    let (_session, mut outputs) = start(&scratch).await;
+    // On a machine with a managed policy, because that is the machine flyco
+    // provisions and the one whose refusal has two possible authors.
+    let (_session, mut outputs) = start_with(&scratch, Some(scratch.join("managed"))).await;
 
     // Identity still arrives first: the CLI is warm before its MCP servers
     // have finished connecting, and the refusal is the next thing said.
@@ -167,6 +169,13 @@ async fn a_harness_that_came_up_without_flycos_tools_fails_the_session() {
     assert!(
         error.contains("blocked by enterprise policy"),
         "the refusal must quote what the agent said about it: {error}"
+    );
+    // And with flycod's own half of the contract, read back from disk: a
+    // policy file that is missing and one the CLI declined to read are
+    // different faults with the same symptom.
+    assert!(
+        error.contains("managed-mcp.json") && error.contains("\"flyco\""),
+        "the refusal must say what flycod left for the CLI to read: {error}"
     );
     assert!(
         outputs.recv().await.is_none(),

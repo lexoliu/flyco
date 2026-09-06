@@ -250,6 +250,7 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
                 announced: false,
                 exit: None,
                 stderr_tail: VecDeque::new(),
+                managed: self.claude.managed_dir.clone(),
             }
             .run(inbox),
         );
@@ -258,6 +259,33 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
             session: ClaudeSession { commands },
             outputs: output_rx,
         })
+    }
+}
+
+/// What this daemon left on disk for the CLI to read, in one sentence.
+///
+/// The half of the mount contract flycod owns. Read back from disk rather
+/// than remembered, because "flycod wrote it" and "it is there now" are
+/// different claims and only the second one explains a mount that came up
+/// short.
+async fn managed_policy_note(dir: Option<std::path::PathBuf>) -> String {
+    let Some(dir) = dir else {
+        return "No managed MCP policy is in force on this machine: the servers were declared to \
+                the SDK instead."
+            .to_owned();
+    };
+    let path = dir.join(crate::mount::MANAGED_MCP);
+    match tokio::fs::read_to_string(&path).await {
+        Ok(body) => format!(
+            "flycod's enterprise MCP policy is on disk at {} ({} bytes): {}",
+            path.display(),
+            body.len(),
+            body.split_whitespace().collect::<Vec<_>>().join(" ")
+        ),
+        Err(error) => format!(
+            "flycod's enterprise MCP policy is not readable at {}: {error}.",
+            path.display()
+        ),
     }
 }
 
@@ -519,6 +547,14 @@ struct Driver<S> {
     /// writes a great deal of it, and what explains a death is always at
     /// the end.
     stderr_tail: VecDeque<String>,
+    /// Where this daemon wrote Claude Code's managed MCP policy, when it
+    /// wrote one.
+    ///
+    /// Kept only to report a mount that came up short: the policy file and
+    /// the mount are the two halves of one contract, and a message that
+    /// named only the mount would leave the reader unable to tell a policy
+    /// flycod failed to write from one the CLI declined to read.
+    managed: Option<std::path::PathBuf>,
 }
 
 impl<S: TranscriptStore> Driver<S> {
@@ -721,8 +757,9 @@ impl<S: TranscriptStore> Driver<S> {
                     // up short is nearly always the CLI refusing a server
                     // for a reason it states on stderr and nowhere else,
                     // and the machine's journal goes with the machine.
-                    let refusal =
-                        self.with_recent_stderr(ClaudeError::Mount(error.into()).to_string());
+                    let note = managed_policy_note(self.managed.clone()).await;
+                    let refusal = self
+                        .with_recent_stderr(format!("{} {note}", ClaudeError::Mount(error.into())));
                     self.fatal(refusal).await;
                     return false;
                 }
