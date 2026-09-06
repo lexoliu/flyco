@@ -840,7 +840,9 @@ describe("route smoke tests", () => {
     expect(
       await findByRole("heading", { level: 2, name: "Instructions" }),
     ).toBeInTheDocument();
-    expect(await findByLabelText("Content")).toBeInTheDocument();
+    // Labelled "AGENTS.md", not "Content": the box's own shape is not a
+    // name, and the group heading already said what document this is.
+    expect(await findByLabelText("AGENTS.md")).toBeInTheDocument();
   });
 
   it("renders /settings/account, handling an unconfigured VAPID key calmly", async () => {

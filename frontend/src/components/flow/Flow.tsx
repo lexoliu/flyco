@@ -126,18 +126,26 @@ export default function Flow(props: FlowProps) {
   return (
     <div class={styles.page}>
       <section class={styles.card} aria-labelledby="flow-title">
-        <div class={styles.bars} aria-hidden="true">
-          <For each={bars()}>
-            {(bar) => (
-              <span class={cx(styles.bar, bar.current && styles.barCurrent)}>
-                <span
-                  class={styles.fill}
-                  style={{ width: `${Math.round(bar.fill * 100)}%` }}
-                />
-              </span>
-            )}
-          </For>
-        </div>
+        {/*
+          A stepper needs steps to compare. Entered from settings the flow
+          has one stage, and a single bar is a dark rule across the top of
+          the card that says nothing and reads as a divider — or, worse, as
+          a finished one.
+        */}
+        <Show when={bars().length > 1}>
+          <div class={styles.bars} aria-hidden="true">
+            <For each={bars()}>
+              {(bar) => (
+                <span class={cx(styles.bar, bar.current && styles.barCurrent)}>
+                  <span
+                    class={styles.fill}
+                    style={{ width: `${Math.round(bar.fill * 100)}%` }}
+                  />
+                </span>
+              )}
+            </For>
+          </div>
+        </Show>
 
         <div class={styles.body}>
           <h1 id="flow-title" class={styles.title}>

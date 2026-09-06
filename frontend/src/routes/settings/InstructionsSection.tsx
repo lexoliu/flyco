@@ -76,10 +76,16 @@ export default function InstructionsSection() {
         <Show when={!doc.loading}>
           <article class={styles.card}>
             <div class={styles.field}>
-              <label for="agents-md-content">Content</label>
+              {/* The group above already says AGENTS.md; a visible "Content"
+                  label repeats the box's own shape and says nothing. What an
+                  empty box does need is an example of what belongs in it. */}
+              <label for="agents-md-content" class="visually-hidden">
+                AGENTS.md
+              </label>
               <textarea
                 id="agents-md-content"
-                rows="16"
+                rows="12"
+                placeholder={"Always run `cargo fmt` before committing.\nThe staging database is read-only."}
                 value={draft()}
                 onInput={(event) => setDraft(event.currentTarget.value)}
               />
