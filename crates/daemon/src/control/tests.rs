@@ -274,13 +274,27 @@ impl Harness {
         Self::build(greeting, 32, keepalive).await
     }
 
+    /// A harness whose agent has stopped reading its commands.
+    async fn wedged(keepalive: wire::Keepalive) -> Self {
+        Self::assemble(Greeting::Welcome, 32, keepalive, FakeSession::wedged()).await
+    }
+
     async fn build(greeting: Greeting, outputs: usize, keepalive: wire::Keepalive) -> Self {
+        Self::assemble(greeting, outputs, keepalive, FakeSession::new()).await
+    }
+
+    async fn assemble(
+        greeting: Greeting,
+        outputs: usize,
+        keepalive: wire::Keepalive,
+        harness: (FakeSession, mpsc::UnboundedReceiver<Call>),
+    ) -> Self {
         let room = Room::start(greeting).await;
         let session = SessionId::generate();
         let endpoint = Endpoint::from_base(&room.base, session, TOKEN.to_owned())
             .expect("a loopback relay endpoint");
 
-        let (fake, calls) = FakeSession::new();
+        let (fake, calls) = harness;
         let recorder = fake.recorder();
         let (sender, receiver) = mpsc::channel(outputs);
         let (approval_sender, approvals) = mpsc::unbounded_channel();
@@ -989,6 +1003,35 @@ async fn the_agent_ready_stage_is_announced_once_and_not_on_every_reconnect() {
 /// beat, then give up after [`wire::MISSES_BEFORE_DEAD`] unanswered beats.
 fn brisk() -> wire::Keepalive {
     wire::Keepalive::every(Duration::from_millis(50), wire::MISSES_BEFORE_DEAD)
+}
+
+#[tokio::test]
+async fn a_harness_that_stops_answering_ends_the_session_instead_of_the_relay() {
+    // The pump awaits the harness inside its own loop, so a command that
+    // never returns takes the socket read and the heartbeat down with it:
+    // the daemon stops answering, stops reconnecting, and stops being able
+    // to say why (issue #201). It must give up on the harness instead.
+    let keepalive = brisk().waiting_on_the_harness(Duration::from_millis(150));
+    let mut harness = Harness::wedged(keepalive).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::UserMessage {
+        text: "anyone there?".to_owned(),
+    });
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), harness.run)
+        .await
+        .expect("a wedged harness must not wedge the relay")
+        .expect("the run did not panic");
+    let Err(WireError::Harness(reason)) = ended else {
+        panic!("a harness that never answers is a failure, not a clean end: {ended:?}");
+    };
+    // Named, so the session says which command went unanswered — and the
+    // user's own words are not repeated into the reason.
+    assert!(
+        reason.contains("user_message") && !reason.contains("anyone there?"),
+        "the reason names the command without quoting it: {reason}"
+    );
 }
 
 #[tokio::test]

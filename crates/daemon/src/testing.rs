@@ -95,6 +95,12 @@ pub struct FakeSessionError;
 #[derive(Debug)]
 pub struct FakeSession {
     calls: mpsc::UnboundedSender<Call>,
+    /// Whether a user message is accepted or simply never answered.
+    ///
+    /// What a real harness looks like when its agent process has stopped
+    /// reading: the command is written, and the acknowledgement that says
+    /// it landed never comes.
+    wedged: bool,
 }
 
 impl FakeSession {
@@ -102,7 +108,26 @@ impl FakeSession {
     #[must_use]
     pub fn new() -> (Self, mpsc::UnboundedReceiver<Call>) {
         let (calls, received) = mpsc::unbounded_channel();
-        (Self { calls }, received)
+        (
+            Self {
+                calls,
+                wedged: false,
+            },
+            received,
+        )
+    }
+
+    /// A session that never answers a user message.
+    #[must_use]
+    pub fn wedged() -> (Self, mpsc::UnboundedReceiver<Call>) {
+        let (calls, received) = mpsc::unbounded_channel();
+        (
+            Self {
+                calls,
+                wedged: true,
+            },
+            received,
+        )
     }
 
     /// The sender every other double in the same test records into.
@@ -150,7 +175,13 @@ impl HarnessSession for FakeSession {
         &self,
         text: String,
     ) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
-        core::future::ready(self.record(Call::UserMessage(text)))
+        let answered = (!self.wedged).then(|| self.record(Call::UserMessage(text)));
+        async move {
+            match answered {
+                Some(result) => result,
+                None => core::future::pending().await,
+            }
+        }
     }
 
     fn interrupt(&self) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {

@@ -479,12 +479,12 @@ async fn a_sidecar_that_dies_mid_turn_reports_what_it_said_before_it_went() {
 }
 
 #[tokio::test]
-async fn a_managed_policy_and_strict_mcp_config_are_never_both_asked_for() {
-    // The CLI refuses to start at all when it finds an enterprise
-    // `managed-mcp.json` and is also passed `--strict-mcp-config`, and a
-    // provisioned machine always has the first (issue #195). The servers
-    // are still named either way: the managed file makes the set
-    // exclusive, naming them makes it present.
+async fn a_machine_declares_its_mcp_servers_once_and_in_one_place() {
+    // The CLI refuses to start when it finds an enterprise
+    // `managed-mcp.json` and is also passed `--strict-mcp-config` (issue
+    // #195), and it blocks a server that same file already declares
+    // (issue #197). A provisioned machine always has that file, so it
+    // says nothing on the command line at all.
     let provisioned = Scratch::new("provisioned");
     let (_session, mut outputs) = start_with(&provisioned, Some(provisioned.join("managed"))).await;
     // The command is written before it is read: waiting for the session to
@@ -492,16 +492,23 @@ async fn a_managed_policy_and_strict_mcp_config_are_never_both_asked_for() {
     next(&mut outputs, "the session to announce itself").await;
     let start = start_command(&provisioned);
     assert_eq!(start["strict_mcp_config"], serde_json::json!(false));
-    assert!(start["mcp_servers"]["flyco"].is_object());
+    // And nothing on the command line either: an enterprise MCP config is
+    // exclusive, and a server declared twice is refused as "blocked by
+    // enterprise policy" (issue #197). The managed file is the whole
+    // declaration on a machine that has one.
+    assert_eq!(start["mcp_servers"], serde_json::json!({}));
 
     // A developer's own flycod is not root and writes no managed file, so
     // the command line is the only thing that can make the set exclusive.
     let own = Scratch::new("own");
     let (_session, mut outputs) = start_with(&own, None).await;
     next(&mut outputs, "the session to announce itself").await;
-    assert_eq!(
-        start_command(&own)["strict_mcp_config"],
-        serde_json::json!(true)
+    let start = start_command(&own);
+    assert_eq!(start["strict_mcp_config"], serde_json::json!(true));
+    assert!(
+        start["mcp_servers"]["flyco"].is_object(),
+        "with no managed file, the command line is the only way flyco's own \
+         server reaches the agent: {start}"
     );
 }
 

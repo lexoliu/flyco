@@ -269,10 +269,16 @@ impl Mount {
 
     /// The `mcpServers` option the Agent SDK's session start carries.
     ///
-    /// The same servers again, and deliberately so: this is what mounts
-    /// them, and the managed files are what make the set exclusive. On a
-    /// machine with both, the two declarations name one set and the CLI
-    /// merges them onto themselves.
+    /// For a machine with no managed policy — a developer's own `flycod`,
+    /// which is not root and writes no such file. There, this is both what
+    /// mounts the servers and, with `strictMcpConfig`, what makes the set
+    /// exclusive.
+    ///
+    /// Not for a provisioned machine. The CLI does not merge the two
+    /// declarations: an enterprise MCP config is exclusive, and a server
+    /// also passed here is refused as `MCP server blocked by enterprise
+    /// policy` (issue #197). There the managed file is the only
+    /// declaration.
     #[must_use]
     pub fn claude_sdk_servers(&self) -> BTreeMap<String, ClaudeMcpServer> {
         self.servers()

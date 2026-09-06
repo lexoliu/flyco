@@ -506,6 +506,31 @@ const fn is_false(value: &bool) -> bool {
 }
 
 impl ControlToDaemon {
+    /// The wire tag this command is sent under.
+    ///
+    /// For diagnostics that have to name a command without quoting one: a
+    /// `user_message` carries the user's own words, and a daemon reporting
+    /// that it could not deliver one should not repeat them into a log.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Welcome => "welcome",
+            Self::Heartbeat => "heartbeat",
+            Self::UserMessage { .. } => "user_message",
+            Self::ShellCommand { .. } => "shell_command",
+            Self::RunShell { .. } => "run_shell",
+            Self::TerminalInput { .. } => "terminal_input",
+            Self::Interrupt => "interrupt",
+            Self::Compact => "compact",
+            Self::ApprovalDecision { .. } => "approval_decision",
+            Self::Budget { .. } => "budget",
+            Self::BudgetRaised { .. } => "budget_raised",
+            Self::MachineChanged { .. } => "machine_changed",
+            Self::InspectWorkdir { .. } => "inspect_workdir",
+            Self::Archive { .. } => "archive",
+        }
+    }
+
     /// Whether a browser may send this command.
     ///
     /// A session room accepts exactly five commands from a client socket;

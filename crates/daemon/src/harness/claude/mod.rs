@@ -48,7 +48,7 @@ pub mod protocol;
 pub mod sidecar;
 pub mod store;
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
@@ -170,6 +170,9 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
                  through the Agent SDK, but nothing on this machine stops the agent adding more"
             );
         }
+        // Whether this machine's MCP set is declared by root-owned policy
+        // or on the command line; the CLI accepts one or the other.
+        let managed = self.claude.managed_dir.is_some();
         sidecar::prepare(&self.sidecar).await?;
         let mut child = sidecar::spawn(&self.sidecar)?;
 
@@ -207,13 +210,26 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
                 model: self.claude.model.clone(),
                 permission_mode: self.claude.permission_mode,
                 resume_session_id: request.resume_session_id,
-                mcp_servers: self.mount.claude_sdk_servers(),
-                // Exactly one of the two exclusivity mechanisms, never
-                // both: a managed policy directory means a root-owned
-                // `managed-mcp.json` the CLI reads as enterprise policy,
-                // and it refuses to start if `--strict-mcp-config` is also
-                // asked for (issue #195).
-                strict_mcp_config: self.claude.managed_dir.is_none(),
+                // One declaration of the set, never two. A managed policy
+                // directory means a root-owned `managed-mcp.json` that the
+                // CLI reads as *enterprise* MCP config, and an enterprise
+                // config is exclusive by definition: it refuses to start
+                // beside `--strict-mcp-config` (issue #195), and it blocks
+                // servers passed any other way — `MCP server blocked by
+                // enterprise policy: flyco` is the CLI refusing flyco's own
+                // server for being declared twice (issue #197).
+                //
+                // So a provisioned machine declares them in the file the
+                // agent cannot reach, and says nothing on the command line;
+                // a developer's own flycod, which is not root and writes no
+                // such file, declares them on the command line and makes
+                // that exclusive with strict mode.
+                mcp_servers: if managed {
+                    BTreeMap::new()
+                } else {
+                    self.mount.claude_sdk_servers()
+                },
+                strict_mcp_config: !managed,
             },
         )
         .await?;
