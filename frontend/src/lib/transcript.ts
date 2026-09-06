@@ -55,6 +55,22 @@ export interface ShellChunk {
   data: string;
 }
 
+/**
+ * One stretch of a turn, in the order the agent produced it.
+ *
+ * A turn used to be a string of prose and a flat list of tool calls,
+ * rendered in that order whatever order they happened in. So a turn that
+ * ran a command and then explained what it found showed the explanation
+ * first and the command under it: the transcript told the reader the agent
+ * answered and then went looking, which is the reverse of what it did.
+ *
+ * Contiguous calls are one part rather than one part each, because a run of
+ * tool rows reads as a list and a list is what it should be in the markup.
+ */
+export type TurnPart =
+  | { kind: "text"; text: string }
+  | { kind: "tools"; calls: ToolCall[] };
+
 export type TranscriptItem =
   | { kind: "user_message"; key: string; text: string; atUnix: number }
   | {
@@ -86,8 +102,8 @@ export type TranscriptItem =
       kind: "turn";
       key: string;
       turnId: string;
-      text: string;
-      tools: ToolCall[];
+      /** What the agent did, in the order it did it. */
+      parts: TurnPart[];
       status: TurnStatus;
       error: string | null;
       usage: UsageReport | null;
@@ -161,6 +177,19 @@ function findTurn(items: TranscriptItem[], turnId: string): Turn | undefined {
   return undefined;
 }
 
+/** The call this turn already has under that id, wherever it sits. */
+function findCall(turn: Turn, callId: string): ToolCall | undefined {
+  for (const part of turn.parts) {
+    if (part.kind === "tools") {
+      const call = part.calls.find((candidate) => candidate.callId === callId);
+      if (call !== undefined) {
+        return call;
+      }
+    }
+  }
+  return undefined;
+}
+
 function startTurn(items: TranscriptItem[], turnId: string, atUnix: number): Turn {
   const existing = findTurn(items, turnId);
   if (existing !== undefined) {
@@ -170,8 +199,7 @@ function startTurn(items: TranscriptItem[], turnId: string, atUnix: number): Tur
     kind: "turn",
     key: `turn-${turnId}`,
     turnId,
-    text: "",
-    tools: [],
+    parts: [],
     status: "running",
     error: null,
     usage: null,
@@ -367,7 +395,12 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
             break;
           case "assistant_delta": {
             const turn = startTurn(items, harness.turn_id, atUnix);
-            turn.text += harness.text;
+            const last = turn.parts.at(-1);
+            if (last?.kind === "text") {
+              last.text += harness.text;
+            } else {
+              turn.parts.push({ kind: "text", text: harness.text });
+            }
             break;
           }
           case "tool_started": {
@@ -376,24 +409,28 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
             // repeating itself, not the agent running the command again,
             // and appending would leave a second row that no completion
             // ever reaches — spinning under the finished one forever.
-            const seen = turn.tools.find(
-              (candidate) => candidate.callId === harness.call_id,
-            );
-            if (seen === undefined) {
-              turn.tools.push({
-                callId: harness.call_id,
-                tool: harness.tool,
-                input: harness.input,
-                ok: null,
-                startedAtUnix: atUnix,
-                endedAtUnix: null,
-              });
+            if (findCall(turn, harness.call_id) !== undefined) {
+              break;
+            }
+            const call: ToolCall = {
+              callId: harness.call_id,
+              tool: harness.tool,
+              input: harness.input,
+              ok: null,
+              startedAtUnix: atUnix,
+              endedAtUnix: null,
+            };
+            const last = turn.parts.at(-1);
+            if (last?.kind === "tools") {
+              last.calls.push(call);
+            } else {
+              turn.parts.push({ kind: "tools", calls: [call] });
             }
             break;
           }
           case "tool_completed": {
             const turn = startTurn(items, harness.turn_id, atUnix);
-            const call = turn.tools.find((candidate) => candidate.callId === harness.call_id);
+            const call = findCall(turn, harness.call_id);
             if (call !== undefined) {
               call.ok = harness.ok;
               call.endedAtUnix = atUnix;

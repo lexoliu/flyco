@@ -594,6 +594,10 @@ longer carries a `refusal` of its own.
   `Edited 3 files`). A failed call keeps the same sentence and says it did
   not happen: `Could not show top-level directory name`. The row is set in
   the prose face, not the monospace one.
+- A turn renders in the order the agent worked it: prose and tool rows
+  interleaved as they happened, not all the prose and then all the calls. A
+  turn that ran a command and then explained what it found must not show the
+  explanation above the command it came from.
 - Expanding a row shows the call, never its wire format. A call whose input
   is source — a shell `command`, an `apply_patch` patch — opens into that
   source, highlighted as the language it is. Everything else opens into

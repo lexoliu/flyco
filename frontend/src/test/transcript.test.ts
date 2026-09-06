@@ -46,8 +46,78 @@ describe("foldTranscript, on a delivery that repeated itself", () => {
     ]);
 
     const turn = items.find((item) => item.kind === "turn");
-    expect(turn?.kind === "turn" ? turn.tools : []).toHaveLength(1);
-    expect(turn?.kind === "turn" ? turn.tools[0]?.ok : null).toBe(true);
+    const parts = turn?.kind === "turn" ? turn.parts : [];
+    expect(parts).toHaveLength(1);
+    expect(parts[0]?.kind === "tools" ? parts[0].calls : []).toHaveLength(1);
+    expect(parts[0]?.kind === "tools" ? parts[0].calls[0]?.ok : null).toBe(true);
+  });
+});
+
+describe("foldTranscript turn order", () => {
+  it("keeps prose and tool calls in the order the agent produced them", () => {
+    // A turn used to be a string and a flat list, rendered prose-first
+    // whatever order they happened in: a turn that ran `ls` and then
+    // explained what it found showed the explanation above the command it
+    // came from, which is the reverse of what the agent did.
+    const items = foldTranscript([
+      at(0, { type: "harness", event: { type: "turn_started", turn_id: TURN } }),
+      at(1, {
+        type: "harness",
+        event: {
+          type: "tool_started",
+          turn_id: TURN,
+          call_id: "c1",
+          tool: "Bash",
+          input: { command: "ls" },
+        },
+      }),
+      at(2, {
+        type: "harness",
+        event: { type: "tool_completed", turn_id: TURN, call_id: "c1", ok: true },
+      }),
+      at(3, { type: "harness", event: { type: "assistant_delta", turn_id: TURN, text: "It is " } }),
+      at(4, { type: "harness", event: { type: "assistant_delta", turn_id: TURN, text: "a kernel." } }),
+      at(5, {
+        type: "harness",
+        event: {
+          type: "tool_started",
+          turn_id: TURN,
+          call_id: "c2",
+          tool: "Bash",
+          input: { command: "wc -l Cargo.toml" },
+        },
+      }),
+    ]);
+
+    const turn = items.find((item) => item.kind === "turn");
+    const parts = turn?.kind === "turn" ? turn.parts : [];
+    expect(parts.map((part) => part.kind)).toEqual(["tools", "text", "tools"]);
+    // Deltas collect into the one part they arrived in, not one part each.
+    expect(parts[1]?.kind === "text" ? parts[1].text : "").toBe("It is a kernel.");
+  });
+
+  it("gathers a run of calls into one list rather than one list each", () => {
+    const call = (id: string) =>
+      at(1, {
+        type: "harness" as const,
+        event: {
+          type: "tool_started" as const,
+          turn_id: TURN,
+          call_id: id,
+          tool: "Read",
+          input: { file_path: `src/${id}.rs` },
+        },
+      });
+    const items = foldTranscript([
+      at(0, { type: "harness", event: { type: "turn_started", turn_id: TURN } }),
+      call("a"),
+      call("b"),
+    ]);
+
+    const turn = items.find((item) => item.kind === "turn");
+    const parts = turn?.kind === "turn" ? turn.parts : [];
+    expect(parts).toHaveLength(1);
+    expect(parts[0]?.kind === "tools" ? parts[0].calls.length : 0).toBe(2);
   });
 });
 
@@ -209,8 +279,8 @@ describe("foldTranscript turns", () => {
     ]);
 
     expect(turn).toMatchObject({ kind: "turn" });
-    const tools = (turn as { tools: { startedAtUnix: number; endedAtUnix: number | null; ok: boolean | null }[] })
-      .tools;
+    const part = turn?.kind === "turn" ? turn.parts[0] : undefined;
+    const tools = part?.kind === "tools" ? part.calls : [];
     expect(tools).toHaveLength(1);
     expect(tools[0]).toMatchObject({ startedAtUnix: T0 + 2, endedAtUnix: T0 + 9, ok: true });
   });
