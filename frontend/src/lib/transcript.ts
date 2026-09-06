@@ -372,14 +372,23 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
           }
           case "tool_started": {
             const turn = startTurn(items, harness.turn_id, atUnix);
-            turn.tools.push({
-              callId: harness.call_id,
-              tool: harness.tool,
-              input: harness.input,
-              ok: null,
-              startedAtUnix: atUnix,
-              endedAtUnix: null,
-            });
+            // A call id names one call. Seeing it twice is a delivery
+            // repeating itself, not the agent running the command again,
+            // and appending would leave a second row that no completion
+            // ever reaches — spinning under the finished one forever.
+            const seen = turn.tools.find(
+              (candidate) => candidate.callId === harness.call_id,
+            );
+            if (seen === undefined) {
+              turn.tools.push({
+                callId: harness.call_id,
+                tool: harness.tool,
+                input: harness.input,
+                ok: null,
+                startedAtUnix: atUnix,
+                endedAtUnix: null,
+              });
+            }
             break;
           }
           case "tool_completed": {

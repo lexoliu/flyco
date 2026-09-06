@@ -128,6 +128,33 @@ describe("EventStream catch-up + live interleaving (the reconnect race)", () => 
   });
 });
 
+describe("EventStream dedup across two serializations of one event", () => {
+  it("recognises a catch-up row whose keys came back in another order", () => {
+    // A live frame is `serde_json` output of the event struct, with the
+    // `type` tag first. The same event read back from the seq log has been
+    // through a `serde_json::Value` — a `BTreeMap` — so it re-serializes
+    // with its keys in alphabetical order. Comparing the two byte for byte
+    // matched nothing, and the page rendered every event twice: a doubled
+    // answer and a phantom tool row that never finished.
+    const stream = freshStream();
+    const live = '{"type":"harness","event":{"type":"turn_started","turn_id":"t-1"}}';
+    expect(stream.ingestLive(live)).not.toBeNull();
+
+    const reordered = { event: { turn_id: "t-1", type: "turn_started" }, type: "harness" };
+    expect(stream.ingestCatchUp([stored(1, reordered)])).toEqual([]);
+  });
+
+  it("still tells two different events apart", () => {
+    const stream = freshStream();
+    expect(
+      stream.ingestLive('{"type":"harness","event":{"type":"turn_started","turn_id":"t-1"}}'),
+    ).not.toBeNull();
+    expect(
+      stream.ingestCatchUp([stored(1, { event: { turn_id: "t-2", type: "turn_started" }, type: "harness" })]),
+    ).toHaveLength(1);
+  });
+});
+
 describe("nextBackoffDelay", () => {
   it("scales the cap by 2^attempt up to maxMs, with full jitter via the injected random source", () => {
     const options = { baseMs: 1000, maxMs: 60_000, random: () => 1 };
