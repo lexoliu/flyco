@@ -571,6 +571,12 @@ pub async fn fail(db: &Db, rooms: &Rooms, id: SessionId, reason: &str) -> Result
     // The row reserved for the machine that was never built is released
     // with the session: left in `provisioning`, the page would keep calling
     // a machine that does not exist `starting` under a `Failed` pill.
+    //
+    // Only the unbuilt one. A machine that exists is the caller's to
+    // destroy, because destroying it means talking to a provider and this
+    // does not have the account to do it with — so every path that can fail
+    // a session holding a *built* machine destroys it first, as the stall
+    // sweep and the agent-death report both do (issue #199).
     machines::release_unbuilt(db, id).await?;
     tracing::warn!(session = %id, %reason, "a session's machine could not be provisioned");
 

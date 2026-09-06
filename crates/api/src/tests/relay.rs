@@ -187,6 +187,16 @@ async fn a_live_session_whose_agent_died_fails_with_what_the_agent_said(
         "the session says what the agent said, not that something went wrong: {:?}",
         detail.failure
     );
+
+    // And it is not still paying for the machine it can no longer use
+    // (issue #199).
+    let machine: flyco_core::MachineView = client
+        .get(&format!("/v1/sessions/{session}/machine"))
+        .bearer(&caller.token)
+        .send()
+        .await
+        .json();
+    assert_eq!(machine.state, flyco_core::MachineState::Destroyed);
 }
 
 #[skyzen::test]
