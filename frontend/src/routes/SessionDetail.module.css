@@ -9,18 +9,25 @@
   width: 100%;
   max-width: 1180px;
   margin: 0 auto;
-  padding: var(--space-5) var(--space-4) var(--space-6);
+  /* No top padding: the header owns the page's top edge and carries its
+     own, so that when it sticks there is no gap above it for the
+     transcript to show through. */
+  padding: 0 var(--space-4) var(--space-6);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
 }
 
 /*
- * What a session that is not running says for itself, above the transcript
- * (docs/ux.md §6, issue #133): the state in the header's own words, what it
- * means, and the one thing to do about it. Bordered in the colour of the
- * status it describes, so a failure reads as one and an archived session
- * reads as the quiet fact it is.
+ * What a session that is not running says for itself, and the one thing to
+ * do about it (docs/ux.md §6, issue #133).
+ *
+ * It sits where the composer sits, because it is the answer to the
+ * question the composer asks: a session that cannot be written to should
+ * not show a box for writing in, and the reason it cannot belongs where
+ * the reader just tried to type. Above the transcript it was a third band
+ * of chrome under two others, saying the word the status pill had already
+ * said.
  */
 .stateNotice {
   display: flex;
@@ -30,7 +37,7 @@
   margin: 0;
   padding: var(--space-3) var(--space-4);
   border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--color-surface-sunken);
 }
 
@@ -105,7 +112,7 @@
  */
 .approvalBanner {
   position: sticky;
-  top: var(--space-3);
+  top: calc(var(--space-3) + 3.5rem);
   z-index: 5;
   display: flex;
   align-items: center;

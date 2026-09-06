@@ -120,3 +120,52 @@ textarea:disabled,
     transition-duration: 0.01ms !important;
   }
 }
+
+/*
+ * Syntax, in ink and two greys.
+ *
+ * Every highlighted block on the site — a file's contents, a tool call's
+ * own command — is the same code in the same palette, so these live here
+ * rather than in the one component that happened to need them first.
+ * `highlightHtml` emits `hljs-*` classes, which no CSS module can scope.
+ */
+.hljs-comment,
+.hljs-quote {
+  color: var(--color-text-faint);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-section,
+.hljs-name {
+  font-weight: var(--weight-semibold);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-symbol,
+.hljs-number,
+.hljs-meta {
+  color: var(--color-text-muted);
+}
+
+.hljs-title,
+.hljs-type,
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-built_in {
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+}
+
+.hljs-deletion {
+  color: var(--color-danger);
+}
+
+.hljs-addition {
+  color: var(--color-success);
+}

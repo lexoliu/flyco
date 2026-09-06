@@ -89,9 +89,9 @@ const VERB_ONLY: ReadonlySet<string> = new Set(["todowrite", "update_plan"]);
 /**
  * Input keys that name what a tool acted on, in the order to prefer them.
  *
- * Ordered by specificity rather than alphabetically: a `Bash` call carries
- * both `command` and (sometimes) `description`, and the command is the
- * thing that ran.
+ * `description` is absent on purpose: it is not an object, it is a whole
+ * sentence the harness wrote about the call, and it is handled before this
+ * list is ever reached (see {@link describedAs}).
  */
 const OBJECT_KEYS: readonly string[] = [
   "command",
@@ -103,7 +103,6 @@ const OBJECT_KEYS: readonly string[] = [
   "query",
   "url",
   "name",
-  "description",
   "prompt",
 ];
 
@@ -154,6 +153,33 @@ function fileCount(input: unknown): number | null {
   return null;
 }
 
+/**
+ * The sentence the harness wrote about this call, if it wrote one.
+ *
+ * Both harnesses ask their model for a short description in the imperative
+ * — "Show top-level directory name", "Run the workspace tests" — precisely
+ * so a client has something to show a person instead of the call. When
+ * there is one it *is* the summary: a line assembled out of a verb and a
+ * quoted shell fragment is flyco describing the call, and the description
+ * is the agent saying what it is doing and why.
+ *
+ * A failure keeps the same sentence and says it did not happen. The
+ * imperative is what makes that read: `Show …` becomes `Could not show …`.
+ */
+function describedAs(input: unknown, ok: boolean | null): string | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+  const described = input["description"];
+  if (typeof described !== "string" || described.trim() === "") {
+    return null;
+  }
+  const sentence = collapse(described);
+  return ok === false
+    ? `Could not ${sentence.charAt(0).toLowerCase()}${sentence.slice(1)}`
+    : sentence;
+}
+
 /** Squashes a value onto one line and trims it to a readable length. */
 function collapse(value: string): string {
   const flat = value.replace(/\s+/g, " ").trim();
@@ -174,6 +200,11 @@ function collapse(value: string): string {
  * a success to everyone who does not study the icon (issue #136).
  */
 export function summarizeTool(tool: string, input: unknown, ok: boolean | null): string {
+  const described = describedAs(input, ok);
+  if (described !== null) {
+    return described;
+  }
+
   const key = tool.toLowerCase();
   const verb = VERBS.get(key) ?? unknownToolVerb(tool);
   const word = ok === false ? verb.failed : verb.done;

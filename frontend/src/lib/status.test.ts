@@ -6,7 +6,7 @@ import {
   SESSION_GROUPS,
   STATUS_ORDER,
   type SessionStatus,
-  composerRefusal,
+  REFUSING,
   deriveStatus,
   elapsedSince,
   groupOf,
@@ -504,28 +504,31 @@ describe("sessionNotice", () => {
   });
 });
 
-describe("composerRefusal", () => {
+describe("REFUSING", () => {
   it("lets a running session be spoken to, whatever it is doing", () => {
     const running: SessionStatus[] = ["working", "needs_input", "idle"];
-    expect(running.map(composerRefusal)).toEqual([null, null, null]);
+    expect(running.some((status) => REFUSING.has(status))).toBe(false);
   });
 
   it("takes a message for a machine that is still being built", () => {
     // It waits in the room's mailbox, which is worth having said.
-    expect(composerRefusal("provisioning")).toBeNull();
-    expect(composerRefusal("migrating")).toBeNull();
+    expect(REFUSING.has("provisioning")).toBe(false);
+    expect(REFUSING.has("migrating")).toBe(false);
   });
 
-  it("gives every state that cannot take a message its own reason", () => {
+  it("names every state whose composer is replaced by the notice", () => {
     const refused: SessionStatus[] = ["failed", "interrupted", "paused", "archived"];
-    const reasons = refused.map(composerRefusal);
-
-    expect(reasons.every((reason) => reason !== null)).toBe(true);
-    expect(new Set(reasons).size).toBe(refused.length);
-    expect(composerRefusal("archived")).toBe("This session is archived and read-only.");
-    expect(composerRefusal("paused")).toBe(
-      "This session is paused: its budget is spent. Raise it to continue.",
-    );
+    expect([...REFUSING].sort()).toEqual([...refused].sort());
+    // And every one of them has a notice to put there, or the slot would
+    // be empty (issue #133).
+    for (const status of refused) {
+      expect(
+        sessionNotice(
+          { status, label: "x", tone: "neutral", breathing: false },
+          { failure: undefined, budgetLimit: undefined },
+        ),
+      ).not.toBeNull();
+    }
   });
 });
 

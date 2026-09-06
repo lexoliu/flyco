@@ -402,28 +402,23 @@ export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNoti
 }
 
 /**
- * Why the composer will not send, or `null` when it will.
+ * The states a session cannot be written to in.
  *
- * A disabled button with no explanation is the page refusing without
- * saying so (issue #133). A session with no machine is the one thing this
- * covers: a message to a session whose machine is still being built waits
- * in the room's mailbox and is worth sending, so provisioning and migrating
- * are not refused.
+ * The page shows {@link sessionNotice} in the composer's place for these
+ * rather than a box that would refuse: a disabled composer with a sentence
+ * under it says the same thing twice and still leaves the reader looking at
+ * somewhere to type (issue #133).
+ *
+ * Provisioning and migrating are deliberately absent. A message to a
+ * session whose machine is still being built waits in the room's mailbox
+ * and is worth sending.
  */
-export function composerRefusal(status: SessionStatus): string | null {
-  switch (status) {
-    case "failed":
-      return "This session failed. Resume it to pick the conversation back up.";
-    case "interrupted":
-      return "This session has no machine right now. Resume it to send a message.";
-    case "paused":
-      return "This session is paused: its budget is spent. Raise it to continue.";
-    case "archived":
-      return "This session is archived and read-only.";
-    default:
-      return null;
-  }
-}
+export const REFUSING: ReadonlySet<SessionStatus> = new Set([
+  "failed",
+  "interrupted",
+  "paused",
+  "archived",
+]);
 
 /**
  * Order the home page groups sessions in (docs/ux.md §5): `Needs input`,

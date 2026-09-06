@@ -6,6 +6,11 @@ function worked(tool: string, input: unknown): string {
   return summarizeTool(tool, input, true);
 }
 
+/** The same call, reported as having failed. */
+function failed(tool: string, input: unknown): string {
+  return summarizeTool(tool, input, false);
+}
+
 describe("summarizeTool", () => {
   it("writes the three summaries docs/ux.md §9.2 names", () => {
     expect(worked("Read", { file_path: "src/main.rs" })).toBe("Read src/main.rs");
@@ -28,10 +33,29 @@ describe("summarizeTool", () => {
     expect(worked("view_image", { path: "shot.png" })).toBe("Viewed shot.png");
   });
 
-  it("prefers the command over a description that merely narrates it", () => {
-    expect(worked("Bash", { command: "cargo build", description: "Build the crate" })).toBe(
-      "Ran cargo build",
-    );
+  it("reads the sentence the harness wrote about the call, not the call", () => {
+    // The description exists so a client has something to show a person.
+    // `Ran basename "$(pwd)"; basename /srv/flyco/work` is flyco describing
+    // a command; "Show top-level directory name" is the agent saying what
+    // it is doing.
+    expect(
+      worked("Bash", {
+        command: 'basename "$(pwd)"; basename /srv/flyco/work',
+        description: "Show top-level directory name",
+      }),
+    ).toBe("Show top-level directory name");
+  });
+
+  it("keeps the same sentence when the call failed, and says it did not happen", () => {
+    // Both harnesses ask for the imperative, which is what lets a failure
+    // be said in the agent's own words instead of a glyph (issue #136).
+    expect(
+      failed("Bash", { command: "cargo build", description: "Build the crate" }),
+    ).toBe("Could not build the crate");
+  });
+
+  it("falls back to the call itself when nothing described it", () => {
+    expect(worked("Bash", { command: "cargo build" })).toBe("Ran cargo build");
   });
 
   it("names a single-edit call by its file rather than counting to one", () => {

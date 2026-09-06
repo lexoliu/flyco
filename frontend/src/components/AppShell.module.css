@@ -1,24 +1,41 @@
+/*
+ * A rail down the left and the work beside it (docs/ux.md §2).
+ *
+ * Not a top bar. A horizontal bar spends the scarcest axis a screen has —
+ * height — on navigation that never changes, and every page under it then
+ * has to stack its own header beneath it: two bands of chrome before the
+ * first word of content, three once a session says what state it is in.
+ * The rail spends the axis there is plenty of, keeps the session list in
+ * reach from inside a session, and leaves each page owning its own top
+ * edge.
+ */
 .shell {
   display: flex;
-  flex-direction: column;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
-/*
- * A slim bar. The home page is the product; this exists to get back to it,
- * so it is a hairline, a wordmark, two links and the avatar.
- */
-.header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-5);
-  height: 48px;
-  padding: 0 var(--space-4);
-  border-bottom: var(--border-width) solid var(--color-border);
-  background: var(--color-bg);
+.rail {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 20;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 248px;
+  height: 100vh;
+  height: 100dvh;
+  padding: var(--space-4) var(--space-3);
+  border-right: var(--border-width) solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
 }
 
 .brand {
@@ -27,57 +44,91 @@
   letter-spacing: -0.02em;
   color: var(--color-text);
   text-decoration: none;
-  margin-right: auto;
 }
 
-.nav {
-  display: flex;
-  gap: var(--space-1);
-}
-
-.nav a {
+/* Closes the drawer on a phone; the rail is permanent above that width. */
+.railClose {
+  display: none;
+  margin-left: auto;
+  padding: var(--space-1);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+/*
+ * The one action the product is for. It is a link rather than a button
+ * because starting a session is going to the page that opens one.
+ */
+.newSession {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
   text-decoration: none;
   font-size: var(--text-md);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
-  transition: color var(--transition-fast), background var(--transition-fast);
+  font-weight: var(--weight-medium);
 }
 
-.nav a:hover {
+.newSession:hover {
+  background: var(--color-surface-sunken);
+}
+
+/* Identity sits at the foot, out of the way of the list, and everything
+   about the account hangs off it rather than competing with the sessions. */
+.account {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border: none;
+  border-top: var(--border-width) solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
   color: var(--color-text);
-  background: var(--color-surface-sunken);
+  font-family: inherit;
+  font-size: var(--text-md);
+  text-align: left;
+  cursor: pointer;
 }
 
-.navActive {
-  color: var(--color-text) !important;
-  background: var(--color-surface-sunken);
+.account:hover {
+  color: var(--color-text);
+}
+
+.accountName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  flex: none;
+  width: 24px;
+  height: 24px;
   border-radius: var(--radius-full);
   border: var(--border-width) solid var(--color-border-strong);
-  background: var(--color-surface);
+  background: var(--color-bg);
   color: var(--color-text);
   font-size: var(--text-xs);
   font-weight: var(--weight-semibold);
   letter-spacing: 0.02em;
-  padding: 0;
-}
-
-.avatar:hover {
-  border-color: var(--color-text-faint);
 }
 
 /* Before /v1/me answers there is no login to take initials from. */
 .avatarBlank {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: var(--radius-full);
   background: var(--color-border-strong);
 }
@@ -115,22 +166,27 @@
 }
 
 .themeOption,
-.menuAction {
+.menuAction,
+.menuLink {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  padding: var(--space-2) var(--space-2);
+  padding: var(--space-2);
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text);
+  font-family: inherit;
   font-size: var(--text-md);
   text-align: left;
+  text-decoration: none;
+  cursor: pointer;
 }
 
 .themeOption:hover,
-.menuAction:hover {
+.menuAction:hover,
+.menuLink:hover {
   background: var(--color-surface-sunken);
 }
 
@@ -157,6 +213,71 @@
 
 .main {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* Opens the rail on a phone. It floats over the page's own top edge rather
+   than reserving a band of its own, so a narrow screen still spends its
+   height on content. */
+.railOpen {
+  display: none;
+  position: fixed;
+  top: var(--space-3);
+  left: var(--space-3);
+  z-index: 15;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.scrim {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .rail {
+    position: fixed;
+    top: 0;
+    left: 0;
+    transform: translateX(-100%);
+    transition: transform var(--transition-panel);
+    box-shadow: 0 0 40px rgb(0 0 0 / 12%);
+  }
+
+  .railOpened {
+    transform: translateX(0);
+  }
+
+  .railClose,
+  .railOpen {
+    display: inline-flex;
+  }
+
+  .scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 19;
+    background: rgb(0 0 0 / 32%);
+    border: none;
+  }
+
+  /* Room for the floating opener, which would otherwise sit on the title. */
+  .main {
+    padding-top: var(--space-6);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail {
+    transition: none;
+  }
 }

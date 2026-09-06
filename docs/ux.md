@@ -62,9 +62,17 @@ color, radius, or size is defined. Component CSS reads tokens.
 /welcome                First run (§4): one linear sequence of pages
 ```
 
-The shell is a slim top bar: wordmark left; `Sessions` and `Settings`
-right, plus the account avatar with a menu (theme, sign out). No sidebar.
-The home page is the product; the top bar exists to get back to it.
+The shell is a left rail and nothing else. There is no top bar: a bar
+above the work is a second place to look, and the work is the page.
+
+The rail, top to bottom: the wordmark, `New session`, a search field, the
+`Sessions` / `Archived` tabs, the session list grouped as in §5, and at the
+foot the account row — avatar and login, opening a menu upward with
+`Settings`, appearance, and `Sign out`. The rail is the only region that
+scrolls independently of the page.
+
+Below 900px the rail is off-canvas: a floating button opens it over the
+page behind a scrim, and choosing anything closes it.
 
 ## 4. First run
 
@@ -265,13 +273,14 @@ Layout, top to bottom, centered at 720px:
    - a send button (ink circle with an up arrow) at the right of the row.
 3. Readiness cards, only while readiness is incomplete: one row per
    missing prerequisite, with its action.
-4. **Sessions**, as a list of rows, grouped and ordered:
-   `Needs input` → `Working` → `Idle` → (tab) `Archived`. Each row:
-   status dot and label, title, `repo · relative time`, and on the right
-   the harness mark. Rows are links to `/sessions/:id`. A search field
-   filters by title and repo.
-5. The session cap appears as one muted line under the list only when
-   active sessions are at or above cap minus one.
+4. The session cap appears as one muted line only when active sessions are
+   at or above cap minus one.
+
+The page is centered vertically as well as horizontally, because those four
+things are the whole page. The session list is not among them: it lives in
+the rail (§3), where it is reachable from every page instead of only this
+one, and where it does not compete with the composer for the attention of
+somebody about to describe a task.
 
 ### Chips
 
@@ -543,18 +552,39 @@ the session has already spent, and an explicit `Set budget to $25` commits
 it. That is the only way out of `Paused · budget exhausted`: a limit above
 the spend puts the session back to `active` and tells its daemon to carry
 on from where the pause interrupted it. A paused session therefore also
-carries a notice above the transcript — "The $10.00 budget is spent. Raise
-it to continue." — with the same control as its action, because the header
-is not where a user looks when the page tells them the session stopped.
+carries a notice — "The $10.00 budget is spent. Raise it to continue." —
+with the same control as its action, because the header is not where a user
+looks when the page tells them the session stopped.
+
+That notice takes the composer's place rather than sitting above the
+transcript, and the composer is not rendered at all while it shows. A
+session that is `failed`, `interrupted`, `paused` or `archived` will not
+take a message, so a field to type one in is an offer the page cannot keep;
+what belongs in that space is the one action that will change the state.
+The same rule covers every refusing state, which is why the composer no
+longer carries a `refusal` of its own.
 
 ### 9.2 Transcript
 
 - User messages are right-aligned bubbles.
 - Assistant text renders as Markdown (a library, sanitized) with code
   blocks and copy buttons.
-- Tool calls are one-line rows: icon, a human summary
-  (`Read src/main.rs`, `Ran cargo test`, `Edited 3 files`), duration,
-  and a status glyph. Expanding a row shows input and output.
+- Tool calls are one-line rows: icon, a human summary, duration, and a
+  status glyph. The summary is the harness's own `description` when the
+  call carries one ("Show top-level directory name"), because that sentence
+  was written for a person to read; only when there is none does flyco
+  describe the call itself (`Read src/main.rs`, `Ran cargo test`,
+  `Edited 3 files`). A failed call keeps the same sentence and says it did
+  not happen: `Could not show top-level directory name`. The row is set in
+  the prose face, not the monospace one.
+- Expanding a row shows the call, never its wire format. A call whose input
+  is source — a shell `command`, an `apply_patch` patch — opens into that
+  source, highlighted as the language it is. Everything else opens into
+  named values (`File · src/main.rs`), flattened two levels deep and
+  counted below that. `JSON.stringify` appears nowhere in the interface:
+  braces, quoted keys and `\"` around the shell quotes the command actually
+  contained are a transport between two programs, and the reader is not
+  one of them.
 - A completed turn ends with `Worked for 8m 23s`.
 - Provisioning renders **inside** the transcript as a timeline: `Reserving
   a machine on Azure` → `Booting` → `Installing flycod` → `Cloning

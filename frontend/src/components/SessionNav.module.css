@@ -1,0 +1,157 @@
+/*
+ * The rail's session list. Every row is one line: a status dot and a title.
+ *
+ * Deliberately poorer than `SessionRow`, which is the home page's row and
+ * carries repository, time and harness. This is a switcher — the reader is
+ * looking for a name they already know — so anything beyond the name and
+ * whether it needs them is noise repeated forty times down the side of the
+ * screen.
+ */
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  flex: 1;
+}
+
+.search {
+  flex: none;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: inherit;
+  font-size: var(--text-sm);
+}
+
+.search::placeholder {
+  color: var(--color-text-faint);
+}
+
+.search:focus {
+  outline: none;
+  border-color: var(--color-border-strong);
+}
+
+.tabs {
+  display: flex;
+  gap: var(--space-1);
+  flex: none;
+}
+
+.tab {
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-faint);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--color-text-muted);
+}
+
+.tabActive {
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+}
+
+/* The only thing on the page allowed to scroll independently: the rail is
+   full height, and its head and foot must stay put while forty sessions
+   move. */
+.scroller {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0 calc(var(--space-2) * -1);
+  padding: 0 var(--space-2);
+}
+
+.group {
+  margin-bottom: var(--space-3);
+}
+
+.groupLabel {
+  margin: 0 0 var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  text-decoration: none;
+  font-size: var(--text-md);
+}
+
+.row:hover {
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+}
+
+.rowCurrent {
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+}
+
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-neutral-dot);
+}
+
+.dot[data-tone="working"] {
+  background: var(--color-success);
+}
+
+.dot[data-tone="attention"] {
+  background: var(--color-warning);
+}
+
+.dot[data-tone="failed"] {
+  background: var(--color-danger);
+}
+
+.dot[data-tone="quiet"] {
+  background: var(--color-border-strong);
+}
+
+.title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  margin: var(--space-3) var(--space-2);
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+}

@@ -10,7 +10,7 @@
  * Nothing here reaches back into the relay for a second opinion, so a row
  * can never disagree with the row above it.
  */
-import { For, Match, Show, Switch } from "solid-js";
+import { For, Match, Show, Switch, createMemo } from "solid-js";
 import {
   AlertTriangle,
   Check,
@@ -29,6 +29,8 @@ import type { ProvisioningStage } from "../api/wire";
 import { operation, type OperationDetail } from "../lib/approvals";
 import { cx } from "../lib/cx";
 import { formatDuration } from "../lib/duration";
+import { highlightHtml } from "../lib/highlight";
+import { detailOfTool } from "../lib/toolDetail";
 import { summarizeTool } from "../lib/toolSummary";
 import type { ProvisioningStep, ToolCall, TranscriptItem } from "../lib/transcript";
 import { machineChangePrice, machineChangeSummary, TURN_FAILED_NOTE } from "../lib/transcript";
@@ -225,10 +227,54 @@ function ToolRow(props: { tool: ToolCall }) {
         </summary>
         <div class={styles.toolDetail}>
           <p class={styles.toolDetailLabel}>{props.tool.tool}</p>
-          <pre class={styles.toolInput}>{JSON.stringify(props.tool.input, null, 2)}</pre>
+          <ToolDetail tool={props.tool.tool} input={props.tool.input} />
         </div>
       </details>
     </li>
+  );
+}
+
+/**
+ * What is behind a tool row's disclosure.
+ *
+ * The call as the agent made it, never as the wire carried it: the command
+ * highlighted as shell, the patch as a diff, and everything else as named
+ * values. A person opening a row wants to see what ran, and a JSON object
+ * makes them read past the syntax of a protocol to find it.
+ */
+function ToolDetail(props: { tool: string; input: unknown }) {
+  const detail = createMemo(() => detailOfTool(props.tool, props.input));
+
+  return (
+    <Show
+      when={detail().code !== null || detail().fields.length > 0}
+      fallback={<p class={styles.toolBare}>This call carried no arguments.</p>}
+    >
+      <Show when={detail().code}>
+        {(code) => (
+          <pre class={styles.toolCode}>
+            <code
+              // Sanitized by `highlightHtml`, which is the only thing that
+              // ever produces the markup here.
+              // eslint-disable-next-line solid/no-innerhtml
+              innerHTML={highlightHtml(code().text, code().language)}
+            />
+          </pre>
+        )}
+      </Show>
+      <Show when={detail().fields.length > 0}>
+        <dl class={styles.toolFields}>
+          <For each={detail().fields}>
+            {(field) => (
+              <>
+                <dt class={styles.toolFieldLabel}>{field.label}</dt>
+                <dd class={styles.toolFieldValue}>{field.value}</dd>
+              </>
+            )}
+          </For>
+        </dl>
+      </Show>
+    </Show>
   );
 }
 

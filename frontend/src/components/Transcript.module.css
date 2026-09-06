@@ -138,14 +138,16 @@
   color: var(--color-text-faint);
 }
 
+/* The agent's own sentence about what it did, so it is set as prose. The
+   monospace face here used to make "Show top-level directory name" read as
+   machine output. The command it ran is under the disclosure, in `.toolCode`. */
 .toolText {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
 }
 
 .toolDuration {
@@ -182,7 +184,9 @@
   color: var(--color-text-faint);
 }
 
-.toolInput {
+/* The call's own source — a shell command, a patch — highlighted as the
+   language it is. Nothing here is ever a serialized object. */
+.toolCode {
   margin: 0;
   padding: var(--space-3);
   max-height: 320px;
@@ -192,8 +196,41 @@
   background: var(--color-surface-sunken);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
+  line-height: var(--line-normal);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* Everything the call carried that is not source: named, one per line, in
+   the order they are worth reading. */
+.toolFields {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+}
+
+.toolFieldLabel {
+  color: var(--color-text-faint);
+  white-space: nowrap;
+}
+
+.toolFieldValue {
+  margin: 0;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A call with nothing to open into still opens into a sentence. */
+.toolBare {
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
 }
 
 /* ── Shell commands (docs/ux.md §9.3) ────────────────────────── */

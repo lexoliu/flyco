@@ -44,6 +44,12 @@ export interface PopoverProps {
   label: string;
   /** Which edge of the trigger the panel lines up with. Defaults to `start`. */
   align?: "start" | "end" | undefined;
+  /**
+   * Which side of the trigger the panel opens on. `bottom` by default; a
+   * trigger sitting at the foot of the window — the account row at the
+   * bottom of the rail — needs `top` or the panel opens off screen.
+   */
+  side?: "bottom" | "top" | undefined;
   /** Extra class on the panel, for callers that need a width. */
   panelClass?: string | undefined;
   /**
@@ -86,8 +92,12 @@ export default function Popover(props: PopoverProps) {
       if (panel === undefined) {
         return;
       }
-      const top = panel.getBoundingClientRect().top;
-      panel.style.maxHeight = `${Math.max(window.innerHeight - top - VIEWPORT_MARGIN_PX, MIN_PANEL_PX)}px`;
+      const box = panel.getBoundingClientRect();
+      const room =
+        props.side === "top"
+          ? box.bottom - VIEWPORT_MARGIN_PX
+          : window.innerHeight - box.top - VIEWPORT_MARGIN_PX;
+      panel.style.maxHeight = `${Math.max(room, MIN_PANEL_PX)}px`;
     }
     fit();
     window.addEventListener("resize", fit);
@@ -134,7 +144,12 @@ export default function Popover(props: PopoverProps) {
       <Show when={open()}>
         <div
           ref={panel}
-          class={cx(styles.panel, props.align === "end" && styles.alignEnd, props.panelClass)}
+          class={cx(
+            styles.panel,
+            props.align === "end" && styles.alignEnd,
+            props.side === "top" && styles.sideTop,
+            props.panelClass,
+          )}
           role="dialog"
           aria-label={props.label}
           aria-labelledby={triggerId}

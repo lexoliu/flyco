@@ -28,6 +28,25 @@
   right: 0;
 }
 
+/* Opens upward, for a trigger that sits at the foot of the window. */
+.sideTop {
+  top: auto;
+  bottom: calc(100% + var(--space-2));
+  animation: settle var(--transition-panel);
+}
+
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* Panels slide; nothing bounces. */
 @keyframes rise {
   from {
