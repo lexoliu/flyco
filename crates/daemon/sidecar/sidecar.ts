@@ -312,6 +312,18 @@ export function sessionOptions(
     // says so here.
     mcpServers: command.mcp_servers,
     strictMcpConfig: command.strict_mcp_config,
+    // What the CLI itself made of those declarations. The SDK swallows the
+    // child's stderr unless a callback asks for it, so a server the CLI
+    // ignored (an enterprise MCP config has exclusive control over the
+    // scope) or refused (blocked by enterprise policy) reaches flycod as
+    // nothing but "no MCP servers at all" — a mount failure with no
+    // account of itself. `--debug mcp` narrows the CLI's account to the
+    // mount, and forwarding it to this process's stderr puts it in the
+    // tail flycod already quotes when the mount check fails.
+    extraArgs: { debug: "mcp" },
+    stderr: (data: string) => {
+      process.stderr.write(data);
+    },
     ...callbacks,
     // Assistant text reaches flyco only as partial-message deltas, so the
     // normalizer never has to choose between a delta and the complete

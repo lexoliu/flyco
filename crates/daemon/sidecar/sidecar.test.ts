@@ -247,6 +247,26 @@ describe("session options", () => {
     expect(options.strictMcpConfig).toBe(false);
     expect(Object.keys(options.mcpServers ?? {})).toEqual(["flyco"]);
   });
+
+  test("the CLI is asked to say what it did with MCP, and says it on stderr", () => {
+    // A mount the CLI declined is only ever explained in its own debug
+    // output; without this the daemon can report that flyco's server is
+    // missing but never why.
+    const options = sessionOptions(start(), "id", callbacks);
+    expect(options.extraArgs).toEqual({ debug: "mcp" });
+    const written: string[] = [];
+    const stderr = process.stderr.write;
+    process.stderr.write = ((chunk: string) => {
+      written.push(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      options.stderr?.("mcp: flyco ignored\n");
+    } finally {
+      process.stderr.write = stderr;
+    }
+    expect(written).toEqual(["mcp: flyco ignored\n"]);
+  });
 });
 
 describe("the mount the CLI reports", () => {
