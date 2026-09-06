@@ -168,8 +168,7 @@ function turn(overrides: Partial<Extract<TranscriptItem, { kind: "turn" }>> = {}
     kind: "turn",
     key: "turn-t1",
     turnId: "t1",
-    text: "I'll rebase the branch and push it.",
-    tools: [],
+    parts: [{ kind: "text", text: "I'll rebase the branch and push it." }],
     status: "completed",
     error: null,
     usage: null,
@@ -197,14 +196,19 @@ describe("Transcript turn", () => {
   it("says a tool call failed in the line, not only in the glyph beside it", () => {
     const { getByText } = show(
       turn({
-        tools: [
+        parts: [
           {
-            callId: "c1",
-            tool: "Edit",
-            input: { file_path: "crates/daemon/src/compaction.rs" },
-            ok: false,
-            startedAtUnix: T0,
-            endedAtUnix: T0 + 2,
+            kind: "tools",
+            calls: [
+              {
+                callId: "c1",
+                tool: "Edit",
+                input: { file_path: "crates/daemon/src/compaction.rs" },
+                ok: false,
+                startedAtUnix: T0,
+                endedAtUnix: T0 + 2,
+              },
+            ],
           },
         ],
       }),

@@ -98,16 +98,30 @@ export default function Transcript(props: TranscriptProps) {
               <Match when={item.kind === "turn" && item}>
                 {(turn) => (
                   <div class={styles.turn}>
-                    <Show when={turn().text !== ""}>
-                      <Markdown text={turn().text} />
-                    </Show>
-                    <Show when={turn().tools.length > 0}>
-                      <ul class={styles.tools}>
-                        <For each={turn().tools}>
-                          {(tool) => <ToolRow tool={tool} />}
-                        </For>
-                      </ul>
-                    </Show>
+                    {/*
+                      In the order the agent worked, not prose first and
+                      commands after: a turn that ran something and then
+                      explained what it found used to show the explanation
+                      above the command it came from.
+                    */}
+                    <For each={turn().parts}>
+                      {(part) => (
+                        <Switch>
+                          <Match when={part.kind === "text" && part}>
+                            {(text) => <Markdown text={text().text} />}
+                          </Match>
+                          <Match when={part.kind === "tools" && part}>
+                            {(group) => (
+                              <ul class={styles.tools}>
+                                <For each={group().calls}>
+                                  {(tool) => <ToolRow tool={tool} />}
+                                </For>
+                              </ul>
+                            )}
+                          </Match>
+                        </Switch>
+                      )}
+                    </For>
                     {/*
                       A turn that stopped says so, and says the session is
                       still the user's to continue; the harness's own words
