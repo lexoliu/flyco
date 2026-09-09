@@ -3,9 +3,9 @@
 use flyco_core::wire::{ApprovalDecision, ApprovalPayload};
 use flyco_core::{
     ApprovalState, ApprovalView, BudgetStage, CreateSession, CurrentUser, DecideApproval,
-    EnvDocument, EnvEntry, HarnessKind, MachineOrigin, MachineState, Problem, ProviderAccountId,
-    SessionDetail, SessionId, SessionState, SessionSummary, SpendKind, UpdateEnv, UpdateMe,
-    UpdateSession, Usd,
+    EnvDocument, EnvEntry, HarnessKind, MachineOrigin, MachineState, ModelChoice, ModelOption,
+    Problem, ProviderAccountId, SessionDetail, SessionId, SessionState, SessionSummary, SpendKind,
+    UpdateEnv, UpdateMe, UpdateSession, Usd, builtin_models,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -17,7 +17,7 @@ use crate::rooms::{NativeRooms, Rooms};
 use crate::testing::{
     SSH_HOST, machine_choice, migrated_router, seed_other_user, seed_provider_account, seed_user,
 };
-use crate::{app, approvals, budgets, metering, session, sessions, testing};
+use crate::{app, approvals, budgets, harness_accounts, metering, session, sessions, testing};
 
 const REPO: &str = "lexoliu/flyco";
 
@@ -76,6 +76,7 @@ fn open(caller: &Caller, repo: &str, dollars: u64) -> CreateSession {
         budget_limit: Usd::from_dollars(dollars),
         machine: Some(machine_choice(caller.account)),
         spot: true,
+        model: None,
     }
 }
 
@@ -142,6 +143,7 @@ async fn omitting_the_machine_lets_flyco_pick_one(ctx: TestContext, kv: Kv, db: 
             budget_limit: Usd::from_dollars(10),
             machine: None,
             spot: true,
+            model: None,
         },
     )
     .await;
@@ -399,6 +401,7 @@ async fn flyco_cannot_choose_a_machine_without_a_deployable_linux_type(
             budget_limit: Usd::from_dollars(10),
             machine: None,
             spot: true,
+            model: None,
         })
         .send()
         .await;
@@ -1159,6 +1162,7 @@ async fn an_update_refuses_a_budget_nothing_can_run_on_and_a_body_that_says_noth
         .json(&UpdateSession {
             title: Some("Rework the relay mailbox".to_owned()),
             budget_limit: Some(Usd::from_dollars(30)),
+            model: None,
         })
         .send()
         .await;
@@ -1206,6 +1210,9 @@ async fn ownership_is_answered_per_user(db: Db) {
             branch: &BRANCH.parse().expect("valid branch"),
             machine_origin: flyco_core::MachineOrigin::Auto,
             budget: flyco_core::BudgetConfig::new(Usd::from_dollars(1)).expect("non-zero"),
+            model: &flyco_core::ModelChoice::default_of(&flyco_core::builtin_models(
+                HarnessKind::Codex,
+            )),
         },
     )
     .await
@@ -1425,6 +1432,260 @@ async fn another_users_environment_is_not_found(ctx: TestContext, kv: Kv, db: Db
         .put(&format!("/v1/sessions/{session}/env"))
         .bearer(&stranger.token)
         .json(&env(&[("MINE", "now")]))
+        .send()
+        .await
+        .assert_status(404);
+}
+
+// ── The model a session runs on ──
+
+/// A `PATCH /v1/sessions/{id}` body that only changes the model.
+fn remodel(model: &str, effort: Option<&str>) -> UpdateSession {
+    UpdateSession {
+        model: Some(ModelChoice {
+            model: model.to_owned(),
+            effort: effort.map(str::to_owned),
+        }),
+        ..UpdateSession::default()
+    }
+}
+
+#[skyzen::test]
+async fn a_session_opened_without_a_model_carries_the_harnesss_default(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // Resolved at creation rather than left blank: the header states the
+    // model on every row, so a session nobody chose one for must still name
+    // what it runs.
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    assert_eq!(
+        session.summary.model,
+        ModelChoice::default_of(&builtin_models(HarnessKind::ClaudeCode))
+    );
+}
+
+#[skyzen::test]
+async fn a_session_opened_with_a_model_carries_exactly_that_one(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let chosen = ModelChoice {
+        model: "sonnet".to_owned(),
+        effort: Some("high".to_owned()),
+    };
+    let session = create(
+        &client,
+        &caller,
+        &CreateSession {
+            model: Some(chosen.clone()),
+            ..open(&caller, REPO, 10)
+        },
+    )
+    .await;
+    assert_eq!(session.summary.model, chosen);
+
+    // And it survives the round trip through the row rather than only the
+    // response the create built.
+    let listed = client
+        .get("/v1/sessions")
+        .bearer(&caller.token)
+        .send()
+        .await;
+    listed.assert_status(200);
+    let listed: Vec<SessionSummary> = listed.json();
+    assert_eq!(listed[0].model, chosen);
+}
+
+#[skyzen::test]
+async fn a_model_the_harness_does_not_offer_is_refused_before_anything_is_written(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let response = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .json(&CreateSession {
+            model: Some(ModelChoice {
+                model: "nope".to_owned(),
+                effort: None,
+            }),
+            ..open(&caller, REPO, 10)
+        })
+        .send()
+        .await;
+    response.assert_status(400);
+    let problem: Problem = response.json();
+    assert_eq!(problem.kind, problem_kind("invalid-model"));
+    assert!(problem.detail.contains("nope"), "{problem:?}");
+
+    // Nothing was opened: the refusal happened before the row.
+    let listed = client
+        .get("/v1/sessions")
+        .bearer(&caller.token)
+        .send()
+        .await;
+    listed.assert_status(200);
+    assert!(listed.json::<Vec<SessionSummary>>().is_empty());
+}
+
+#[skyzen::test]
+async fn an_effort_the_model_does_not_accept_is_refused_too(ctx: TestContext, kv: Kv, db: Db) {
+    // Haiku names no effort levels at all, so every effort is one it
+    // refuses — and the refusal says which model, because "invalid model"
+    // alone leaves the user guessing which half they got wrong.
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let response = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .json(&CreateSession {
+            model: Some(ModelChoice {
+                model: "haiku".to_owned(),
+                effort: Some("max".to_owned()),
+            }),
+            ..open(&caller, REPO, 10)
+        })
+        .send()
+        .await;
+    response.assert_status(400);
+    let problem: Problem = response.json();
+    assert_eq!(problem.kind, problem_kind("invalid-model"));
+    assert!(problem.detail.contains("haiku"), "{problem:?}");
+}
+
+#[skyzen::test]
+async fn changing_the_model_records_it_on_the_session(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    let path = format!("/v1/sessions/{}", session.summary.id);
+
+    let changed = client
+        .patch(&path)
+        .bearer(&caller.token)
+        .json(&remodel("opus[1m]", Some("max")))
+        .send()
+        .await;
+    changed.assert_status(200);
+    let changed: SessionDetail = changed.json();
+    assert_eq!(
+        changed.summary.model,
+        ModelChoice {
+            model: "opus[1m]".to_owned(),
+            effort: Some("max".to_owned()),
+        }
+    );
+
+    // And it is the row that changed, not just the answer: the next read
+    // of the session names the new model.
+    let reread = client.get(&path).bearer(&caller.token).send().await;
+    reread.assert_status(200);
+    assert_eq!(
+        reread.json::<SessionDetail>().summary.model,
+        ModelChoice {
+            model: "opus[1m]".to_owned(),
+            effort: Some("max".to_owned()),
+        }
+    );
+
+    // The effort is cleared by naming the model without one, rather than
+    // kept from the change before it: a choice is the pair, and half of an
+    // old one is a combination nobody picked.
+    let cleared = client
+        .patch(&path)
+        .bearer(&caller.token)
+        .json(&remodel("opus[1m]", None))
+        .send()
+        .await;
+    cleared.assert_status(200);
+    assert_eq!(cleared.json::<SessionDetail>().summary.model.effort, None);
+}
+
+#[skyzen::test]
+async fn a_model_the_accounts_stored_list_dropped_is_refused_at_patch(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // A picker rendered from yesterday's list is exactly the case this
+    // guards: the account's harness has since reported what it offers, and
+    // a model outside that list is one no session can run.
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    let path = format!("/v1/sessions/{}", session.summary.id);
+
+    testing::seed_harness_account(&db, caller.user.id, HarnessKind::ClaudeCode).await;
+    harness_accounts::record_models(
+        &db,
+        caller.user.id,
+        HarnessKind::ClaudeCode,
+        &[ModelOption {
+            id: "claude-opus-6".to_owned(),
+            label: "Opus 6".to_owned(),
+            description: "The only model this build still offers.".to_owned(),
+            is_default: true,
+            efforts: vec!["high".to_owned()],
+            default_effort: None,
+        }],
+    )
+    .await
+    .expect("record what the harness offers");
+
+    let refused = client
+        .patch(&path)
+        .bearer(&caller.token)
+        .json(&remodel("sonnet", None))
+        .send()
+        .await;
+    refused.assert_status(400);
+    assert_eq!(
+        refused.json::<Problem>().kind,
+        problem_kind("invalid-model")
+    );
+
+    // And the one it does offer is accepted.
+    let accepted = client
+        .patch(&path)
+        .bearer(&caller.token)
+        .json(&remodel("claude-opus-6", Some("high")))
+        .send()
+        .await;
+    accepted.assert_status(200);
+    assert_eq!(
+        accepted.json::<SessionDetail>().summary.model.model,
+        "claude-opus-6"
+    );
+}
+
+#[skyzen::test]
+async fn a_model_change_on_somebody_elses_session_is_a_404(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+
+    let stranger = sign_in(&kv, &db, seed_other_user(&db).await).await;
+    client
+        .patch(&format!("/v1/sessions/{}", session.summary.id))
+        .bearer(&stranger.token)
+        .json(&remodel("sonnet", None))
         .send()
         .await
         .assert_status(404);

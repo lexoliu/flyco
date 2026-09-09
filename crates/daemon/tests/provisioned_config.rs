@@ -50,6 +50,7 @@ fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
         machine_origin: MachineOrigin::User,
         machine: flyco_provider::testing::session_machine(),
         resume_session_id: None,
+        model: flyco_provider::testing::session_model(),
         mcp_servers: flyco_provider::testing::mcp_servers(),
     }
 }
@@ -80,6 +81,36 @@ fn a_provisioned_configuration_is_one_this_daemon_accepts() {
     assert_eq!(
         config.claude.as_ref().expect("claude").permission_mode,
         PermissionMode::Auto
+    );
+}
+
+#[test]
+fn it_carries_the_model_the_session_was_opened_on_into_the_table_that_harness_reads() {
+    // A rename on either side of this — `effort` becoming `reasoning_effort`,
+    // the pair moving under one key — produces a machine that provisions,
+    // boots, and then refuses its own configuration. Both harnesses are
+    // checked because each reads its own table.
+    let claude = parse(&claude(ClaudeCredential::Inherit));
+    let claude = claude.claude.expect("claude");
+    assert_eq!(claude.model.as_deref(), Some("sonnet"));
+    assert_eq!(claude.effort.as_deref(), Some("high"));
+
+    let codex = parse(&codex(CodexCredential::Inherit));
+    let codex = codex.codex.expect("codex");
+    assert_eq!(codex.model.as_deref(), Some("sonnet"));
+    assert_eq!(codex.effort.as_deref(), Some("high"));
+}
+
+#[test]
+fn a_session_that_chose_no_effort_arrives_with_none_rather_than_an_empty_one() {
+    let mut bootstrap = claude(ClaudeCredential::Inherit);
+    bootstrap.model.effort = None;
+    let config = parse(&bootstrap);
+    let claude = config.claude.expect("claude");
+    assert_eq!(claude.model.as_deref(), Some("sonnet"));
+    assert_eq!(
+        claude.effort, None,
+        "the harness's own default for the model is the answer, not a level flyco invented"
     );
 }
 

@@ -19,7 +19,7 @@
 
 use flyco_core::{
     CurrentUser, HarnessAccountId, HarnessAccountView, HarnessCredentialInput, HarnessKind,
-    LinkHarnessAccount, LlmUsageView, UserId,
+    LinkHarnessAccount, LlmUsageView, ModelOption, UserId, builtin_models,
 };
 use flyco_provider::{ClaudeCredential, CodexCredential, HarnessCredential};
 use serde::{Deserialize, Serialize};
@@ -240,18 +240,120 @@ struct HarnessAccountRow {
     label: String,
     linked_at_unix: u64,
     expires_at_unix: Option<u64>,
+    /// The model list this account's last session reported, as JSON.
+    ///
+    /// `NULL` until one has, which is what [`builtin_models`] answers for.
+    models_json: Option<String>,
 }
 
-impl From<HarnessAccountRow> for HarnessAccountView {
-    fn from(row: HarnessAccountRow) -> Self {
-        Self {
+impl TryFrom<HarnessAccountRow> for HarnessAccountView {
+    type Error = ApiError;
+
+    /// Fails rather than falling back to the built-in list when the stored
+    /// JSON will not parse.
+    ///
+    /// The two states are opposite facts: no stored list means nothing has
+    /// reported yet and the built-in one is the honest answer, and a stored
+    /// list that does not parse means flyco wrote something it cannot read
+    /// back. Answering the second with the first would hide the bug behind
+    /// a picker that quietly showed the wrong models.
+    fn try_from(row: HarnessAccountRow) -> Result<Self, ApiError> {
+        Ok(Self {
             id: row.id,
             harness: row.harness,
             label: row.label,
             linked_at_unix: row.linked_at_unix,
             expires_at_unix: row.expires_at_unix,
-        }
+            models: parse_models(row.harness, row.models_json.as_deref())?,
+        })
     }
+}
+
+/// The models an account offers: the stored list, or the built-in one.
+fn parse_models(harness: HarnessKind, stored: Option<&str>) -> Result<Vec<ModelOption>, ApiError> {
+    let Some(stored) = stored else {
+        return Ok(builtin_models(harness));
+    };
+    serde_json::from_str(stored)
+        .map_err(|_| ApiError::CorruptRecord("a stored harness model list could not be decoded"))
+}
+
+/// The models a session on the caller's account for `harness` may run on.
+///
+/// What `POST /v1/sessions` validates a requested model against, and what
+/// it resolves a request that named none to. The account's own reported
+/// list where one exists, because the harness build a machine runs is the
+/// only authority on what it accepts.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails or the stored list is
+/// malformed.
+pub async fn models(
+    db: &Db,
+    user: UserId,
+    harness: HarnessKind,
+) -> Result<Vec<ModelOption>, ApiError> {
+    let stored: Option<Option<String>> = sql!(
+        db,
+        "SELECT models_json FROM harness_accounts \
+         WHERE user_id = {user} AND harness = {harness}"
+    )
+    .fetch_scalar_optional()
+    .await?;
+    // No row at all and a row that has never reported are the same answer:
+    // nothing has told flyco otherwise, so the harness's built-in list
+    // stands. A session cannot be opened without an account anyway — that
+    // refusal belongs to provisioning, not to a model list.
+    parse_models(harness, stored.flatten().as_deref())
+}
+
+/// Records what a session's harness said it offers.
+///
+/// Replaces the stored list wholesale: the harness answered the whole
+/// question, and merging today's answer into yesterday's would keep a model
+/// the vendor withdrew alive in the picker forever.
+///
+/// # Errors
+///
+/// Returns [`ApiError::CorruptRecord`] if `models` is empty — a harness
+/// that lists nothing is a bug in the daemon, and storing it would leave
+/// the account with a picker it can never open —
+/// [`ApiError::HarnessAccountNotFound`] if the user has no account for that
+/// harness, or [`ApiError`] if the database fails.
+pub async fn record_models(
+    db: &Db,
+    user: UserId,
+    harness: HarnessKind,
+    models: &[ModelOption],
+) -> Result<(), ApiError> {
+    if models.is_empty() {
+        return Err(ApiError::CorruptRecord(
+            "a harness reported an empty model list",
+        ));
+    }
+    let encoded = serde_json::to_string(models)
+        .map_err(|_| ApiError::CorruptRecord("a harness model list could not be encoded"))?;
+    // `RETURNING` rather than a bare `UPDATE`, so an account that is not
+    // there is a refusal instead of a write that silently touched nothing
+    // and a picker that quietly kept the built-in list. Unlinking is
+    // refused while any session still runs on the harness, so a session
+    // reporting its models always has an account to record them against.
+    let stored: Option<HarnessAccountId> = sql!(
+        db,
+        "UPDATE harness_accounts SET models_json = {encoded} \
+         WHERE user_id = {user} AND harness = {harness} RETURNING id"
+    )
+    .fetch_scalar_optional()
+    .await?;
+    let stored = stored.ok_or(ApiError::HarnessAccountNotFound)?;
+    tracing::info!(
+        ?harness,
+        account = %stored,
+        models = models.len(),
+        "recorded a harness model list"
+    );
+    Ok(())
 }
 
 /// Lists the caller's linked harness accounts.
@@ -266,13 +368,13 @@ async fn list_harness_accounts(
 async fn list(db: &Db, user: UserId) -> Result<Vec<HarnessAccountView>, ApiError> {
     let rows: Vec<HarnessAccountRow> = sql!(
         db,
-        "SELECT id, harness, label, linked_at_unix, expires_at_unix \
+        "SELECT id, harness, label, linked_at_unix, expires_at_unix, models_json \
          FROM harness_accounts WHERE user_id = {user} ORDER BY harness"
     )
     .fetch_all()
     .await?;
 
-    Ok(rows.into_iter().map(Into::into).collect())
+    rows.into_iter().map(HarnessAccountView::try_from).collect()
 }
 
 /// Links a harness credential, replacing the credential for that harness.
@@ -402,6 +504,10 @@ pub async fn store(
         label: label.to_owned(),
         linked_at_unix: now,
         expires_at_unix,
+        // Linking again replaces the credential and keeps the row, so a
+        // relinked account keeps whatever its sessions have reported; a
+        // fresh one has reported nothing and offers the built-in list.
+        models: models(db, user, harness).await?,
     })
 }
 

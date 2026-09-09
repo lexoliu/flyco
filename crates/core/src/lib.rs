@@ -51,8 +51,8 @@ pub use github::{BranchPage, BranchSummary, RepoSummary};
 pub use harness::{
     Availability, ClaudeOauthStart, CodexOauthPending, CodexOauthStart, CompleteClaudeOauth,
     ContextWindow, Feature, HarnessAccountView, HarnessCredentialInput, HarnessEvent,
-    HarnessFeature, HarnessKind, LinkHarnessAccount, PermissionMode, UsageReport, availability,
-    matrix,
+    HarnessFeature, HarnessKind, LinkHarnessAccount, ModelChoice, ModelChoiceError, ModelOption,
+    PermissionMode, ReportModels, UsageReport, availability, builtin_models, matrix,
 };
 pub use host::{
     ENROLLMENT_TOKEN_TTL_SECONDS, EnrollHost, EnrolledHost, Enrollment, EnrollmentToken,
@@ -110,4 +110,4 @@ pub use workdir::{
 /// Bumped on every incompatible change to [`wire`]; the control plane
 /// refuses daemons speaking a different version (fast fail, no
 /// best-effort compatibility).
-pub const WIRE_PROTOCOL_VERSION: u32 = 8;
+pub const WIRE_PROTOCOL_VERSION: u32 = 9;

@@ -58,7 +58,55 @@ def main() -> None:
         if msg is None:
             return
         method = msg.get("method")
-        if method == "mcpServerStatus/list":
+        if method == "model/list":
+            # The real app-server's own three rows, trimmed to the fields
+            # flycod reads, plus a hidden one — the driver has to drop it,
+            # and a fixture that never carried one could not show that.
+            send(
+                {
+                    "id": msg["id"],
+                    "result": {
+                        "data": [
+                            {
+                                "id": "gpt-5.6-terra",
+                                "displayName": "GPT-5.6-Terra",
+                                "description": "Balanced agentic coding model for everyday work.",
+                                "isDefault": True,
+                                "hidden": False,
+                                "defaultReasoningEffort": "medium",
+                                "supportedReasoningEfforts": [
+                                    {"reasoningEffort": "low", "description": "Fast"},
+                                    {"reasoningEffort": "medium", "description": "Balanced"},
+                                    {"reasoningEffort": "high", "description": "Deeper"},
+                                ],
+                            },
+                            {
+                                "id": "gpt-5.6-luna",
+                                "displayName": "GPT-5.6-Luna",
+                                "description": "Fast and affordable agentic coding model.",
+                                "isDefault": False,
+                                "hidden": False,
+                                "defaultReasoningEffort": "medium",
+                                "supportedReasoningEfforts": [
+                                    {"reasoningEffort": "low", "description": "Fast"},
+                                    {"reasoningEffort": "medium", "description": "Balanced"},
+                                ],
+                            },
+                            {
+                                "id": "gpt-5.6-internal",
+                                "displayName": "Internal",
+                                "description": "Not a model a user is meant to choose.",
+                                "isDefault": False,
+                                "hidden": True,
+                                "defaultReasoningEffort": None,
+                                "supportedReasoningEfforts": [],
+                            },
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            )
+        elif method == "mcpServerStatus/list":
             # What the app-server mounted. The driver refuses the session
             # unless flyco's own server is here, connected, with its tools.
             tools = ["budget_status", "machine_resize"]

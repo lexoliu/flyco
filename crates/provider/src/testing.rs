@@ -192,6 +192,21 @@ pub fn mcp_servers() -> Vec<flyco_core::McpServerMount> {
     ]
 }
 
+/// The model a bootstrap fixture's session runs on.
+///
+/// Beside [`session_machine`] and for the same reason: every driver's tests
+/// build a [`DaemonBootstrap`](crate::DaemonBootstrap) and none of them
+/// cares which model it names. An effort is included, because a fixture
+/// that omitted one would leave the half of the rendering that writes it
+/// untested everywhere but the one test that checks it.
+#[must_use]
+pub fn session_model() -> flyco_core::ModelChoice {
+    flyco_core::ModelChoice {
+        model: "sonnet".to_owned(),
+        effort: Some("high".to_owned()),
+    }
+}
+
 /// The machine a bootstrap fixture describes.
 ///
 /// Every driver's tests build a [`DaemonBootstrap`](crate::DaemonBootstrap),

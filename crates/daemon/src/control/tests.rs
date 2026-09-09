@@ -5,8 +5,9 @@ use core::time::Duration;
 use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
-    HarnessObservation, MachineOrigin, ProvisioningStage, SessionId, ShellOutcome, ShellRunId,
-    ShellStream, UsageReport, Usd, WIRE_PROTOCOL_VERSION,
+    HarnessObservation, HarnessSessionView, MachineOrigin, ModelChoice, ModelOption,
+    ProvisioningStage, SessionId, ShellOutcome, ShellRunId, ShellStream, UsageReport, Usd,
+    WIRE_PROTOCOL_VERSION,
 };
 use tokio::sync::mpsc;
 
@@ -166,12 +167,30 @@ impl ControlApi for RecordingApi {
         )
     }
 
-    fn harness_session_id(
+    fn harness_session(
         &self,
-    ) -> impl core::future::Future<Output = Result<Option<String>, ControlApiError>> + Send {
-        // The relay never asks: the id is resolved once, before the harness
-        // is started, by `flycod run` itself.
-        core::future::ready(Ok(None))
+    ) -> impl core::future::Future<Output = Result<HarnessSessionView, ControlApiError>> + Send
+    {
+        // The relay never asks: the conversation and the model are resolved
+        // once, before the harness is started, by `flycod run` itself.
+        core::future::ready(Ok(HarnessSessionView {
+            harness_session_id: None,
+            model: ModelChoice {
+                model: "sonnet".to_owned(),
+                effort: None,
+            },
+        }))
+    }
+
+    fn report_models(
+        &self,
+        models: &[ModelOption],
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        let recorded = self
+            .calls
+            .send(Call::ModelsReported(models.to_vec()))
+            .map_err(|error| ControlApiError::Transport(error.to_string()));
+        core::future::ready(recorded)
     }
 
     fn put_workdir_patch(
@@ -896,6 +915,45 @@ async fn user_messages_interrupts_and_compaction_reach_the_harness() {
 
     harness.command(ControlToDaemon::Compact);
     assert_eq!(harness.next_call().await, Call::Compact);
+
+    let model = ModelChoice {
+        model: "claude-fable-5-1[1m]".to_owned(),
+        effort: Some("max".to_owned()),
+    };
+    harness.command(ControlToDaemon::SetModel {
+        model: model.clone(),
+    });
+    assert_eq!(harness.next_call().await, Call::ModelSet(model));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn the_models_a_harness_offers_are_filed_over_rest_rather_than_sent_as_a_frame() {
+    // The list is recorded against the *account*, which lives in D1, and a
+    // session room is a Durable Object that cannot reach it. So this output
+    // is the one that leaves the relay by the other door — and the control
+    // plane announces it to the browsers itself.
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    let models = flyco_core::builtin_models(flyco_core::HarnessKind::Codex);
+    harness
+        .emit(SessionOutput::Models {
+            models: models.clone(),
+        })
+        .await;
+    assert_eq!(harness.next_call().await, Call::ModelsReported(models));
+
+    // And nothing was queued for the room: the next frame is the one the
+    // output after it produces.
+    harness
+        .emit(SessionOutput::Event { event: delta("hi") })
+        .await;
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness { event: delta("hi") }
+    );
 
     harness.archive().await.expect("the run ended cleanly");
 }
@@ -1857,7 +1915,7 @@ mod remote_store {
     use super::{RemoteTranscriptStore, SessionKey, StoreError, TranscriptStore, stream_key};
     use crate::control::rest::{ApprovalRaiser, ControlApi, ControlApiError, TranscriptRead};
     use flyco_core::wire::ApprovalPayload;
-    use flyco_core::{ApprovalId, HarnessObservation};
+    use flyco_core::{ApprovalId, HarnessObservation, HarnessSessionView, ModelOption};
     use serde_json::{Value, json};
     use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -1945,11 +2003,22 @@ mod remote_store {
             )))
         }
 
-        fn harness_session_id(
+        fn harness_session(
             &self,
-        ) -> impl core::future::Future<Output = Result<Option<String>, ControlApiError>> + Send
+        ) -> impl core::future::Future<Output = Result<HarnessSessionView, ControlApiError>> + Send
         {
-            core::future::ready(Ok(None))
+            core::future::ready(Err(ControlApiError::Transport(
+                "the transcript store answers no harness-session reads".to_owned(),
+            )))
+        }
+
+        fn report_models(
+            &self,
+            _models: &[ModelOption],
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Err(ControlApiError::Transport(
+                "the transcript store reports no model lists".to_owned(),
+            )))
         }
 
         fn put_transcript_batch(

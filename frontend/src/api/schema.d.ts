@@ -1124,9 +1124,9 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Changes what one of the caller's sessions is called, what it may spend, or both.
+         * Changes what one of the caller's sessions is called, what it may spend, what it runs on, or any combination of the three.
          * @description Changes what one of the caller's sessions is called, what it may spend,
-         *     or both.
+         *     what it runs on, or any combination of the three.
          *
          *     The title opens as the excerpt of the prompt the session was created
          *     with; this is how it becomes something the user chose. The budget limit
@@ -1134,7 +1134,9 @@ export interface paths {
          *     and raising it past the spend both puts the session back to
          *     [`SessionState::Active`] and tells its daemon to carry on — the daemon
          *     stopped accepting work when the pause reached it and nothing in the
-         *     database can lift that.
+         *     database can lift that. The model is recorded and then sent to the
+         *     session's room, which echoes it into the transcript and hands it to the
+         *     harness mid-conversation.
          */
         patch: operations["flyco_api::app::update_session"];
         trace?: never;
@@ -1500,15 +1502,17 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Reads the harness conversation a daemon on this session must continue.
-         * @description Reads the harness conversation a daemon on this session must continue.
+         * Reads the harness conversation a daemon on this session must continue, and the model it must continue it on.
+         * @description Reads the harness conversation a daemon on this session must continue,
+         *     and the model it must continue it on.
          *
          *     The daemon asks at startup instead of trusting the configuration on its
          *     disk: that file was written when the machine was created, and a machine
          *     that was stopped and started again on the same disk — which is how a
          *     spot reclamation is recovered from — boots the same file. A daemon that
          *     trusted it would open a second conversation beside the one the user is
-         *     watching.
+         *     watching, and would open it on the model the session had before the user
+         *     changed it.
          */
         get: operations["flyco_api::app::get_harness_session"];
         /**
@@ -1650,6 +1654,33 @@ export interface paths {
          *     arrives on the relay, not in this response.
          */
         post: operations["flyco_api::app::send_message"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Records the models this session's harness offers.
+         * @description Records the models this session's harness offers.
+         *
+         *     Filed by the daemon once its harness has answered — the earliest moment
+         *     the answer exists — and stored against the *account*, because the list
+         *     is a fact about the harness build that account's machines run and the
+         *     composer needs it before the next session exists. The live half goes to
+         *     the room in the same call, so a browser watching this session gets the
+         *     real list without reloading the account.
+         */
+        put: operations["flyco_api::app::report_models"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2573,6 +2604,7 @@ export interface components {
             /** @description Which coding harness drives the session. */
             harness: components["schemas"]["HarnessKind"];
             machine?: null | components["schemas"]["MachineChoice"];
+            model?: null | components["schemas"]["ModelChoice"];
             /**
              * @description What the agent should do first.
              *
@@ -2894,6 +2926,17 @@ export interface components {
              * @description When it was linked, seconds since the Unix epoch.
              */
             linked_at_unix: number;
+            /**
+             * @description The models a session on this account may run on.
+             *
+             *     What the account's last session reported its harness offers, and
+             *     [`builtin_models`] until one has. Carried on the account rather than
+             *     asked for separately because the composer picks a model *while*
+             *     choosing which account to open the session on, and a second request
+             *     per account would be a picker that renders after the form it belongs
+             *     to.
+             */
+            models: components["schemas"]["ModelOption"][];
         };
         /**
          * @description A credential accepted when linking a Claude Code or Codex account.
@@ -3002,6 +3045,16 @@ export interface components {
         HarnessSessionView: {
             /** @description Harness-native session id; resume reopens this conversation. */
             harness_session_id?: string | null;
+            /**
+             * @description The model this session runs on, as the control plane last recorded
+             *     it.
+             *
+             *     Asked for the same reason the conversation is: the model in the
+             *     configuration on the machine's disk is the one it was *provisioned*
+             *     with, so a session whose model was changed while it ran would come
+             *     back on the old one after a reclamation.
+             */
+            model: components["schemas"]["ModelChoice"];
         };
         /** @description One HTTP header sent with every request to a remote MCP server. */
         HeaderEntry: {
@@ -3500,6 +3553,68 @@ export interface components {
             updated_at_unix: number;
         };
         /**
+         * @description What a session runs on: a model and, optionally, an effort.
+         *
+         *     One value rather than two fields wherever a session's model is written,
+         *     read or changed, because the pair is only ever meaningful together: an
+         *     effort names a level of a *model*, and a request that changed one
+         *     without the other would be asking for a combination nobody chose.
+         */
+        ModelChoice: {
+            /** @description `None` leaves the harness's own default effort in place. */
+            effort?: string | null;
+            /** @description The model's [`id`](ModelOption::id). */
+            model: string;
+        };
+        /**
+         * @description One model a harness can run a session on, as the harness itself lists it.
+         *
+         *     Flyco never curates this: the identifiers, the names and the order are
+         *     the harness's own, so a model Anthropic or `OpenAI` adds tomorrow reaches
+         *     the picker the first time a session asks its harness what it offers.
+         *     [`builtin_models`] is what the picker shows before any session has.
+         */
+        ModelOption: {
+            /**
+             * @description The effort the harness uses when none is chosen, where it says.
+             *
+             *     Codex states one per model (`defaultReasoningEffort`); the Claude
+             *     SDK does not, so this is `None` for every Claude row and the CLI's
+             *     own default stands.
+             */
+            default_effort?: string | null;
+            /** @description One line under the label, which is the harness's `description`. */
+            description: string;
+            /**
+             * @description The effort levels the model accepts, in the harness's own order.
+             *
+             *     Empty for a model that accepts none — Claude's Haiku row names no
+             *     effort levels at all — and an empty list is the whole answer: a
+             *     picker that offered one anyway would be offering a request the
+             *     harness refuses.
+             */
+            efforts: string[];
+            /**
+             * @description The identifier the harness accepts, verbatim.
+             *
+             *     The Claude Agent SDK's `value` and Codex's model `id`. Passed
+             *     through untouched — `default` and `claude-fable-5-1[1m]` are both
+             *     things the CLI takes — because a normalized spelling would be a
+             *     second vocabulary flyco would then have to translate back.
+             */
+            id: string;
+            /**
+             * @description Whether the harness runs this one when nothing is chosen.
+             *
+             *     Claude says so by naming the row `default`; Codex says so with
+             *     `isDefault`. Exactly one row of a list carries it, which is what
+             *     [`ModelChoice::default_of`] relies on.
+             */
+            is_default: boolean;
+            /** @description What the picker shows, which is the harness's `displayName`. */
+            label: string;
+        };
+        /**
          * @description Operating system family of a machine type.
          * @enum {string}
          */
@@ -3890,6 +4005,18 @@ export interface components {
             outcome: components["schemas"]["JobOutcome"];
         };
         /**
+         * @description Request body of `PUT /v1/sessions/{id}/models`.
+         *
+         *     What a session's daemon reports once its harness has answered what it
+         *     offers. Recorded against the account rather than the session, because
+         *     the list is a fact about the harness build the account runs on and the
+         *     composer needs it before any session of the next one exists.
+         */
+        ReportModels: {
+            /** @description Every model the harness listed, in its own order. */
+            models: components["schemas"]["ModelOption"][];
+        };
+        /**
          * @description Request body of `POST /v1/sessions/{id}/provisioning-stage`.
          *
          *     The daemon names the milestone; the control plane times it, exactly as it
@@ -4062,6 +4189,15 @@ export interface components {
             last_active_unix: number;
             /** @description Whether flyco or the user chose the machine it runs on. */
             machine_origin: components["schemas"]["MachineOrigin"];
+            /**
+             * @description What it runs on, and at what effort.
+             *
+             *     Always concrete, never "whatever the CLI picks": a session opened
+             *     without a model named carries the harness's default resolved at
+             *     creation, so the header can state the model on every row rather than
+             *     leaving one blank for the sessions nobody chose one for.
+             */
+            model: components["schemas"]["ModelChoice"];
             /** @description Repository it works in. */
             repo: components["schemas"]["RepoSlug"];
             /** @description Where it is in its lifecycle. */
@@ -4248,14 +4384,15 @@ export interface components {
         /**
          * @description Request body of `PATCH /v1/sessions/{id}`.
          *
-         *     Both fields are independently optional, because the two things a user
-         *     changes about a live session are changed from opposite ends of the
-         *     header and neither has any business restating the other's value. A body
-         *     carrying neither is refused rather than answered with a session nothing
+         *     All three fields are independently optional, because the things a user
+         *     changes about a live session are changed from different parts of the UI
+         *     and none has any business restating another's value. A body carrying
+         *     none of them is refused rather than answered with a session nothing
          *     happened to.
          */
         UpdateSession: {
             budget_limit?: null | components["schemas"]["Usd"];
+            model?: null | components["schemas"]["ModelChoice"];
             /**
              * @description What to call the session, 1 to
              *     [`MAX_SESSION_TITLE_CHARS`] characters once trimmed.
@@ -4762,6 +4899,17 @@ export interface operations {
                          * @description When it was linked, seconds since the Unix epoch.
                          */
                         linked_at_unix: number;
+                        /**
+                         * @description The models a session on this account may run on.
+                         *
+                         *     What the account's last session reported its harness offers, and
+                         *     [`builtin_models`] until one has. Carried on the account rather than
+                         *     asked for separately because the composer picks a model *while*
+                         *     choosing which account to open the session on, and a second request
+                         *     per account would be a picker that renders after the form it belongs
+                         *     to.
+                         */
+                        models: components["schemas"]["ModelOption"][];
                     }[];
                 };
             };
@@ -4813,6 +4961,17 @@ export interface operations {
                          * @description When it was linked, seconds since the Unix epoch.
                          */
                         linked_at_unix: number;
+                        /**
+                         * @description The models a session on this account may run on.
+                         *
+                         *     What the account's last session reported its harness offers, and
+                         *     [`builtin_models`] until one has. Carried on the account rather than
+                         *     asked for separately because the composer picks a model *while*
+                         *     choosing which account to open the session on, and a second request
+                         *     per account would be a picker that renders after the form it belongs
+                         *     to.
+                         */
+                        models: components["schemas"]["ModelOption"][];
                     };
                 };
             };
@@ -4868,6 +5027,17 @@ export interface operations {
                          * @description When it was linked, seconds since the Unix epoch.
                          */
                         linked_at_unix: number;
+                        /**
+                         * @description The models a session on this account may run on.
+                         *
+                         *     What the account's last session reported its harness offers, and
+                         *     [`builtin_models`] until one has. Carried on the account rather than
+                         *     asked for separately because the composer picks a model *while*
+                         *     choosing which account to open the session on, and a second request
+                         *     per account would be a picker that renders after the form it belongs
+                         *     to.
+                         */
+                        models: components["schemas"]["ModelOption"][];
                     };
                 };
             };
@@ -4989,6 +5159,17 @@ export interface operations {
                          * @description When it was linked, seconds since the Unix epoch.
                          */
                         linked_at_unix: number;
+                        /**
+                         * @description The models a session on this account may run on.
+                         *
+                         *     What the account's last session reported its harness offers, and
+                         *     [`builtin_models`] until one has. Carried on the account rather than
+                         *     asked for separately because the composer picks a model *while*
+                         *     choosing which account to open the session on, and a second request
+                         *     per account would be a picker that renders after the form it belongs
+                         *     to.
+                         */
+                        models: components["schemas"]["ModelOption"][];
                     };
                 };
             };
@@ -6526,6 +6707,15 @@ export interface operations {
                         last_active_unix: number;
                         /** @description Whether flyco or the user chose the machine it runs on. */
                         machine_origin: components["schemas"]["MachineOrigin"];
+                        /**
+                         * @description What it runs on, and at what effort.
+                         *
+                         *     Always concrete, never "whatever the CLI picks": a session opened
+                         *     without a model named carries the harness's default resolved at
+                         *     creation, so the header can state the model on every row rather than
+                         *     leaving one blank for the sessions nobody chose one for.
+                         */
+                        model: components["schemas"]["ModelChoice"];
                         /** @description Repository it works in. */
                         repo: components["schemas"]["RepoSlug"];
                         /** @description Where it is in its lifecycle. */
@@ -6570,6 +6760,7 @@ export interface operations {
                     /** @description Which coding harness drives the session. */
                     harness: components["schemas"]["HarnessKind"];
                     machine?: null | components["schemas"]["MachineChoice"];
+                    model?: null | components["schemas"]["ModelChoice"];
                     /**
                      * @description What the agent should do first.
                      *
@@ -6666,6 +6857,7 @@ export interface operations {
             content: {
                 "application/json": {
                     budget_limit?: null | components["schemas"]["Usd"];
+                    model?: null | components["schemas"]["ModelChoice"];
                     /**
                      * @description What to call the session, 1 to
                      *     [`MAX_SESSION_TITLE_CHARS`] characters once trimmed.
@@ -7283,6 +7475,16 @@ export interface operations {
                     "application/json": {
                         /** @description Harness-native session id; resume reopens this conversation. */
                         harness_session_id?: string | null;
+                        /**
+                         * @description The model this session runs on, as the control plane last recorded
+                         *     it.
+                         *
+                         *     Asked for the same reason the conversation is: the model in the
+                         *     configuration on the machine's disk is the one it was *provisioned*
+                         *     with, so a session whose model was changed while it ran would come
+                         *     back on the old one after a reclamation.
+                         */
+                        model: components["schemas"]["ModelChoice"];
                     };
                 };
             };
@@ -7479,6 +7681,34 @@ export interface operations {
         responses: {
             /** @description Recorded. The outcome arrives on the session relay, not in this response. */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::report_models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Every model the harness listed, in its own order. */
+                    models: components["schemas"]["ModelOption"][];
+                };
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };

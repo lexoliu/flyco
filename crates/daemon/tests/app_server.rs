@@ -75,6 +75,7 @@ async fn start(
         CodexConfig {
             bin: script("fake-app-server.py"),
             model: None,
+            effort: None,
             approval_policy: CodexApprovalPolicy::OnRequest,
             sandbox: CodexSandbox::WorkspaceWrite,
             auth: CodexAuth::Inherit,
@@ -103,6 +104,7 @@ async fn a_thread_that_opened_without_flycos_tools_never_becomes_a_session() {
         CodexConfig {
             bin: script("fake-app-server.py"),
             model: None,
+            effort: None,
             approval_policy: CodexApprovalPolicy::OnRequest,
             sandbox: CodexSandbox::WorkspaceWrite,
             auth: CodexAuth::Inherit,
@@ -130,6 +132,17 @@ async fn next(outputs: &mut mpsc::Receiver<SessionOutput>, what: &str) -> Sessio
         .unwrap_or_else(|| panic!("the session ended before {what}"))
 }
 
+/// Steps past the two announcements every session opens with.
+///
+/// A thread is identified and its models are listed before any turn, in
+/// that order, so a test about turns walks past both rather than restating
+/// them — `a_session_announces_itself_without_anyone_typing` is where their
+/// content is pinned.
+async fn announcements(outputs: &mut mpsc::Receiver<SessionOutput>) {
+    let _ = next(outputs, "started").await;
+    let _ = next(outputs, "models").await;
+}
+
 #[tokio::test]
 async fn a_session_announces_itself_without_anyone_typing() {
     let scratch = Scratch::new("announce");
@@ -142,6 +155,28 @@ async fn a_session_announces_itself_without_anyone_typing() {
         }
     );
 
+    // And what it can run on, before a single turn: the composer's picker
+    // has to be right for the first message. A row the app-server marks
+    // hidden is not one a user may choose, so it is not in the answer.
+    let SessionOutput::Models { models } = next(&mut outputs, "models").await else {
+        panic!("a session must announce the models its harness offers");
+    };
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["gpt-5.6-terra", "gpt-5.6-luna"],
+        "a hidden model is dropped rather than offered"
+    );
+    let default = models
+        .iter()
+        .find(|model| model.is_default)
+        .expect("the app-server names a default");
+    assert_eq!(default.id, "gpt-5.6-terra");
+    assert_eq!(default.default_effort.as_deref(), Some("medium"));
+    assert_eq!(default.efforts, ["low", "medium", "high"]);
+
     session.shutdown().await.expect("shut the session down");
 }
 
@@ -149,7 +184,7 @@ async fn a_session_announces_itself_without_anyone_typing() {
 async fn a_turn_runs_from_user_message_to_completion() {
     let scratch = Scratch::new("turn");
     let (session, mut outputs) = start(&scratch).await;
-    let _ = next(&mut outputs, "started").await;
+    announcements(&mut outputs).await;
 
     session
         .send_user_message("hi".to_owned())
@@ -213,7 +248,7 @@ async fn a_turn_runs_from_user_message_to_completion() {
 async fn an_interrupted_turn_fails_rather_than_completing() {
     let scratch = Scratch::new("interrupt");
     let (session, mut outputs) = start(&scratch).await;
-    let _ = next(&mut outputs, "started").await;
+    announcements(&mut outputs).await;
 
     session
         .send_user_message("hi".to_owned())
@@ -240,7 +275,7 @@ async fn an_interrupted_turn_fails_rather_than_completing() {
 async fn manual_compaction_uses_the_native_thread_method_and_reports_completion() {
     let scratch = Scratch::new("compact");
     let (session, mut outputs) = start(&scratch).await;
-    let _ = next(&mut outputs, "started").await;
+    announcements(&mut outputs).await;
 
     session.compact().await.expect("compact the thread");
     assert_eq!(

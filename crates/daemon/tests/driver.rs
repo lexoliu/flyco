@@ -107,6 +107,7 @@ async fn start_with(
     let harness = ClaudeCodeHarness::new(
         ClaudeConfig {
             model: None,
+            effort: None,
             permission_mode: PermissionMode::Default,
             managed_dir,
             auth: ClaudeAuth::Inherit,
@@ -382,6 +383,7 @@ async fn a_missing_bun_names_itself_instead_of_failing_obscurely() {
     let harness = ClaudeCodeHarness::new(
         ClaudeConfig {
             model: None,
+            effort: None,
             permission_mode: PermissionMode::Default,
             managed_dir: None,
             auth: ClaudeAuth::Inherit,

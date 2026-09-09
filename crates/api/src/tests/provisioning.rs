@@ -204,6 +204,7 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
+            model: None,
         })
         .send()
         .await;
@@ -391,6 +392,7 @@ async fn a_machine_the_account_cannot_deploy_is_refused_where_it_was_chosen(
             budget_limit: Usd::from_dollars(10),
             machine: Some(choice),
             spot: true,
+            model: None,
         })
         .send()
         .await;
@@ -1106,6 +1108,7 @@ async fn a_session_carries_the_branch_it_was_opened_on(
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
+            model: None,
         })
         .send()
         .await;
@@ -1157,6 +1160,7 @@ async fn a_branch_git_would_refuse_is_refused_where_it_was_typed(
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
+            model: None,
         })
         .send()
         .await;
@@ -1202,6 +1206,7 @@ async fn a_token_without_the_repo_scope_cannot_open_a_session(
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
+            model: None,
         })
         .send()
         .await;

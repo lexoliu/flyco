@@ -1140,6 +1140,73 @@ async fn a_raised_budget_reaches_the_daemon_the_way_the_pause_did() {
     assert_eq!(room.drain(), vec![to_daemon(&command)]);
 }
 
+#[skyzen::test]
+async fn a_model_change_reaches_the_daemon_and_the_transcript() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    let model = flyco_core::ModelChoice {
+        model: "opus[1m]".to_owned(),
+        effort: Some("max".to_owned()),
+    };
+    let command = ControlToDaemon::SetModel {
+        model: model.clone(),
+    };
+    let (status, _) = room
+        .call(
+            Method::POST,
+            "/internal/command",
+            Some(serde_json::to_vec(&command).expect("serialize")),
+        )
+        .await;
+    assert_eq!(status, 204);
+
+    assert_eq!(
+        room.drain(),
+        vec![
+            to_daemon(&command),
+            to_client(&ClientEvent::ModelChanged { model }),
+        ]
+    );
+}
+
+#[skyzen::test]
+async fn a_model_change_is_held_for_an_absent_daemon_and_still_echoed() {
+    // No `greet`: the room has no daemon. The model was already recorded by
+    // the control plane, so the browsers are told and the command waits —
+    // the same shape a machine change takes, and for the same reason.
+    let mut room = Room::open().await;
+
+    let model = flyco_core::ModelChoice {
+        model: "haiku".to_owned(),
+        effort: None,
+    };
+    let command = ControlToDaemon::SetModel {
+        model: model.clone(),
+    };
+    let (status, _) = room
+        .call(
+            Method::POST,
+            "/internal/command",
+            Some(serde_json::to_vec(&command).expect("serialize")),
+        )
+        .await;
+    assert_eq!(status, 204);
+    assert_eq!(
+        room.drain(),
+        vec![to_client(&ClientEvent::ModelChanged { model })]
+    );
+
+    // And the daemon that arrives next is handed it, in the same breath as
+    // the welcome — `greet` is not used here precisely because this room's
+    // mailbox is not empty.
+    room.hello().await;
+    assert!(
+        room.drain().contains(&to_daemon(&command)),
+        "a held model change must be replayed to the daemon that arrives"
+    );
+}
+
 // ── The internal boundary ──
 
 #[skyzen::test]

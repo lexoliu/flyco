@@ -35,9 +35,9 @@ use tokio::sync::{mpsc, oneshot};
 use self::normalize::{ApprovalParams, Normalizer};
 use self::protocol::{
     ApprovalDecision, ApprovalDecisionBody, ClientCapabilities, ClientInfo, Envelope,
-    InitializeParams, McpServerStatusPage, McpServerStatusParams, RequestId,
-    ThreadCompactStartParams, ThreadConfig, ThreadParams, TurnInterruptParams, TurnStartParams,
-    UserInput, method,
+    InitializeParams, McpServerStatusPage, McpServerStatusParams, ModelListParams,
+    ModelListResponse, RequestId, ThreadCompactStartParams, ThreadConfig, ThreadParams,
+    TurnInterruptParams, TurnStartParams, UserInput, method,
 };
 use super::{Harness, HarnessSession, SessionOutput, StartRequest, Started, ToolApproval};
 use crate::config::{CodexAuth, CodexConfig};
@@ -193,7 +193,7 @@ impl Harness for CodexHarness {
 
         let mut lines = BufReader::new(stdout).lines();
         let mut next_id = 1_u64;
-        let thread_id = Box::pin(handshake(
+        let Handshaken { thread_id, models } = Box::pin(handshake(
             &mut stdin,
             &mut lines,
             &mut next_id,
@@ -219,6 +219,9 @@ impl Harness for CodexHarness {
                 pending_approvals: BTreeMap::new(),
                 pending_compaction: None,
                 stopped: false,
+                model: self.config.model.clone(),
+                effort: self.config.effort.clone(),
+                models,
             }
             .run(inbox, resumed),
         );
@@ -270,6 +273,10 @@ impl HarnessSession for CodexSession {
         self.ask(|ack| DriverCommand::Compact { ack }).await
     }
 
+    async fn set_model(&self, model: flyco_core::ModelChoice) -> Result<(), CodexError> {
+        self.ask(|ack| DriverCommand::SetModel { model, ack }).await
+    }
+
     async fn decide_approval(&self, approval: ToolApproval) -> Result<(), CodexError> {
         self.ask(|ack| DriverCommand::Approval { approval, ack })
             .await
@@ -305,6 +312,17 @@ enum DriverCommand {
     },
     /// From the handle: compact the conversation context.
     Compact {
+        ack: oneshot::Sender<Result<(), CodexError>>,
+    },
+    /// From the handle: run the rest of the thread on another model.
+    ///
+    /// Nothing is written to the app-server here. It has no method for
+    /// changing a live thread's model — the override travels on
+    /// `turn/start` — so the driver records the new pair and every turn
+    /// from the next one carries it, which is exactly what the app-server
+    /// documents that field as meaning.
+    SetModel {
+        model: flyco_core::ModelChoice,
         ack: oneshot::Sender<Result<(), CodexError>>,
     },
     /// From the handle: answer a pending approval.
@@ -501,6 +519,14 @@ fn spawn(config: &CodexConfig, workdir: &std::path::Path) -> Result<Child, Codex
     }
 }
 
+/// What a completed handshake settled, before the driver task exists.
+struct Handshaken {
+    /// The thread every later frame is keyed by.
+    thread_id: String,
+    /// What this build of the app-server said it offers.
+    models: Vec<flyco_core::ModelOption>,
+}
+
 async fn handshake<R>(
     stdin: &mut ChildStdin,
     lines: &mut tokio::io::Lines<R>,
@@ -508,7 +534,7 @@ async fn handshake<R>(
     config: &CodexConfig,
     mount: &Mount,
     request: &StartRequest,
-) -> Result<String, CodexError>
+) -> Result<Handshaken, CodexError>
 where
     R: tokio::io::AsyncBufRead + Unpin,
 {
@@ -548,6 +574,7 @@ where
         thread_id: request.resume_session_id.clone(),
         config: ThreadConfig {
             mcp_servers: mount.codex_servers(),
+            model_reasoning_effort: config.effort.clone(),
         },
     };
     let method_name = if request.resume_session_id.is_some() {
@@ -569,12 +596,54 @@ where
         detail: "thread/start returned no thread id".to_owned(),
     })?;
 
+    let models = offered_models(stdin, lines, next_id).await?;
+
     // Last, and before a single turn: a thread whose agent cannot call
     // `budget_status` is one that will spend the user's money with the
     // meter out of reach, so the session fails here rather than opening.
     crate::mount::verify(&settled_mount(stdin, lines, next_id, &thread).await?)
         .map_err(|error| CodexError::Mount(error.into()))?;
-    Ok(thread)
+    Ok(Handshaken {
+        thread_id: thread,
+        models,
+    })
+}
+
+/// Every model this build of the app-server offers a user.
+///
+/// Asked once, during the handshake, because the answer is a fact about the
+/// installed `codex` and not about the thread. Hidden rows are dropped
+/// here: the app-server lists them, and a picker that offered one would be
+/// offering a model nobody is meant to choose.
+async fn offered_models<R>(
+    stdin: &mut ChildStdin,
+    lines: &mut tokio::io::Lines<R>,
+    next_id: &mut u64,
+) -> Result<Vec<flyco_core::ModelOption>, CodexError>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let id = take_id(next_id);
+    write_envelope(
+        stdin,
+        &Envelope::request(
+            id.clone(),
+            method::MODEL_LIST,
+            serde_json::to_value(ModelListParams {}).expect("ModelListParams serializes"),
+        ),
+    )
+    .await?;
+    let result = expect_result(lines, &id, method::MODEL_LIST).await?;
+    let listed: ModelListResponse =
+        serde_json::from_value(result).map_err(|source| CodexError::Protocol {
+            detail: format!("model/list returned something else: {source}"),
+        })?;
+    Ok(listed
+        .data
+        .into_iter()
+        .filter(|model| !model.hidden)
+        .map(Into::into)
+        .collect())
 }
 
 /// How long the driver waits for every MCP server to stop dialling.
@@ -814,6 +883,17 @@ struct Driver {
     pending_approvals: BTreeMap<ApprovalId, RequestId>,
     pending_compaction: Option<(RequestId, oneshot::Sender<Result<(), CodexError>>)>,
     stopped: bool,
+    /// What the thread runs on, restated on every `turn/start`.
+    ///
+    /// Seeded from the configuration the machine booted with and replaced
+    /// by a [`DriverCommand::SetModel`]. Held here rather than read from
+    /// the config each turn because the config is what the session
+    /// *started* on, and this is what it is on now.
+    model: Option<String>,
+    /// The effort it runs at, on the same terms.
+    effort: Option<String>,
+    /// What the app-server said it offers, reported once at start.
+    models: Vec<flyco_core::ModelOption>,
 }
 
 impl Driver {
@@ -828,6 +908,17 @@ impl Driver {
             tracing::info!(thread = %self.thread_id, "resumed a Codex thread");
         } else {
             tracing::info!(thread = %self.thread_id, "started a Codex thread");
+        }
+        // After the identity and before any turn: the picker has to be
+        // right for the first message, and this is the earliest moment the
+        // answer exists.
+        let models = core::mem::take(&mut self.models);
+        tracing::info!(
+            count = models.len(),
+            "the app-server listed the models it offers"
+        );
+        if !emit(&self.outputs, SessionOutput::Models { models }).await {
+            return;
         }
 
         while let Some(command) = inbox.recv().await {
@@ -873,6 +964,17 @@ impl Driver {
                     }
                 }
             }
+            DriverCommand::SetModel { model, ack } => {
+                tracing::info!(
+                    model = %model.model,
+                    effort = ?model.effort,
+                    "the thread will run on another model from its next turn"
+                );
+                self.model = Some(model.model);
+                self.effort = model.effort;
+                let _ = ack.send(Ok(()));
+                true
+            }
             DriverCommand::Approval { approval, ack } => {
                 let result = self.decide(approval).await;
                 let ok = result.is_ok();
@@ -916,6 +1018,8 @@ impl Driver {
                 text,
                 text_elements: [],
             }],
+            model: self.model.clone(),
+            effort: self.effort.clone(),
         };
         write_envelope(
             self.stdin.as_mut().ok_or(CodexError::Stopped)?,

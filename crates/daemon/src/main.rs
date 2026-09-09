@@ -197,7 +197,7 @@ async fn run(cli: Cli) -> Result<(), Failure> {
                 )
             });
             if let Some(api) = api.as_ref() {
-                config.resume_session_id = Box::pin(conversation_to_continue(&config, api)).await;
+                Box::pin(conversation_to_continue(&mut config, api)).await;
             }
             report_failure_to(
                 api.as_ref(),
@@ -259,27 +259,48 @@ async fn report_failure_to<T>(
 /// place. That is the honest fallback rather than a papered-over failure:
 /// on a first boot it is `None` and a fresh session is right, and on a
 /// rebuilt machine the provisioner wrote the id into the file itself.
-async fn conversation_to_continue(config: &DaemonConfig, api: &HttpControlApi) -> Option<String> {
-    match api.harness_session_id().await {
-        Ok(Some(recorded)) => {
+async fn conversation_to_continue(config: &mut DaemonConfig, api: &HttpControlApi) {
+    let view = match api.harness_session().await {
+        Ok(view) => view,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "could not read the harness conversation to continue; using the configured one"
+            );
+            return;
+        }
+    };
+
+    // The model as well as the conversation, and for the same reason: the
+    // file on this disk was written when the machine was *created*, so a
+    // session whose model the user changed while it ran would come back on
+    // the old one after a reclamation.
+    tracing::info!(
+        model = %view.model.model,
+        effort = ?view.model.effort,
+        "running this session on the model the control plane recorded"
+    );
+    if let Some(claude) = config.claude.as_mut() {
+        claude.model = Some(view.model.model.clone());
+        claude.effort.clone_from(&view.model.effort);
+    }
+    if let Some(codex) = config.codex.as_mut() {
+        codex.model = Some(view.model.model.clone());
+        codex.effort.clone_from(&view.model.effort);
+    }
+
+    match view.harness_session_id {
+        Some(recorded) => {
             if config.resume_session_id.as_deref() != Some(recorded.as_str()) {
                 tracing::info!(
                     session = %recorded,
                     "continuing the harness conversation the control plane recorded"
                 );
             }
-            Some(recorded)
+            config.resume_session_id = Some(recorded);
         }
-        Ok(None) => {
+        None => {
             tracing::info!("this session has no harness conversation yet; starting one");
-            config.resume_session_id.clone()
-        }
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                "could not read the harness conversation to continue; using the configured one"
-            );
-            config.resume_session_id.clone()
         }
     }
 }

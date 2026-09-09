@@ -33,8 +33,8 @@ use core::future::Future;
 use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
     AgentMachineView, ApprovalId, ApprovalView, BudgetView, HarnessObservation, HarnessSessionView,
-    MachineCatalogEntry, Problem, ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
-    ReportStartupFailure, ResizeMachine, SessionId,
+    MachineCatalogEntry, ModelOption, Problem, ProvisioningStage, ReportProvisioningStage,
+    ReportSpotNotice, ReportStartupFailure, ResizeMachine, SessionId,
 };
 use url::Url;
 use zenwave::{Client as _, ResponseExt as _};
@@ -214,21 +214,40 @@ pub trait ControlApi: ApprovalRaiser {
     ) -> impl Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send;
 
     /// Reads the conversation a daemon starting on this session must
-    /// continue.
+    /// continue, and the model it must continue it on.
     ///
-    /// The authority on it, and the configuration on the disk is not: that
-    /// file was written when the machine was created, and a machine that
-    /// was stopped and started again on the same disk — a spot reclamation
-    /// recovered from — boots the same file. A daemon that trusted it would
-    /// open a second conversation beside the one the user is watching.
+    /// The authority on both, and the configuration on the disk is not:
+    /// that file was written when the machine was created, and a machine
+    /// that was stopped and started again on the same disk — a spot
+    /// reclamation recovered from — boots the same file. A daemon that
+    /// trusted it would open a second conversation beside the one the user
+    /// is watching, and would open it on the model the session had before
+    /// the user changed it.
     ///
     /// # Errors
     ///
     /// Returns [`ControlApiError`] if the control plane could not be
     /// reached or refused the read.
-    fn harness_session_id(
+    fn harness_session(
         &self,
-    ) -> impl Future<Output = Result<Option<String>, ControlApiError>> + Send;
+    ) -> impl Future<Output = Result<HarnessSessionView, ControlApiError>> + Send;
+
+    /// Reports the models this session's harness offers.
+    ///
+    /// Filed once, after the harness's handshake and before any turn. The
+    /// control plane records the list against the account the machine was
+    /// provisioned through, so the next session's picker opens on what this
+    /// harness build actually accepts rather than on the list flyco shipped
+    /// with.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or refused the report.
+    fn report_models(
+        &self,
+        models: &[ModelOption],
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 
     /// Reports why this daemon is stopping before it could report in.
     ///
@@ -456,10 +475,29 @@ impl ControlApi for HttpControlApi {
         Ok(())
     }
 
-    async fn harness_session_id(&self) -> Result<Option<String>, ControlApiError> {
-        self.get_json::<HarnessSessionView>("harness-session")
+    async fn harness_session(&self) -> Result<HarnessSessionView, ControlApiError> {
+        self.get_json("harness-session").await
+    }
+
+    async fn report_models(&self, models: &[ModelOption]) -> Result<(), ControlApiError> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            models: &'a [ModelOption],
+        }
+
+        let url = self.url("models")?;
+        let mut client = zenwave::client();
+        let response = client
+            .put(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(&Body { models })
+            .map_err(transport)?
             .await
-            .map(|view| view.harness_session_id)
+            .map_err(|error| refused("PUT", &url, &error))?;
+
+        debug_assert!(response.status().is_success());
+        Ok(())
     }
 
     async fn report_startup_failure(&self, message: String) -> Result<(), ControlApiError> {

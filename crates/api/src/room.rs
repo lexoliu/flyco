@@ -996,13 +996,22 @@ async fn dispatch_command(
     }
 
     let echo = match &command {
-        ControlToDaemon::ApprovalDecision { id, decision } => Some(ClientEvent::ApprovalDecided {
-            id: *id,
-            decision: *decision,
-        }),
-        ControlToDaemon::Archive { .. } => Some(ClientEvent::SessionStateChanged {
+        ControlToDaemon::ApprovalDecision { id, decision } => {
+            Some(Echo::live(ClientEvent::ApprovalDecided {
+                id: *id,
+                decision: *decision,
+            }))
+        }
+        ControlToDaemon::Archive { .. } => Some(Echo::live(ClientEvent::SessionStateChanged {
             state: flyco_core::SessionState::Archived,
-        }),
+        })),
+        // Echoed whether the daemon took the command or the room held it:
+        // the change is already recorded, so a browser watching a session
+        // whose machine is between lives must still see the line — the
+        // model is what the next machine comes up on.
+        ControlToDaemon::SetModel { model } => Some(Echo::recorded(ClientEvent::ModelChanged {
+            model: model.clone(),
+        })),
         _ => None,
     };
 
@@ -1023,10 +1032,48 @@ async fn dispatch_command(
             announce_machine(connections, false).map_err(|error| room_failed(&error))?;
         }
     }
-    if let Some(event) = echo {
-        broadcast(connections, &event).map_err(|error| room_failed(&error))?;
+    if let Some(echo) = echo {
+        if echo.recorded {
+            append(db, &echo.event)
+                .await
+                .map_err(|error| room_failed(&error))?;
+        }
+        broadcast(connections, &echo.event).map_err(|error| room_failed(&error))?;
     }
     Ok(NoContent)
+}
+
+/// What the room tells its browsers about a command it just handled.
+struct Echo {
+    event: ClientEvent,
+    /// Whether it is appended to the replayable stream as well as sent.
+    ///
+    /// True for an event that is *transcript*: a model change is a line in
+    /// the conversation, because what answers from here on is a different
+    /// model and a replay with no seam in it would misrepresent itself.
+    /// False for the ones that are only the UI's present state — an
+    /// approval's decision and a lifecycle move are both re-read from the
+    /// control plane by a browser that reconnects, so a copy in the stream
+    /// would be a second answer free to disagree with it.
+    recorded: bool,
+}
+
+impl Echo {
+    /// An echo browsers watching right now see, and nobody replays.
+    const fn live(event: ClientEvent) -> Self {
+        Self {
+            event,
+            recorded: false,
+        }
+    }
+
+    /// An echo that also belongs in the transcript.
+    const fn recorded(event: ClientEvent) -> Self {
+        Self {
+            event,
+            recorded: true,
+        }
+    }
 }
 
 /// Appends a control-plane event to the room's stream and shows it to every

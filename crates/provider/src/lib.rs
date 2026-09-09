@@ -215,6 +215,13 @@ pub struct DaemonBootstrap {
     /// Harness-native session id to resume, for a session moving onto a new
     /// machine.
     pub resume_session_id: Option<String>,
+    /// The model the harness runs on, and the effort it runs at.
+    ///
+    /// Always concrete: `POST /v1/sessions` resolves the harness account's
+    /// default when the caller names none, so the configuration on the
+    /// machine states the model rather than leaving it to whichever version
+    /// of the CLI the image happens to carry.
+    pub model: flyco_core::ModelChoice,
     /// The user's enabled MCP servers, as the machine's harness is given
     /// them.
     ///
@@ -238,6 +245,7 @@ impl fmt::Debug for DaemonBootstrap {
             .field("machine_origin", &self.machine_origin)
             .field("machine", &self.machine)
             .field("resume_session_id", &self.resume_session_id)
+            .field("model", &self.model)
             // Names only: a remote MCP server's headers routinely carry a
             // bearer token, which is a fourth credential this structure
             // holds and the fourth this rendering keeps out of a log line.
@@ -601,6 +609,7 @@ mod tests {
             machine_origin: flyco_core::MachineOrigin::Auto,
             machine: crate::testing::session_machine(),
             resume_session_id: None,
+            model: crate::testing::session_model(),
             mcp_servers: vec![flyco_core::McpServerMount {
                 name: "deepwiki".to_owned(),
                 config: flyco_core::McpServerConfig::Http {

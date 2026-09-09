@@ -1,0 +1,50 @@
+[
+  {
+    "id": "default",
+    "label": "Default (recommended)",
+    "description": "Opus 5 with 1M context · Best for everyday, complex tasks",
+    "is_default": true,
+    "efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_effort": null
+  },
+  {
+    "id": "opus[1m]",
+    "label": "Opus (1M context)",
+    "description": "Opus 5 with 1M context · Best for everyday, complex tasks",
+    "is_default": false,
+    "efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_effort": null
+  },
+  {
+    "id": "claude-fable-5-1[1m]",
+    "label": "Fable",
+    "description": "Fable 5.1 · Most capable for your hardest and longest-running tasks",
+    "is_default": false,
+    "efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_effort": null
+  },
+  {
+    "id": "sonnet",
+    "label": "Sonnet",
+    "description": "Sonnet 5 · Efficient for routine tasks",
+    "is_default": false,
+    "efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_effort": null
+  },
+  {
+    "id": "haiku",
+    "label": "Haiku",
+    "description": "Haiku 4.5 · Fastest for quick answers",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "opus",
+    "label": "Opus",
+    "description": "Opus 5 · Best for everyday, complex tasks",
+    "is_default": false,
+    "efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_effort": null
+  }
+]

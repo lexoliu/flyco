@@ -256,6 +256,8 @@ pub mod method {
     pub const TOKEN_USAGE: &str = "thread/tokenUsage/updated";
     /// Notification: a turn-level error, possibly retried internally.
     pub const ERROR: &str = "error";
+    /// Request: the models this build of the app-server offers.
+    pub const MODEL_LIST: &str = "model/list";
 }
 
 /// `initialize.clientInfo`.
@@ -318,6 +320,15 @@ pub struct ThreadParams {
 pub struct ThreadConfig {
     /// `[mcp_servers]`, keyed by the id that is also the server's identity.
     pub mcp_servers: std::collections::BTreeMap<String, crate::mount::CodexMcpServer>,
+    /// `model_reasoning_effort`: the effort the thread opens at.
+    ///
+    /// A `config.toml` key rather than a field of
+    /// [`ThreadParams`](super::protocol::ThreadParams), because that is
+    /// where the app-server takes it — the model is a parameter and its
+    /// effort is configuration. Omitted where the session chose none, so
+    /// the app-server's own `defaultReasoningEffort` for the model stands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_reasoning_effort: Option<String>,
 }
 
 /// Params for `mcpServerStatus/list`.
@@ -382,6 +393,91 @@ pub struct TurnStartParams {
     pub thread_id: String,
     /// User input items.
     pub input: Vec<UserInput>,
+    /// Model override for this turn and every turn after it, as the
+    /// app-server documents the field.
+    ///
+    /// Sent on every turn rather than only on the one that changes it: the
+    /// driver holds what the session runs on, and restating it is what
+    /// makes a mid-conversation model change survive whatever the
+    /// app-server thought the thread was on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Reasoning effort, on the same terms.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+/// Params for `model/list`.
+///
+/// The app-server takes an empty object rather than no params at all, so
+/// this is a unit struct that serializes as `{}`.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ModelListParams {}
+
+/// One effort level a model accepts, with the app-server's own gloss.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningEffortOption {
+    /// The level, as `turn/start`'s `effort` takes it.
+    pub reasoning_effort: String,
+    /// What the app-server says the level is for. Read for completeness
+    /// rather than shown: flyco's picker labels a level by its own name.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// One row of the `model/list` result.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexModel {
+    /// The identifier `thread/start` and `turn/start` take.
+    pub id: String,
+    /// What a picker shows.
+    pub display_name: String,
+    /// One line under the name.
+    #[serde(default)]
+    pub description: String,
+    /// Whether the app-server runs this one when nothing is chosen.
+    #[serde(default)]
+    pub is_default: bool,
+    /// Whether the app-server keeps this row out of pickers.
+    ///
+    /// Read so it can be dropped: a hidden model is one `model/list`
+    /// mentions and no user is meant to choose.
+    #[serde(default)]
+    pub hidden: bool,
+    /// The effort the app-server uses when none is named.
+    #[serde(default)]
+    pub default_reasoning_effort: Option<String>,
+    /// Every effort level this model accepts, in the app-server's order.
+    #[serde(default)]
+    pub supported_reasoning_efforts: Vec<ReasoningEffortOption>,
+}
+
+impl From<CodexModel> for flyco_core::ModelOption {
+    fn from(model: CodexModel) -> Self {
+        Self {
+            id: model.id,
+            label: model.display_name,
+            description: model.description,
+            is_default: model.is_default,
+            efforts: model
+                .supported_reasoning_efforts
+                .into_iter()
+                .map(|effort| effort.reasoning_effort)
+                .collect(),
+            default_effort: model.default_reasoning_effort,
+        }
+    }
+}
+
+/// The `model/list` result.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelListResponse {
+    /// This page's models. Flycod reads one page: the list is three rows
+    /// and the cursor exists for a catalogue that is not this one.
+    pub data: Vec<CodexModel>,
 }
 
 /// Params for `turn/interrupt`.

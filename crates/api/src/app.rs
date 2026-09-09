@@ -8,10 +8,10 @@ use flyco_core::{
     ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, EnvDocument,
     HarnessFeature, HarnessObservation, HarnessSessionView, MAX_SESSION_TITLE_CHARS,
-    MachineCatalogEntry, MachineOrigin, MachineSpec, ProvisioningStage, RepoSlug, RepoStatus,
-    ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure, ResizeMachine, SendMessage,
-    SessionActivity, SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv,
-    UpdateMe, UpdateSession, UserId, wire::ApprovalPayload,
+    MachineCatalogEntry, MachineOrigin, MachineSpec, ModelChoice, ProvisioningStage, RepoSlug,
+    RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure,
+    ResizeMachine, SendMessage, SessionActivity, SessionDetail, SessionId, SessionState,
+    SessionSummary, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId, wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -218,6 +218,20 @@ async fn start_session(
                 .choice
         }
     };
+    // Resolved against the account's own model list before anything is
+    // written, and for the same reason the machine choice is: a model the
+    // harness does not offer is refused here rather than accepted and then
+    // discovered by a daemon the caller is no longer watching. A request
+    // that named none opens on the list's default, so the session row
+    // always states what it runs.
+    let models = harness_accounts::models(db, user.id, request.harness).await?;
+    let model = match request.model {
+        Some(model) => {
+            model.validate(&models).map_err(ApiError::InvalidModel)?;
+            model
+        }
+        None => ModelChoice::default_of(&models),
+    };
     let account = provisioning::account(db, config, user.id, choice.provider_account).await?;
     // Checked against the cached catalog, which is what the picker showed;
     // the queue re-asks the provider when it actually builds the machine.
@@ -243,6 +257,7 @@ async fn start_session(
             branch: &branch,
             machine_origin,
             budget,
+            model: &model,
         },
     )
     .await?;
@@ -281,6 +296,8 @@ async fn start_session(
         repo = %repo,
         branch = %branch,
         harness = ?request.harness,
+        model = %model.model,
+        effort = ?model.effort,
         machine_type = %spec.machine_type,
         region = %spec.region,
         spot = spec.spot,
@@ -388,7 +405,7 @@ async fn read_session(
 }
 
 /// Changes what one of the caller's sessions is called, what it may spend,
-/// or both.
+/// what it runs on, or any combination of the three.
 ///
 /// The title opens as the excerpt of the prompt the session was created
 /// with; this is how it becomes something the user chose. The budget limit
@@ -396,7 +413,9 @@ async fn read_session(
 /// and raising it past the spend both puts the session back to
 /// [`SessionState::Active`] and tells its daemon to carry on — the daemon
 /// stopped accepting work when the pause reached it and nothing in the
-/// database can lift that.
+/// database can lift that. The model is recorded and then sent to the
+/// session's room, which echoes it into the transcript and hands it to the
+/// harness mid-conversation.
 #[skyzen::openapi]
 async fn update_session(
     State(user): State<CurrentUser>,
@@ -424,6 +443,33 @@ async fn apply_session_update(
         None => None,
     };
 
+    let remodelled = match &update.model {
+        Some(choice) => {
+            // Validated against the harness the *session* runs, read off
+            // the session rather than taken from the caller: a body naming
+            // a Codex model for a Claude session is a stale picker, and it
+            // is refused with the model it named rather than accepted.
+            let session = sessions::find(db, user.id, id).await?;
+            let models = harness_accounts::models(db, user.id, session.summary.harness).await?;
+            choice.validate(&models).map_err(ApiError::InvalidModel)?;
+            let session = sessions::set_model(db, user.id, id, choice).await?;
+            // Recorded first, announced second: the room's echo is what the
+            // transcript shows, and an echo the database had not yet agreed
+            // with would be a line about a change that could still fail.
+            rooms
+                .command(
+                    id,
+                    &ControlToDaemon::SetModel {
+                        model: choice.clone(),
+                    },
+                )
+                .await?;
+            tracing::info!(session = %id, model = %choice.model, effort = ?choice.effort, "a session was put on another model");
+            Some(session)
+        }
+        None => None,
+    };
+
     let rebudgeted = match update.budget_limit {
         Some(limit) => {
             let raise = sessions::set_budget_limit(db, user.id, id, limit).await?;
@@ -438,11 +484,13 @@ async fn apply_session_update(
         None => None,
     };
 
-    // The budget answer wins where both were asked for: it is the later of
-    // the two reads and therefore the one carrying the rename as well.
-    // Neither means a body that named nothing to do, which is the caller's
-    // bug rather than a session that happens to be unchanged.
+    // The last answer wins where more than one was asked for: each read
+    // follows the write before it, so the latest is the one carrying every
+    // change made above it. None at all means a body that named nothing to
+    // do, which is the caller's bug rather than a session that happens to
+    // be unchanged.
     rebudgeted
+        .or(remodelled)
         .or(renamed)
         .map(Json)
         .ok_or(ApiError::EmptyUpdate)
@@ -1365,23 +1413,70 @@ async fn put_harness_session(
         .into()
 }
 
-/// Reads the harness conversation a daemon on this session must continue.
+/// Reads the harness conversation a daemon on this session must continue,
+/// and the model it must continue it on.
 ///
 /// The daemon asks at startup instead of trusting the configuration on its
 /// disk: that file was written when the machine was created, and a machine
 /// that was stopped and started again on the same disk — which is how a
 /// spot reclamation is recovered from — boots the same file. A daemon that
 /// trusted it would open a second conversation beside the one the user is
-/// watching.
+/// watching, and would open it on the model the session had before the user
+/// changed it.
 #[skyzen::openapi]
 async fn get_harness_session(
     State(session): State<DaemonSession>,
     db: Db,
 ) -> Outcome<Json<HarnessSessionView>> {
-    sessions::harness_session_id(&db, session.0)
+    sessions::harness_session(&db, session.0)
         .await
-        .map(|harness_session_id| Json(HarnessSessionView { harness_session_id }))
+        .map(Json)
         .into()
+}
+
+/// Records the models this session's harness offers.
+///
+/// Filed by the daemon once its harness has answered — the earliest moment
+/// the answer exists — and stored against the *account*, because the list
+/// is a fact about the harness build that account's machines run and the
+/// composer needs it before the next session exists. The live half goes to
+/// the room in the same call, so a browser watching this session gets the
+/// real list without reloading the account.
+#[skyzen::openapi]
+async fn report_models(
+    State(session): State<DaemonSession>,
+    Json(report): Json<ReportModels>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<NoContent> {
+    record_reported_models(session.0, report, &rooms, &db)
+        .await
+        .into()
+}
+
+async fn record_reported_models(
+    id: SessionId,
+    report: ReportModels,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<NoContent, ApiError> {
+    // An `fd_` token proves which session is calling and nothing about a
+    // user, so the owner and the harness are derived from the session row
+    // rather than trusted from the body — which is what keeps one session's
+    // daemon from rewriting another user's model list.
+    let target = sessions::provisioning_target(db, id)
+        .await?
+        .ok_or(ApiError::SessionNotFound)?;
+    harness_accounts::record_models(db, target.user_id, target.harness, &report.models).await?;
+    rooms
+        .broadcast(
+            id,
+            &ClientEvent::Models {
+                models: report.models,
+            },
+        )
+        .await?;
+    Ok(NoContent)
 }
 
 /// Records that this session's machine is being reclaimed by its provider.
@@ -2043,6 +2138,7 @@ fn daemon_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/harness-session"
             .at(get_harness_session)
             .put(put_harness_session),
+        "/v1/sessions/{id}/models".put(report_models),
         "/v1/sessions/{id}/spot-notice".post(report_spot_notice),
         "/v1/sessions/{id}/startup-failure".post(report_startup_failure),
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),

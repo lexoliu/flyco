@@ -493,6 +493,25 @@ pub enum ControlToDaemon {
         /// What is being asked.
         request: WorkdirRequest,
     },
+    /// Run the session on this model, and at this effort, from here on.
+    ///
+    /// Applied to the conversation already in progress rather than to the
+    /// next one: Claude Code takes `setModel` and `applyFlagSettings` on a
+    /// live query, and Codex's `turn/start` documents `model` and `effort`
+    /// as overriding "this turn and subsequent turns". A session's model is
+    /// therefore something the user changes while watching it work, which
+    /// is the whole point of putting the picker in the composer.
+    ///
+    /// Held for a daemon that is not connected, for the same reason
+    /// [`Self::MachineChanged`] is: it describes a state rather than an
+    /// instant. The control plane has already recorded the model, so a
+    /// daemon that comes back an hour later is still owed the change — and
+    /// the alternative is a session whose row and whose harness disagree
+    /// about what it is running.
+    SetModel {
+        /// What the session runs on now.
+        model: crate::harness::ModelChoice,
+    },
     /// Archive the session: flush state, optionally snapshot the repo, shut
     /// down.
     Archive {
@@ -533,6 +552,7 @@ impl ControlToDaemon {
             Self::Budget { .. } => "budget",
             Self::BudgetRaised { .. } => "budget_raised",
             Self::MachineChanged { .. } => "machine_changed",
+            Self::SetModel { .. } => "set_model",
             Self::InspectWorkdir { .. } => "inspect_workdir",
             Self::Archive { .. } => "archive",
         }
@@ -565,17 +585,23 @@ impl ControlToDaemon {
     /// reconnects an hour later would arrive as an instruction about a turn
     /// that no longer exists.
     ///
-    /// [`MachineChanged`](Self::MachineChanged) is the exception, and it is
-    /// the exception by construction rather than by preference: the change
-    /// it reports *is* a restart, so the daemon is guaranteed to be gone at
-    /// the moment it is sent, and it describes a state rather than an
-    /// instant — the machine is still the new one whenever the daemon comes
-    /// back. A user message survives too, but through the room's mailbox,
-    /// which is an index into the replayable stream rather than a queue,
-    /// because a conversation must not be reordered.
+    /// The two exceptions are the two commands that describe a *state*
+    /// rather than an instant, so redelivering one late still says
+    /// something true. [`MachineChanged`](Self::MachineChanged) is the
+    /// exception by construction: the change it reports *is* a restart, so
+    /// the daemon is guaranteed to be gone at the moment it is sent, and
+    /// the machine is still the new one whenever it comes back.
+    /// [`SetModel`](Self::SetModel) is the exception by consequence: the
+    /// control plane has already recorded the model, and a daemon that
+    /// missed the command would run the session on a model its own row
+    /// disagrees with.
+    ///
+    /// A user message survives too, but through the room's mailbox, which
+    /// is an index into the replayable stream rather than a queue, because
+    /// a conversation must not be reordered.
     #[must_use]
     pub const fn survives_a_disconnect(&self) -> bool {
-        matches!(self, Self::MachineChanged { .. })
+        matches!(self, Self::MachineChanged { .. } | Self::SetModel { .. })
     }
 }
 
@@ -716,6 +742,29 @@ pub enum ClientEvent {
         spot: bool,
         /// Whether the change restarted the machine. A resize always does.
         restarted: bool,
+    },
+    /// The session was put on another model.
+    ///
+    /// Rendered as one line in the transcript, like a machine change and
+    /// for the same reason: what the agent answers with changes from here
+    /// on, and a conversation whose second half was written by a different
+    /// model with no note of where the seam is would be a transcript that
+    /// misrepresents itself.
+    ModelChanged {
+        /// What the session runs on now.
+        model: crate::harness::ModelChoice,
+    },
+    /// The models this session's harness offers.
+    ///
+    /// State rather than conversation, like
+    /// [`Capabilities`](Self::Capabilities): the newest list wins, and it
+    /// is what the composer's picker offers for the rest of the session.
+    /// Reported by the daemon once its harness has answered — the earliest
+    /// moment the answer exists — and recorded against the account, so the
+    /// next session's picker opens on the list this one discovered.
+    Models {
+        /// Every model the harness listed, in its own order.
+        models: Vec<crate::harness::ModelOption>,
     },
     /// The machine reached a provisioning milestone.
     ///
@@ -978,6 +1027,18 @@ mod tests {
                 spot: false,
                 restarted: false,
             },
+            ControlToDaemon::SetModel {
+                model: crate::harness::ModelChoice {
+                    model: "sonnet".to_owned(),
+                    effort: Some("high".to_owned()),
+                },
+            },
+            ControlToDaemon::SetModel {
+                model: crate::harness::ModelChoice {
+                    model: "haiku".to_owned(),
+                    effort: None,
+                },
+            },
             ControlToDaemon::Archive {
                 preserve_workdir: false,
             },
@@ -1028,6 +1089,15 @@ mod tests {
             },
             ClientEvent::Started {
                 harness_session_id: "9d0f4b1a".to_owned(),
+            },
+            ClientEvent::ModelChanged {
+                model: crate::harness::ModelChoice {
+                    model: "opus[1m]".to_owned(),
+                    effort: Some("max".to_owned()),
+                },
+            },
+            ClientEvent::Models {
+                models: crate::harness::builtin_models(crate::harness::HarnessKind::Codex),
             },
             ClientEvent::Capabilities {
                 capabilities: vec!["can_use_tool".to_owned()],
@@ -1152,9 +1222,15 @@ mod tests {
     }
 
     #[test]
-    fn only_a_machine_change_outlives_the_daemon_it_was_sent_to() {
+    fn only_a_machine_change_and_a_model_change_outlive_the_daemon_they_were_sent_to() {
+        // The two commands that describe a state rather than an instant.
+        // Everything else replayed into a later turn would be an
+        // instruction about something that is no longer happening.
         for frame in every_control_frame() {
-            let held = matches!(frame, ControlToDaemon::MachineChanged { .. });
+            let held = matches!(
+                frame,
+                ControlToDaemon::MachineChanged { .. } | ControlToDaemon::SetModel { .. }
+            );
             assert_eq!(frame.survives_a_disconnect(), held, "{frame:?}");
         }
     }

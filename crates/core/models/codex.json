@@ -1,0 +1,26 @@
+[
+  {
+    "id": "gpt-5.6-terra",
+    "label": "GPT-5.6-Terra",
+    "description": "Balanced agentic coding model for everyday work.",
+    "is_default": true,
+    "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    "default_effort": "medium"
+  },
+  {
+    "id": "gpt-5.6-luna",
+    "label": "GPT-5.6-Luna",
+    "description": "Fast and affordable agentic coding model.",
+    "is_default": false,
+    "efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_effort": "medium"
+  },
+  {
+    "id": "gpt-5.5",
+    "label": "GPT-5.5",
+    "description": "Proven previous-generation model for coding and general work.",
+    "is_default": false,
+    "efforts": ["low", "medium", "high", "xhigh"],
+    "default_effort": "medium"
+  }
+]

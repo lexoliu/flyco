@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::budget::BudgetView;
-use crate::harness::{HarnessKind, UsageReport};
+use crate::harness::{HarnessKind, ModelChoice, UsageReport};
 use crate::id::{ProviderAccountId, SessionId};
 use crate::money::Usd;
 use crate::repo::{BranchName, RepoSlug};
@@ -365,6 +365,14 @@ pub struct CreateSession {
     /// choice already carries its own `spot`.
     #[serde(default = "default_spot")]
     pub spot: bool,
+    /// The model the session runs on, and the effort it runs at.
+    ///
+    /// Omitted, the control plane records the default of the harness
+    /// account's own model list — resolved *here*, once, so the session row
+    /// always names what it is running rather than deferring to whatever
+    /// the CLI happens to default to on the day its machine boots.
+    #[serde(default)]
+    pub model: Option<ModelChoice>,
 }
 
 /// A session in a list.
@@ -422,6 +430,13 @@ pub struct SessionSummary {
     pub created_at_unix: u64,
     /// Last time anything happened on it, seconds since the Unix epoch.
     pub last_active_unix: u64,
+    /// What it runs on, and at what effort.
+    ///
+    /// Always concrete, never "whatever the CLI picks": a session opened
+    /// without a model named carries the harness's default resolved at
+    /// creation, so the header can state the model on every row rather than
+    /// leaving one blank for the sessions nobody chose one for.
+    pub model: ModelChoice,
 }
 
 /// A single session, with its budget.
@@ -457,14 +472,22 @@ pub struct SessionDetail {
 pub struct HarnessSessionView {
     /// Harness-native session id; resume reopens this conversation.
     pub harness_session_id: Option<String>,
+    /// The model this session runs on, as the control plane last recorded
+    /// it.
+    ///
+    /// Asked for the same reason the conversation is: the model in the
+    /// configuration on the machine's disk is the one it was *provisioned*
+    /// with, so a session whose model was changed while it ran would come
+    /// back on the old one after a reclamation.
+    pub model: ModelChoice,
 }
 
 /// Request body of `PATCH /v1/sessions/{id}`.
 ///
-/// Both fields are independently optional, because the two things a user
-/// changes about a live session are changed from opposite ends of the
-/// header and neither has any business restating the other's value. A body
-/// carrying neither is refused rather than answered with a session nothing
+/// All three fields are independently optional, because the things a user
+/// changes about a live session are changed from different parts of the UI
+/// and none has any business restating another's value. A body carrying
+/// none of them is refused rather than answered with a session nothing
 /// happened to.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct UpdateSession {
@@ -481,6 +504,17 @@ pub struct UpdateSession {
     /// changes nothing else — the session stays paused, because it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_limit: Option<Usd>,
+    /// What the session should run on from here on.
+    ///
+    /// Takes effect on the conversation already in progress rather than at
+    /// the next turn's discretion: the control plane records it and sends
+    /// the session's daemon a
+    /// [`SetModel`](crate::wire::ControlToDaemon::SetModel), which both
+    /// harnesses apply to the running session. Refused when the account's
+    /// own model list does not offer it, so a stale picker cannot put a
+    /// session on a model its harness has dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelChoice>,
 }
 
 /// Request body of `POST /v1/sessions/{id}/messages`.
@@ -636,6 +670,10 @@ mod tests {
             interrupted_reason: None,
             created_at_unix: 0,
             last_active_unix: 0,
+            model: ModelChoice {
+                model: "default".to_owned(),
+                effort: None,
+            },
         };
         let json = serde_json::to_string(&summary).expect("serialize");
         assert!(!json.contains("interrupted_reason"), "{json}");

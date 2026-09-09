@@ -521,6 +521,14 @@ async fn collect<A: ControlApi>(
             SessionOutput::Capabilities { capabilities } => {
                 (DaemonToControl::Capabilities { capabilities }, None)
             }
+            SessionOutput::Models { models } => {
+                // Filed over REST and never queued as a relay frame: the
+                // list is recorded against the account, which is D1, and a
+                // session room is a Durable Object that cannot reach it.
+                // The control plane announces it to the browsers itself.
+                api.report_models(&models).await?;
+                continue;
+            }
             SessionOutput::Event { event } => {
                 match &event {
                     HarnessEvent::TurnStarted { .. } => api.notify_turn_started().await?,
@@ -1198,6 +1206,20 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                     return Ok(Ended::Disconnected);
                 }
                 self.session.compact().await.map_err(harness)?;
+            }
+            ControlToDaemon::SetModel { model } => {
+                // Refused on the same terms as a compaction: both reach the
+                // harness, and a session that has stopped accepting work or
+                // is about to lose its machine has no harness to reach.
+                // The control plane has already recorded the model, so the
+                // change is redelivered on the next `Hello` rather than
+                // lost — `survives_a_disconnect` is what makes that true.
+                if self.refuse_while_paused("a model change")
+                    || self.refuse_while_reclaiming("a model change")
+                {
+                    return Ok(Ended::Disconnected);
+                }
+                self.session.set_model(model).await.map_err(harness)?;
             }
             ControlToDaemon::TerminalInput { data } => {
                 if self.refuse_while_paused("terminal input") {

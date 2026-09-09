@@ -90,6 +90,24 @@ export const mountedServerSchema = z.object({
   tools: z.array(z.string()),
 });
 
+/**
+ * One model the harness offers, in flyco's own vocabulary.
+ *
+ * `snake_case`, like the rest of this protocol, and deliberately not the
+ * SDK's `ModelInfo`: the same shape has to come back from Codex, so the
+ * translation happens here at the boundary rather than in three readers
+ * downstream. `efforts` is empty for a model that accepts none, which is a
+ * real answer rather than a missing one.
+ */
+export const modelOptionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string(),
+  is_default: z.boolean(),
+  efforts: z.array(z.string()),
+  default_effort: z.string().nullable(),
+});
+
 /** The SDK's `SessionKey`, in this protocol's `snake_case`. */
 export const sessionKeySchema = z.object({
   project_key: z.string(),
@@ -114,6 +132,7 @@ export const sidecarCommandSchema = z.discriminatedUnion("type", [
     config_dir: z.string().nullable(),
     project_dir_name: z.string().nullable(),
     model: z.string().nullable(),
+    effort: z.string().nullable(),
     permission_mode: permissionModeSchema,
     resume_session_id: z.string().nullable(),
     mcp_servers: z.record(z.string(), claudeMcpServerSchema),
@@ -122,6 +141,11 @@ export const sidecarCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("user_message"), text: z.string() }),
   z.object({ type: z.literal("interrupt") }),
   z.object({ type: z.literal("compact") }),
+  z.object({
+    type: z.literal("set_model"),
+    model: z.string(),
+    effort: z.string().nullable(),
+  }),
   z.object({
     type: z.literal("approval_decision"),
     id: z.string(),
@@ -142,6 +166,7 @@ export const sidecarEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("ready"), sdk_version: z.string() }),
   z.object({ type: z.literal("started"), session_id: z.string() }),
   z.object({ type: z.literal("capabilities"), capabilities: z.array(z.string()) }),
+  z.object({ type: z.literal("models"), models: z.array(modelOptionSchema) }),
   z.object({ type: z.literal("mcp_servers"), servers: z.array(mountedServerSchema) }),
   z.object({ type: z.literal("sdk_message"), message: jsonValue }),
   z.object({
@@ -165,6 +190,8 @@ export type PermissionMode = z.infer<typeof permissionModeSchema>;
 export type SidecarAuth = z.infer<typeof sidecarAuthSchema>;
 /** One MCP server, as the SDK's `mcpServers` option takes it. */
 export type ClaudeMcpServer = z.infer<typeof claudeMcpServerSchema>;
+/** One model the harness offers. */
+export type ModelOption = z.infer<typeof modelOptionSchema>;
 /** Where one mounted MCP server has got to. */
 export type MountState = z.infer<typeof mountStateSchema>;
 /** What the CLI reports about one mounted MCP server. */
