@@ -66,7 +66,7 @@ pub const PROVIDER: &str = "host";
 /// It must carry `flycod` and the harness CLIs, and its entrypoint must
 /// decode [`CONFIG_ENV`] into a `flycod` configuration and run
 /// `flycod run` against it.
-pub const DEFAULT_IMAGE: &str = "ghcr.io/lexoliu/flyco-session:latest";
+pub const DEFAULT_IMAGE: &str = flyco_core::release::SESSION_IMAGE_LATEST;
 
 /// Environment variable the image reads the base64 `flycod` configuration
 /// out of.

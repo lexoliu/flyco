@@ -24,8 +24,8 @@ use tracing::info;
 use zenwave::{ResponseExt as _, header::CONTENT_TYPE};
 
 use crate::release::{
-    ARCHITECTURES, ArchitectureArtifacts, Channel, Invocation, Release, ReleaseObject, WireCheck,
-    asset_source,
+    ARCHITECTURES, ArchitectureArtifacts, CONTAINERFILE, Channel, ENTRYPOINT, IMAGE_DIR,
+    Invocation, Release, ReleaseObject, WireCheck, asset_source,
 };
 
 /// An external program the publish runs, and how to install it.
@@ -52,11 +52,23 @@ const BUILD_TOOLS: [RequiredTool; 2] = [
     },
 ];
 
+/// What building the session image needs: a Docker CLI with buildx, which
+/// every current Docker Desktop, `OrbStack` and the Ubuntu runner carry.
+const IMAGE_TOOLS: [RequiredTool; 1] = [RequiredTool {
+    program: "docker",
+    install: "https://docs.docker.com/get-docker/ (OrbStack on a Mac)",
+}];
+
 /// What uploading needs.
 const UPLOAD_TOOLS: [RequiredTool; 1] = [RequiredTool {
     program: "wrangler",
     install: "npm install --global wrangler",
 }];
+
+/// How the registry is logged into when a push is refused: the same GitHub
+/// account the repository lives under, with the one scope a package push
+/// needs.
+const REGISTRY_LOGIN: &str = "gh auth refresh --hostname github.com --scopes write:packages && gh auth token | docker login ghcr.io --username lexoliu --password-stdin";
 
 /// Builds and publishes the `flycod` release artifacts.
 #[derive(Debug, Parser)]
@@ -110,6 +122,7 @@ impl PublishFlycod {
         );
 
         require(&BUILD_TOOLS)?;
+        require(&IMAGE_TOOLS)?;
         if !self.dry_run {
             require(&UPLOAD_TOOLS)?;
         }
@@ -148,13 +161,34 @@ impl PublishFlycod {
             );
         }
 
+        // The image before the bucket: a push the registry refuses (no
+        // login, no `write:packages`) stops the publish before a single
+        // object has changed under the machines already installing from it.
+        let stage_dir = self.channel.stage_dir(&workspace.target);
+        let tags = self.channel.image_tags(publishing);
+        let build = Invocation::image_build(self.channel, &stage_dir, publishing, !self.dry_run);
+        run_to_completion(&build, &workspace.root)
+            .await
+            .with_context(|| {
+                if self.dry_run {
+                    "building the session image".to_owned()
+                } else {
+                    format!("building and pushing the session image; if the registry refused the push, log in with: {REGISTRY_LOGIN}")
+                }
+            })?;
         if self.dry_run {
+            run_to_completion(&Invocation::image_smoke(&tags[0]), &workspace.root).await?;
             info!(
                 objects = release.objects().count(),
-                directory = %self.channel.stage_dir(&workspace.target).display(),
-                "dry run: staged, nothing uploaded"
+                image = %tags[0],
+                directory = %stage_dir.display(),
+                "dry run: staged and the image built, nothing uploaded"
             );
             return Ok(());
+        }
+        for tag in &tags {
+            run_to_completion(&Invocation::image_inspect(tag), &workspace.root).await?;
+            info!(image = %tag, "pushed and read back");
         }
 
         for object in release.objects() {
@@ -276,6 +310,22 @@ async fn stage(channel: Channel, workspace: &Workspace) -> Result<Release> {
     let assets = assets
         .try_into()
         .expect("one staged object per installer asset");
+
+    // The image's own two sources go beside the objects, since the staging
+    // directory is the image's build context and the installer it runs is
+    // the one just staged above.
+    let image_dir = IMAGE_DIR
+        .iter()
+        .fold(workspace.root.clone(), |path, segment| path.join(segment));
+    for source in [CONTAINERFILE, ENTRYPOINT] {
+        let from = image_dir.join(source);
+        let bytes = fs::read(&from)
+            .await
+            .with_context(|| format!("reading {}", from.display()))?;
+        fs::write(stage_dir.join(source), &bytes)
+            .await
+            .with_context(|| format!("writing {}", stage_dir.join(source).display()))?;
+    }
 
     Ok(Release {
         channel,

@@ -52,7 +52,8 @@ download() {
 }
 
 usage() {
-  echo "usage: flycod.sh                     build a flyco session image" >&2
+  echo "usage: flycod.sh                     set this machine up as a flyco session VM" >&2
+  echo "       flycod.sh image <flycod>      set up a session container image, flycod from a file" >&2
   echo "       flycod.sh host enroll <token> enrol this machine as a flyco host" >&2
   exit 64
 }
@@ -80,6 +81,14 @@ install_flycod() {
   install -m 0755 "$scratch/$artifact" "$install_root/flycod"
 }
 
+# The image build has the binary it just cross-compiled on hand, and no
+# control plane to fetch one from: an image is published *with* the daemon
+# it carries, by the same publish, so downloading here would be downloading
+# the previous release.
+install_flycod_from() {
+  install -m 0755 "$1" "$install_root/flycod"
+}
+
 # One systemd unit, downloaded and installed under its published name.
 install_unit() {
   download "$asset_base/$1" "$scratch/$1"
@@ -98,7 +107,12 @@ next_subid() {
 
 # ── The session image ──
 
-install_session() {
+# Everything a session runs on, whether the machine is a VM or a container:
+# the packages, the runtime user, the directories the daemon writes, bun for
+# the Claude Code sidecar, codex, and the shell the terminal opens. The two
+# callers differ only in where `flycod` comes from and whether there is a
+# systemd to hand it to, so this is the one list and they add their own line.
+install_session_runtime() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install --yes --no-install-recommends ca-certificates curl fish git npm unzip
@@ -110,11 +124,6 @@ install_session() {
   # on every start, so it exists before the unit does and belongs to the
   # user the unit runs as.
   install -d -o "$runtime_user" -g "$runtime_group" /etc/claude-code
-  chgrp "$runtime_group" /etc/flycod/config.toml
-  chmod 0640 /etc/flycod/config.toml
-
-  install_flycod
-  install_unit flycod.service
 
   download https://github.com/oven-sh/bun/releases/latest/download/SHASUMS256.txt "$scratch/bun-sha256"
   case "$artifact" in
@@ -138,12 +147,38 @@ install_session() {
   download https://raw.githubusercontent.com/oh-my-fish/oh-my-fish/master/bin/install "$scratch/omf-install"
   chown "$runtime_user:$runtime_group" "$scratch/omf-install"
   runuser -u "$runtime_user" -- env HOME=/home/flyco fish "$scratch/omf-install" --noninteractive --yes
+}
 
-  systemctl daemon-reload
+verify_session_runtime() {
   "$install_root/flycod" --version
   command -v fish >/dev/null
   runuser -u "$runtime_user" -- env HOME=/home/flyco /home/flyco/.bun/bin/bun --version
   runuser -u "$runtime_user" -- env HOME=/home/flyco codex --version
+}
+
+install_session() {
+  install_session_runtime
+  # cloud-init wrote the configuration as root before this ran; the daemon
+  # runs as the runtime user and has to read it.
+  chgrp "$runtime_group" /etc/flycod/config.toml
+  chmod 0640 /etc/flycod/config.toml
+  install_flycod
+  install_unit flycod.service
+  systemctl daemon-reload
+  verify_session_runtime
+}
+
+# A session container image. The daemon binary is a file the image build
+# has on hand, there is no systemd, and the configuration is not on disk
+# yet: the entrypoint writes it at start from the environment the platform
+# hands the container, so the directory it lands in belongs to the runtime
+# user the entrypoint runs as.
+install_image() {
+  install_session_runtime
+  install -d -o "$runtime_user" -g "$runtime_group" -m 0750 /etc/flycod
+  install_flycod_from "$1"
+  verify_session_runtime
+  rm -rf /var/lib/apt/lists/*
 }
 
 # ── A machine the user owns ──
@@ -202,6 +237,11 @@ install_host() {
 
 case "${1:-}" in
   "") install_session ;;
+  image)
+    shift
+    [ -n "${1:-}" ] && [ -f "$1" ] || usage
+    install_image "$1"
+    ;;
   host)
     shift
     [ "${1:-}" = "enroll" ] || usage

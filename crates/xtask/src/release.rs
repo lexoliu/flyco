@@ -164,6 +164,22 @@ impl Channel {
     pub fn health_url(self) -> String {
         format!("{}/v1/healthz", self.origin)
     }
+
+    /// The tags one publish puts on the session image: the channel, the wire
+    /// protocol version the daemon inside speaks, and `latest`.
+    ///
+    /// The wire tag is what a driver can pin when it must start a container
+    /// that the deployed control plane will accept; the channel tag is what
+    /// an operator reads; `latest` is what the host path names by default.
+    #[must_use]
+    pub fn image_tags(self, wire_protocol_version: u32) -> [String; 3] {
+        let image = flyco_core::release::SESSION_IMAGE;
+        [
+            format!("{image}:{}", self.name),
+            format!("{image}:wire-{wire_protocol_version}"),
+            format!("{image}:latest"),
+        ]
+    }
 }
 
 impl fmt::Display for Channel {
@@ -337,6 +353,26 @@ impl Release {
     }
 }
 
+/// The Containerfile of the session image, staged beside the binaries.
+pub const CONTAINERFILE: &str = "Containerfile";
+
+/// The image's entrypoint script, staged beside the binaries.
+pub const ENTRYPOINT: &str = "flyco-session";
+
+/// Where the two image sources live in the repository.
+pub const IMAGE_DIR: [&str; 3] = ["crates", "xtask", "image"];
+
+/// The Docker platform name of the machine running the publish, for the
+/// single-architecture image a dry run loads locally.
+#[must_use]
+pub const fn host_platform() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
+    }
+}
+
 /// An external program and its argument vector.
 ///
 /// Every argument is one element and the program is executed directly: no
@@ -397,6 +433,76 @@ impl Invocation {
                 object.published.content_type.to_owned(),
                 "--remote".to_owned(),
             ],
+        }
+    }
+
+    /// `docker buildx build --file <stage>/Containerfile --platform … --tag … <stage>`
+    ///
+    /// The staging directory is the build context: it holds both `flycod`
+    /// binaries under their published names, the installer, the entrypoint
+    /// and the Containerfile, so the image is built from exactly the bytes
+    /// the bucket gets. A real publish builds both architectures and pushes
+    /// the manifest list, since a multi-platform build cannot be loaded into
+    /// the local daemon; a dry run builds the host's own architecture and
+    /// loads it, so it can be started and asked its version.
+    #[must_use]
+    pub fn image_build(
+        channel: Channel,
+        stage_dir: &Path,
+        wire_protocol_version: u32,
+        push: bool,
+    ) -> Self {
+        let mut args = vec![
+            "buildx".to_owned(),
+            "build".to_owned(),
+            "--file".to_owned(),
+            stage_dir.join(CONTAINERFILE).display().to_string(),
+            "--platform".to_owned(),
+            if push {
+                "linux/amd64,linux/arm64".to_owned()
+            } else {
+                format!("linux/{}", host_platform())
+            },
+        ];
+        for tag in channel.image_tags(wire_protocol_version) {
+            args.push("--tag".to_owned());
+            args.push(tag);
+        }
+        args.push(if push { "--push" } else { "--load" }.to_owned());
+        args.push(stage_dir.display().to_string());
+        Self {
+            program: "docker",
+            args,
+        }
+    }
+
+    /// `docker run --rm --entrypoint /usr/local/bin/flycod <tag> --version`
+    ///
+    /// The one check a dry run can make on the image: that the daemon inside
+    /// starts on this architecture and is the build that was just staged.
+    #[must_use]
+    pub fn image_smoke(tag: &str) -> Self {
+        Self {
+            program: "docker",
+            args: vec![
+                "run".to_owned(),
+                "--rm".to_owned(),
+                "--entrypoint".to_owned(),
+                "/usr/local/bin/flycod".to_owned(),
+                tag.to_owned(),
+                "--version".to_owned(),
+            ],
+        }
+    }
+
+    /// `docker manifest inspect <tag>`: reads the pushed manifest back from
+    /// the registry, which is the image's equivalent of reading a checksum
+    /// back from the control plane.
+    #[must_use]
+    pub fn image_inspect(tag: &str) -> Self {
+        Self {
+            program: "docker",
+            args: vec!["manifest".to_owned(), "inspect".to_owned(), tag.to_owned()],
         }
     }
 
@@ -613,6 +719,64 @@ mod tests {
         assert_eq!(
             aarch64.built_binary(Path::new("/w/target")),
             PathBuf::from("/w/target/aarch64-unknown-linux-gnu/release/flycod")
+        );
+    }
+
+    #[test]
+    fn a_publish_tags_the_image_by_channel_wire_version_and_latest() {
+        let channel = CHANNELS[0];
+        assert_eq!(
+            channel.image_tags(9),
+            [
+                "ghcr.io/lexoliu/flyco-session:dev".to_owned(),
+                "ghcr.io/lexoliu/flyco-session:wire-9".to_owned(),
+                "ghcr.io/lexoliu/flyco-session:latest".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_real_publish_builds_both_architectures_and_pushes_a_dry_run_loads_one() {
+        let channel = CHANNELS[0];
+        let stage = Path::new("/tmp/stage dir");
+
+        let pushed = Invocation::image_build(channel, stage, 9, true);
+        assert_eq!(pushed.program, "docker");
+        assert!(pushed.args.contains(&"linux/amd64,linux/arm64".to_owned()));
+        assert!(pushed.args.contains(&"--push".to_owned()));
+        assert!(!pushed.args.contains(&"--load".to_owned()));
+        assert_eq!(
+            pushed.args.last().map(String::as_str),
+            Some("/tmp/stage dir")
+        );
+        assert!(
+            pushed
+                .args
+                .contains(&"/tmp/stage dir/Containerfile".to_owned()),
+            "the Containerfile is read out of the staging directory: {pushed}"
+        );
+        assert_eq!(
+            pushed.args.iter().filter(|arg| *arg == "--tag").count(),
+            3,
+            "every tag of the publish goes on the one build: {pushed}"
+        );
+
+        let loaded = Invocation::image_build(channel, stage, 9, false);
+        assert!(
+            loaded
+                .args
+                .contains(&format!("linux/{}", super::host_platform()))
+        );
+        assert!(loaded.args.contains(&"--load".to_owned()));
+        assert!(!loaded.args.contains(&"--push".to_owned()));
+    }
+
+    #[test]
+    fn the_smoke_test_asks_the_daemon_inside_the_image_its_version() {
+        let smoke = Invocation::image_smoke("ghcr.io/lexoliu/flyco-session:dev");
+        assert_eq!(
+            smoke.to_string(),
+            "docker run --rm --entrypoint /usr/local/bin/flycod 'ghcr.io/lexoliu/flyco-session:dev' --version"
         );
     }
 

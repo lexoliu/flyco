@@ -63,6 +63,19 @@ pub struct PublishedBinary {
 /// path missing from `ReadWritePaths` is a daemon that cannot start.
 pub const CLAUDE_MANAGED_DIR: &str = "/etc/claude-code";
 
+/// The OCI image a session runs in on a container runtime — a machine the
+/// user owns, or a managed container service (issue #235).
+///
+/// Published by `cargo xtask publish-flycod` with the daemon it carries,
+/// tagged by channel (`:dev`), by wire protocol version (`:wire-9`), and
+/// `:latest`; named here so the publisher and every driver that starts one
+/// spell it the same way.
+pub const SESSION_IMAGE: &str = "ghcr.io/lexoliu/flyco-session";
+
+/// [`SESSION_IMAGE`] at its `latest` tag: what a host runs unless the user
+/// names another image.
+pub const SESSION_IMAGE_LATEST: &str = "ghcr.io/lexoliu/flyco-session:latest";
+
 /// The 64-bit x86 build.
 pub const X86_64: PublishedBinary = PublishedBinary {
     uname: "x86_64",
