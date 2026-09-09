@@ -38,13 +38,11 @@
 
 use core::fmt;
 
-use base64::Engine as _;
 use flyco_core::machine::{CpuArchitecture, MachineLineage};
-use flyco_core::{MachineId, WIRE_PROTOCOL_VERSION, release};
+use flyco_core::{MachineId, release};
 use serde::{Deserialize, Serialize};
 
 use super::bodies::MachineTags;
-use crate::flycod;
 use crate::{DaemonBootstrap, ProviderError};
 
 /// The workload profile every flyco environment and job is pinned to.
@@ -211,36 +209,6 @@ impl Size {
             generation: None,
         }
     }
-}
-
-/// The container image a managed container runs.
-///
-/// Pinned to the wire protocol this control plane speaks rather than to
-/// `latest`, which is what a machine the *user* owns runs: the user chose
-/// that image and may run an older daemon deliberately, while a container
-/// flyco starts on the user's behalf has to be able to talk to the control
-/// plane that started it. The tag is published by
-/// `cargo xtask publish-flycod` beside the channel tags.
-#[must_use]
-pub fn session_image() -> String {
-    format!("{}:wire-{WIRE_PROTOCOL_VERSION}", release::SESSION_IMAGE)
-}
-
-/// The `flycod` configuration a container reads out of its environment.
-///
-/// Base64 of the TOML, exactly as [`crate::host::script`] hands it to
-/// Podman, because the image on both ends is the same image reading the
-/// same variable — see [`crate::host::CONFIG_ENV`].
-///
-/// # Errors
-///
-/// Returns [`ProviderError::Malformed`] if the configuration does not
-/// render, which would mean [`crate::flycod`] is broken rather than
-/// anything the caller did.
-pub fn encoded_config(bootstrap: &DaemonBootstrap) -> Result<String, ProviderError> {
-    let config = flycod::render(bootstrap)
-        .map_err(|_| ProviderError::Malformed("the flycod configuration did not render"))?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(config))
 }
 
 /// The names Container Apps resources answer to.
@@ -455,7 +423,8 @@ pub struct JobTemplate {
 pub struct Container {
     /// Container name inside the replica.
     pub name: &'static str,
-    /// Image tag — see [`session_image`].
+    /// Image tag — see
+    /// [`release::session_image_for_wire_protocol`].
     pub image: String,
     /// How big the replica is.
     pub resources: ContainerResources,
@@ -559,7 +528,7 @@ pub fn job_body(
                 },
                 secrets: vec![Secret {
                     name: CONFIG_SECRET,
-                    value: encoded_config(bootstrap)?,
+                    value: crate::host::encoded_config(bootstrap)?,
                 }],
             },
             template: template(size),
@@ -577,7 +546,7 @@ pub fn template(size: Size) -> JobTemplate {
     JobTemplate {
         containers: vec![Container {
             name: CONTAINER_NAME,
-            image: session_image(),
+            image: release::session_image_for_wire_protocol(),
             resources: ContainerResources {
                 cpu: size.cpu_cores(),
                 memory: size.memory(),
@@ -609,7 +578,8 @@ pub fn environment_body(region: &str) -> ManagedEnvironment {
 
 #[cfg(test)]
 mod tests {
-    use super::{Execution, MACHINE_TYPE_PREFIX, Size, session_image, template};
+    use super::{Execution, MACHINE_TYPE_PREFIX, Size, template};
+    use flyco_core::release;
 
     #[test]
     fn every_offered_size_pairs_two_gibibytes_with_each_core() {
@@ -662,7 +632,7 @@ mod tests {
 
     #[test]
     fn the_container_is_pinned_to_the_wire_this_control_plane_speaks() {
-        let image = session_image();
+        let image = release::session_image_for_wire_protocol();
         assert!(image.starts_with("ghcr.io/lexoliu/flyco-session:wire-"));
         assert!(!image.ends_with(":latest"));
 

@@ -79,6 +79,28 @@ pub const DEFAULT_IMAGE: &str = flyco_core::release::SESSION_IMAGE_LATEST;
 /// table for as long as `podman run` took to return.
 pub const CONFIG_ENV: &str = "FLYCO_DAEMON_CONFIG";
 
+/// The value [`CONFIG_ENV`] carries: base64 of the rendered `flycod`
+/// configuration.
+///
+/// Beside the variable rather than in each driver that sets it, because it
+/// is one half of one contract: the image decodes exactly this, and the four
+/// runtimes that start that image — a machine the user owns, Azure Container
+/// Apps, Cloud Run and ECS on Fargate — must not be able to disagree about
+/// the encoding.
+///
+/// # Errors
+///
+/// Returns [`ProviderError::Malformed`] if the configuration does not
+/// render, which would mean [`crate::flycod`] is broken rather than anything
+/// the caller did.
+pub fn encoded_config(bootstrap: &DaemonBootstrap) -> Result<String, ProviderError> {
+    use base64::Engine as _;
+
+    let config = crate::flycod::render(bootstrap)
+        .map_err(|_| ProviderError::Malformed("the flycod configuration did not render"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(config))
+}
+
 /// Prefix every flyco container and volume name carries, so a host shared
 /// with other work stays legible.
 const RESOURCE_PREFIX: &str = "flyco-";

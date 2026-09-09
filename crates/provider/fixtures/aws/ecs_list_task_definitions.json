@@ -1,0 +1,6 @@
+{
+  "taskDefinitionArns": [
+    "arn:aws:ecs:us-west-2:123456789012:task-definition/flyco-6f2a1c0e-4b3d-4f8a-9c2e-7d1b5a930e42:2",
+    "arn:aws:ecs:us-west-2:123456789012:task-definition/flyco-6f2a1c0e-4b3d-4f8a-9c2e-7d1b5a930e42:1"
+  ]
+}

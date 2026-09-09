@@ -1,0 +1,10 @@
+{
+  "tasks": [],
+  "failures": [
+    {
+      "arn": "arn:aws:ecs:us-west-2:123456789012:task/flyco/8f7d3e114a2b4c3d9e8f1a2b3c4d5e6f",
+      "reason": "MISSING",
+      "detail": ""
+    }
+  ]
+}

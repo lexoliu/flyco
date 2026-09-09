@@ -1,0 +1,10 @@
+{
+  "clusters": [],
+  "failures": [
+    {
+      "arn": "arn:aws:ecs:us-west-2:123456789012:cluster/flyco",
+      "reason": "MISSING",
+      "detail": ""
+    }
+  ]
+}

@@ -107,6 +107,37 @@ const PRODUCTS: &str = include_str!("../../fixtures/aws/get_products.json");
 const STORAGE_PRODUCTS: &str = include_str!("../../fixtures/aws/get_storage_products.json");
 const SPOT_PRICES: &str = include_str!("../../fixtures/aws/describe_spot_price_history.xml");
 const COST: &str = include_str!("../../fixtures/aws/get_cost_and_usage.json");
+/// The three Fargate meters, as AWS's own published price list for
+/// `us-west-2` holds them: an x86-64 pair, a Graviton pair, a Windows pair
+/// flyco must not fold in, and one ephemeral-disk rate.
+const FARGATE_VCPU_PRODUCTS: &str =
+    include_str!("../../fixtures/aws/get_products_fargate_vcpu.json");
+const FARGATE_MEMORY_PRODUCTS: &str =
+    include_str!("../../fixtures/aws/get_products_fargate_memory.json");
+const FARGATE_STORAGE_PRODUCTS: &str =
+    include_str!("../../fixtures/aws/get_products_fargate_storage.json");
+
+const ECS_CLUSTERS: &str = include_str!("../../fixtures/aws/ecs_describe_clusters.json");
+const ECS_NO_CLUSTER: &str = include_str!("../../fixtures/aws/ecs_describe_clusters_none.json");
+const ECS_CREATED_CLUSTER: &str = include_str!("../../fixtures/aws/ecs_create_cluster.json");
+const ECS_NO_DEFINITIONS: &str =
+    include_str!("../../fixtures/aws/ecs_list_task_definitions_none.json");
+const ECS_DEFINITIONS: &str = include_str!("../../fixtures/aws/ecs_list_task_definitions.json");
+const ECS_REGISTERED: &str = include_str!("../../fixtures/aws/ecs_register_task_definition.json");
+const ECS_DEFINITION: &str = include_str!("../../fixtures/aws/ecs_describe_task_definition.json");
+const ECS_DEREGISTERED: &str =
+    include_str!("../../fixtures/aws/ecs_deregister_task_definition.json");
+const ECS_DELETED: &str = include_str!("../../fixtures/aws/ecs_delete_task_definitions.json");
+const ECS_RUN_SPOT: &str = include_str!("../../fixtures/aws/ecs_run_task_spot.json");
+const ECS_RUN_ON_DEMAND: &str = include_str!("../../fixtures/aws/ecs_run_task_on_demand.json");
+const ECS_NO_SPOT_CAPACITY: &str =
+    include_str!("../../fixtures/aws/ecs_run_task_no_spot_capacity.json");
+const ECS_NO_TASKS: &str = include_str!("../../fixtures/aws/ecs_list_tasks_none.json");
+const ECS_LIVE_TASK: &str = include_str!("../../fixtures/aws/ecs_list_tasks_live.json");
+const ECS_TASK_RUNNING: &str = include_str!("../../fixtures/aws/ecs_describe_tasks_running.json");
+const ECS_TASK_STOPPED: &str = include_str!("../../fixtures/aws/ecs_describe_tasks_stopped.json");
+const ECS_TASK_MISSING: &str = include_str!("../../fixtures/aws/ecs_describe_tasks_none.json");
+const ECS_STOPPED: &str = include_str!("../../fixtures/aws/ecs_stop_task.json");
 const IDENTITY: &str = include_str!("../../fixtures/aws/get_caller_identity.xml");
 
 /// A driver over a scripted transport, clocks that do not move, and a timer
@@ -1219,6 +1250,11 @@ fn catalog_script() -> Vec<HttpResponse> {
         json(PRODUCTS),
         json(STORAGE_PRODUCTS),
         xml(SPOT_PRICES),
+        // The same region also sells containers, priced from three meters
+        // under a different offer code.
+        json(FARGATE_VCPU_PRODUCTS),
+        json(FARGATE_MEMORY_PRODUCTS),
+        json(FARGATE_STORAGE_PRODUCTS),
     ]
 }
 
@@ -1379,6 +1415,716 @@ async fn the_price_query_is_signed_against_the_price_lists_own_region() {
     assert_eq!(action(&spot), "DescribeSpotPriceHistory");
     assert_eq!(field(&spot, "ProductDescription.1"), "Linux/UNIX");
     assert_eq!(field(&spot, "StartTime"), "2026-08-29T12:00:00Z");
+}
+
+// ── Containers on Fargate ──
+
+const ECS_ENDPOINT: &str = "https://ecs.us-west-2.amazonaws.com/";
+const CONTAINER_TYPE: &str = "fargate-4x8";
+const LARGER_CONTAINER_TYPE: &str = "fargate-8x32";
+const TASK: &str = "arn:aws:ecs:us-west-2:123456789012:task/flyco/8f7d3e114a2b4c3d9e8f1a2b3c4d5e6f";
+const DEFINITION_FAMILY: &str =
+    "arn:aws:ecs:us-west-2:123456789012:task-definition/flyco-6f2a1c0e-4b3d-4f8a-9c2e-7d1b5a930e42";
+/// The image the described definition already runs, which is deliberately an
+/// older wire tag than this control plane's: a resize carries it over rather
+/// than folding an upgrade into a size change.
+const PROVISIONED_IMAGE: &str = "ghcr.io/lexoliu/flyco-session:wire-9";
+
+/// A provisioning request for a container, which is one axis on the spec
+/// rather than a different provider.
+fn container_request(machine: MachineId, machine_type: &str) -> ProvisionRequest {
+    let mut request = request(machine, machine_type, true);
+    request.spec.runtime = Runtime::Container;
+    request.bootstrap.runtime = Runtime::Container;
+    request
+}
+
+/// A provisioned container machine, as `provision` answered with it.
+fn container_machine(machine: MachineId) -> Machine {
+    Machine {
+        id: machine,
+        native_id: TASK.to_owned(),
+        runtime: Runtime::Container,
+        region: REGION.to_owned(),
+        state: MachineState::Running,
+        capacity_mode: CapacityMode::Spot,
+        address: None,
+    }
+}
+
+/// Every action the driver performed, with the ECS target prefix stripped so
+/// a list of them reads as a sequence.
+fn ecs_actions(provider: &Recorded) -> Vec<String> {
+    actions(provider)
+        .into_iter()
+        .map(|action| {
+            action
+                .strip_prefix(super::fargate::TARGET_PREFIX)
+                .unwrap_or(&action)
+                .to_owned()
+        })
+        .collect()
+}
+
+/// The JSON body of a request the driver sent.
+fn body_of(request: &HttpRequest) -> serde_json::Value {
+    serde_json::from_slice(&request.body).expect("a JSON body")
+}
+
+/// The `flycod` configuration a container's environment carries.
+fn decoded_config(container: &serde_json::Value) -> String {
+    use base64::Engine as _;
+
+    let entry = &container["environment"][0];
+    assert_eq!(entry["name"], "FLYCO_DAEMON_CONFIG");
+    String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(entry["value"].as_str().expect("a string"))
+            .expect("the environment value is base64"),
+    )
+    .expect("the configuration is UTF-8")
+}
+
+/// The responses a first container provision consumes, in order.
+fn container_script(run: Vec<HttpResponse>) -> Vec<HttpResponse> {
+    let mut script = vec![
+        xml(REGIONS),
+        json(ECS_NO_CLUSTER),
+        json(ECS_CREATED_CLUSTER),
+        json(ECS_NO_DEFINITIONS),
+        json(ECS_REGISTERED),
+        xml(VPCS),
+        xml(SUBNETS),
+        xml(GROUPS),
+    ];
+    script.extend(run);
+    script
+}
+
+/// Index of `RunTask` in a [`container_script`] run.
+const RUN_TASK: usize = 8;
+
+#[tokio::test]
+async fn provisioning_a_container_creates_the_cluster_then_registers_a_revision() {
+    let machine = MachineId::generate();
+    let provision = container_request(machine, CONTAINER_TYPE);
+    let mut aws = provider(container_script(vec![json(ECS_RUN_SPOT)]));
+
+    aws.provision(&provision).await.expect("provision");
+
+    assert_eq!(
+        ecs_actions(&aws),
+        [
+            // The account's region opt-in is the one EC2 gate that applies to
+            // every service in the region.
+            "DescribeRegions",
+            "DescribeClusters",
+            "CreateCluster",
+            "ListTaskDefinitions",
+            "RegisterTaskDefinition",
+            "DescribeVpcs",
+            "DescribeSubnets",
+            "DescribeSecurityGroups",
+            "RunTask",
+        ]
+    );
+
+    let created = aws.transport().request(2);
+    assert_eq!(created.url, ECS_ENDPOINT);
+    assert_eq!(
+        header(&created, "content-type"),
+        "application/x-amz-json-1.1",
+        "the version is part of the media type and is what selects the protocol"
+    );
+    let cluster = body_of(&created);
+    assert_eq!(cluster["clusterName"], "flyco");
+    assert_eq!(
+        cluster["capacityProviders"],
+        serde_json::json!(["FARGATE", "FARGATE_SPOT"]),
+        "a cluster refuses a capacity provider it was not associated with, and the \
+         spot fallback needs the other one to be there already"
+    );
+
+    let registered = aws.transport().request(4);
+    let definition = body_of(&registered);
+    assert_eq!(definition["family"], names::machine(machine));
+    assert_eq!(definition["cpu"], "4096", "four vCPUs, in CPU units");
+    assert_eq!(definition["memory"], "8192", "eight GiB, in mebibytes");
+    assert_eq!(definition["networkMode"], "awsvpc");
+    assert_eq!(
+        definition["requiresCompatibilities"],
+        serde_json::json!(["FARGATE"])
+    );
+    assert_eq!(definition["runtimePlatform"]["cpuArchitecture"], "X86_64");
+    assert_eq!(
+        definition["runtimePlatform"]["operatingSystemFamily"],
+        "LINUX"
+    );
+    assert_eq!(
+        definition["ephemeralStorage"]["sizeInGiB"], 30,
+        "the session's own disk, which on Fargate is the working filesystem"
+    );
+    assert!(
+        definition["executionRoleArn"].is_null() && definition["taskRoleArn"].is_null(),
+        "a public image with no CloudWatch logging needs no execution role, and an \
+         identity inside the session is the one thing an agent must not be handed"
+    );
+
+    let container = &definition["containerDefinitions"][0];
+    assert_eq!(container["name"], "session");
+    assert_eq!(
+        container["image"],
+        format!(
+            "ghcr.io/lexoliu/flyco-session:wire-{}",
+            flyco_core::WIRE_PROTOCOL_VERSION
+        ),
+        "pinned to this control plane's wire protocol, never `latest`"
+    );
+    assert_eq!(container["essential"], true);
+    assert_eq!(
+        container["stopTimeout"], 120,
+        "the platform's default thirty seconds leaves five over flyco's own \
+         twenty-five-second shutdown, and a SIGKILL mid-patch costs a turn"
+    );
+
+    // The configuration travels base64 in the same environment variable the
+    // host path already uses, so one image reads both.
+    let config = decoded_config(container);
+    assert!(config.contains("daemon_token = \"fd_a-live-daemon-token\""));
+    assert!(
+        config.contains("runtime = \"container\""),
+        "the daemon has to know its filesystem ends with the task"
+    );
+    let raw = registered.body_text().expect("UTF-8").to_owned();
+    assert!(
+        !raw.contains("fd_a-live-daemon-token"),
+        "the credential is never on the wire in the clear"
+    );
+
+    let tags: Vec<(String, String)> = definition["tags"]
+        .as_array()
+        .expect("tags")
+        .iter()
+        .map(|tag| {
+            (
+                tag["key"].as_str().expect("a key").to_owned(),
+                tag["value"].as_str().expect("a value").to_owned(),
+            )
+        })
+        .collect();
+    assert!(tags.contains(&("owner".to_owned(), "aws".to_owned())));
+    assert!(tags.contains(&("flyco-machine".to_owned(), machine.to_string())));
+}
+
+#[tokio::test]
+async fn the_task_a_container_provision_runs_names_one_market_and_every_subnet() {
+    let machine = MachineId::generate();
+    let mut aws = provider(container_script(vec![json(ECS_RUN_SPOT)]));
+
+    let provisioned = aws
+        .provision(&container_request(machine, CONTAINER_TYPE))
+        .await
+        .expect("provision");
+
+    let run = body_of(&aws.transport().request(RUN_TASK));
+    assert_eq!(run["cluster"], "flyco");
+    assert_eq!(
+        run["taskDefinition"],
+        DEFINITION_FAMILY.to_owned() + ":1",
+        "the revision that was just registered, named exactly rather than by family"
+    );
+    assert_eq!(run["count"], 1);
+    assert_eq!(run["platformVersion"], "LATEST");
+    assert_eq!(run["propagateTags"], "TASK_DEFINITION");
+    assert_eq!(
+        run["capacityProviderStrategy"],
+        serde_json::json!([{ "capacityProvider": "FARGATE_SPOT", "weight": 1 }])
+    );
+    assert!(
+        run["clientToken"].is_null(),
+        "ECS's idempotency token pins the first task for ever, so a later start \
+         would answer with the task it is replacing"
+    );
+    assert!(
+        run["launchType"].is_null(),
+        "a launch type and a capacity provider strategy are mutually exclusive"
+    );
+    let network = &run["networkConfiguration"]["awsvpcConfiguration"];
+    assert_eq!(
+        network["subnets"],
+        serde_json::json!(["subnet-0123456789abcdef0", "subnet-0c9d8e7f6a5b4c3d2"]),
+        "every subnet of the default VPC, because ECS manages capacity per zone"
+    );
+    assert_eq!(
+        network["securityGroups"],
+        serde_json::json!([SECURITY_GROUP])
+    );
+    assert_eq!(
+        network["assignPublicIp"], "ENABLED",
+        "a subnet with no NAT gateway has no route out without one, and nothing listens"
+    );
+
+    assert_eq!(provisioned, container_machine(machine));
+}
+
+#[tokio::test]
+async fn a_container_spot_cannot_place_is_run_on_demand_from_the_identical_body() {
+    // `RunTask` answers HTTP 200 with an empty `tasks` and a `failures` entry,
+    // and AWS states Fargate never falls back on its own — so the driver does.
+    let machine = MachineId::generate();
+    let mut aws = provider(container_script(vec![
+        json(ECS_NO_SPOT_CAPACITY),
+        json(ECS_RUN_ON_DEMAND),
+    ]));
+
+    let provisioned = aws
+        .provision(&container_request(machine, CONTAINER_TYPE))
+        .await
+        .expect("the same task runs on demand");
+
+    let spot = body_of(&aws.transport().request(RUN_TASK));
+    let mut on_demand = body_of(&aws.transport().request(RUN_TASK + 1));
+    assert_eq!(
+        on_demand["capacityProviderStrategy"],
+        serde_json::json!([{ "capacityProvider": "FARGATE", "weight": 1 }])
+    );
+
+    // Identical in every other respect: a fallback that rebuilt the request
+    // could differ somewhere nobody was looking.
+    on_demand["capacityProviderStrategy"] = spot["capacityProviderStrategy"].clone();
+    assert_eq!(on_demand, spot);
+
+    assert_eq!(
+        provisioned.capacity_mode,
+        CapacityMode::OnDemand,
+        "the market is read from the provider that placed it, because that is what \
+         the bill follows"
+    );
+}
+
+#[tokio::test]
+async fn a_capacity_refusal_on_demand_is_the_end_of_the_attempt() {
+    let machine = MachineId::generate();
+    let mut request = container_request(machine, CONTAINER_TYPE);
+    request.spec.spot = false;
+    let mut aws = provider(container_script(vec![json(ECS_NO_SPOT_CAPACITY)]));
+
+    let error = aws
+        .provision(&request)
+        .await
+        .expect_err("there is no third market to try");
+    assert!(matches!(error, ProviderError::NoCapacity(_)));
+    assert_eq!(
+        aws.transport().request_count(),
+        RUN_TASK + 1,
+        "an on-demand refusal is not retried"
+    );
+}
+
+#[tokio::test]
+async fn a_redelivered_container_provision_adopts_the_task_already_running() {
+    // The queue is at-least-once, and a second `RunTask` would put a second
+    // `flycod` on the same session token.
+    let machine = MachineId::generate();
+    let mut aws = provider(vec![
+        xml(REGIONS),
+        json(ECS_CLUSTERS),
+        json(ECS_DEFINITIONS),
+        json(ECS_LIVE_TASK),
+        json(ECS_TASK_RUNNING),
+    ]);
+
+    let provisioned = aws
+        .provision(&container_request(machine, CONTAINER_TYPE))
+        .await
+        .expect("the redelivery adopts what is already running");
+
+    assert_eq!(
+        ecs_actions(&aws),
+        [
+            "DescribeRegions",
+            "DescribeClusters",
+            "ListTaskDefinitions",
+            "ListTasks",
+            "DescribeTasks",
+        ],
+        "nothing was registered and nothing was run"
+    );
+    assert_eq!(provisioned.native_id, TASK);
+    assert_eq!(provisioned.capacity_mode, CapacityMode::Spot);
+}
+
+#[tokio::test]
+async fn the_cluster_is_confirmed_once_per_driver() {
+    let mut script = container_script(vec![json(ECS_RUN_SPOT)]);
+    // A second provision on the same driver: the cluster is already known, so
+    // it is neither described nor created again.
+    script.extend([
+        json(ECS_NO_DEFINITIONS),
+        json(ECS_REGISTERED),
+        json(ECS_RUN_SPOT),
+    ]);
+    let mut aws = provider(script);
+
+    aws.provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
+        .await
+        .expect("the first provision");
+    aws.provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
+        .await
+        .expect("the second provision");
+
+    let describes = ecs_actions(&aws)
+        .iter()
+        .filter(|action| *action == "DescribeClusters" || *action == "CreateCluster")
+        .count();
+    assert_eq!(
+        describes, 2,
+        "one describe and one create, for both machines"
+    );
+    assert_eq!(
+        ecs_actions(&aws)
+            .iter()
+            .filter(|action| *action == "DescribeVpcs")
+            .count(),
+        1,
+        "and the region's network is cached for the same reason"
+    );
+}
+
+#[tokio::test]
+async fn a_size_fargate_does_not_offer_is_refused_before_any_write() {
+    let mut aws = provider(Vec::new());
+
+    // A legal Fargate pair that is not on flyco's menu.
+    let error = aws
+        .provision(&container_request(MachineId::generate(), "fargate-4x16"))
+        .await
+        .expect_err("flyco publishes no such container");
+    assert!(matches!(error, ProviderError::Unavailable { .. }));
+    assert_eq!(aws.transport().request_count(), 0);
+}
+
+#[tokio::test]
+async fn a_disk_beyond_fargates_ceiling_is_refused_with_the_ceiling_in_it() {
+    let mut request = container_request(MachineId::generate(), CONTAINER_TYPE);
+    request.spec.disk_gib = 250;
+    let mut aws = provider(vec![xml(REGIONS)]);
+
+    let error = aws
+        .provision(&request)
+        .await
+        .expect_err("a task's ephemeral disk stops at 200 GiB");
+    assert!(error.to_string().contains("200 GiB"));
+    assert_eq!(
+        aws.transport().request_count(),
+        1,
+        "nothing was created for a request that cannot be honoured"
+    );
+}
+
+#[tokio::test]
+async fn deallocating_a_container_reads_the_task_then_stops_it_and_waits() {
+    let machine = container_machine(MachineId::generate());
+    let mut aws = provider(vec![
+        json(ECS_TASK_RUNNING),
+        json(ECS_STOPPED),
+        json(ECS_TASK_STOPPED),
+    ]);
+
+    aws.deallocate(&machine).await.expect("deallocate");
+
+    assert_eq!(
+        ecs_actions(&aws),
+        ["DescribeTasks", "StopTask", "DescribeTasks"]
+    );
+    let stop = body_of(&aws.transport().request(1));
+    assert_eq!(stop["cluster"], "flyco");
+    assert_eq!(stop["task"], TASK);
+    assert_eq!(stop["reason"], "flyco stopped this session's machine");
+    assert!(
+        !aws.timer().delays().is_empty(),
+        "the stop is waited on, because the next step would race the container \
+         still writing its workdir patch"
+    );
+}
+
+#[tokio::test]
+async fn a_task_that_has_already_stopped_is_not_stopped_again() {
+    // An eviction or a task that reached its own end is already stopped, and
+    // `StopTask` against it would refuse a deallocate with nothing left to do.
+    let machine = container_machine(MachineId::generate());
+    let mut aws = provider(vec![json(ECS_TASK_STOPPED)]);
+
+    aws.deallocate(&machine).await.expect("deallocate");
+    assert_eq!(ecs_actions(&aws), ["DescribeTasks"]);
+}
+
+#[tokio::test]
+async fn a_task_ecs_has_forgotten_leaves_nothing_to_stop() {
+    // A stopped task is described for about an hour and then purged, so
+    // absence is an ordinary answer for a machine that has been deallocated
+    // for a while.
+    let machine = container_machine(MachineId::generate());
+    let mut aws = provider(vec![json(ECS_TASK_MISSING)]);
+
+    aws.deallocate(&machine).await.expect("deallocate");
+    assert_eq!(ecs_actions(&aws), ["DescribeTasks"]);
+}
+
+#[tokio::test]
+async fn starting_a_container_runs_the_newest_revision_again() {
+    let machine = container_machine(MachineId::generate());
+    let mut aws = provider(vec![
+        json(ECS_NO_TASKS),
+        json(ECS_DEFINITIONS),
+        xml(VPCS),
+        xml(SUBNETS),
+        xml(GROUPS),
+        json(ECS_RUN_SPOT),
+    ]);
+
+    let started = aws.start(&machine).await.expect("start");
+
+    assert_eq!(
+        ecs_actions(&aws),
+        [
+            "ListTasks",
+            "ListTaskDefinitions",
+            "DescribeVpcs",
+            "DescribeSubnets",
+            "DescribeSecurityGroups",
+            "RunTask",
+        ],
+        "no cluster check: a machine could not exist without its region's cluster"
+    );
+
+    let listed = body_of(&aws.transport().request(1));
+    assert_eq!(listed["familyPrefix"], names::machine(machine.id));
+    assert_eq!(listed["sort"], "DESC", "newest first");
+    assert_eq!(listed["status"], "ACTIVE");
+
+    let run = body_of(&aws.transport().request(5));
+    assert_eq!(
+        run["taskDefinition"],
+        DEFINITION_FAMILY.to_owned() + ":2",
+        "the revision a resize left behind, not the one the machine first ran"
+    );
+    assert_eq!(started.state, MachineState::Running);
+    assert_eq!(started.native_id, TASK);
+}
+
+#[tokio::test]
+async fn a_redelivered_start_adopts_the_task_already_running() {
+    let machine = container_machine(MachineId::generate());
+    let mut aws = provider(vec![json(ECS_LIVE_TASK), json(ECS_TASK_RUNNING)]);
+
+    let started = aws.start(&machine).await.expect("start");
+
+    assert_eq!(ecs_actions(&aws), ["ListTasks", "DescribeTasks"]);
+    assert_eq!(started.native_id, TASK);
+}
+
+#[tokio::test]
+async fn resizing_a_container_stops_it_registers_a_revision_and_runs_that() {
+    let machine = container_machine(MachineId::generate());
+    let mut aws = provider(vec![
+        json(ECS_DEFINITIONS),
+        json(ECS_DEFINITION),
+        json(ECS_TASK_RUNNING),
+        json(ECS_STOPPED),
+        json(ECS_TASK_STOPPED),
+        json(ECS_REGISTERED),
+        xml(VPCS),
+        xml(SUBNETS),
+        xml(GROUPS),
+        json(ECS_RUN_SPOT),
+    ]);
+
+    let resized = aws
+        .resize(&machine, LARGER_CONTAINER_TYPE)
+        .await
+        .expect("a container resize is stop and run at the new size");
+
+    assert_eq!(
+        ecs_actions(&aws),
+        [
+            // Read and validated before anything is mutated: a resize that
+            // refused after the stop would leave the session on neither
+            // machine.
+            "ListTaskDefinitions",
+            "DescribeTaskDefinition",
+            "DescribeTasks",
+            "StopTask",
+            "DescribeTasks",
+            "RegisterTaskDefinition",
+            "DescribeVpcs",
+            "DescribeSubnets",
+            "DescribeSecurityGroups",
+            "RunTask",
+        ]
+    );
+
+    let described = body_of(&aws.transport().request(1));
+    assert_eq!(
+        described["include"],
+        serde_json::json!(["TAGS"]),
+        "a definition's tags are a sibling of the definition and are omitted \
+         unless they are asked for — and they name the session"
+    );
+
+    let registered = body_of(&aws.transport().request(5));
+    assert_eq!(registered["cpu"], "8192");
+    assert_eq!(registered["memory"], "32768");
+    let container = &registered["containerDefinitions"][0];
+    assert_eq!(
+        container["image"], PROVISIONED_IMAGE,
+        "a resize changes the size and nothing else: the session keeps speaking \
+         the wire protocol it came up on"
+    );
+    assert!(
+        decoded_config(container).contains("fd_an-already-provisioned-session"),
+        "the one thing a resize cannot re-derive is read back and re-sent"
+    );
+    assert_eq!(
+        registered["ephemeralStorage"]["sizeInGiB"], 40,
+        "the disk is the session's, and a resize was asked about the machine"
+    );
+    assert_eq!(
+        registered["tags"],
+        described_tags(),
+        "the tags name the session, which a resize is not told"
+    );
+
+    assert_eq!(resized.state, MachineState::Running);
+    assert_eq!(resized.capacity_mode, CapacityMode::Spot);
+}
+
+/// The tags the described definition carries, which a resize re-sends.
+fn described_tags() -> serde_json::Value {
+    serde_json::json!([
+        { "key": "owner", "value": "aws" },
+        { "key": "flyco-session", "value": "4d9c1f80-3a17-4c62-8b5e-0e2f7a614c93" },
+        { "key": "flyco-machine", "value": "6f2a1c0e-4b3d-4f8a-9c2e-7d1b5a930e42" },
+    ])
+}
+
+#[tokio::test]
+async fn a_container_is_not_resized_across_instruction_sets() {
+    // `fargate-4x8` and `fargate-arm64-4x8` are two entries at two prices,
+    // and a working tree was built for the one it is on.
+    let machine = container_machine(MachineId::generate());
+    let mut aws = provider(vec![json(ECS_DEFINITIONS), json(ECS_DEFINITION)]);
+
+    let error = aws
+        .resize(&machine, "fargate-arm64-4x8")
+        .await
+        .expect_err("an architecture is not a size");
+    assert!(matches!(error, ProviderError::Unsupported { .. }));
+    assert_eq!(
+        aws.transport().request_count(),
+        2,
+        "the refusal comes before the stop, so the machine is untouched"
+    );
+}
+
+#[tokio::test]
+async fn destroying_a_container_stops_the_task_then_removes_every_revision() {
+    let machine = container_machine(MachineId::generate());
+    let mut aws = provider(vec![
+        json(ECS_TASK_RUNNING),
+        json(ECS_STOPPED),
+        json(ECS_TASK_STOPPED),
+        json(ECS_DEFINITIONS),
+        json(ECS_DEREGISTERED),
+        json(ECS_DEREGISTERED),
+        json(ECS_DELETED),
+    ]);
+
+    aws.destroy(&machine).await.expect("destroy");
+
+    assert_eq!(
+        ecs_actions(&aws),
+        [
+            "DescribeTasks",
+            "StopTask",
+            "DescribeTasks",
+            "ListTaskDefinitions",
+            // Deregistering alone leaves an INACTIVE revision in the account
+            // for ever, and a revision cannot be deleted until it has been
+            // deregistered.
+            "DeregisterTaskDefinition",
+            "DeregisterTaskDefinition",
+            "DeleteTaskDefinitions",
+        ]
+    );
+
+    let deleted = body_of(&aws.transport().request(6));
+    assert_eq!(
+        deleted["taskDefinitions"],
+        serde_json::json!([
+            DEFINITION_FAMILY.to_owned() + ":2",
+            DEFINITION_FAMILY.to_owned() + ":1"
+        ]),
+        "every revision of the family, in one call"
+    );
+}
+
+#[tokio::test]
+async fn the_catalog_publishes_fargate_beside_the_instance_types() {
+    let mut aws = provider_over(one_region(), catalog_script());
+    let catalog = aws.catalog().await.expect("catalog");
+
+    let containers: Vec<&flyco_core::MachineCatalogEntry> = catalog
+        .iter()
+        .filter(|entry| entry.runtime == Runtime::Container)
+        .collect();
+    assert_eq!(
+        containers.len(),
+        10,
+        "five sizes on each of the two architectures the region prices"
+    );
+
+    let four = containers
+        .iter()
+        .find(|entry| entry.machine_type == CONTAINER_TYPE)
+        .expect("four cores and eight gibibytes is on the menu");
+    assert_eq!(
+        four.pricing,
+        flyco_core::MachinePricing::Metered {
+            // 4 × $0.04048 + 8 × $0.004445, from AWS's own price list for
+            // this region — never the Windows meters in the same answer.
+            on_demand_hourly: flyco_core::Usd::from_micros(197_480),
+            // AWS publishes no Fargate Spot rate anywhere a program can read
+            // it, so what is quoted is the published ceiling: the task runs on
+            // Spot and is billed at less than this, never more.
+            spot_hourly: Some(flyco_core::Usd::from_micros(197_480)),
+            minimum: None,
+            storage: flyco_core::StoragePricing::PerGibHourly {
+                rate: flyco_core::Usd::from_micros(111),
+            },
+        }
+    );
+    assert_eq!(four.free_grant, None, "Fargate gives nothing away monthly");
+
+    let graviton = containers
+        .iter()
+        .find(|entry| entry.machine_type == "fargate-arm64-4x8")
+        .expect("the region prices Graviton too");
+    // 4 × $0.03238 + 8 × $0.00356.
+    assert_eq!(
+        graviton.pricing.hourly(false),
+        Some(flyco_core::Usd::from_micros(158_000))
+    );
+
+    let vcpu_query = body_of(&aws.transport().request(8));
+    assert_eq!(vcpu_query["ServiceCode"], "AmazonECS");
+    let fields: Vec<&str> = vcpu_query["Filters"]
+        .as_array()
+        .expect("filters")
+        .iter()
+        .map(|filter| filter["Field"].as_str().expect("a field"))
+        .collect();
+    assert_eq!(fields, ["regionCode", "productFamily", "cputype"]);
 }
 
 // ── Metered spend, and proving a key works ──

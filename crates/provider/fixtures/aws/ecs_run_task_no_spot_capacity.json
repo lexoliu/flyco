@@ -1,0 +1,9 @@
+{
+  "tasks": [],
+  "failures": [
+    {
+      "reason": "Capacity is unavailable at this time. Please try again later or in a different availability zone",
+      "detail": ""
+    }
+  ]
+}

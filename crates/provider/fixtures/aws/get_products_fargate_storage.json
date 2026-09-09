@@ -1,0 +1,6 @@
+{
+  "FormatVersion": "aws_v1",
+  "PriceList": [
+    "{\"product\": {\"sku\": \"TTWDU5N74ZQ26XMP\", \"productFamily\": \"Compute\", \"attributes\": {\"servicecode\": \"AmazonECS\", \"location\": \"US West (Oregon)\", \"locationType\": \"AWS Region\", \"usagetype\": \"USW2-Fargate-EphemeralStorage-GB-Hours\", \"operation\": \"\", \"regionCode\": \"us-west-2\", \"servicename\": \"Amazon Elastic Container Service\", \"storagetype\": \"default\"}}, \"serviceCode\": \"AmazonECS\", \"terms\": {\"OnDemand\": {\"TTWDU5N74ZQ26XMP.JRTCKXETXF\": {\"offerTermCode\": \"JRTCKXETXF\", \"sku\": \"TTWDU5N74ZQ26XMP\", \"effectiveDate\": \"2026-07-01T00:00:00Z\", \"priceDimensions\": {\"TTWDU5N74ZQ26XMP.JRTCKXETXF.6YS6EN2CT7\": {\"rateCode\": \"TTWDU5N74ZQ26XMP.JRTCKXETXF.6YS6EN2CT7\", \"description\": \"AWS Fargate - Ephemeral Storage - US West (Oregon)\", \"beginRange\": \"0\", \"endRange\": \"Inf\", \"unit\": \"GB-Hours\", \"pricePerUnit\": {\"USD\": \"0.0001110000\"}, \"appliesTo\": []}}, \"termAttributes\": {}}}}, \"version\": \"20260831092155\"}"
+  ]
+}
