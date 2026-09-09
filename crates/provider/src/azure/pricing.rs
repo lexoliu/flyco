@@ -64,6 +64,26 @@ const TOO_MANY_REQUESTS: u16 = 429;
 /// open until the platform kills it.
 pub const THROTTLE_BUDGET_SECONDS: u32 = 60;
 
+/// The service name Container Apps publishes its meters under.
+///
+/// A different service from `Virtual Machines`, with its own rows: the
+/// filter values are case-sensitive here too.
+pub const CONTAINER_APPS_SERVICE: &str = "Azure Container Apps";
+
+/// The meter that prices a Consumption replica's cores, per vCPU-second.
+///
+/// *Active* rather than *Idle*: the idle meter is the reduced rate an
+/// application pays for a replica it keeps warm between requests, and a job
+/// replica is running the whole time it exists. Quoting the idle rate would
+/// tell a user their session costs an eighth of what it does.
+pub const CONTAINER_VCPU_METER: &str = "Standard vCPU Active Usage";
+
+/// The meter that prices its memory, per GiB-second.
+pub const CONTAINER_MEMORY_METER: &str = "Standard Memory Active Usage";
+
+/// Seconds in the hour every price in the catalog is quoted for.
+const SECONDS_PER_HOUR: f64 = 3_600.0;
+
 /// Suffix marking a spot meter.
 const SPOT_SUFFIX: &str = " Spot";
 
@@ -151,6 +171,57 @@ impl PriceRow {
         let micros = (self.retail_price * 1_000_000.0).round() as u64;
         Usd::from_micros(micros)
     }
+
+    /// The price of an hour of one unit this row meters by the second.
+    ///
+    /// Container Apps quotes vCPU-seconds and GiB-seconds, and the catalog
+    /// quotes hours, so the multiplication happens *before* the rounding to
+    /// microdollars: `$0.000024` a vCPU-second is `$0.0864` an hour, while
+    /// rounding the second first would throw away every digit the price
+    /// has.
+    #[must_use]
+    pub fn hourly_from_per_second(&self) -> Usd {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "an hourly container price in microdollars is small and non-negative"
+        )]
+        let micros = (self.retail_price * SECONDS_PER_HOUR * 1_000_000.0).round() as u64;
+        Usd::from_micros(micros)
+    }
+}
+
+/// What a Container Apps replica costs, per hour of each thing it holds.
+///
+/// Two rates rather than a price per size, because that is how the service
+/// bills: a replica's cores and its memory are separate meters, and every
+/// size flyco offers is the same two rates multiplied by different numbers.
+/// Held per hour rather than per second — the unit Azure publishes —
+/// because rounding a per-second price to a microdollar would quantise it
+/// to nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerPrices {
+    /// One vCPU for one hour.
+    pub vcpu_hourly: Usd,
+    /// One GiB of memory for one hour.
+    pub gib_hourly: Usd,
+}
+
+impl ContainerPrices {
+    /// What one hour of a replica of this shape costs.
+    #[must_use]
+    pub fn hourly(self, vcpus: u32, memory_gib: u32) -> Usd {
+        Usd::from_micros(
+            self.vcpu_hourly
+                .micros()
+                .saturating_mul(u64::from(vcpus))
+                .saturating_add(
+                    self.gib_hourly
+                        .micros()
+                        .saturating_mul(u64::from(memory_gib)),
+                ),
+        )
+    }
 }
 
 /// The Linux prices of one machine type.
@@ -177,11 +248,24 @@ struct CachedStorage {
     expires_after: u64,
 }
 
+/// One region's container rates, or the fact that it publishes none.
+///
+/// `None` is a real answer rather than a missing one — Container Apps is
+/// not sold in every region — and it is cached like any other, so a catalog
+/// refresh does not re-ask a region that has already said no.
+#[derive(Debug, Clone)]
+struct CachedContainers {
+    region: String,
+    prices: Option<ContainerPrices>,
+    expires_after: u64,
+}
+
 /// Prices per region, with a time-to-live.
 #[derive(Debug, Clone, Default)]
 pub struct PriceCatalog {
     cached: Option<CachedRegion>,
     storage_cached: Option<CachedStorage>,
+    containers_cached: Option<CachedContainers>,
 }
 
 /// The `OData` filter for one region's Linux consumption meters.
@@ -216,6 +300,7 @@ impl PriceCatalog {
         Self {
             cached: None,
             storage_cached: None,
+            containers_cached: None,
         }
     }
 
@@ -321,6 +406,89 @@ impl PriceCatalog {
             .expect("the storage cache was just filled")
             .pricing)
     }
+
+    /// What a Container Apps replica costs in one region, or `None` where
+    /// the region publishes no Consumption meters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the retail-prices API refuses the read
+    /// or answers with something that is not a price page. A region that
+    /// simply does not sell Container Apps is not one of those: it answers
+    /// an empty page, and an empty page is `None`.
+    pub async fn container_prices<T: HttpTransport, C: MonotonicClock, K: Timer>(
+        &mut self,
+        transport: &T,
+        clock: &C,
+        timer: &K,
+        region: &str,
+    ) -> Result<Option<ContainerPrices>, ProviderError> {
+        let now = clock.elapsed_seconds();
+        let fresh = self
+            .containers_cached
+            .as_ref()
+            .is_some_and(|cached| cached.region == region && now < cached.expires_after);
+        if !fresh {
+            self.containers_cached = Some(CachedContainers {
+                region: region.to_owned(),
+                prices: read_containers(transport, timer, region).await?,
+                expires_after: now.saturating_add(CACHE_TTL_SECONDS),
+            });
+        }
+        Ok(self
+            .containers_cached
+            .as_ref()
+            .and_then(|cached| cached.prices))
+    }
+}
+
+fn container_filter(region: &str) -> String {
+    format!(
+        "serviceName eq '{CONTAINER_APPS_SERVICE}' and armRegionName eq '{region}' \
+         and priceType eq 'Consumption'"
+    )
+}
+
+fn container_url(region: &str) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("api-version", PRICES_API_VERSION)
+        .append_pair("$filter", &container_filter(region))
+        .finish();
+    format!("{RETAIL_PRICES_URL}?{query}")
+}
+
+/// Reads one region's two Consumption meters.
+///
+/// Both or neither: a region that published cores without memory would
+/// price a replica at a fraction of what it bills, and quoting that is
+/// worse than offering no container at all.
+async fn read_containers<T: HttpTransport, K: Timer>(
+    transport: &T,
+    timer: &K,
+    region: &str,
+) -> Result<Option<ContainerPrices>, ProviderError> {
+    let mut vcpu_hourly = None;
+    let mut gib_hourly = None;
+    let mut next = Some(container_url(region));
+
+    while let Some(url) = next {
+        let page = read_page(transport, timer, &url, "Container Apps pricing").await?;
+        for row in &page.items {
+            match row.meter_name.as_str() {
+                CONTAINER_VCPU_METER => vcpu_hourly = Some(row.hourly_from_per_second()),
+                CONTAINER_MEMORY_METER => gib_hourly = Some(row.hourly_from_per_second()),
+                _ => {}
+            }
+        }
+        next = page.next_page_link;
+    }
+
+    Ok(vcpu_hourly
+        .zip(gib_hourly)
+        .map(|(vcpu_hourly, gib_hourly)| ContainerPrices {
+            vcpu_hourly,
+            gib_hourly,
+        }))
 }
 
 fn storage_filter(region: &str) -> String {
@@ -686,6 +854,89 @@ mod tests {
             .expect("read prices");
         assert_eq!(prices.on_demand, None);
         assert_eq!(prices.spot, None);
+    }
+
+    /// Azure Container Apps' meters for one region, as recorded from the
+    /// live API.
+    const CONTAINERS: &str = include_str!("../../fixtures/azure/container_apps_prices.json");
+    /// A region the API publishes no Container Apps meters for.
+    const NO_CONTAINERS: &str =
+        include_str!("../../fixtures/azure/container_apps_prices_none.json");
+
+    #[tokio::test]
+    async fn container_rates_come_from_the_active_meters_and_are_quoted_by_the_hour() {
+        let transport = RecordedTransport::new(vec![page(CONTAINERS)]);
+        let clock = ManualClock::new();
+        let mut catalog = PriceCatalog::new();
+
+        let prices = catalog
+            .container_prices(&transport, &clock, &RecordingTimer::new(), "northcentralus")
+            .await
+            .expect("read prices")
+            .expect("the region sells Container Apps");
+
+        // $0.000024 a vCPU-second and $0.000003 a GiB-second: multiplied by
+        // the hour before rounding, because rounding a per-second price to a
+        // microdollar would quantise it away.
+        assert_eq!(prices.vcpu_hourly, Usd::from_micros(86_400));
+        assert_eq!(prices.gib_hourly, Usd::from_micros(10_800));
+        assert_eq!(prices.hourly(4, 8), Usd::from_micros(432_000));
+
+        let url = transport.request(0).url;
+        assert!(url.contains("serviceName+eq+%27Azure+Container+Apps%27"));
+        assert!(url.contains("armRegionName+eq+%27northcentralus%27"));
+    }
+
+    #[test]
+    fn the_idle_and_dedicated_meters_are_not_what_a_job_is_billed_at() {
+        // The idle rate is what an application pays for a replica it keeps
+        // warm between requests, and Dedicated is a different plan billed by
+        // the hour. A job replica runs the whole time it exists, so quoting
+        // either would be off by nearly an order of magnitude.
+        let page: PricePage = serde_json::from_str(CONTAINERS).expect("the fixture parses");
+        let row = |meter: &str| {
+            page.items
+                .iter()
+                .find(|row| row.meter_name == meter)
+                .unwrap_or_else(|| panic!("the fixture holds `{meter}`"))
+        };
+
+        assert_eq!(
+            row(super::CONTAINER_VCPU_METER).hourly_from_per_second(),
+            Usd::from_micros(86_400)
+        );
+        assert_eq!(
+            row("Standard vCPU Idle Usage").hourly_from_per_second(),
+            Usd::from_micros(10_800),
+            "the idle rate is an eighth of the active one, and no job is ever billed at it"
+        );
+        // Dedicated is a different plan, and Azure quotes it by the hour
+        // rather than by the second — reading it with the same conversion
+        // would be off by a factor of 3,600 as well as by the plan.
+        assert_eq!(row("Dedicated vCPU Usage").hourly(), Usd::from_micros(57_077));
+    }
+
+    #[tokio::test]
+    async fn a_region_that_sells_no_container_apps_has_no_container_prices() {
+        let transport = RecordedTransport::new(vec![page(NO_CONTAINERS)]);
+        let clock = ManualClock::new();
+        let mut catalog = PriceCatalog::new();
+
+        assert_eq!(
+            catalog
+                .container_prices(&transport, &clock, &RecordingTimer::new(), "chinaeast2")
+                .await
+                .expect("an empty page is an answer, not a failure"),
+            None
+        );
+
+        // And the answer is cached like any other, so a catalog refresh does
+        // not re-ask a region that has already said no.
+        catalog
+            .container_prices(&transport, &clock, &RecordingTimer::new(), "chinaeast2")
+            .await
+            .expect("reuse");
+        assert_eq!(transport.request_count(), 1);
     }
 
     /// A throttled page, as the prices API answers one.

@@ -26,6 +26,14 @@ pub mod api_version {
     pub const COMPUTE: &str = "2024-11-01";
     /// `Microsoft.Compute/disks`.
     pub const DISKS: &str = "2025-01-02";
+    /// Every `Microsoft.App` type the container half of the driver
+    /// touches: managed environments, jobs, and a job's executions.
+    ///
+    /// One version for the three because they are one resource provider and
+    /// Azure versions it as a whole — a job created at one version and
+    /// started at another would be two contracts against the same
+    /// resource.
+    pub const CONTAINER_APPS: &str = "2025-07-01";
     /// `Microsoft.Compute/skus`, the resource-SKUs list.
     pub const SKUS: &str = "2021-07-01";
     /// `Microsoft.Compute/locations/{location}/usages`, the quota read.

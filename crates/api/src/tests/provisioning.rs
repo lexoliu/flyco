@@ -157,6 +157,7 @@ impl RecordedHost {
             Answer::Takes => Ok(Machine {
                 id: request.machine,
                 native_id: job.container().to_owned(),
+                runtime: flyco_core::Runtime::Container,
                 region: planner.machine_type().to_owned(),
                 state: MachineState::Running,
                 capacity_mode: flyco_provider::CapacityMode::OnDemand,

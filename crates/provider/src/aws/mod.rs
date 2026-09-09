@@ -1476,6 +1476,10 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
         Ok(Machine {
             id,
             native_id: launched.instance_id,
+            // EC2 sells this driver nothing but virtual machines: flyco's
+            // container runtime on AWS would be Fargate, which is not this
+            // API.
+            runtime: Runtime::Vm,
             region: region.clone(),
             state: MachineState::Running,
             capacity_mode,

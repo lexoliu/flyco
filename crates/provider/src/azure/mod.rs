@@ -60,10 +60,29 @@
 //! Zone-restricted-but-usable is the dominant pattern for the machine types
 //! a small subscription can run, and a regional deployment is what succeeds.
 //! The field is not modelled at all — see [`bodies`].
+//!
+//! # Two runtimes, one subscription
+//!
+//! Everything above is the [`Runtime::Vm`] half. The same subscription also
+//! sells [`Runtime::Container`]: a session there is one execution of an
+//! Azure Container Apps job, provisioned, stopped, started, resized and
+//! destroyed through [`containers`]. It is one driver rather than two
+//! because it is one account, one token and one resource group — what
+//! differs is the resource provider a call is addressed to and what a stop
+//! means, and [`MachineSpec::runtime`] and [`Machine::runtime`] are what
+//! say which of the two a caller is asking for.
+//!
+//! None of the three gates above applies to it. Container Apps publishes no
+//! SKU list and spends no vCPU quota (its own quota is per environment and
+//! Azure exposes it only through a support request), so the only gate a
+//! container passes is the subscription's region policy — which does apply,
+//! because a policy refuses the environment's `PUT` exactly as it refuses a
+//! virtual network's.
 
 pub mod arm;
 pub mod auth;
 pub mod bodies;
+pub mod containers;
 pub mod costs;
 pub mod policy;
 pub mod pricing;
@@ -76,6 +95,7 @@ use flyco_core::machine::{
     CloudProviderKind, CpuArchitecture, FreeGrant, MachineCapacity, MachineCatalogEntry,
     MachinePricing, MachineSpec, MachineState, OsFamily, Runtime, StoragePricing,
 };
+use flyco_core::money::Usd;
 use flyco_core::{CloudSpend, MachineId};
 
 use crate::clock::{MonotonicClock, SystemClock, SystemTimer, Timer};
@@ -114,6 +134,12 @@ pub const CONTAINER_APPS_FREE_GRANT: FreeGrant = FreeGrant {
     vcpu_seconds_per_month: 180_000,
     gib_seconds_per_month: 360_000,
 };
+
+/// Resource-provider path of a Container Apps managed environment.
+pub const CONTAINER_ENVIRONMENTS_PATH: &str = "Microsoft.App/managedEnvironments";
+
+/// Resource-provider path of a Container Apps job.
+pub const CONTAINER_JOBS_PATH: &str = "Microsoft.App/jobs";
 
 /// Regions a catalog covers when the subscription restricts none and the
 /// caller names none either.
@@ -450,10 +476,11 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         if !response.is_success() {
             return Err(refusal(&response));
         }
-        self.await_operation(&response).await
+        self.await_operation(response).await.map(drop)
     }
 
-    /// Follows an asynchronous operation to a terminal state.
+    /// Follows an asynchronous operation to a terminal state, answering
+    /// with the response that describes the **resource**, where one does.
     ///
     /// `Azure-AsyncOperation` is preferred over `Location` and the terminal
     /// set is exactly `{Succeeded, Failed, Canceled}` — anything else means
@@ -461,12 +488,22 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     /// The operation's status is what is trusted, never the resource body: a
     /// failed resize leaves the machine reporting the size it was asked for
     /// while still running on the old one.
-    async fn await_operation(&mut self, accepted: &HttpResponse) -> Result<(), ProviderError> {
-        let mut follow = arm::follow(accepted)?;
+    ///
+    /// `None` is what an `Azure-AsyncOperation` poll ends as: that document
+    /// describes the *operation* — its own id, its status — so a caller that
+    /// needs something the service named (the execution a job start
+    /// created) has nothing to read here, and must say so rather than read
+    /// the operation's id as the resource's name. Every caller that only
+    /// needs "did it work" ignores it.
+    async fn await_operation(
+        &mut self,
+        accepted: HttpResponse,
+    ) -> Result<Option<HttpResponse>, ProviderError> {
+        let mut follow = arm::follow(&accepted)?;
 
         for attempt in 0..MAX_POLL_ATTEMPTS {
             let (url, retry_after, by_status) = match &follow {
-                Follow::Finished => return Ok(()),
+                Follow::Finished => return Ok(Some(accepted)),
                 Follow::Operation { url, retry_after } => (url.clone(), *retry_after, false),
                 Follow::Location { url, retry_after } => (url.clone(), *retry_after, true),
             };
@@ -487,7 +524,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
                     continue;
                 }
                 if polled.is_success() {
-                    return Ok(());
+                    return Ok(Some(polled));
                 }
                 return Err(refusal(&polled));
             }
@@ -498,7 +535,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
 
             let body: OperationBody = polled.json()?;
             match OperationStatus::parse(&body.status) {
-                OperationStatus::Succeeded => return Ok(()),
+                OperationStatus::Succeeded => return Ok(None),
                 OperationStatus::Failed | OperationStatus::Canceled => {
                     let error = body.error.unwrap_or_default();
                     return Err(ProviderError::OperationFailed {
@@ -1056,6 +1093,381 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         }
     }
 
+    /// Provisions a session as a virtual machine: the three gates, the
+    /// workspace, the two network resources, then the machine.
+    async fn provision_vm(&mut self, request: &ProvisionRequest) -> Result<Machine, ProviderError> {
+        let MachineSpec {
+            region,
+            machine_type,
+            ..
+        } = &request.spec;
+        let id = request.machine;
+
+        let requested = if request.spec.spot {
+            CapacityMode::Spot
+        } else {
+            CapacityMode::OnDemand
+        };
+        let (sku, quotas) = self.deployable_sku(region, machine_type, requested).await?;
+        self.ensure_workspace(region).await?;
+
+        self.create_session_network(id, region).await?;
+
+        let body = self.machine_body(request, &sku)?;
+        let capacity_mode = self.create_machine(id, body, &sku, region, &quotas).await?;
+
+        tracing::info!(
+            machine = %id,
+            machine_type = %machine_type,
+            region = %region,
+            capacity = ?capacity_mode,
+            "provisioned an Azure machine"
+        );
+        Ok(Machine {
+            id,
+            native_id: self.resource_id("Microsoft.Compute/virtualMachines", &names::machine(id)),
+            runtime: Runtime::Vm,
+            region: region.clone(),
+            state: MachineState::Running,
+            capacity_mode,
+            address: Some(names::fqdn(id, region)),
+        })
+    }
+
+    /// Deallocate, `PATCH` the size, start.
+    ///
+    /// Always through a deallocation, even from a running machine: a size
+    /// the current hardware cluster does not offer needs one anyway, and a
+    /// deterministic sequence beats a conditional one that is only sometimes
+    /// exercised. The result is read from the operations, never from the
+    /// machine — a failed resize leaves the resource reporting the size it
+    /// was asked for while still running on the old one.
+    async fn resize_vm(
+        &mut self,
+        machine: &Machine,
+        new_machine_type: &str,
+    ) -> Result<Machine, ProviderError> {
+        self.deployable_sku(&machine.region, new_machine_type, machine.capacity_mode)
+            .await?;
+
+        self.post_action(machine.id, "deallocate").await?;
+
+        let patch = bodies::ResizePatch {
+            properties: bodies::ResizeProperties {
+                hardware_profile: bodies::HardwareProfile {
+                    vm_size: new_machine_type.to_owned(),
+                },
+            },
+        };
+        self.send_and_await(
+            HttpRequest::new(Method::Patch, self.machine_url(machine.id)).json_body(&patch)?,
+        )
+        .await?;
+
+        self.post_action(machine.id, "start").await?;
+
+        tracing::info!(machine = %machine.id, %new_machine_type, "resized an Azure machine");
+        Ok(Machine {
+            state: MachineState::Running,
+            ..machine.clone()
+        })
+    }
+
+    /// Deletes the machine and everything `Detach` kept alive.
+    ///
+    /// In dependency order: the machine, then the interface that referenced
+    /// it, then the address the interface held, then the disk. Deleting out
+    /// of order fails on a resource that is still referenced.
+    async fn destroy_vm(&mut self, machine: &Machine) -> Result<(), ProviderError> {
+        let id = machine.id;
+        self.send_and_await(HttpRequest::new(Method::Delete, self.machine_url(id)))
+            .await?;
+
+        for (provider_path, name, version) in [
+            (
+                "Microsoft.Network/networkInterfaces",
+                names::network_interface(id),
+                api_version::NETWORK,
+            ),
+            (
+                "Microsoft.Network/publicIPAddresses",
+                names::public_ip(id),
+                api_version::NETWORK,
+            ),
+            (
+                "Microsoft.Compute/disks",
+                names::os_disk(id),
+                api_version::DISKS,
+            ),
+        ] {
+            let url = self.resource_url(provider_path, &name, version);
+            self.send_and_await(HttpRequest::new(Method::Delete, url))
+                .await?;
+        }
+
+        tracing::info!(machine = %id, "destroyed an Azure machine and its resources");
+        Ok(())
+    }
+
+    // ── Container Apps ──
+
+    /// The ARM id of the environment a region's jobs run in.
+    fn environment_id(&self, region: &str) -> String {
+        self.resource_id(
+            CONTAINER_ENVIRONMENTS_PATH,
+            &containers::names::environment(region),
+        )
+    }
+
+    /// Creates the Container Apps environment a region's jobs run in.
+    ///
+    /// Lazy and idempotent, exactly as [`ensure_workspace`](Self::ensure_workspace)
+    /// is for the network a region's virtual machines share: the `PUT` is
+    /// create-or-update, so the second session in a region re-sends the same
+    /// body and Azure answers that nothing changed. The alternative — making
+    /// it when the account is linked — would build an environment in every
+    /// region the subscription allows for the one region a user turns out to
+    /// use.
+    async fn ensure_environment(&mut self, region: &str) -> Result<(), ProviderError> {
+        self.send_and_await(
+            HttpRequest::new(
+                Method::Put,
+                self.resource_url(
+                    CONTAINER_ENVIRONMENTS_PATH,
+                    &containers::names::environment(region),
+                    api_version::CONTAINER_APPS,
+                ),
+            )
+            .json_body(&containers::environment_body(region))?,
+        )
+        .await
+    }
+
+    /// The URL of one job.
+    fn job_url(&self, job: &str) -> String {
+        self.resource_url(CONTAINER_JOBS_PATH, job, api_version::CONTAINER_APPS)
+    }
+
+    /// A `POST` to one of a job's action endpoints, or one of its
+    /// executions'.
+    fn job_action_url(&self, path: &str) -> String {
+        let base = arm::resource_group_scope(self.subscription(), &self.workspace.resource_group);
+        format!(
+            "{base}/providers/{CONTAINER_JOBS_PATH}/{path}?api-version={}",
+            api_version::CONTAINER_APPS
+        )
+    }
+
+    /// Starts a new execution of a job, and answers with Azure's name for
+    /// it.
+    ///
+    /// The name is not flyco's to choose and it is different every time,
+    /// which is why it is recorded on the machine rather than derived: it is
+    /// what every later call about the *running* half of this machine is
+    /// addressed to.
+    async fn start_execution(&mut self, job: &str) -> Result<String, ProviderError> {
+        let response = self
+            .send(HttpRequest::new(
+                Method::Post,
+                self.job_action_url(&format!("{job}/start")),
+            ))
+            .await?;
+        if !response.is_success() {
+            return Err(refusal(&response));
+        }
+
+        let started: containers::StartedExecution = self
+            .await_operation(response)
+            .await?
+            .ok_or(ProviderError::Malformed(
+                "Azure reported the operation that started a job execution but not the \
+                 execution, so there is no name to address it by",
+            ))?
+            .json()?;
+        if started.name.is_empty() {
+            return Err(ProviderError::Malformed(
+                "Azure started a job execution without naming it",
+            ));
+        }
+        Ok(started.name)
+    }
+
+    /// Stops one execution, leaving the job it belongs to.
+    ///
+    /// What a container machine's *stop* is. The filesystem goes with the
+    /// execution — the daemon has already written the `workdir-patch` on
+    /// `SIGTERM` — and the job stays, which is what makes the next
+    /// [`start`](CloudProvider::start) a start rather than a provision.
+    async fn stop_execution(
+        &mut self,
+        execution: &containers::Execution<'_>,
+    ) -> Result<(), ProviderError> {
+        self.send_and_await(HttpRequest::new(
+            Method::Post,
+            self.job_action_url(&format!(
+                "{}/executions/{}/stop",
+                execution.job, execution.name
+            )),
+        ))
+        .await
+    }
+
+    /// The one gate a container passes, and the size it asked for.
+    ///
+    /// The region policy, because it refuses an environment's `PUT` exactly
+    /// as it refuses a virtual network's, and the size table, because
+    /// Container Apps publishes no SKU list to check a name against — a
+    /// machine type outside [`containers::Size::OFFERED`] is one flyco never
+    /// offered, and attempting it would send Azure a `cpu` and a `memory`
+    /// nobody chose.
+    async fn deployable_container(
+        &mut self,
+        region: &str,
+        machine_type: &str,
+    ) -> Result<containers::Size, ProviderError> {
+        let policy = self.region_policy().await?;
+        if !policy.allows(region) {
+            return Err(ProviderError::Unavailable {
+                machine_type: machine_type.to_owned(),
+                region: region.to_owned(),
+                reason: policy.refusal(region),
+            });
+        }
+
+        containers::Size::named(machine_type).ok_or_else(|| ProviderError::Unavailable {
+            machine_type: machine_type.to_owned(),
+            region: region.to_owned(),
+            reason: "flyco offers no container of that size on Azure Container Apps".to_owned(),
+        })
+    }
+
+    /// Provisions a session as one execution of a Container Apps job.
+    ///
+    /// Three writes deep, the same shape the virtual-machine path has: the
+    /// environment the region's jobs share, then this machine's job, then
+    /// the execution that is the machine.
+    ///
+    /// A redelivered provisioning message re-`PUT`s the same job — the call
+    /// is create-or-update — and starts a second execution. Suppressing that
+    /// is the control plane's job and already is: a machine row that is
+    /// running and has a provider-native id is one whose provisioning is
+    /// done, and the queue never reaches here twice for it.
+    async fn provision_container(
+        &mut self,
+        request: &ProvisionRequest,
+    ) -> Result<Machine, ProviderError> {
+        let id = request.machine;
+        let region = &request.spec.region;
+        let size = self
+            .deployable_container(region, &request.spec.machine_type)
+            .await?;
+
+        self.ensure_environment(region).await?;
+
+        let job = containers::names::job(id);
+        let body = containers::job_body(
+            id,
+            &request.bootstrap,
+            region,
+            self.environment_id(region),
+            size,
+        )?;
+        self.send_and_await(HttpRequest::new(Method::Put, self.job_url(&job)).json_body(&body)?)
+            .await?;
+
+        let execution = self.start_execution(&job).await?;
+        tracing::info!(
+            machine = %id,
+            machine_type = %request.spec.machine_type,
+            region = %region,
+            %execution,
+            "provisioned an Azure Container Apps execution"
+        );
+        Ok(Machine {
+            id,
+            native_id: containers::Execution::native_id(&job, &execution),
+            runtime: Runtime::Container,
+            region: region.clone(),
+            state: MachineState::Running,
+            // Container Apps sells no interruptible capacity, so a session
+            // that asked for spot holds ordinary capacity and is billed for
+            // it. Recorded rather than refused: what the machine actually
+            // holds is what the price follows, and there is nothing here for
+            // a user to act on.
+            capacity_mode: CapacityMode::OnDemand,
+            // Nothing dials a container. Its daemon opens the connection to
+            // the control plane, and Container Apps gives a job no inbound
+            // address at all.
+            address: None,
+        })
+    }
+
+    /// Moves a container machine to another size: stop, patch, start.
+    ///
+    /// A `PATCH` rather than a second `PUT` — see [`containers::JobPatch`] —
+    /// and a stop that is not optional: a replica's size is fixed for its
+    /// lifetime, so the execution running at the old size has to end before
+    /// one at the new size can begin. That is also what makes this cheaper
+    /// than the virtual-machine resize rather than worse: there is no disk
+    /// to detach and re-attach, because there is no disk.
+    async fn resize_container(
+        &mut self,
+        machine: &Machine,
+        new_machine_type: &str,
+    ) -> Result<Machine, ProviderError> {
+        let size = self
+            .deployable_container(&machine.region, new_machine_type)
+            .await?;
+        let execution = containers::Execution::parse(&machine.native_id)?;
+
+        self.stop_execution(&execution).await?;
+
+        let patch = containers::JobPatch {
+            properties: containers::JobPatchProperties {
+                template: containers::template(size),
+            },
+        };
+        self.send_and_await(
+            HttpRequest::new(Method::Patch, self.job_url(execution.job)).json_body(&patch)?,
+        )
+        .await?;
+
+        let started = self.start_execution(execution.job).await?;
+        tracing::info!(
+            machine = %machine.id,
+            %new_machine_type,
+            execution = %started,
+            "resized an Azure Container Apps job"
+        );
+        Ok(Machine {
+            native_id: containers::Execution::native_id(execution.job, &started),
+            state: MachineState::Running,
+            ..machine.clone()
+        })
+    }
+
+    /// Removes a container machine: the execution first where one is
+    /// running, then the job.
+    ///
+    /// The stop is skipped for a machine already recorded as stopped rather
+    /// than sent anyway, because that machine's execution is already gone
+    /// and the request would name something that no longer exists.
+    async fn destroy_container(&mut self, machine: &Machine) -> Result<(), ProviderError> {
+        let execution = containers::Execution::parse(&machine.native_id)?;
+        if machine.state == MachineState::Running {
+            self.stop_execution(&execution).await?;
+        }
+
+        self.send_and_await(HttpRequest::new(
+            Method::Delete,
+            self.job_url(execution.job),
+        ))
+        .await?;
+
+        tracing::info!(machine = %machine.id, "destroyed an Azure Container Apps job");
+        Ok(())
+    }
+
     /// What one region offers, and why everything else was left out.
     ///
     /// The three gates, applied in the order that makes the answer cheapest
@@ -1063,9 +1475,16 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     /// without a single SKU being read, and a machine type that is not sold
     /// here is a different sentence from one with no quota.
     ///
+    /// The region's containers are on the same menu, after its virtual
+    /// machines: one fixed table of sizes ([`containers::Size::OFFERED`])
+    /// against one pair of published rates. They are not a cheaper kind of
+    /// virtual machine and are never compared with one — curation groups by
+    /// runtime, because a machine whose filesystem ends with it is a
+    /// different bargain rather than a better price.
+    ///
     /// # Errors
     ///
-    /// Returns [`ProviderError`] if Azure refuses any of the three reads.
+    /// Returns [`ProviderError`] if Azure refuses any of the reads.
     pub async fn region_report(&mut self, region: &str) -> Result<RegionReport, ProviderError> {
         let policy = self.region_policy().await?;
         if !policy.allows(region) {
@@ -1102,6 +1521,22 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             match Self::entry_for(&sku, region, &quotas, &priced, &storage) {
                 Ok(entry) => report.offered.push(entry),
                 Err(reason) => report.excluded.push((sku.name, reason)),
+            }
+        }
+
+        let container_rates = self
+            .prices
+            .container_prices(&self.transport, &self.clock, &self.timer, region)
+            .await?;
+        for size in containers::Size::OFFERED {
+            match container_rates {
+                Some(rates) => report.offered.push(container_entry(size, region, rates)),
+                // A region that publishes no Consumption meters is one where
+                // the service is not sold, and flyco will not quote an hour
+                // it cannot price.
+                None => report
+                    .excluded
+                    .push((size.machine_type(), ExclusionReason::Unpriced)),
             }
         }
         Ok(report)
@@ -1211,6 +1646,52 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     }
 }
 
+/// One container size's catalog entry.
+///
+/// Infallible, unlike [`AzureProvider::entry_for`]: the size table is
+/// flyco's own and every entry in it is deployable wherever the service is
+/// sold, so the only way a container is *not* on the menu is the region
+/// publishing no price — which the caller has already established by
+/// holding [`pricing::ContainerPrices`] at all.
+fn container_entry(
+    size: containers::Size,
+    region: &str,
+    prices: pricing::ContainerPrices,
+) -> MachineCatalogEntry {
+    MachineCatalogEntry {
+        // Stamped by the control plane, which knows the row.
+        account: None,
+        provider: CloudProviderKind::Azure,
+        region: region.to_owned(),
+        machine_type: size.machine_type(),
+        runtime: Runtime::Container,
+        // Per subscription and per calendar month, drawn on by every
+        // container this account runs rather than by this machine type.
+        free_grant: Some(CONTAINER_APPS_FREE_GRANT),
+        os: OsFamily::Linux,
+        capacity: Some(MachineCapacity {
+            vcpus: size.vcpus(),
+            memory_mib: size.memory_mib(),
+        }),
+        lineage: Some(size.lineage()),
+        pricing: MachinePricing::Metered {
+            on_demand_hourly: prices.hourly(size.vcpus(), size.memory_gib()),
+            // Container Apps has no interruptible market at all, so there is
+            // no second price to quote — not one that happens to equal the
+            // first.
+            spot_hourly: None,
+            // Nothing is billed before an execution runs: the job costs
+            // nothing to exist.
+            minimum: None,
+            // A replica's filesystem is part of the replica and is billed
+            // through its memory and cores, so every GiB of it costs
+            // nothing extra. That is what the provider bills, not a
+            // discount flyco is applying.
+            storage: StoragePricing::PerGibHourly { rate: Usd::ZERO },
+        },
+    }
+}
+
 /// Turns a refused response into an error that keeps its code.
 fn refusal(response: &HttpResponse) -> ProviderError {
     ErrorBody::of(response).map_or_else(
@@ -1252,128 +1733,92 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> CloudProvider for AzureProvi
         Ok(entries)
     }
 
+    /// Provisions a virtual machine or a managed container, as the spec
+    /// asks.
+    ///
+    /// The two runtimes disagree about the first thing a caller would want
+    /// to know — whether the filesystem survives a stop — so a request whose
+    /// spec and whose daemon bootstrap name different ones is refused rather
+    /// than half-honoured. Satisfying it would put `runtime = "vm"` in a
+    /// container's configuration, and that daemon would let the platform
+    /// take the working tree away without writing the patch that is the only
+    /// copy of it.
     async fn provision(&mut self, request: &ProvisionRequest) -> Result<Machine, ProviderError> {
-        let MachineSpec {
-            region,
-            machine_type,
-            ..
-        } = &request.spec;
-        let id = request.machine;
-
-        let requested = if request.spec.spot {
-            CapacityMode::Spot
-        } else {
-            CapacityMode::OnDemand
-        };
-        let (sku, quotas) = self.deployable_sku(region, machine_type, requested).await?;
-        self.ensure_workspace(region).await?;
-
-        self.create_session_network(id, region).await?;
-
-        let body = self.machine_body(request, &sku)?;
-        let capacity_mode = self.create_machine(id, body, &sku, region, &quotas).await?;
-
-        tracing::info!(
-            machine = %id,
-            machine_type = %machine_type,
-            region = %region,
-            capacity = ?capacity_mode,
-            "provisioned an Azure machine"
-        );
-        Ok(Machine {
-            id,
-            native_id: self.resource_id("Microsoft.Compute/virtualMachines", &names::machine(id)),
-            region: region.clone(),
-            state: MachineState::Running,
-            capacity_mode,
-            address: Some(names::fqdn(id, region)),
-        })
+        if request.spec.runtime != request.bootstrap.runtime {
+            return Err(ProviderError::Malformed(
+                "this request's machine spec and daemon bootstrap disagree about \
+                 whether the machine is a virtual machine or a container",
+            ));
+        }
+        match request.spec.runtime {
+            Runtime::Vm => self.provision_vm(request).await,
+            Runtime::Container => self.provision_container(request).await,
+        }
     }
 
-    /// Deallocate, `PATCH` the size, start.
-    ///
-    /// Always through a deallocation, even from a running machine: a size
-    /// the current hardware cluster does not offer needs one anyway, and a
-    /// deterministic sequence beats a conditional one that is only sometimes
-    /// exercised. The result is read from the operations, never from the
-    /// machine — a failed resize leaves the resource reporting the size it
-    /// was asked for while still running on the old one.
     async fn resize(
         &mut self,
         machine: &Machine,
         new_machine_type: &str,
     ) -> Result<Machine, ProviderError> {
-        self.deployable_sku(&machine.region, new_machine_type, machine.capacity_mode)
-            .await?;
-
-        self.post_action(machine.id, "deallocate").await?;
-
-        let patch = bodies::ResizePatch {
-            properties: bodies::ResizeProperties {
-                hardware_profile: bodies::HardwareProfile {
-                    vm_size: new_machine_type.to_owned(),
-                },
-            },
-        };
-        self.send_and_await(
-            HttpRequest::new(Method::Patch, self.machine_url(machine.id)).json_body(&patch)?,
-        )
-        .await?;
-
-        self.post_action(machine.id, "start").await?;
-
-        tracing::info!(machine = %machine.id, %new_machine_type, "resized an Azure machine");
-        Ok(Machine {
-            state: MachineState::Running,
-            ..machine.clone()
-        })
-    }
-
-    async fn deallocate(&mut self, machine: &Machine) -> Result<(), ProviderError> {
-        self.post_action(machine.id, "deallocate").await
-    }
-
-    async fn start(&mut self, machine: &Machine) -> Result<Machine, ProviderError> {
-        self.post_action(machine.id, "start").await?;
-        Ok(Machine {
-            state: MachineState::Running,
-            ..machine.clone()
-        })
-    }
-
-    /// Deletes the machine and everything `Detach` kept alive.
-    ///
-    /// In dependency order: the machine, then the interface that referenced
-    /// it, then the address the interface held, then the disk. Deleting out
-    /// of order fails on a resource that is still referenced.
-    async fn destroy(&mut self, machine: &Machine) -> Result<(), ProviderError> {
-        let id = machine.id;
-        self.send_and_await(HttpRequest::new(Method::Delete, self.machine_url(id)))
-            .await?;
-
-        for (provider_path, name, version) in [
-            (
-                "Microsoft.Network/networkInterfaces",
-                names::network_interface(id),
-                api_version::NETWORK,
-            ),
-            (
-                "Microsoft.Network/publicIPAddresses",
-                names::public_ip(id),
-                api_version::NETWORK,
-            ),
-            (
-                "Microsoft.Compute/disks",
-                names::os_disk(id),
-                api_version::DISKS,
-            ),
-        ] {
-            let url = self.resource_url(provider_path, &name, version);
-            self.send_and_await(HttpRequest::new(Method::Delete, url))
-                .await?;
+        match machine.runtime {
+            Runtime::Vm => self.resize_vm(machine, new_machine_type).await,
+            Runtime::Container => self.resize_container(machine, new_machine_type).await,
         }
+    }
 
-        tracing::info!(machine = %id, "destroyed an Azure machine and its resources");
-        Ok(())
+    /// Releases compute: a deallocation on a virtual machine, and the end of
+    /// the execution on a container.
+    ///
+    /// The two are the same request to the session and different requests to
+    /// Azure. Which one it is cannot be read off the machine's identifier —
+    /// it is [`Machine::runtime`], which the row already carries.
+    async fn deallocate(&mut self, machine: &Machine) -> Result<(), ProviderError> {
+        match machine.runtime {
+            Runtime::Vm => self.post_action(machine.id, "deallocate").await,
+            Runtime::Container => {
+                let execution = containers::Execution::parse(&machine.native_id)?;
+                self.stop_execution(&execution).await
+            }
+        }
+    }
+
+    /// Puts a machine back on compute.
+    ///
+    /// A virtual machine starts on the disk it kept. A container starts as a
+    /// *new execution* of the job it kept, on an empty filesystem, which is
+    /// why its `native_id` changes here: the job is the same and the replica
+    /// is not.
+    async fn start(&mut self, machine: &Machine) -> Result<Machine, ProviderError> {
+        match machine.runtime {
+            Runtime::Vm => {
+                self.post_action(machine.id, "start").await?;
+                Ok(Machine {
+                    state: MachineState::Running,
+                    ..machine.clone()
+                })
+            }
+            Runtime::Container => {
+                let job = containers::Execution::parse(&machine.native_id)?.job;
+                let execution = self.start_execution(job).await?;
+                tracing::info!(
+                    machine = %machine.id,
+                    %execution,
+                    "started a new Azure Container Apps execution"
+                );
+                Ok(Machine {
+                    native_id: containers::Execution::native_id(job, &execution),
+                    state: MachineState::Running,
+                    ..machine.clone()
+                })
+            }
+        }
+    }
+
+    async fn destroy(&mut self, machine: &Machine) -> Result<(), ProviderError> {
+        match machine.runtime {
+            Runtime::Vm => self.destroy_vm(machine).await,
+            Runtime::Container => self.destroy_container(machine).await,
+        }
     }
 }

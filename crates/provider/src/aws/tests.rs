@@ -280,6 +280,7 @@ fn provisioned(machine: MachineId) -> Machine {
     Machine {
         id: machine,
         native_id: INSTANCE.to_owned(),
+        runtime: flyco_core::Runtime::Vm,
         region: REGION.to_owned(),
         state: MachineState::Running,
         capacity_mode: CapacityMode::Spot,

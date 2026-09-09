@@ -1037,6 +1037,9 @@ async fn provision_on_host(
     Ok(Machine {
         id: request.machine,
         native_id: job.container().to_owned(),
+        // A session on hardware the user owns has always been a Podman
+        // container, which is the one entry a host's catalog publishes.
+        runtime: flyco_core::Runtime::Container,
         // A host is its own region, and there is nowhere else to put it —
         // the same answer its catalog gives.
         region: planner.machine_type().to_owned(),

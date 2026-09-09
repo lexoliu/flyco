@@ -93,8 +93,21 @@ pub struct Machine {
     /// Flyco's identifier for the machine.
     pub id: MachineId,
     /// Provider-native resource identifier: an instance id, a VM resource
-    /// id, or the container name on a machine the user owns.
+    /// id, the `job/execution` pair of a managed container, or the
+    /// container name on a machine the user owns.
     pub native_id: String,
+    /// Whether this machine is a virtual machine or a managed container.
+    ///
+    /// Carried rather than inferred from [`native_id`](Self::native_id),
+    /// because it decides *which API a lifecycle call is even addressed
+    /// to*: on Azure a stop is a `deallocate` action on a virtual machine
+    /// and a `stop` on a Container Apps execution, and telling the two
+    /// apart by the shape of an identifier would be a parser standing in
+    /// for a fact the row already holds. It is the same runtime the
+    /// [`MachineSpec`] asked for — a provider never answers a container
+    /// with a virtual machine — which is why nothing downstream has to
+    /// reconcile the two.
+    pub runtime: flyco_core::Runtime,
     /// Provider-native region the machine lives in.
     ///
     /// Carried rather than derived: every later operation needs it — an EC2
