@@ -10,8 +10,10 @@ name: Publish flycod
 # locally, so there is one implementation of the procedure and this file only
 # supplies the toolchain and the credentials. The installer and its systemd
 # unit are published by that command too, straight out of `crates/xtask/install/`
-# in this checkout, so a release is one commit's worth of daemon and installer
-# rather than a build here and a hand upload somewhere else.
+# in this checkout, and so is the session container image out of
+# `crates/xtask/image/`, so a release is one commit's worth of daemon,
+# installer and image rather than a build here and a hand upload somewhere
+# else.
 on:
   workflow_dispatch:
     inputs:
@@ -33,12 +35,27 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# The session image is pushed to this repository's package on ghcr.io with
+# the workflow's own token; nothing else here writes to GitHub.
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   publish:
     name: Cross-compile and publish
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The session image is built for both Linux architectures and pushed
+      # as one manifest list; the arm64 half runs under QEMU here.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu

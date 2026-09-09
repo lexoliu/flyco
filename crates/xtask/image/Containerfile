@@ -1,0 +1,21 @@
+# The image a flyco session runs in (issue #235): what `flycod.sh` puts on a
+# session VM, minus systemd, on Ubuntu 24.04. Built and pushed by
+# `cargo xtask publish-flycod` with the daemon it carries, so the image, the
+# installer and the binaries in the release bucket are one commit's worth.
+#
+# The build context is the release staging directory: it holds both
+# cross-compiled `flycod` binaries, the installer, and the entrypoint. The
+# binaries are bind-mounted into the install step rather than copied, so
+# neither ends up in a layer of the image.
+FROM ubuntu:24.04
+ARG TARGETARCH
+RUN --mount=type=bind,source=flycod.sh,target=/tmp/flycod.sh \
+    --mount=type=bind,source=flycod-linux-x86_64,target=/tmp/bin/amd64 \
+    --mount=type=bind,source=flycod-linux-aarch64,target=/tmp/bin/arm64 \
+    sh /tmp/flycod.sh image "/tmp/bin/${TARGETARCH}"
+COPY --chmod=0755 flyco-session /usr/local/bin/flyco-session
+USER flyco
+WORKDIR /srv/flyco/work
+ENV HOME=/home/flyco
+ENV PATH=/home/flyco/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ENTRYPOINT ["/usr/local/bin/flyco-session"]

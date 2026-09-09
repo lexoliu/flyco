@@ -1,0 +1,22 @@
+#!/bin/sh
+# The entrypoint of the flyco session image.
+#
+# The platform hands the container its daemon configuration as base64 TOML
+# in `FLYCO_DAEMON_CONFIG` — the same variable the host path's podman script
+# passes (`flyco_provider::host::CONFIG_ENV`) — because a container has no
+# cloud-init to write a file with. It is decoded to the path the daemon reads
+# on every machine and never echoed: it carries the session's daemon token.
+set -eu
+
+config=/etc/flycod/config.toml
+
+if [ -z "${FLYCO_DAEMON_CONFIG:-}" ]; then
+  echo "flyco-session: FLYCO_DAEMON_CONFIG is not set; this image is started by the flyco control plane" >&2
+  exit 78
+fi
+
+umask 077
+printf '%s' "$FLYCO_DAEMON_CONFIG" | base64 -d >"$config"
+unset FLYCO_DAEMON_CONFIG
+
+exec /usr/local/bin/flycod run --config "$config"
