@@ -250,3 +250,22 @@ pub trait HarnessSession: Send + Sync {
     /// Returns [`Self::Error`] if the harness did not stop cleanly.
     fn shutdown(self) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
+
+/// The sentence a failure is reported as: the error and every cause under
+/// it, outermost first.
+///
+/// `Display` on a `thiserror` type prints only its own line, and a fatal
+/// reason recorded from that alone said `transcript store I/O failed at
+/// <control plane>` about a request the control plane had refused with a
+/// status and a reason. The chain is what a person diagnoses from, so it
+/// is what gets recorded (issue #231).
+pub(crate) fn describe(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}

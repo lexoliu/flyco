@@ -1936,6 +1936,9 @@ mod remote_store {
         body: Vec<u8>,
         batches: u64,
         wrote: Sender<Wrote>,
+        /// Refuse every batch with this status, the way a control plane
+        /// that has run out of room, or of patience, does.
+        refuse_puts: Option<u16>,
     }
 
     impl ApprovalRaiser for Held {
@@ -2027,6 +2030,15 @@ mod remote_store {
             seq: u64,
             body: Vec<u8>,
         ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            if let Some(status) = self.refuse_puts {
+                return core::future::ready(Err(ControlApiError::Refused {
+                    method: "PUT",
+                    path: format!("/v1/sessions/s/transcript/{stream}/{seq}"),
+                    status,
+                    title: "Payload Too Large".to_owned(),
+                    detail: "the batch is over the 1 MiB a transcript batch may be".to_owned(),
+                }));
+            }
             core::future::ready(
                 self.wrote
                     .send(Wrote::Put {
@@ -2086,9 +2098,37 @@ mod remote_store {
                 body: body.to_vec(),
                 batches,
                 wrote,
+                refuse_puts: None,
             }),
             received,
         )
+    }
+
+    #[tokio::test]
+    async fn a_refused_batch_is_reported_with_the_control_planes_own_answer() {
+        // Issue #231: the session failed with `transcript store I/O failed
+        // at <control plane>`, and nothing about which request or why.
+        let (wrote, _received) = channel();
+        let mut store = RemoteTranscriptStore::new(Held {
+            body: Vec::new(),
+            batches: 0,
+            wrote,
+            refuse_puts: Some(413),
+        });
+
+        let error = store
+            .append(&key(None), vec![json!({ "uuid": "a" })])
+            .await
+            .expect_err("a refused batch is an error");
+
+        assert!(matches!(error, StoreError::ControlPlane { .. }));
+        let described = crate::harness::describe(&error);
+        assert_eq!(
+            described,
+            "the control plane could not keep the transcript: the control plane refused PUT \
+             /v1/sessions/s/transcript/flyco-work.9d0f4b1a/0: 413 Payload Too Large — the \
+             batch is over the 1 MiB a transcript batch may be"
+        );
     }
 
     fn key(subpath: Option<&str>) -> SessionKey {
