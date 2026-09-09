@@ -34,6 +34,7 @@ pub fn bootstrap() -> flyco_provider::DaemonBootstrap {
     flyco_provider::DaemonBootstrap {
         session: flyco_core::SessionId::generate(),
         provider: flyco_core::machine::CloudProviderKind::Host,
+        runtime: flyco_core::Runtime::Container,
         control_plane_url: "https://dev.flyco.dev/".to_owned(),
         daemon_token: "fd_a-daemon-token".to_owned(),
         permission_mode: flyco_core::PermissionMode::Default,
@@ -87,6 +88,14 @@ pub enum Call {
     Synced,
     /// The reclamation was reported to the control plane over REST.
     SpotNoticeReported(u32),
+    /// The working tree was stored as a patch, with its size in bytes.
+    ///
+    /// The container counterpart of [`Self::Synced`]: a machine with no
+    /// disk gets its uncommitted work off the machine rather than onto a
+    /// disk, and the ordering test asserts which of the two happened.
+    WorkdirPatchStored(usize),
+    /// The stop was reported to the control plane over REST.
+    StoppingReported(flyco_core::StopReason),
     /// The models the harness offers were filed with the control plane.
     ModelsReported(Vec<flyco_core::ModelOption>),
     /// How much of the plan is spent was filed with the control plane.

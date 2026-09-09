@@ -12,6 +12,7 @@ import type {
   MachineCatalogEntry,
   MachineState,
   MachineView,
+  Runtime,
 } from "../api/client";
 import { ApiProblem } from "../api/problem";
 import { formatUsd } from "./money";
@@ -62,24 +63,131 @@ export function shortMachineType(machineType: string): string {
   return machineType.replace(/^Standard_/u, "");
 }
 
-/** `4 vCPU / 16 GiB`, or nothing for a machine flyco has not measured. */
-export function capacityLabel(entry: MachineCatalogEntry): string | null {
+/** What each runtime is called where a person reads it. */
+export const RUNTIME_LABEL: Record<Runtime, string> = {
+  vm: "VM",
+  container: "Container",
+};
+
+/**
+ * What kind of machine this is, with the default the API applies.
+ *
+ * `runtime` is optional on the wire because a document written before the
+ * axis existed describes a virtual machine and reads back as one. Resolving
+ * it here means nothing downstream has to remember that.
+ */
+export function runtimeOf(entry: { runtime?: Runtime }): Runtime {
+  return entry.runtime ?? "vm";
+}
+
+/**
+ * Whether this machine has a name worth showing, or is described by its
+ * size.
+ *
+ * A virtual machine is its type: `D4s_v6` is a thing the provider sells,
+ * it is what the user picked, and it is what they will look for again. A
+ * managed container's type name (`aca-4x8`) is flyco's own key for a size
+ * the provider bills by the second — nobody typed it and nothing outside
+ * the driver reads it — so a container row says what it *is* and lets the
+ * size beside it say how big.
+ *
+ * A machine the user enrolled is the exception, and it is a container too:
+ * its type is the machine's own hostname, which is the name they gave it
+ * and the only thing that tells two of their machines apart.
+ */
+function namesItself(provider: CloudProviderKind, runtime: Runtime): boolean {
+  return runtime === "vm" || provider === "host";
+}
+
+/**
+ * What a catalog entry is called where there is room for its whole name:
+ * the slider's label, which is the one place the provider's own spelling is
+ * worth reading in full (docs/ux.md §7.7).
+ */
+export function entryName(entry: MachineCatalogEntry): string {
+  const runtime = runtimeOf(entry);
+  return namesItself(entry.provider, runtime)
+    ? entry.machine_type
+    : RUNTIME_LABEL[runtime];
+}
+
+/** The same name on a chip, where `Standard_` is the part that wraps. */
+export function entryChipName(entry: MachineCatalogEntry): string {
+  return shortMachineType(entryName(entry));
+}
+
+/**
+ * How big a machine is, as the parts a label joins.
+ *
+ * Two parts rather than one string, because the two runtimes spend them
+ * differently: a VM row is anchored by its type name and carries the size
+ * as one parenthetical fact (`4 vCPU / 16 GiB`), while a container row has
+ * no name to anchor it and the size *is* the identity, so each half stands
+ * on its own (`Container · 4 vCPU · 8 GiB`).
+ *
+ * Empty for a machine flyco has not measured — hardware the user enrolled,
+ * whose size flyco does not learn until a daemon runs on it.
+ */
+export function capacityParts(entry: MachineCatalogEntry): string[] {
   const capacity = entry.capacity;
   if (capacity === null || capacity === undefined) {
-    return null;
+    return [];
   }
   const gib = Math.round(capacity.memory_mib / MIB_PER_GIB);
-  return `${capacity.vcpus} vCPU / ${gib} GiB`;
+  return [`${capacity.vcpus} vCPU`, `${gib} GiB`];
+}
+
+/** `4 vCPU / 16 GiB`, or nothing for a machine flyco has not measured. */
+export function capacityLabel(entry: MachineCatalogEntry): string | null {
+  const parts = capacityParts(entry);
+  return parts.length === 0 ? null : parts.join(" / ");
+}
+
+/**
+ * What a provider gives away every month, where it gives anything away.
+ *
+ * The grant is per subscription and per calendar month, and how much of it
+ * this account has already spent is a number only the provider's own meter
+ * has — so the label says the machine is covered, not how much of the cover
+ * is left.
+ */
+export const FREE_GRANT_LABEL = "Free this month";
+
+/** Whether the provider covers this entry out of a monthly allowance. */
+export function hasFreeGrant(entry: MachineCatalogEntry | undefined): boolean {
+  return entry?.free_grant !== null && entry?.free_grant !== undefined;
 }
 
 /**
  * The slider label of docs/ux.md §7.7:
- * `Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr`.
+ * `Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr`, and for a container
+ * `Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month`.
  */
 export function detentLabel(entry: MachineCatalogEntry, spot: boolean): string {
-  return [entry.machine_type, capacityLabel(entry), hourlyLabel(entry, spot)]
-    .filter((part) => part !== null)
-    .join(" · ");
+  const size = namesItself(entry.provider, runtimeOf(entry))
+    ? [capacityLabel(entry)].filter((part) => part !== null)
+    : capacityParts(entry);
+  return [entryName(entry), ...size, hourlyLabel(entry, spot), ...grantParts(entry)].join(" · ");
+}
+
+/** ` · Free this month`, on the entries that earn it and nothing else. */
+function grantParts(entry: MachineCatalogEntry): string[] {
+  return hasFreeGrant(entry) ? [FREE_GRANT_LABEL] : [];
+}
+
+/**
+ * The same entry, sized for the composer's compute chip.
+ *
+ * A VM drops its size — the type name is what the user picked, and this is
+ * the chip that gives way when the row runs out of room. A container keeps
+ * it, because `Container · $0.21/hr` would be a chip that says nothing
+ * about the machine it names.
+ */
+export function chipLabel(entry: MachineCatalogEntry, spot: boolean): string {
+  const size = namesItself(entry.provider, runtimeOf(entry)) ? [] : capacityParts(entry);
+  return [entryChipName(entry), ...size, hourlyLabel(entry, spot), ...grantParts(entry)].join(
+    " · ",
+  );
 }
 
 /**
@@ -124,10 +232,18 @@ export function isUserOwned(entry: MachineCatalogEntry | undefined): boolean {
  * `Auto` resolved to the sentence names the machine rather than quoting a
  * rule that did not decide anything.
  *
+ * A container the provider covers out of a monthly grant wins over both,
+ * because that allowance expires unspent at the end of the month and the
+ * machine at home does not — so the sentence names the grant rather than a
+ * price nobody is paying.
+ *
  * It follows the word `Auto` where the slider speaks it, so it opens as a
  * sentence of its own rather than as a clause.
  */
 export function autoSentence(entry: MachineCatalogEntry | undefined): string {
+  if (entry !== undefined && hasFreeGrant(entry)) {
+    return "A container your provider gives away this month, which flyco spends before it spends money.";
+  }
   return isUserOwned(entry) && entry !== undefined
     ? `${entry.machine_type} — the machine you enrolled, which flyco meters no spend on.`
     : "The cheapest curated Linux type with at least 4 vCPU and 16 GiB.";
@@ -179,9 +295,18 @@ export const MACHINE_STATE_LABEL: Record<MachineState, string> = {
  * A running machine flyco meters nothing on (hardware the user enrolled)
  * quotes no price either: `$0.00/hr` would read as "this is free", which is
  * a different claim.
+ *
+ * A managed container reads `Container · $0.21/hr`, for the reason
+ * {@link entryName} gives: `aca-4x8` is flyco's key for a size, not a name
+ * anybody would recognise in a header. The size is not repeated here — the
+ * header has one line and the drawer's machine tab has the whole entry.
  */
 export function machineChip(machine: MachineView): string {
-  const parts = [shortMachineType(machine.spec.machine_type)];
+  const parts = [
+    namesItself(machine.spec.provider, runtimeOf(machine.spec))
+      ? shortMachineType(machine.spec.machine_type)
+      : RUNTIME_LABEL.container,
+  ];
   if (machine.state !== "running") {
     parts.push(MACHINE_STATE_LABEL[machine.state]);
     return parts.join(" · ");

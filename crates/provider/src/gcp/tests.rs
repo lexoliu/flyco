@@ -32,7 +32,7 @@
 //! billing read, not a compute one), and the project must still have its
 //! default VPC network.
 
-use flyco_core::machine::{CloudProviderKind, MachineSpec, MachineState};
+use flyco_core::machine::{CloudProviderKind, MachineSpec, MachineState, Runtime};
 use flyco_core::{MachineId, PermissionMode, SessionId};
 use serde_json::Value;
 
@@ -138,6 +138,7 @@ fn request_in(machine: MachineId, zone: &str, machine_type: &str, spot: bool) ->
         spec: MachineSpec {
             provider: CloudProviderKind::Gcp,
             machine_type: machine_type.to_owned(),
+            runtime: Runtime::Vm,
             region: zone.to_owned(),
             spot,
             disk_gib: 30,
@@ -145,6 +146,7 @@ fn request_in(machine: MachineId, zone: &str, machine_type: &str, spot: bool) ->
         bootstrap: DaemonBootstrap {
             session: SessionId::generate(),
             provider: flyco_core::CloudProviderKind::Gcp,
+            runtime: Runtime::Vm,
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_a-live-daemon-token".to_owned(),
             permission_mode: PermissionMode::Default,

@@ -1,5 +1,5 @@
 use flyco_core::{
-    BudgetId, BudgetSignal, BudgetStage, CloudProviderKind, MachineSpec, MachineState,
+    BudgetId, BudgetSignal, BudgetStage, CloudProviderKind, MachineSpec, MachineState, Runtime,
     SessionState, SpendKind, Usd,
 };
 use skyzen::sql;
@@ -31,6 +31,7 @@ async fn scheduled_metering_records_compute_and_storage_once_and_pauses(_ctx: Te
         &MachineSpec {
             provider: CloudProviderKind::Host,
             machine_type: "build.lexo.cool".to_owned(),
+            runtime: Runtime::Container,
             region: "build.lexo.cool".to_owned(),
             spot: false,
             disk_gib: 64,

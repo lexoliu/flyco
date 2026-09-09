@@ -187,6 +187,16 @@ pub struct DaemonBootstrap {
     /// the configuration only when the capacity is interruptible — see
     /// [`flycod::render`].
     pub provider: flyco_core::CloudProviderKind,
+    /// Whether the machine is a virtual machine or a managed container.
+    ///
+    /// The daemon needs it for exactly one thing, and again nothing on the
+    /// machine can tell it: whether the filesystem it is working on will
+    /// still be there after this process stops. A VM's `SIGTERM` is a
+    /// shutdown onto a disk that survives; a container's is the platform
+    /// taking the working tree away in thirty seconds, so the daemon has to
+    /// write the `workdir-patch` before it goes. See
+    /// [`flyco_core::Runtime`].
+    pub runtime: flyco_core::Runtime,
     /// Base URL of the control plane, e.g. `https://flyco.dev/`.
     pub control_plane_url: String,
     /// The session's `fd_` daemon token.
@@ -238,6 +248,7 @@ impl fmt::Debug for DaemonBootstrap {
         f.debug_struct("DaemonBootstrap")
             .field("session", &self.session)
             .field("provider", &self.provider)
+            .field("runtime", &self.runtime)
             .field("control_plane_url", &self.control_plane_url)
             .field("permission_mode", &self.permission_mode)
             .field("auth", &self.auth)
@@ -521,6 +532,20 @@ pub trait CloudProvider {
 
     /// Changes the machine type in place, preserving the disk
     /// (stop → modify → start).
+    ///
+    /// On a [`Runtime::Container`](flyco_core::Runtime::Container) machine
+    /// this is **stop, then start at the new size**, and that is a cheaper
+    /// operation than the VM version rather than a degraded one: a job's
+    /// size belongs to the execution, so there is nothing to modify between
+    /// the two halves. What it costs instead is the filesystem — the
+    /// execution that stops takes the working tree with it — which is why
+    /// the stop writes the `workdir-patch` and the start replays it onto a
+    /// fresh clone, exactly as an ordinary container start does.
+    ///
+    /// A driver with no size to change refuses with
+    /// [`ProviderError::Unsupported`] rather than reporting a resize it did
+    /// not perform: [`host::Host`] is the one such driver, because hardware
+    /// the user owns has the cores it has.
     fn resize(
         &mut self,
         machine: &Machine,
@@ -528,9 +553,19 @@ pub trait CloudProvider {
     ) -> impl Future<Output = Result<Machine, ProviderError>>;
 
     /// Releases compute but keeps the disk (archive-pending, spot pause).
+    ///
+    /// "Keeps the disk" is a VM's promise. On a
+    /// [`Runtime::Container`](flyco_core::Runtime::Container) machine there
+    /// is no disk to keep: the definition survives and the filesystem does
+    /// not, so what makes the session resumable is the `workdir-patch` its
+    /// daemon wrote on the way out.
     fn deallocate(&mut self, machine: &Machine) -> impl Future<Output = Result<(), ProviderError>>;
 
     /// Puts a deallocated machine back on compute, on the same disk.
+    ///
+    /// On a [`Runtime::Container`](flyco_core::Runtime::Container) machine,
+    /// on a fresh filesystem: a new execution of the same job, which clones
+    /// the repository again and applies the stored patch on top.
     fn start(&mut self, machine: &Machine) -> impl Future<Output = Result<Machine, ProviderError>>;
 
     /// Releases compute and disk. Irreversible.
@@ -599,6 +634,7 @@ mod tests {
         let bootstrap = DaemonBootstrap {
             session: SessionId::generate(),
             provider: flyco_core::CloudProviderKind::Azure,
+            runtime: flyco_core::Runtime::Vm,
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_a-live-credential".to_owned(),
             permission_mode: flyco_core::PermissionMode::Default,

@@ -9,8 +9,8 @@
 
 use flyco_core::{
     CloudProviderKind, MachineCapacity, MachineCatalog, MachineCatalogEntry, MachineDefault,
-    MachinePricing, OsFamily, Problem, ProviderAccountId, ProviderCredentials, StoragePricing, Usd,
-    UserId,
+    MachinePricing, OsFamily, Problem, ProviderAccountId, ProviderCredentials, Runtime,
+    StoragePricing, Usd, UserId,
 };
 use skyzen::routing::Router;
 use skyzen_services::queue::{QueueBatch, QueueMessage, ReceiveOptions};
@@ -83,6 +83,8 @@ fn entry(account: ProviderAccountId) -> MachineCatalogEntry {
         provider: CloudProviderKind::Azure,
         region: REGION.to_owned(),
         machine_type: MACHINE_TYPE.to_owned(),
+        runtime: Runtime::Vm,
+        free_grant: None,
         os: OsFamily::Linux,
         capacity: Some(MachineCapacity {
             vcpus: 4,

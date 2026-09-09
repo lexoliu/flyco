@@ -67,8 +67,8 @@ mod tests;
 
 use flyco_core::MachineId;
 use flyco_core::machine::{
-    CloudProviderKind, CpuArchitecture, MachineCapacity, MachineCatalogEntry, MachinePricing,
-    MachineSpec, MachineState, OsFamily, StoragePricing,
+    CloudProviderKind, CpuArchitecture, FreeGrant, MachineCapacity, MachineCatalogEntry,
+    MachinePricing, MachineSpec, MachineState, OsFamily, Runtime, StoragePricing,
 };
 
 use crate::clock::{MonotonicClock, SystemClock, SystemTimer, SystemWallClock, Timer, WallClock};
@@ -86,6 +86,24 @@ use quotas::Quotas;
 
 /// Driver name, as it appears in [`ProviderError::Unsupported`].
 pub const PROVIDER: &str = "gcp";
+
+/// What Cloud Run gives away per billing account per calendar month, on
+/// instance-based billing.
+///
+/// 240,000 vCPU-seconds and 450,000 GiB-seconds
+/// ([cloud.google.com/run/pricing](https://cloud.google.com/run/pricing)) —
+/// a third more than [Azure's](crate::azure::CONTAINER_APPS_FREE_GRANT),
+/// and the reason a Cloud Run job is the cheaper of the two once both
+/// drivers exist.
+///
+/// Declared here, beside the driver that will publish it on its container
+/// entries: it is a fact about one provider's price list, and
+/// [`flyco_core::FreeGrant`] is the shared shape rather than the shared
+/// number.
+pub const CLOUD_RUN_FREE_GRANT: FreeGrant = FreeGrant {
+    vcpu_seconds_per_month: 240_000,
+    gib_seconds_per_month: 450_000,
+};
 
 /// Zones a catalog covers when the caller names none.
 ///
@@ -728,6 +746,8 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
             // machine it describes can be created.
             region: zone.to_owned(),
             machine_type: machine_type.name.clone(),
+            runtime: Runtime::Vm,
+            free_grant: None,
             os: OsFamily::Linux,
             capacity: Some(MachineCapacity {
                 vcpus: machine_type.guest_cpus,

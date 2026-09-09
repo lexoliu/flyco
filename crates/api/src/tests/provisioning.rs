@@ -1786,6 +1786,70 @@ async fn every_stage_the_queue_announces_is_one_something_can_time(
 }
 
 #[skyzen::test]
+async fn a_stopping_container_marks_its_machine_and_queues_nothing(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // The container counterpart of a spot notice, and deliberately not the
+    // same route. A reclaimed virtual machine keeps its disk and has a
+    // recovery queued against it; a stopping container has already handed
+    // its working tree over as the `workdir-patch` and there is nothing to
+    // schedule against a deadline. What the control plane keeps is the mark
+    // the container drivers read to tell an execution that was asked to go
+    // from one that died.
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, daemon) = provisioned(&client, &caller, &db, &kv, &queue).await;
+    let machine = machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("a machine row")
+        .id;
+
+    let response = client
+        .post(&format!("/v1/sessions/{session}/stopping"))
+        .bearer(&daemon)
+        .json(&flyco_core::ReportStopping {
+            reason: flyco_core::StopReason::Sigterm,
+        })
+        .send()
+        .await;
+    response.assert_status(202);
+
+    let reason: Option<flyco_core::StopReason> = sql!(
+        db,
+        "SELECT stopping_reason FROM machines WHERE id = {machine}"
+    )
+    .fetch_scalar()
+    .await
+    .expect("read the machine row back");
+    assert_eq!(reason, Some(flyco_core::StopReason::Sigterm));
+
+    let since: Option<u64> = sql!(
+        db,
+        "SELECT stopping_since_unix FROM machines WHERE id = {machine}"
+    )
+    .fetch_scalar()
+    .await
+    .expect("read the machine row back");
+    assert!(
+        since.is_some(),
+        "the instant is what says the session is safe to start elsewhere"
+    );
+
+    assert!(
+        queued(&backend)
+            .into_iter()
+            .all(|job| !matches!(job, ProvisioningJob::Recover { .. })),
+        "a container that stopped has no disk to recover onto"
+    );
+}
+
+#[skyzen::test]
 async fn a_reclaimed_session_reads_as_interrupted_and_queues_its_own_recovery(
     ctx: TestContext,
     kv: Kv,

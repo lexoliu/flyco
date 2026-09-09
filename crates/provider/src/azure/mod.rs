@@ -73,8 +73,8 @@ pub mod skus;
 mod tests;
 
 use flyco_core::machine::{
-    CloudProviderKind, CpuArchitecture, MachineCapacity, MachineCatalogEntry, MachinePricing,
-    MachineSpec, MachineState, OsFamily, StoragePricing,
+    CloudProviderKind, CpuArchitecture, FreeGrant, MachineCapacity, MachineCatalogEntry,
+    MachinePricing, MachineSpec, MachineState, OsFamily, Runtime, StoragePricing,
 };
 use flyco_core::{CloudSpend, MachineId};
 
@@ -96,6 +96,24 @@ use skus::{Availability, Quotas, Sku, SkuPage, UsagePage};
 
 /// Driver name, as it appears in [`ProviderError::Unsupported`].
 pub const PROVIDER: &str = "azure";
+
+/// What Azure Container Apps gives away per subscription per calendar
+/// month, jobs included.
+///
+/// The published Consumption-plan allowance: 180,000 vCPU-seconds and
+/// 360,000 GiB-seconds
+/// ([learn.microsoft.com/azure/container-apps/billing](https://learn.microsoft.com/azure/container-apps/billing)),
+/// which is about twelve and a half hours of a 4 vCPU / 8 GiB job before the
+/// vCPU half — the binding one at that shape — runs out.
+///
+/// Declared here, beside the driver that will publish it on its container
+/// entries, rather than in `flyco_core`: it is a fact about one provider's
+/// price list, and the type that carries it
+/// ([`flyco_core::FreeGrant`]) is what the catalog shares.
+pub const CONTAINER_APPS_FREE_GRANT: FreeGrant = FreeGrant {
+    vcpu_seconds_per_month: 180_000,
+    gib_seconds_per_month: 360_000,
+};
 
 /// Regions a catalog covers when the subscription restricts none and the
 /// caller names none either.
@@ -1130,6 +1148,8 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             provider: CloudProviderKind::Azure,
             region: region.to_owned(),
             machine_type: sku.name.clone(),
+            runtime: Runtime::Vm,
+            free_grant: None,
             os: OsFamily::Linux,
             capacity: Some(MachineCapacity { vcpus, memory_mib }),
             lineage: Some(lineage),

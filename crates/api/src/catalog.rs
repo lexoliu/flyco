@@ -369,7 +369,8 @@ pub async fn refresh_stale(db: &Db, kv: &Kv, queue: &Queue, at_unix: u64) -> Res
 #[cfg(test)]
 mod tests {
     use flyco_core::{
-        CloudProviderKind, MachineCatalogEntry, MachinePricing, OsFamily, ProviderAccountId, Usd,
+        CloudProviderKind, MachineCatalogEntry, MachinePricing, OsFamily, ProviderAccountId,
+        Runtime, Usd,
     };
     use skyzen_services::Kv;
     use skyzen_test::mock::InMemoryKv;
@@ -385,6 +386,8 @@ mod tests {
             provider: CloudProviderKind::Azure,
             region: region.to_owned(),
             machine_type: machine_type.to_owned(),
+            runtime: Runtime::Vm,
+            free_grant: None,
             os: OsFamily::Linux,
             capacity: None,
             lineage: None,

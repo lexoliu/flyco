@@ -12,8 +12,8 @@ use flyco_core::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, ClientEvent,
     CloudProviderKind, ControlToDaemon, CurrentUser, DEFAULT_DISK_GIB, MachineCapacity,
     MachineCatalog, MachineCatalogEntry, MachineChoice, MachineDefault, MachineId, MachineSpec,
-    MachineState, MachineView, OsFamily, ProviderAccountId, ResizeMachine, SessionId,
-    SessionMachine, Usd, UserId, auto_linux_choice, curate,
+    MachineState, MachineView, OsFamily, ProviderAccountId, ResizeMachine, Runtime, SessionId,
+    SessionMachine, StopReason, Usd, UserId, auto_linux_choice, curate,
 };
 use serde::Deserialize;
 use skyzen::extract::Query;
@@ -48,6 +48,14 @@ pub struct MachineRow {
     pub provider_account_id: ProviderAccountId,
     provider: CloudProviderKind,
     machine_type: String,
+    /// Whether it is a virtual machine or a managed container.
+    ///
+    /// On the row rather than derived from `provider`, because one account
+    /// offers both: a subscription sells `Standard_D4s_v6` as a VM and
+    /// `aca-4x8` as a Container Apps job. It is what a driver needs to know
+    /// what a stop does to the disk, and what the daemon's configuration
+    /// states so the machine knows what to do with a `SIGTERM`.
+    runtime: Runtime,
     region: String,
     disk_gib: u32,
     requested_spot: bool,
@@ -92,6 +100,7 @@ impl From<MachineRow> for MachineView {
             spec: MachineSpec {
                 provider: row.provider,
                 machine_type: row.machine_type,
+                runtime: row.runtime,
                 region: row.region.clone(),
                 spot: row.requested_spot,
                 disk_gib: row.disk_gib,
@@ -148,6 +157,7 @@ impl MachineRow {
         MachineSpec {
             provider: self.provider,
             machine_type: self.machine_type.clone(),
+            runtime: self.runtime,
             region: self.region.clone(),
             spot: self.requested_spot,
             disk_gib: self.disk_gib,
@@ -220,9 +230,14 @@ async fn run(
 
     sql!(
         db,
+        // The stop mark is cleared here and not on its own: a machine
+        // a driver has just acted on is no longer on its way out, whatever
+        // the last daemon on it said, and a stale mark would have the
+        // container drivers read a live execution as a departing one.
         "UPDATE machines SET state = {updated.state}, machine_type = {machine_type}, \
          spot = {updated.capacity_mode.is_spot()}, native_id = {updated.native_id.clone()}, \
-         address = {updated.address.clone()}, compute_metered_at_unix = {now_unix()} \
+         address = {updated.address.clone()}, compute_metered_at_unix = {now_unix()}, \
+         stopping_since_unix = NULL, stopping_reason = NULL \
          WHERE id = {row.id}"
     )
     .execute()
@@ -236,15 +251,22 @@ async fn run(
 ///
 /// A resize keeps the disk, so it cannot cross an account or a region — the
 /// disk is in one of each — which makes those two, plus the provider, the
-/// filter rather than a preference. What comes back is the curated list of
-/// docs/ux.md §7.6, the same one the user's slider and the agent's
-/// `machine_resize` tool read.
+/// filter rather than a preference. The runtime is there for the same
+/// reason and is not a fourth kind of thing: moving between a virtual
+/// machine and a managed container is not a change of size, it is a
+/// different machine with a different bargain about what survives a stop,
+/// and offering it here would be offering something the resize route cannot
+/// express.
+///
+/// What comes back is the curated list of docs/ux.md §7.6, the same one the
+/// user's slider and the agent's `machine_resize` tool read.
 fn resize_filter(row: &MachineRow) -> CatalogFilter {
     CatalogFilter {
         provider: Some(row.provider),
         account: Some(row.provider_account_id),
         region: Some(row.region.clone()),
         os: None,
+        runtime: Some(row.runtime),
     }
 }
 
@@ -566,7 +588,7 @@ pub async fn release_unbuilt(db: &Db, session: SessionId) -> Result<(), ApiError
 async fn load(db: &Db, user: UserId, session: SessionId) -> Result<MachineRow, ApiError> {
     sql!(
         db,
-        "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
+        "SELECT id, session_id, provider_account_id, provider, machine_type, runtime, region, \
          disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, \
          vcpus, memory_mib, minimum_hours, minimum_charge_micros, native_id, volume_name, \
          address, created_at_unix \
@@ -613,6 +635,14 @@ pub struct CatalogFilter {
     pub region: Option<String>,
     /// Only machines running this operating system family.
     pub os: Option<OsFamily>,
+    /// Only virtual machines, or only managed containers.
+    ///
+    /// What a *resize* narrows by, for the same reason it narrows by
+    /// account and region: those are facts about the machine that already
+    /// exists, and a resize changes its size rather than what it is. The
+    /// composer's picker leaves this open, because a new session may be
+    /// either.
+    pub runtime: Option<Runtime>,
 }
 
 /// Lists the machine types the caller can provision, with their prices.
@@ -704,6 +734,9 @@ pub(crate) async fn catalog(
             .as_ref()
             .is_none_or(|region| entry.region.eq_ignore_ascii_case(region))
             && filter.os.is_none_or(|os| entry.os == os)
+            && filter
+                .runtime
+                .is_none_or(|runtime| entry.runtime == runtime)
     });
 
     // Curation is applied after filtering, not before: a frontier computed
@@ -792,6 +825,10 @@ pub(crate) async fn automatic(
             account,
             region: None,
             os: Some(OsFamily::Linux),
+            // Both, because `auto_linux_choice` is what chooses between
+            // them: a container the provider gives away this month beats
+            // every price a virtual machine can quote.
+            runtime: None,
         },
     )
     .await?;
@@ -813,6 +850,7 @@ pub(crate) async fn automatic(
         choice: MachineChoice {
             provider_account: account,
             machine_type: entry.machine_type.clone(),
+            runtime: entry.runtime,
             region: entry.region.clone(),
             // Spot only where the catalog quoted it: the cheapest type may
             // be one the spot pool cannot fund, and asking the provider for
@@ -832,11 +870,21 @@ pub(crate) async fn automatic(
 /// is read, never refreshed: asking the provider for a region in the
 /// request is the twelve seconds the send button used to hang for.
 ///
+/// The runtime is checked as well as the type, and separately, because the
+/// two failures are different sentences. A type this account does not offer
+/// here is a choice against a catalog it never had; a type it offers as
+/// something other than what was asked for is a caller working from a
+/// catalog that has since changed — and quietly provisioning the runtime on
+/// offer would give a session that asked for a disk one that loses its
+/// working tree every time the platform stops it.
+///
 /// # Errors
 ///
 /// Returns [`ApiError::CatalogNotReady`] while the account has not been
-/// read, and [`ApiError::MachineUnavailable`] when the account's catalog
-/// does not offer this type in this region.
+/// read, [`ApiError::MachineUnavailable`] when the account's catalog does
+/// not offer this type in this region, and
+/// [`ApiError::MachineRuntimeMismatch`] when it offers it as a different
+/// runtime from the one asked for.
 pub(crate) async fn deployable(
     db: &Db,
     config: &ApiConfig,
@@ -858,10 +906,14 @@ pub(crate) async fn deployable(
             account: Some(choice.provider_account),
             region: Some(choice.region.clone()),
             os: None,
+            // Read whole and checked below, so a request naming the right
+            // type and the wrong runtime is refused as the contradiction it
+            // is rather than as a type this account does not offer.
+            runtime: None,
         },
     )
     .await?;
-    entries
+    let entry = entries
         .into_iter()
         .find(|entry| entry.machine_type == choice.machine_type)
         .ok_or_else(|| {
@@ -873,7 +925,15 @@ pub(crate) async fn deployable(
                     choice.machine_type, choice.region
                 ))
             }
-        })
+        })?;
+    if entry.runtime != choice.runtime {
+        return Err(ApiError::MachineRuntimeMismatch {
+            machine_type: choice.machine_type.clone(),
+            requested: choice.runtime,
+            offered: entry.runtime,
+        });
+    }
+    Ok(entry)
 }
 
 /// The refusal a catalog with nothing flyco may pick answers with.
@@ -1050,11 +1110,11 @@ pub async fn reserve(
     sql!(
         db,
         "INSERT INTO machines \
-         (id, session_id, provider_account_id, provider, machine_type, region, disk_gib, \
-          requested_spot, spot, state, created_at_unix) \
+         (id, session_id, provider_account_id, provider, machine_type, runtime, region, \
+          disk_gib, requested_spot, spot, state, created_at_unix) \
          VALUES ({id}, {session}, {account}, {spec.provider}, {spec.machine_type.clone()}, \
-                 {spec.region.clone()}, {spec.disk_gib}, {spec.spot}, {spec.spot}, \
-                 {provisioning}, {now})"
+                 {spec.runtime}, {spec.region.clone()}, {spec.disk_gib}, {spec.spot}, \
+                 {spec.spot}, {provisioning}, {now})"
     )
     .execute()
     .await?;
@@ -1075,7 +1135,7 @@ pub async fn reserve(
 pub async fn for_session(db: &Db, session: SessionId) -> Result<Option<MachineRow>, ApiError> {
     Ok(sql!(
         db,
-        "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
+        "SELECT id, session_id, provider_account_id, provider, machine_type, runtime, region, \
          disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, \
          vcpus, memory_mib, minimum_hours, minimum_charge_micros, native_id, volume_name, \
          address, created_at_unix \
@@ -1098,7 +1158,7 @@ pub async fn for_session(db: &Db, session: SessionId) -> Result<Option<MachineRo
 pub async fn find(db: &Db, machine: MachineId) -> Result<Option<MachineRow>, ApiError> {
     Ok(sql!(
         db,
-        "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
+        "SELECT id, session_id, provider_account_id, provider, machine_type, runtime, region, \
          disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, \
          vcpus, memory_mib, minimum_hours, minimum_charge_micros, native_id, volume_name, \
          address, created_at_unix \
@@ -1123,7 +1183,7 @@ pub async fn live_on_account(
     let destroyed = MachineState::Destroyed;
     Ok(sql!(
         db,
-        "SELECT id, session_id, provider_account_id, provider, machine_type, region, \
+        "SELECT id, session_id, provider_account_id, provider, machine_type, runtime, region, \
          disk_gib, requested_spot, spot, state, hourly_micros, storage_hourly_micros, \
          vcpus, memory_mib, minimum_hours, minimum_charge_micros, native_id, volume_name, \
          address, created_at_unix \
@@ -1154,7 +1214,41 @@ pub async fn record_container(
     sql!(
         db,
         "UPDATE machines SET state = {running}, native_id = {container}, \
-         volume_name = {volume} WHERE id = {machine}"
+         volume_name = {volume}, stopping_since_unix = NULL, stopping_reason = NULL \
+         WHERE id = {machine}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
+/// Records that this machine's own daemon says it is stopping.
+///
+/// What `POST /v1/sessions/{id}/stopping` writes, and it is written *after*
+/// the daemon has flushed the transcript and stored the working tree — so a
+/// row carrying an instant here is one whose session is safe to start
+/// somewhere else.
+///
+/// Not a [`MachineState`]: the machine has not stopped yet and may not stop
+/// cleanly, and a fifth lifecycle state would have every reader of that
+/// column learn a word for a moment rather than for a condition. The
+/// container drivers of issue #235 read this to tell an execution that was
+/// asked to go from one that died, and it is cleared the moment anything
+/// acts on the machine again.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn mark_stopping(
+    db: &Db,
+    machine: MachineId,
+    reason: StopReason,
+) -> Result<(), ApiError> {
+    let now = now_unix();
+    sql!(
+        db,
+        "UPDATE machines SET stopping_since_unix = {now}, stopping_reason = {reason} \
+         WHERE id = {machine}"
     )
     .execute()
     .await?;
@@ -1323,7 +1417,7 @@ pub fn routes() -> Vec<RouteNode> {
 mod tests {
     use flyco_core::{
         BillingMinimum, CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachinePricing,
-        OsFamily, StoragePricing, Usd,
+        OsFamily, Runtime, StoragePricing, Usd,
     };
 
     use super::on_the_agents_authority;
@@ -1335,6 +1429,8 @@ mod tests {
             account: None,
             region: "us-east-1".to_owned(),
             machine_type: machine_type.to_owned(),
+            runtime: Runtime::Vm,
+            free_grant: None,
             os: OsFamily::Linux,
             capacity: Some(MachineCapacity {
                 vcpus: 8,

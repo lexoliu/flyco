@@ -1,7 +1,13 @@
 /**
  * Session creation, on top of the typed client.
  */
-import { createSession, type HarnessKind, type ModelChoice, type SessionDetail } from "./client";
+import {
+  createSession,
+  type HarnessKind,
+  type ModelChoice,
+  type Runtime,
+  type SessionDetail,
+} from "./client";
 import { dollarsToUsdMicros } from "../lib/money";
 
 export interface NewSessionInput {
@@ -34,6 +40,14 @@ export interface NewSessionInput {
   machine?: {
     providerAccount: string;
     machineType: string;
+    /**
+     * Whether that type is a virtual machine or a managed container, as the
+     * catalog entry it came from says. Sent because the control plane
+     * checks it: a request whose runtime disagrees with the type it names
+     * is a picker working from a catalog that has since changed, and it is
+     * refused rather than provisioned as whatever is on offer.
+     */
+    runtime: Runtime;
     region: string;
     spot: boolean;
     diskGib?: number;
@@ -59,6 +73,7 @@ export function requestNewSession(input: NewSessionInput): Promise<SessionDetail
           machine: {
             provider_account: input.machine.providerAccount,
             machine_type: input.machine.machineType,
+            runtime: input.machine.runtime,
             region: input.machine.region,
             spot: input.machine.spot,
             ...(input.machine.diskGib === undefined

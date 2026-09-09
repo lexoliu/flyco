@@ -221,6 +221,18 @@ pub struct MachineChoice {
     pub provider_account: ProviderAccountId,
     /// Provider-native machine type, as `GET /v1/machines/catalog` names it.
     pub machine_type: String,
+    /// Whether that type is a virtual machine or a managed container, as
+    /// the same catalog entry says.
+    ///
+    /// Sent rather than derived, and checked against the entry before the
+    /// session is written: the two facts came off one row in the picker,
+    /// and a request whose runtime disagrees with the type it names is a
+    /// caller working from a catalog that has since changed — which is a
+    /// refusal at the point of choice rather than a machine of the wrong
+    /// shape. Defaulted to [`Runtime::Vm`], which is what every caller
+    /// written before this axis existed means.
+    #[serde(default)]
+    pub runtime: crate::machine::Runtime,
     /// Provider-native region, as the catalog entry names it.
     pub region: String,
     /// Whether to ask for interruptible spot capacity. Spot is the default

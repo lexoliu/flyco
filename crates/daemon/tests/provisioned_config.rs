@@ -13,7 +13,9 @@
 //! own loader parses; the assertions are on the fields the control plane
 //! depends on being carried.
 
-use flyco_core::{BillingMinimum, HarnessKind, MachineOrigin, PermissionMode, SessionId, Usd};
+use flyco_core::{
+    BillingMinimum, HarnessKind, MachineOrigin, PermissionMode, Runtime, SessionId, Usd,
+};
 use flyco_daemon::config::{ClaudeAuth, CodexAuth, DaemonConfig};
 use flyco_provider::flycod::{
     self, CLAUDE_CONFIG_DIR, CLAUDE_MANAGED_DIR, CLAUDE_PROJECT_DIR_NAME, CODEX_HOME, WORKDIR,
@@ -34,6 +36,7 @@ fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
     DaemonBootstrap {
         session: SessionId::generate(),
         provider: flyco_core::CloudProviderKind::Azure,
+        runtime: flyco_core::Runtime::Vm,
         control_plane_url: CONTROL_PLANE.to_owned(),
         daemon_token: DAEMON_TOKEN.to_owned(),
         permission_mode: PermissionMode::Auto,
@@ -121,6 +124,23 @@ fn it_carries_the_machine_the_agent_is_told_about_and_who_chose_it() {
 
     assert_eq!(config.machine_origin, MachineOrigin::User);
     assert_eq!(config.machine, bootstrap.machine);
+}
+
+#[test]
+fn it_carries_whether_the_disk_survives_a_stop() {
+    // The one fact nothing on the machine can discover for itself, and the
+    // one that decides what SIGTERM means there: on a container the daemon
+    // spends the platform's grace period writing the working tree out,
+    // because nothing else will survive.
+    let vm = parse(&claude(ClaudeCredential::Inherit));
+    assert_eq!(vm.runtime, Runtime::Vm);
+
+    let container = parse(&DaemonBootstrap {
+        runtime: Runtime::Container,
+        ..claude(ClaudeCredential::Inherit)
+    });
+    assert_eq!(container.runtime, Runtime::Container);
+    assert!(!container.runtime.keeps_disk());
 }
 
 #[test]

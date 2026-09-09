@@ -288,6 +288,41 @@ pub struct ReportSpotNotice {
     pub seconds_remaining: u32,
 }
 
+/// Why a machine's own daemon says it is going away.
+///
+/// One variant, and an enum all the same: the control plane's container
+/// drivers have to tell "the platform stopped this execution" from "the
+/// execution ran out of time" and from "flyco asked for it", and a boolean
+/// or a bare string could not carry that distinction into the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
+pub enum StopReason {
+    /// The platform sent `SIGTERM`.
+    ///
+    /// What every managed container service does when it stops an
+    /// execution, evicts a spot task, or reaches the run's timeout: Azure
+    /// Container Apps, Cloud Run and Fargate all announce it this way, and
+    /// all three follow it with `SIGKILL` about thirty seconds later.
+    Sigterm,
+}
+
+/// Request body of `POST /v1/sessions/{id}/stopping`.
+///
+/// The last thing a container session's daemon files. Its counterpart on a
+/// virtual machine is [`ReportSpotNotice`], and the two are deliberately
+/// different routes rather than one with a flag: a reclaimed VM keeps its
+/// disk and is *recovered* — the control plane queues a start against the
+/// same machine after the provider's own countdown — while a stopping
+/// container has already handed its working tree over as the
+/// `workdir-patch` and is simply gone, with nothing to schedule against a
+/// deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ReportStopping {
+    /// What made the machine stop.
+    pub reason: StopReason,
+}
+
 /// The user's decision on an approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -990,8 +1025,8 @@ impl ClientEvent {
 mod tests {
     use super::{
         ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-        HarnessCommand, ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ShellOutcome,
-        ShellStream, UsageWindow,
+        HarnessCommand, ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
+        ReportStopping, ShellOutcome, ShellStream, StopReason, UsageWindow,
     };
     use crate::budget::BudgetSignal;
     use crate::harness::{ContextWindow, HarnessEvent, UsageReport};
@@ -1433,6 +1468,20 @@ mod tests {
             })
             .expect("serialize"),
             r#"{"seconds_remaining":120}"#
+        );
+    }
+
+    #[test]
+    fn a_stopping_container_names_what_stopped_it() {
+        round_trip(&ReportStopping {
+            reason: StopReason::Sigterm,
+        });
+        assert_eq!(
+            serde_json::to_string(&ReportStopping {
+                reason: StopReason::Sigterm,
+            })
+            .expect("serialize"),
+            r#"{"reason":"sigterm"}"#
         );
     }
 

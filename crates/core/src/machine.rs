@@ -26,6 +26,70 @@ pub enum CloudProviderKind {
     Host,
 }
 
+/// What kind of thing a machine actually is: a virtual machine, or a
+/// container the provider runs for the length of one execution.
+///
+/// One axis on the machine rather than a second set of providers, because
+/// the same subscription sells both and the driver that reaches them is the
+/// same driver. What it decides is the only thing that differs everywhere
+/// else in flyco: **whether the filesystem survives a stop.** A VM
+/// deallocates onto a disk that is still there when it starts again; a
+/// managed container's filesystem ends with its execution, so the working
+/// tree has to travel as the `workdir-patch` flyco already keeps and be
+/// replayed onto a fresh clone at the next start.
+///
+/// [`Vm`](Self::Vm) is the default, and that is a statement about history
+/// rather than a preference: every machine flyco provisioned before this
+/// axis existed was one, and a row or a request that names no runtime is
+/// one of those.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
+pub enum Runtime {
+    /// A virtual machine with a persistent disk that outlives a stop.
+    #[default]
+    Vm,
+    /// A container the provider runs for one execution, with no disk.
+    Container,
+}
+
+impl Runtime {
+    /// Whether the working tree is still there after the machine stops.
+    ///
+    /// The question every caller is actually asking, asked once: a spot
+    /// reclamation on a VM syncs the page cache and trusts the disk, while
+    /// the same event on a container has to write the patch out before the
+    /// filesystem goes with the execution.
+    #[must_use]
+    pub const fn keeps_disk(self) -> bool {
+        matches!(self, Self::Vm)
+    }
+}
+
+/// What a provider gives away every month before it bills a container at
+/// all.
+///
+/// Stated in the provider's own two meters rather than as a number of hours
+/// or a sum of money, because that is how the grant is actually spent: Azure
+/// Container Apps gives 180,000 vCPU-seconds and 360,000 GiB-seconds per
+/// subscription per month, and a 4 vCPU / 8 GiB job exhausts the vCPU half
+/// first. Converting either meter into hours here would need a machine size
+/// this type does not have, and converting it into dollars would be a
+/// discount rather than an allowance.
+///
+/// Per subscription and per calendar month, on every provider that offers
+/// one, which is why nothing here names a machine: two entries of one
+/// account share one grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct FreeGrant {
+    /// vCPU-seconds the provider does not bill for, per month.
+    pub vcpu_seconds_per_month: u64,
+    /// GiB-seconds of memory the provider does not bill for, per month.
+    pub gib_seconds_per_month: u64,
+}
+
 /// Operating system family of a machine type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -269,6 +333,24 @@ pub struct MachineCatalogEntry {
     pub region: String,
     /// Provider-native machine type name (e.g. `Standard_B2ats_v2`).
     pub machine_type: String,
+    /// Whether this entry is a virtual machine or a managed container.
+    ///
+    /// Defaulted rather than required, because a catalog is cached as JSON
+    /// and a document written before this axis existed describes machines
+    /// that were all [`Runtime::Vm`].
+    #[serde(default)]
+    pub runtime: Runtime,
+    /// The monthly allowance the provider does not bill this entry for,
+    /// where it publishes one.
+    ///
+    /// Absent is the ordinary case and the honest one: a VM never carries a
+    /// grant, and neither does a container service that does not offer one
+    /// (ACI and Fargate). Present, it belongs to the *subscription* rather
+    /// than to this machine — every entry of that account draws on the same
+    /// pool — which is why it says what the pool is rather than what is
+    /// left of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_grant: Option<FreeGrant>,
     /// Operating system family.
     pub os: OsFamily,
     /// How big it is, when the provider publishes a size.
@@ -328,6 +410,18 @@ impl MachineCatalogEntry {
         self.billing_minimum().is_some()
     }
 
+    /// Whether the provider covers this machine out of a monthly allowance
+    /// rather than billing it.
+    ///
+    /// A fact about the entry, not about the account's remaining balance:
+    /// how much of the grant this subscription has already spent is a
+    /// number only the provider's own meter has, and nothing here pretends
+    /// to it.
+    #[must_use]
+    pub const fn has_free_grant(&self) -> bool {
+        self.free_grant.is_some()
+    }
+
     /// Whether flyco may pick this entry without being asked to.
     ///
     /// Linux, provisionable through a linked account, and at least
@@ -348,11 +442,25 @@ impl MachineCatalogEntry {
 
 /// The machine flyco picks when the caller names none.
 ///
-/// The cheapest [auto-eligible](MachineCatalogEntry::is_auto_eligible) entry:
-/// user-owned hardware wins (flyco meters nothing on it), and metered
-/// entries are ordered by the hourly rate the session actually asked for —
-/// spot when the caller wants it and the type has a spot price, otherwise
-/// on-demand.
+/// Two rules, in this order:
+///
+/// 1. **A container the provider does not bill for wins.** Where the
+///    account's catalog offers an entry with a
+///    [`free_grant`](MachineCatalogEntry::free_grant), that grant is
+///    compute the user is already entitled to and which expires unspent at
+///    the end of the month — so spending it is strictly better than
+///    spending money, and better than spending nothing on hardware the user
+///    owns, which is still there in November.
+/// 2. **Otherwise, the cheapest
+///    [auto-eligible](MachineCatalogEntry::is_auto_eligible) entry**:
+///    user-owned hardware wins (flyco meters nothing on it), and metered
+///    entries are ordered by the hourly rate the session actually asked for
+///    — spot when the caller wants it and the type has a spot price,
+///    otherwise on-demand.
+///
+/// The second rule also orders *within* the first, because two free-granted
+/// containers draw on the same subscription pool and the cheaper one leaves
+/// more of it.
 ///
 /// There is deliberately no fallback to something smaller. A machine below
 /// the floor is not a cheaper version of the same session, it is a session
@@ -367,10 +475,13 @@ pub fn auto_linux_choice(
         .iter()
         .filter(|entry| entry.is_auto_eligible())
         .min_by_key(|entry| {
-            entry
-                .pricing
-                .hourly(spot)
-                .map_or((0_u8, Usd::ZERO), |hourly| (1_u8, hourly))
+            (
+                u8::from(!entry.has_free_grant()),
+                entry
+                    .pricing
+                    .hourly(spot)
+                    .map_or((0_u8, Usd::ZERO), |hourly| (1_u8, hourly)),
+            )
         })
 }
 
@@ -466,11 +577,24 @@ pub struct MachineSpec {
     pub provider: CloudProviderKind,
     /// Provider-native machine type name.
     pub machine_type: String,
+    /// Whether the type names a virtual machine or a managed container.
+    ///
+    /// Carried on the spec rather than looked up from the catalog every
+    /// time, because it decides what a *stop* means to this machine and a
+    /// stop happens long after the catalog entry it came from was read.
+    /// Defaulted for the rows written before this axis existed, every one
+    /// of which is a [`Runtime::Vm`].
+    #[serde(default)]
+    pub runtime: Runtime,
     /// Provider-native region name.
     pub region: String,
     /// Whether to request spot capacity (the default).
     pub spot: bool,
     /// Disk size in GiB.
+    ///
+    /// Ignored on [`Runtime::Container`], which has no persistent disk to
+    /// size — the request still carries the session's default so a session
+    /// moved between runtimes asks for the same disk it always did.
     pub disk_gib: u32,
 }
 
@@ -579,8 +703,8 @@ pub struct ResizeMachine {
 mod tests {
     use super::{
         AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, BillingMinimum, CloudProviderKind, CpuArchitecture,
-        MachineCapacity, MachineCatalogEntry, MachineLineage, MachinePricing, OsFamily,
-        StoragePricing, auto_linux_choice,
+        FreeGrant, MachineCapacity, MachineCatalogEntry, MachineLineage, MachinePricing,
+        MachineSpec, OsFamily, Runtime, StoragePricing, auto_linux_choice,
     };
     use crate::id::ProviderAccountId;
     use crate::money::Usd;
@@ -630,6 +754,8 @@ mod tests {
             region: "northcentralus".to_owned(),
             provider: CloudProviderKind::Azure,
             machine_type: "Standard_B2pts_v2".to_owned(),
+            runtime: Runtime::Vm,
+            free_grant: None,
             os: OsFamily::Linux,
             capacity: Some(MachineCapacity {
                 vcpus: 2,
@@ -665,6 +791,8 @@ mod tests {
             region: "us-east-1".to_owned(),
             provider: CloudProviderKind::Aws,
             machine_type: machine_type.to_owned(),
+            runtime: Runtime::Vm,
+            free_grant: None,
             os: OsFamily::Linux,
             capacity: Some(MachineCapacity {
                 vcpus: AUTO_MIN_VCPUS,
@@ -752,5 +880,114 @@ mod tests {
             Some("m7g.xlarge")
         );
         assert!(auto_linux_choice(&[tiny, starved], true).is_none());
+    }
+
+    /// The Azure Container Apps grant, as the driver PR will state it.
+    fn aca_grant() -> FreeGrant {
+        FreeGrant {
+            vcpu_seconds_per_month: 180_000,
+            gib_seconds_per_month: 360_000,
+        }
+    }
+
+    #[test]
+    fn a_container_the_provider_gives_away_wins_over_everything_cheaper() {
+        // Including hardware the user owns, which is otherwise first: the
+        // grant expires unspent at the end of the month and the machine at
+        // home does not.
+        let granted = MachineCatalogEntry {
+            runtime: Runtime::Container,
+            free_grant: Some(aca_grant()),
+            ..linux("aca-4x8", Some(Usd::from_cents(21)))
+        };
+        let owned = MachineCatalogEntry {
+            capacity: None,
+            ..linux("home", None)
+        };
+        let cheap = linux("right-sized", Some(Usd::from_cents(2)));
+
+        assert_eq!(
+            auto_linux_choice(&[owned.clone(), cheap.clone(), granted.clone()], true)
+                .map(|entry| entry.machine_type.as_str()),
+            Some("aca-4x8")
+        );
+        // Without a grant the container is priced like anything else, and
+        // the old rule stands untouched.
+        let ungranted = MachineCatalogEntry {
+            free_grant: None,
+            ..granted
+        };
+        assert_eq!(
+            auto_linux_choice(&[owned, cheap, ungranted], true)
+                .map(|entry| entry.machine_type.as_str()),
+            Some("home")
+        );
+    }
+
+    #[test]
+    fn two_grants_draw_on_one_pool_so_the_cheaper_container_wins() {
+        let dear = MachineCatalogEntry {
+            runtime: Runtime::Container,
+            free_grant: Some(aca_grant()),
+            ..linux("aca-8x16", Some(Usd::from_cents(42)))
+        };
+        let cheap = MachineCatalogEntry {
+            runtime: Runtime::Container,
+            free_grant: Some(aca_grant()),
+            ..linux("aca-4x8", Some(Usd::from_cents(21)))
+        };
+
+        assert_eq!(
+            auto_linux_choice(&[dear, cheap], true).map(|entry| entry.machine_type.as_str()),
+            Some("aca-4x8")
+        );
+    }
+
+    #[test]
+    fn a_runtime_round_trips_as_its_wire_token_and_defaults_to_a_vm() {
+        assert_eq!(
+            serde_json::to_string(&Runtime::Container).expect("serialize"),
+            "\"container\""
+        );
+        assert_eq!(Runtime::default(), Runtime::Vm);
+        assert!(Runtime::Vm.keeps_disk());
+        assert!(!Runtime::Container.keeps_disk());
+
+        // A spec stored before the axis existed describes a VM, and reads
+        // back as one rather than failing to parse.
+        let older = serde_json::json!({
+            "provider": "azure",
+            "machine_type": "Standard_D4s_v6",
+            "region": "westeurope",
+            "spot": true,
+            "disk_gib": 64,
+        });
+        let spec: MachineSpec = serde_json::from_value(older).expect("deserialize");
+        assert_eq!(spec.runtime, Runtime::Vm);
+    }
+
+    #[test]
+    fn a_container_entry_carries_its_grant_across_the_wire() {
+        let entry = MachineCatalogEntry {
+            runtime: Runtime::Container,
+            free_grant: Some(aca_grant()),
+            ..linux("aca-4x8", Some(Usd::from_cents(21)))
+        };
+
+        let json = serde_json::to_value(&entry).expect("serialize");
+        assert_eq!(json["runtime"], "container");
+        assert_eq!(json["free_grant"]["vcpu_seconds_per_month"], 180_000);
+        assert!(entry.has_free_grant());
+        assert_eq!(
+            serde_json::from_value::<MachineCatalogEntry>(json).expect("deserialize"),
+            entry
+        );
+
+        // A VM says nothing at all about a grant it does not have.
+        let vm = linux("m7g.xlarge", Some(Usd::from_cents(9)));
+        let json = serde_json::to_value(&vm).expect("serialize");
+        assert_eq!(json["runtime"], "vm");
+        assert!(json.get("free_grant").is_none());
+        assert!(!vm.has_free_grant());
     }
 }

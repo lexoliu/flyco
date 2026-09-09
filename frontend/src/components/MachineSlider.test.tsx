@@ -54,6 +54,22 @@ const MAC = entry("mac2-m2.metal", 8, 24, 650_000, {
   },
 });
 
+/** An Azure Container Apps job, with the grant the subscription carries. */
+const CONTAINER = entry("aca-4x8", 4, 8, 210_000, {
+  runtime: "container",
+  lineage: null,
+  free_grant: { vcpu_seconds_per_month: 180_000, gib_seconds_per_month: 360_000 },
+  pricing: {
+    kind: "metered",
+    on_demand_hourly: 210_000,
+    spot_hourly: null,
+    minimum: null,
+    storage: { kind: "per_gib_hourly", rate: 0 },
+  },
+});
+
+const CONTAINER_KEY = `${ACCOUNT}/eastus/aca-4x8`;
+
 const AUTOMATIC: MachineDefault = {
   choice: {
     provider_account: ACCOUNT,
@@ -75,6 +91,10 @@ const HOST: MachineCatalogEntry = {
   // else to call it that a person would recognise.
   region: "mercury",
   machine_type: "mercury",
+  // A session on an enrolled machine is a Podman container, and it is the
+  // one container that keeps its own name: `mercury` is what the user
+  // called it.
+  runtime: "container",
   os: "linux",
   capacity: { vcpus: 16, memory_mib: 64 * 1024 },
   lineage: null,
@@ -371,5 +391,28 @@ describe("detentForKey", () => {
     for (const key of ["Tab", "Enter", " ", "PageUp", "a"]) {
       expect(detentForKey(key, 2, 4)).toBeNull();
     }
+  });
+});
+
+describe("MachineSlider on a container", () => {
+  it("reads a container detent by its size and says the grant covers it", () => {
+    // `aca-4x8` is flyco's key for a size billed by the second; what the
+    // user is choosing between is 4 vCPU and 8 GiB at $0.21/hr, free until
+    // the subscription's monthly allowance runs out.
+    const { getByLabelText } = mount([CONTAINER, LARGE], CONTAINER_KEY);
+
+    expect(getByLabelText("Machine")).toHaveAttribute(
+      "aria-valuetext",
+      "Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month",
+    );
+  });
+
+  it("never hides a virtual machine behind a cheaper container", () => {
+    // Curation groups by runtime, so both are on the track: a session that
+    // needs a disk which survives a stop is not served by an execution
+    // whose filesystem ends with it.
+    const { getByLabelText } = mount([CONTAINER, SMALL], SMALL_KEY);
+
+    expect(getByLabelText("Machine")).toHaveAttribute("max", "2");
   });
 });

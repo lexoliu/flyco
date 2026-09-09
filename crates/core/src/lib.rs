@@ -67,9 +67,10 @@ pub use id::{
 };
 pub use machine::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, CloudProviderKind,
-    CpuArchitecture, MachineCapacity, MachineCatalog, MachineCatalogEntry, MachineDefault,
-    MachineLineage, MachinePricing, MachineSpec, MachineState, MachineView, OsFamily,
-    ResizeMachine, SessionMachine, StoragePriceTier, StoragePricing, auto_linux_choice,
+    CpuArchitecture, FreeGrant, MachineCapacity, MachineCatalog, MachineCatalogEntry,
+    MachineDefault, MachineLineage, MachinePricing, MachineSpec, MachineState, MachineView,
+    OsFamily, ResizeMachine, Runtime, SessionMachine, StoragePriceTier, StoragePricing,
+    auto_linux_choice,
 };
 pub use mcp::{HeaderEntry, McpServerConfig, McpServerMount, McpServerView, UpsertMcpServer};
 pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};
@@ -97,7 +98,7 @@ pub use usage::{
 pub use wire::{
     ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
     HarnessCommand, ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
-    ReportStartupFailure, ShellOutcome, ShellStream, UsageWindow,
+    ReportStartupFailure, ReportStopping, ShellOutcome, ShellStream, StopReason, UsageWindow,
 };
 pub use workdir::{
     DIFF_PATCH_BYTES_MAX, DIRECTORY_ENTRIES_MAX, DirectoryEntry, DirectoryListing, EntryKind,

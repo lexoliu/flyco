@@ -320,6 +320,35 @@ pub enum ApiError {
     #[error("{0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     MachineUnavailable(String),
 
+    /// The caller named a machine type and a runtime the catalog does not
+    /// pair.
+    ///
+    /// `400` rather than the `422` beside it, and the difference is which
+    /// half is wrong: [`MachineUnavailable`](Self::MachineUnavailable) is a
+    /// well-formed choice this account cannot honour, while this is a
+    /// request that contradicts itself — the type is on offer, and the
+    /// runtime sent with it is not the runtime it is offered as. That
+    /// happens when a picker is working from a catalog that has since
+    /// changed, and the fix is to read it again rather than to link
+    /// anything or raise a quota.
+    ///
+    /// Never resolved in the caller's favour by taking the runtime on
+    /// offer. A session that asked for a virtual machine asked for a disk
+    /// that survives a stop, and a container would lose its working tree
+    /// the first time the platform stopped it.
+    #[error(
+        "`{machine_type}` is offered as a {offered:?} and this request asks for it          as a {requested:?}; read the catalog again",
+        status = StatusCode::BAD_REQUEST
+    )]
+    MachineRuntimeMismatch {
+        /// The type both halves name.
+        machine_type: String,
+        /// What the request asked for.
+        requested: flyco_core::Runtime,
+        /// What the catalog offers it as.
+        offered: flyco_core::Runtime,
+    },
+
     /// The session has not been given a machine yet.
     ///
     /// Distinct from a destroyed one: nothing was ever provisioned.
@@ -1116,6 +1145,7 @@ impl ApiError {
             Self::MachineNotReady => "machine-not-ready",
             Self::Provisioning(_) => "provisioning-failed",
             Self::MachineUnavailable(_) => "machine-unavailable",
+            Self::MachineRuntimeMismatch { .. } => "machine-runtime-mismatch",
             Self::ProviderInUse { .. } => "provider-in-use",
             Self::ProviderUnsupported { .. } => "provider-unsupported",
             Self::ProviderRejectedCredentials { .. } => "provider-rejected-credentials",

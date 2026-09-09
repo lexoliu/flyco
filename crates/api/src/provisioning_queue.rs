@@ -938,6 +938,9 @@ async fn bootstrap(
         // from whose machine it is on, and nothing on the machine can tell
         // it that.
         provider: claim.machine.spec().provider,
+        // And whether the disk survives a stop, which is what the daemon
+        // needs to know what to do with the platform's SIGTERM.
+        runtime: claim.machine.spec().runtime,
         control_plane_url: config.control_plane_url(),
         daemon_token: token.token,
         // Auto is the product default. Flyco's managed deny rules still bind

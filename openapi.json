@@ -1778,6 +1778,22 @@
               ],
               "description": "Only machines in this provider-native region."
             }
+          },
+          {
+            "name": "runtime",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/Runtime",
+                  "description": "Only virtual machines, or only managed containers.\n\nWhat a *resize* narrows by, for the same reason it narrows by\naccount and region: those are facts about the machine that already\nexists, and a resize changes its size rather than what it is. The\ncomposer's picker leaves this open, because a new session may be\neither."
+                }
+              ]
+            }
           }
         ],
         "responses": {
@@ -4209,6 +4225,17 @@
                           }
                         ]
                       },
+                      "free_grant": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/FreeGrant",
+                            "description": "The monthly allowance the provider does not bill this entry for,\nwhere it publishes one.\n\nAbsent is the ordinary case and the honest one: a VM never carries a\ngrant, and neither does a container service that does not offer one\n(ACI and Fargate). Present, it belongs to the *subscription* rather\nthan to this machine — every entry of that account draws on the same\npool — which is why it says what the pool is rather than what is\nleft of it."
+                          }
+                        ]
+                      },
                       "lineage": {
                         "oneOf": [
                           {
@@ -4239,6 +4266,10 @@
                       "region": {
                         "type": "string",
                         "description": "Provider-native region this entry is offered in.\n\nA catalog spans every region an account may deploy into, so an entry\nwithout one would not say where the machine it describes can be\ncreated. A registered SSH host names itself here: it is its own\nregion, and there is nowhere else to put it."
+                      },
+                      "runtime": {
+                        "$ref": "#/components/schemas/Runtime",
+                        "description": "Whether this entry is a virtual machine or a managed container.\n\nDefaulted rather than required, because a catalog is cached as JSON\nand a document written before this axis existed describes machines\nthat were all [`Runtime::Vm`]."
                       }
                     }
                   }
@@ -5725,8 +5756,7 @@
     },
     "/v1/sessions/{id}/spot-notice": {
       "post": {
-        "summary": "Records that this session's machine is being reclaimed by its provider.",
-        "description": "Records that this session's machine is being reclaimed by its provider.\n\nThe durable half of a spot notice. The relay frame beside it puts the\ncountdown in front of the user; this is what survives the machine, and\nit has to be a REST call rather than a room frame because a Durable\nObject can reach neither D1 nor the provisioning queue.\n\nTwo things happen, in this order:\n\n1. The session is marked interrupted, with the reason, so every list\nand header reads `Interrupted · spot reclaimed` rather than a\nsession that mysteriously stopped.\n2. A [`Recover`](crate::provisioning_queue::ProvisioningJob::Recover)\njob is queued for after the provider's own countdown, because a\nstart issued against a machine that is still running is not a\nrestart.\n\nAnswers `202`: the machine is going whatever the control plane thinks,\nand what this accepts is the work of getting the session back.\n\nWhat browsers see is *not* here. The countdown reaches them as the relay\nframe the daemon sends immediately after this call, which the room\nrecords and forwards in one place — announcing it here as well would put\nthe same notice in the transcript twice.",
+        "summary": "flyco_api::app::report_spot_notice",
         "operationId": "flyco_api::app::report_spot_notice",
         "parameters": [
           {
@@ -5807,6 +5837,49 @@
         "responses": {
           "204": {
             "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/stopping": {
+      "post": {
+        "summary": "Records that this session's machine is being reclaimed by its provider.",
+        "description": "Records that this session's machine is being reclaimed by its provider.\n\nThe durable half of a spot notice. The relay frame beside it puts the\ncountdown in front of the user; this is what survives the machine, and\nit has to be a REST call rather than a room frame because a Durable\nObject can reach neither D1 nor the provisioning queue.\n\nTwo things happen, in this order:\n\n1. The session is marked interrupted, with the reason, so every list\nand header reads `Interrupted · spot reclaimed` rather than a\nsession that mysteriously stopped.\n2. A [`Recover`](crate::provisioning_queue::ProvisioningJob::Recover)\njob is queued for after the provider's own countdown, because a\nstart issued against a machine that is still running is not a\nrestart.\n\nAnswers `202`: the machine is going whatever the control plane thinks,\nand what this accepts is the work of getting the session back.\n\nWhat browsers see is *not* here. The countdown reaches them as the relay\nframe the daemon sends immediately after this call, which the room\nrecords and forwards in one place — announcing it here as well would put\nthe same notice in the transcript twice.\nRecords that this session's machine is stopping and its filesystem is\ngoing with it.\n\nThe container counterpart of\n[`report_spot_notice`], and a route of its own rather than a flag on\nthat one because the two ask for different things. A reclaimed virtual\nmachine keeps its disk, so the control plane queues a *recovery* against\nthe same machine after the provider's countdown. A stopping container\nhas no disk to come back to: its daemon has already flushed the\ntranscript and stored the working tree as the `workdir-patch`, and there\nis nothing left to schedule — what the control plane needs is the mark\non the row, which is what the container drivers read to tell an\nexecution that was stopped from one that died.\n\nAnswers `202`: the machine is going whatever the control plane thinks,\nand this is the record of it.",
+        "operationId": "flyco_api::app::report_stopping",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions/{id}/stopping`.\n\nThe last thing a container session's daemon files. Its counterpart on a\nvirtual machine is [`ReportSpotNotice`], and the two are deliberately\ndifferent routes rather than one with a flag: a reclaimed VM keeps its\ndisk and is *recovered* — the control plane queues a start against the\nsame machine after the provider's own countdown — while a stopping\ncontainer has already handed its working tree over as the\n`workdir-patch` and is simply gone, with nothing to schedule against a\ndeadline.",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "$ref": "#/components/schemas/StopReason",
+                    "description": "What made the machine stop."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
           }
         }
       }
@@ -7066,6 +7139,17 @@
               "null"
             ],
             "description": "Only machines in this provider-native region."
+          },
+          "runtime": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Runtime",
+                "description": "Only virtual machines, or only managed containers.\n\nWhat a *resize* narrows by, for the same reason it narrows by\naccount and region: those are facts about the machine that already\nexists, and a resize changes its size rather than what it is. The\ncomposer's picker leaves this open, because a new session may be\neither."
+              }
+            ]
           }
         }
       },
@@ -7885,6 +7969,28 @@
           }
         }
       },
+      "FreeGrant": {
+        "type": "object",
+        "description": "What a provider gives away every month before it bills a container at\nall.\n\nStated in the provider's own two meters rather than as a number of hours\nor a sum of money, because that is how the grant is actually spent: Azure\nContainer Apps gives 180,000 vCPU-seconds and 360,000 GiB-seconds per\nsubscription per month, and a 4 vCPU / 8 GiB job exhausts the vCPU half\nfirst. Converting either meter into hours here would need a machine size\nthis type does not have, and converting it into dollars would be a\ndiscount rather than an allowance.\n\nPer subscription and per calendar month, on every provider that offers\none, which is why nothing here names a machine: two entries of one\naccount share one grant.",
+        "required": [
+          "vcpu_seconds_per_month",
+          "gib_seconds_per_month"
+        ],
+        "properties": {
+          "gib_seconds_per_month": {
+            "type": "integer",
+            "format": "int64",
+            "description": "GiB-seconds of memory the provider does not bill for, per month.",
+            "minimum": 0
+          },
+          "vcpu_seconds_per_month": {
+            "type": "integer",
+            "format": "int64",
+            "description": "vCPU-seconds the provider does not bill for, per month.",
+            "minimum": 0
+          }
+        }
+      },
       "HarnessAccountView": {
         "type": "object",
         "description": "A Claude or Codex account the user has linked, as `GET\n/v1/harness-accounts` lists it.\n\nNo representation of an account carries its credential; the sealed value\nleaves the control plane only when it is provisioned onto a session machine.",
@@ -8553,6 +8659,17 @@
               }
             ]
           },
+          "free_grant": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FreeGrant",
+                "description": "The monthly allowance the provider does not bill this entry for,\nwhere it publishes one.\n\nAbsent is the ordinary case and the honest one: a VM never carries a\ngrant, and neither does a container service that does not offer one\n(ACI and Fargate). Present, it belongs to the *subscription* rather\nthan to this machine — every entry of that account draws on the same\npool — which is why it says what the pool is rather than what is\nleft of it."
+              }
+            ]
+          },
           "lineage": {
             "oneOf": [
               {
@@ -8583,6 +8700,10 @@
           "region": {
             "type": "string",
             "description": "Provider-native region this entry is offered in.\n\nA catalog spans every region an account may deploy into, so an entry\nwithout one would not say where the machine it describes can be\ncreated. A registered SSH host names itself here: it is its own\nregion, and there is nowhere else to put it."
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/Runtime",
+            "description": "Whether this entry is a virtual machine or a managed container.\n\nDefaulted rather than required, because a catalog is cached as JSON\nand a document written before this axis existed describes machines\nthat were all [`Runtime::Vm`]."
           }
         }
       },
@@ -8612,6 +8733,10 @@
           "region": {
             "type": "string",
             "description": "Provider-native region, as the catalog entry names it."
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/Runtime",
+            "description": "Whether that type is a virtual machine or a managed container, as\nthe same catalog entry says.\n\nSent rather than derived, and checked against the entry before the\nsession is written: the two facts came off one row in the picker,\nand a request whose runtime disagrees with the type it names is a\ncaller working from a catalog that has since changed — which is a\nrefusal at the point of choice rather than a machine of the wrong\nshape. Defaulted to [`Runtime::Vm`], which is what every caller\nwritten before this axis existed means."
           },
           "spot": {
             "type": "boolean",
@@ -8761,7 +8886,7 @@
           "disk_gib": {
             "type": "integer",
             "format": "int32",
-            "description": "Disk size in GiB.",
+            "description": "Disk size in GiB.\n\nIgnored on [`Runtime::Container`], which has no persistent disk to\nsize — the request still carries the session's default so a session\nmoved between runtimes asks for the same disk it always did.",
             "minimum": 0
           },
           "machine_type": {
@@ -8775,6 +8900,10 @@
           "region": {
             "type": "string",
             "description": "Provider-native region name."
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/Runtime",
+            "description": "Whether the type names a virtual machine or a managed container.\n\nCarried on the spec rather than looked up from the catalog every\ntime, because it decides what a *stop* means to this machine and a\nstop happens long after the catalog entry it came from was read.\nDefaulted for the rows written before this axis existed, every one\nof which is a [`Runtime::Vm`]."
           },
           "spot": {
             "type": "boolean",
@@ -9798,6 +9927,19 @@
           }
         }
       },
+      "ReportStopping": {
+        "type": "object",
+        "description": "Request body of `POST /v1/sessions/{id}/stopping`.\n\nThe last thing a container session's daemon files. Its counterpart on a\nvirtual machine is [`ReportSpotNotice`], and the two are deliberately\ndifferent routes rather than one with a flag: a reclaimed VM keeps its\ndisk and is *recovered* — the control plane queues a start against the\nsame machine after the provider's own countdown — while a stopping\ncontainer has already handed its working tree over as the\n`workdir-patch` and is simply gone, with nothing to schedule against a\ndeadline.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "$ref": "#/components/schemas/StopReason",
+            "description": "What made the machine stop."
+          }
+        }
+      },
       "ReportUsage": {
         "type": "object",
         "description": "Request body of `PUT /v1/sessions/{id}/usage`.\n\nWhat a session's daemon reports when its harness answers how much of the\nplan is spent: at start, and after every turn. Recorded against the\naccount rather than the session, because the plan is the account's and\ntwo sessions on one account share it.",
@@ -9826,6 +9968,14 @@
             "description": "Provider-native machine type to move to, from the catalog."
           }
         }
+      },
+      "Runtime": {
+        "type": "string",
+        "description": "What kind of thing a machine actually is: a virtual machine, or a\ncontainer the provider runs for the length of one execution.\n\nOne axis on the machine rather than a second set of providers, because\nthe same subscription sells both and the driver that reaches them is the\nsame driver. What it decides is the only thing that differs everywhere\nelse in flyco: **whether the filesystem survives a stop.** A VM\ndeallocates onto a disk that is still there when it starts again; a\nmanaged container's filesystem ends with its execution, so the working\ntree has to travel as the `workdir-patch` flyco already keeps and be\nreplayed onto a fresh clone at the next start.\n\n[`Vm`](Self::Vm) is the default, and that is a statement about history\nrather than a preference: every machine flyco provisioned before this\naxis existed was one, and a row or a request that names no runtime is\none of those.",
+        "enum": [
+          "vm",
+          "container"
+        ]
       },
       "SendMessage": {
         "type": "object",
@@ -10068,6 +10218,13 @@
             "minimum": 0
           }
         }
+      },
+      "StopReason": {
+        "type": "string",
+        "description": "Why a machine's own daemon says it is going away.\n\nOne variant, and an enum all the same: the control plane's container\ndrivers have to tell \"the platform stopped this execution\" from \"the\nexecution ran out of time\" and from \"flyco asked for it\", and a boolean\nor a bare string could not carry that distinction into the row.",
+        "enum": [
+          "sigterm"
+        ]
       },
       "StoragePriceTier": {
         "type": "object",

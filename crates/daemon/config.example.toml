@@ -21,6 +21,14 @@ workdir = "/tmp/flycod-dev/work"
 # user chose alone unless the task cannot proceed on it.
 machine_origin = "auto"
 
+# What kind of machine this daemon is on: "vm" (a virtual machine whose disk
+# is still there after a stop) or "container" (a managed container whose
+# filesystem ends with the execution). It decides what SIGTERM means: on a
+# container the daemon spends the platform's grace period writing the
+# working tree out as the session's workdir patch, because nothing else will
+# survive. Omitted means "vm", which is what a developer machine is.
+runtime = "vm"
+
 # Root of the local append-only transcript store, used when there is no
 # [control_plane] below. A session that reports to a control plane keeps its
 # transcript in R2 instead — that is what lets it resume onto any machine.
