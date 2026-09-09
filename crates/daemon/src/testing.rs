@@ -44,6 +44,7 @@ pub fn bootstrap() -> flyco_provider::DaemonBootstrap {
         machine_origin: flyco_core::MachineOrigin::Auto,
         machine: flyco_provider::testing::session_machine(),
         resume_session_id: None,
+        model: flyco_provider::testing::session_model(),
         mcp_servers: flyco_provider::testing::mcp_servers(),
     }
 }
@@ -69,6 +70,8 @@ pub enum Call {
     Flush,
     /// The session context was compacted.
     Compact,
+    /// The session was put on another model.
+    ModelSet(flyco_core::ModelChoice),
     /// A pending approval was answered.
     Approval {
         /// The approval that was answered.
@@ -84,6 +87,8 @@ pub enum Call {
     Synced,
     /// The reclamation was reported to the control plane over REST.
     SpotNoticeReported(u32),
+    /// The models the harness offers were filed with the control plane.
+    ModelsReported(Vec<flyco_core::ModelOption>),
 }
 
 /// The harness never fails in these tests.
@@ -194,6 +199,13 @@ impl HarnessSession for FakeSession {
 
     fn compact(&self) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
         core::future::ready(self.record(Call::Compact))
+    }
+
+    fn set_model(
+        &self,
+        model: flyco_core::ModelChoice,
+    ) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
+        core::future::ready(self.record(Call::ModelSet(model)))
     }
 
     fn decide_approval(

@@ -46,7 +46,7 @@ use core::time::Duration;
 
 use askama::Template;
 use flyco_core::{
-    BranchName, ClientEvent, ControlToDaemon, HarnessKind, MachineId, MachineOrigin,
+    BranchName, ClientEvent, ControlToDaemon, HarnessKind, MachineId, MachineOrigin, ModelChoice,
     PermissionMode, ProviderAccountId, ProvisioningStage, RepoSlug, SessionId, SessionState,
     UserId,
 };
@@ -594,6 +594,12 @@ struct Claim {
     branch: Option<BranchName>,
     machine_origin: MachineOrigin,
     machine: MachineRow,
+    /// What the session runs on, as the control plane records it.
+    ///
+    /// Carried on the claim rather than re-read in [`bootstrap`], so the
+    /// model written into the machine's configuration is the one this job
+    /// read the session at.
+    model: ModelChoice,
 }
 
 /// Decides whether this delivery still has work to do.
@@ -653,6 +659,7 @@ async fn claim(db: &Db, rooms: &Rooms, job: ProvisioningJob) -> Result<Option<Cl
         return Ok(None);
     }
 
+    let model = target.model_choice();
     Ok(Some(Claim {
         session,
         user: target.user_id,
@@ -661,6 +668,7 @@ async fn claim(db: &Db, rooms: &Rooms, job: ProvisioningJob) -> Result<Option<Cl
         branch: target.branch,
         machine_origin: target.machine_origin,
         machine,
+        model,
     }))
 }
 
@@ -945,9 +953,14 @@ async fn bootstrap(
         // live `GET /v1/sessions/{id}/agent/machine` the agent's
         // `machine_status` reads is what says which it got.
         machine: flyco_core::SessionMachine::of(entry, spot),
-        resume_session_id: sessions::harness_session_id(db, claim.session)
+        resume_session_id: sessions::harness_session(db, claim.session)
             .await
-            .map_err(Provisioned::from)?,
+            .map_err(Provisioned::from)?
+            .harness_session_id,
+        // What the session is recorded as running, which for a machine
+        // being rebuilt is whatever the user last changed it to rather than
+        // what the previous machine booted on.
+        model: claim.model.clone(),
         // The user's whole MCP registry, resolved once here: the machine
         // writes it into the harness's root-owned configuration, and that
         // file is the allowlist. A server missing from this list is one the

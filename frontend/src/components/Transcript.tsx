@@ -19,17 +19,19 @@ import {
   Cpu,
   Info,
   Loader,
+  Sparkles,
   TerminalSquare,
   Wrench,
   X,
 } from "lucide-solid";
 import Markdown from "./Markdown";
 import { shellOutcomeLabel, shellSucceeded } from "../lib/shell";
-import type { ProvisioningStage } from "../api/wire";
+import type { ModelOption, ProvisioningStage } from "../api/wire";
 import { operation, type OperationDetail } from "../lib/approvals";
 import { cx } from "../lib/cx";
 import { formatDuration } from "../lib/duration";
 import { highlightHtml } from "../lib/highlight";
+import { choiceLabel } from "../lib/models";
 import { detailOfTool } from "../lib/toolDetail";
 import { summarizeTool } from "../lib/toolSummary";
 import type { ProvisioningStep, ToolCall, TranscriptItem } from "../lib/transcript";
@@ -77,6 +79,12 @@ export interface TranscriptProps {
   repo: string;
   /** The provider the machine came from, when it is known. */
   provider: string | null;
+  /**
+   * The models the agent offers, for the row that says the session moved
+   * onto one of them: the stream carries the id, and a person reads the
+   * name.
+   */
+  models: readonly ModelOption[];
   /** Decides one approval. Absent when there is nothing live to decide against. */
   onDecide?: ((id: string, decision: "approved" | "denied") => void) | undefined;
   /** Whether a decision is in flight, which disables both buttons. */
@@ -169,6 +177,15 @@ export default function Transcript(props: TranscriptProps) {
 
               <Match when={item.kind === "machine_change" && item}>
                 {(change) => <MachineChangeRow change={change()} />}
+              </Match>
+
+              <Match when={item.kind === "model_change" && item}>
+                {(change) => (
+                  <p class={styles.machineChange}>
+                    <Sparkles size={14} aria-hidden="true" />
+                    Switched to {choiceLabel(props.models, change().model)}
+                  </p>
+                )}
               </Match>
 
               <Match when={item.kind === "provisioning" && item}>
@@ -392,13 +409,24 @@ export function ProvisioningTimeline(props: {
     return stoppedAt() === null ? what : `${what} stopped`;
   };
 
-  return (
-    <div class={styles.timeline} aria-label={label()}>
-      <Show when={props.recovery}>
-        <p class={styles.timelineHeading}>
-          Migrating · the machine was reclaimed and is being restarted on its own disk
-        </p>
-      </Show>
+  /**
+   * How long the whole build took, once it is over.
+   *
+   * A finished timeline folds to this one line (docs/ux.md §9.2): four
+   * ticked rows above the first turn are a record nobody rereads, and the
+   * one number worth keeping is the wait. The rows stay behind a
+   * disclosure for the reader who wants to know where the minutes went.
+   */
+  const took = () => {
+    const first = props.steps[0];
+    const ready = props.steps.find((step) => step.stage === "ready");
+    return first === undefined || ready === undefined
+      ? null
+      : formatDuration(ready.atUnix - first.atUnix);
+  };
+
+  const rows = () => (
+    <div class={styles.stages}>
       <For each={props.steps}>
         {(step, index) => {
           const next = () => props.steps[index() + 1];
@@ -445,6 +473,35 @@ export function ProvisioningTimeline(props: {
         }}
       </For>
     </div>
+  );
+
+  return (
+    <Show
+      when={!done()}
+      fallback={
+        <details class={styles.timeline} aria-label={label()}>
+          <summary class={styles.timelineSummary}>
+            <ChevronRight size={13} class={cx(styles.toolChevron)} aria-hidden="true" />
+            <span class={styles.stageLabel}>
+              {props.recovery ? "Machine restarted" : "Machine ready"}
+            </span>
+            <Show when={took()}>
+              {(elapsed) => <span class={styles.stageElapsed}>{elapsed()}</span>}
+            </Show>
+          </summary>
+          {rows()}
+        </details>
+      }
+    >
+      <div class={styles.timeline} aria-label={label()}>
+        <Show when={props.recovery}>
+          <p class={styles.timelineHeading}>
+            Migrating · the machine was reclaimed and is being restarted on its own disk
+          </p>
+        </Show>
+        {rows()}
+      </div>
+    </Show>
   );
 }
 

@@ -81,7 +81,15 @@
    reflows the chips under an open popover. After the base rule, because
    `flex` above resets the basis this overrides. */
 @media (max-width: 900px) {
+  /* The chips take the row and what follows them — the model, the
+     context ring, send — takes the next, right-aligned. Sharing one row
+     squeezed the machine chip to `D4…` on a phone, which names nothing. */
+  .controls {
+    flex-wrap: wrap;
+  }
+
   .chips {
+    flex: 1 0 100%;
     flex-wrap: wrap;
   }
 

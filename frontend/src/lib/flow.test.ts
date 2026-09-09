@@ -25,6 +25,7 @@ const CLAUDE: HarnessAccountView = {
   label: "me@lexo.cool",
   linked_at_unix: 1_787_000_000,
   expires_at_unix: 1_787_028_800,
+  models: [],
 };
 
 const CODEX: HarnessAccountView = {
@@ -33,6 +34,7 @@ const CODEX: HarnessAccountView = {
   label: "me@lexo.cool",
   linked_at_unix: 1_787_000_000,
   expires_at_unix: null,
+  models: [],
 };
 
 const AZURE_STUDENTS: ProviderBonusHint = {

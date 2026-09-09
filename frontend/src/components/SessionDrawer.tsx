@@ -16,15 +16,7 @@
  * on the page.
  */
 import { For, Match, Show, Switch, createEffect, createSignal, onCleanup } from "solid-js";
-import {
-  Cpu,
-  FileCode2,
-  GitCompare,
-  PanelRightClose,
-  PanelRightOpen,
-  SlidersHorizontal,
-  TerminalSquare,
-} from "lucide-solid";
+import { Cpu, FileCode2, GitCompare, SlidersHorizontal, TerminalSquare } from "lucide-solid";
 import DiffPanel from "./DiffPanel";
 import EnvEditor from "./EnvEditor";
 import FilesPanel from "./FilesPanel";
@@ -46,6 +38,16 @@ const TABS: readonly { id: Tab; label: string }[] = [
 
 export interface SessionDrawerProps {
   sessionId: string;
+  /**
+   * Whether the drawer is open.
+   *
+   * Owned by the page rather than by the drawer, because the control that
+   * opens it lives in the header (docs/ux.md §9.1): a toggle beside the
+   * panel it opens sat at the top of the transcript column, right where
+   * the first user message lands, and read as an avatar on it.
+   */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   relay: SessionRelay;
   /** Latest `repo_dirty` summary from the relay, when one has arrived. */
   liveRepoSummary: string | null;
@@ -61,7 +63,7 @@ export interface SessionDrawerProps {
 }
 
 export default function SessionDrawer(props: SessionDrawerProps) {
-  const [open, setOpen] = createSignal(false);
+  const open = () => props.open;
   const [tab, setTab] = createSignal<Tab>("terminal");
   /**
    * When the machine tab was last asked for a resize, rather than merely
@@ -74,7 +76,7 @@ export default function SessionDrawer(props: SessionDrawerProps) {
     const request = props.openPanel;
     if (request !== undefined) {
       setTab(request.panel);
-      setOpen(true);
+      props.onOpenChange(true);
       if (request.resize === true) {
         setResizeAt(request.at);
       }
@@ -85,7 +87,7 @@ export default function SessionDrawer(props: SessionDrawerProps) {
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key === "." && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        setOpen((was) => !was);
+        props.onOpenChange(!props.open);
       }
     }
     document.addEventListener("keydown", onKeyDown);
@@ -93,31 +95,8 @@ export default function SessionDrawer(props: SessionDrawerProps) {
   });
 
   return (
-    <div class={cx(styles.drawer, open() && styles.drawerOpen)}>
-      <button
-        type="button"
-        class={styles.handle}
-        aria-expanded={open()}
-        title={open() ? "Hide the panel (⌘.)" : "Show the panel (⌘.)"}
-        aria-label={open() ? "Hide the panel" : "Show the panel"}
-        onClick={() => setOpen((was) => !was)}
-      >
-        <Show when={open()} fallback={<PanelRightOpen size={16} aria-hidden="true" />}>
-          <PanelRightClose size={16} aria-hidden="true" />
-        </Show>
-        {/*
-          On a phone the drawer drops under the transcript, and a lone 32px
-          glyph sitting at the foot of the page is a button nobody can name.
-          Below the breakpoint it takes the width and says what it opens; on
-          a wide screen the handle is beside the panel it belongs to and the
-          label would be a caption on a hinge.
-        */}
-        <Show when={!open()}>
-          <span class={styles.handleLabel}>Terminal, files and the machine</span>
-        </Show>
-      </button>
-
-      <Show when={open()}>
+    <Show when={open()}>
+      <div class={cx(styles.drawer, styles.drawerOpen)}>
         <div class={styles.panel}>
           <div class={styles.tabs} role="tablist" aria-label="Session panels">
             <For each={TABS}>
@@ -175,7 +154,7 @@ export default function SessionDrawer(props: SessionDrawerProps) {
             </Switch>
           </div>
         </div>
-      </Show>
-    </div>
+      </div>
+    </Show>
   );
 }

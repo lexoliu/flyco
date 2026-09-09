@@ -96,6 +96,9 @@ async fn active_session(db: &Db, user: &CurrentUser, repo: &str) -> SessionId {
             machine_origin: flyco_core::MachineOrigin::Auto,
             budget: flyco_core::BudgetConfig::new(flyco_core::Usd::from_dollars(10))
                 .expect("a valid budget"),
+            model: &flyco_core::ModelChoice::default_of(&flyco_core::builtin_models(
+                flyco_core::HarnessKind::ClaudeCode,
+            )),
         },
     )
     .await

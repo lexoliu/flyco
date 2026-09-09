@@ -13,6 +13,9 @@
  * - report the CLI's capability list (`capabilities`) from every
  *   `system/init` frame, which is the only place it appears and therefore
  *   only from the first turn onward,
+ * - report the models this CLI build offers (`models`) as soon as the
+ *   handshake is answered, so the composer's picker is right for the very
+ *   first message,
  * - turn flycod's `user_message` commands into a streaming-input generator,
  * - forward every SDK message out verbatim as `sdk_message`,
  * - park `canUseTool` on flycod until an `approval_decision` arrives,
@@ -27,7 +30,9 @@ import { dirname, join } from "node:path";
 import {
   query,
   type CanUseTool,
+  type EffortLevel,
   type McpServerStatus,
+  type ModelInfo,
   type Options,
   type PermissionResult,
   type Query,
@@ -40,6 +45,7 @@ import {
 import {
   describeError,
   sidecarCommandSchema,
+  type ModelOption,
   type MountedServer,
   type MountState,
   type SessionKey,
@@ -330,9 +336,33 @@ export function sessionOptions(
     // message that repeats it.
     includePartialMessages: true,
     ...(command.model === null ? {} : { model: command.model }),
+    // Two independent choices, so two independent spreads: a model that
+    // accepts no effort levels at all (Haiku) is started with none, and an
+    // `effort: undefined` under `exactOptionalPropertyTypes` is not the
+    // same as the key being absent.
+    ...(command.effort === null ? {} : { effort: command.effort as EffortLevel }),
     ...(command.resume_session_id === null
       ? { sessionId }
       : { resume: command.resume_session_id }),
+  };
+}
+
+/**
+ * One SDK model row in flyco's own vocabulary.
+ *
+ * The SDK marks its default by naming the row `default` rather than with a
+ * flag, and it states no per-model default effort at all — so `is_default`
+ * is derived from the identifier and `default_effort` is honestly null,
+ * which leaves the CLI's own choice in force.
+ */
+export function toModelOption(row: ModelInfo): ModelOption {
+  return {
+    id: row.value,
+    label: row.displayName,
+    description: row.description,
+    is_default: row.value === "default",
+    efforts: row.supportedEffortLevels ?? [],
+    default_effort: null,
   };
 }
 
@@ -381,6 +411,11 @@ class Session {
     emit({ type: "started", session_id: this.sessionId });
     try {
       await this.session.initializationResult();
+      // What this build of the CLI can run on, before the first turn: the
+      // list is a fact about the installed CLI rather than about a turn,
+      // and flyco records it against the account so the *next* session's
+      // picker opens on it too.
+      emit({ type: "models", models: (await this.session.supportedModels()).map(toModelOption) });
       // The earliest moment the answer exists, and the whole answer: which
       // servers the CLI mounted, whether it reached them, and what they
       // advertise. flycod refuses the session if flyco's own is not among
@@ -408,6 +443,22 @@ class Session {
   /** Runs Claude Code's native manual-compaction command. */
   compact(): void {
     this.messages.push("/compact");
+  }
+
+  /**
+   * Moves the running query onto another model, at another effort.
+   *
+   * In this order, and both every time: the effort is a level *of a model*,
+   * so applying one before the move would set a level of the model the
+   * session is leaving. `null` clears the flag rather than leaving the
+   * previous model's level in force, which is what a model with no effort
+   * levels at all needs.
+   */
+  async setModel(model: string, effort: string | null): Promise<void> {
+    await this.session.setModel(model);
+    await this.session.applyFlagSettings({
+      effortLevel: effort === null ? null : (effort as EffortLevel),
+    });
   }
 
   /** Ends the streaming input, which ends the session. */
@@ -507,6 +558,9 @@ async function apply(command: SidecarCommand, session: Session | null): Promise<
       return true;
     case "compact":
       session.compact();
+      return true;
+    case "set_model":
+      await session.setModel(command.model, command.effort);
       return true;
     case "approval_decision": {
       const result: PermissionResult = command.allow

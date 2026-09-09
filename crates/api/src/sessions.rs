@@ -7,9 +7,9 @@
 
 use flyco_core::{
     ARCHIVE_AFTER_IDLE_SECS, ApprovalState, BranchName, BudgetConfig, BudgetId, BudgetStage,
-    ClientEvent, HarnessKind, InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineOrigin,
-    PROVISION_DEADLINE_SECS, RepoSlug, SessionActivity, SessionDetail, SessionId, SessionState,
-    SessionSummary, Usd, UserId,
+    ClientEvent, HarnessKind, HarnessSessionView, InterruptedReason, MAX_SESSION_TITLE_CHARS,
+    MachineOrigin, ModelChoice, PROVISION_DEADLINE_SECS, RepoSlug, SessionActivity, SessionDetail,
+    SessionId, SessionState, SessionSummary, Usd, UserId, builtin_models,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -42,6 +42,26 @@ struct SessionRow {
     interrupted_reason: Option<InterruptedReason>,
     created_at_unix: u64,
     last_active_unix: u64,
+    /// The model the session was put on, or `NULL` for one opened before
+    /// flyco recorded a model at all.
+    model: Option<String>,
+    /// The effort it runs at. `NULL` both for a legacy row and for a
+    /// session that chose a model and left the harness's own effort alone.
+    effort: Option<String>,
+}
+
+/// The choice a stored row names, resolving a legacy `NULL` model.
+///
+/// A row written before migration 0021 ran on whatever its harness
+/// defaults to, so that is what it reads back as — today's default of that
+/// harness, resolved here rather than backfilled once into the table, where
+/// it would have frozen one afternoon's answer into rows nobody chose it
+/// for.
+fn model_of(harness: HarnessKind, model: Option<String>, effort: Option<String>) -> ModelChoice {
+    model.map_or_else(
+        || ModelChoice::default_of(&builtin_models(harness)),
+        |model| ModelChoice { model, effort },
+    )
 }
 
 impl From<SessionRow> for SessionSummary {
@@ -61,6 +81,7 @@ impl From<SessionRow> for SessionSummary {
             interrupted_reason: row.interrupted_reason,
             created_at_unix: row.created_at_unix,
             last_active_unix: row.last_active_unix,
+            model: model_of(row.harness, row.model, row.effort),
         }
     }
 }
@@ -145,6 +166,10 @@ pub struct Opening<'a> {
     pub machine_origin: MachineOrigin,
     /// What it may spend.
     pub budget: BudgetConfig,
+    /// What it runs on, already resolved against the harness account's own
+    /// model list — so a row is never written naming a model nobody
+    /// checked.
+    pub model: &'a ModelChoice,
 }
 
 /// Creates a session and the budget it accounts against.
@@ -179,16 +204,20 @@ pub async fn create(db: &Db, cap: u32, opening: Opening<'_>) -> Result<SessionDe
         repo,
         branch,
         machine_origin,
+        model,
         ..
     } = opening;
+    let effort = model.effort.as_deref();
+    let model = model.model.as_str();
 
     sql!(
         db,
         "INSERT INTO sessions \
          (id, user_id, title, harness, repo, branch, state, machine_origin, budget_id, \
-          created_at_unix, last_active_unix) \
+          created_at_unix, last_active_unix, model, effort) \
          VALUES ({id}, {user}, {title}, {harness}, {repo}, {branch}, \
-                 {SessionState::Provisioning}, {machine_origin}, {budget_id}, {now}, {now})"
+                 {SessionState::Provisioning}, {machine_origin}, {budget_id}, {now}, {now}, \
+                 {model}, {effort})"
     )
     .execute()
     .await?;
@@ -228,6 +257,46 @@ pub async fn rename(
     sql!(
         db,
         "UPDATE sessions SET title = {title} WHERE id = {id} AND user_id = {user}"
+    )
+    .execute()
+    .await?;
+
+    find(db, user, id).await
+}
+
+/// Puts one of the caller's sessions on another model.
+///
+/// The durable half alone: the running harness is told separately, by the
+/// [`SetModel`](flyco_core::ControlToDaemon::SetModel) the caller sends the
+/// session's room once this has returned. Written in that order because the
+/// room is the live announcement and the row is what a daemon reads when it
+/// comes back — a harness told first would, for the window between the two,
+/// be running a model the control plane does not know about.
+///
+/// The choice is validated against the account's model list by the caller,
+/// not here: this module writes sessions and has no business fetching a
+/// harness account.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is not the
+/// caller's, or [`ApiError`] if the database fails.
+pub async fn set_model(
+    db: &Db,
+    user: UserId,
+    id: SessionId,
+    choice: &ModelChoice,
+) -> Result<SessionDetail, ApiError> {
+    // The row is loaded first so a session that is not the caller's is a
+    // 404 rather than an UPDATE that quietly writes nothing.
+    load(db, user, id).await?;
+
+    let model = choice.model.as_str();
+    let effort = choice.effort.as_deref();
+    sql!(
+        db,
+        "UPDATE sessions SET model = {model}, effort = {effort} \
+         WHERE id = {id} AND user_id = {user}"
     )
     .execute()
     .await?;
@@ -304,7 +373,7 @@ pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError
          EXISTS (SELECT 1 FROM approvals a WHERE a.session_id = s.id AND a.state = {pending}) \
          AS approval_pending, \
          s.machine_origin, s.budget_id, s.failure_reason, s.interrupted_reason, \
-         s.created_at_unix, s.last_active_unix \
+         s.created_at_unix, s.last_active_unix, s.model, s.effort \
          FROM sessions s WHERE s.user_id = {user} \
          ORDER BY s.created_at_unix DESC, s.id DESC"
     )
@@ -414,7 +483,7 @@ async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiErr
          EXISTS (SELECT 1 FROM approvals a WHERE a.session_id = s.id AND a.state = {pending}) \
          AS approval_pending, \
          s.machine_origin, s.budget_id, s.failure_reason, s.interrupted_reason, \
-         s.created_at_unix, s.last_active_unix \
+         s.created_at_unix, s.last_active_unix, s.model, s.effort \
          FROM sessions s WHERE s.id = {id} AND s.user_id = {user}"
     )
     .fetch_optional()
@@ -455,6 +524,26 @@ pub struct ProvisioningTarget {
     pub machine_origin: MachineOrigin,
     /// Where the session is in its lifecycle right now.
     pub state: SessionState,
+    /// The model the machine's harness is provisioned to run.
+    ///
+    /// `None` for a session opened before flyco recorded one; read through
+    /// [`model_choice`](Self::model_choice), which resolves that to the
+    /// harness's own default.
+    pub model: Option<String>,
+    /// The effort it runs at, where one was chosen.
+    pub effort: Option<String>,
+}
+
+impl ProvisioningTarget {
+    /// What the machine's `flycod` is configured to run the session on.
+    ///
+    /// A legacy row resolves to the harness's built-in default, which is
+    /// the model it has been running all along — the configuration this
+    /// feeds is the first place flyco has ever stated it.
+    #[must_use]
+    pub fn model_choice(&self) -> ModelChoice {
+        model_of(self.harness, self.model.clone(), self.effort.clone())
+    }
 }
 
 /// Reads the session a provisioning job names.
@@ -471,7 +560,7 @@ pub async fn provisioning_target(
 ) -> Result<Option<ProvisioningTarget>, ApiError> {
     Ok(sql!(
         db,
-        "SELECT user_id, harness, repo, branch, machine_origin, state \
+        "SELECT user_id, harness, repo, branch, machine_origin, state, model, effort \
          FROM sessions WHERE id = {id}"
     )
     .fetch_optional()
@@ -821,24 +910,37 @@ pub async fn record_activity(
     Ok(())
 }
 
-/// The harness-native session id recorded for this session, if any.
+/// The conversation and the model a daemon starting on this session must
+/// continue it on.
+///
+/// One read rather than two, because a daemon that asked for them
+/// separately could get an answer from either side of a model change and
+/// resume the right conversation on the wrong model.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] if the read fails.
-pub async fn harness_session_id(db: &Db, id: SessionId) -> Result<Option<String>, ApiError> {
+/// Returns [`ApiError::SessionNotFound`] if the session is gone, or
+/// [`ApiError`] if the read fails.
+pub async fn harness_session(db: &Db, id: SessionId) -> Result<HarnessSessionView, ApiError> {
     #[derive(Debug, skyzen::FromRow)]
     struct Row {
         harness_session_id: Option<String>,
+        harness: HarnessKind,
+        model: Option<String>,
+        effort: Option<String>,
     }
 
-    let row: Option<Row> = sql!(
+    let row: Row = sql!(
         db,
-        "SELECT harness_session_id FROM sessions WHERE id = {id}"
+        "SELECT harness_session_id, harness, model, effort FROM sessions WHERE id = {id}"
     )
     .fetch_optional()
-    .await?;
-    Ok(row.and_then(|row| row.harness_session_id))
+    .await?
+    .ok_or(ApiError::SessionNotFound)?;
+    Ok(HarnessSessionView {
+        harness_session_id: row.harness_session_id,
+        model: model_of(row.harness, row.model, row.effort),
+    })
 }
 
 /// Marks a provisioning session active because its daemon has arrived.

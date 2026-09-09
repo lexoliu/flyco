@@ -81,8 +81,16 @@ memory_mib = 16384
 # charge = 15600000
 
 [claude]
-# Model override. Omit to leave the CLI's own default in place.
-# model = "claude-sonnet-4-5-20250929"
+# Model override, written by the control plane from the model the session
+# was opened on. It is the identifier the Agent SDK's own model list names —
+# "default", "opus[1m]", "sonnet", "claude-fable-5-1[1m]" — passed through
+# verbatim. Omit to leave the CLI's own default in place.
+# model = "sonnet"
+
+# Reasoning effort for that model: "low", "medium", "high", "xhigh" or
+# "max". Omit to leave the CLI's own default for the model in place; a model
+# that accepts no effort levels at all (Haiku) never carries one.
+# effort = "high"
 
 # Spelled the way the Agent SDK spells it: "default", "acceptEdits",
 # "bypassPermissions", or "plan". Anything but "default" narrows what

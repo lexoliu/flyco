@@ -208,6 +208,7 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
                 config_dir: isolation.map(|isolation| isolation.config_dir.clone()),
                 project_dir_name: isolation.map(|isolation| isolation.project_dir_name.clone()),
                 model: self.claude.model.clone(),
+                effort: self.claude.effort.clone(),
                 permission_mode: self.claude.permission_mode,
                 resume_session_id: request.resume_session_id,
                 // One declaration of the set, never two. A managed policy
@@ -330,6 +331,10 @@ impl HarnessSession for ClaudeSession {
         self.ask(|ack| DriverCommand::Compact { ack }).await
     }
 
+    async fn set_model(&self, model: flyco_core::ModelChoice) -> Result<(), ClaudeError> {
+        self.ask(|ack| DriverCommand::SetModel { model, ack }).await
+    }
+
     async fn decide_approval(&self, approval: ToolApproval) -> Result<(), ClaudeError> {
         self.ask(|ack| DriverCommand::Approval { approval, ack })
             .await
@@ -364,6 +369,11 @@ enum DriverCommand {
     },
     /// From the handle: compact the conversation context.
     Compact {
+        ack: oneshot::Sender<Result<(), ClaudeError>>,
+    },
+    /// From the handle: put the running query on another model.
+    SetModel {
+        model: flyco_core::ModelChoice,
         ack: oneshot::Sender<Result<(), ClaudeError>>,
     },
     /// From the handle: answer a pending approval.
@@ -668,6 +678,19 @@ impl<S: TranscriptStore> Driver<S> {
                 let _ = ack.send(result);
                 ok
             }
+            DriverCommand::SetModel { model, ack } => {
+                let result = write_command(
+                    &mut self.stdin,
+                    &SidecarCommand::SetModel {
+                        model: model.model,
+                        effort: model.effort,
+                    },
+                )
+                .await;
+                let ok = result.is_ok();
+                let _ = ack.send(result);
+                ok
+            }
             DriverCommand::Flush { ack } => {
                 // Nothing to do: reaching this arm *is* the answer. Every
                 // store request the sidecar sent before it was handled by
@@ -747,6 +770,13 @@ impl<S: TranscriptStore> Driver<S> {
                     self.capabilities = Some(capabilities.clone());
                 }
                 emit(&self.outputs, SessionOutput::Capabilities { capabilities }).await
+            }
+            SidecarEvent::Models { models } => {
+                tracing::info!(
+                    count = models.len(),
+                    "the harness listed the models it offers"
+                );
+                emit(&self.outputs, SessionOutput::Models { models }).await
             }
             SidecarEvent::McpServers { servers } => {
                 // The session's whole point is an agent that can see what

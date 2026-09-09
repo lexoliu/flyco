@@ -87,6 +87,11 @@ pub enum SidecarCommand {
         project_dir_name: Option<String>,
         /// Model override; `None` leaves the CLI's own default in place.
         model: Option<String>,
+        /// Reasoning effort for that model, as the SDK's `EffortLevel`
+        /// spells it. `None` leaves the CLI's own default for the model in
+        /// place, which is the only correct value for a model that accepts
+        /// no effort levels at all.
+        effort: Option<String>,
         /// Permission mode for the session.
         permission_mode: PermissionMode,
         /// Harness-native session id to resume, for cross-host History.
@@ -122,6 +127,19 @@ pub enum SidecarCommand {
     Interrupt,
     /// Run Claude Code's native `/compact` command.
     Compact,
+    /// Put the running query on another model, at another effort.
+    ///
+    /// Two SDK calls behind one command, because they are one decision:
+    /// `setModel` moves the query and `applyFlagSettings` sets the effort
+    /// on it, and an effort applied to the model before it would be a level
+    /// of something the session is no longer running.
+    SetModel {
+        /// The identifier the SDK's own model list names, verbatim.
+        model: String,
+        /// The effort level, or `None` to clear whatever was set and leave
+        /// the CLI's default for the new model in place.
+        effort: Option<String>,
+    },
     /// Resolve a pending [`SidecarEvent::ApprovalRequest`].
     ApprovalDecision {
         /// The approval being decided.
@@ -158,6 +176,7 @@ impl SidecarCommand {
             Self::UserMessage { .. } => "user_message",
             Self::Interrupt => "interrupt",
             Self::Compact => "compact",
+            Self::SetModel { .. } => "set_model",
             Self::ApprovalDecision { .. } => "approval_decision",
             Self::StoreResponse { .. } => "store_response",
             Self::Shutdown => "shutdown",
@@ -236,6 +255,19 @@ pub enum SidecarEvent {
         /// The capability tokens, as the CLI names them.
         capabilities: Vec<String>,
     },
+    /// Every model this CLI build offers, from the SDK's
+    /// `supportedModels()`.
+    ///
+    /// Emitted once, as soon as the CLI has answered its `initialize`
+    /// handshake and before any turn — the earliest moment the answer
+    /// exists, and early enough that the composer's picker is right for the
+    /// first message. Translated into flyco's own vocabulary in the
+    /// sidecar rather than passed through raw, because the same shape has
+    /// to come back from Codex.
+    Models {
+        /// The models, in the order the SDK listed them.
+        models: Vec<flyco_core::ModelOption>,
+    },
     /// What the CLI actually mounted, from the SDK's `mcpServerStatus()`.
     ///
     /// Emitted once, as soon as the CLI has finished its `initialize`
@@ -286,6 +318,7 @@ impl SidecarEvent {
             Self::Ready { .. } => "ready",
             Self::Started { .. } => "started",
             Self::Capabilities { .. } => "capabilities",
+            Self::Models { .. } => "models",
             Self::McpServers { .. } => "mcp_servers",
             Self::SdkMessage { .. } => "sdk_message",
             Self::ApprovalRequest { .. } => "approval_request",

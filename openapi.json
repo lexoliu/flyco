@@ -648,7 +648,8 @@
                       "id",
                       "harness",
                       "label",
-                      "linked_at_unix"
+                      "linked_at_unix",
+                      "models"
                     ],
                     "properties": {
                       "expires_at_unix": {
@@ -677,6 +678,13 @@
                         "format": "int64",
                         "description": "When it was linked, seconds since the Unix epoch.",
                         "minimum": 0
+                      },
+                      "models": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/ModelOption"
+                        },
+                        "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
                       }
                     }
                   }
@@ -728,7 +736,8 @@
                     "id",
                     "harness",
                     "label",
-                    "linked_at_unix"
+                    "linked_at_unix",
+                    "models"
                   ],
                   "properties": {
                     "expires_at_unix": {
@@ -757,6 +766,13 @@
                       "format": "int64",
                       "description": "When it was linked, seconds since the Unix epoch.",
                       "minimum": 0
+                    },
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ModelOption"
+                      },
+                      "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
                     }
                   }
                 }
@@ -809,7 +825,8 @@
                     "id",
                     "harness",
                     "label",
-                    "linked_at_unix"
+                    "linked_at_unix",
+                    "models"
                   ],
                   "properties": {
                     "expires_at_unix": {
@@ -838,6 +855,13 @@
                       "format": "int64",
                       "description": "When it was linked, seconds since the Unix epoch.",
                       "minimum": 0
+                    },
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ModelOption"
+                      },
+                      "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
                     }
                   }
                 }
@@ -980,7 +1004,8 @@
                     "id",
                     "harness",
                     "label",
-                    "linked_at_unix"
+                    "linked_at_unix",
+                    "models"
                   ],
                   "properties": {
                     "expires_at_unix": {
@@ -1009,6 +1034,13 @@
                       "format": "int64",
                       "description": "When it was linked, seconds since the Unix epoch.",
                       "minimum": 0
+                    },
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ModelOption"
+                      },
+                      "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
                     }
                   }
                 }
@@ -3643,7 +3675,8 @@
                       "state",
                       "activity",
                       "created_at_unix",
-                      "last_active_unix"
+                      "last_active_unix",
+                      "model"
                     ],
                     "properties": {
                       "activity": {
@@ -3695,6 +3728,10 @@
                       "machine_origin": {
                         "$ref": "#/components/schemas/MachineOrigin",
                         "description": "Whether flyco or the user chose the machine it runs on."
+                      },
+                      "model": {
+                        "$ref": "#/components/schemas/ModelChoice",
+                        "description": "What it runs on, and at what effort.\n\nAlways concrete, never \"whatever the CLI picks\": a session opened\nwithout a model named carries the harness's default resolved at\ncreation, so the header can state the model on every row rather than\nleaving one blank for the sessions nobody chose one for."
                       },
                       "repo": {
                         "$ref": "#/components/schemas/RepoSlug",
@@ -3757,6 +3794,17 @@
                       {
                         "$ref": "#/components/schemas/MachineChoice",
                         "description": "The machine to provision for it.\n\nOmitted, flyco picks the cheapest Linux type in the caller's catalog\nof at least\n[`AUTO_MIN_VCPUS`](crate::machine::AUTO_MIN_VCPUS) vCPUs and\n[`AUTO_MIN_MEMORY_MIB`](crate::machine::AUTO_MIN_MEMORY_MIB) of\nmemory, and records the machine as automatically chosen."
+                      }
+                    ]
+                  },
+                  "model": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/ModelChoice",
+                        "description": "The model the session runs on, and the effort it runs at.\n\nOmitted, the control plane records the default of the harness\naccount's own model list — resolved *here*, once, so the session row\nalways names what it is running rather than deferring to whatever\nthe CLI happens to default to on the day its machine boots."
                       }
                     ]
                   },
@@ -3871,8 +3919,8 @@
         }
       },
       "patch": {
-        "summary": "Changes what one of the caller's sessions is called, what it may spend, or both.",
-        "description": "Changes what one of the caller's sessions is called, what it may spend,\nor both.\n\nThe title opens as the excerpt of the prompt the session was created\nwith; this is how it becomes something the user chose. The budget limit\nis the one thing that releases a session paused on an exhausted budget,\nand raising it past the spend both puts the session back to\n[`SessionState::Active`] and tells its daemon to carry on — the daemon\nstopped accepting work when the pause reached it and nothing in the\ndatabase can lift that.",
+        "summary": "Changes what one of the caller's sessions is called, what it may spend, what it runs on, or any combination of the three.",
+        "description": "Changes what one of the caller's sessions is called, what it may spend,\nwhat it runs on, or any combination of the three.\n\nThe title opens as the excerpt of the prompt the session was created\nwith; this is how it becomes something the user chose. The budget limit\nis the one thing that releases a session paused on an exhausted budget,\nand raising it past the spend both puts the session back to\n[`SessionState::Active`] and tells its daemon to carry on — the daemon\nstopped accepting work when the pause reached it and nothing in the\ndatabase can lift that. The model is recorded and then sent to the\nsession's room, which echoes it into the transcript and hands it to the\nharness mid-conversation.",
         "operationId": "flyco_api::app::update_session",
         "parameters": [
           {
@@ -3890,7 +3938,7 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "description": "Request body of `PATCH /v1/sessions/{id}`.\n\nBoth fields are independently optional, because the two things a user\nchanges about a live session are changed from opposite ends of the\nheader and neither has any business restating the other's value. A body\ncarrying neither is refused rather than answered with a session nothing\nhappened to.",
+                "description": "Request body of `PATCH /v1/sessions/{id}`.\n\nAll three fields are independently optional, because the things a user\nchanges about a live session are changed from different parts of the UI\nand none has any business restating another's value. A body carrying\nnone of them is refused rather than answered with a session nothing\nhappened to.",
                 "properties": {
                   "budget_limit": {
                     "oneOf": [
@@ -3900,6 +3948,17 @@
                       {
                         "$ref": "#/components/schemas/Usd",
                         "description": "What the session may spend on compute, in microdollars.\n\nThe one thing that releases a session paused on an exhausted\nbudget: a limit above what the ledger has already spent puts the\nsession back to [`SessionState::Active`] and tells its daemon to\ncarry on. A limit that is still under the spend is accepted and\nchanges nothing else — the session stays paused, because it is."
+                      }
+                    ]
+                  },
+                  "model": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/ModelChoice",
+                        "description": "What the session should run on from here on.\n\nTakes effect on the conversation already in progress rather than at\nthe next turn's discretion: the control plane records it and sends\nthe session's daemon a\n[`SetModel`](crate::wire::ControlToDaemon::SetModel), which both\nharnesses apply to the running session. Refused when the account's\nown model list does not offer it, so a stale picker cannot put a\nsession on a model its harness has dropped."
                       }
                     ]
                   },
@@ -5027,8 +5086,8 @@
     },
     "/v1/sessions/{id}/harness-session": {
       "get": {
-        "summary": "Reads the harness conversation a daemon on this session must continue.",
-        "description": "Reads the harness conversation a daemon on this session must continue.\n\nThe daemon asks at startup instead of trusting the configuration on its\ndisk: that file was written when the machine was created, and a machine\nthat was stopped and started again on the same disk — which is how a\nspot reclamation is recovered from — boots the same file. A daemon that\ntrusted it would open a second conversation beside the one the user is\nwatching.",
+        "summary": "Reads the harness conversation a daemon on this session must continue, and the model it must continue it on.",
+        "description": "Reads the harness conversation a daemon on this session must continue,\nand the model it must continue it on.\n\nThe daemon asks at startup instead of trusting the configuration on its\ndisk: that file was written when the machine was created, and a machine\nthat was stopped and started again on the same disk — which is how a\nspot reclamation is recovered from — boots the same file. A daemon that\ntrusted it would open a second conversation beside the one the user is\nwatching, and would open it on the model the session had before the user\nchanged it.",
         "operationId": "flyco_api::app::get_harness_session",
         "parameters": [
           {
@@ -5048,6 +5107,9 @@
                 "schema": {
                   "type": "object",
                   "description": "What `GET /v1/sessions/{id}/harness-session` answers.\n\nThe conversation a daemon starting on this session must continue, as the\ncontrol plane last recorded it. Asked rather than read out of the\ndaemon's own configuration, because that file was written when the\nmachine was *created*: a machine that was stopped and started again on\nthe same disk — which is what recovering from a spot reclamation is —\nboots the same file, and a daemon that trusted it would open a second\nconversation beside the one the user is watching.\n\n`None` is a session whose harness has never announced an identity, which\nis every session until its first daemon connects.",
+                  "required": [
+                    "model"
+                  ],
                   "properties": {
                     "harness_session_id": {
                       "type": [
@@ -5055,6 +5117,10 @@
                         "null"
                       ],
                       "description": "Harness-native session id; resume reopens this conversation."
+                    },
+                    "model": {
+                      "$ref": "#/components/schemas/ModelChoice",
+                      "description": "The model this session runs on, as the control plane last recorded\nit.\n\nAsked for the same reason the conversation is: the model in the\nconfiguration on the machine's disk is the one it was *provisioned*\nwith, so a session whose model was changed while it ran would come\nback on the old one after a reclamation."
                     }
                   }
                 }
@@ -5346,6 +5412,52 @@
         "responses": {
           "202": {
             "description": "Recorded. The outcome arrives on the session relay, not in this response."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/models": {
+      "put": {
+        "summary": "Records the models this session's harness offers.",
+        "description": "Records the models this session's harness offers.\n\nFiled by the daemon once its harness has answered — the earliest moment\nthe answer exists — and stored against the *account*, because the list\nis a fact about the harness build that account's machines run and the\ncomposer needs it before the next session exists. The live half goes to\nthe room in the same call, so a browser watching this session gets the\nreal list without reloading the account.",
+        "operationId": "flyco_api::app::report_models",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `PUT /v1/sessions/{id}/models`.\n\nWhat a session's daemon reports once its harness has answered what it\noffers. Recorded against the account rather than the session, because\nthe list is a fact about the harness build the account runs on and the\ncomposer needs it before any session of the next one exists.",
+                "required": [
+                  "models"
+                ],
+                "properties": {
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ModelOption"
+                    },
+                    "description": "Every model the harness listed, in its own order."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
           }
         }
       }
@@ -7171,6 +7283,17 @@
               }
             ]
           },
+          "model": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModelChoice",
+                "description": "The model the session runs on, and the effort it runs at.\n\nOmitted, the control plane records the default of the harness\naccount's own model list — resolved *here*, once, so the session row\nalways names what it is running rather than deferring to whatever\nthe CLI happens to default to on the day its machine boots."
+              }
+            ]
+          },
           "prompt": {
             "type": "string",
             "description": "What the agent should do first.\n\nRequired, because a session with nothing to do is a machine nobody\nasked for: the prompt is recorded as the session's first user\nmessage and delivered to the daemon as soon as one connects. Its\nexcerpt is also the session's opening [`title`](SessionSummary::title)."
@@ -7691,7 +7814,8 @@
           "id",
           "harness",
           "label",
-          "linked_at_unix"
+          "linked_at_unix",
+          "models"
         ],
         "properties": {
           "expires_at_unix": {
@@ -7720,6 +7844,13 @@
             "format": "int64",
             "description": "When it was linked, seconds since the Unix epoch.",
             "minimum": 0
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelOption"
+            },
+            "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
           }
         }
       },
@@ -7937,6 +8068,9 @@
       "HarnessSessionView": {
         "type": "object",
         "description": "What `GET /v1/sessions/{id}/harness-session` answers.\n\nThe conversation a daemon starting on this session must continue, as the\ncontrol plane last recorded it. Asked rather than read out of the\ndaemon's own configuration, because that file was written when the\nmachine was *created*: a machine that was stopped and started again on\nthe same disk — which is what recovering from a spot reclamation is —\nboots the same file, and a daemon that trusted it would open a second\nconversation beside the one the user is watching.\n\n`None` is a session whose harness has never announced an identity, which\nis every session until its first daemon connects.",
+        "required": [
+          "model"
+        ],
         "properties": {
           "harness_session_id": {
             "type": [
@@ -7944,6 +8078,10 @@
               "null"
             ],
             "description": "Harness-native session id; resume reopens this conversation."
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelChoice",
+            "description": "The model this session runs on, as the control plane last recorded\nit.\n\nAsked for the same reason the conversation is: the model in the\nconfiguration on the machine's disk is the one it was *provisioned*\nwith, so a session whose model was changed while it ran would come\nback on the old one after a reclamation."
           }
         }
       },
@@ -8815,6 +8953,69 @@
           }
         }
       },
+      "ModelChoice": {
+        "type": "object",
+        "description": "What a session runs on: a model and, optionally, an effort.\n\nOne value rather than two fields wherever a session's model is written,\nread or changed, because the pair is only ever meaningful together: an\neffort names a level of a *model*, and a request that changed one\nwithout the other would be asking for a combination nobody chose.",
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`None` leaves the harness's own default effort in place."
+          },
+          "model": {
+            "type": "string",
+            "description": "The model's [`id`](ModelOption::id)."
+          }
+        }
+      },
+      "ModelOption": {
+        "type": "object",
+        "description": "One model a harness can run a session on, as the harness itself lists it.\n\nFlyco never curates this: the identifiers, the names and the order are\nthe harness's own, so a model Anthropic or `OpenAI` adds tomorrow reaches\nthe picker the first time a session asks its harness what it offers.\n[`builtin_models`] is what the picker shows before any session has.",
+        "required": [
+          "id",
+          "label",
+          "description",
+          "is_default",
+          "efforts"
+        ],
+        "properties": {
+          "default_effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The effort the harness uses when none is chosen, where it says.\n\nCodex states one per model (`defaultReasoningEffort`); the Claude\nSDK does not, so this is `None` for every Claude row and the CLI's\nown default stands."
+          },
+          "description": {
+            "type": "string",
+            "description": "One line under the label, which is the harness's `description`."
+          },
+          "efforts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The effort levels the model accepts, in the harness's own order.\n\nEmpty for a model that accepts none — Claude's Haiku row names no\neffort levels at all — and an empty list is the whole answer: a\npicker that offered one anyway would be offering a request the\nharness refuses."
+          },
+          "id": {
+            "type": "string",
+            "description": "The identifier the harness accepts, verbatim.\n\nThe Claude Agent SDK's `value` and Codex's model `id`. Passed\nthrough untouched — `default` and `claude-fable-5-1[1m]` are both\nthings the CLI takes — because a normalized spelling would be a\nsecond vocabulary flyco would then have to translate back."
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "Whether the harness runs this one when nothing is chosen.\n\nClaude says so by naming the row `default`; Codex says so with\n`isDefault`. Exactly one row of a list carries it, which is what\n[`ModelChoice::default_of`] relies on."
+          },
+          "label": {
+            "type": "string",
+            "description": "What the picker shows, which is the harness's `displayName`."
+          }
+        }
+      },
       "OsFamily": {
         "type": "string",
         "description": "Operating system family of a machine type.",
@@ -9454,6 +9655,22 @@
           }
         }
       },
+      "ReportModels": {
+        "type": "object",
+        "description": "Request body of `PUT /v1/sessions/{id}/models`.\n\nWhat a session's daemon reports once its harness has answered what it\noffers. Recorded against the account rather than the session, because\nthe list is a fact about the harness build the account runs on and the\ncomposer needs it before any session of the next one exists.",
+        "required": [
+          "models"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelOption"
+            },
+            "description": "Every model the harness listed, in its own order."
+          }
+        }
+      },
       "ReportProvisioningStage": {
         "type": "object",
         "description": "Request body of `POST /v1/sessions/{id}/provisioning-stage`.\n\nThe daemon names the milestone; the control plane times it, exactly as it\ntimes the stages its own provisioning queue announces. A daemon whose\nclock is wrong would otherwise put its line of the timeline in 1970.",
@@ -9633,7 +9850,8 @@
           "state",
           "activity",
           "created_at_unix",
-          "last_active_unix"
+          "last_active_unix",
+          "model"
         ],
         "properties": {
           "activity": {
@@ -9685,6 +9903,10 @@
           "machine_origin": {
             "$ref": "#/components/schemas/MachineOrigin",
             "description": "Whether flyco or the user chose the machine it runs on."
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelChoice",
+            "description": "What it runs on, and at what effort.\n\nAlways concrete, never \"whatever the CLI picks\": a session opened\nwithout a model named carries the harness's default resolved at\ncreation, so the header can state the model on every row rather than\nleaving one blank for the sessions nobody chose one for."
           },
           "repo": {
             "$ref": "#/components/schemas/RepoSlug",
@@ -10008,7 +10230,7 @@
       },
       "UpdateSession": {
         "type": "object",
-        "description": "Request body of `PATCH /v1/sessions/{id}`.\n\nBoth fields are independently optional, because the two things a user\nchanges about a live session are changed from opposite ends of the\nheader and neither has any business restating the other's value. A body\ncarrying neither is refused rather than answered with a session nothing\nhappened to.",
+        "description": "Request body of `PATCH /v1/sessions/{id}`.\n\nAll three fields are independently optional, because the things a user\nchanges about a live session are changed from different parts of the UI\nand none has any business restating another's value. A body carrying\nnone of them is refused rather than answered with a session nothing\nhappened to.",
         "properties": {
           "budget_limit": {
             "oneOf": [
@@ -10018,6 +10240,17 @@
               {
                 "$ref": "#/components/schemas/Usd",
                 "description": "What the session may spend on compute, in microdollars.\n\nThe one thing that releases a session paused on an exhausted\nbudget: a limit above what the ledger has already spent puts the\nsession back to [`SessionState::Active`] and tells its daemon to\ncarry on. A limit that is still under the spend is accepted and\nchanges nothing else — the session stays paused, because it is."
+              }
+            ]
+          },
+          "model": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModelChoice",
+                "description": "What the session should run on from here on.\n\nTakes effect on the conversation already in progress rather than at\nthe next turn's discretion: the control plane records it and sends\nthe session's daemon a\n[`SetModel`](crate::wire::ControlToDaemon::SetModel), which both\nharnesses apply to the running session. Refused when the account's\nown model list does not offer it, so a stale picker cannot put a\nsession on a model its harness has dropped."
               }
             ]
           },

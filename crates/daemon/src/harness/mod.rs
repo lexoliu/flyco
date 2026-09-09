@@ -20,7 +20,7 @@ pub mod codex;
 use std::future::Future;
 use std::path::PathBuf;
 
-use flyco_core::{ApprovalId, HarnessEvent};
+use flyco_core::{ApprovalId, HarnessEvent, ModelChoice, ModelOption};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -91,6 +91,17 @@ pub enum SessionOutput {
     Capabilities {
         /// The capability tokens, as the harness names them.
         capabilities: Vec<String>,
+    },
+    /// The models this harness offers.
+    ///
+    /// Reported once the harness has answered its handshake and before any
+    /// turn — the earliest moment the answer exists, and early enough that
+    /// the composer's picker is right for the first message. The control
+    /// loop files it over REST rather than as a relay frame, because it is
+    /// recorded against the *account* and a Durable Object cannot reach D1.
+    Models {
+        /// Every model the harness listed, in its own order.
+        models: Vec<ModelOption>,
     },
     /// A normalized harness event.
     Event {
@@ -205,6 +216,22 @@ pub trait HarnessSession: Send + Sync {
     /// Returns [`Self::Error`] if the session has already stopped or the
     /// harness rejects compaction.
     fn compact(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Puts the running session on another model, at another effort.
+    ///
+    /// Applied to the conversation in progress rather than the next one:
+    /// the Claude Agent SDK takes `setModel` and `applyFlagSettings` on a
+    /// live query, and Codex's `turn/start` documents `model` and `effort`
+    /// as overriding "this turn and subsequent turns". Both mean a user can
+    /// change the model while watching the agent work, which is what the
+    /// composer's picker offers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the session has already stopped or the
+    /// harness refuses the model.
+    fn set_model(&self, model: ModelChoice)
+    -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Answers a pending approval.
     ///

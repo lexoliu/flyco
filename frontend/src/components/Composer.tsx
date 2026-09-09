@@ -26,6 +26,7 @@ import {
 import BudgetPicker, { DEFAULT_BUDGET } from "./BudgetPicker";
 import ComposerShell from "./ComposerShell";
 import MachinePicker from "./MachinePicker";
+import ModelChip from "./ModelChip";
 import Popover from "./Popover";
 import Logomark, { HARNESS_MARK, PROVIDER_MARK } from "./Logomark";
 import ProblemNotice from "./ProblemNotice";
@@ -39,12 +40,14 @@ import {
   type HarnessKind,
   type MachineCatalogEntry,
   type MachineDefault,
+  type ModelChoice,
   type ProviderAccountView,
   type RepoSummary,
 } from "../api/client";
 import { beginGithubLogin, githubTokenRevoked } from "../api/auth";
 import type { NewSessionInput } from "../api/sessions";
 import { cx } from "../lib/cx";
+import { defaultChoice, optionOf } from "../lib/models";
 import {
   MAX_RECENT_REPOS,
   recentRepos,
@@ -99,6 +102,10 @@ export default function Composer(props: ComposerProps) {
   const [spot, setSpot] = createSignal(spotPreference());
   const [chosenKey, setChosenKey] = createSignal<string | null>(null);
   const [harnessChoice, setHarnessChoice] = createSignal<HarnessKind | null>(null);
+  // `null` is "whatever the agent runs by default", resolved against the
+  // agent's own list at send time; a choice is kept only while the list it
+  // was made against is still the one on the chip.
+  const [modelChoice, setModelChoice] = createSignal<ModelChoice | null>(null);
   const [sending, setSending] = createSignal(false);
   const [error, setError] = createSignal<unknown>(null);
 
@@ -199,6 +206,26 @@ export default function Composer(props: ComposerProps) {
     return linked[0]?.harness ?? "claude_code";
   });
 
+  /** The models the chosen agent offers, as its account lists them. */
+  const models = createMemo(
+    () => readiness.harness().find((account) => account.harness === harness())?.models ?? [],
+  );
+
+  /**
+   * The model the session opens on: what was picked while it is still on
+   * the list, else the agent's default. Switching agents therefore drops a
+   * pick made for the other one, because a Claude model id means nothing
+   * to Codex.
+   */
+  const model = createMemo<ModelChoice | null>(() => {
+    const list = models();
+    if (list.length === 0) {
+      return null;
+    }
+    const picked = modelChoice();
+    return picked !== null && optionOf(list, picked) !== undefined ? picked : defaultChoice(list);
+  });
+
   /** The catalog entry the compute chip is showing. */
   const chosen = createMemo<MachineCatalogEntry | undefined>(() => {
     const key = chosenKey();
@@ -261,9 +288,11 @@ export default function Composer(props: ComposerProps) {
       const entry = chosen();
       const account = entry?.account;
       const chosenBranch = branch();
+      const chosenModel = model();
       await props.onSend({
         prompt: prompt().trim(),
         repo: slug,
+        ...(chosenModel === null ? {} : { model: chosenModel }),
         // Sent only when the user picked one: omitted, the control plane
         // reads the repository's default from GitHub and records *that*, so
         // the branch a session is on is never this browser's guess.
@@ -326,6 +355,18 @@ export default function Composer(props: ComposerProps) {
           <BranchChip slug={repo()} branch={branch()} onChoose={setBranch} />
           <BudgetChip dollars={budget()} onChange={setBudget} />
         </div>
+      }
+      trailing={
+        /*
+         * At the right, beside send, where both official apps keep their
+         * model chip: the last thing checked before the task goes out,
+         * and off the row of chips that decide where it runs.
+         */
+        <Show when={model()}>
+          {(choice) => (
+            <ModelChip models={models()} choice={choice()} align="end" onChoose={setModelChoice} />
+          )}
+        </Show>
       }
       action={
         <button

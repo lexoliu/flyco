@@ -5,14 +5,16 @@
 //! list response has always carried a per-account id, and there was no way
 //! to name the second account with it.
 
-use flyco_core::{HarnessAccountView, HarnessKind, Problem, SessionState};
+use flyco_core::{
+    HarnessAccountView, HarnessKind, ModelOption, Problem, SessionState, builtin_models,
+};
 use skyzen_services::{Db, Kv};
 use skyzen_test::TestContext;
 
 use crate::testing::{
     migrated_router, seed_harness_account, seed_other_user, seed_session, seed_user,
 };
-use crate::{session, sessions};
+use crate::{harness_accounts, session, sessions};
 
 #[skyzen::test]
 async fn each_linked_account_is_unlinked_by_its_own_id(ctx: TestContext, kv: Kv, db: Db) {
@@ -358,4 +360,119 @@ mod linking {
             );
         }
     }
+}
+
+// ── The model list a linked account offers ──
+
+#[skyzen::test]
+async fn an_account_that_has_never_run_a_session_offers_the_built_in_list(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // The picker has to show something the first time an account is linked,
+    // and the built-in list is the honest answer: nothing has told flyco
+    // what this account's harness build accepts.
+    let router = migrated_router(&db).await;
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+    let client = ctx.client(router);
+    seed_harness_account(&db, user.id, HarnessKind::ClaudeCode).await;
+
+    let listed = client
+        .get("/v1/harness-accounts")
+        .bearer(&token)
+        .send()
+        .await;
+    listed.assert_status(200);
+    let accounts: Vec<HarnessAccountView> = listed.json();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].models, builtin_models(HarnessKind::ClaudeCode));
+}
+
+#[skyzen::test]
+async fn a_reported_list_replaces_the_built_in_one_for_that_account(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let router = migrated_router(&db).await;
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+    let client = ctx.client(router);
+    seed_harness_account(&db, user.id, HarnessKind::ClaudeCode).await;
+    seed_harness_account(&db, user.id, HarnessKind::Codex).await;
+
+    let reported = vec![ModelOption {
+        id: "claude-opus-6".to_owned(),
+        label: "Opus 6".to_owned(),
+        description: "A model this build of the CLI knows about and flyco did not.".to_owned(),
+        is_default: true,
+        efforts: vec!["low".to_owned(), "max".to_owned()],
+        default_effort: None,
+    }];
+    harness_accounts::record_models(&db, user.id, HarnessKind::ClaudeCode, &reported)
+        .await
+        .expect("record what the harness offers");
+
+    let listed = client
+        .get("/v1/harness-accounts")
+        .bearer(&token)
+        .send()
+        .await;
+    listed.assert_status(200);
+    let accounts: Vec<HarnessAccountView> = listed.json();
+    let claude = accounts
+        .iter()
+        .find(|account| account.harness == HarnessKind::ClaudeCode)
+        .expect("the Claude account");
+    assert_eq!(claude.models, reported);
+
+    // Recorded against one account and not the other: the list is a fact
+    // about the harness build that account's machines run.
+    let codex = accounts
+        .iter()
+        .find(|account| account.harness == HarnessKind::Codex)
+        .expect("the Codex account");
+    assert_eq!(codex.models, builtin_models(HarnessKind::Codex));
+}
+
+#[skyzen::test]
+async fn a_harness_that_lists_nothing_is_refused_rather_than_stored(db: Db) {
+    // An empty list is a daemon bug, and storing it would leave the account
+    // with a picker that can never be opened and no way back.
+    crate::testing::migrate(&db).await;
+    let user = seed_user(&db).await;
+    seed_harness_account(&db, user.id, HarnessKind::Codex).await;
+
+    let refusal = harness_accounts::record_models(&db, user.id, HarnessKind::Codex, &[])
+        .await
+        .expect_err("an empty model list is refused");
+    assert_eq!(refusal.slug(), "internal");
+    let _ = &refusal;
+    assert_eq!(
+        harness_accounts::models(&db, user.id, HarnessKind::Codex)
+            .await
+            .expect("read the list back"),
+        builtin_models(HarnessKind::Codex),
+        "the refusal leaves the stored list alone"
+    );
+}
+
+#[skyzen::test]
+async fn a_report_for_a_harness_the_user_has_no_account_for_is_refused(db: Db) {
+    // A write that matched nothing would leave the picker quietly on the
+    // built-in list and report success, so it is a refusal instead.
+    crate::testing::migrate(&db).await;
+    let user = seed_user(&db).await;
+
+    let refusal = harness_accounts::record_models(
+        &db,
+        user.id,
+        HarnessKind::Codex,
+        &builtin_models(HarnessKind::Codex),
+    )
+    .await
+    .expect_err("there is no Codex account to record against");
+    assert_eq!(refusal.slug(), "harness-account-not-found");
 }

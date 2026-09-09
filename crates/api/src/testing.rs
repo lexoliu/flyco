@@ -32,7 +32,7 @@ use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 19] = [
+pub const MIGRATIONS: [&str; 20] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -52,6 +52,7 @@ pub const MIGRATIONS: [&str; 19] = [
     include_str!("../../../migrations/0018_session_activity.sql"),
     include_str!("../../../migrations/0019_hosts.sql"),
     include_str!("../../../migrations/0020_provider_unlink.sql"),
+    include_str!("../../../migrations/0021_session_model.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -977,6 +978,9 @@ pub async fn seed_session(db: &Db, user: &CurrentUser) -> flyco_core::SessionId 
             machine_origin: flyco_core::MachineOrigin::Auto,
             budget: flyco_core::BudgetConfig::new(flyco_core::Usd::from_dollars(10))
                 .expect("a valid budget"),
+            model: &flyco_core::ModelChoice::default_of(&flyco_core::builtin_models(
+                flyco_core::HarnessKind::ClaudeCode,
+            )),
         },
     )
     .await

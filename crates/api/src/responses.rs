@@ -73,6 +73,7 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::app::put_harness_session",
     "flyco_api::app::put_workdir_patch",
     "flyco_api::app::record_harness_observation",
+    "flyco_api::app::report_models",
     "flyco_api::app::report_provisioning_stage",
     "flyco_api::app::report_spot_notice",
     "flyco_api::app::report_startup_failure",

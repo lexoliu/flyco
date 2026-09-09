@@ -66,10 +66,27 @@ The shell is a left rail and nothing else. There is no top bar: a bar
 above the work is a second place to look, and the work is the page.
 
 The rail, top to bottom: the wordmark, `New session`, a search field, the
-`Sessions` / `Archived` tabs, the session list grouped as in §5, and at the
-foot the account row — avatar and login, opening a menu upward with
-`Settings`, appearance, and `Sign out`. The rail is the only region that
-scrolls independently of the page.
+session list, one quiet `Archived · 3` line at its foot, and the account
+row — avatar and login, opening a menu upward with `Settings`, appearance,
+and `Sign out`. The rail is the only region that scrolls independently of
+the page.
+
+The list is grouped **by repository**, the way the official apps group by
+project, because that is how a person remembers a session: "the helios
+one", never "the idle one". Repositories are ordered by their most recent
+session and sessions within one newest first. A row is a dot and a title.
+The dot is coloured only while it says something — green while the agent
+is working, red for a failure, neutral while a machine is being built —
+and a session at rest has no dot at all, only the slot, so titles line up.
+Neither does a session whose agent has answered and is waiting for a
+reply: after a day's work that is every session there is, and a column of
+amber dots is the `Needs input` badge forty times over. Nothing in the rail moves: a row of
+breathing dots in the corner of the eye competes with the work in the
+middle of the screen. There are no `NEEDS INPUT / WORKING / IDLE` headings
+and no `SESSIONS / ARCHIVED` tabs: a heading that names a status is chrome
+repeating what the dot already says, and archived sessions are the same
+list read for a different reason, which one line at the foot is enough
+for. That line toggles the list to its archived half and back.
 
 In settings the rail becomes the settings nav: `Sessions` in the slot
 `New session` occupies everywhere else, then the five sections of §10. There
@@ -300,6 +317,7 @@ Every chip is both a status readout and the entry point to change it.
 | Chip | Ready | Not ready |
 |---|---|---|
 | Harness | logomark + `Claude Code` (or `Codex`); popover lists the linked agents with the chosen one marked, ending in `Connect another agent` → `/connect/harness` | `+ Connect an agent` → `/connect/harness` |
+| Model | `Fable 5.1 · High`: the model's name and, once one is chosen, the effort after it. The name is the head of the harness's description where it has one (`Fable 5.1 · Most capable…` → `Fable 5.1`; Claude's rows are menu labels like `Default (recommended)`) and the row's label otherwise (`GPT-5.5`). The chip sits at the right of the row beside send, where both official apps keep theirs. The popover lists the agent's own models (`GET /v1/harness-accounts` carries each account's list, as its last session's agent reported it, or flyco's built-in one until then), each with the harness's one-line description, and under the chosen one its effort levels as pills with `Default` first. Choosing a model resets the effort to the model's own default. Switching agents drops the choice, because a Claude id means nothing to Codex | absent until an agent is linked, since there is no list to show |
 | Compute | provider logomark + `B2s · $0.04/hr` and `Auto` or `Chosen`; the logomark names the provider, and region, spot and the account live in the popover. While an account is still being read the chip says `Reading Azure…` and the popover carries the whole sentence | `+ Add compute` → `/connect/compute` |
 | Repository | `owner/name`; popover with a search box, recent repositories first | `Select repository` opens the same popover |
 | Budget | `$10`; popover with a slider (1–200) and the sentence "Covers the machine and its disk. Model tokens are billed by your Claude or Codex plan." | always shown, default `$10` |
@@ -362,6 +380,23 @@ archived, and the UI ignores it there.
 
 Amber for `Needs input`, green breathing for `Working`, neutral breathing
 for `Provisioning` and `Migrating`, gray for the rest, red for `Failed`.
+
+**Where a status is shown.** The rail's dot (§3) is the only place a
+status is a colour beside a name. The session page has no status pill: a
+pill reading `Needs input` or `Working` above a conversation is chrome
+telling the reader what the conversation already shows, and next to the
+official apps it reads as generated. Each status is said where it
+happens, and only there:
+
+| Status | On the session page |
+|---|---|
+| Provisioning, Migrating | the timeline in the transcript (§9.2), which folds to one line once the agent is ready |
+| Working | a breathing dot and `Working…` at the foot of the transcript, where the next line will land, and the composer's `Stop` button |
+| Needs input | the approval card and the amber banner when a decision is pending; otherwise nothing — the agent's last message is the page, and the composer has focus |
+| Idle | nothing |
+| Disconnected · machine not reachable | a notice above the composer: the machine dropped off the network, it reconnects on its own, anything sent waits for it |
+| Paused, Interrupted, Failed, Archived | the state notice in the composer's place (§9.1) |
+| Reconnecting…, Connecting… | one amber word at the right of the header, only while the browser's own socket is not carrying events |
 
 `interrupted_reason` is cleared when the session's daemon reaches the
 control plane again, which is the moment a migration is genuinely over and
@@ -557,21 +592,24 @@ after linking.
 ### 9.1 Header
 
 Title (editable inline; defaults to the first prompt's excerpt),
-`repo · branch`, the status pill from §6, the machine chip
-(`Standard_B2s · $0.04/hr · spot`), a budget ring (`$1.20 / $10`) and a
-context ring (`41k / 200k`). Actions: `Archive` and a `⋯` menu (stop
-machine, start machine, resize, edit `.env`, copy session id).
+`repo · branch`, the drawer's toggle (§9.4), and one `⋯` menu: rename,
+archive, then start machine, stop machine, resize, edit `.env`, copy
+session id, with the machine's provider, region and state as the menu's
+footer. Nothing else. The header
+is one quiet row, the way the official apps' is; the status is read off
+the transcript (§6), and the machine, the budget and the context window
+are the composer's row (§9.3), where they are acted on.
 
-The budget ring is a control and the context ring is not: one of its two
-numbers is something the user set. Clicking it opens the same slider the
-composer's budget chip does, floored at the first whole dollar above what
-the session has already spent, and an explicit `Set budget to $25` commits
-it. That is the only way out of `Paused · budget exhausted`: a limit above
-the spend puts the session back to `active` and tells its daemon to carry
-on from where the pause interrupted it. A paused session therefore also
-carries a notice — "The $10.00 budget is spent. Raise it to continue." —
-with the same control as its action, because the header is not where a user
-looks when the page tells them the session stopped.
+The budget is a control and the context reading is not: one of the
+budget's two numbers is something the user set. The composer's budget chip
+(`$1.20 / $10`) opens the same slider the home composer's does, floored at
+the first whole dollar above what the session has already spent, and an
+explicit `Set budget to $25` commits it. That is the only way out of
+`Paused · budget exhausted`: a limit above the spend puts the session back
+to `active` and tells its daemon to carry on from where the pause
+interrupted it. A paused session therefore also carries a notice — "The
+$10.00 budget is spent. Raise it to continue." — with the same control as
+its action, because the composer is gone while the session is paused.
 
 That notice takes the composer's place rather than sitting above the
 transcript, and the composer is not rendered at all while it shows. A
@@ -653,19 +691,40 @@ longer carries a `refusal` of its own.
 
 ### 9.3 Composer
 
-Same component as the home composer, without chips. While a turn is in
-flight the send button becomes `Stop`. `/` opens a command palette
-(`/compact`, `/archive`, `/resize`); a message beginning with `!` runs in
-the machine's bash, and the composer says so under the field while typing
-one.
+Same component as the home composer. Its row carries what a running
+session still has a say over, as the official composers do, left to right:
+
+- the **machine**, `D4ps_v6 · $0.17/hr · spot` (or `D4ps_v6 · Stopped`),
+  which opens the drawer's Machine tab;
+- the **budget**, `$1.20 / $10`, which opens the budget slider of §9.1;
+- then, at the right beside send, the **model chip** of §5, `Fable 5.1 ·
+  High`, whose choice is sent as `PATCH /v1/sessions/{id}` with `model`
+  and reaches the running agent through its room; the chip dims until the
+  answer lands, and the transcript records the change as one line,
+  `Switched to Sonnet 5 · High`;
+- the **context ring**, `41k / 200k`, once the harness has reported a
+  turn — before that there is nothing to draw;
+- then send, which becomes `Stop` while a turn is in flight.
+
+The composer sits at the foot of the window even when the transcript is
+three lines long: the page is at least a window tall, and the composer is
+pushed to its bottom, where the hands already expect it.
+
+`/` opens a command palette (`/compact`, `/archive`, `/resize`); a message
+beginning with `!` runs in the machine's bash, and the composer says so
+under the field while typing one. The placeholder is one line: `Reply, /
+for a command, ! for the shell`.
 
 ### 9.4 Drawer
 
-A right-side drawer, collapsed by default, with tabs `Terminal`, `Files`,
+A right-side drawer, closed by default, with tabs `Terminal`, `Files`,
 `Diff`, `Machine`, `Env`. `Terminal` is the existing xterm panel.
 `Machine` shows spec, hourly, storage hourly, state, and the
-start/stop/resize controls. `Env` is the existing editor. Keyboard: `⌘.`
-toggles the drawer.
+start/stop/resize controls. `Env` is the existing editor. Its toggle is a
+panel icon in the header beside `⋯`, where the official apps keep theirs;
+a handle at the top of the transcript column sat exactly where the first
+user message lands and read as an avatar on it. Keyboard: `⌘.` toggles
+the drawer. Closed, it takes no room at all.
 
 `Resize` is the tiered slider of §7.7, on the machine the session is
 already on: the same detents, prices and license-bound badge, opened on the
@@ -745,6 +804,21 @@ Pre-1.0, the API changes to fit the product; no compatibility shims.
   the harness starts.
 - `SessionSummary` gains `title: string` (first prompt excerpt, editable
   via `PATCH /v1/sessions/{id}`).
+- The model is a session property. `ModelOption` (`id`, `label`,
+  `description`, `is_default`, `efforts`, `default_effort`) is what a
+  harness lists; `ModelChoice` (`model`, optional `effort`) is what a
+  session runs on. `POST /v1/sessions` takes `model?: ModelChoice` (the
+  agent's default when omitted), `SessionSummary` carries `model`,
+  `PATCH /v1/sessions/{id}` changes it — the room delivers
+  `ControlToDaemon::SetModel`, held across a disconnect like a machine
+  change, and echoes `ClientEvent::ModelChanged` — and a choice outside
+  the account's list is `400 invalid-model`. `HarnessAccountView` carries
+  `models`, the list the account's last session reported or flyco's
+  built-in one; the daemon reports the list it gets from the harness at
+  start over `PUT /v1/sessions/{id}/models`, which records it on the
+  account and broadcasts `ClientEvent::Models`. `GET
+  /v1/sessions/{id}/harness-session` carries the model, so a machine that
+  comes back reads it beside the conversation it continues.
 - `GET /v1/machines/default?spot=` returns the curated default choice and
   its catalog entry. `GET /v1/machines/catalog` returns the curated
   catalog (§7.6).

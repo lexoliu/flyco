@@ -55,6 +55,8 @@ export type RepoSummary = Schemas["RepoSummary"];
 export type BranchSummary = Schemas["BranchSummary"];
 export type BranchPage = Schemas["BranchPage"];
 export type HarnessKind = Schemas["HarnessKind"];
+export type ModelOption = Schemas["ModelOption"];
+export type ModelChoice = Schemas["ModelChoice"];
 export type SessionState = Schemas["SessionState"];
 export type SessionActivity = Schemas["SessionActivity"];
 export type InterruptedReason = Schemas["InterruptedReason"];
@@ -250,22 +252,26 @@ export function getSession(
 }
 
 /**
- * Changes a session's title, its compute budget, or both.
+ * Changes a session's title, its compute budget, the model it runs on, or
+ * any of the three.
  *
  * Every field is optional and a body naming none of them is refused, so
  * callers pass exactly what they are changing. Raising `budgetLimit` (in
  * microdollars) past what the session has spent is what releases one paused
  * on an exhausted budget: the answer carries the session already `active`.
+ * A new `model` reaches the running agent through its room, and the answer
+ * carries the session already on it.
  */
 export function updateSession(
   id: string,
-  changes: { title?: string; budgetLimit?: number },
+  changes: { title?: string; budgetLimit?: number; model?: ModelChoice },
 ): Promise<JsonResponse<"flyco_api::app::update_session", 200>> {
   const body: JsonBody<"flyco_api::app::update_session"> = {
     ...(changes.title === undefined ? {} : { title: changes.title }),
     ...(changes.budgetLimit === undefined
       ? {}
       : { budget_limit: changes.budgetLimit }),
+    ...(changes.model === undefined ? {} : { model: changes.model }),
   };
   return requestJson("PATCH", `/v1/sessions/${id}`, { json: body });
 }

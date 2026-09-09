@@ -46,6 +46,7 @@ pub fn bootstrap() -> DaemonBootstrap {
         machine_origin: flyco_core::MachineOrigin::Auto,
         machine: flyco_provider::testing::session_machine(),
         resume_session_id: None,
+        model: flyco_provider::testing::session_model(),
         mcp_servers: Vec::new(),
     }
 }
@@ -452,6 +453,7 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
+            model: None,
         })
         .send()
         .await;

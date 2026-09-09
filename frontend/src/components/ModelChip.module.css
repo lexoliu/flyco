@@ -1,0 +1,85 @@
+/*
+ * The model picker: a list of the agent's models, each with the harness's
+ * own one-line description, and the effort levels of the chosen one as a
+ * row of pills under it.
+ */
+
+.panel {
+  min-width: 300px;
+  max-width: min(380px, calc(100vw - 2 * var(--space-4)));
+}
+
+/* A change on its way to the agent: legible, but visibly not settled. */
+.saving {
+  opacity: 0.6;
+}
+
+.model {
+  align-items: flex-start;
+}
+
+.modelText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.modelName {
+  font-weight: var(--weight-medium);
+}
+
+.modelDescription {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--line-normal);
+}
+
+.check {
+  flex: none;
+  margin-left: auto;
+  margin-top: 2px;
+  color: var(--color-text);
+}
+
+.efforts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.effort {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.effort:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+/* The chosen level is ink on the page, the way every primary is. */
+.effortChosen {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+}
+
+.effortChosen:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary-text);
+}
+
+.effortNote {
+  font-size: var(--text-xs);
+  opacity: 0.7;
+}

@@ -22,6 +22,8 @@ export type ApprovalDecision = components["schemas"]["ApprovalDecision"];
 export type SessionState = components["schemas"]["SessionState"];
 export type UsageReport = components["schemas"]["UsageReport"];
 export type ContextWindow = components["schemas"]["ContextWindow"];
+export type ModelChoice = components["schemas"]["ModelChoice"];
+export type ModelOption = components["schemas"]["ModelOption"];
 
 /**
  * A normalized event extracted from either harness's native stream.
@@ -101,7 +103,14 @@ export type ClientEvent =
       hourly: number | null;
       spot: boolean;
       restarted: boolean;
-    };
+    }
+  /** The session was moved onto another model, by the user (docs/ux.md §9.3). */
+  | { type: "model_changed"; model: ModelChoice }
+  /**
+   * The models the agent offers, as it listed them at start. State rather
+   * than history: the newest list wins and the page reads the last one.
+   */
+  | { type: "models"; models: ModelOption[] };
 
 /**
  * The five `ControlToDaemon` variants a browser may send directly over the
@@ -155,4 +164,6 @@ const CLIENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "spot_notice",
   "provisioning_stage",
   "machine_changed",
+  "model_changed",
+  "models",
 ]);

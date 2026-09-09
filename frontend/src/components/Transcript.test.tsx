@@ -29,6 +29,7 @@ function show(item: TranscriptItem, stoppedAtUnix: number | null = null) {
       items={[item]}
       repo="lexoliu/flyco"
       provider="Azure"
+      models={[]}
       now={T0 * 1000}
       stoppedAtUnix={stoppedAtUnix}
     />

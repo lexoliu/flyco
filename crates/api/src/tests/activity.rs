@@ -49,6 +49,7 @@ async fn running(client: &TestClient<Router>, kv: &Kv, db: &Db) -> Running {
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(account)),
             spot: true,
+            model: None,
         })
         .send()
         .await;

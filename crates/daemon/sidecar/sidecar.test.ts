@@ -12,6 +12,7 @@ import {
   environment,
   lines,
   sessionIdFor,
+  toModelOption,
   sessionOptions,
   settledMount,
   toMountedServer,
@@ -48,6 +49,7 @@ function start(overrides: Partial<StartCommand> = {}): StartCommand {
     config_dir: null,
     project_dir_name: null,
     model: null,
+    effort: null,
     permission_mode: "default",
     resume_session_id: null,
     strict_mcp_config: true,
@@ -223,6 +225,15 @@ describe("session options", () => {
     );
   });
 
+  test("an omitted effort leaves the CLI's own default for the model in place", () => {
+    // A model that accepts no effort levels at all (Haiku) is started with
+    // none, so the key is absent rather than set to something empty.
+    expect(sessionOptions(start({ model: "haiku" }), "id", callbacks).effort).toBeUndefined();
+    expect(
+      sessionOptions(start({ model: "sonnet", effort: "high" }), "id", callbacks).effort,
+    ).toBe("high");
+  });
+
   test("the permission mode and cwd are passed through unchanged", () => {
     const options = sessionOptions(start({ permission_mode: "acceptEdits" }), "id", callbacks);
     expect(options.permissionMode).toBe("acceptEdits");
@@ -330,5 +341,47 @@ describe("the mount the CLI reports", () => {
     expect(mounted).toEqual([
       { name: "flyco", status: "pending", state: "pending", tools: [] },
     ]);
+  });
+});
+
+describe("the models the CLI offers", () => {
+  test("the SDK's row becomes flyco's, default derived from the identifier", () => {
+    // The SDK marks its default by *naming* the row `default` rather than
+    // with a flag, and states no per-model default effort at all — so
+    // `default_effort` is honestly null and the CLI's own choice stands.
+    expect(
+      toModelOption({
+        value: "default",
+        resolvedModel: "claude-opus-5[1m]",
+        displayName: "Default (recommended)",
+        description: "Opus 5 with 1M context · Best for everyday, complex tasks",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      }),
+    ).toEqual({
+      id: "default",
+      label: "Default (recommended)",
+      description: "Opus 5 with 1M context · Best for everyday, complex tasks",
+      is_default: true,
+      efforts: ["low", "medium", "high", "xhigh", "max"],
+      default_effort: null,
+    });
+  });
+
+  test("a model that names no effort levels reports an empty list, not a missing one", () => {
+    expect(
+      toModelOption({
+        value: "haiku",
+        displayName: "Haiku",
+        description: "Haiku 4.5 · Fastest for quick answers",
+      }),
+    ).toEqual({
+      id: "haiku",
+      label: "Haiku",
+      description: "Haiku 4.5 · Fastest for quick answers",
+      is_default: false,
+      efforts: [],
+      default_effort: null,
+    });
   });
 });

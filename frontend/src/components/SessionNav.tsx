@@ -1,31 +1,70 @@
 /**
- * The session switcher that lives in the rail (docs/ux.md §5).
+ * The session switcher that lives in the rail (docs/ux.md §3).
  *
  * The list belongs beside the work rather than on a page of its own: the
  * thing a person does most often is move between running sessions, and a
  * layout that makes them go home first puts a navigation step in front of
  * every one of those moves.
  *
- * It shows the same groups and the same order as the home page used to,
- * because they are the product's own idea of what is urgent — what needs
- * you, then what is running, then what is idle.
+ * Grouped by repository, the way the official apps group by project,
+ * because that is how a person remembers a session: "the helios one", not
+ * "the idle one". Within a repository the newest is first. What a session
+ * is doing is a dot, and only when it matters — a session that is working,
+ * building its machine, or failed carries one; a session at rest carries
+ * nothing, and neither does one whose agent has answered and is waiting
+ * for a reply, because after a day's work that is every session there is.
+ * A rail of forty coloured dots is a rail that says nothing.
  */
 import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
 import { A, useMatch } from "@solidjs/router";
 import { createQuery } from "../lib/query";
-import { listSessions } from "../api/client";
+import { listSessions, type SessionSummary } from "../api/client";
 import { cx } from "../lib/cx";
-import { deriveStatus, groupSessions, isArchived } from "../lib/status";
+import { deriveStatus, isArchived, type StatusView } from "../lib/status";
 import styles from "./SessionNav.module.css";
 
 /**
  * How often the rail re-reads the clock.
  *
  * Slower than the session page's own tick: no row prints a duration, so
- * this exists only so a session that ages out of one group moves into the
- * next without a reload.
+ * this exists only so a session that changes state moves its dot without a
+ * reload.
  */
 const TICK_MS = 5000;
+
+/** One repository's sessions, newest first. */
+interface RepoGroup {
+  repo: string;
+  rows: { session: SessionSummary; status: StatusView }[];
+}
+
+/**
+ * Divides sessions by repository, ordered by each repository's most recent
+ * activity, so the project being worked on today is at the top.
+ */
+export function groupByRepo(
+  rows: readonly { session: SessionSummary; status: StatusView }[],
+): RepoGroup[] {
+  const byRepo = new Map<string, RepoGroup>();
+  for (const row of rows) {
+    const held = byRepo.get(row.session.repo);
+    if (held === undefined) {
+      byRepo.set(row.session.repo, { repo: row.session.repo, rows: [row] });
+    } else {
+      held.rows.push(row);
+    }
+  }
+  const latest = (group: RepoGroup) =>
+    Math.max(...group.rows.map((row) => row.session.last_active_unix));
+  return [...byRepo.values()]
+    .map((group) => ({
+      ...group,
+      rows: [...group.rows].sort(
+        (left, right) => right.session.last_active_unix - left.session.last_active_unix,
+      ),
+    }))
+    .sort((left, right) => latest(right) - latest(left));
+}
 
 export interface SessionNavProps {
   /** Called when a session is chosen, so a mobile drawer can close. */
@@ -61,18 +100,7 @@ export default function SessionNav(props: SessionNavProps) {
     matching().filter(({ status }) => isArchived(status.status) === showArchived()),
   );
 
-  const groups = createMemo(() =>
-    groupSessions(visible().map(({ session, status }) => ({ session, status: status.status }))),
-  );
-
-  /** The status a session reads as, by id, so a row need not re-derive it. */
-  const statusOf = createMemo(() => {
-    const byId = new Map<string, ReturnType<typeof deriveStatus>>();
-    for (const entry of matching()) {
-      byId.set(entry.session.id, entry.status);
-    }
-    return byId;
-  });
+  const groups = createMemo(() => groupByRepo(visible()));
 
   const archivedCount = createMemo(
     () => matching().filter(({ status }) => isArchived(status.status)).length,
@@ -83,45 +111,18 @@ export default function SessionNav(props: SessionNavProps) {
       <input
         class={styles.search}
         type="search"
-        placeholder="Search sessions"
+        placeholder="Search"
         aria-label="Search sessions by title or repository"
         value={query()}
         onInput={(event) => setQuery(event.currentTarget.value)}
       />
-
-      {/* Archived is a tab rather than a page: it is the same list read for
-          a different reason, and a route for it would be a second place to
-          come back from. */}
-      <div class={styles.tabs} role="group" aria-label="Filter sessions">
-        <button
-          type="button"
-          class={cx(styles.tab, !showArchived() && styles.tabActive)}
-          aria-pressed={!showArchived()}
-          onClick={() => setShowArchived(false)}
-        >
-          Sessions
-        </button>
-        <Show when={archivedCount() > 0}>
-          <button
-            type="button"
-            class={cx(styles.tab, showArchived() && styles.tabActive)}
-            aria-pressed={showArchived()}
-            onClick={() => setShowArchived(true)}
-          >
-            Archived
-          </button>
-        </Show>
-      </div>
 
       <div class={styles.scroller}>
         <Show
           when={visible().length > 0}
           fallback={
             <p class={styles.empty}>
-              <Show
-                when={!sessions.loading}
-                fallback="Loading…"
-              >
+              <Show when={!sessions.loading} fallback="Loading…">
                 {showArchived() ? "Nothing archived." : "No sessions yet."}
               </Show>
             </p>
@@ -130,41 +131,40 @@ export default function SessionNav(props: SessionNavProps) {
           <For each={groups()}>
             {(group) => (
               <div class={styles.group}>
-                <Show when={group.heading}>
-                  {(heading) => <p class={styles.groupLabel}>{heading()}</p>}
-                </Show>
+                <p class={styles.groupLabel} title={group.repo}>
+                  {group.repo}
+                </p>
                 <ul class={styles.list}>
                   <For each={group.rows}>
-                    {(session) => {
-                      const status = () => statusOf().get(session.id);
-                      return (
-                        <li>
-                          <A
-                            href={`/sessions/${session.id}`}
-                            class={cx(
-                              styles.row,
-                              current()?.params.id === session.id && styles.rowCurrent,
-                            )}
-                            onClick={() => props.onNavigate?.()}
-                            title={`${session.title} — ${status()?.label ?? ""}`}
-                          >
-                            {/*
-                              A colour, and no motion. The rail sits in the
-                              corner of the eye for the whole of a session,
-                              and a row of pulsing dots out there is the
-                              page competing with the work being read in
-                              the middle of it.
-                            */}
-                            <span
-                              class={styles.dot}
-                              data-tone={status()?.tone}
-                              aria-hidden="true"
-                            />
-                            <span class={styles.title}>{session.title}</span>
-                          </A>
-                        </li>
-                      );
-                    }}
+                    {({ session, status }) => (
+                      <li>
+                        <A
+                          href={`/sessions/${session.id}`}
+                          class={cx(
+                            styles.row,
+                            current()?.params.id === session.id && styles.rowCurrent,
+                          )}
+                          onClick={() => props.onNavigate?.()}
+                          title={`${session.title} — ${status.label}`}
+                        >
+                          {/*
+                            A colour, and no motion. The rail sits in the
+                            corner of the eye for the whole of a session,
+                            and a row of pulsing dots out there is the
+                            page competing with the work being read in the
+                            middle of it. A session at rest, or waiting
+                            on a reply, has no dot at all: the slot is
+                            kept so titles line up.
+                          */}
+                          <span
+                            class={styles.dot}
+                            data-tone={status.tone}
+                            aria-hidden="true"
+                          />
+                          <span class={styles.title}>{session.title}</span>
+                        </A>
+                      </li>
+                    )}
                   </For>
                 </ul>
               </div>
@@ -172,6 +172,23 @@ export default function SessionNav(props: SessionNavProps) {
           </For>
         </Show>
       </div>
+
+      {/*
+        Archived sessions are the same list read for a different reason,
+        and one quiet line at the foot is all the way in it needs: a tab
+        row above the list was a second thing to read before the first
+        session, on every page.
+      */}
+      <Show when={archivedCount() > 0 || showArchived()}>
+        <button
+          type="button"
+          class={styles.archivedToggle}
+          aria-pressed={showArchived()}
+          onClick={() => setShowArchived((was) => !was)}
+        >
+          {showArchived() ? "Back to sessions" : `Archived · ${archivedCount()}`}
+        </button>
+      </Show>
     </div>
   );
 }

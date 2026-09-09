@@ -229,6 +229,171 @@ pub struct UsageReport {
     pub estimated_cost: Option<Usd>,
 }
 
+/// One model a harness can run a session on, as the harness itself lists it.
+///
+/// Flyco never curates this: the identifiers, the names and the order are
+/// the harness's own, so a model Anthropic or `OpenAI` adds tomorrow reaches
+/// the picker the first time a session asks its harness what it offers.
+/// [`builtin_models`] is what the picker shows before any session has.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ModelOption {
+    /// The identifier the harness accepts, verbatim.
+    ///
+    /// The Claude Agent SDK's `value` and Codex's model `id`. Passed
+    /// through untouched — `default` and `claude-fable-5-1[1m]` are both
+    /// things the CLI takes — because a normalized spelling would be a
+    /// second vocabulary flyco would then have to translate back.
+    pub id: String,
+    /// What the picker shows, which is the harness's `displayName`.
+    pub label: String,
+    /// One line under the label, which is the harness's `description`.
+    pub description: String,
+    /// Whether the harness runs this one when nothing is chosen.
+    ///
+    /// Claude says so by naming the row `default`; Codex says so with
+    /// `isDefault`. Exactly one row of a list carries it, which is what
+    /// [`ModelChoice::default_of`] relies on.
+    pub is_default: bool,
+    /// The effort levels the model accepts, in the harness's own order.
+    ///
+    /// Empty for a model that accepts none — Claude's Haiku row names no
+    /// effort levels at all — and an empty list is the whole answer: a
+    /// picker that offered one anyway would be offering a request the
+    /// harness refuses.
+    pub efforts: Vec<String>,
+    /// The effort the harness uses when none is chosen, where it says.
+    ///
+    /// Codex states one per model (`defaultReasoningEffort`); the Claude
+    /// SDK does not, so this is `None` for every Claude row and the CLI's
+    /// own default stands.
+    pub default_effort: Option<String>,
+}
+
+/// What a session runs on: a model and, optionally, an effort.
+///
+/// One value rather than two fields wherever a session's model is written,
+/// read or changed, because the pair is only ever meaningful together: an
+/// effort names a level of a *model*, and a request that changed one
+/// without the other would be asking for a combination nobody chose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ModelChoice {
+    /// The model's [`id`](ModelOption::id).
+    pub model: String,
+    /// `None` leaves the harness's own default effort in place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+/// Why a model choice was refused.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ModelChoiceError {
+    /// The model is not in the list the harness offers.
+    #[error("`{model}` is not a model this agent offers")]
+    UnknownModel {
+        /// What was asked for.
+        model: String,
+    },
+    /// The model is offered but does not take this effort level.
+    #[error("`{effort}` is not an effort level `{model}` accepts")]
+    UnknownEffort {
+        /// The model the effort was asked of.
+        model: String,
+        /// What was asked for.
+        effort: String,
+    },
+}
+
+impl ModelChoice {
+    /// The choice a session opens with when the caller names none.
+    ///
+    /// The list's own default, with no effort: a session that did not
+    /// choose a model has not chosen an effort either, and naming the
+    /// harness's stated default here would freeze today's answer into the
+    /// session row.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `models` names no default, which is a harness that
+    /// answered its own model list without saying which one it runs.
+    #[must_use]
+    pub fn default_of(models: &[ModelOption]) -> Self {
+        let default = models
+            .iter()
+            .find(|model| model.is_default)
+            .expect("a harness model list names exactly one default");
+        Self {
+            model: default.id.clone(),
+            effort: None,
+        }
+    }
+
+    /// Refuses a choice the list does not offer.
+    ///
+    /// Checked against the list rather than against a hardcoded set, so a
+    /// model the harness dropped stops being accepted the moment a session
+    /// reports the new list — and the refusal names the model, because
+    /// "invalid model" alone tells a user nothing about which of the two
+    /// halves they got wrong.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelChoiceError`] if the model is not in `models`, or if
+    /// it is and does not accept the named effort.
+    pub fn validate(&self, models: &[ModelOption]) -> Result<(), ModelChoiceError> {
+        let offered = models
+            .iter()
+            .find(|model| model.id == self.model)
+            .ok_or_else(|| ModelChoiceError::UnknownModel {
+                model: self.model.clone(),
+            })?;
+        let Some(effort) = &self.effort else {
+            return Ok(());
+        };
+        if offered.efforts.iter().any(|level| level == effort) {
+            return Ok(());
+        }
+        Err(ModelChoiceError::UnknownEffort {
+            model: self.model.clone(),
+            effort: effort.clone(),
+        })
+    }
+}
+
+/// The models a harness offers before any session of the account has
+/// reported its own list.
+///
+/// Two JSON documents rather than two `vec![]` literals, and they are the
+/// real lists as the installed harnesses answered them: the picker has to
+/// show something the first time an account is linked, and a list written
+/// out as Rust would be a place for a stale identifier to hide behind a
+/// compiling expression. A session that reports its harness's own list
+/// replaces this for that account.
+///
+/// # Panics
+///
+/// Panics if either document does not parse, which is this crate's own
+/// data being malformed rather than anything a caller did.
+#[must_use]
+pub fn builtin_models(harness: HarnessKind) -> Vec<ModelOption> {
+    let document = match harness {
+        HarnessKind::ClaudeCode => include_str!("../models/claude_code.json"),
+        HarnessKind::Codex => include_str!("../models/codex.json"),
+    };
+    serde_json::from_str(document).expect("a built-in model list parses")
+}
+
+/// Request body of `PUT /v1/sessions/{id}/models`.
+///
+/// What a session's daemon reports once its harness has answered what it
+/// offers. Recorded against the account rather than the session, because
+/// the list is a fact about the harness build the account runs on and the
+/// composer needs it before any session of the next one exists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ReportModels {
+    /// Every model the harness listed, in its own order.
+    pub models: Vec<ModelOption>,
+}
+
 /// A credential accepted when linking a Claude Code or Codex account.
 ///
 /// Each variant determines its harness, so the wire format cannot pair a
@@ -416,6 +581,15 @@ pub struct HarnessAccountView {
     /// When the stored credential expires, when the vendor states a
     /// lifetime.
     pub expires_at_unix: Option<u64>,
+    /// The models a session on this account may run on.
+    ///
+    /// What the account's last session reported its harness offers, and
+    /// [`builtin_models`] until one has. Carried on the account rather than
+    /// asked for separately because the composer picks a model *while*
+    /// choosing which account to open the session on, and a second request
+    /// per account would be a picker that renders after the form it belongs
+    /// to.
+    pub models: Vec<ModelOption>,
 }
 
 /// A normalized event extracted from either harness's native stream.
@@ -490,8 +664,8 @@ pub enum HarnessEvent {
 #[cfg(test)]
 mod tests {
     use super::{
-        Availability, ContextWindow, Feature, HarnessEvent, HarnessKind, UsageReport, availability,
-        matrix,
+        Availability, ContextWindow, Feature, HarnessEvent, HarnessKind, ModelChoice,
+        ModelChoiceError, ModelOption, UsageReport, availability, builtin_models, matrix,
     };
     use crate::money::Usd;
 
@@ -582,5 +756,99 @@ mod tests {
             availability(HarnessKind::ClaudeCode, Feature::SideChat),
             Availability::HarnessLimitation
         );
+    }
+
+    #[test]
+    fn both_built_in_lists_parse_and_name_one_default() {
+        for harness in [HarnessKind::ClaudeCode, HarnessKind::Codex] {
+            let models = builtin_models(harness);
+            assert!(!models.is_empty(), "{harness:?} lists no models");
+            let defaults = models.iter().filter(|model| model.is_default).count();
+            assert_eq!(defaults, 1, "{harness:?} must name exactly one default");
+            for model in &models {
+                assert!(!model.id.is_empty());
+                assert!(!model.label.is_empty());
+                assert!(!model.description.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_session_that_chose_nothing_opens_on_the_harnesss_default() {
+        let claude = ModelChoice::default_of(&builtin_models(HarnessKind::ClaudeCode));
+        assert_eq!(claude.model, "default");
+        // No effort: not choosing a model is not choosing an effort either,
+        // and the harness's own default stands.
+        assert_eq!(claude.effort, None);
+        let codex = ModelChoice::default_of(&builtin_models(HarnessKind::Codex));
+        assert_eq!(codex.model, "gpt-5.6-terra");
+    }
+
+    #[test]
+    #[should_panic(expected = "a harness model list names exactly one default")]
+    fn a_model_list_with_no_default_is_a_harness_bug() {
+        let _ = ModelChoice::default_of(&[]);
+    }
+
+    #[test]
+    fn a_choice_is_refused_against_the_list_that_does_not_offer_it() {
+        let models = builtin_models(HarnessKind::ClaudeCode);
+        assert_eq!(
+            ModelChoice {
+                model: "sonnet".to_owned(),
+                effort: Some("high".to_owned()),
+            }
+            .validate(&models),
+            Ok(())
+        );
+        assert_eq!(
+            ModelChoice {
+                model: "gpt-5.6-terra".to_owned(),
+                effort: None,
+            }
+            .validate(&models),
+            Err(ModelChoiceError::UnknownModel {
+                model: "gpt-5.6-terra".to_owned(),
+            })
+        );
+        // Haiku names no effort levels, so every effort is one it refuses.
+        assert_eq!(
+            ModelChoice {
+                model: "haiku".to_owned(),
+                effort: Some("low".to_owned()),
+            }
+            .validate(&models),
+            Err(ModelChoiceError::UnknownEffort {
+                model: "haiku".to_owned(),
+                effort: "low".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_choice_without_an_effort_omits_it_rather_than_sending_null() {
+        let json = serde_json::to_string(&ModelChoice {
+            model: "opus".to_owned(),
+            effort: None,
+        })
+        .expect("serialize");
+        assert_eq!(json, r#"{"model":"opus"}"#);
+    }
+
+    #[test]
+    fn a_model_option_round_trips() {
+        let option = ModelOption {
+            id: "gpt-5.5".to_owned(),
+            label: "GPT-5.5".to_owned(),
+            description: "Proven previous-generation model for coding and general work.".to_owned(),
+            is_default: false,
+            efforts: vec!["low".to_owned(), "medium".to_owned()],
+            default_effort: Some("medium".to_owned()),
+        };
+        let json = serde_json::to_value(&option).expect("serialize");
+        assert_eq!(json["is_default"], false);
+        assert_eq!(json["default_effort"], "medium");
+        let back: ModelOption = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, option);
     }
 }

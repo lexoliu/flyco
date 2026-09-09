@@ -743,6 +743,18 @@ pub enum ApiError {
     )]
     InvalidBudget,
 
+    /// The caller named a model, or an effort, the harness does not offer.
+    ///
+    /// A `400` rather than a `422`, and the difference is which of the two
+    /// the caller can fix: an unprocessable body is one flyco understood
+    /// and refused on its own terms, and this is a body naming something
+    /// that does not exist — a picker rendered from a model list the
+    /// harness has since revised. The detail is the refusal's own sentence,
+    /// which names the model, because "invalid model" alone leaves the user
+    /// guessing which half they got wrong.
+    #[error("{0}", status = StatusCode::BAD_REQUEST)]
+    InvalidModel(flyco_core::ModelChoiceError),
+
     /// A `PATCH` body named nothing to change.
     ///
     /// Every field of an update is optional, so a body with none of them is
@@ -1141,6 +1153,7 @@ impl ApiError {
             Self::InvalidEnvKey(_) => "invalid-env-key",
             Self::InvalidTitle { .. } => "invalid-title",
             Self::InvalidBudget => "invalid-budget",
+            Self::InvalidModel(_) => "invalid-model",
             Self::EmptyUpdate => "empty-update",
             Self::InvalidSessionCap { .. } => "invalid-session-cap",
             Self::EmptyMessage => "empty-message",

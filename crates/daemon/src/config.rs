@@ -125,6 +125,15 @@ pub struct ClaudeConfig {
     /// Model override; omitted leaves the CLI's own default in place.
     #[serde(default)]
     pub model: Option<String>,
+    /// Reasoning effort for that model, as the SDK's `EffortLevel` spells
+    /// it (`low`, `medium`, `high`, `xhigh`, `max`).
+    ///
+    /// Separate from [`Self::model`] because the harness takes them
+    /// separately, and omitted where the session chose none so the CLI's
+    /// own default for the model stands. Every provisioned machine now
+    /// names the model, and most name no effort.
+    #[serde(default)]
+    pub effort: Option<String>,
     /// Permission mode, spelled the way the Agent SDK spells it
     /// (`default`, `acceptEdits`, `bypassPermissions`, `plan`).
     pub permission_mode: PermissionMode,
@@ -266,6 +275,14 @@ pub struct CodexConfig {
     /// Model override; omitted leaves the CLI's own default in place.
     #[serde(default)]
     pub model: Option<String>,
+    /// Reasoning effort, which reaches the app-server as
+    /// `model_reasoning_effort` on `thread/start` and as `effort` on every
+    /// `turn/start`.
+    ///
+    /// Omitted where the session chose none, so the app-server's own
+    /// `defaultReasoningEffort` for the model stands.
+    #[serde(default)]
+    pub effort: Option<String>,
     /// Approval policy for `thread/start`.
     pub approval_policy: CodexApprovalPolicy,
     /// Sandbox mode for `thread/start`.

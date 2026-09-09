@@ -215,6 +215,10 @@ enum Auth<'a> {
 struct Claude<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<&'a str>,
+    /// Reasoning effort, omitted where the session chose none so the CLI's
+    /// own default for the model stands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<&'a str>,
     permission_mode: PermissionMode,
     managed_dir: &'static str,
     auth: Auth<'a>,
@@ -277,6 +281,13 @@ enum CodexAuth<'a> {
 #[derive(Debug, Clone, Serialize)]
 struct Codex<'a> {
     bin: &'static str,
+    /// Model override for `thread/start` and every `turn/start` after it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
+    /// Reasoning effort, omitted where the session chose none so the
+    /// app-server's own `defaultReasoningEffort` for the model stands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<&'a str>,
     approval_policy: &'static str,
     sandbox: &'static str,
     auth: CodexAuth<'a>,
@@ -388,10 +399,16 @@ const fn spot_provider(bootstrap: &DaemonBootstrap) -> Option<CloudProviderKind>
 /// mean this module's own structure is malformed rather than anything the
 /// caller did.
 pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
+    // The session's model reaches exactly one of the two tables, because
+    // exactly one harness is being configured — and it reaches the one the
+    // credential names, so a Codex model can never land in `[claude]`.
+    let model = bootstrap.model.model.as_str();
+    let effort = bootstrap.model.effort.as_deref();
     let (claude, sidecar, codex) = match &bootstrap.auth {
         HarnessCredential::ClaudeCode(credential) => (
             Some(Claude {
-                model: None,
+                model: Some(model),
+                effort,
                 permission_mode: bootstrap.permission_mode,
                 managed_dir: CLAUDE_MANAGED_DIR,
                 auth: claude_auth(credential),
@@ -407,6 +424,8 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
             None,
             Some(Codex {
                 bin: "codex",
+                model: Some(model),
+                effort,
                 approval_policy: "on-request",
                 sandbox: "workspace-write",
                 auth: codex_auth(credential),
@@ -464,6 +483,7 @@ mod tests {
             machine_origin: MachineOrigin::Auto,
             machine: crate::testing::session_machine(),
             resume_session_id: None,
+            model: crate::testing::session_model(),
             mcp_servers: crate::testing::mcp_servers(),
         }
     }
@@ -674,5 +694,38 @@ mod tests {
                 .expect("render")
                 .contains("resume_session_id")
         );
+    }
+
+    #[test]
+    fn the_session_model_lands_in_the_table_the_daemon_reads_it_from() {
+        // One harness is configured, so one table carries the model. The
+        // effort sits beside it rather than inside the identifier, because
+        // the daemon reads them as two settings.
+        let rendered = render(&claude(ClaudeCredential::OauthToken {
+            token: "sk-ant-oat01-test".to_owned(),
+        }))
+        .expect("render");
+        assert!(rendered.contains("[claude]"));
+        assert!(rendered.contains(r#"model = "sonnet""#), "{rendered}");
+        assert!(rendered.contains(r#"effort = "high""#), "{rendered}");
+
+        let rendered = render(&codex(chatgpt())).expect("render");
+        assert!(rendered.contains("[codex]"));
+        assert!(rendered.contains(r#"model = "sonnet""#), "{rendered}");
+        assert!(rendered.contains(r#"effort = "high""#), "{rendered}");
+    }
+
+    #[test]
+    fn a_session_that_chose_no_effort_writes_none() {
+        // Absent rather than empty: the harness's own default for the model
+        // is the answer, and an `effort = ""` would be flyco asserting a
+        // level nobody picked.
+        let mut with_no_effort = claude(ClaudeCredential::OauthToken {
+            token: "sk-ant-oat01-test".to_owned(),
+        });
+        with_no_effort.model.effort = None;
+        let rendered = render(&with_no_effort).expect("render");
+        assert!(rendered.contains(r#"model = "sonnet""#), "{rendered}");
+        assert!(!rendered.contains("effort ="), "{rendered}");
     }
 }

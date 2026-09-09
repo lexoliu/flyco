@@ -2,11 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { render } from "@solidjs/testing-library";
 import SessionHeader, { type SessionHeaderProps } from "./SessionHeader";
 import type { SessionDetail } from "../api/client";
-import type { StatusView } from "../lib/status";
 
 const SESSION_ID = "3f2b1c9d-6a4e-4d8b-9f21-7c5a0e3b8d14";
-
-const WORKING: StatusView = { status: "working", label: "Working", tone: "working", breathing: true };
 
 const SESSION: SessionDetail = {
   id: SESSION_ID,
@@ -14,6 +11,7 @@ const SESSION: SessionDetail = {
   repo: "octocat/hello-world",
   branch: "dev",
   harness: "claude_code",
+  model: { model: "default" },
   state: "active",
   activity: "working",
   machine_origin: "auto",
@@ -26,20 +24,15 @@ function mount(overrides: Partial<SessionHeaderProps>) {
   const props: SessionHeaderProps = {
     session: undefined,
     sessionId: SESSION_ID,
-    status: undefined,
     connection: "live",
     machine: undefined,
-    budgetSpentUsd: undefined,
-    budgetLimitUsd: undefined,
-    contextUsed: undefined,
-    contextSize: undefined,
     onRename: vi.fn(),
-    onSetBudget: vi.fn(),
-    settingBudget: false,
     onArchive: vi.fn(),
     archiving: false,
     onStartMachine: vi.fn(),
     onStopMachine: vi.fn(),
+    drawerOpen: false,
+    onToggleDrawer: vi.fn(),
     onOpenPanel: vi.fn(),
     ...overrides,
   };
@@ -48,91 +41,67 @@ function mount(overrides: Partial<SessionHeaderProps>) {
 
 describe("SessionHeader", () => {
   it("holds the title's place while the session loads, without showing the id", () => {
-    const { getByLabelText, getByRole, queryByRole, queryByText } = mount({});
+    const { getByLabelText, queryByText } = mount({});
 
     expect(getByLabelText("Loading the session")).toBeInTheDocument();
     expect(queryByText(SESSION_ID)).not.toBeInTheDocument();
     // No status either: a session nothing is known about has no lifecycle
     // to report, and a pill is a claim (issue #137).
     expect(queryByText("Loading")).not.toBeInTheDocument();
-
-    // The budget ring keeps its name and reads a dash: the session has one
-    // from the moment it is opened, and what is unknown is only the number.
-    expect(getByRole("img", { name: "Budget: —" })).toBeInTheDocument();
-    // Context has no such promise. Nothing has run, so there is nothing to
-    // draw, and an empty ring beside an em dash is a shape the eye stops on
-    // to learn nothing.
-    expect(queryByRole("img", { name: /^Context/ })).not.toBeInTheDocument();
-    expect(queryByText(/not loaded/)).not.toBeInTheDocument();
-    expect(queryByText(/not reported/)).not.toBeInTheDocument();
   });
 
-  it("reads the title, the repository and both rings once everything is known", () => {
-    const { getByRole, getByText, queryByLabelText } = mount({
+  it("reads as the title and the repository, and nothing that is not the conversation", () => {
+    const { getByRole, getByText, queryByLabelText, queryByRole, queryByText } = mount({
       session: SESSION,
-      status: WORKING,
-      budgetSpentUsd: 1.2,
-      budgetLimitUsd: 10,
-      contextUsed: 41_000,
-      contextSize: 200_000,
+      machine: undefined,
     });
 
     expect(getByRole("button", { name: "Audit the relay for dropped frames" })).toBeInTheDocument();
     expect(queryByLabelText("Loading the session")).not.toBeInTheDocument();
     expect(getByText("octocat/hello-world")).toBeInTheDocument();
-    expect(getByRole("img", { name: "Budget: $1.20 / $10" })).toBeInTheDocument();
-    expect(getByRole("img", { name: "Context: 41k / 200k" })).toBeInTheDocument();
+    expect(getByText("· dev")).toBeInTheDocument();
+    // No pill, no rings, no SKU (issue #229): the status is read off the
+    // transcript, and the budget and context are the composer's row.
+    expect(queryByText("Working")).not.toBeInTheDocument();
+    expect(queryByRole("img", { name: /^Budget/ })).not.toBeInTheDocument();
+    expect(queryByRole("img", { name: /^Context/ })).not.toBeInTheDocument();
+    expect(queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
   });
 
-  it("raises the budget from the ring, never below what is already spent", async () => {
-    const onSetBudget = vi.fn();
-    const { getByRole, getByLabelText } = mount({
-      session: {
-        ...SESSION,
-        state: "paused",
-        budget: { limit: 10_000_000, spent: 10_000_000, remaining: 0, stage: "exhausted" },
-      },
-      budgetSpentUsd: 10,
-      budgetLimitUsd: 10,
-      onSetBudget,
-    });
+  it("keeps every session action behind the one menu", async () => {
+    const onArchive = vi.fn();
+    const { getByRole, findByRole } = mount({ session: SESSION, onArchive });
 
-    // The ring is the button: what it is named by is the reading it shows,
-    // which is what a person clicking it is acting on.
-    getByRole("button", { name: "Budget: $10.00 / $10" }).click();
+    getByRole("button", { name: "Session actions" }).click();
 
-    // The floor is the first whole dollar above the spend: a limit at or
-    // under it would leave the session paused on the same exhausted budget.
-    const slider = getByLabelText("Session budget in dollars") as HTMLInputElement;
-    expect(slider.min).toBe("11");
-
-    slider.value = "25";
-    slider.dispatchEvent(new Event("input", { bubbles: true }));
-    getByRole("button", { name: "Set budget to $25" }).click();
-
-    expect(onSetBudget).toHaveBeenCalledWith(25);
+    expect(await findByRole("button", { name: "Rename" })).toBeInTheDocument();
+    expect(getByRole("button", { name: "Resize" })).toBeInTheDocument();
+    expect(getByRole("button", { name: "Edit .env" })).toBeInTheDocument();
+    expect(getByRole("button", { name: "Copy session id" })).toBeInTheDocument();
+    getByRole("button", { name: "Archive" }).click();
+    expect(onArchive).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves the budget a readout on an archived session", () => {
-    const { getByRole, queryByRole } = mount({
+  it("offers no archive on a session that already is", async () => {
+    const { getByRole, findByRole, queryByRole } = mount({
       session: { ...SESSION, state: "archived" },
-      budgetSpentUsd: 1.2,
-      budgetLimitUsd: 10,
     });
 
-    expect(getByRole("img", { name: "Budget: $1.20 / $10" })).toBeInTheDocument();
-    expect(queryByRole("button", { name: /^Budget:/ })).not.toBeInTheDocument();
+    getByRole("button", { name: "Session actions" }).click();
+
+    expect(await findByRole("button", { name: "Rename" })).toBeInTheDocument();
+    expect(queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
   });
 
   it("says a socket is coming back while it still is", () => {
-    const { getByText } = mount({ session: SESSION, status: WORKING, connection: "reconnecting" });
+    const { getByText } = mount({ session: SESSION, connection: "reconnecting" });
     expect(getByText("Reconnecting…")).toBeInTheDocument();
   });
 
   it("promises no reconnection once the relay has stopped for good", () => {
     // The page renders the problem itself, with a way out of it; a pill
     // here would only be a quieter version of the same sentence (#137).
-    const { queryByText } = mount({ session: SESSION, status: WORKING, connection: "failed" });
+    const { queryByText } = mount({ session: SESSION, connection: "failed" });
     expect(queryByText("Reconnecting…")).not.toBeInTheDocument();
     expect(queryByText("Disconnected")).not.toBeInTheDocument();
   });
