@@ -83,7 +83,7 @@ mod tests;
 
 use flyco_core::machine::{
     BillingMinimum, CloudProviderKind, MachineCapacity, MachineCatalogEntry, MachineLineage,
-    MachinePricing, MachineSpec, MachineState, OsFamily, StoragePricing,
+    MachinePricing, MachineSpec, MachineState, OsFamily, Runtime, StoragePricing,
 };
 use flyco_core::{CloudSpend, MachineId};
 use serde::Serialize;
@@ -1195,6 +1195,8 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
             provider: CloudProviderKind::Aws,
             region: region.to_owned(),
             machine_type: name.to_owned(),
+            runtime: Runtime::Vm,
+            free_grant: None,
             os: os_family(&info.processor_info.supported_architectures.item),
             capacity: Some(MachineCapacity {
                 vcpus: info.vcpu_info.default_vcpus,

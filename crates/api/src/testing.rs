@@ -32,7 +32,7 @@ use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 21] = [
+pub const MIGRATIONS: [&str; 22] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -54,6 +54,7 @@ pub const MIGRATIONS: [&str; 21] = [
     include_str!("../../../migrations/0020_provider_unlink.sql"),
     include_str!("../../../migrations/0021_session_model.sql"),
     include_str!("../../../migrations/0022_harness_usage.sql"),
+    include_str!("../../../migrations/0023_machine_runtime.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -1094,6 +1095,9 @@ pub fn machine_choice(account: ProviderAccountId) -> MachineChoice {
     MachineChoice {
         provider_account: account,
         machine_type: SSH_HOST.to_owned(),
+        // An enrolled host offers exactly one entry, and it is a container:
+        // a session there has always been a Podman container.
+        runtime: flyco_core::Runtime::Container,
         region: SSH_HOST.to_owned(),
         spot: true,
         disk_gib: flyco_core::DEFAULT_DISK_GIB,

@@ -10,8 +10,8 @@ use flyco_core::{
     HarnessFeature, HarnessObservation, HarnessSessionView, MAX_SESSION_TITLE_CHARS,
     MachineCatalogEntry, MachineOrigin, MachineSpec, ModelChoice, ProvisioningStage, RepoSlug,
     RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure,
-    ReportUsage, ResizeMachine, SendMessage, SessionActivity, SessionDetail, SessionId,
-    SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId,
+    ReportStopping, ReportUsage, ResizeMachine, SendMessage, SessionActivity, SessionDetail,
+    SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId,
     wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
@@ -240,6 +240,10 @@ async fn start_session(
     let spec = MachineSpec {
         provider: account.kind(),
         machine_type: choice.machine_type,
+        // Taken from the entry rather than from the request, which
+        // `deployable` has just proved agree: the catalog is the authority
+        // on what a type is, and the request is a claim about it.
+        runtime: entry.runtime,
         region: choice.region,
         // Spot only where the catalog quoted it; a type the spot pool cannot
         // fund is held on demand rather than refused at provisioning.
@@ -1548,6 +1552,50 @@ async fn record_reported_usage(
 /// frame the daemon sends immediately after this call, which the room
 /// records and forwards in one place — announcing it here as well would put
 /// the same notice in the transcript twice.
+/// Records that this session's machine is stopping and its filesystem is
+/// going with it.
+///
+/// The container counterpart of
+/// [`report_spot_notice`], and a route of its own rather than a flag on
+/// that one because the two ask for different things. A reclaimed virtual
+/// machine keeps its disk, so the control plane queues a *recovery* against
+/// the same machine after the provider's countdown. A stopping container
+/// has no disk to come back to: its daemon has already flushed the
+/// transcript and stored the working tree as the `workdir-patch`, and there
+/// is nothing left to schedule — what the control plane needs is the mark
+/// on the row, which is what the container drivers read to tell an
+/// execution that was stopped from one that died.
+///
+/// Answers `202`: the machine is going whatever the control plane thinks,
+/// and this is the record of it.
+#[skyzen::openapi]
+async fn report_stopping(
+    State(session): State<DaemonSession>,
+    Json(report): Json<ReportStopping>,
+    db: Db,
+) -> Outcome<Accepted> {
+    mark_stopping(session.0, report, &db).await.into()
+}
+
+async fn mark_stopping(
+    session: SessionId,
+    report: ReportStopping,
+    db: &Db,
+) -> Result<Accepted, ApiError> {
+    let machine = machines::for_session(db, session)
+        .await?
+        .ok_or(ApiError::MachineNotFound)?;
+    machines::mark_stopping(db, machine.id, report.reason).await?;
+
+    tracing::warn!(
+        %session,
+        machine = %machine.id,
+        reason = ?report.reason,
+        "a session's machine is stopping; its working tree is stored as a patch"
+    );
+    Ok(Accepted)
+}
+
 #[skyzen::openapi]
 async fn report_spot_notice(
     State(session): State<DaemonSession>,
@@ -2186,6 +2234,7 @@ fn daemon_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/models".put(report_models),
         "/v1/sessions/{id}/usage".put(report_usage),
         "/v1/sessions/{id}/spot-notice".post(report_spot_notice),
+        "/v1/sessions/{id}/stopping".post(report_stopping),
         "/v1/sessions/{id}/startup-failure".post(report_startup_failure),
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),
         "/v1/sessions/{id}/turn-started".post(notify_turn_started),

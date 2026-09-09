@@ -121,7 +121,7 @@ mod tests {
     use crate::host::tests::{HOSTNAME, bootstrap, host};
     use crate::host::{CONFIG_ENV, ContainerJob, container_name, volume_name};
     use crate::{ProvisionRequest, flycod};
-    use flyco_core::machine::{CloudProviderKind, MachineSpec};
+    use flyco_core::machine::{CloudProviderKind, MachineSpec, Runtime};
 
     const TOKEN: &str = "fd_a-live-daemon-token";
 
@@ -134,6 +134,7 @@ mod tests {
                 spec: MachineSpec {
                     provider: CloudProviderKind::Host,
                     machine_type: HOSTNAME.to_owned(),
+                    runtime: Runtime::Container,
                     region: HOSTNAME.to_owned(),
                     spot: true,
                     disk_gib: 0,

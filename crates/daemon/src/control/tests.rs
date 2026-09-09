@@ -6,8 +6,8 @@ use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
     HarnessObservation, HarnessSessionView, MachineOrigin, ModelChoice, ModelOption,
-    ProvisioningStage, SessionId, ShellOutcome, ShellRunId, ShellStream, UsageReport, UsageWindow,
-    Usd, WIRE_PROTOCOL_VERSION,
+    ProvisioningStage, SessionId, ShellOutcome, ShellRunId, ShellStream, StopReason, UsageReport,
+    UsageWindow, Usd, WIRE_PROTOCOL_VERSION,
 };
 use tokio::sync::mpsc;
 
@@ -28,6 +28,21 @@ use crate::testing::{
 };
 use crate::workdir::Checkout;
 use flyco_core::workdir::{WorkdirRefusal, WorkdirReply, WorkdirRequest};
+
+/// What `git diff --cached --binary` produces over the one uncommitted edit
+/// in a session's checkout.
+///
+/// The bytes the daemon stores, rather than a placeholder: what the stop
+/// sequence has to get off a machine with no disk is a patch a later `git
+/// apply` accepts, and a test asserting on its size should be asserting on
+/// the size of one.
+const WORKDIR_PATCH: &[u8] = b"diff --git a/NOTES.md b/NOTES.md\n\
+index 3b18e512..8c7e5a61 100644\n\
+--- a/NOTES.md\n\
++++ b/NOTES.md\n\
+@@ -1 +1,2 @@\n\
+ the agent was here\n\
++and this line was never committed\n";
 
 /// A daemon token shaped the way the control plane mints them.
 const TOKEN: &str = "fd_a-daemon-token";
@@ -206,15 +221,30 @@ impl ControlApi for RecordingApi {
 
     fn put_workdir_patch(
         &self,
-        _patch: Vec<u8>,
+        patch: Vec<u8>,
     ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
-        core::future::ready(Ok(()))
+        core::future::ready(
+            self.calls
+                .send(Call::WorkdirPatchStored(patch.len()))
+                .map_err(|error| ControlApiError::Transport(error.to_string())),
+        )
     }
 
     fn get_workdir_patch(
         &self,
     ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send {
         core::future::ready(Ok(None))
+    }
+
+    fn report_stopping(
+        &self,
+        reason: StopReason,
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        core::future::ready(
+            self.calls
+                .send(Call::StoppingReported(reason))
+                .map_err(|error| ControlApiError::Transport(error.to_string())),
+        )
     }
 
     fn report_stage(
@@ -243,6 +273,9 @@ struct Harness {
     /// Makes the fake metadata endpoint announce a reclamation. Taken once:
     /// a provider announces one machine's reclamation exactly once.
     evict: Option<tokio::sync::oneshot::Sender<SpotNotice>>,
+    /// Makes the platform ask this container to stop, on the channel
+    /// `crate::stop::watch` fills on a machine with no disk.
+    stopper: mpsc::Sender<StopReason>,
     run: tokio::task::JoinHandle<Result<(), WireError>>,
     /// Whether the agent-ready stage is still to come.
     ///
@@ -341,10 +374,15 @@ impl Harness {
         let (watcher, evict) = FakeEviction::pair();
         let (notices, spot) = mpsc::channel(1);
         crate::spot::spawn(watcher, notices);
+        // The stop signal is injected on the channel `crate::stop::watch`
+        // would have handed the relay, because a test cannot raise a real
+        // `SIGTERM` at this process without ending the test binary.
+        let (stopper, stops) = mpsc::channel(1);
 
         let (terminal, terminal_writes, terminal_inject, terminal_out) = FakeTerminal::pair();
         let (shell, shell_runs) = FakeShell::pair();
-        let (workdir, repo_inject, repo_status) = FakeWorkdir::pair();
+        let (workdir, repo_inject, repo_status) =
+            FakeWorkdir::with_snapshot(Some(WORKDIR_PATCH.to_vec()));
         let checkout_dir = scratch_checkout();
         let run = tokio::spawn(wire::run(SessionRelay {
             endpoint,
@@ -360,6 +398,7 @@ impl Harness {
             repo_status,
             disk: FakeDisk::new(recorder),
             spot,
+            stops,
             machine: crate::testing::session_machine(),
             machine_origin: MachineOrigin::Auto,
         }));
@@ -378,6 +417,7 @@ impl Harness {
             shell_runs,
             repo_inject,
             evict: Some(evict),
+            stopper,
             run,
             expect_ready: greeting == Greeting::Welcome,
             checkout_dir,
@@ -390,6 +430,18 @@ impl Harness {
     /// watcher's own task and the channel the relay selects on — so what
     /// the test drives is the daemon's reaction rather than a function call
     /// into the middle of it.
+    /// Makes the platform ask this container to stop.
+    ///
+    /// The signal travels the channel a real `SIGTERM` would arrive on, so
+    /// what the test drives is the relay's reaction rather than a call into
+    /// the middle of it.
+    async fn stop(&self) {
+        self.stopper
+            .send(StopReason::Sigterm)
+            .await
+            .expect("the relay is listening for a stop");
+    }
+
     fn evict(&mut self, seconds_remaining: u32) {
         self.evict
             .take()
@@ -477,6 +529,18 @@ impl Harness {
     }
 
     /// Stops the run by archiving, and returns its result.
+    /// Waits for the relay to end by itself, which a stop makes it do.
+    ///
+    /// Unlike [`Self::archive`] nothing is sent: the platform's signal is
+    /// what ends this run, and a relay still waiting for a command would be
+    /// the bug the test is looking for.
+    async fn ended(self) -> Result<(), WireError> {
+        tokio::time::timeout(Duration::from_secs(5), self.run)
+            .await
+            .expect("the run ended by itself")
+            .expect("the run did not panic")
+    }
+
     async fn archive(mut self) -> Result<(), WireError> {
         self.command(ControlToDaemon::Archive {
             preserve_workdir: false,
@@ -1328,6 +1392,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
     let (terminal, _, _, terminal_out) = FakeTerminal::pair();
     let (shell, _shell_runs) = FakeShell::pair();
     let (workdir, _, repo_status) = FakeWorkdir::pair();
+    let stops = crate::stop::nothing_to_watch();
     let run = tokio::spawn(wire::run(SessionRelay {
         endpoint,
         keepalive: wire::Keepalive::default(),
@@ -1342,6 +1407,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         repo_status,
         disk: FakeDisk::new(recorder),
         spot: crate::spot::nothing_to_watch(),
+        stops,
         machine: crate::testing::session_machine(),
         machine_origin: MachineOrigin::Auto,
     }));
@@ -1601,6 +1667,84 @@ async fn nothing_opens_a_turn_between_the_notice_and_the_machine_going() {
     );
 
     harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_stopping_container_flushes_before_it_writes_the_patch_and_reports_last() {
+    // The order is the feature. The transcript is flushed while the harness
+    // still answers; the working tree is written out only once nothing is
+    // still changing it; and the control plane is told last, because
+    // "this machine is stopping" must not be true before the user's
+    // uncommitted work has left it.
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+    harness
+        .emit(SessionOutput::Started {
+            session_id: "harness-native-thread".to_owned(),
+        })
+        .await;
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::Started {
+            harness_session_id: "harness-native-thread".to_owned(),
+        }
+    );
+    assert_eq!(
+        harness.next_call().await,
+        Call::HarnessSessionRecorded("harness-native-thread".to_owned())
+    );
+
+    harness.stop().await;
+
+    assert_eq!(harness.next_call().await, Call::Interrupt);
+    assert_eq!(harness.next_call().await, Call::Flush);
+    assert_eq!(
+        harness.next_call().await,
+        Call::HarnessSessionRecorded("harness-native-thread".to_owned()),
+        "the id the next execution resumes on is re-filed and awaited"
+    );
+    assert_eq!(
+        harness.next_call().await,
+        Call::WorkdirPatchStored(WORKDIR_PATCH.len()),
+        "the working tree leaves the machine, because nothing here survives the stop"
+    );
+    assert_eq!(
+        harness.next_call().await,
+        Call::StoppingReported(StopReason::Sigterm),
+        "the control plane is told last, once the work is safe"
+    );
+
+    // No `sync`: there is no disk for a page cache to be flushed onto, and
+    // spending a second of the grace period on one would be a second not
+    // spent getting the patch off the machine.
+    assert_eq!(harness.next_call().await, Call::Shutdown);
+    harness.ended().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_stop_ends_the_run_rather_than_holding_the_socket() {
+    // The container counterpart of a reclamation's held socket. A machine
+    // being reclaimed keeps its connection because it is about to be killed
+    // anyway and a clean disconnect would read as "coming back"; a stopping
+    // container has been *asked* to exit, and exiting 0 is what stops the
+    // platform recording the execution as failed.
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness.stop().await;
+    assert_eq!(harness.next_call().await, Call::Interrupt);
+    assert_eq!(harness.next_call().await, Call::Flush);
+    assert_eq!(
+        harness.next_call().await,
+        Call::WorkdirPatchStored(WORKDIR_PATCH.len())
+    );
+    assert_eq!(
+        harness.next_call().await,
+        Call::StoppingReported(StopReason::Sigterm)
+    );
+    assert_eq!(harness.next_call().await, Call::Shutdown);
+
+    harness.ended().await.expect("the run ended cleanly");
 }
 
 #[tokio::test]
@@ -1985,7 +2129,7 @@ mod remote_store {
     use crate::control::rest::{ApprovalRaiser, ControlApi, ControlApiError, TranscriptRead};
     use flyco_core::wire::ApprovalPayload;
     use flyco_core::{
-        ApprovalId, HarnessObservation, HarnessSessionView, ModelOption, UsageWindow,
+        ApprovalId, HarnessObservation, HarnessSessionView, ModelOption, StopReason, UsageWindow,
     };
     use serde_json::{Value, json};
     use std::sync::mpsc::{Receiver, Sender, channel};
@@ -2074,6 +2218,15 @@ mod remote_store {
         ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
             core::future::ready(Err(ControlApiError::Transport(
                 "the transcript store reports no spot notices".to_owned(),
+            )))
+        }
+
+        fn report_stopping(
+            &self,
+            _reason: StopReason,
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Err(ControlApiError::Transport(
+                "the transcript store reports no stops".to_owned(),
             )))
         }
 

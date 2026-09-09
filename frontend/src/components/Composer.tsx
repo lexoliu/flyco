@@ -59,11 +59,11 @@ import {
   CATALOG_POLL_SECONDS,
   billingMinimumSentence,
   catalogNotReady,
+  chipLabel,
   entryKey,
-  hourlyLabel,
   readingMachines,
   readingMachinesShort,
-  shortMachineType,
+  runtimeOf,
 } from "../lib/machines";
 import styles from "./Composer.module.css";
 
@@ -306,6 +306,7 @@ export default function Composer(props: ComposerProps) {
               machine: {
                 providerAccount: account,
                 machineType: entry.machine_type,
+                runtime: runtimeOf(entry),
                 region: entry.region,
                 spot: spot(),
               },
@@ -506,11 +507,12 @@ function ComputeChip(props: {
     if (entry === undefined) {
       return null;
     }
-    // Type and price: what decides whether to send. The logomark already
+    // Name and price: what decides whether to send. The logomark already
     // names the provider; region, spot and account are one click away in
     // the popover, and on the chip they were what pushed the row onto a
-    // second line.
-    return [shortMachineType(entry.machine_type), hourlyLabel(entry, props.spot)].join(" · ");
+    // second line. A container carries its size too, because `Container`
+    // alone names no machine — see `chipLabel`.
+    return chipLabel(entry, props.spot);
   });
 
   /** The sentence a license-bound machine has to show before send. */

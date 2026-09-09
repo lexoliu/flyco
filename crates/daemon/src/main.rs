@@ -314,10 +314,14 @@ async fn conversation_to_continue(config: &mut DaemonConfig, api: &HttpControlAp
 ///    timeline says what the minute before the agent appears is being spent
 ///    on (docs/ux.md §9.2).
 /// 2. The repository is cloned at the branch the session names.
-/// 3. Any uncommitted work an automatic archive snapshotted is applied back
-///    on top. A session resuming onto a new machine is a fresh clone plus
-///    that patch — which is why the patch is applied *after* the clone and
-///    *before* the harness, rather than onto whatever the last machine left.
+/// 3. Any uncommitted work a previous machine stored is applied back on
+///    top. A session resuming onto a new machine is a fresh clone plus that
+///    patch — which is why the patch is applied *after* the clone and
+///    *before* the harness, rather than onto whatever the last machine
+///    left. On a [`Runtime::Container`](flyco_core::Runtime::Container)
+///    this is every start, not only the ones that follow an archive: the
+///    filesystem went with the last execution, so the clone is always fresh
+///    and the patch is always where the work is.
 ///
 /// A daemon with no `[repo]` is a developer machine pointed at a checkout
 /// that already exists, and clones nothing.
@@ -465,6 +469,10 @@ async fn drive_claude_code(config: DaemonConfig, mount: Mount) -> Result<(), Fai
         // endpoint carries a notice is a fact about the machine, and the
         // relay's business is the session on it.
         spot: flyco_daemon::spot::watch(config.spot_provider),
+        // And on exactly the machines whose filesystem goes with them:
+        // saving a session takes the whole grace period, and on a VM there
+        // is nothing at risk to spend it on (see [`flyco_daemon::stop`]).
+        stops: flyco_daemon::stop::watch(config.runtime),
         machine: config.machine.clone(),
         machine_origin: config.machine_origin,
     }))
@@ -528,6 +536,10 @@ async fn report<S: HarnessSession + 'static>(
         // endpoint carries a notice is a fact about the machine, and the
         // relay's business is the session on it.
         spot: flyco_daemon::spot::watch(config.spot_provider),
+        // And on exactly the machines whose filesystem goes with them:
+        // saving a session takes the whole grace period, and on a VM there
+        // is nothing at risk to spend it on (see [`flyco_daemon::stop`]).
+        stops: flyco_daemon::stop::watch(config.runtime),
         machine: config.machine.clone(),
         machine_origin: config.machine_origin,
     }))
@@ -554,22 +566,39 @@ fn checkout_of(config: &DaemonConfig) -> flyco_daemon::workdir::Checkout {
     )
 }
 
-/// Replays uncommitted work an automatic archive stored, if any.
+/// Replays the uncommitted work a previous machine stored, if any.
+///
+/// Two things store one, and from this side they are the same fact — this
+/// checkout is fresh and the session's work is not in it. An automatic
+/// archive writes a patch before it releases the disk, and so does every
+/// stop of a [`Runtime::Container`](flyco_core::Runtime::Container)
+/// session, whose filesystem goes with its execution
+/// ([`flyco_daemon::stop`]).
+///
+/// A patch that will not apply is **fatal**, and the git error travels with
+/// it into the startup failure the control plane records. The alternative
+/// is an agent that comes up on a clean tree and carries on, which is the
+/// user's uncommitted work silently discarded and a session that looks
+/// fine until they read the diff.
 async fn apply_stored_patch(
     api: &HttpControlApi,
     workdir: &std::path::Path,
 ) -> Result<(), flyco_daemon::control::WireError> {
     use flyco_daemon::git::WorkingTree as _;
 
-    if let Some(patch) = api.get_workdir_patch().await? {
-        tracing::info!(
-            bytes = patch.len(),
-            "replaying the uncommitted work an automatic archive snapshotted"
-        );
-        flyco_daemon::git::GitWorkdir::new(workdir.to_path_buf())
-            .apply(&patch)
-            .await?;
-    }
+    let Some(patch) = api.get_workdir_patch().await? else {
+        tracing::info!("no stored patch: this session's work is all in the clone");
+        return Ok(());
+    };
+    let bytes = patch.len();
+    flyco_daemon::git::GitWorkdir::new(workdir.to_path_buf())
+        .apply(&patch)
+        .await?;
+    tracing::info!(
+        bytes,
+        workdir = %workdir.display(),
+        "replayed the uncommitted work the previous machine stored"
+    );
     Ok(())
 }
 

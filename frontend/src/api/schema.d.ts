@@ -1833,33 +1833,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * Records that this session's machine is being reclaimed by its provider.
-         * @description Records that this session's machine is being reclaimed by its provider.
-         *
-         *     The durable half of a spot notice. The relay frame beside it puts the
-         *     countdown in front of the user; this is what survives the machine, and
-         *     it has to be a REST call rather than a room frame because a Durable
-         *     Object can reach neither D1 nor the provisioning queue.
-         *
-         *     Two things happen, in this order:
-         *
-         *     1. The session is marked interrupted, with the reason, so every list
-         *     and header reads `Interrupted · spot reclaimed` rather than a
-         *     session that mysteriously stopped.
-         *     2. A [`Recover`](crate::provisioning_queue::ProvisioningJob::Recover)
-         *     job is queued for after the provider's own countdown, because a
-         *     start issued against a machine that is still running is not a
-         *     restart.
-         *
-         *     Answers `202`: the machine is going whatever the control plane thinks,
-         *     and what this accepts is the work of getting the session back.
-         *
-         *     What browsers see is *not* here. The countdown reaches them as the relay
-         *     frame the daemon sends immediately after this call, which the room
-         *     records and forwards in one place — announcing it here as well would put
-         *     the same notice in the transcript twice.
-         */
+        /** flyco_api::app::report_spot_notice */
         post: operations["flyco_api::app::report_spot_notice"];
         delete?: never;
         options?: never;
@@ -1887,6 +1861,65 @@ export interface paths {
          *     guess (issue #186).
          */
         post: operations["flyco_api::app::report_startup_failure"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/stopping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Records that this session's machine is being reclaimed by its provider.
+         * @description Records that this session's machine is being reclaimed by its provider.
+         *
+         *     The durable half of a spot notice. The relay frame beside it puts the
+         *     countdown in front of the user; this is what survives the machine, and
+         *     it has to be a REST call rather than a room frame because a Durable
+         *     Object can reach neither D1 nor the provisioning queue.
+         *
+         *     Two things happen, in this order:
+         *
+         *     1. The session is marked interrupted, with the reason, so every list
+         *     and header reads `Interrupted · spot reclaimed` rather than a
+         *     session that mysteriously stopped.
+         *     2. A [`Recover`](crate::provisioning_queue::ProvisioningJob::Recover)
+         *     job is queued for after the provider's own countdown, because a
+         *     start issued against a machine that is still running is not a
+         *     restart.
+         *
+         *     Answers `202`: the machine is going whatever the control plane thinks,
+         *     and what this accepts is the work of getting the session back.
+         *
+         *     What browsers see is *not* here. The countdown reaches them as the relay
+         *     frame the daemon sends immediately after this call, which the room
+         *     records and forwards in one place — announcing it here as well would put
+         *     the same notice in the transcript twice.
+         *     Records that this session's machine is stopping and its filesystem is
+         *     going with it.
+         *
+         *     The container counterpart of
+         *     [`report_spot_notice`], and a route of its own rather than a flag on
+         *     that one because the two ask for different things. A reclaimed virtual
+         *     machine keeps its disk, so the control plane queues a *recovery* against
+         *     the same machine after the provider's countdown. A stopping container
+         *     has no disk to come back to: its daemon has already flushed the
+         *     transcript and stored the working tree as the `workdir-patch`, and there
+         *     is nothing left to schedule — what the control plane needs is the mark
+         *     on the row, which is what the container drivers read to tell an
+         *     execution that was stopped from one that died.
+         *
+         *     Answers `202`: the machine is going whatever the control plane thinks,
+         *     and this is the record of it.
+         */
+        post: operations["flyco_api::app::report_stopping"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2459,6 +2492,7 @@ export interface components {
             provider?: null | components["schemas"]["CloudProviderKind"];
             /** @description Only machines in this provider-native region. */
             region?: string | null;
+            runtime?: null | components["schemas"]["Runtime"];
         };
         /** @description Query of the two `Files` routes. */
         CheckoutPath: {
@@ -2926,6 +2960,34 @@ export interface components {
             project_id: string;
         };
         /**
+         * @description What a provider gives away every month before it bills a container at
+         *     all.
+         *
+         *     Stated in the provider's own two meters rather than as a number of hours
+         *     or a sum of money, because that is how the grant is actually spent: Azure
+         *     Container Apps gives 180,000 vCPU-seconds and 360,000 GiB-seconds per
+         *     subscription per month, and a 4 vCPU / 8 GiB job exhausts the vCPU half
+         *     first. Converting either meter into hours here would need a machine size
+         *     this type does not have, and converting it into dollars would be a
+         *     discount rather than an allowance.
+         *
+         *     Per subscription and per calendar month, on every provider that offers
+         *     one, which is why nothing here names a machine: two entries of one
+         *     account share one grant.
+         */
+        FreeGrant: {
+            /**
+             * Format: int64
+             * @description GiB-seconds of memory the provider does not bill for, per month.
+             */
+            gib_seconds_per_month: number;
+            /**
+             * Format: int64
+             * @description vCPU-seconds the provider does not bill for, per month.
+             */
+            vcpu_seconds_per_month: number;
+        };
+        /**
          * @description A Claude or Codex account the user has linked, as `GET
          *     /v1/harness-accounts` lists it.
          *
@@ -3323,6 +3385,7 @@ export interface components {
         MachineCatalogEntry: {
             account?: null | components["schemas"]["Uuid"];
             capacity?: null | components["schemas"]["MachineCapacity"];
+            free_grant?: null | components["schemas"]["FreeGrant"];
             lineage?: null | components["schemas"]["MachineLineage"];
             /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
             machine_type: string;
@@ -3341,6 +3404,14 @@ export interface components {
              *     region, and there is nowhere else to put it.
              */
             region: string;
+            /**
+             * @description Whether this entry is a virtual machine or a managed container.
+             *
+             *     Defaulted rather than required, because a catalog is cached as JSON
+             *     and a document written before this axis existed describes machines
+             *     that were all [`Runtime::Vm`].
+             */
+            runtime?: components["schemas"]["Runtime"];
         };
         /**
          * @description Which machine a session asks for.
@@ -3365,6 +3436,19 @@ export interface components {
             provider_account: components["schemas"]["Uuid"];
             /** @description Provider-native region, as the catalog entry names it. */
             region: string;
+            /**
+             * @description Whether that type is a virtual machine or a managed container, as
+             *     the same catalog entry says.
+             *
+             *     Sent rather than derived, and checked against the entry before the
+             *     session is written: the two facts came off one row in the picker,
+             *     and a request whose runtime disagrees with the type it names is a
+             *     caller working from a catalog that has since changed — which is a
+             *     refusal at the point of choice rather than a machine of the wrong
+             *     shape. Defaulted to [`Runtime::Vm`], which is what every caller
+             *     written before this axis existed means.
+             */
+            runtime?: components["schemas"]["Runtime"];
             /**
              * @description Whether to ask for interruptible spot capacity. Spot is the default
              *     because it is the cheaper option and flyco handles eviction.
@@ -3475,6 +3559,10 @@ export interface components {
             /**
              * Format: int32
              * @description Disk size in GiB.
+             *
+             *     Ignored on [`Runtime::Container`], which has no persistent disk to
+             *     size — the request still carries the session's default so a session
+             *     moved between runtimes asks for the same disk it always did.
              */
             disk_gib: number;
             /** @description Provider-native machine type name. */
@@ -3483,6 +3571,16 @@ export interface components {
             provider: components["schemas"]["CloudProviderKind"];
             /** @description Provider-native region name. */
             region: string;
+            /**
+             * @description Whether the type names a virtual machine or a managed container.
+             *
+             *     Carried on the spec rather than looked up from the catalog every
+             *     time, because it decides what a *stop* means to this machine and a
+             *     stop happens long after the catalog entry it came from was read.
+             *     Defaulted for the rows written before this axis existed, every one
+             *     of which is a [`Runtime::Vm`].
+             */
+            runtime?: components["schemas"]["Runtime"];
             /** @description Whether to request spot capacity (the default). */
             spot: boolean;
         };
@@ -4101,6 +4199,22 @@ export interface components {
             message: string;
         };
         /**
+         * @description Request body of `POST /v1/sessions/{id}/stopping`.
+         *
+         *     The last thing a container session's daemon files. Its counterpart on a
+         *     virtual machine is [`ReportSpotNotice`], and the two are deliberately
+         *     different routes rather than one with a flag: a reclaimed VM keeps its
+         *     disk and is *recovered* — the control plane queues a start against the
+         *     same machine after the provider's own countdown — while a stopping
+         *     container has already handed its working tree over as the
+         *     `workdir-patch` and is simply gone, with nothing to schedule against a
+         *     deadline.
+         */
+        ReportStopping: {
+            /** @description What made the machine stop. */
+            reason: components["schemas"]["StopReason"];
+        };
+        /**
          * @description Request body of `PUT /v1/sessions/{id}/usage`.
          *
          *     What a session's daemon reports when its harness answers how much of the
@@ -4123,6 +4237,26 @@ export interface components {
             /** @description Provider-native machine type to move to, from the catalog. */
             machine_type: string;
         };
+        /**
+         * @description What kind of thing a machine actually is: a virtual machine, or a
+         *     container the provider runs for the length of one execution.
+         *
+         *     One axis on the machine rather than a second set of providers, because
+         *     the same subscription sells both and the driver that reaches them is the
+         *     same driver. What it decides is the only thing that differs everywhere
+         *     else in flyco: **whether the filesystem survives a stop.** A VM
+         *     deallocates onto a disk that is still there when it starts again; a
+         *     managed container's filesystem ends with its execution, so the working
+         *     tree has to travel as the `workdir-patch` flyco already keeps and be
+         *     replayed onto a fresh clone at the next start.
+         *
+         *     [`Vm`](Self::Vm) is the default, and that is a statement about history
+         *     rather than a preference: every machine flyco provisioned before this
+         *     axis existed was one, and a row or a request that names no runtime is
+         *     one of those.
+         * @enum {string}
+         */
+        Runtime: "vm" | "container";
         /** @description Request body of `POST /v1/sessions/{id}/messages`. */
         SendMessage: {
             /**
@@ -4288,6 +4422,16 @@ export interface components {
              */
             uploaded_at_unix: number;
         };
+        /**
+         * @description Why a machine's own daemon says it is going away.
+         *
+         *     One variant, and an enum all the same: the control plane's container
+         *     drivers have to tell "the platform stopped this execution" from "the
+         *     execution ran out of time" and from "flyco asked for it", and a boolean
+         *     or a bare string could not carry that distinction into the row.
+         * @enum {string}
+         */
+        StopReason: "sigterm";
         /** @description One fixed-price disk tier. */
         StoragePriceTier: {
             /**
@@ -5730,6 +5874,7 @@ export interface operations {
                 os?: null | components["schemas"]["OsFamily"];
                 provider?: null | components["schemas"]["CloudProviderKind"];
                 region?: string | null;
+                runtime?: null | components["schemas"]["Runtime"];
             };
             header?: never;
             path?: never;
@@ -7100,6 +7245,7 @@ export interface operations {
                     "application/json": {
                         account?: null | components["schemas"]["Uuid"];
                         capacity?: null | components["schemas"]["MachineCapacity"];
+                        free_grant?: null | components["schemas"]["FreeGrant"];
                         lineage?: null | components["schemas"]["MachineLineage"];
                         /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
                         machine_type: string;
@@ -7118,6 +7264,14 @@ export interface operations {
                          *     region, and there is nowhere else to put it.
                          */
                         region: string;
+                        /**
+                         * @description Whether this entry is a virtual machine or a managed container.
+                         *
+                         *     Defaulted rather than required, because a catalog is cached as JSON
+                         *     and a document written before this axis existed describes machines
+                         *     that were all [`Runtime::Vm`].
+                         */
+                        runtime?: components["schemas"]["Runtime"];
                     }[];
                 };
             };
@@ -8062,6 +8216,34 @@ export interface operations {
         responses: {
             /** @description Done. There is nothing to return. */
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::report_stopping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description What made the machine stop. */
+                    reason: components["schemas"]["StopReason"];
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -42,6 +42,9 @@
 //!   instance-metadata endpoint, and the disk flush the daemon answers it
 //!   with. The agent takes no part in a reclamation and is told about it
 //!   afterwards.
+//! - [`stop`] — the same event on a machine with no disk: the platform's
+//!   `SIGTERM` on a managed container, which takes the working tree with it
+//!   and so has the daemon write the workdir patch out before it goes.
 //! - [`notice`] — every sentence flyco says to the agent, compiled from a
 //!   template rather than assembled from strings.
 //!
@@ -63,6 +66,7 @@ pub mod notice;
 pub mod repl;
 pub mod shell;
 pub mod spot;
+pub mod stop;
 pub mod terminal;
 pub mod workdir;
 

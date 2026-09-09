@@ -8,7 +8,7 @@
 
 use flyco_core::{
     AwsIamPolicy, CloudProviderKind, HostId, LinkProvider, MachineCatalog, MachinePricing,
-    MachineSpec, Problem, ProviderAccountView, ProviderCredentials,
+    MachineSpec, Problem, ProviderAccountView, ProviderCredentials, Runtime,
 };
 use skyzen::sql;
 use skyzen_services::sql::Row;
@@ -136,6 +136,7 @@ async fn unlinking_an_account_with_a_live_machine_counts_what_it_would_strand(
         &MachineSpec {
             provider: CloudProviderKind::Host,
             machine_type: SSH_HOST.to_owned(),
+            runtime: Runtime::Container,
             region: SSH_HOST.to_owned(),
             spot: false,
             disk_gib: 64,

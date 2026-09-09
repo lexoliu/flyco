@@ -4,8 +4,8 @@ use flyco_core::wire::{ApprovalDecision, ApprovalPayload};
 use flyco_core::{
     ApprovalState, ApprovalView, BudgetStage, CreateSession, CurrentUser, DecideApproval,
     EnvDocument, EnvEntry, HarnessKind, MachineOrigin, MachineState, ModelChoice, ModelOption,
-    Problem, ProviderAccountId, SessionDetail, SessionId, SessionState, SessionSummary, SpendKind,
-    UpdateEnv, UpdateMe, UpdateSession, Usd, builtin_models,
+    Problem, ProviderAccountId, Runtime, SessionDetail, SessionId, SessionState, SessionSummary,
+    SpendKind, UpdateEnv, UpdateMe, UpdateSession, Usd, builtin_models,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -96,6 +96,67 @@ async fn create(
 }
 
 // ── Creation, validation, and the concurrent-session cap ──
+
+#[skyzen::test]
+async fn a_session_records_the_runtime_the_catalog_offers_its_type_as(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // The only entry the test catalog offers is the enrolled machine, and a
+    // session there has always been a Podman container. The row says so, so
+    // the machine's own `flycod` is told what a stop does to its disk.
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+
+    let session = create(&ctx.client(router), &caller, &open(&caller, REPO, 10)).await;
+
+    let session_id = session.summary.id;
+    let runtime: Runtime = sql!(
+        db,
+        "SELECT runtime FROM machines WHERE session_id = {session_id}"
+    )
+    .fetch_scalar()
+    .await
+    .expect("the runtime was recorded");
+    assert_eq!(runtime, Runtime::Container);
+}
+
+#[skyzen::test]
+async fn a_choice_that_contradicts_the_catalog_is_refused_rather_than_reshaped(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // The type is on offer and the runtime sent with it is not the runtime
+    // it is offered as: a picker working from a catalog that has since
+    // changed. Provisioning the runtime on offer would hand a session that
+    // asked for a disk one that loses its working tree on every stop.
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+
+    let mut body = open(&caller, REPO, 10);
+    body.machine.as_mut().expect("a chosen machine").runtime = Runtime::Vm;
+
+    let response = ctx
+        .client(router)
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .json(&body)
+        .send()
+        .await;
+
+    response.assert_status(400);
+    let problem: Problem = response.json();
+    assert!(
+        problem.kind.ends_with("/machine-runtime-mismatch"),
+        "unexpected problem: {problem:?}"
+    );
+    assert!(
+        problem.detail.contains(SSH_HOST),
+        "the refusal names the type both halves disagree about: {problem:?}"
+    );
+}
 
 #[skyzen::test]
 async fn creating_a_session_returns_it_provisioning_with_its_budget(

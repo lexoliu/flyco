@@ -29,7 +29,7 @@
 //! `ce:GetCostAndUsage`; the region must be one the account has enabled and
 //! must still have its default VPC.
 
-use flyco_core::machine::{CloudProviderKind, MachineSpec, MachineState};
+use flyco_core::machine::{CloudProviderKind, MachineSpec, MachineState, Runtime};
 use flyco_core::{MachineId, PermissionMode, SessionId};
 
 use super::{AwsProvider, AwsWorkspace, ExclusionReason, SPOT_UNSUPPORTED_CODES, names};
@@ -158,6 +158,7 @@ fn request_in(
         spec: MachineSpec {
             provider: CloudProviderKind::Aws,
             machine_type: machine_type.to_owned(),
+            runtime: Runtime::Vm,
             region: region.to_owned(),
             spot,
             disk_gib: 30,
@@ -165,6 +166,7 @@ fn request_in(
         bootstrap: DaemonBootstrap {
             session: SessionId::generate(),
             provider: flyco_core::CloudProviderKind::Aws,
+            runtime: Runtime::Vm,
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_a-live-daemon-token".to_owned(),
             permission_mode: PermissionMode::Default,

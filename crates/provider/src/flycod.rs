@@ -20,7 +20,8 @@ use core::fmt;
 
 use flyco_core::machine::SessionMachine;
 use flyco_core::{
-    BranchName, CloudProviderKind, HarnessKind, MachineOrigin, PermissionMode, RepoSlug, SessionId,
+    BranchName, CloudProviderKind, HarnessKind, MachineOrigin, PermissionMode, RepoSlug, Runtime,
+    SessionId,
 };
 use serde::Serialize;
 
@@ -304,6 +305,13 @@ struct Document<'a> {
     harness: HarnessKind,
     workdir: &'static str,
     transcript_dir: &'static str,
+    /// Whether this machine's filesystem outlives a stop.
+    ///
+    /// Always written, unlike [`Self::spot_provider`]: "the disk survives"
+    /// is what the daemon assumes when nothing says otherwise, and a
+    /// container whose configuration forgot to say so would lose the
+    /// working tree the first time the platform stopped it.
+    runtime: Runtime,
     machine_origin: MachineOrigin,
     #[serde(skip_serializing_if = "Option::is_none")]
     spot_provider: Option<CloudProviderKind>,
@@ -438,6 +446,7 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
         harness: bootstrap.auth.harness(),
         workdir: WORKDIR,
         transcript_dir: TRANSCRIPT_DIR,
+        runtime: bootstrap.runtime,
         machine_origin: bootstrap.machine_origin,
         spot_provider: spot_provider(bootstrap),
         resume_session_id: bootstrap.resume_session_id.as_deref(),
@@ -463,7 +472,9 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
 
 #[cfg(test)]
 mod tests {
-    use flyco_core::{CloudProviderKind, HarnessKind, MachineOrigin, PermissionMode, SessionId};
+    use flyco_core::{
+        CloudProviderKind, HarnessKind, MachineOrigin, PermissionMode, Runtime, SessionId,
+    };
 
     use super::{
         CLAUDE_CONFIG_DIR, CODEX_HOME, ClaudeCredential, CodexCredential, HarnessCredential, render,
@@ -475,6 +486,7 @@ mod tests {
         DaemonBootstrap {
             session: SessionId::generate(),
             provider: CloudProviderKind::Azure,
+            runtime: Runtime::Vm,
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_token".to_owned(),
             permission_mode: PermissionMode::Default,
@@ -514,6 +526,23 @@ mod tests {
         assert!(rendered.contains("daemon_token = \"fd_token\""));
         assert!(rendered.contains("permission_mode = \"default\""));
         assert!(rendered.contains("mode = \"inherit\""));
+    }
+
+    #[test]
+    fn a_provisioned_config_states_whether_the_disk_survives_a_stop() {
+        // Always written, on both runtimes: "the disk survives" is what the
+        // daemon assumes when nothing says otherwise, so a container whose
+        // configuration forgot to say so would lose the working tree the
+        // first time the platform stopped it.
+        let vm = render(&claude(ClaudeCredential::Inherit)).expect("render");
+        assert!(vm.contains("runtime = \"vm\""));
+
+        let container = render(&DaemonBootstrap {
+            runtime: Runtime::Container,
+            ..claude(ClaudeCredential::Inherit)
+        })
+        .expect("render");
+        assert!(container.contains("runtime = \"container\""));
     }
 
     #[test]

@@ -19,13 +19,17 @@
 //! 3. **Order by price.** Cheapest first, which is the order the slider's
 //!    detents run in and the order an agent should read.
 //!
-//! Two dimensions are never compared across, and both are the same mistake
-//! if they are: **architecture**, because an arm64 machine is not a cheaper
-//! x86-64 one, and **operating system**, because a Mac is not a large Linux
-//! box. They are grouping keys, not axes. So is the account: two linked
-//! accounts are two bills and two sets of credentials, and an account whose
-//! whole line-up was dominated by a cheaper account's would vanish from a
-//! chooser whose entire job is to let the user pick between them.
+//! Three dimensions are never compared across, and each is the same mistake
+//! if it is: **architecture**, because an arm64 machine is not a cheaper
+//! x86-64 one; **operating system**, because a Mac is not a large Linux box;
+//! and **runtime**, because a container that loses its filesystem when it
+//! stops is not a cheap virtual machine — it is a different bargain, and a
+//! cheap container dominating a whole line-up of VMs would leave a user who
+//! needs a disk with nothing to pick. They are grouping keys, not axes. So
+//! is the account: two linked accounts are two bills and two sets of
+//! credentials, and an account whose whole line-up was dominated by a
+//! cheaper account's would vanish from a chooser whose entire job is to let
+//! the user pick between them.
 //!
 //! Everything here is total and pure. Entries the provider published no size
 //! or no price for — hardware the user owns is both — are never dropped:
@@ -34,7 +38,7 @@
 
 use crate::id::ProviderAccountId;
 use crate::machine::{
-    CloudProviderKind, CpuArchitecture, MachineCatalogEntry, MachinePricing, OsFamily,
+    CloudProviderKind, CpuArchitecture, MachineCatalogEntry, MachinePricing, OsFamily, Runtime,
 };
 use crate::money::Usd;
 
@@ -51,6 +55,7 @@ struct Group {
     region: String,
     os: OsFamily,
     architecture: Option<CpuArchitecture>,
+    runtime: Runtime,
 }
 
 impl Group {
@@ -61,6 +66,7 @@ impl Group {
             region: entry.region.clone(),
             os: entry.os,
             architecture: entry.lineage.as_ref().map(|lineage| lineage.architecture),
+            runtime: entry.runtime,
         }
     }
 }
@@ -238,7 +244,7 @@ mod tests {
     use crate::id::ProviderAccountId;
     use crate::machine::{
         BillingMinimum, CloudProviderKind, CpuArchitecture, MachineCapacity, MachineCatalogEntry,
-        MachineLineage, MachinePricing, OsFamily, StoragePricing,
+        MachineLineage, MachinePricing, OsFamily, Runtime, StoragePricing,
     };
     use crate::money::Usd;
 
@@ -260,6 +266,8 @@ mod tests {
             account: Some(account(1)),
             region: "eastus".to_owned(),
             machine_type: machine_type.to_owned(),
+            runtime: Runtime::Vm,
+            free_grant: None,
             os: OsFamily::Linux,
             capacity: Some(MachineCapacity {
                 vcpus,
@@ -463,12 +471,30 @@ mod tests {
     }
 
     #[test]
+    fn a_container_is_never_compared_against_a_virtual_machine() {
+        // Cheaper and bigger, and it still does not hide the VM: a session
+        // that needs a disk which survives a stop is not served by an
+        // execution whose filesystem ends with it.
+        let container = MachineCatalogEntry {
+            runtime: Runtime::Container,
+            ..entry("aca-8x16", "aca", None, 8, 16, 21)
+        };
+        let catalog = vec![entry("D4s_v6", "ds", Some(6), 4, 16, 38), container];
+
+        assert_eq!(names(&curate(catalog)), ["aca-8x16", "D4s_v6"]);
+    }
+
+    #[test]
     fn hardware_the_user_owns_is_never_dropped_and_sorts_first() {
         let owned = MachineCatalogEntry {
             provider: CloudProviderKind::Host,
             account: Some(account(3)),
             region: "build.lexo.cool".to_owned(),
             machine_type: "build.lexo.cool".to_owned(),
+            // A session on hardware the user owns is a Podman container, as
+            // `flyco_provider::host` plans it.
+            runtime: Runtime::Container,
+            free_grant: None,
             os: OsFamily::Linux,
             capacity: None,
             lineage: None,

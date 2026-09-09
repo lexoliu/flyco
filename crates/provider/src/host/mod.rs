@@ -52,7 +52,9 @@ pub use script::render;
 pub use wire::{ControlToHost, HostToControl};
 
 use flyco_core::host::HostFacts;
-use flyco_core::machine::{CloudProviderKind, MachineCatalogEntry, MachinePricing, OsFamily};
+use flyco_core::machine::{
+    CloudProviderKind, MachineCatalogEntry, MachinePricing, OsFamily, Runtime,
+};
 use flyco_core::{HostId, MachineId};
 use serde::{Deserialize, Serialize};
 
@@ -271,6 +273,12 @@ impl Host {
     /// It carries no price, because the user already owns and already pays
     /// for the hardware, and its size and architecture are the ones the
     /// machine reported at its last `Hello` rather than any flyco invented.
+    ///
+    /// Its runtime is [`Runtime::Container`], which it always was: a session
+    /// here has always been a Podman container, and the axis is what finally
+    /// says so. It carries no [`free_grant`](MachineCatalogEntry::free_grant)
+    /// — a grant is a provider giving compute away, and there is no provider
+    /// in this arrangement.
     #[must_use]
     pub fn catalog(&self) -> Vec<MachineCatalogEntry> {
         vec![MachineCatalogEntry {
@@ -279,6 +287,8 @@ impl Host {
             provider: CloudProviderKind::Host,
             region: self.facts.hostname.clone(),
             machine_type: self.facts.hostname.clone(),
+            runtime: Runtime::Container,
+            free_grant: None,
             os: OsFamily::Linux,
             capacity: Some(self.facts.capacity()),
             lineage: Some(self.facts.lineage()),
@@ -301,6 +311,19 @@ impl Host {
                         provider: PROVIDER,
                         operation: "provisioning another machine",
                         reason: "an enrolled host offers exactly one machine type — itself",
+                    });
+                }
+                if request.spec.runtime != Runtime::Container {
+                    // The one entry this host publishes is a container, so a
+                    // spec asking for a VM was built against something else.
+                    // Refused rather than quietly satisfied with a container:
+                    // the caller asked for a disk that survives a stop, and
+                    // this cannot give one.
+                    return Err(ProviderError::Unsupported {
+                        provider: PROVIDER,
+                        operation: "provisioning a virtual machine",
+                        reason: "an enrolled host runs sessions as containers; \
+                                 it has no hypervisor to make a virtual machine with",
                     });
                 }
                 Ok(ContainerJob::Create {
@@ -336,7 +359,7 @@ impl Host {
 mod tests {
     use flyco_core::host::HostFacts;
     use flyco_core::machine::{
-        CloudProviderKind, CpuArchitecture, MachinePricing, MachineSpec, MachineState,
+        CloudProviderKind, CpuArchitecture, MachinePricing, MachineSpec, MachineState, Runtime,
     };
     use flyco_core::{HostId, MachineId, PermissionMode, SessionId};
 
@@ -369,6 +392,7 @@ mod tests {
         DaemonBootstrap {
             session: SessionId::generate(),
             provider: CloudProviderKind::Host,
+            runtime: Runtime::Container,
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_token".to_owned(),
             permission_mode: PermissionMode::Default,
@@ -399,6 +423,7 @@ mod tests {
             spec: MachineSpec {
                 provider: CloudProviderKind::Host,
                 machine_type: machine_type.to_owned(),
+                runtime: Runtime::Container,
                 region: HOSTNAME.to_owned(),
                 spot: false,
                 disk_gib: 0,
@@ -416,6 +441,15 @@ mod tests {
         assert_eq!(catalog[0].pricing, MachinePricing::UserOwned);
         assert_eq!(catalog[0].pricing.hourly(false), None);
         assert_eq!(
+            catalog[0].runtime,
+            Runtime::Container,
+            "a session on an enrolled host has always been a Podman container"
+        );
+        assert!(
+            catalog[0].free_grant.is_none(),
+            "there is no provider here to give compute away"
+        );
+        assert_eq!(
             catalog[0].capacity.as_ref().map(|capacity| capacity.vcpus),
             Some(10)
         );
@@ -426,6 +460,32 @@ mod tests {
                 .map(|lineage| lineage.architecture),
             Some(CpuArchitecture::Arm64),
             "an arm64 host must never be offered as an x86-64 machine"
+        );
+    }
+
+    #[test]
+    fn a_host_refuses_to_provision_a_virtual_machine() {
+        // The spec asked for a disk that survives a stop, and a host has no
+        // hypervisor to make one with. Refused rather than quietly given a
+        // container, which is a different bargain.
+        let MachineOperation::Provision(mut request) = provision(HOSTNAME) else {
+            panic!("provisioning plans a create");
+        };
+        request.spec.runtime = Runtime::Vm;
+
+        let refusal = host()
+            .plan(&MachineOperation::Provision(request))
+            .expect_err("a host cannot make a virtual machine");
+        assert!(
+            matches!(
+                refusal,
+                ProviderError::Unsupported {
+                    provider: PROVIDER,
+                    operation: "provisioning a virtual machine",
+                    ..
+                }
+            ),
+            "unexpected refusal: {refusal}"
         );
     }
 

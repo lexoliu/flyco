@@ -38,6 +38,7 @@ pub fn bootstrap() -> DaemonBootstrap {
     DaemonBootstrap {
         session: SessionId::generate(),
         provider: flyco_core::CloudProviderKind::Host,
+        runtime: flyco_core::Runtime::Container,
         control_plane_url: "https://flyco.test/".to_owned(),
         daemon_token: "fd_token".to_owned(),
         permission_mode: flyco_core::PermissionMode::Auto,

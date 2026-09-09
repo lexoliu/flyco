@@ -371,7 +371,7 @@ mod tests {
     use flyco_core::{
         AgentMachineView, ApprovalId, BillingMinimum, BudgetStage, BudgetView, CloudProviderKind,
         MachineCapacity, MachineCatalogEntry, MachineOrigin, MachinePricing, MachineState,
-        OsFamily, SessionMachine, StoragePricing, Usd,
+        OsFamily, Runtime, SessionMachine, StoragePricing, Usd,
     };
 
     use super::{
@@ -456,6 +456,8 @@ mod tests {
             account: None,
             region: "us-east-1".to_owned(),
             machine_type: machine_type.to_owned(),
+            runtime: Runtime::Vm,
+            free_grant: None,
             os: OsFamily::Linux,
             capacity: Some(MachineCapacity {
                 vcpus: 8,

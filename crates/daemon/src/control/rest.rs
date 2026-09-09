@@ -34,7 +34,8 @@ use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
     AgentMachineView, ApprovalId, ApprovalView, BudgetView, HarnessObservation, HarnessSessionView,
     MachineCatalogEntry, ModelOption, Problem, ProvisioningStage, ReportProvisioningStage,
-    ReportSpotNotice, ReportStartupFailure, ResizeMachine, SessionId, UsageWindow,
+    ReportSpotNotice, ReportStartupFailure, ReportStopping, ResizeMachine, SessionId, StopReason,
+    UsageWindow,
 };
 use url::Url;
 use zenwave::{Client as _, ResponseExt as _};
@@ -300,6 +301,29 @@ pub trait ControlApi: ApprovalRaiser {
         seconds_remaining: u32,
     ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 
+    /// Reports that this machine is stopping and its filesystem is going
+    /// with it.
+    ///
+    /// The container counterpart of [`report_spot_notice`](Self::report_spot_notice),
+    /// and a separate route for a reason rather than a flag on that one: a
+    /// reclaimed virtual machine keeps its disk and is recovered onto it
+    /// after the provider's countdown, while a stopping container has
+    /// already handed its working tree over as the `workdir-patch` and
+    /// there is nothing to schedule against a deadline.
+    ///
+    /// Filed *after* the patch and awaited, in that order, because it is the
+    /// sentence that makes the stop true for everyone else and it must not
+    /// be true before the work is safe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or refused the report.
+    fn report_stopping(
+        &self,
+        reason: StopReason,
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
+
     /// Announces a provisioning milestone the machine has reached.
     ///
     /// The control plane times it, so a session VM whose clock is wrong
@@ -561,6 +585,22 @@ impl ControlApi for HttpControlApi {
             .map_err(transport)?
             .bearer_auth(self.token.clone())
             .json_body(&ReportSpotNotice { seconds_remaining })
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("POST", &url, &error))?;
+
+        debug_assert!(response.status().is_success());
+        Ok(())
+    }
+
+    async fn report_stopping(&self, reason: StopReason) -> Result<(), ControlApiError> {
+        let url = self.url("stopping")?;
+        let mut client = zenwave::client();
+        let response = client
+            .post(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(&ReportStopping { reason })
             .map_err(transport)?
             .await
             .map_err(|error| refused("POST", &url, &error))?;

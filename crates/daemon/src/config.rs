@@ -513,6 +513,22 @@ pub struct DaemonConfig {
     /// `GET /v1/sessions/{id}/agent/machine`, which is what the agent's
     /// `machine_status` tool reads.
     pub machine: SessionMachine,
+    /// Whether the filesystem this daemon works on survives the machine
+    /// stopping.
+    ///
+    /// The one fact nothing on the machine can discover for itself, and the
+    /// one that decides what `SIGTERM` means here. On a
+    /// [`Runtime::Vm`](flyco_core::Runtime::Vm) it is systemd stopping a
+    /// unit on a disk that will still be there, and the daemon simply goes.
+    /// On a [`Runtime::Container`](flyco_core::Runtime::Container) it is the
+    /// platform taking the working tree away in about thirty seconds, so the
+    /// daemon spends them saving the session — see [`crate::stop`].
+    ///
+    /// Defaulted, and the default is a VM: every configuration written
+    /// before this field existed describes one, and so does the developer
+    /// machine the example config is written for.
+    #[serde(default)]
+    pub runtime: flyco_core::Runtime,
     /// Whose instance-metadata endpoint announces this machine's
     /// reclamation, when it holds capacity that can be reclaimed at all.
     ///

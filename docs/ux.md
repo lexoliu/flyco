@@ -318,7 +318,7 @@ Every chip is both a status readout and the entry point to change it.
 |---|---|---|
 | Harness | logomark + `Claude Code` (or `Codex`); popover lists the linked agents with the chosen one marked, ending in `Connect another agent` → `/connect/harness` | `+ Connect an agent` → `/connect/harness` |
 | Model | `Fable 5.1 · High`: the model's name and, once one is chosen, the effort after it. The name is the head of the harness's description where it has one (`Fable 5.1 · Most capable…` → `Fable 5.1`; Claude's rows are menu labels like `Default (recommended)`) and the row's label otherwise (`GPT-5.5`). The chip sits at the right of the row beside send, where both official apps keep theirs. The popover lists the agent's own models (`GET /v1/harness-accounts` carries each account's list, as its last session's agent reported it, or flyco's built-in one until then), each with the harness's one-line description, and under the chosen one its effort levels as pills with `Default` first. Choosing a model resets the effort to the model's own default. Switching agents drops the choice, because a Claude id means nothing to Codex | absent until an agent is linked, since there is no list to show |
-| Compute | provider logomark + `B2s · $0.04/hr` and `Auto` or `Chosen`; the logomark names the provider, and region, spot and the account live in the popover. While an account is still being read the chip says `Reading Azure…` and the popover carries the whole sentence | `+ Add compute` → `/connect/compute` |
+| Compute | provider logomark + `B2s · $0.04/hr` and `Auto` or `Chosen`; the logomark names the provider, and region, spot and the account live in the popover. A **managed container** reads `Container · 4 vCPU · 8 GiB · $0.21/hr` instead: `aca-4x8` is flyco's key for a size billed by the second, not a name anybody picked, so the size is what identifies the row — and where the provider covers it out of a monthly allowance the chip ends ` · Free this month`. A machine the user enrolled is a container too and keeps its own hostname, which is the name they gave it. While an account is still being read the chip says `Reading Azure…` and the popover carries the whole sentence | `+ Add compute` → `/connect/compute` |
 | Repository | `owner/name`; popover with a search box, recent repositories first | `Select repository` opens the same popover |
 | Budget | `$10`; popover with a slider (1–200) and the sentence "Covers the machine and its disk. Model tokens are billed by your Claude or Codex plan." | always shown, default `$10` |
 
@@ -540,17 +540,24 @@ provider catalog:
 
 - keep only the newest CPU generation of each family the provider
   offers (newest is also usually cheapest),
+- never compare a **container** against a virtual machine: a container
+  whose filesystem ends with its execution is not a cheap VM, and a cheap
+  container dominating a whole line-up would leave a user who needs a disk
+  with nothing to pick,
 - within one architecture (x86-64, arm64) and one region, drop any type
   that costs the same or more than another type with at least the same
   vCPUs and memory (strict Pareto frontier on price vs. capacity),
 - order by price.
 
-The default machine is the cheapest Linux entry of the curated catalog.
-The agent's `machine_resize` tool sees the same curated list.
+The default machine is the cheapest Linux entry of the curated catalog,
+except that a **container the provider gives away this month** wins over
+everything, hardware the user owns included: that allowance expires unspent
+at the end of the month and the machine at home does not. The agent's
+`machine_resize` tool sees the same curated list.
 
 ### 7.7 Choosing a machine by hand
 
-The compute chip's popover is a **tiered slider**, not a table. Its detents are the curated catalog of the selected account and region ordered by price; the thumb snaps to a detent and the label above it reads `Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr`. The leftmost position is `Auto`. `Auto` is the cheapest curated Linux type with at least 4 vCPU and 16 GiB; the label says so. An `Advanced ›` disclosure above the slider reveals account, region, architecture (x86-64 / arm64), OS family, and spot. Choosing any detent other than `Auto` sets `machine_origin: user`; the chip then reads `Chosen by you`.
+The compute chip's popover is a **tiered slider**, not a table. Its detents are the curated catalog of the selected account and region ordered by price; the thumb snaps to a detent and the label above it reads `Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr`, or for a managed container `Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month`. The leftmost position is `Auto`. `Auto` is the cheapest curated Linux type with at least 4 vCPU and 16 GiB, unless the account's catalog offers a container covered by a monthly grant, in which case that is what it picks; the label says which rule decided. An `Advanced ›` disclosure above the slider reveals account, region, architecture (x86-64 / arm64), OS family, and spot. Choosing any detent other than `Auto` sets `machine_origin: user`; the chip then reads `Chosen by you`.
 
 License-bound types (macOS on EC2 Mac, and any type with a billing minimum) render with an amber badge on their detent and a sentence under the slider: "Starts a 24-hour minimum charge of $X the moment it boots." The sentence must be visible before send is enabled.
 
@@ -865,6 +872,24 @@ Pre-1.0, the API changes to fit the product; no compatibility shims.
 - `GET /v1/machines/default?spot=` returns the curated default choice and
   its catalog entry. `GET /v1/machines/catalog` returns the curated
   catalog (§7.6).
+- A machine is a virtual machine or a managed container.
+  `MachineCatalogEntry`, `MachineSpec` and `MachineChoice` carry
+  `runtime: "vm" | "container"`, defaulting to `vm` so a document written
+  before the axis existed reads back as what it described; an entry the
+  provider covers out of a monthly allowance also carries
+  `free_grant { vcpu_seconds_per_month, gib_seconds_per_month }`.
+  `POST /v1/sessions` checks the runtime against the catalog entry the type
+  names and refuses a request that contradicts itself with
+  `400 machine-runtime-mismatch` — never by provisioning whichever runtime
+  is on offer, because a session that asked for a disk would lose its
+  working tree every time the platform stopped it.
+- `POST /v1/sessions/{id}/stopping` (daemon-scoped, `{ reason: "sigterm" }`,
+  answers `202`) is what a container session's `flycod` files on its way
+  out, after it has flushed the transcript and stored the working tree as
+  the workdir patch. A route of its own rather than a flag on
+  `POST /v1/sessions/{id}/spot-notice`: a reclaimed virtual machine keeps
+  its disk and has a recovery queued against it, and a stopping container
+  has nothing left to schedule.
 - Azure credentials: `resource_group` and `admin_ssh_public_key` are
   replaced by `admin_ssh_public_key` only; flyco creates the resource
   group at link time and stores its name on the account.

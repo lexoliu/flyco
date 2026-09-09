@@ -30,7 +30,7 @@
 //! policy allows, and the service principal must be `Contributor` on it —
 //! no resource-group-scoped role can create the group it is scoped to.
 
-use flyco_core::machine::{CloudProviderKind, MachineSpec, MachineState};
+use flyco_core::machine::{CloudProviderKind, MachineSpec, MachineState, Runtime};
 use flyco_core::{MachineId, PermissionMode, SessionId};
 use serde_json::Value;
 
@@ -145,6 +145,7 @@ fn request_in(
         spec: MachineSpec {
             provider: CloudProviderKind::Azure,
             machine_type: machine_type.to_owned(),
+            runtime: Runtime::Vm,
             region: region.to_owned(),
             spot,
             disk_gib: 30,
@@ -152,6 +153,7 @@ fn request_in(
         bootstrap: DaemonBootstrap {
             session: SessionId::generate(),
             provider: flyco_core::CloudProviderKind::Azure,
+            runtime: Runtime::Vm,
             control_plane_url: "https://flyco.dev/".to_owned(),
             daemon_token: "fd_a-live-daemon-token".to_owned(),
             permission_mode: PermissionMode::Default,
