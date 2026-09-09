@@ -186,6 +186,7 @@ fn provisioned(machine: MachineId) -> Machine {
             "{BASE}/projects/{PROJECT}/zones/{ZONE}/instances/{}",
             names::machine(machine)
         ),
+        runtime: flyco_core::Runtime::Vm,
         region: ZONE.to_owned(),
         state: MachineState::Running,
         capacity_mode: CapacityMode::Spot,

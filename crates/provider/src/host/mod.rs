@@ -410,6 +410,7 @@ mod tests {
         Machine {
             id,
             native_id: container_name(id),
+            runtime: flyco_core::Runtime::Container,
             region: HOSTNAME.to_owned(),
             state: MachineState::Running,
             capacity_mode: CapacityMode::OnDemand,

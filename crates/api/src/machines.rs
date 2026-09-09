@@ -184,6 +184,10 @@ impl MachineRow {
         Ok(flyco_provider::Machine {
             id: self.id,
             native_id: self.native_id.clone().ok_or(ApiError::MachineNotReady)?,
+            // What the row was provisioned as, which is what decides whether
+            // the driver's stop is a deallocation or the end of a container
+            // execution.
+            runtime: self.runtime,
             region: self.region.clone(),
             state: self.state,
             capacity_mode: if self.spot {

@@ -36,7 +36,7 @@ use serde_json::Value;
 
 use super::{
     ADMIN_USERNAME, AzureProvider, ExclusionReason, IMAGE_SKU_ARM64, IMAGE_SKU_X64,
-    SPOT_UNSUPPORTED_CODES, Workspace, names,
+    SPOT_UNSUPPORTED_CODES, Workspace, containers, names,
 };
 use crate::LoginKey;
 use crate::azure::auth::ServicePrincipal;
@@ -77,6 +77,10 @@ const LOW_PRIORITY_SPENT: &str =
     include_str!("../../fixtures/azure/usages_low_priority_spent.json");
 const PRICES: &str = include_str!("../../fixtures/azure/retail_prices.json");
 const STORAGE_PRICES: &str = include_str!("../../fixtures/azure/standard_ssd_prices.json");
+const CONTAINER_PRICES: &str = include_str!("../../fixtures/azure/container_apps_prices.json");
+/// A region the retail-prices API publishes no Container Apps meters for.
+const CONTAINER_PRICES_NONE: &str =
+    include_str!("../../fixtures/azure/container_apps_prices_none.json");
 const COST: &str = include_str!("../../fixtures/azure/cost_month_to_date.json");
 const COST_IN_EUROS: &str = include_str!("../../fixtures/azure/cost_month_to_date_euros.json");
 const COST_EMPTY: &str = include_str!("../../fixtures/azure/cost_month_to_date_empty.json");
@@ -207,6 +211,7 @@ fn provisioned(machine: MachineId) -> Machine {
              /providers/Microsoft.Compute/virtualMachines/{}",
             names::machine(machine)
         ),
+        runtime: Runtime::Vm,
         region: REGION.to_owned(),
         state: MachineState::Running,
         capacity_mode: CapacityMode::OnDemand,
@@ -1125,6 +1130,518 @@ async fn destroying_removes_the_machine_then_everything_detach_kept() {
     )));
 }
 
+// ── Container Apps ──
+
+/// A size the container catalog offers.
+const CONTAINER_TYPE: &str = "aca-2x4";
+
+/// Azure's name for the execution a start creates: the job's name and a
+/// suffix the service generates.
+const EXECUTION: &str = "flyco-container-run-xk29p";
+
+/// The same, for a start that follows a stop — a different execution of the
+/// same job, which is what makes a container's `native_id` change.
+const NEXT_EXECUTION: &str = "flyco-container-run-b4t7m";
+
+/// The same provisioning request, for a managed container.
+fn container_request(machine: MachineId, machine_type: &str) -> ProvisionRequest {
+    let mut request = request(machine, machine_type, false);
+    request.spec.runtime = Runtime::Container;
+    request.bootstrap.runtime = Runtime::Container;
+    request
+}
+
+/// What `POST .../jobs/{job}/start` answers, naming the execution.
+fn started(execution: &str) -> HttpResponse {
+    json(
+        200,
+        &serde_json::to_string(&serde_json::json!({
+            "id": format!(
+                "/subscriptions/{SUBSCRIPTION}/resourceGroups/{RESOURCE_GROUP}\
+                 /providers/Microsoft.App/jobs/job/executions/{execution}"
+            ),
+            "name": execution,
+        }))
+        .expect("serialize"),
+    )
+}
+
+/// The responses a clean container provisioning run consumes, in order:
+/// the token, the policy read, the environment `PUT`, the job `PUT`, and
+/// the start.
+fn container_script() -> Vec<HttpResponse> {
+    vec![
+        token(),
+        json(200, POLICY),
+        done(),
+        done(),
+        started(EXECUTION),
+    ]
+}
+
+/// Index of the environment `PUT` in a [`container_script`] run.
+const ENVIRONMENT_PUT: usize = 2;
+/// Index of the job's own `PUT`.
+const JOB_PUT: usize = 3;
+/// Index of the `POST` that starts an execution.
+const JOB_START: usize = 4;
+
+fn provisioned_container(machine: MachineId) -> Machine {
+    Machine {
+        id: machine,
+        native_id: format!("{}/{EXECUTION}", containers::names::job(machine)),
+        runtime: Runtime::Container,
+        region: REGION.to_owned(),
+        state: MachineState::Running,
+        capacity_mode: CapacityMode::OnDemand,
+        address: None,
+    }
+}
+
+#[tokio::test]
+async fn provisioning_a_container_creates_the_environment_then_the_job_then_an_execution() {
+    let id = MachineId::generate();
+    let mut azure = provider(container_script());
+
+    let machine = azure
+        .provision(&container_request(id, CONTAINER_TYPE))
+        .await
+        .expect("provision a container");
+
+    let transport = azure.transport();
+    let environment = transport.request(ENVIRONMENT_PUT);
+    assert_eq!(environment.method, Method::Put);
+    assert_eq!(
+        environment.url,
+        format!(
+            "https://management.azure.com/subscriptions/{SUBSCRIPTION}\
+             /resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.App/managedEnvironments\
+             /flyco-{REGION}-env?api-version=2025-07-01"
+        )
+    );
+
+    let job = transport.request(JOB_PUT);
+    assert_eq!(job.method, Method::Put);
+    assert_eq!(
+        job.url,
+        format!(
+            "https://management.azure.com/subscriptions/{SUBSCRIPTION}\
+             /resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.App/jobs/{}\
+             ?api-version=2025-07-01",
+            containers::names::job(id)
+        )
+    );
+
+    let start = transport.request(JOB_START);
+    assert_eq!(start.method, Method::Post);
+    assert_eq!(
+        start.url,
+        format!(
+            "https://management.azure.com/subscriptions/{SUBSCRIPTION}\
+             /resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.App/jobs/{}/start\
+             ?api-version=2025-07-01",
+            containers::names::job(id)
+        )
+    );
+    assert_eq!(start.body, [] as [u8; 0]);
+
+    assert_eq!(machine.runtime, Runtime::Container);
+    assert_eq!(
+        machine.native_id,
+        format!("{}/{EXECUTION}", containers::names::job(id)),
+        "the machine records the job and the execution Azure named"
+    );
+    assert_eq!(machine.state, MachineState::Running);
+    assert_eq!(
+        machine.capacity_mode,
+        CapacityMode::OnDemand,
+        "Container Apps has no interruptible market to record"
+    );
+    assert_eq!(
+        machine.address, None,
+        "nothing dials a container: its daemon opens the connection"
+    );
+}
+
+#[tokio::test]
+async fn the_environment_declares_consumption_and_a_logging_destination_needing_no_workspace() {
+    let mut azure = provider(container_script());
+    azure
+        .provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
+        .await
+        .expect("provision a container");
+
+    let body = body_of(&azure.transport().request(ENVIRONMENT_PUT));
+    assert_eq!(body["location"], REGION);
+
+    let profiles = body["properties"]["workloadProfiles"]
+        .as_array()
+        .expect("the environment declares its profiles");
+    assert_eq!(
+        profiles.len(),
+        1,
+        "a dedicated profile would bill the hours a session is not running"
+    );
+    assert_eq!(profiles[0]["name"], "Consumption");
+    assert_eq!(profiles[0]["workloadProfileType"], "Consumption");
+
+    let logs = &body["properties"]["appLogsConfiguration"];
+    assert_eq!(logs["destination"], "azure-monitor");
+    assert!(
+        logs.get("logAnalyticsConfiguration").is_none(),
+        "`log-analytics` would need a workspace flyco creates and a shared key it holds"
+    );
+}
+
+#[tokio::test]
+async fn the_job_body_is_the_documented_shape() {
+    use base64::Engine as _;
+
+    let id = MachineId::generate();
+    let provision = container_request(id, CONTAINER_TYPE);
+    let session = provision.bootstrap.session;
+    let mut azure = provider(container_script());
+    azure.provision(&provision).await.expect("provision");
+
+    let request = azure.transport().request(JOB_PUT);
+    let body = body_of(&request);
+    assert_eq!(body["location"], REGION);
+    assert_eq!(body["tags"]["owner"], "flyco");
+    assert_eq!(body["tags"]["session"], session.to_string());
+    assert_eq!(body["tags"]["machine"], id.to_string());
+
+    let properties = &body["properties"];
+    assert_eq!(
+        properties["environmentId"],
+        format!(
+            "/subscriptions/{SUBSCRIPTION}/resourceGroups/{RESOURCE_GROUP}\
+             /providers/Microsoft.App/managedEnvironments/flyco-{REGION}-env"
+        )
+    );
+    assert_eq!(properties["workloadProfileName"], "Consumption");
+
+    let configuration = &properties["configuration"];
+    assert_eq!(configuration["triggerType"], "Manual");
+    assert_eq!(
+        configuration["replicaTimeout"], 604_800,
+        "a job must state a finite timeout; seven days is the backstop, not the plan"
+    );
+    assert_eq!(
+        configuration["replicaRetryLimit"], 0,
+        "a retried replica would be a second daemon on one session"
+    );
+    assert_eq!(configuration["manualTriggerConfig"]["parallelism"], 1);
+    assert_eq!(
+        configuration["manualTriggerConfig"]["replicaCompletionCount"],
+        1
+    );
+
+    let container = &properties["template"]["containers"][0];
+    assert_eq!(container["name"], "session");
+    assert_eq!(
+        container["image"],
+        format!(
+            "ghcr.io/lexoliu/flyco-session:wire-{}",
+            flyco_core::WIRE_PROTOCOL_VERSION
+        )
+    );
+    assert_eq!(container["resources"]["cpu"], 2.0);
+    assert_eq!(container["resources"]["memory"], "4Gi");
+    assert_eq!(container["env"][0]["name"], "FLYCO_DAEMON_CONFIG");
+    assert_eq!(container["env"][0]["secretRef"], "daemon-config");
+    assert!(
+        container["env"][0].get("value").is_none(),
+        "the configuration is a secret reference, never a readable env value"
+    );
+
+    // The configuration itself travels as a job secret, base64 rather than
+    // as a legible token.
+    let raw = String::from_utf8(request.body).expect("UTF-8");
+    assert!(!raw.contains("fd_a-live-daemon-token"));
+
+    let secret = &configuration["secrets"][0];
+    assert_eq!(secret["name"], "daemon-config");
+    let config = String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(secret["value"].as_str().expect("the secret is a string"))
+            .expect("the secret is base64"),
+    )
+    .expect("the config is UTF-8");
+    assert!(config.contains("daemon_token = \"fd_a-live-daemon-token\""));
+    assert!(
+        config.contains("runtime = \"container\""),
+        "the daemon has to know its filesystem ends with the execution: {config}"
+    );
+}
+
+#[tokio::test]
+async fn a_request_whose_spec_and_bootstrap_disagree_about_the_runtime_is_refused() {
+    let mut request = container_request(MachineId::generate(), CONTAINER_TYPE);
+    // What a caller that updated the spec and forgot the bootstrap sends;
+    // honouring it would write `runtime = "vm"` into a container's
+    // configuration and lose the working tree at the first stop.
+    request.bootstrap.runtime = Runtime::Vm;
+    let mut azure = provider(container_script());
+
+    let error = azure
+        .provision(&request)
+        .await
+        .expect_err("a request that disagrees with itself is not provisioned");
+    assert!(matches!(error, ProviderError::Malformed(_)));
+    assert_eq!(
+        azure.transport().request_count(),
+        0,
+        "nothing is created for a request that cannot be right"
+    );
+}
+
+#[tokio::test]
+async fn a_container_in_a_forbidden_region_is_refused_before_any_write() {
+    let mut azure = provider(vec![token(), json(200, POLICY)]);
+    let mut request = container_request(MachineId::generate(), CONTAINER_TYPE);
+    request.spec.region = FORBIDDEN_REGION.to_owned();
+
+    let error = azure
+        .provision(&request)
+        .await
+        .expect_err("the policy refuses an environment's PUT exactly as it refuses a network's");
+    assert!(matches!(error, ProviderError::Unavailable { .. }));
+    assert_eq!(azure.transport().request_count(), 2);
+}
+
+#[tokio::test]
+async fn a_size_flyco_never_offered_is_refused_before_any_write() {
+    let mut azure = provider(vec![token(), json(200, POLICY)]);
+
+    let error = azure
+        .provision(&container_request(MachineId::generate(), "aca-8x16"))
+        .await
+        .expect_err("Container Apps publishes no SKU list, so the size table is the gate");
+    let ProviderError::Unavailable { reason, .. } = &error else {
+        panic!("an unoffered size is an availability failure: {error}");
+    };
+    assert!(reason.contains("no container of that size"));
+    assert_eq!(azure.transport().request_count(), 2);
+}
+
+#[tokio::test]
+async fn a_redelivered_provision_updates_the_job_and_starts_another_execution() {
+    // At-least-once delivery: the same request twice. Both `PUT`s are
+    // create-or-update against the same name, so the second is an update
+    // rather than a conflict — suppressing the duplicate start is the
+    // control plane's gate on a machine row that is already running.
+    let id = MachineId::generate();
+    let mut script = container_script();
+    script.extend([done(), done(), started(NEXT_EXECUTION)]);
+    let mut azure = provider(script);
+    let request = container_request(id, CONTAINER_TYPE);
+
+    let first = azure.provision(&request).await.expect("provision");
+    let second = azure.provision(&request).await.expect("provision again");
+
+    let transport = azure.transport();
+    assert_eq!(
+        transport.request(JOB_PUT).url,
+        transport.request(JOB_PUT + 3).url,
+        "the same machine is the same job"
+    );
+    assert_eq!(transport.request(JOB_PUT + 3).method, Method::Put);
+    assert_ne!(first.native_id, second.native_id);
+    assert!(second.native_id.ends_with(NEXT_EXECUTION));
+}
+
+#[tokio::test]
+async fn a_start_azure_reports_without_naming_the_execution_is_a_failure() {
+    // There would be nothing to address the running machine by, and
+    // recording an empty name would make every later call name the job's
+    // executions collection instead of one execution.
+    let mut script = container_script();
+    script[JOB_START] = json(200, r#"{"id":"/subscriptions/x/jobs/y/executions/z"}"#);
+    let mut azure = provider(script);
+
+    let error = azure
+        .provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
+        .await
+        .expect_err("an unnamed execution is unusable");
+    assert!(matches!(error, ProviderError::Malformed(_)));
+}
+
+#[tokio::test]
+async fn stopping_a_container_stops_its_execution_and_leaves_the_job() {
+    let machine = provisioned_container(MachineId::generate());
+    let mut azure = provider(vec![token(), done()]);
+
+    azure.deallocate(&machine).await.expect("stop");
+
+    let request = azure.transport().request(1);
+    assert_eq!(request.method, Method::Post);
+    assert_eq!(
+        request.url,
+        format!(
+            "https://management.azure.com/subscriptions/{SUBSCRIPTION}\
+             /resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.App/jobs/{}\
+             /executions/{EXECUTION}/stop?api-version=2025-07-01",
+            containers::names::job(machine.id)
+        )
+    );
+    assert_eq!(
+        azure.transport().request_count(),
+        2,
+        "the job survives a stop: that is what makes the next start a start"
+    );
+}
+
+#[tokio::test]
+async fn starting_a_container_again_is_a_new_execution_with_a_new_native_id() {
+    let mut machine = provisioned_container(MachineId::generate());
+    machine.state = MachineState::Deallocated;
+    let mut azure = provider(vec![token(), started(NEXT_EXECUTION)]);
+
+    let restarted = azure.start(&machine).await.expect("start");
+
+    assert_eq!(restarted.state, MachineState::Running);
+    assert_eq!(
+        restarted.native_id,
+        format!("{}/{NEXT_EXECUTION}", containers::names::job(machine.id)),
+        "the job is the same and the replica is not, so the id moves"
+    );
+    assert!(azure.transport().request(1).url.ends_with(&format!(
+        "/jobs/{}/start?api-version=2025-07-01",
+        containers::names::job(machine.id)
+    )));
+}
+
+#[tokio::test]
+async fn a_container_machine_whose_id_names_no_execution_is_refused() {
+    // A virtual machine's `native_id` is a full ARM resource id. Reaching a
+    // container operation with one means the row disagrees with itself, and
+    // guessing an execution name out of it would stop somebody else's.
+    let mut machine = provisioned_container(MachineId::generate());
+    machine.native_id = provisioned(machine.id).native_id;
+    let mut azure = provider(vec![token()]);
+
+    let error = azure
+        .deallocate(&machine)
+        .await
+        .expect_err("an id that names no execution is unusable");
+    assert!(matches!(error, ProviderError::Malformed(_)));
+    assert_eq!(azure.transport().request_count(), 0);
+}
+
+#[tokio::test]
+async fn resizing_a_container_stops_the_execution_patches_the_job_and_starts_it() {
+    let machine = provisioned_container(MachineId::generate());
+    let mut azure = provider(vec![
+        token(),
+        json(200, POLICY),
+        done(),
+        done(),
+        started(NEXT_EXECUTION),
+    ]);
+
+    let resized = azure.resize(&machine, "aca-4x8").await.expect("resize");
+
+    let transport = azure.transport();
+    let job = containers::names::job(machine.id);
+    assert!(
+        transport.request(2).url.ends_with(&format!(
+            "/executions/{EXECUTION}/stop?api-version=2025-07-01"
+        )),
+        "a replica's size is fixed for its lifetime, so the old execution ends first"
+    );
+
+    let patch = transport.request(3);
+    assert_eq!(
+        patch.method,
+        Method::Patch,
+        "a PUT would replace the job, deleting the secret its container reads its \
+         configuration from"
+    );
+    assert!(patch.url.ends_with(&format!(
+        "/providers/Microsoft.App/jobs/{job}?api-version=2025-07-01"
+    )));
+
+    let body = body_of(&patch);
+    let container = &body["properties"]["template"]["containers"][0];
+    assert_eq!(container["resources"]["cpu"], 4.0);
+    assert_eq!(container["resources"]["memory"], "8Gi");
+    assert_eq!(
+        container["env"][0]["secretRef"], "daemon-config",
+        "the container is restated whole: ARM replaces the array rather than merging \
+         into its elements"
+    );
+    assert!(
+        body["properties"]["configuration"].is_null(),
+        "a resize does not carry the session's credentials: it does not have them"
+    );
+
+    assert!(
+        transport
+            .request(4)
+            .url
+            .ends_with(&format!("/jobs/{job}/start?api-version=2025-07-01"))
+    );
+    assert_eq!(
+        resized.native_id,
+        format!("{job}/{NEXT_EXECUTION}"),
+        "the machine comes back as the execution that is actually running"
+    );
+    assert_eq!(resized.state, MachineState::Running);
+}
+
+#[tokio::test]
+async fn a_resize_to_a_size_flyco_never_offered_never_stops_the_machine() {
+    let machine = provisioned_container(MachineId::generate());
+    let mut azure = provider(vec![token(), json(200, POLICY)]);
+
+    let error = azure
+        .resize(&machine, "aca-3x6")
+        .await
+        .expect_err("a size outside the table is not a size");
+    assert!(matches!(error, ProviderError::Unavailable { .. }));
+    assert_eq!(
+        azure.transport().request_count(),
+        2,
+        "the running execution is untouched by a resize that was never possible"
+    );
+}
+
+#[tokio::test]
+async fn destroying_a_container_stops_its_execution_then_deletes_the_job() {
+    let machine = provisioned_container(MachineId::generate());
+    let mut azure = provider(vec![token(), done(), done()]);
+
+    azure.destroy(&machine).await.expect("destroy");
+
+    let transport = azure.transport();
+    assert!(
+        transport
+            .request(1)
+            .url
+            .contains(&format!("/executions/{EXECUTION}/stop"))
+    );
+    assert_eq!(transport.request(2).method, Method::Delete);
+    assert!(transport.request(2).url.ends_with(&format!(
+        "/providers/Microsoft.App/jobs/{}?api-version=2025-07-01",
+        containers::names::job(machine.id)
+    )));
+}
+
+#[tokio::test]
+async fn destroying_a_stopped_container_deletes_the_job_without_stopping_anything() {
+    // Its execution is already gone; a stop would name something that no
+    // longer exists.
+    let mut machine = provisioned_container(MachineId::generate());
+    machine.state = MachineState::Deallocated;
+    let mut azure = provider(vec![token(), done()]);
+
+    azure.destroy(&machine).await.expect("destroy");
+
+    let transport = azure.transport();
+    assert_eq!(transport.request_count(), 2);
+    assert_eq!(transport.request(1).method, Method::Delete);
+}
+
 // ── The catalog ──
 
 fn one_region() -> Workspace {
@@ -1139,6 +1656,7 @@ fn catalog_script() -> Vec<HttpResponse> {
         json(200, USAGES),
         json(200, PRICES),
         json(200, STORAGE_PRICES),
+        json(200, CONTAINER_PRICES),
     ]
 }
 
@@ -1196,6 +1714,89 @@ async fn the_catalog_offers_only_what_passes_all_three_gates() {
             },
         }
     );
+}
+
+#[tokio::test]
+async fn the_catalog_prices_a_container_from_the_two_meters_azure_bills_it_by() {
+    let mut azure = provider_over(one_region(), catalog_script());
+
+    let catalog = azure.catalog().await.expect("catalog");
+    let containers: Vec<&flyco_core::MachineCatalogEntry> = catalog
+        .iter()
+        .filter(|entry| entry.runtime == Runtime::Container)
+        .collect();
+    assert_eq!(
+        containers
+            .iter()
+            .map(|entry| entry.machine_type.as_str())
+            .collect::<Vec<_>>(),
+        vec!["aca-1x2", "aca-2x4", "aca-4x8"]
+    );
+
+    let two_by_four = containers
+        .iter()
+        .find(|entry| entry.machine_type == "aca-2x4")
+        .expect("the two-core size is offered");
+    assert_eq!(
+        two_by_four.capacity,
+        Some(flyco_core::MachineCapacity {
+            vcpus: 2,
+            memory_mib: 4_096,
+        })
+    );
+    assert_eq!(
+        two_by_four
+            .lineage
+            .as_ref()
+            .map(|lineage| lineage.architecture),
+        Some(flyco_core::CpuArchitecture::X8664),
+        "Consumption offers no Arm capacity, so the image is pulled as linux/amd64"
+    );
+    assert_eq!(
+        two_by_four.free_grant,
+        Some(super::CONTAINER_APPS_FREE_GRANT),
+        "the grant belongs to the subscription and is published on every container entry"
+    );
+
+    // $0.000024 a vCPU-second and $0.000003 a GiB-second, as
+    // `prices.azure.com` publishes them: two cores and four gibibytes for an
+    // hour is 2 × 86_400 + 4 × 10_800 microdollars.
+    assert_eq!(
+        two_by_four.pricing,
+        flyco_core::MachinePricing::Metered {
+            on_demand_hourly: flyco_core::Usd::from_micros(216_000),
+            spot_hourly: None,
+            minimum: None,
+            storage: flyco_core::StoragePricing::PerGibHourly {
+                rate: flyco_core::Usd::ZERO,
+            },
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_region_that_publishes_no_container_meters_offers_no_containers() {
+    let mut script = catalog_script();
+    let last = script.len() - 1;
+    script[last] = json(200, CONTAINER_PRICES_NONE);
+    let mut azure = provider_over(one_region(), script);
+
+    let report = azure.region_report(REGION).await.expect("report");
+    assert!(
+        report
+            .offered
+            .iter()
+            .all(|entry| entry.runtime == Runtime::Vm),
+        "flyco will not quote an hour of a service the region does not sell"
+    );
+    for size in ["aca-1x2", "aca-2x4", "aca-4x8"] {
+        let (_, reason) = report
+            .excluded
+            .iter()
+            .find(|(name, _)| name == size)
+            .unwrap_or_else(|| panic!("`{size}` should have been excluded"));
+        assert!(matches!(reason, ExclusionReason::Unpriced));
+    }
 }
 
 #[tokio::test]

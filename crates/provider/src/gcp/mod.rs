@@ -855,6 +855,10 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
         Ok(Machine {
             id,
             native_id: self.instance_url(id, zone),
+            // Compute Engine sells this driver nothing but virtual
+            // machines: flyco's container runtime on Google would be Cloud
+            // Run, which is not this API.
+            runtime: Runtime::Vm,
             region: zone.clone(),
             state: MachineState::Running,
             capacity_mode,
