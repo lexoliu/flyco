@@ -16,6 +16,9 @@
  * - report the models this CLI build offers (`models`) as soon as the
  *   handshake is answered, so the composer's picker is right for the very
  *   first message,
+ * - report the slash commands this session offers (`commands`) on the same
+ *   handshake and again on every `commands_changed` frame, so the
+ *   composer's `/` palette is the CLI's own list rather than a guess,
  * - turn flycod's `user_message` commands into a streaming-input generator,
  * - forward every SDK message out verbatim as `sdk_message`,
  * - park `canUseTool` on flycod until an `approval_decision` arrives,
@@ -41,11 +44,13 @@ import {
   type SessionKey as SdkSessionKey,
   type SessionStore,
   type SessionStoreEntry,
+  type SlashCommand,
 } from "@anthropic-ai/claude-agent-sdk";
 
 import {
   describeError,
   sidecarCommandSchema,
+  type HarnessCommand,
   type ModelOption,
   type MountedServer,
   type MountState,
@@ -447,6 +452,39 @@ export function toModelOption(row: ModelInfo): ModelOption {
   };
 }
 
+/**
+ * What the CLI calls a command flyco must not offer.
+ *
+ * The SDK lists its own machinery beside the user's skills —
+ * `__remote-workflow` is one — and a palette that showed it would invite a
+ * user to run something the product has no account of. The double
+ * underscore is the CLI's own marker for them.
+ */
+const INTERNAL_COMMAND = "__";
+
+/**
+ * One `SlashCommand`, in flyco's vocabulary.
+ *
+ * The empty `argumentHint` becomes `null`, because "takes no argument" is
+ * what the composer sends in one keystroke and it must not have to read an
+ * empty string as a meaning. Aliases are dropped: they are more rows for
+ * the same command.
+ */
+export function toHarnessCommand(command: SlashCommand): HarnessCommand {
+  return {
+    name: command.name,
+    description: command.description,
+    argument_hint: command.argumentHint === "" ? null : command.argumentHint,
+  };
+}
+
+/** The commands a user may be offered, in the order the CLI listed them. */
+export function offeredCommands(commands: SlashCommand[]): HarnessCommand[] {
+  return commands
+    .filter((command) => !command.name.startsWith(INTERNAL_COMMAND))
+    .map(toHarnessCommand);
+}
+
 /** One live SDK session and everything parked on flycod for it. */
 class Session {
   private readonly messages = new UserMessages();
@@ -497,6 +535,14 @@ class Session {
       // and flyco records it against the account so the *next* session's
       // picker opens on it too.
       emit({ type: "models", models: (await this.session.supportedModels()).map(toModelOption) });
+      // What this session can be told to do, on the same terms — except
+      // that this list is not a fact about the installed CLI alone: it
+      // carries the checkout's own skills, so it is reported to the session
+      // and never recorded against the account.
+      emit({
+        type: "commands",
+        commands: offeredCommands(await this.session.supportedCommands()),
+      });
       // The earliest moment the answer exists, and the whole answer: which
       // servers the CLI mounted, whether it reached them, and what they
       // advertise. flycod refuses the session if flyco's own is not among
@@ -578,6 +624,14 @@ class Session {
         // The only place the CLI names its capabilities, and it names them
         // per turn. Later frames revise the set; flycod keeps the newest.
         emit({ type: "capabilities", capabilities: message.capabilities ?? [] });
+      }
+      if (message.type === "system" && message.subtype === "commands_changed") {
+        // The CLI discovers skills as the agent walks into subdirectories.
+        // The frame carries the whole new list and the SDK documents it as
+        // a replacement, so it is forwarded rather than answered with a
+        // second `supportedCommands()` round trip — which would also mean
+        // awaiting a control request from inside the message loop.
+        emit({ type: "commands", commands: offeredCommands(message.commands) });
       }
       emit({ type: "sdk_message", message });
       // A `result` closes a turn, and a turn is the only thing that moves

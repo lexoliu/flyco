@@ -521,6 +521,14 @@ async fn collect<A: ControlApi>(
             SessionOutput::Capabilities { capabilities } => {
                 (DaemonToControl::Capabilities { capabilities }, None)
             }
+            SessionOutput::Commands { commands } => {
+                // A relay frame rather than a REST report, which is where
+                // this parts company with the model list beneath it: the
+                // command set includes the checkout's own skills, so it
+                // belongs to this session and there is nothing to file
+                // against the account.
+                (DaemonToControl::Commands { commands }, None)
+            }
             SessionOutput::Models { models } => {
                 // Filed over REST and never queued as a relay frame: the
                 // list is recorded against the account, which is D1, and a

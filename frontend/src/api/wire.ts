@@ -44,6 +44,22 @@ export type HarnessEvent =
   | { type: "context_compaction_failed"; error: string };
 
 /**
+ * One slash command the running harness offers, mirroring
+ * `flyco_core::wire::HarnessCommand`.
+ *
+ * Hand-typed like the rest of this file: the command list travels only over
+ * the relay, so it has no OpenAPI schema to generate from. `name` carries
+ * no leading slash and may contain a colon (`presence:status` is a plugin's
+ * skill). `argument_hint` is `null` for a command that takes no argument,
+ * which is what lets the palette send it in one keystroke.
+ */
+export interface HarnessCommand {
+  name: string;
+  description: string;
+  argument_hint: string | null;
+}
+
+/**
  * How far a session's machine has got towards running an agent.
  *
  * Mirrors `flyco_core::wire::ProvisioningStage`: the milestones flyco can
@@ -118,7 +134,13 @@ export type ClientEvent =
    * read the last one. Named `plan_usage` and not `usage` because `usage`
    * is already this session's own token count.
    */
-  | { type: "plan_usage"; windows: UsageWindow[] };
+  | { type: "plan_usage"; windows: UsageWindow[] }
+  /**
+   * The slash commands the agent offers, as the running harness lists them.
+   * State rather than history, like `models`: the newest list wins and the
+   * composer's `/` palette reads the last one.
+   */
+  | { type: "commands"; commands: HarnessCommand[] };
 
 /**
  * The five `ControlToDaemon` variants a browser may send directly over the
@@ -175,4 +197,5 @@ const CLIENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "model_changed",
   "models",
   "plan_usage",
+  "commands",
 ]);

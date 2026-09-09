@@ -721,10 +721,30 @@ The composer sits at the foot of the window even when the transcript is
 three lines long: the page is at least a window tall, and the composer is
 pushed to its bottom, where the hands already expect it.
 
-`/` opens a command palette (`/compact`, `/archive`, `/resize`); a message
-beginning with `!` runs in the machine's bash, and the composer says so
-under the field while typing one. The placeholder is one line: `Reply, /
-for a command, ! for the shell`.
+`/` opens a command palette listing what the session can actually be told
+to do. Flyco's own three come first, marked `flyco` — `/compact`, which is
+the control plane's compaction request rather than a message, so every
+browser watching sees the same one; `/archive`; `/resize` — and after them
+everything the running harness reported: `/goal`, `/effort`, `/context`,
+`/usage`, `/advisor`, and every skill of the checkout, ninety of them on a
+well-equipped machine. The list is the harness's own, sent over the relay
+when the agent starts and again whenever it discovers more, so a repository
+that adds a skill has it in the palette without a reload. Until the machine
+has reported one, the three are all there is.
+
+Typing after the slash filters by prefix on the name; each row shows the
+name, the argument it expects, and the harness's one-line description,
+clipped to the row. Arrow keys move, Enter chooses, Escape closes the list
+and leaves what was typed. Choosing a command that takes no argument sends
+it there and then; one that expects an argument is written into the field —
+`/goal ` — for the user to finish. A chosen command reaches the agent as the
+ordinary message `/name args`, because that is how both harnesses take a
+slash command; flyco adds no plumbing per command and none of them is a
+feature flyco has to know about.
+
+A message beginning with `!` runs in the machine's bash, and the composer
+says so under the field while typing one. The placeholder is one line:
+`Reply, / for a command, ! for the shell`.
 
 ### 9.4 Drawer
 

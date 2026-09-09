@@ -9,48 +9,128 @@
  *
  * - while a turn is in flight the send button becomes `Stop`, because the
  *   only useful thing to do to a running turn is end it;
- * - `/` at the start of an empty field opens a command palette, so the
- *   three session-level actions are reachable without a menu;
+ * - `/` opens a command palette listing flyco's own session actions and
+ *   then everything the running harness said it offers, so `/goal`,
+ *   `/effort`, `/context` and every skill of the checkout are reachable
+ *   without knowing they exist;
  * - a message beginning with `!` runs in the machine's bash, and the field
  *   says so while one is being typed rather than after it is sent.
  */
-import { For, type JSX, Show, createMemo, createSignal } from "solid-js";
+import { For, type JSX, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { ArrowUp, Square, TerminalSquare } from "lucide-solid";
 import ComposerShell from "./ComposerShell";
+import type { HarnessCommand } from "../api/wire";
 import { cx } from "../lib/cx";
 import { BASH_PREFIX } from "../lib/shell";
 import styles from "./Composer.module.css";
 import sessionStyles from "./SessionComposer.module.css";
 
-/** What `/` opens. One entry per session-level action (docs/ux.md §9.3). */
+/** The session-level actions flyco runs itself (docs/ux.md §9.3). */
 export type SessionCommand = "compact" | "archive" | "resize";
 
-interface CommandEntry {
-  command: SessionCommand;
-  /** What the user types, including the slash. */
-  typed: string;
-  /** What it does, in the interface's voice. */
+/** One row of the palette. */
+interface PaletteEntry {
+  /** The name as it is typed, without the leading slash. */
+  name: string;
+  /** What it does, in the harness's words or the interface's. */
   description: string;
+  /**
+   * What its argument is, or `null` when it takes none.
+   *
+   * This is what decides whether choosing a command sends it: a command
+   * with nothing left to say is run on the spot, and one that expects an
+   * argument is written into the field so the user can supply it.
+   */
+  argumentHint: string | null;
+  /**
+   * Who runs it. `flyco`'s three are its own product actions and never
+   * reach the agent; everything else is sent as the message `/name args`,
+   * which is how both harnesses take a slash command.
+   */
+  run: SessionCommand | "harness";
 }
 
-const COMMANDS: readonly CommandEntry[] = [
+/**
+ * Flyco's own commands, which come first and are marked as flyco's.
+ *
+ * They are not the harness's: `/archive` and `/resize` are things flyco
+ * does to a machine, and `/compact` is routed to the control plane's own
+ * compaction request rather than typed at the agent, so that one browser
+ * pressing it is a compaction every browser can see. All three are named
+ * by both harnesses too; the harness's copy is dropped rather than shown
+ * twice.
+ */
+const FLYCO_COMMANDS: readonly (PaletteEntry & { run: SessionCommand })[] = [
   {
-    command: "compact",
-    typed: "/compact",
+    name: "compact",
     description: "Summarise the conversation to free context",
+    argumentHint: null,
+    run: "compact",
   },
-  { command: "archive", typed: "/archive", description: "End the session and release the machine" },
-  { command: "resize", typed: "/resize", description: "Move the session to another machine type" },
+  {
+    name: "archive",
+    description: "End the session and release the machine",
+    argumentHint: null,
+    run: "archive",
+  },
+  {
+    name: "resize",
+    description: "Move the session to another machine type",
+    argumentHint: null,
+    run: "resize",
+  },
 ];
+
+const FLYCO_NAMES: ReadonlySet<string> = new Set(FLYCO_COMMANDS.map((entry) => entry.name));
+
+/**
+ * What the field holds while a command is being picked, or `null` when the
+ * palette has no business being open.
+ *
+ * A leading slash opens it, and the first space closes it again: by then
+ * the command is chosen and what is being typed is its argument, so a list
+ * still hanging over the field would be covering the conversation for no
+ * reason.
+ */
+export function paletteQuery(text: string): string | null {
+  if (!text.startsWith("/")) {
+    return null;
+  }
+  const query = text.slice(1);
+  return /\s/.test(query) ? null : query;
+}
+
+/** The palette's rows: flyco's own first, then the harness's own list. */
+export function paletteEntries(commands: readonly HarnessCommand[]): PaletteEntry[] {
+  return [
+    ...FLYCO_COMMANDS,
+    ...commands
+      .filter((command) => !FLYCO_NAMES.has(command.name))
+      .map((command) => ({
+        name: command.name,
+        description: command.description,
+        argumentHint: command.argument_hint,
+        run: "harness" as const,
+      })),
+  ];
+}
 
 export interface SessionComposerProps {
   /** Whether a turn is running, which turns Send into Stop. */
   turnInFlight: boolean;
-  /** Sends the message, verbatim — including a leading `!`. */
+  /**
+   * What the running harness said it offers, newest list wins.
+   *
+   * Empty until the session's daemon has reported one, which is why the
+   * palette is useful from the first keystroke: flyco's own three are
+   * always there.
+   */
+  commands: readonly HarnessCommand[];
+  /** Sends the message, verbatim — including a leading `!` or `/`. */
   onSend: (text: string) => void;
   /** Interrupts the running turn. */
   onStop: () => void;
-  /** Runs one palette command. */
+  /** Runs one of flyco's own commands. */
   onCommand: (command: SessionCommand) => void;
   /**
    * The row under the field: the session's own chips and readouts
@@ -64,31 +144,72 @@ export interface SessionComposerProps {
 
 export default function SessionComposer(props: SessionComposerProps) {
   const [text, setText] = createSignal("");
-  const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [highlighted, setHighlighted] = createSignal(0);
+  /**
+   * Whether Escape has closed the palette for what is currently typed.
+   *
+   * Escape means "stop offering", not "delete what I typed", so the field
+   * keeps its text and only the list goes away. The next keystroke clears
+   * this: the user has started choosing again.
+   */
+  const [dismissed, setDismissed] = createSignal(false);
   let field: HTMLTextAreaElement | undefined;
+  let list: HTMLUListElement | undefined;
 
   /** A message beginning with `!` is a shell command, not a prompt. */
   const isBash = createMemo(() => text().startsWith(BASH_PREFIX));
 
-  /** The palette's entries, filtered by whatever has been typed after the slash. */
+  const entries = createMemo(() => paletteEntries(props.commands));
+
+  /** The palette's rows, filtered by whatever has been typed after the slash. */
   const matches = createMemo(() => {
-    const typed = text().trim().toLowerCase();
-    if (!typed.startsWith("/")) {
-      return [...COMMANDS];
+    const query = paletteQuery(text());
+    if (query === null) {
+      return [];
     }
-    return COMMANDS.filter((entry) => entry.typed.startsWith(typed));
+    const wanted = query.toLowerCase();
+    return entries().filter((entry) => entry.name.toLowerCase().startsWith(wanted));
   });
 
-  function closePalette(): void {
-    setPaletteOpen(false);
+  const paletteOpen = createMemo(() => !dismissed() && matches().length > 0);
+
+  // A checkout with ninety skills is a list taller than the window, so the
+  // row the arrow keys are on has to be brought to where the eyes are.
+  createEffect(() => {
+    const index = highlighted();
+    if (!paletteOpen()) {
+      return;
+    }
+    list?.children[index]?.scrollIntoView({ block: "nearest" });
+  });
+
+  function clear(): void {
+    setText("");
     setHighlighted(0);
+    setDismissed(false);
   }
 
-  function run(entry: CommandEntry): void {
-    setText("");
-    closePalette();
-    props.onCommand(entry.command);
+  /**
+   * Runs one row, or writes it into the field when it wants an argument.
+   *
+   * The split is the whole point of `argumentHint`: `/context` has nothing
+   * left to ask, so choosing it is sending it, while `/goal` without its
+   * condition would be a command that means nothing.
+   */
+  function choose(entry: PaletteEntry): void {
+    if (entry.argumentHint !== null) {
+      setText(`/${entry.name} `);
+      setHighlighted(0);
+      setDismissed(false);
+      field?.focus();
+      return;
+    }
+    clear();
+    if (entry.run === "harness") {
+      props.onSend(`/${entry.name}`);
+    } else {
+      props.onCommand(entry.run);
+    }
     field?.focus();
   }
 
@@ -97,29 +218,26 @@ export default function SessionComposer(props: SessionComposerProps) {
     if (message === "") {
       return;
     }
-    // A typed-out command is the same action as picking it from the
-    // palette; a user who has typed the whole word should not have to
-    // press a different key to get the same result.
-    const entry = COMMANDS.find((candidate) => candidate.typed === message.toLowerCase());
-    if (entry !== undefined) {
-      run(entry);
+    // A typed-out command flyco runs itself is the same action as picking
+    // it from the palette; a user who has typed the whole word should not
+    // have to press a different key to get the same result. Everything
+    // else goes to the agent verbatim, slash and arguments included —
+    // which is exactly how both harnesses take a slash command.
+    const own = FLYCO_COMMANDS.find((entry) => `/${entry.name}` === message.toLowerCase());
+    if (own !== undefined) {
+      clear();
+      props.onCommand(own.run);
+      field?.focus();
       return;
     }
-    setText("");
-    closePalette();
+    clear();
     props.onSend(message);
   }
 
   function onInput(value: string): void {
     setText(value);
-    // The palette follows what is in the field: it opens on a leading
-    // slash and closes as soon as the message stops being a command.
-    if (value.startsWith("/")) {
-      setPaletteOpen(true);
-      setHighlighted(0);
-    } else {
-      closePalette();
-    }
+    setHighlighted(0);
+    setDismissed(false);
   }
 
   /** Palette navigation. Returns `true` when the key was the palette's. */
@@ -127,33 +245,32 @@ export default function SessionComposer(props: SessionComposerProps) {
     if (!paletteOpen()) {
       return false;
     }
-    const entries = matches();
+    const rows = matches();
     if (event.key === "Escape") {
       event.preventDefault();
-      closePalette();
+      setDismissed(true);
+      setHighlighted(0);
       return true;
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      if (entries.length > 0) {
-        const step = event.key === "ArrowDown" ? 1 : entries.length - 1;
-        setHighlighted((index) => (index + step) % entries.length);
+      const step = event.key === "ArrowDown" ? 1 : rows.length - 1;
+      setHighlighted((index) => (index + step) % rows.length);
+      return true;
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      const entry = rows[highlighted()];
+      if (entry !== undefined) {
+        choose(entry);
       }
       return true;
     }
-    if (event.key === "Enter" && !event.shiftKey && entries.length > 0) {
+    if (event.key === "Tab") {
       event.preventDefault();
-      const entry = entries[highlighted()];
+      const entry = rows[highlighted()];
       if (entry !== undefined) {
-        run(entry);
-      }
-      return true;
-    }
-    if (event.key === "Tab" && entries.length > 0) {
-      event.preventDefault();
-      const entry = entries[highlighted()];
-      if (entry !== undefined) {
-        setText(entry.typed);
+        setText(`/${entry.name}`);
       }
       return true;
     }
@@ -174,8 +291,15 @@ export default function SessionComposer(props: SessionComposerProps) {
         field = element;
       }}
       overlay={
-        <Show when={paletteOpen() && matches().length > 0}>
-          <ul class={sessionStyles.palette} role="listbox" aria-label="Session commands">
+        <Show when={paletteOpen()}>
+          <ul
+            class={sessionStyles.palette}
+            role="listbox"
+            aria-label="Session commands"
+            ref={(element) => {
+              list = element;
+            }}
+          >
             <For each={matches()}>
               {(entry, index) => (
                 <li>
@@ -188,10 +312,16 @@ export default function SessionComposer(props: SessionComposerProps) {
                       index() === highlighted() && sessionStyles.commandHighlighted,
                     )}
                     onMouseEnter={() => setHighlighted(index())}
-                    onClick={() => run(entry)}
+                    onClick={() => choose(entry)}
                   >
-                    <span class={sessionStyles.commandName}>{entry.typed}</span>
+                    <span class={sessionStyles.commandName}>/{entry.name}</span>
+                    <Show when={entry.argumentHint}>
+                      {(hint) => <span class={sessionStyles.commandHint}>{hint()}</span>}
+                    </Show>
                     <span class={sessionStyles.commandDescription}>{entry.description}</span>
+                    <Show when={entry.run !== "harness"}>
+                      <span class={sessionStyles.commandOwner}>flyco</span>
+                    </Show>
                   </button>
                 </li>
               )}

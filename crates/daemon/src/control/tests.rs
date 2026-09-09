@@ -972,6 +972,32 @@ async fn what_is_left_of_the_plan_is_filed_over_rest_rather_than_sent_as_a_frame
 }
 
 #[tokio::test]
+async fn the_commands_a_harness_offers_travel_as_a_frame_rather_than_over_rest() {
+    // The other way round from the model list beside it, and for a reason:
+    // the command set carries the checkout's own skills, so it is a fact
+    // about this session and there is no account row to file it against.
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    let commands = vec![flyco_core::HarnessCommand {
+        name: "goal".to_owned(),
+        description: "Set a goal — keep working until the condition is met".to_owned(),
+        argument_hint: None,
+    }];
+    harness
+        .emit(SessionOutput::Commands {
+            commands: commands.clone(),
+        })
+        .await;
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::Commands { commands }
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
 async fn the_models_a_harness_offers_are_filed_over_rest_rather_than_sent_as_a_frame() {
     // The list is recorded against the *account*, which lives in D1, and a
     // session room is a Durable Object that cannot reach it. So this output

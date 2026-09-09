@@ -134,14 +134,15 @@ async fn next(outputs: &mut mpsc::Receiver<SessionOutput>, what: &str) -> Sessio
 
 /// Steps past the three announcements every session opens with.
 ///
-/// A thread is identified, its models are listed, and its plan's limits are
-/// read, in that order and before any turn — so a test about turns walks
-/// past all three rather than restating them.
+/// A thread is identified, its models and its commands are listed, and its
+/// plan's limits are read, in that order and before any turn — so a test
+/// about turns walks past all four rather than restating them.
 /// `a_session_announces_itself_without_anyone_typing` is where their content
 /// is pinned.
 async fn announcements(outputs: &mut mpsc::Receiver<SessionOutput>) {
     let _ = next(outputs, "started").await;
     let _ = next(outputs, "models").await;
+    let _ = next(outputs, "commands").await;
     let _ = next(outputs, "plan usage").await;
 }
 
@@ -179,6 +180,27 @@ async fn a_session_announces_itself_without_anyone_typing() {
     assert_eq!(default.default_effort.as_deref(), Some("medium"));
     assert_eq!(default.efforts, ["low", "medium", "high"]);
 
+    // And what it can be told to do. The same skill is installed under two
+    // roots and is offered once; one the user turned off is not offered at
+    // all; and a Codex skill declares no argument, which is what lets the
+    // palette send it the moment it is chosen.
+    let SessionOutput::Commands { commands } = next(&mut outputs, "commands").await else {
+        panic!("a session must announce the commands its harness offers");
+    };
+    assert_eq!(
+        commands
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect::<Vec<_>>(),
+        ["cloudflare"]
+    );
+    assert_eq!(commands[0].argument_hint, None);
+    assert!(
+        commands[0]
+            .description
+            .starts_with("Comprehensive Cloudflare")
+    );
+
     // And how much of the plan is already gone, before the session has
     // cost anything: the composer's rings are right for the first message
     // rather than only after the first turn has been paid for. The labels
@@ -194,6 +216,44 @@ async fn a_session_announces_itself_without_anyone_typing() {
         [("5-hour", 12), ("Weekly", 40)]
     );
     assert_eq!(windows[0].resets_at_unix, Some(1_789_002_000));
+
+    session.shutdown().await.expect("shut the session down");
+}
+
+#[tokio::test]
+async fn a_skill_file_changing_mid_session_re_lists_the_palette() {
+    // The scratch's name is what tells the stand-in app-server to announce
+    // `skills/changed` when a turn opens. The notification carries nothing
+    // but the fact that the set moved, so the driver has to ask again — and
+    // ask for a re-scan rather than for whatever is cached.
+    let scratch = Scratch::new("skillsreload");
+    let (session, mut outputs) = start(&scratch).await;
+    announcements(&mut outputs).await;
+
+    session
+        .send_user_message("hi".to_owned())
+        .await
+        .expect("send a user message");
+
+    // The re-listing races the turn's own frames, so this reads forward to
+    // it rather than assuming it lands first.
+    let mut relisted = None;
+    while relisted.is_none() {
+        if let SessionOutput::Commands { commands } =
+            next(&mut outputs, "the new command list").await
+        {
+            relisted = Some(commands);
+        }
+    }
+    assert_eq!(
+        relisted
+            .expect("checked above")
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect::<Vec<_>>(),
+        ["cloudflare", "release"],
+        "a re-scan of the checkout finds the skill the change added"
+    );
 
     session.shutdown().await.expect("shut the session down");
 }

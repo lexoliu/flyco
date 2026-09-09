@@ -262,6 +262,10 @@ pub mod method {
     pub const RATE_LIMITS_READ: &str = "account/rateLimits/read";
     /// Notification: a *sparse* revision of that answer.
     pub const RATE_LIMITS_UPDATED: &str = "account/rateLimits/updated";
+    /// Request: the skills this thread's checkout offers.
+    pub const SKILLS_LIST: &str = "skills/list";
+    /// Notification: a watched skill file changed, so the list is stale.
+    pub const SKILLS_CHANGED: &str = "skills/changed";
 }
 
 /// `initialize.clientInfo`.
@@ -441,7 +445,7 @@ pub struct McpServerStatusPage {
     pub next_cursor: Option<String>,
 }
 
-/// A text user-input item for `turn/start`.
+/// One item of a `turn/start` input.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum UserInput {
@@ -451,6 +455,18 @@ pub enum UserInput {
         text: String,
         /// Structured elements; flycod sends none.
         text_elements: [(); 0],
+    },
+    /// A skill the user chose from the composer's `/` palette.
+    ///
+    /// Codex invokes a skill by naming it as an input item rather than by
+    /// any spelling inside the prose, so a `/name` the user picked has to
+    /// become this on the way in — a turn that carried the slash as text
+    /// would ask the model to read a command instead of running it.
+    Skill {
+        /// The skill's name, as `skills/list` reported it.
+        name: String,
+        /// Where its `SKILL.md` lives, as `skills/list` reported it.
+        path: String,
     },
 }
 
@@ -547,6 +563,85 @@ pub struct ModelListResponse {
     /// This page's models. Flycod reads one page: the list is three rows
     /// and the cursor exists for a catalogue that is not this one.
     pub data: Vec<CodexModel>,
+}
+
+/// Params for `skills/list`.
+///
+/// `cwds` is left off, which the app-server documents as "the current
+/// session working directory" — the only checkout a flyco session has.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsListParams {
+    /// Re-scan from disk instead of answering from the cache.
+    ///
+    /// False during the handshake, where the cache is as fresh as the
+    /// process; true after a [`method::SKILLS_CHANGED`] notification, whose
+    /// whole content is that what is on disk is no longer what was cached.
+    pub force_reload: bool,
+}
+
+/// One skill of a `skills/list` result.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSkill {
+    /// How the skill is named and invoked.
+    pub name: String,
+    /// The full description from its `SKILL.md` front matter, which runs to
+    /// a paragraph.
+    pub description: String,
+    /// Absolute path of its `SKILL.md`, which `turn/start` needs to invoke
+    /// it.
+    pub path: String,
+    /// Whether the thread will actually run it.
+    pub enabled: bool,
+    /// The legacy one-line description from `SKILL.md`, when it has one.
+    #[serde(default)]
+    pub short_description: Option<String>,
+    /// The presentation block from `SKILL.json`, when it has one.
+    #[serde(default)]
+    pub interface: Option<SkillInterface>,
+}
+
+impl CodexSkill {
+    /// The one line a palette shows under the name.
+    ///
+    /// Shortest first, because the palette gives a command one clipped row:
+    /// `SKILL.json`'s `shortDescription` is what the skill's author wrote
+    /// for exactly this place, `SKILL.md`'s legacy field is the same idea a
+    /// generation earlier, and the full description — a paragraph aimed at
+    /// the model, not at a reader — is what is left when neither exists.
+    #[must_use]
+    pub fn summary(self) -> String {
+        self.interface
+            .and_then(|interface| interface.short_description)
+            .or(self.short_description)
+            .unwrap_or(self.description)
+    }
+}
+
+/// The `SKILL.json` presentation block, of which flyco reads one field.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillInterface {
+    /// One line describing the skill, written for a picker.
+    #[serde(default)]
+    pub short_description: Option<String>,
+}
+
+/// One checkout's worth of a `skills/list` result.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsListEntry {
+    /// The skills found under it.
+    pub skills: Vec<CodexSkill>,
+}
+
+/// The `skills/list` result.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsListResponse {
+    /// One entry per working directory asked about.
+    pub data: Vec<SkillsListEntry>,
 }
 
 /// Params for `turn/interrupt`.

@@ -68,9 +68,7 @@ export interface ShellChunk {
  * Contiguous calls are one part rather than one part each, because a run of
  * tool rows reads as a list and a list is what it should be in the markup.
  */
-export type TurnPart =
-  | { kind: "text"; text: string }
-  | { kind: "tools"; calls: ToolCall[] };
+export type TurnPart = { kind: "text"; text: string } | { kind: "tools"; calls: ToolCall[] };
 
 export type TranscriptItem =
   | { kind: "user_message"; key: string; text: string; atUnix: number }
@@ -367,7 +365,8 @@ export function usageLimitText(resetsAtUnix: number | null, atUnix: number): str
  * first-time reader neither that the turn is over nor that the session is
  * still theirs to continue (issue #136).
  */
-export const TURN_FAILED_NOTE = "The turn stopped before it finished. Send a message to continue it.";
+export const TURN_FAILED_NOTE =
+  "The turn stopped before it finished. Send a message to continue it.";
 
 export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] {
   const items: TranscriptItem[] = [];
@@ -548,6 +547,7 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
       case "capabilities":
       case "models":
       case "plan_usage":
+      case "commands":
       case "session_state_changed":
       case "machine_connection":
       case "usage":

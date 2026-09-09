@@ -129,6 +129,23 @@ export const usageWindowSchema = z.object({
   resets_at_unix: z.number().int().nullable(),
 });
 
+/**
+ * One slash command the running CLI offers, in flyco's own vocabulary.
+ *
+ * `snake_case` and not the SDK's `SlashCommand`, for the reason the model
+ * option above is not `ModelInfo`: the same shape has to come back from
+ * Codex. `argument_hint` is `null` for a command that takes no argument —
+ * the SDK spells that as an empty string, and a palette that has to tell
+ * `""` from "unset" is a palette with a bug waiting in it. Aliases are
+ * dropped: `/cost` and `/stats` are two more rows saying what `/usage`
+ * already says.
+ */
+export const harnessCommandSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  argument_hint: z.string().nullable(),
+});
+
 /** The SDK's `SessionKey`, in this protocol's `snake_case`. */
 export const sessionKeySchema = z.object({
   project_key: z.string(),
@@ -189,6 +206,7 @@ export const sidecarEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("capabilities"), capabilities: z.array(z.string()) }),
   z.object({ type: z.literal("models"), models: z.array(modelOptionSchema) }),
   z.object({ type: z.literal("plan_usage"), windows: z.array(usageWindowSchema) }),
+  z.object({ type: z.literal("commands"), commands: z.array(harnessCommandSchema) }),
   z.object({ type: z.literal("mcp_servers"), servers: z.array(mountedServerSchema) }),
   z.object({ type: z.literal("sdk_message"), message: jsonValue }),
   z.object({
@@ -216,6 +234,8 @@ export type ClaudeMcpServer = z.infer<typeof claudeMcpServerSchema>;
 export type ModelOption = z.infer<typeof modelOptionSchema>;
 /** One rolling plan window, as read from the SDK. */
 export type UsageWindow = z.infer<typeof usageWindowSchema>;
+/** One slash command the harness offers. */
+export type HarnessCommand = z.infer<typeof harnessCommandSchema>;
 /** Where one mounted MCP server has got to. */
 export type MountState = z.infer<typeof mountStateSchema>;
 /** What the CLI reports about one mounted MCP server. */

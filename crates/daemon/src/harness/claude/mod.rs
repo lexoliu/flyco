@@ -787,6 +787,13 @@ impl<S: TranscriptStore> Driver<S> {
                 );
                 emit(&self.outputs, SessionOutput::PlanUsage { windows }).await
             }
+            SidecarEvent::Commands { commands } => {
+                tracing::info!(
+                    count = commands.len(),
+                    "the harness listed the slash commands it offers"
+                );
+                emit(&self.outputs, SessionOutput::Commands { commands }).await
+            }
             SidecarEvent::McpServers { servers } => {
                 // The session's whole point is an agent that can see what
                 // it is spending; one that cannot is stopped here rather

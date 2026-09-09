@@ -18,6 +18,12 @@ window.scrollTo = () => {
 // vendor's own page in a tab of its own.
 window.open = () => null;
 
+// Nor Element.scrollIntoView, which the session composer's palette calls to
+// keep the row the arrow keys are on inside a list that scrolls.
+Element.prototype.scrollIntoView = () => {
+  /* no-op in tests */
+};
+
 // vite-plugin-pwa's virtual module only exists inside a real Vite build;
 // components that call registerSW() need a stand-in for it under Vitest.
 vi.mock("virtual:pwa-register", () => ({

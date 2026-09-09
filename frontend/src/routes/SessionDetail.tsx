@@ -55,6 +55,7 @@ import {
 import { ApiProblem } from "../api/problem";
 import type { UsageWindow } from "../api/wire";
 import { createSessionRelay } from "../api/relay";
+import type { HarnessCommand } from "../api/wire";
 import { PROVIDER_LABEL } from "../lib/providers";
 import { machineChip } from "../lib/machines";
 import { orderedWindows, resetHint } from "../lib/planUsage";
@@ -275,6 +276,25 @@ export default function SessionDetail() {
     return orderedWindows(
       readiness.harness().find((account) => account.harness === harness)?.usage ?? [],
     );
+  });
+
+  /**
+   * The slash commands this session's agent offers.
+   *
+   * Per session and never per account, unlike the model list above it: the
+   * set carries the checkout's own skills, so the last session's answer
+   * says nothing about this one's. Until the daemon has reported one the
+   * palette shows flyco's own three and nothing else.
+   */
+  const commands = createMemo<HarnessCommand[]>(() => {
+    const events = relay.events();
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const entry = events[i];
+      if (entry !== undefined && entry.event.type === "commands") {
+        return entry.event.commands;
+      }
+    }
+    return [];
   });
 
   /** Who the machine came from, for the timeline's `Reserving on …` line. */
@@ -780,6 +800,7 @@ export default function SessionDetail() {
             <Show when={!refused()}>
               <SessionComposer
                 turnInFlight={status()?.status === "working"}
+                commands={commands()}
                 onSend={onSend}
                 onStop={onStop}
                 onCommand={onCommand}
