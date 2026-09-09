@@ -6,8 +6,8 @@ use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
     HarnessObservation, HarnessSessionView, MachineOrigin, ModelChoice, ModelOption,
-    ProvisioningStage, SessionId, ShellOutcome, ShellRunId, ShellStream, UsageReport, Usd,
-    WIRE_PROTOCOL_VERSION,
+    ProvisioningStage, SessionId, ShellOutcome, ShellRunId, ShellStream, UsageReport, UsageWindow,
+    Usd, WIRE_PROTOCOL_VERSION,
 };
 use tokio::sync::mpsc;
 
@@ -189,6 +189,17 @@ impl ControlApi for RecordingApi {
         let recorded = self
             .calls
             .send(Call::ModelsReported(models.to_vec()))
+            .map_err(|error| ControlApiError::Transport(error.to_string()));
+        core::future::ready(recorded)
+    }
+
+    fn report_usage(
+        &self,
+        windows: &[UsageWindow],
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        let recorded = self
+            .calls
+            .send(Call::UsageReported(windows.to_vec()))
             .map_err(|error| ControlApiError::Transport(error.to_string()));
         core::future::ready(recorded)
     }
@@ -924,6 +935,38 @@ async fn user_messages_interrupts_and_compaction_reach_the_harness() {
         model: model.clone(),
     });
     assert_eq!(harness.next_call().await, Call::ModelSet(model));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn what_is_left_of_the_plan_is_filed_over_rest_rather_than_sent_as_a_frame() {
+    // The snapshot is recorded against the *account*, which lives in D1,
+    // so it leaves the relay by the same door the model list does and the
+    // control plane announces it to the browsers itself.
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    let windows = vec![
+        UsageWindow::new(Some(300), None, 12, Some(1_789_002_000)),
+        UsageWindow::new(Some(10_080), None, 40, Some(1_789_570_800)),
+    ];
+    harness
+        .emit(SessionOutput::PlanUsage {
+            windows: windows.clone(),
+        })
+        .await;
+    assert_eq!(harness.next_call().await, Call::UsageReported(windows));
+
+    // And nothing was queued for the room: the next frame is the one the
+    // output after it produces.
+    harness
+        .emit(SessionOutput::Event { event: delta("hi") })
+        .await;
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness { event: delta("hi") }
+    );
 
     harness.archive().await.expect("the run ended cleanly");
 }
@@ -1915,7 +1958,9 @@ mod remote_store {
     use super::{RemoteTranscriptStore, SessionKey, StoreError, TranscriptStore, stream_key};
     use crate::control::rest::{ApprovalRaiser, ControlApi, ControlApiError, TranscriptRead};
     use flyco_core::wire::ApprovalPayload;
-    use flyco_core::{ApprovalId, HarnessObservation, HarnessSessionView, ModelOption};
+    use flyco_core::{
+        ApprovalId, HarnessObservation, HarnessSessionView, ModelOption, UsageWindow,
+    };
     use serde_json::{Value, json};
     use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -2021,6 +2066,15 @@ mod remote_store {
         ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
             core::future::ready(Err(ControlApiError::Transport(
                 "the transcript store reports no model lists".to_owned(),
+            )))
+        }
+
+        fn report_usage(
+            &self,
+            _windows: &[UsageWindow],
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Err(ControlApiError::Transport(
+                "the transcript store reports no usage snapshots".to_owned(),
             )))
         }
 

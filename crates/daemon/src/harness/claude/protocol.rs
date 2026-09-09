@@ -222,6 +222,43 @@ pub enum StoreOp {
     },
 }
 
+/// One rolling plan window as the sidecar read it from the SDK.
+///
+/// The *reading*, not the finished [`flyco_core::UsageWindow`]: the label
+/// is derived in Rust so that a five-hour window is called the same thing
+/// whichever harness reported it, and a rule that lived in TypeScript would
+/// have to be written a second time for Codex. So the sidecar translates
+/// only what it alone knows — that the SDK's `five_hour` key means three
+/// hundred minutes, and that a `model_scoped` row is a weekly window scoped
+/// to one model — and hands the numbers on.
+///
+/// `used_percent` is an integer because that is what the protocol pins: the
+/// SDK's `utilization` is an unbounded 0–100 number, and rounding it at the
+/// boundary keeps one spelling of a percentage on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SidecarUsageWindow {
+    /// How long the window is, in minutes.
+    pub window_minutes: Option<u32>,
+    /// The part of the plan this window covers, when it covers only part of
+    /// one — the display name of a per-model weekly bucket.
+    pub scope: Option<String>,
+    /// How much of the window is spent, 0–100.
+    pub used_percent: u8,
+    /// When the window turns over, seconds since the Unix epoch.
+    pub resets_at_unix: Option<i64>,
+}
+
+impl From<SidecarUsageWindow> for flyco_core::UsageWindow {
+    fn from(window: SidecarUsageWindow) -> Self {
+        Self::new(
+            window.window_minutes,
+            window.scope.as_deref(),
+            window.used_percent,
+            window.resets_at_unix,
+        )
+    }
+}
+
 /// An event the sidecar writes to flycod.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -267,6 +304,18 @@ pub enum SidecarEvent {
     Models {
         /// The models, in the order the SDK listed them.
         models: Vec<flyco_core::ModelOption>,
+    },
+    /// How much of the account's plan is spent, from the SDK's
+    /// `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()`.
+    ///
+    /// Emitted once the CLI has answered its handshake, and again after
+    /// every `result` message — the two moments the number can have moved.
+    /// The list is empty for a session with no plan behind it at all (an
+    /// API key, Bedrock, Vertex), which the SDK states outright with
+    /// `rate_limits_available: false`.
+    PlanUsage {
+        /// Every window the SDK reported, in no particular order.
+        windows: Vec<SidecarUsageWindow>,
     },
     /// What the CLI actually mounted, from the SDK's `mcpServerStatus()`.
     ///
@@ -319,6 +368,7 @@ impl SidecarEvent {
             Self::Started { .. } => "started",
             Self::Capabilities { .. } => "capabilities",
             Self::Models { .. } => "models",
+            Self::PlanUsage { .. } => "plan_usage",
             Self::McpServers { .. } => "mcp_servers",
             Self::SdkMessage { .. } => "sdk_message",
             Self::ApprovalRequest { .. } => "approval_request",

@@ -258,6 +258,10 @@ pub mod method {
     pub const ERROR: &str = "error";
     /// Request: the models this build of the app-server offers.
     pub const MODEL_LIST: &str = "model/list";
+    /// Request: how much of the account's plan is spent.
+    pub const RATE_LIMITS_READ: &str = "account/rateLimits/read";
+    /// Notification: a *sparse* revision of that answer.
+    pub const RATE_LIMITS_UPDATED: &str = "account/rateLimits/updated";
 }
 
 /// `initialize.clientInfo`.
@@ -329,6 +333,71 @@ pub struct ThreadConfig {
     /// the app-server's own `defaultReasoningEffort` for the model stands.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_reasoning_effort: Option<String>,
+}
+
+/// One rolling window of the account's plan limit.
+///
+/// `usedPercent` is the only required field: the app-server states a
+/// percentage even where it cannot state how long the window is or when it
+/// turns over, and both of those are honestly absent rather than zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitWindow {
+    /// How much of the window is spent, 0–100.
+    pub used_percent: u8,
+    /// How long the window is, in minutes.
+    #[serde(default)]
+    pub window_duration_mins: Option<u32>,
+    /// When it turns over, seconds since the Unix epoch.
+    #[serde(default)]
+    pub resets_at: Option<i64>,
+}
+
+/// The account's rate limits, as one `account/rateLimits/read` answers them.
+///
+/// Only the two windows flyco draws are read. The snapshot also carries
+/// credits, plan type and spend-control state, which answer a different
+/// question — what the account *is* rather than what is left of it — and
+/// which neither the composer nor the settings page asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub struct RateLimitSnapshot {
+    /// The shorter window, when the account has one.
+    #[serde(default)]
+    pub primary: Option<RateLimitWindow>,
+    /// The longer window, when the account has one.
+    #[serde(default)]
+    pub secondary: Option<RateLimitWindow>,
+}
+
+impl RateLimitSnapshot {
+    /// This snapshot revised by a sparse `account/rateLimits/updated`.
+    ///
+    /// The app-server documents that notification as sparse — "merge
+    /// available values into the most recent read" — so an absent window
+    /// means *unchanged*, not *gone*. Replacing the snapshot with the
+    /// notification would blank one window every time the other moved.
+    #[must_use]
+    pub const fn merged(self, update: Self) -> Self {
+        Self {
+            primary: match update.primary {
+                Some(window) => Some(window),
+                None => self.primary,
+            },
+            secondary: match update.secondary {
+                Some(window) => Some(window),
+                None => self.secondary,
+            },
+        }
+    }
+}
+
+/// The `account/rateLimits/read` result and the
+/// `account/rateLimits/updated` params, which carry the same field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitsBody {
+    /// The snapshot.
+    pub rate_limits: RateLimitSnapshot,
 }
 
 /// Params for `mcpServerStatus/list`.

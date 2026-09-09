@@ -14,6 +14,7 @@
  */
 import { useNavigate, useParams } from "@solidjs/router";
 import {
+  For,
   Match,
   Show,
   Switch,
@@ -52,9 +53,11 @@ import {
   type ModelOption,
 } from "../api/client";
 import { ApiProblem } from "../api/problem";
+import type { UsageWindow } from "../api/wire";
 import { createSessionRelay } from "../api/relay";
 import { PROVIDER_LABEL } from "../lib/providers";
 import { machineChip } from "../lib/machines";
+import { orderedWindows, resetHint } from "../lib/planUsage";
 import { dollarsToUsdMicros, usdMicrosToDollars } from "../lib/money";
 import { shellCommandIn } from "../lib/shell";
 import {
@@ -249,6 +252,29 @@ export default function SessionDetail() {
     }
     const harness = session()?.harness;
     return readiness.harness().find((account) => account.harness === harness)?.models ?? [];
+  });
+
+  /**
+   * How much of the plan behind this session's harness account is spent.
+   *
+   * The newest snapshot the agent reported over the relay wins; until it
+   * has reported one, the linked account's — which is what the last session
+   * on it filed — stands in, so the rings are right on a page opened before
+   * the machine says anything. Empty until *something* has asked the
+   * vendor, which is the honest state: nothing is drawn.
+   */
+  const planUsage = createMemo<UsageWindow[]>(() => {
+    const events = relay.events();
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const entry = events[i];
+      if (entry !== undefined && entry.event.type === "plan_usage") {
+        return orderedWindows(entry.event.windows);
+      }
+    }
+    const harness = session()?.harness;
+    return orderedWindows(
+      readiness.harness().find((account) => account.harness === harness)?.usage ?? [],
+    );
   });
 
   /** Who the machine came from, for the timeline's `Reserving on …` line. */
@@ -844,6 +870,24 @@ export default function SessionDetail() {
                         />
                       )}
                     </Show>
+                    {/*
+                      What is left of the plan, beside the context ring and
+                      on the same terms: nothing is drawn until a harness
+                      has reported, because a ring at zero over a plan flyco
+                      has never asked about is an invention (docs/ux.md
+                      §9.3).
+                    */}
+                    <For each={planUsage()}>
+                      {(window) => (
+                        <Ring
+                          label={window.label}
+                          value={window.used_percent}
+                          total={100}
+                          readout={`${window.used_percent}%`}
+                          hint={resetHint(window, now())}
+                        />
+                      )}
+                    </For>
                   </>
                 }
               />

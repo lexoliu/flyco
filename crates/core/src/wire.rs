@@ -28,6 +28,97 @@ use crate::id::{ApprovalId, SessionId, ShellRunId, WorkdirRequestId};
 use crate::session::SessionState;
 use crate::workdir::{WorkdirReply, WorkdirRequest};
 
+/// One rolling window of the harness plan's rate limit.
+///
+/// Both harnesses answer the same question in the same shape — how much of
+/// a window is spent, and when the window turns over — so flyco states it
+/// once and both drivers fill it in. This is a *plan* limit, not the
+/// session's token usage: [`UsageReport`] is what one conversation cost,
+/// this is what is left of the account it was billed to.
+///
+/// A window nobody has reported is absent from the list rather than present
+/// at zero; there is no "unknown" reading, because a ring drawn empty is
+/// indistinguishable from a plan that has not been touched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct UsageWindow {
+    /// What the window is called in the UI, e.g. `5-hour`, `Weekly`,
+    /// `Weekly (Fable)`. Derived by [`UsageWindow::new`].
+    pub label: String,
+    /// How much of the window is spent, 0–100.
+    pub used_percent: u8,
+    /// When the window turns over, seconds since the Unix epoch.
+    ///
+    /// `None` for a window whose harness reports a utilization but no
+    /// reset — Codex's `resetsAt` and Claude's `resets_at` are both
+    /// nullable, and inventing a deadline would be worse than showing none.
+    pub resets_at_unix: Option<i64>,
+    /// How long the window is, in minutes.
+    ///
+    /// Kept alongside the label because it is what the UI orders by: the
+    /// label is prose and sorts alphabetically into nonsense, while the
+    /// length is the thing a reader scans in order. `None` for a window
+    /// whose harness names no duration.
+    pub window_minutes: Option<u32>,
+}
+
+/// Minutes in a day, the unit the day-and-longer labels are built from.
+const MINUTES_PER_DAY: u32 = 24 * 60;
+
+impl UsageWindow {
+    /// One window, with its label derived from its length and its scope.
+    ///
+    /// The label is computed here rather than by each driver so that a
+    /// five-hour window is called the same thing whichever harness reported
+    /// it — and so that a window length flyco has never seen still gets a
+    /// name instead of a blank. `scope` is the part of the plan the window
+    /// covers when it covers only part of one: Claude's per-model weekly
+    /// buckets name a model, and everything else is `None`.
+    ///
+    /// `used_percent` is clamped to 0–100 rather than trusted: both vendors
+    /// type it as an unbounded number, and a plan that is 103% spent is
+    /// still a full ring.
+    #[must_use]
+    pub fn new(
+        window_minutes: Option<u32>,
+        scope: Option<&str>,
+        used_percent: u8,
+        resets_at_unix: Option<i64>,
+    ) -> Self {
+        Self {
+            label: window_label(window_minutes, scope),
+            used_percent: used_percent.min(100),
+            resets_at_unix,
+            window_minutes,
+        }
+    }
+}
+
+/// What a window of `minutes` covering `scope` is called.
+///
+/// Human words where a human word exists — a day, a week, a month are read
+/// as words and not as `1440 minutes` — and a counted unit otherwise, so a
+/// vendor introducing a three-hour window tomorrow gets `3-hour` rather
+/// than a gap.
+fn window_label(minutes: Option<u32>, scope: Option<&str>) -> String {
+    let base = match minutes {
+        // A window whose length the harness did not state. Its scope, when
+        // it has one, is the only true thing left to call it.
+        None => "Plan".to_owned(),
+        Some(minutes) if minutes % MINUTES_PER_DAY == 0 => match minutes / MINUTES_PER_DAY {
+            1 => "Daily".to_owned(),
+            7 => "Weekly".to_owned(),
+            30 => "Monthly".to_owned(),
+            days => format!("{days}-day"),
+        },
+        Some(minutes) if minutes % 60 == 0 => format!("{}-hour", minutes / 60),
+        Some(minutes) => format!("{minutes}-minute"),
+    };
+    match scope {
+        None => base,
+        Some(scope) => format!("{base} ({scope})"),
+    }
+}
+
 /// What the daemon asks the user to approve, mirrored in the approval UI.
 ///
 /// Approvals are enforced by flyco's own UI and API — never by prompt
@@ -766,6 +857,21 @@ pub enum ClientEvent {
         /// Every model the harness listed, in its own order.
         models: Vec<crate::harness::ModelOption>,
     },
+    /// How much of the plan behind this session's harness account is spent.
+    ///
+    /// State rather than conversation, like [`Models`](Self::Models): the
+    /// newest snapshot wins and the composer reads the last one. Reported
+    /// at session start and after every turn, because a turn is the only
+    /// thing that moves the number and reading it any oftener would be
+    /// polling the vendor on a timer. Named `plan_usage` and not `usage`
+    /// because [`Usage`](Self::Usage) is already this session's token
+    /// count — the two answer different questions and a reader has to be
+    /// able to tell which one a frame is.
+    PlanUsage {
+        /// Every window the harness reported, in no particular order; the
+        /// UI sorts them by [`UsageWindow::window_minutes`].
+        windows: Vec<UsageWindow>,
+    },
     /// The machine reached a provisioning milestone.
     ///
     /// Announced by the provisioning queue up to the machine existing and
@@ -835,6 +941,7 @@ mod tests {
     use super::{
         ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
         ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ShellOutcome, ShellStream,
+        UsageWindow,
     };
     use crate::budget::BudgetSignal;
     use crate::harness::{ContextWindow, HarnessEvent, UsageReport};
@@ -1078,9 +1185,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_client_event_survives_the_wire() {
-        let events = [
+    /// Every [`ClientEvent`] variant, at least once each.
+    ///
+    /// A builder rather than a `let` inside the test, so the list can keep
+    /// growing with the protocol without the test that walks it growing too.
+    fn every_client_event() -> Vec<ClientEvent> {
+        vec![
             ClientEvent::Harness {
                 event: harness_event(),
             },
@@ -1165,6 +1275,12 @@ mod tests {
                 spot: false,
                 restarted: false,
             },
+            ClientEvent::PlanUsage {
+                windows: vec![
+                    UsageWindow::new(Some(300), None, 26, Some(1_789_002_000)),
+                    UsageWindow::new(Some(10_080), Some("Fable"), 26, None),
+                ],
+            },
             ClientEvent::ApprovalPending {
                 id: ApprovalId::generate(),
                 payload: ApprovalPayload::MachineResizeLicenseBound {
@@ -1173,10 +1289,45 @@ mod tests {
                     reason: "the build needs a signed macOS toolchain".to_owned(),
                 },
             },
-        ];
-        for event in events {
+        ]
+    }
+
+    #[test]
+    fn every_client_event_survives_the_wire() {
+        for event in every_client_event() {
             round_trip(&event);
         }
+    }
+
+    #[test]
+    fn a_usage_window_is_named_after_its_length() {
+        // The three lengths the two vendors actually report, and the two
+        // shapes a length flyco has not seen falls into.
+        let named = [
+            (300, "5-hour"),
+            (10_080, "Weekly"),
+            (43_200, "Monthly"),
+            (1_440, "Daily"),
+            (180, "3-hour"),
+            (30, "30-minute"),
+            (4_320, "3-day"),
+        ];
+        for (minutes, label) in named {
+            assert_eq!(UsageWindow::new(Some(minutes), None, 0, None).label, label);
+        }
+        assert_eq!(
+            UsageWindow::new(Some(10_080), Some("Fable"), 0, None).label,
+            "Weekly (Fable)"
+        );
+        assert_eq!(UsageWindow::new(None, None, 0, None).label, "Plan");
+    }
+
+    #[test]
+    fn a_usage_window_cannot_read_past_full() {
+        assert_eq!(
+            UsageWindow::new(Some(300), None, 103, None).used_percent,
+            100
+        );
     }
 
     #[test]

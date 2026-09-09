@@ -29,6 +29,15 @@ export interface RingProps {
   total: number | undefined;
   /** The reading beside the ring, already formatted (`$1.20 / $10`). */
   readout: string;
+  /**
+   * One more true thing about the measurement, for the tooltip and the
+   * accessible name — `Resets in 2h 10m` under a plan window.
+   *
+   * Part of the name rather than a separate title, because a ring is one
+   * control: a tooltip that replaced the reading with the deadline would
+   * make the number unreachable to anyone reading by ear.
+   */
+  hint?: string | undefined;
 }
 
 function tone(ratio: number): "ok" | "warn" | "danger" {
@@ -44,6 +53,10 @@ const RADIUS = (SIZE - STROKE) / 2;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
 export default function Ring(props: RingProps) {
+  const name = () =>
+    props.hint === undefined
+      ? `${props.label}: ${props.readout}`
+      : `${props.label}: ${props.readout} · ${props.hint}`;
   const known = () => props.value !== undefined && props.total !== undefined && props.total > 0;
   const ratio = () => {
     if (props.value === undefined || props.total === undefined || props.total <= 0) {
@@ -55,9 +68,9 @@ export default function Ring(props: RingProps) {
   return (
     <span
       class={styles.ring}
-      title={`${props.label}: ${props.readout}`}
+      title={name()}
       role="img"
-      aria-label={`${props.label}: ${props.readout}`}
+      aria-label={name()}
     >
       <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} aria-hidden="true">
         <circle

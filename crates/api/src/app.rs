@@ -10,8 +10,9 @@ use flyco_core::{
     HarnessFeature, HarnessObservation, HarnessSessionView, MAX_SESSION_TITLE_CHARS,
     MachineCatalogEntry, MachineOrigin, MachineSpec, ModelChoice, ProvisioningStage, RepoSlug,
     RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure,
-    ResizeMachine, SendMessage, SessionActivity, SessionDetail, SessionId, SessionState,
-    SessionSummary, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId, wire::ApprovalPayload,
+    ReportUsage, ResizeMachine, SendMessage, SessionActivity, SessionDetail, SessionId,
+    SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId,
+    wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -1479,6 +1480,50 @@ async fn record_reported_models(
     Ok(NoContent)
 }
 
+/// Records how much of this session's harness plan is spent.
+///
+/// Filed by the daemon at session start and after every turn — the two
+/// moments the number can have moved — and stored against the *account*,
+/// because the plan belongs to the account and the settings page reads it
+/// there without a session. The live half goes to the room in the same
+/// call, so the composer's rings move as the turn ends rather than on the
+/// next page load.
+#[skyzen::openapi]
+async fn report_usage(
+    State(session): State<DaemonSession>,
+    Json(report): Json<ReportUsage>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<NoContent> {
+    record_reported_usage(session.0, report, &rooms, &db)
+        .await
+        .into()
+}
+
+async fn record_reported_usage(
+    id: SessionId,
+    report: ReportUsage,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<NoContent, ApiError> {
+    // The owner and the harness come from the session row and never from
+    // the body, for the same reason they do in `record_reported_models`: an
+    // `fd_` token proves which session is calling and nothing about a user.
+    let target = sessions::provisioning_target(db, id)
+        .await?
+        .ok_or(ApiError::SessionNotFound)?;
+    harness_accounts::record_usage(db, target.user_id, target.harness, &report.windows).await?;
+    rooms
+        .broadcast(
+            id,
+            &ClientEvent::PlanUsage {
+                windows: report.windows,
+            },
+        )
+        .await?;
+    Ok(NoContent)
+}
+
 /// Records that this session's machine is being reclaimed by its provider.
 ///
 /// The durable half of a spot notice. The relay frame beside it puts the
@@ -2139,6 +2184,7 @@ fn daemon_routes() -> Vec<RouteNode> {
             .at(get_harness_session)
             .put(put_harness_session),
         "/v1/sessions/{id}/models".put(report_models),
+        "/v1/sessions/{id}/usage".put(report_usage),
         "/v1/sessions/{id}/spot-notice".post(report_spot_notice),
         "/v1/sessions/{id}/startup-failure".post(report_startup_failure),
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),

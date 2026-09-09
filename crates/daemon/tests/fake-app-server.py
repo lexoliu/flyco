@@ -106,6 +106,40 @@ def main() -> None:
                     },
                 }
             )
+        elif method == "account/rateLimits/read":
+            # Recorded from codex-cli 0.153.4 on 2026-09-09, plus a
+            # `secondary` window the recorded account did not have: the
+            # driver reports both, and a fixture with one could not show it.
+            send(
+                {
+                    "id": msg["id"],
+                    "result": {
+                        "rateLimits": {
+                            "limitId": "codex",
+                            "limitName": None,
+                            "primary": {
+                                "usedPercent": 12,
+                                "windowDurationMins": 300,
+                                "resetsAt": 1789002000,
+                            },
+                            "secondary": {
+                                "usedPercent": 40,
+                                "windowDurationMins": 10080,
+                                "resetsAt": 1789570800,
+                            },
+                            "credits": {
+                                "hasCredits": False,
+                                "unlimited": False,
+                                "balance": "0",
+                            },
+                            "individualLimit": None,
+                            "spendControlReached": False,
+                            "planType": "plus",
+                            "rateLimitReachedType": None,
+                        }
+                    },
+                }
+            )
         elif method == "mcpServerStatus/list":
             # What the app-server mounted. The driver refuses the session
             # unless flyco's own server is here, connected, with its tools.
@@ -213,6 +247,23 @@ def main() -> None:
                     "params": {
                         "threadId": "fake-thread",
                         "turn": {"id": "fake-turn", "status": "completed"},
+                    },
+                }
+            )
+            # Sparse, exactly as the app-server documents it: the window
+            # the turn moved, and nothing about the weekly one. The driver
+            # has to merge it into the snapshot it already read.
+            send(
+                {
+                    "method": "account/rateLimits/updated",
+                    "params": {
+                        "rateLimits": {
+                            "primary": {
+                                "usedPercent": 13,
+                                "windowDurationMins": 300,
+                                "resetsAt": 1789002000,
+                            }
+                        }
                     },
                 }
             )

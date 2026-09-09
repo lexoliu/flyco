@@ -5,7 +5,11 @@
  */
 import { describe, expect, test } from "bun:test";
 
-import type { McpServerStatus, Query } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  McpServerStatus,
+  Query,
+  SDKControlGetUsageResponse,
+} from "@anthropic-ai/claude-agent-sdk";
 
 import type { StartCommand } from "./protocol.ts";
 import {
@@ -16,6 +20,7 @@ import {
   sessionOptions,
   settledMount,
   toMountedServer,
+  toUsageWindows,
   toWireKey,
   UserMessages,
 } from "./sidecar.ts";
@@ -382,6 +387,89 @@ describe("the models the CLI offers", () => {
       is_default: false,
       efforts: [],
       default_effort: null,
+    });
+  });
+});
+
+describe("the plan's usage windows", () => {
+  /**
+   * What `usage_EXPERIMENTAL_...()` answered on a Max account on
+   * 2026-09-09, trimmed to the keys the SDK's own type declares.
+   */
+  function recorded(): SDKControlGetUsageResponse {
+    return {
+      session: {
+        total_cost_usd: 0.42,
+        total_api_duration_ms: 1200,
+        total_duration_ms: 3400,
+        total_lines_added: 0,
+        total_lines_removed: 0,
+        model_usage: {},
+      },
+      subscription_type: "max",
+      rate_limits_available: true,
+      rate_limits: {
+        five_hour: { utilization: 26, resets_at: "2026-09-10T01:00:00.550120+00:00" },
+        seven_day: { utilization: 15, resets_at: "2026-09-16T15:00:00.550142+00:00" },
+        seven_day_oauth_apps: null,
+        seven_day_opus: null,
+        seven_day_sonnet: null,
+        model_scoped: [
+          {
+            display_name: "Fable",
+            utilization: 26,
+            resets_at: "2026-09-16T15:00:00.282385+00:00",
+          },
+        ],
+        extra_usage: {
+          is_enabled: false,
+          monthly_limit: null,
+          used_credits: null,
+          utilization: null,
+        },
+      },
+      behaviors: null,
+    } as SDKControlGetUsageResponse;
+  }
+
+  test("the declared windows become readings, ISO resets become Unix seconds", () => {
+    expect(toUsageWindows(recorded())).toEqual([
+      { window_minutes: 300, scope: null, used_percent: 26, resets_at_unix: 1789002000 },
+      { window_minutes: 10080, scope: null, used_percent: 15, resets_at_unix: 1789570800 },
+      { window_minutes: 10080, scope: "Fable", used_percent: 26, resets_at_unix: 1789570800 },
+    ]);
+  });
+
+  test("a bucket the plan does not have is dropped, not drawn at zero", () => {
+    const usage = recorded();
+    // `utilization: null` is the SDK's "this account has no such window".
+    usage.rate_limits = {
+      ...usage.rate_limits,
+      seven_day_opus: { utilization: null, resets_at: null },
+    };
+    expect(toUsageWindows(usage).some((window) => window.scope === "Opus")).toBe(false);
+  });
+
+  test("a session with no plan behind it reports nothing at all", () => {
+    // What an API-key, Bedrock or Vertex session answers. Flyco draws no
+    // rings rather than inventing empty ones.
+    const usage = recorded();
+    usage.rate_limits_available = false;
+    usage.rate_limits = null;
+    expect(toUsageWindows(usage)).toEqual([]);
+  });
+
+  test("a reset flyco cannot place in time is reported as no reset", () => {
+    const usage = recorded();
+    usage.rate_limits = {
+      ...usage.rate_limits,
+      five_hour: { utilization: 26, resets_at: "not a timestamp" },
+    };
+    expect(toUsageWindows(usage)[0]).toEqual({
+      window_minutes: 300,
+      scope: null,
+      used_percent: 26,
+      resets_at_unix: null,
     });
   });
 });

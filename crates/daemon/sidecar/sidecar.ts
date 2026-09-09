@@ -36,6 +36,7 @@ import {
   type Options,
   type PermissionResult,
   type Query,
+  type SDKControlGetUsageResponse,
   type SDKUserMessage,
   type SessionKey as SdkSessionKey,
   type SessionStore,
@@ -53,6 +54,7 @@ import {
   type SidecarEvent,
   type StartCommand,
   type StoreOp,
+  type UsageWindow,
 } from "./protocol.ts";
 
 /** How this sidecar identifies itself in the CLI's User-Agent. */
@@ -165,6 +167,85 @@ export class UserMessages {
       yield next;
     }
   }
+}
+
+/** How long the SDK's named plan windows are, in minutes. */
+const WINDOW_MINUTES = {
+  five_hour: 5 * 60,
+  seven_day: 7 * 24 * 60,
+  seven_day_oauth_apps: 7 * 24 * 60,
+  seven_day_opus: 7 * 24 * 60,
+  seven_day_sonnet: 7 * 24 * 60,
+} as const;
+
+/** What each of those windows covers, when it covers less than the plan. */
+const WINDOW_SCOPE: Record<keyof typeof WINDOW_MINUTES, string | null> = {
+  five_hour: null,
+  seven_day: null,
+  seven_day_oauth_apps: "OAuth apps",
+  seven_day_opus: "Opus",
+  seven_day_sonnet: "Sonnet",
+};
+
+/** One utilization reading as the SDK states it: 0-100, or not known. */
+interface SdkWindow {
+  utilization: number | null;
+  resets_at: string | null;
+}
+
+/**
+ * One window in this protocol's spelling, or `null` when there is nothing
+ * true to say.
+ *
+ * A window the SDK reports with a null `utilization` is a bucket the plan
+ * does not have, not a bucket at zero, and it is dropped rather than drawn
+ * empty. `resets_at` is ISO 8601 in the usage response — unlike the stream's
+ * `rate_limit_event`, which states the same instant as a Unix second — so it
+ * is parsed here, at the one boundary that sees both.
+ */
+function toUsageWindow(
+  window: SdkWindow | null | undefined,
+  minutes: number | null,
+  scope: string | null,
+): UsageWindow | null {
+  if (window === null || window === undefined || window.utilization === null) {
+    return null;
+  }
+  const resets = window.resets_at === null ? null : Date.parse(window.resets_at);
+  return {
+    window_minutes: minutes,
+    scope,
+    used_percent: Math.min(100, Math.max(0, Math.round(window.utilization))),
+    // `Date.parse` answers NaN for a string it cannot read. A reset flyco
+    // cannot place in time is no reset at all, and reporting NaN as a
+    // timestamp would put "resets in 56 years" under the ring.
+    resets_at_unix: resets === null || Number.isNaN(resets) ? null : Math.floor(resets / 1000),
+  };
+}
+
+/**
+ * Every plan window in one `/usage` answer, in flycod's spelling.
+ *
+ * Only the windows the SDK's own type declares are read. The live response
+ * carries more — codename buckets the account is not on, and a `limits[]`
+ * array the type does not mention — and reading an undeclared key would be
+ * flyco depending on a shape nobody promised it.
+ */
+export function toUsageWindows(usage: SDKControlGetUsageResponse): UsageWindow[] {
+  // The SDK says outright when a session has no plan behind it at all: an
+  // API key, Bedrock, Vertex. That is an empty list rather than a guess.
+  if (!usage.rate_limits_available || usage.rate_limits === null) {
+    return [];
+  }
+  const limits = usage.rate_limits;
+  const named = (Object.keys(WINDOW_MINUTES) as (keyof typeof WINDOW_MINUTES)[]).map((key) =>
+    toUsageWindow(limits[key], WINDOW_MINUTES[key], WINDOW_SCOPE[key]),
+  );
+  // Per-model weekly buckets, which the server names itself.
+  const scoped = (limits.model_scoped ?? []).map((row) =>
+    toUsageWindow(row, WINDOW_MINUTES.seven_day, row.display_name),
+  );
+  return [...named, ...scoped].filter((window): window is UsageWindow => window !== null);
 }
 
 /** Round trips parked on flycod, keyed by the id it must echo back. */
@@ -422,6 +503,10 @@ class Session {
       // them, so this is emitted before the first turn rather than
       // discovered from one.
       emit({ type: "mcp_servers", servers: await settledMount(this.session) });
+      // How much of the plan is already spent, before the session costs
+      // anything: the composer's rings are right for the first message
+      // rather than only after the first turn has been paid for.
+      await this.reportUsage();
     } catch (error) {
       // Shutting down rejects every in-flight control request; that is the
       // exit path, not a failure.
@@ -475,6 +560,17 @@ class Session {
     return this.stores.answer(id, result);
   }
 
+  /**
+   * Asks the CLI what is left of the plan and reports it.
+   *
+   * The control request needs a live transport, so this is only ever called
+   * from inside the session's own lifetime — never after `close`.
+   */
+  private async reportUsage(): Promise<void> {
+    const usage = await this.session.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
+    emit({ type: "plan_usage", windows: toUsageWindows(usage) });
+  }
+
   /** Forwards every SDK message to flycod, verbatim. */
   private async drain(): Promise<void> {
     for await (const message of this.session) {
@@ -484,6 +580,12 @@ class Session {
         emit({ type: "capabilities", capabilities: message.capabilities ?? [] });
       }
       emit({ type: "sdk_message", message });
+      // A `result` closes a turn, and a turn is the only thing that moves
+      // the plan's meters — so the reading is taken here rather than on a
+      // timer that would poll the vendor through every idle hour.
+      if (message.type === "result" && !this.closing) {
+        await this.reportUsage();
+      }
     }
   }
 

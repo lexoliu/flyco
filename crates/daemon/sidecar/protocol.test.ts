@@ -32,6 +32,7 @@ const EVENT_TAGS = [
   "started",
   "capabilities",
   "models",
+  "plan_usage",
   "mcp_servers",
   "sdk_message",
   "approval_request",

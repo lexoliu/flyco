@@ -52,7 +52,7 @@ pub use harness::{
     Availability, ClaudeOauthStart, CodexOauthPending, CodexOauthStart, CompleteClaudeOauth,
     ContextWindow, Feature, HarnessAccountView, HarnessCredentialInput, HarnessEvent,
     HarnessFeature, HarnessKind, LinkHarnessAccount, ModelChoice, ModelChoiceError, ModelOption,
-    PermissionMode, ReportModels, UsageReport, availability, builtin_models, matrix,
+    PermissionMode, ReportModels, ReportUsage, UsageReport, availability, builtin_models, matrix,
 };
 pub use host::{
     ENROLLMENT_TOKEN_TTL_SECONDS, EnrollHost, EnrolledHost, Enrollment, EnrollmentToken,
@@ -97,7 +97,7 @@ pub use usage::{
 pub use wire::{
     ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
     ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure,
-    ShellOutcome, ShellStream,
+    ShellOutcome, ShellStream, UsageWindow,
 };
 pub use workdir::{
     DIFF_PATCH_BYTES_MAX, DIRECTORY_ENTRIES_MAX, DirectoryEntry, DirectoryListing, EntryKind,
@@ -110,4 +110,4 @@ pub use workdir::{
 /// Bumped on every incompatible change to [`wire`]; the control plane
 /// refuses daemons speaking a different version (fast fail, no
 /// best-effort compatibility).
-pub const WIRE_PROTOCOL_VERSION: u32 = 9;
+pub const WIRE_PROTOCOL_VERSION: u32 = 10;
