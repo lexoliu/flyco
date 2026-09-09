@@ -18,8 +18,15 @@ use serde_json::Value;
 use tokio::io::AsyncWriteExt as _;
 
 use super::protocol::SessionKey;
+use crate::control::rest::ControlApiError;
 
 /// A transcript stream could not be read or written.
+///
+/// Each variant names the operation that failed and keeps its cause as the
+/// `source`; the sentence a user reads is the whole chain (see
+/// [`crate::harness::describe`]), so a session that failed here says which
+/// request the control plane refused and what it said, not a placeholder
+/// path (issue #231).
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     /// The filesystem refused an operation.
@@ -30,6 +37,22 @@ pub enum StoreError {
         /// The underlying cause.
         #[source]
         source: std::io::Error,
+    },
+    /// The control plane did not take, or did not give back, a stream.
+    #[error("the control plane could not keep the transcript")]
+    ControlPlane {
+        /// What the control plane answered, or why it could not be asked.
+        #[source]
+        source: ControlApiError,
+    },
+    /// The control plane handed back a stream that is not text.
+    #[error("transcript stream {stream} from the control plane is not UTF-8")]
+    NotUtf8 {
+        /// The stream being read.
+        stream: String,
+        /// Where the bytes stopped being text.
+        #[source]
+        source: std::string::FromUtf8Error,
     },
     /// A [`SessionKey`] component could not be used as a path segment.
     ///

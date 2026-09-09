@@ -825,7 +825,8 @@ impl<S: TranscriptStore> Driver<S> {
         let result = match result {
             Ok(result) => result,
             Err(error) => {
-                self.fatal(ClaudeError::Store(error).to_string()).await;
+                self.fatal(super::describe(&ClaudeError::Store(error)))
+                    .await;
                 return false;
             }
         };

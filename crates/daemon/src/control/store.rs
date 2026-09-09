@@ -28,7 +28,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::control::rest::{ControlApi, ControlApiError};
+use crate::control::rest::ControlApi;
 use crate::harness::claude::protocol::SessionKey;
 use crate::harness::claude::store::{StoreError, TranscriptStore};
 
@@ -115,22 +115,9 @@ impl<A: ControlApi> RemoteTranscriptStore<A> {
             .api
             .get_transcript(stream)
             .await
-            .map_err(|error| remote(&error))?;
+            .map_err(|source| StoreError::ControlPlane { source })?;
         self.next_seq.insert(stream.to_owned(), read.batches);
         Ok(read.batches)
-    }
-}
-
-/// A control-plane failure, in the shape the SDK's store contract speaks.
-///
-/// `StoreError` is an I/O vocabulary because M3a's store is a directory;
-/// a network failure is the same *kind* of fact — the transcript could not
-/// be written — so it arrives as one rather than widening the harness's
-/// error surface for a second backend.
-fn remote(error: &ControlApiError) -> StoreError {
-    StoreError::Io {
-        path: std::path::PathBuf::from("<control plane>"),
-        source: std::io::Error::other(error.to_string()),
     }
 }
 
@@ -154,7 +141,7 @@ impl<A: ControlApi> TranscriptStore for RemoteTranscriptStore<A> {
         self.api
             .put_transcript_batch(&stream, seq, body)
             .await
-            .map_err(|error| remote(&error))?;
+            .map_err(|source| StoreError::ControlPlane { source })?;
         self.next_seq.insert(stream.clone(), seq + 1);
 
         tracing::debug!(
@@ -172,12 +159,12 @@ impl<A: ControlApi> TranscriptStore for RemoteTranscriptStore<A> {
             .api
             .get_transcript(&stream)
             .await
-            .map_err(|error| remote(&error))?;
+            .map_err(|source| StoreError::ControlPlane { source })?;
         self.next_seq.insert(stream.clone(), read.batches);
 
-        let text = String::from_utf8(read.body).map_err(|error| StoreError::Io {
-            path: std::path::PathBuf::from(&stream),
-            source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+        let text = String::from_utf8(read.body).map_err(|source| StoreError::NotUtf8 {
+            stream: stream.clone(),
+            source,
         })?;
 
         let entries = text
