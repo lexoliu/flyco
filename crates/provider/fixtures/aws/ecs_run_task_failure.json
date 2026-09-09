@@ -1,0 +1,10 @@
+{
+  "tasks": [],
+  "failures": [
+    {
+      "arn": "arn:aws:ecs:us-west-2:123456789012:cluster/flyco",
+      "reason": "RESOURCE:ENI",
+      "detail": ""
+    }
+  ]
+}

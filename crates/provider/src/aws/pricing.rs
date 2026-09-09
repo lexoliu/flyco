@@ -1,7 +1,7 @@
-//! What an hour costs, from the two places AWS publishes it.
+//! What an hour costs, from the places AWS publishes it.
 //!
 //! Unlike Azure, AWS puts the on-demand price and the spot price behind
-//! different services, so a priced catalog is two reads:
+//! different services, so a priced catalog is several reads:
 //!
 //! * **On-demand** comes from the Price List Query API — `GetProducts` on
 //!   `api.pricing.us-east-1.amazonaws.com`, filtered to one region's Linux,
@@ -15,9 +15,24 @@
 //!   one quoted, because a launch that names no zone is placed in whichever
 //!   one has capacity and is billed at that zone's rate.
 //!
-//! Both are cached with a TTL for the reason Azure's retail prices are: a
-//! spot price moves on its own schedule and a catalog read must not be a
+//! * **A container's rates** come from the same Price List under a different
+//!   offer code, `AmazonECS`: Fargate is sold per vCPU-hour and per
+//!   GiB-hour, with a second pair for Graviton and a third meter for the
+//!   ephemeral disk beyond a task's free allowance. See [`FargatePrices`].
+//!
+//! All three are cached with a TTL for the reason Azure's retail prices are:
+//! a spot price moves on its own schedule and a catalog read must not be a
 //! page-walk every time.
+//!
+//! **Fargate Spot is the one price AWS publishes nowhere.** There is no Spot
+//! meter under `AmazonECS`, no Fargate offer code beside it, and
+//! `DescribeSpotPriceHistory` prices EC2 instance types rather than tasks;
+//! [aws.amazon.com/fargate/pricing](https://aws.amazon.com/fargate/pricing/)
+//! states only that the rate is "set by AWS Fargate and adjust[s] gradually"
+//! at up to 70% off. So this module publishes no spot rate for a container
+//! and [`fargate`](super::fargate) quotes the on-demand one — see
+//! [`fargate::catalog`](super::fargate::catalog) for why that is the
+//! quotable answer rather than a discount flyco invented.
 //!
 //! `clippy::future_not_send` is allowed across this module for the reason it
 //! is in `azure::pricing`: `Send`-ness follows from the concrete transport,
@@ -25,6 +40,7 @@
 //! driver is tested against.
 #![expect(clippy::future_not_send, reason = "see the module documentation")]
 
+use flyco_core::machine::CpuArchitecture;
 use flyco_core::money::Usd;
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +68,42 @@ pub const GET_PRODUCTS_TARGET: &str = "AWSPriceListService.GetProducts";
 
 /// The service whose products are EC2 instance-hours.
 pub const EC2_SERVICE_CODE: &str = "AmazonEC2";
+
+/// The service whose products are ECS's own meters, Fargate's included.
+///
+/// Fargate has no offer code of its own: a task-hour is billed under
+/// `AmazonECS`, per vCPU and per GiB, which is why a container's price is
+/// read from here rather than from [`EC2_SERVICE_CODE`].
+pub const ECS_SERVICE_CODE: &str = "AmazonECS";
+
+/// The product family both Fargate rate meters sit in.
+///
+/// Named because `AmazonECS` also publishes `Compute Metering` — the
+/// zero-rated meters that account for tasks on EC2 capacity — under names
+/// that are otherwise indistinguishable from Fargate's.
+pub const COMPUTE_FAMILY: &str = "Compute";
+
+/// The value AWS puts in `cpuArchitecture` on the Graviton Fargate meters.
+///
+/// The x86-64 meters carry no such attribute at all, so this is the whole
+/// discriminator between the two price pairs.
+pub const ARM_ARCHITECTURE: &str = "ARM";
+
+/// The unit an instance-hour is published in.
+pub const INSTANCE_HOUR_UNIT: &str = "Hrs";
+
+/// The unit Fargate's vCPU and memory rates are published in.
+///
+/// Lowercase, and different from [`INSTANCE_HOUR_UNIT`] on the identical
+/// question, which is why the unit is a parameter rather than a constant
+/// inside the reader.
+pub const FARGATE_HOUR_UNIT: &str = "hours";
+
+/// The unit Fargate's ephemeral-storage rate is published in.
+pub const FARGATE_STORAGE_UNIT: &str = "GB-Hours";
+
+/// Hours in the month AWS prices monthly capacity by.
+pub const HOURS_PER_MONTH: f64 = 730.0;
 
 /// How long a region's prices are reused for.
 pub const CACHE_TTL_SECONDS: u64 = 6 * 60 * 60;
@@ -141,6 +193,51 @@ impl GetProducts {
             next_token,
         }
     }
+
+    /// One region's Fargate meters, narrowed by the attribute that says what
+    /// each of them counts.
+    ///
+    /// Three queries rather than one, because the only filters that separate
+    /// Fargate's rates from the rest of `AmazonECS` are the ones naming the
+    /// resource being metered: `cputype`, `memorytype` and `storagetype`. A
+    /// single `productFamily` query would walk several hundred ECS Managed
+    /// Instances products to find four.
+    fn fargate(
+        region: &str,
+        resource: &'static str,
+        value: &'static str,
+        next_token: Option<String>,
+    ) -> Self {
+        Self {
+            service_code: ECS_SERVICE_CODE,
+            filters: vec![
+                ProductFilter::term("regionCode", region),
+                ProductFilter::term("productFamily", COMPUTE_FAMILY),
+                ProductFilter::term(resource, value),
+            ],
+            max_results: 100,
+            next_token,
+        }
+    }
+
+    /// The per-vCPU-hour meters, one per architecture and one for Windows.
+    #[must_use]
+    pub fn fargate_vcpu(region: &str, next_token: Option<String>) -> Self {
+        Self::fargate(region, "cputype", "perCPU", next_token)
+    }
+
+    /// The per-GiB-hour memory meters, likewise.
+    #[must_use]
+    pub fn fargate_memory(region: &str, next_token: Option<String>) -> Self {
+        Self::fargate(region, "memorytype", "perGB", next_token)
+    }
+
+    /// The ephemeral-storage meter, of which there is one: the rate for the
+    /// disk beyond a task's free allowance does not vary by architecture.
+    #[must_use]
+    pub fn fargate_storage(region: &str, next_token: Option<String>) -> Self {
+        Self::fargate(region, "storagetype", "default", next_token)
+    }
 }
 
 /// One page of priced products.
@@ -176,6 +273,14 @@ struct ProductAttributes {
     instance_type: String,
     #[serde(rename = "volumeApiName", default)]
     volume_api_name: String,
+    /// `ARM` on a Fargate meter that prices Graviton, absent on the x86-64
+    /// one. Absence is how the two are told apart: AWS states the
+    /// architecture only on the meter that is not the default.
+    #[serde(rename = "cpuArchitecture", default)]
+    cpu_architecture: String,
+    /// `Windows` on the Windows-container meters, absent on the Linux ones.
+    #[serde(rename = "operatingSystem", default)]
+    operating_system: String,
 }
 
 /// The pricing half of a product.
@@ -185,14 +290,19 @@ struct Terms {
     on_demand: serde_json::Map<String, serde_json::Value>,
 }
 
-/// The Linux on-demand price of one instance type in one region.
+/// The dollar amount of the one on-demand dimension quoted in `unit`.
 ///
 /// The terms are nested two maps deep under offer and rate codes that are
 /// generated per product, so they are walked rather than indexed: there is
-/// exactly one on-demand term with exactly one price dimension for these
-/// filters, and reaching it by position would be a bug the first time AWS
-/// publishes a second.
-fn on_demand_hourly(product: &Product) -> Option<Usd> {
+/// exactly one on-demand term with exactly one price dimension in each of
+/// these units, and reaching it by position would be a bug the first time
+/// AWS publishes a second. The unit is part of the question because the same
+/// product routinely carries more than one dimension — a `Quantity` beside
+/// an `Hrs`, and every meter in this crate is a rate rather than a count.
+///
+/// A `0.0000000000` rate is a free-tier or placeholder meter rather than a
+/// price anything can be run at, so it reads as no price at all.
+fn rate_in(product: &Product, unit: &str) -> Option<f64> {
     let dimensions = product
         .terms
         .on_demand
@@ -201,9 +311,7 @@ fn on_demand_hourly(product: &Product) -> Option<Usd> {
         .flat_map(serde_json::Map::values);
 
     for dimension in dimensions {
-        // `Hrs` — the same product also carries a `Quantity` dimension on
-        // some meters, which is not a rate per hour.
-        if dimension.get("unit").and_then(serde_json::Value::as_str) != Some("Hrs") {
+        if dimension.get("unit").and_then(serde_json::Value::as_str) != Some(unit) {
             continue;
         }
         let quoted = dimension
@@ -211,39 +319,25 @@ fn on_demand_hourly(product: &Product) -> Option<Usd> {
             .get("USD")
             .and_then(serde_json::Value::as_str)?;
         let price = quoted.parse::<f64>().ok()?;
-        // A `0.0000000000` rate is a free-tier or placeholder meter, not a
-        // price a machine can be run at.
         if price > 0.0 {
-            return Some(micros(price));
+            return Some(price);
         }
     }
     None
+}
+
+/// The Linux on-demand price of one instance type in one region.
+fn on_demand_hourly(product: &Product) -> Option<Usd> {
+    rate_in(product, INSTANCE_HOUR_UNIT).map(micros)
 }
 
 fn storage_gib_hourly(product: &Product) -> Option<Usd> {
     if product.product.attributes.volume_api_name != "gp3" {
         return None;
     }
-    let dimensions = product
-        .terms
-        .on_demand
-        .values()
-        .filter_map(|term| term.get("priceDimensions")?.as_object())
-        .flat_map(serde_json::Map::values);
-    for dimension in dimensions {
-        if dimension.get("unit").and_then(serde_json::Value::as_str) != Some("GB-Mo") {
-            continue;
-        }
-        let quoted = dimension
-            .get("pricePerUnit")?
-            .get("USD")
-            .and_then(serde_json::Value::as_str)?;
-        let monthly = quoted.parse::<f64>().ok()?;
-        if monthly > 0.0 {
-            return Some(micros(monthly / 730.0));
-        }
-    }
-    None
+    // EBS capacity is published per GiB-month, and a month here is AWS's own
+    // 730 hours rather than the calendar's.
+    rate_in(product, "GB-Mo").map(|monthly| micros(monthly / HOURS_PER_MONTH))
 }
 
 /// A decimal amount of dollars as exact microdollars.
@@ -267,6 +361,46 @@ pub struct MachinePrices {
     pub spot: Option<Usd>,
 }
 
+/// What Fargate charges for one architecture's capacity, per hour.
+///
+/// Per vCPU and per GiB rather than per machine, because that is how the
+/// service sells it: a size is a point flyco picks on the two meters, and
+/// its hourly price is the pair multiplied out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FargateRates {
+    /// One vCPU for one hour.
+    pub vcpu_hourly: Usd,
+    /// One GiB of memory for one hour.
+    pub memory_gib_hourly: Usd,
+}
+
+/// One region's Fargate rates, per architecture.
+///
+/// Each half is optional because a region that publishes no meter for an
+/// architecture is a region that does not sell it — Graviton Fargate reached
+/// the regions at its own pace — and a container flyco cannot price is one it
+/// must not offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FargatePrices {
+    /// The x86-64 rates.
+    pub x86_64: Option<FargateRates>,
+    /// The Graviton rates.
+    pub arm64: Option<FargateRates>,
+    /// One GiB of ephemeral disk beyond the free allowance, for one hour.
+    pub ephemeral_gib_hourly: Option<Usd>,
+}
+
+impl FargatePrices {
+    /// The rates for one architecture, when the region sells it.
+    #[must_use]
+    pub const fn rates(&self, architecture: CpuArchitecture) -> Option<FargateRates> {
+        match architecture {
+            CpuArchitecture::X8664 => self.x86_64,
+            CpuArchitecture::Arm64 => self.arm64,
+        }
+    }
+}
+
 /// One region's prices, and when they stop being reused.
 #[derive(Debug, Clone)]
 struct CachedRegion {
@@ -276,17 +410,69 @@ struct CachedRegion {
     expires_after: u64,
 }
 
+/// One region's Fargate rates, and when they stop being reused.
+#[derive(Debug, Clone)]
+struct CachedFargate {
+    region: String,
+    prices: FargatePrices,
+    expires_after: u64,
+}
+
 /// Prices per region, with a time-to-live.
 #[derive(Debug, Clone, Default)]
 pub struct PriceCatalog {
     cached: Option<CachedRegion>,
+    fargate: Option<CachedFargate>,
 }
 
 impl PriceCatalog {
     /// An empty catalog.
     #[must_use]
     pub const fn new() -> Self {
-        Self { cached: None }
+        Self {
+            cached: None,
+            fargate: None,
+        }
+    }
+
+    /// One region's Fargate rates, cached for [`CACHE_TTL_SECONDS`].
+    ///
+    /// Cached separately from the instance prices because they are read for
+    /// a different reason: a region's container entries need these three
+    /// meters and none of the instance page-walk, and a driver that read
+    /// both would spend eleven calls to publish four sizes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the Price List refuses a read or answers
+    /// with something this driver cannot read.
+    pub async fn fargate_prices<T, C>(
+        &mut self,
+        transport: &T,
+        clock: &C,
+        key: &AccessKey,
+        region: &str,
+        now_unix: u64,
+    ) -> Result<FargatePrices, ProviderError>
+    where
+        T: HttpTransport,
+        C: MonotonicClock,
+    {
+        let now = clock.elapsed_seconds();
+        if let Some(cached) = &self.fargate
+            && cached.region == region
+            && now < cached.expires_after
+        {
+            return Ok(cached.prices);
+        }
+
+        let prices = read_fargate(transport, key, region, now_unix).await?;
+        self.fargate = Some(CachedFargate {
+            region: region.to_owned(),
+            prices,
+            expires_after: now.saturating_add(CACHE_TTL_SECONDS),
+        });
+        Ok(prices)
     }
 
     /// Every priced instance type in one region.
@@ -334,6 +520,161 @@ impl PriceCatalog {
         let cached = self.cached.as_ref().expect("the cache was just filled");
         Ok((&cached.prices, cached.storage_gib_hourly))
     }
+}
+
+/// One region's three Fargate meters, as the rates a size is priced from.
+///
+/// A pair is kept only when both halves of it were published: half of an
+/// hour's cost is not a price flyco may quote, and an architecture with no
+/// meter in this region is one the region does not sell.
+async fn read_fargate<T: HttpTransport>(
+    transport: &T,
+    key: &AccessKey,
+    region: &str,
+    now_unix: u64,
+) -> Result<FargatePrices, ProviderError> {
+    let vcpus =
+        read_architecture_rates(transport, key, region, now_unix, GetProducts::fargate_vcpu)
+            .await?;
+    let memory = read_architecture_rates(
+        transport,
+        key,
+        region,
+        now_unix,
+        GetProducts::fargate_memory,
+    )
+    .await?;
+    let ephemeral_gib_hourly = read_ephemeral_rate(transport, key, region, now_unix).await?;
+
+    let rate_of = |rates: &[(CpuArchitecture, Usd)], architecture: CpuArchitecture| {
+        rates
+            .iter()
+            .find(|(published, _)| *published == architecture)
+            .map(|(_, rate)| *rate)
+    };
+    let pair = |architecture: CpuArchitecture| {
+        Some(FargateRates {
+            vcpu_hourly: rate_of(&vcpus, architecture)?,
+            memory_gib_hourly: rate_of(&memory, architecture)?,
+        })
+    };
+
+    Ok(FargatePrices {
+        x86_64: pair(CpuArchitecture::X8664),
+        arm64: pair(CpuArchitecture::Arm64),
+        ephemeral_gib_hourly,
+    })
+}
+
+/// Every architecture one Fargate query prices, with its hourly rate.
+///
+/// The Windows meters are dropped rather than folded in: flyco boots Ubuntu,
+/// and they are the only products in these queries that name an operating
+/// system at all, so absence is the test. What is left is at most one rate
+/// per architecture, and the ARM one is the only one AWS labels — an
+/// unlabelled Linux meter is the x86-64 rate.
+async fn read_architecture_rates<T: HttpTransport>(
+    transport: &T,
+    key: &AccessKey,
+    region: &str,
+    now_unix: u64,
+    query: fn(&str, Option<String>) -> GetProducts,
+) -> Result<Vec<(CpuArchitecture, Usd)>, ProviderError> {
+    let mut rates: Vec<(CpuArchitecture, Usd)> = Vec::new();
+    let mut next = None;
+
+    loop {
+        let page = read_products(transport, key, region, now_unix, query, next).await?;
+        for product in products_of(&page) {
+            if !product.product.attributes.operating_system.is_empty() {
+                continue;
+            }
+            let Some(rate) = rate_in(&product, FARGATE_HOUR_UNIT) else {
+                continue;
+            };
+            let architecture = if product.product.attributes.cpu_architecture == ARM_ARCHITECTURE {
+                CpuArchitecture::Arm64
+            } else {
+                CpuArchitecture::X8664
+            };
+            if !rates.iter().any(|(seen, _)| *seen == architecture) {
+                rates.push((architecture, micros(rate)));
+            }
+        }
+        next = page.next_token.filter(|token| !token.is_empty());
+        if next.is_none() {
+            return Ok(rates);
+        }
+    }
+}
+
+/// The one ephemeral-storage rate a region publishes, when it publishes one.
+///
+/// Unlike the capacity meters it carries no architecture: the disk beyond a
+/// task's free allowance costs the same on Graviton as on x86-64.
+async fn read_ephemeral_rate<T: HttpTransport>(
+    transport: &T,
+    key: &AccessKey,
+    region: &str,
+    now_unix: u64,
+) -> Result<Option<Usd>, ProviderError> {
+    let mut next = None;
+    loop {
+        let page = read_products(
+            transport,
+            key,
+            region,
+            now_unix,
+            GetProducts::fargate_storage,
+            next,
+        )
+        .await?;
+        for product in products_of(&page) {
+            if let Some(rate) = rate_in(&product, FARGATE_STORAGE_UNIT) {
+                return Ok(Some(micros(rate)));
+            }
+        }
+        next = page.next_token.filter(|token| !token.is_empty());
+        if next.is_none() {
+            return Ok(None);
+        }
+    }
+}
+
+/// One page of a Price List query.
+async fn read_products<T: HttpTransport>(
+    transport: &T,
+    key: &AccessKey,
+    region: &str,
+    now_unix: u64,
+    query: fn(&str, Option<String>) -> GetProducts,
+    next_token: Option<String>,
+) -> Result<ProductPage, ProviderError> {
+    json_rpc(
+        transport,
+        key,
+        PRICING_ENDPOINT,
+        Scope {
+            region: PRICING_REGION,
+            service: SERVICE,
+        },
+        GET_PRODUCTS_TARGET,
+        &query(region, next_token),
+        now_unix,
+    )
+    .await
+}
+
+/// The products of one page that this driver can read at all.
+///
+/// A `PriceList` entry that does not parse is skipped rather than fatal, for
+/// the reason the instance walk skips one: the query returns every meter AWS
+/// publishes under those filters, and one flyco has no shape for must not
+/// take the region's whole price list with it.
+fn products_of(page: &ProductPage) -> impl Iterator<Item = Product> + '_ {
+    page.price_list
+        .iter()
+        .filter_map(|encoded| serde_json::from_str::<Product>(encoded).ok())
 }
 
 async fn read_storage<T: HttpTransport>(

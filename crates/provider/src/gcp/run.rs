@@ -52,13 +52,13 @@
 use core::fmt;
 use std::collections::BTreeMap;
 
-use base64::Engine as _;
 use flyco_core::MachineId;
 use flyco_core::machine::{
     CloudProviderKind, CpuArchitecture, MachineCapacity, MachineCatalogEntry, MachineLineage,
     MachinePricing, MachineState, OsFamily, Runtime, StoragePricing,
 };
 use flyco_core::money::Usd;
+use flyco_core::release;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -68,7 +68,7 @@ use crate::clock::{MonotonicClock, Timer, WallClock};
 use crate::host::CONFIG_ENV;
 use crate::http::{HttpRequest, HttpResponse, HttpTransport, Method};
 use crate::polling::{MAX_POLL_ATTEMPTS, poll_delay};
-use crate::{CapacityMode, Machine, ProviderError, ProvisionRequest, flycod};
+use crate::{CapacityMode, Machine, ProviderError, ProvisionRequest};
 
 /// The Cloud Run Admin API's base URL.
 ///
@@ -836,22 +836,6 @@ pub fn refusal(project: &str, response: &HttpResponse) -> ProviderError {
     ProviderError::Refused { code, message }
 }
 
-/// The image a session runs in, at the tag that matches this control plane.
-///
-/// Pinned to the wire protocol rather than to `latest`, which the host path
-/// may use because a host's daemon is upgraded with its image: a job flyco
-/// starts must speak the protocol the control plane that started it speaks,
-/// and `latest` would let a republished image break every running session's
-/// relay at once.
-#[must_use]
-pub fn session_image() -> String {
-    format!(
-        "{}:wire-{}",
-        flyco_core::release::SESSION_IMAGE,
-        flyco_core::WIRE_PROTOCOL_VERSION
-    )
-}
-
 /// What a create found when it asked Cloud Run for the job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JobCreation {
@@ -930,12 +914,10 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
 
     /// The job body for one provisioning request.
     fn job_body(request: &ProvisionRequest, size: Size) -> Result<Job, ProviderError> {
-        let config = flycod::render(&request.bootstrap)
-            .map_err(|_| ProviderError::Malformed("the flycod configuration did not render"))?;
         Ok(Self::job_body_with_config(
             size,
-            session_image(),
-            base64::engine::general_purpose::STANDARD.encode(config),
+            release::session_image_for_wire_protocol(),
+            crate::host::encoded_config(&request.bootstrap)?,
             labels(request.machine, &request.bootstrap.session.to_string()),
         ))
     }
@@ -1196,8 +1178,8 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
              start a machine that cannot reach its session",
         ))?;
         // The image is carried over rather than re-derived from
-        // [`session_image`], although it could be: a resize changes the size
-        // and nothing else. A session that came up on `wire-11` keeps
+        // `release::session_image_for_wire_protocol`, although it could be: a
+        // resize changes the size and nothing else. A session that came up on `wire-11` keeps
         // speaking `wire-11` across it, and bundling an image upgrade into a
         // size change would make one operation two.
         let image = view.image().ok_or(ProviderError::Malformed(
@@ -1296,7 +1278,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
 mod tests {
     use super::{
         Handle, MEMORY_GIB_PER_VCPU, Operation, SERVICE_DISABLED, Size, TIER_ONE_REGIONS,
-        TIER_TWO_REGIONS, Tier, catalog, refusal, session_image,
+        TIER_TWO_REGIONS, Tier, catalog, refusal,
     };
     use crate::ProviderError;
     use crate::http::HttpResponse;
@@ -1485,16 +1467,5 @@ mod tests {
             .failure()
             .expect("a finished failure is a failure");
         assert_eq!(failure.code(), Some("QUOTA_EXCEEDED"));
-    }
-
-    #[test]
-    fn the_image_is_pinned_to_this_control_planes_wire_protocol() {
-        assert_eq!(
-            session_image(),
-            format!(
-                "ghcr.io/lexoliu/flyco-session:wire-{}",
-                flyco_core::WIRE_PROTOCOL_VERSION
-            )
-        );
     }
 }

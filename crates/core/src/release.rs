@@ -76,6 +76,24 @@ pub const SESSION_IMAGE: &str = "ghcr.io/lexoliu/flyco-session";
 /// names another image.
 pub const SESSION_IMAGE_LATEST: &str = "ghcr.io/lexoliu/flyco-session:latest";
 
+/// [`SESSION_IMAGE`] at the tag matching this control plane's wire protocol.
+///
+/// What every *managed* container runtime starts — Azure Container Apps,
+/// Cloud Run and ECS on Fargate — and deliberately not `latest`, which is
+/// what a machine the **user** owns runs: the user chose that image and may
+/// be running an older daemon on purpose, while a container flyco starts on
+/// their behalf has to speak to the control plane that started it. Pinning
+/// it here is also what stops a republished image from breaking every
+/// running session's relay at once.
+///
+/// One function rather than one per driver, because three drivers agreeing
+/// about a tag by each formatting it themselves is three places for the
+/// agreement to lapse.
+#[must_use]
+pub fn session_image_for_wire_protocol() -> String {
+    format!("{SESSION_IMAGE}:wire-{}", crate::WIRE_PROTOCOL_VERSION)
+}
+
 /// The 64-bit x86 build.
 pub const X86_64: PublishedBinary = PublishedBinary {
     uname: "x86_64",
@@ -179,7 +197,23 @@ pub fn object(name: &str) -> Option<PublishedObject> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ASSETS, BINARIES, HOST_UNIT, INSTALLER, OBJECT_COUNT, OBJECTS, object};
+    use super::{
+        ASSETS, BINARIES, HOST_UNIT, INSTALLER, OBJECT_COUNT, OBJECTS, SESSION_IMAGE,
+        SESSION_IMAGE_LATEST, object, session_image_for_wire_protocol,
+    };
+
+    #[test]
+    fn a_managed_container_runs_the_image_tagged_with_this_wire_protocol() {
+        let pinned = session_image_for_wire_protocol();
+        assert_eq!(
+            pinned,
+            format!("{SESSION_IMAGE}:wire-{}", crate::WIRE_PROTOCOL_VERSION)
+        );
+        // Never `latest`: that tag is the *user's* choice on hardware they
+        // own, and a republished `latest` would break every running
+        // session's relay at once.
+        assert_ne!(pinned, SESSION_IMAGE_LATEST);
+    }
 
     #[test]
     fn every_published_object_is_named_once() {

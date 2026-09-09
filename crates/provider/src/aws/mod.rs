@@ -69,6 +69,7 @@
 
 pub mod costs;
 pub mod ec2;
+pub mod fargate;
 pub mod iam;
 pub mod identity;
 pub mod image;
@@ -320,8 +321,32 @@ impl Default for AwsWorkspace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RegionNetwork {
     region: String,
-    subnet_id: String,
+    /// Every subnet of the region's default VPC, in availability-zone order.
+    ///
+    /// All of them rather than one, because the two runtimes want different
+    /// answers from the same read: an instance is launched into
+    /// [`first`](RegionNetwork::subnet) so that two provisions in a region
+    /// land in the same zone — a spot price is quoted per zone, and a disk
+    /// cannot leave one — while a Fargate task names them all, having no disk
+    /// to keep and better odds of capacity for it.
+    subnet_ids: Vec<String>,
     security_group_id: String,
+}
+
+impl RegionNetwork {
+    /// The subnet a virtual machine is launched into.
+    ///
+    /// The first in zone order, which is what makes it stable across
+    /// provisions: an unordered "first" would move with the API's own
+    /// ordering.
+    fn subnet(&self) -> Result<String, ProviderError> {
+        self.subnet_ids
+            .first()
+            .cloned()
+            .ok_or(ProviderError::Malformed(
+                "this account's default VPC has no subnet in the region",
+            ))
+    }
 }
 
 /// The AWS driver.
@@ -341,6 +366,10 @@ pub struct AwsProvider<T = LiveTransport, C = SystemClock, K = SystemTimer, W = 
     prices: PriceCatalog,
     region_access: Option<RegionAccess>,
     network: Option<RegionNetwork>,
+    /// The region whose ECS cluster this driver has already confirmed, for
+    /// the reason [`network`](Self::network) is cached: a container provision
+    /// would otherwise describe the same cluster on every call.
+    cluster: Option<String>,
 }
 
 impl AwsProvider {
@@ -378,6 +407,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
             prices: PriceCatalog::new(),
             region_access: None,
             network: None,
+            cluster: None,
         }
     }
 
@@ -751,12 +781,15 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
         // an unordered "first" would move with the API's own ordering, and a
         // spot price is quoted per zone.
         available.sort_by(|left, right| left.availability_zone.cmp(&right.availability_zone));
-        let subnet = available
+        let subnet_ids: Vec<String> = available
             .into_iter()
-            .next()
-            .ok_or(ProviderError::Malformed(
+            .map(|subnet| subnet.subnet_id)
+            .collect();
+        if subnet_ids.is_empty() {
+            return Err(ProviderError::Malformed(
                 "this account's default VPC has no subnet in the region",
-            ))?;
+            ));
+        }
 
         let group_name = names::security_group(region);
         let groups: ec2::DescribeSecurityGroupsResponse = self
@@ -782,7 +815,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
 
         let network = RegionNetwork {
             region: region.to_owned(),
-            subnet_id: subnet.subnet_id,
+            subnet_ids,
             security_group_id,
         };
         self.network = Some(network.clone());
@@ -978,7 +1011,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
             instance_type: request.spec.machine_type.clone(),
             min_count: 1,
             max_count: 1,
-            subnet_id: network.subnet_id.clone(),
+            subnet_id: network.subnet()?,
             security_group_id: vec![network.security_group_id.clone()],
             key_name: self.workspace.key_name.clone(),
             user_data: cloud_init::render(&config, &self.workspace.flycod_installer_url)?,
@@ -1395,17 +1428,77 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
                 "read an AWS region's catalog"
             );
             entries.extend(report.offered);
+
+            // The same account also sells containers, at rates published
+            // under a different offer code — three reads rather than the
+            // instance walk, and a region that publishes none of them offers
+            // no container here rather than an unpriced one.
+            let containers = self.fargate_catalog(&region).await?;
+            tracing::debug!(
+                %region,
+                offered = containers.len(),
+                "read an AWS region's Fargate catalog"
+            );
+            entries.extend(containers);
         }
         Ok(entries)
     }
 
+    /// A virtual machine on EC2, or a container on Fargate — see
+    /// [`fargate`].
+    async fn provision(&mut self, request: &ProvisionRequest) -> Result<Machine, ProviderError> {
+        match request.spec.runtime {
+            Runtime::Vm => self.provision_instance(request).await,
+            Runtime::Container => self.provision_task(request).await,
+        }
+    }
+
+    /// Stop, `ModifyInstanceAttribute`, start on a virtual machine; stop and
+    /// run a new revision at the new size on a container — see [`fargate`].
+    async fn resize(
+        &mut self,
+        machine: &Machine,
+        new_machine_type: &str,
+    ) -> Result<Machine, ProviderError> {
+        match machine.runtime {
+            Runtime::Vm => self.resize_instance(machine, new_machine_type).await,
+            Runtime::Container => self.resize_task(machine, new_machine_type).await,
+        }
+    }
+
+    async fn deallocate(&mut self, machine: &Machine) -> Result<(), ProviderError> {
+        match machine.runtime {
+            Runtime::Vm => self.deallocate_instance(machine).await,
+            Runtime::Container => self.deallocate_task(machine).await,
+        }
+    }
+
+    async fn start(&mut self, machine: &Machine) -> Result<Machine, ProviderError> {
+        match machine.runtime {
+            Runtime::Vm => self.start_instance(machine).await,
+            Runtime::Container => self.start_task(machine).await,
+        }
+    }
+
+    async fn destroy(&mut self, machine: &Machine) -> Result<(), ProviderError> {
+        match machine.runtime {
+            Runtime::Vm => self.destroy_instance(machine).await,
+            Runtime::Container => self.destroy_task(machine).await,
+        }
+    }
+}
+
+impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T, C, K, W> {
     /// The three gates, the workspace network, the address, the machine.
     ///
     /// The address is allocated before the launch for Azure's reason — a
     /// machine has to be created *with* the network it will answer on — and
     /// released again if the launch fails, because an elastic IP nothing is
     /// using is still billed by the hour.
-    async fn provision(&mut self, request: &ProvisionRequest) -> Result<Machine, ProviderError> {
+    async fn provision_instance(
+        &mut self,
+        request: &ProvisionRequest,
+    ) -> Result<Machine, ProviderError> {
         let MachineSpec {
             region,
             machine_type,
@@ -1498,7 +1591,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
     /// settled states, never from the instance's own reported type: a
     /// modification that failed leaves the instance running on the old type
     /// with nothing to distinguish it.
-    async fn resize(
+    async fn resize_instance(
         &mut self,
         machine: &Machine,
         new_machine_type: &str,
@@ -1544,7 +1637,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
         })
     }
 
-    async fn deallocate(&mut self, machine: &Machine) -> Result<(), ProviderError> {
+    async fn deallocate_instance(&self, machine: &Machine) -> Result<(), ProviderError> {
         let region = machine.region.clone();
         self.ec2_call(
             &region,
@@ -1557,7 +1650,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
         Ok(())
     }
 
-    async fn start(&mut self, machine: &Machine) -> Result<Machine, ProviderError> {
+    async fn start_instance(&self, machine: &Machine) -> Result<Machine, ProviderError> {
         let region = machine.region.clone();
         self.ec2_call(
             &region,
@@ -1582,7 +1675,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
     /// Then the instance, then the address, then the volume — which is only
     /// deletable once it has actually detached, so that is waited for rather
     /// than assumed.
-    async fn destroy(&mut self, machine: &Machine) -> Result<(), ProviderError> {
+    async fn destroy_instance(&self, machine: &Machine) -> Result<(), ProviderError> {
         let region = machine.region.clone();
         let described = self.describe_instance(&region, &machine.native_id).await?;
         let volume = described.root_volume().map(ToOwned::to_owned);

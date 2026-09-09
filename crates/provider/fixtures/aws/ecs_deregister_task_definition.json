@@ -1,0 +1,47 @@
+{
+  "taskDefinition": {
+    "taskDefinitionArn": "arn:aws:ecs:us-west-2:123456789012:task-definition/flyco-6f2a1c0e-4b3d-4f8a-9c2e-7d1b5a930e42:2",
+    "family": "flyco-6f2a1c0e-4b3d-4f8a-9c2e-7d1b5a930e42",
+    "revision": 2,
+    "status": "INACTIVE",
+    "requiresCompatibilities": [
+      "FARGATE"
+    ],
+    "networkMode": "awsvpc",
+    "cpu": "4096",
+    "memory": "8192",
+    "runtimePlatform": {
+      "operatingSystemFamily": "LINUX",
+      "cpuArchitecture": "X86_64"
+    },
+    "ephemeralStorage": {
+      "sizeInGiB": 40
+    },
+    "containerDefinitions": [
+      {
+        "name": "session",
+        "image": "ghcr.io/lexoliu/flyco-session:wire-9",
+        "essential": true,
+        "stopTimeout": 120,
+        "cpu": 0,
+        "portMappings": [],
+        "mountPoints": [],
+        "volumesFrom": [],
+        "environment": [
+          {
+            "name": "FLYCO_DAEMON_CONFIG",
+            "value": "W2RhZW1vbl0KY29udHJvbF9wbGFuZV91cmwgPSAiaHR0cHM6Ly9mbHljby5kZXYvIgpkYWVtb25fdG9rZW4gPSAiZmRfYW4tYWxyZWFkeS1wcm92aXNpb25lZC1zZXNzaW9uIgpydW50aW1lID0gImNvbnRhaW5lciIK"
+          }
+        ]
+      }
+    ],
+    "volumes": [],
+    "placementConstraints": [],
+    "compatibilities": [
+      "EC2",
+      "FARGATE"
+    ],
+    "registeredAt": 1788004800.412,
+    "registeredBy": "arn:aws:iam::123456789012:user/flyco"
+  }
+}
