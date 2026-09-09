@@ -385,11 +385,10 @@ pub fn catalog(region: &str, tier: Tier) -> Vec<MachineCatalogEntry> {
 /// stop produces a *different* execution of the same job — so the pair is
 /// what [`Machine::native_id`] carries, spelled `<job>/<execution>`.
 ///
-/// It is also how this driver tells its own two runtimes apart without a
-/// field on [`Machine`]: a Compute Engine machine's native id is an absolute
-/// `https://` URL, and [`Handle::parse`] accepts only a name flyco itself
-/// derived from a [`MachineId`] followed by a single path segment. The two
-/// shapes cannot be confused for one another.
+/// Which runtime a machine is comes from [`Machine::runtime`], not from the
+/// shape of this string; the handle is only read once that field has said
+/// the machine is a job, and a container machine whose id does not spell a
+/// job is a corrupt row, refused rather than guessed at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Handle {
     /// The Cloud Run job, named from the machine id.
@@ -399,18 +398,24 @@ pub struct Handle {
 }
 
 impl Handle {
-    /// Reads a handle out of a machine's native id, or `None` when the id
-    /// describes something that is not a Cloud Run job.
-    #[must_use]
-    pub fn parse(native_id: &str) -> Option<Self> {
-        let (job, execution) = native_id.split_once('/')?;
+    /// Reads a handle out of a container machine's native id.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::Malformed`] when the id is not `<job>/<execution>`
+    /// with a job flyco itself named.
+    pub fn parse(native_id: &str) -> Result<Self, ProviderError> {
+        const MALFORMED: ProviderError = ProviderError::Malformed(
+            "this machine's provider-native id names no Cloud Run execution",
+        );
+        let (job, execution) = native_id.split_once('/').ok_or(MALFORMED)?;
         if execution.is_empty() || execution.contains('/') {
-            return None;
+            return Err(MALFORMED);
         }
-        // The job half has to be a name flyco derived, which is what keeps
-        // this disjoint from every other id shape the driver produces.
-        names::machine_named(job)?;
-        Some(Self {
+        // The job half has to be a name flyco derived: anything else is an
+        // id this driver never wrote.
+        names::machine_named(job).ok_or(MALFORMED)?;
+        Ok(Self {
             job: job.to_owned(),
             execution: execution.to_owned(),
         })
@@ -1092,6 +1097,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
         Machine {
             id: machine,
             native_id: handle.to_string(),
+            runtime: Runtime::Container,
             region: region.to_owned(),
             state: MachineState::Running,
             // Cloud Run sells no interruptible capacity, so this is what was
@@ -1396,19 +1402,22 @@ mod tests {
         assert_eq!(handle.job, format!("flyco-{machine}"));
         assert_eq!(handle.to_string(), native);
 
-        // A Compute Engine machine's native id is an absolute URL, which is
-        // what keeps the two runtimes' identities disjoint without a field
-        // on `Machine`.
-        assert_eq!(
-            Handle::parse(
-                "https://compute.googleapis.com/compute/v1/projects/flyco-sessions\
-                 /zones/us-central1-a/instances/flyco-1"
-            ),
-            None
-        );
-        assert_eq!(Handle::parse(&format!("flyco-{machine}")), None);
-        assert_eq!(Handle::parse(&format!("flyco-{machine}/")), None);
-        assert_eq!(Handle::parse("not-a-machine/exec"), None);
+        // A container row carrying anything else — a Compute Engine
+        // self-link, a job with no execution, a name flyco never wrote — is
+        // a corrupt row, and is refused rather than read as some other id.
+        for malformed in [
+            "https://compute.googleapis.com/compute/v1/projects/flyco-sessions\
+             /zones/us-central1-a/instances/flyco-1"
+                .to_owned(),
+            format!("flyco-{machine}"),
+            format!("flyco-{machine}/"),
+            "not-a-machine/exec".to_owned(),
+        ] {
+            assert!(
+                matches!(Handle::parse(&malformed), Err(ProviderError::Malformed(_))),
+                "{malformed} must not parse as a Cloud Run handle"
+            );
+        }
     }
 
     #[test]

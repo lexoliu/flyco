@@ -67,10 +67,9 @@
 //! that is not, from the signed assertion to the resource naming, is shared
 //! with the compute path here.
 //!
-//! A later operation is handed a [`Machine`] rather than a spec, so the
-//! runtime is read back off the machine's own provider-native id: a Compute
-//! Engine machine's is an absolute URL and a Cloud Run machine's is
-//! `<job>/<execution>`, and [`run::Handle::parse`] accepts only the second.
+//! A later operation is handed a [`Machine`] rather than a spec, and reads
+//! the same runtime off [`Machine::runtime`]; only then is the native id
+//! read as the `<job>/<execution>` pair a Cloud Run machine carries.
 
 pub mod auth;
 pub mod compute;
@@ -900,30 +899,42 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
         machine: &Machine,
         new_machine_type: &str,
     ) -> Result<Machine, ProviderError> {
-        match run::Handle::parse(&machine.native_id) {
-            Some(handle) => self.resize_job(machine, &handle, new_machine_type).await,
-            None => self.resize_instance(machine, new_machine_type).await,
+        match machine.runtime {
+            Runtime::Vm => self.resize_instance(machine, new_machine_type).await,
+            Runtime::Container => {
+                let handle = run::Handle::parse(&machine.native_id)?;
+                self.resize_job(machine, &handle, new_machine_type).await
+            }
         }
     }
 
     async fn deallocate(&mut self, machine: &Machine) -> Result<(), ProviderError> {
-        match run::Handle::parse(&machine.native_id) {
-            Some(handle) => self.deallocate_job(machine, &handle).await,
-            None => self.deallocate_instance(machine).await,
+        match machine.runtime {
+            Runtime::Vm => self.deallocate_instance(machine).await,
+            Runtime::Container => {
+                let handle = run::Handle::parse(&machine.native_id)?;
+                self.deallocate_job(machine, &handle).await
+            }
         }
     }
 
     async fn start(&mut self, machine: &Machine) -> Result<Machine, ProviderError> {
-        match run::Handle::parse(&machine.native_id) {
-            Some(handle) => self.start_job(machine, &handle).await,
-            None => self.start_instance(machine).await,
+        match machine.runtime {
+            Runtime::Vm => self.start_instance(machine).await,
+            Runtime::Container => {
+                let handle = run::Handle::parse(&machine.native_id)?;
+                self.start_job(machine, &handle).await
+            }
         }
     }
 
     async fn destroy(&mut self, machine: &Machine) -> Result<(), ProviderError> {
-        match run::Handle::parse(&machine.native_id) {
-            Some(handle) => self.destroy_job(machine, &handle).await,
-            None => self.destroy_instance(machine).await,
+        match machine.runtime {
+            Runtime::Vm => self.destroy_instance(machine).await,
+            Runtime::Container => {
+                let handle = run::Handle::parse(&machine.native_id)?;
+                self.destroy_job(machine, &handle).await
+            }
         }
     }
 }

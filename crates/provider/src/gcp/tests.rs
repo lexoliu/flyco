@@ -1054,6 +1054,7 @@ fn container_machine(machine: MachineId) -> Machine {
     Machine {
         id: machine,
         native_id: format!("{}/{EXECUTION}", names::machine(machine)),
+        runtime: Runtime::Container,
         region: REGION.to_owned(),
         state: MachineState::Running,
         capacity_mode: CapacityMode::OnDemand,
