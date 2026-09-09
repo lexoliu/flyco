@@ -4,18 +4,28 @@
  * transcript carries code and a drawer carries a terminal, and both are
  * unreadable in a narrow column.
  */
+/*
+ * The page is exactly the window: the header at its top, the composer at
+ * its foot, and the transcript scrolling between them in a scroller of its
+ * own. The page itself never scrolls, so the composer is where the hands
+ * expect it whatever the transcript is doing, the way the official
+ * composers are; a composer that merely stuck to the bottom of a scrolling
+ * page floated up the screen on a short transcript and slid under the
+ * state notice on a long one.
+ */
 .page {
   flex: 1;
+  min-height: 0;
   width: 100%;
   max-width: 1180px;
   margin: 0 auto;
   /* No top padding: the header owns the page's top edge and carries its
-     own, so that when it sticks there is no gap above it for the
-     transcript to show through. */
-  padding: 0 var(--space-4) var(--space-6);
+     own. */
+  padding: 0 var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
+  overflow: hidden;
 }
 
 /*
@@ -93,17 +103,30 @@
 
 .body {
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: var(--space-4);
+  flex: 1;
   min-height: 0;
 }
 
 .column {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
   flex: 1;
   min-width: 0;
+  min-height: 0;
+}
+
+/* The only thing in the column that scrolls. */
+.scroller {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  flex: 1;
+  min-height: 0;
+  padding-top: var(--space-2);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /*
@@ -112,7 +135,7 @@
  */
 .approvalBanner {
   position: sticky;
-  top: calc(var(--space-3) + 3.5rem);
+  top: 0;
   z-index: 5;
   display: flex;
   align-items: center;
@@ -126,6 +149,39 @@
   font-size: var(--text-sm);
 }
 
+/*
+ * The agent at work, at the foot of the transcript: one breathing dot and
+ * one word, in the same quiet grey as `Worked for 8m 23s`, which is what
+ * it turns into.
+ */
+.working {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+}
+
+.workingDot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--color-success);
+  animation: breathe 2s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
 .empty {
   margin: var(--space-6) 0;
   color: var(--color-text-faint);
@@ -133,16 +189,12 @@
   text-align: center;
 }
 
-/*
- * The composer sits at the bottom of the column and stays there while the
- * transcript scrolls past it, because the next thing to say is always
- * within reach.
- */
+/* Under the scroller, so it is at the foot of the window whatever the
+   transcript is doing. */
 .composer {
-  position: sticky;
-  bottom: var(--space-4);
+  flex: none;
+  padding: var(--space-3) 0 var(--space-4);
   background: var(--color-bg);
-  padding-top: var(--space-3);
 }
 
 /* The `git status --short` a refused archive quoted back, inside the shared
@@ -166,8 +218,11 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .keep:active,
-  .discard:active:not(:disabled) {
+  .workingDot {
+    animation: none;
+  }
+
+  .stateAction:active:not(:disabled) {
     transform: none;
   }
 }

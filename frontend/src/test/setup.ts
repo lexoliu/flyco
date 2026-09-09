@@ -104,6 +104,7 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
         title: "Audit the relay for dropped frames",
         repo: "octocat/hello-world",
         harness: "claude_code",
+        model: { model: "default" },
         // Freshly opened, machine still being built: what a new user sees
         // first, and the state whose empty transcript is easiest to get wrong.
         state: "provisioning",

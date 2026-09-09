@@ -35,8 +35,10 @@ export interface ComposerShellProps {
   disabled?: boolean | undefined;
   /** Extra key handling, e.g. a command palette. Returning `true` consumes the event. */
   onKeyDown?: ((event: KeyboardEvent) => boolean) | undefined;
-  /** Controls on the row under the field. Empty in a session (no chips). */
+  /** The chips at the left of the row under the field. */
   controls?: JSX.Element | undefined;
+  /** What sits between the chips and the action: the model chip, a ring. */
+  trailing?: JSX.Element | undefined;
   /** The right-hand action: a send button, or a stop button. */
   action: JSX.Element;
   /** A panel floating over the field, e.g. the command palette. */
@@ -79,6 +81,7 @@ export default function ComposerShell(props: ComposerShellProps) {
         />
         <div class={styles.controls}>
           {props.controls}
+          {props.trailing}
           {props.action}
         </div>
       </div>

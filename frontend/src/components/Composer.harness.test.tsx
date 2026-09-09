@@ -17,6 +17,7 @@ vi.mock("./Readiness", () => ({
         label: "lexo@flyco.dev",
         linked_at_unix: 1_787_000_000,
         expires_at_unix: null,
+        models: [],
       },
     ],
     compute: () => [],

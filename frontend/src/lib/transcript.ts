@@ -17,6 +17,7 @@
 import type { TimedEvent } from "../api/relay";
 import type {
   ApprovalPayload,
+  ModelChoice,
   ProvisioningStage,
   ShellOutcome,
   ShellStream,
@@ -152,6 +153,19 @@ export type TranscriptItem =
       hourlyMicros: number | null;
       spot: boolean;
       restarted: boolean;
+      atUnix: number;
+    }
+  | {
+      /**
+       * The user moved the session onto another model (docs/ux.md §9.3).
+       *
+       * Carries the choice's ids rather than a sentence, because the names
+       * a sentence needs are the agent's own model list, which lives with
+       * the page and not with the stream.
+       */
+      kind: "model_change";
+      key: string;
+      model: ModelChoice;
       atUnix: number;
     }
   | { kind: "notice"; key: string; text: string; tone: NoticeTone; atUnix: number };
@@ -511,6 +525,14 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
           atUnix,
         });
         break;
+      case "model_changed":
+        items.push({
+          kind: "model_change",
+          key: `model-${items.length}`,
+          model: event.model,
+          atUnix,
+        });
+        break;
       case "spot_notice":
         // `120s` is how a provider states a deadline; `2m` is how a person
         // reads one (issue #136).
@@ -524,6 +546,7 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
         break;
       case "started":
       case "capabilities":
+      case "models":
       case "session_state_changed":
       case "machine_connection":
       case "usage":

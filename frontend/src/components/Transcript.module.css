@@ -346,6 +346,39 @@
   color: var(--color-text);
 }
 
+.stages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/*
+ * A finished build, folded to its one number. The chevron turns the way a
+ * tool row's does, because it is the same gesture: the rows are there for
+ * whoever wants them and out of the way for everyone else.
+ */
+.timelineSummary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  list-style: none;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.timelineSummary::-webkit-details-marker {
+  display: none;
+}
+
+details[open] > .timelineSummary {
+  margin-bottom: var(--space-2);
+}
+
+details[open] > .timelineSummary .toolChevron {
+  transform: rotate(90deg);
+}
+
 .stage {
   display: flex;
   align-items: center;

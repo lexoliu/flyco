@@ -1,7 +1,7 @@
 /**
  * Session creation, on top of the typed client.
  */
-import { createSession, type HarnessKind, type SessionDetail } from "./client";
+import { createSession, type HarnessKind, type ModelChoice, type SessionDetail } from "./client";
 import { dollarsToUsdMicros } from "../lib/money";
 
 export interface NewSessionInput {
@@ -19,6 +19,11 @@ export interface NewSessionInput {
    */
   branch?: string;
   harness: HarnessKind;
+  /**
+   * The model the agent runs, and at what effort. Omitted, the session
+   * opens on the harness's own default.
+   */
+  model?: ModelChoice;
   /** Whole-dollar budget limit, as the budget chip sets it. */
   budgetLimitDollars: number;
   /**
@@ -46,6 +51,7 @@ export function requestNewSession(input: NewSessionInput): Promise<SessionDetail
     repo: input.repo,
     ...(input.branch === undefined ? {} : { branch: input.branch }),
     harness: input.harness,
+    ...(input.model === undefined ? {} : { model: input.model }),
     budget_limit: dollarsToUsdMicros(input.budgetLimitDollars),
     ...(input.machine === undefined
       ? { spot: input.spot ?? true }

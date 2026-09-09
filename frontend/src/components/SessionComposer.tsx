@@ -1,9 +1,11 @@
 /**
  * The session's composer (docs/ux.md §9.3).
  *
- * The home composer's container and send button, without the chips —
- * everything a chip decides was decided when the session was created. Three
- * things are added, all of them about a conversation already in progress:
+ * The home composer's container and send button, with the chips a running
+ * session still has a say over — the model, the machine, the budget — and
+ * the context ring, handed in by the page because they are its facts. Three
+ * things are added here, all of them about a conversation already in
+ * progress:
  *
  * - while a turn is in flight the send button becomes `Stop`, because the
  *   only useful thing to do to a running turn is end it;
@@ -12,7 +14,7 @@
  * - a message beginning with `!` runs in the machine's bash, and the field
  *   says so while one is being typed rather than after it is sent.
  */
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, type JSX, Show, createMemo, createSignal } from "solid-js";
 import { ArrowUp, Square, TerminalSquare } from "lucide-solid";
 import ComposerShell from "./ComposerShell";
 import { cx } from "../lib/cx";
@@ -50,6 +52,14 @@ export interface SessionComposerProps {
   onStop: () => void;
   /** Runs one palette command. */
   onCommand: (command: SessionCommand) => void;
+  /**
+   * The row under the field: the session's own chips and readouts
+   * (docs/ux.md §9.3). Rendered by the page, because every one of them is
+   * a fact the page holds — the model, the machine, the budget, the
+   * context — and a composer that fetched them itself would be a second
+   * copy of the session.
+   */
+  controls?: JSX.Element | undefined;
 }
 
 export default function SessionComposer(props: SessionComposerProps) {
@@ -155,9 +165,10 @@ export default function SessionComposer(props: SessionComposerProps) {
       value={text()}
       onInput={onInput}
       onSubmit={send}
-      placeholder="Message the agent, / for commands, ! to run a shell command"
+      placeholder="Reply, / for a command, ! for the shell"
       label="Message the agent"
       submitOn="enter"
+      controls={props.controls}
       onKeyDown={onKeyDown}
       ref={(element) => {
         field = element;

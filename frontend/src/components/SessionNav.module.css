@@ -1,11 +1,10 @@
 /*
- * The rail's session list. Every row is one line: a status dot and a title.
+ * The rail's session list. Every row is one line: a dot, when the session
+ * needs one, and a title.
  *
- * Deliberately poorer than `SessionRow`, which is the home page's row and
- * carries repository, time and harness. This is a switcher — the reader is
- * looking for a name they already know — so anything beyond the name and
- * whether it needs them is noise repeated forty times down the side of the
- * screen.
+ * This is a switcher — the reader is looking for a name they already know —
+ * so anything beyond the name and whether it needs them is noise repeated
+ * forty times down the side of the screen.
  */
 .nav {
   display: flex;
@@ -36,34 +35,6 @@
   border-color: var(--color-border-strong);
 }
 
-.tabs {
-  display: flex;
-  gap: var(--space-1);
-  flex: none;
-}
-
-.tab {
-  padding: var(--space-1) var(--space-2);
-  border: none;
-  border-radius: var(--radius-full);
-  background: transparent;
-  color: var(--color-text-faint);
-  font-family: inherit;
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  cursor: pointer;
-}
-
-.tab:hover {
-  color: var(--color-text-muted);
-}
-
-.tabActive {
-  background: var(--color-surface-sunken);
-  color: var(--color-text);
-}
-
 /* The only thing on the page allowed to scroll independently: the rail is
    full height, and its head and foot must stay put while forty sessions
    move. */
@@ -80,13 +51,16 @@
   margin-bottom: var(--space-3);
 }
 
+/* A repository name, in the same case the repository spells it: it is a
+   name, not a heading, and `OWNER/REPO` in small capitals would be neither. */
 .groupLabel {
   margin: 0 0 var(--space-1);
   padding: 0 var(--space-2);
   color: var(--color-text-faint);
   font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .list {
@@ -119,28 +93,26 @@
   color: var(--color-text);
 }
 
+/* The slot is always there so titles line up; the colour is there only
+   when the session is doing something the reader might want to know. */
 .dot {
   flex: none;
   width: 6px;
   height: 6px;
   border-radius: var(--radius-full);
-  background: var(--color-neutral-dot);
+  background: transparent;
 }
 
 .dot[data-tone="working"] {
   background: var(--color-success);
 }
 
-.dot[data-tone="attention"] {
-  background: var(--color-warning);
-}
-
 .dot[data-tone="failed"] {
   background: var(--color-danger);
 }
 
-.dot[data-tone="quiet"] {
-  background: var(--color-border-strong);
+.dot[data-tone="neutral"] {
+  background: var(--color-neutral-dot);
 }
 
 .title {
@@ -154,4 +126,22 @@
   margin: var(--space-3) var(--space-2);
   color: var(--color-text-faint);
   font-size: var(--text-sm);
+}
+
+.archivedToggle {
+  flex: none;
+  padding: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-faint);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.archivedToggle:hover {
+  background: var(--color-surface-sunken);
+  color: var(--color-text-muted);
 }

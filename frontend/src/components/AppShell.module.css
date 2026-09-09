@@ -9,10 +9,13 @@
  * reach from inside a session, and leaves each page owning its own top
  * edge.
  */
+/* Exactly the window tall. The rail is the window's height and the work
+   beside it scrolls on its own, so a page that wants to own its scrolling
+   — the session page, whose composer never moves — can. */
 .shell {
   display: flex;
-  min-height: 100vh;
-  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
 }
 
 .rail {
@@ -214,8 +217,10 @@
 .main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
 }
 
 /* Opens the rail on a phone. It floats over the page's own top edge rather

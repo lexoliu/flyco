@@ -1,13 +1,11 @@
 /*
- * One row, wrapping to three on a narrow screen: what the session is, what
- * it is doing, and what can be done to it. Nothing here is a card — the
- * header is chrome, and chrome carries no accent colour (docs/ux.md §2).
+ * One quiet row: what the session is, and a menu. Nothing here is a card —
+ * the header is chrome, and chrome carries no accent colour (docs/ux.md §2).
  *
  * It is the page's top edge and it stays there. A transcript is the one
- * thing in flyco long enough to scroll for minutes, and the two facts a
- * reader checks while scrolling — is it still working, what is it costing —
- * are both in this row; a header that scrolled away would send them to the
- * top of the page to read a number that changes every second.
+ * thing in flyco long enough to scroll for minutes, and the title is what
+ * tells two open sessions apart; a header that scrolled away would send the
+ * reader to the top of the page to check which one they are in.
  */
 .header {
   position: sticky;
@@ -16,8 +14,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  flex-wrap: wrap;
-  padding: var(--space-5) 0 var(--space-4);
+  padding: var(--space-4) 0 var(--space-3);
   border-bottom: var(--border-width) solid var(--color-border);
   background: var(--color-bg);
 }
@@ -42,7 +39,7 @@
   border: none;
   background: none;
   color: var(--color-text);
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: var(--weight-semibold);
   line-height: var(--line-tight);
   text-align: left;
@@ -62,7 +59,7 @@
 .titleSkeleton {
   display: inline-block;
   width: 16ch;
-  height: calc(var(--text-xl) * var(--line-tight));
+  height: calc(var(--text-lg) * var(--line-tight));
   border-radius: var(--radius-sm);
   background: var(--color-surface-sunken);
   animation: pulse 1.6s ease-in-out infinite;
@@ -79,12 +76,6 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .titleSkeleton {
-    animation: none;
-  }
-}
-
 .titleInput {
   min-width: 0;
   flex: 1;
@@ -94,7 +85,7 @@
   background: none;
   color: var(--color-text);
   font-family: inherit;
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: var(--weight-semibold);
   line-height: var(--line-tight);
 }
@@ -117,67 +108,11 @@
   color: var(--color-text-faint);
 }
 
-.readouts {
+.actions {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
-
-.status {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-full);
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
-  white-space: nowrap;
-}
-
-.statusDot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-full);
-  background: var(--color-neutral-dot);
-}
-
-.status[data-tone="working"] .statusDot {
-  background: var(--color-success);
-}
-
-.status[data-tone="attention"] .statusDot {
-  background: var(--color-warning);
-}
-
-.status[data-tone="failed"] .statusDot {
-  background: var(--color-danger);
-}
-
-.status[data-tone="quiet"] .statusDot {
-  background: var(--color-border-strong);
-}
-
-/* Status dots breathe while something is running, and only then. */
-.breathing .statusDot {
-  animation: breathe 2s ease-in-out infinite;
-}
-
-@keyframes breathe {
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.35;
-  }
-}
-
-.statusDetail {
-  color: var(--color-text-faint);
-  font-variant-numeric: tabular-nums;
+  gap: var(--space-3);
+  margin-left: auto;
 }
 
 /*
@@ -191,59 +126,23 @@
   white-space: nowrap;
 }
 
-.machine {
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
-  font-family: var(--font-mono);
-  white-space: nowrap;
-}
-
-.actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-left: auto;
-}
-
-.action {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-full);
-  background: var(--color-bg);
-  color: var(--color-text);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: border-color var(--transition-fast);
-}
-
-.action:hover:not(:disabled) {
-  border-color: var(--color-border-strong);
-}
-
-.action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .iconAction {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 28px;
   height: 28px;
-  border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-full);
-  background: var(--color-bg);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--color-text-muted);
   cursor: pointer;
-  transition: border-color var(--transition-fast), color var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.iconAction:hover {
-  border-color: var(--color-border-strong);
+.iconAction:hover,
+.iconAction[aria-expanded="true"] {
+  background: var(--color-surface-sunken);
   color: var(--color-text);
 }
 
@@ -281,6 +180,13 @@
   cursor: not-allowed;
 }
 
+/* The session's own actions above the line, the machine's below it. */
+.menuDivider {
+  height: var(--border-width);
+  margin: var(--space-1) 0;
+  background: var(--color-border);
+}
+
 .menuFooter {
   margin-top: var(--space-2);
   padding: var(--space-2);
@@ -290,59 +196,18 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .breathing .statusDot {
+  .titleSkeleton {
     animation: none;
   }
 }
 
-/* The budget ring is a control, and the only thing that says so is that it
-   answers to a pointer: a bordered button around it would make the header a
-   row of two shapes where the two rings should read as a pair. */
-.budgetTrigger {
-  display: inline-flex;
-  align-items: center;
-  padding: 0;
-  border: none;
-  background: none;
-  color: inherit;
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-}
-
-.budgetTrigger:hover {
-  color: var(--color-text);
-}
-
-/*
- * On a phone the header was four rows — title, status, machine and budget,
- * then the actions — before the first message. That is the stack of bands
- * this header exists to avoid.
- *
- * Two rows: what the session is, then whether it is working and what it has
- * spent, with its actions on the same line. The machine's name and state
- * drop out; they are in the drawer's Machine tab and in the ⋯ menu, and a
- * SKU name is not what anyone checks while reading a conversation.
- */
 @media (max-width: 640px) {
   .header {
     gap: var(--space-2) var(--space-3);
-    padding: var(--space-4) 0 var(--space-3);
-  }
-
-  .machine {
-    display: none;
+    padding: var(--space-3) 0;
   }
 
   .identity {
-    flex: 1 1 100%;
-  }
-
-  .readouts {
-    flex: 1 1 auto;
-    gap: var(--space-3);
-  }
-
-  .title {
-    font-size: var(--text-lg);
+    flex-wrap: wrap;
   }
 }

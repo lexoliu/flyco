@@ -181,7 +181,7 @@ export const MACHINE_STATE_LABEL: Record<MachineState, string> = {
  * a different claim.
  */
 export function machineChip(machine: MachineView): string {
-  const parts = [machine.spec.machine_type];
+  const parts = [shortMachineType(machine.spec.machine_type)];
   if (machine.state !== "running") {
     parts.push(MACHINE_STATE_LABEL[machine.state]);
     return parts.join(" · ");

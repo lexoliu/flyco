@@ -13,16 +13,29 @@
  * screen can never disagree about what happened.
  */
 import { useNavigate, useParams } from "@solidjs/router";
-import { Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
+import {
+  Match,
+  Show,
+  Switch,
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  onCleanup,
+} from "solid-js";
 import { createQuery } from "../lib/query";
-import { AlertTriangle } from "lucide-solid";
+import { AlertTriangle, Server, Wallet } from "lucide-solid";
 import { BudgetRaise } from "../components/BudgetPicker";
 import ConfirmDialog from "../components/ConfirmDialog";
+import ModelChip from "../components/ModelChip";
 import ProblemNotice from "../components/ProblemNotice";
+import { useReadiness } from "../components/Readiness";
+import Ring from "../components/Ring";
 import SessionComposer, { type SessionCommand } from "../components/SessionComposer";
 import SessionDrawer from "../components/SessionDrawer";
 import SessionHeader from "../components/SessionHeader";
 import Transcript, { ProvisioningTimeline } from "../components/Transcript";
+import composerStyles from "../components/Composer.module.css";
 import {
   archiveSession,
   compactSession,
@@ -35,10 +48,13 @@ import {
   startSessionMachine,
   stopSessionMachine,
   updateSession,
+  type ModelChoice,
+  type ModelOption,
 } from "../api/client";
 import { ApiProblem } from "../api/problem";
 import { createSessionRelay } from "../api/relay";
 import { PROVIDER_LABEL } from "../lib/providers";
+import { machineChip } from "../lib/machines";
 import { dollarsToUsdMicros, usdMicrosToDollars } from "../lib/money";
 import { shellCommandIn } from "../lib/shell";
 import {
@@ -60,17 +76,20 @@ import styles from "./SessionDetail.module.css";
  */
 const TICK_MS = 1000;
 
+/** `41k / 200k`, because a context window is read in thousands or not at all. */
+function tokens(count: number): string {
+  return count >= 1000 ? `${Math.round(count / 1000)}k` : `${count}`;
+}
+
 export default function SessionDetail() {
   const params = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const readiness = useReadiness();
   const [session, { refetch: refetchSession, mutate: mutateSession }] = createQuery(
     () => params.id,
     getSession,
   );
-  const [machine, { refetch: refetchMachine }] = createQuery(
-    () => params.id,
-    getSessionMachine,
-  );
+  const [machine, { refetch: refetchMachine }] = createQuery(() => params.id, getSessionMachine);
 
   const relay = createSessionRelay(params.id);
   onCleanup(() => relay.dispose());
@@ -96,9 +115,11 @@ export default function SessionDetail() {
    */
   const machineNews = createMemo(
     () =>
-      relay.events().filter(
-        ({ event }) => event.type === "machine_changed" || event.type === "session_state_changed",
-      ).length,
+      relay
+        .events()
+        .filter(
+          ({ event }) => event.type === "machine_changed" || event.type === "session_state_changed",
+        ).length,
   );
   createEffect(
     on(
@@ -145,6 +166,34 @@ export default function SessionDetail() {
   );
 
   const transcript = createMemo(() => foldTranscript(relay.events()));
+
+  /*
+   * The transcript scrolls inside the page, not with it, so the composer
+   * stays at the foot of the window. That makes following the agent the
+   * page's job: a reader at the bottom is kept there as lines arrive, and
+   * one who has scrolled up to reread something is left where they are.
+   * How close counts as "at the bottom" is a few lines, so the last line's
+   * own height never counts as having scrolled away from it.
+   */
+  let scroller: HTMLDivElement | undefined;
+  let pinned = true;
+  const PIN_SLACK_PX = 96;
+  function noteScroll(): void {
+    if (scroller === undefined) {
+      return;
+    }
+    pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= PIN_SLACK_PX;
+  }
+  createEffect(
+    on(
+      () => transcript().length,
+      () => {
+        if (scroller !== undefined && pinned) {
+          scroller.scrollTop = scroller.scrollHeight;
+        }
+      },
+    ),
+  );
   const waiting = createMemo(() => pendingApprovals(transcript()));
   const signals = createMemo(() => liveSignalsFrom(relay.events()));
 
@@ -181,6 +230,25 @@ export default function SessionDetail() {
       }
     }
     return null;
+  });
+
+  /**
+   * The models this session's agent offers.
+   *
+   * The list the agent itself reported over the relay is the newest and
+   * wins; until it has said, the linked account's list — which is what the
+   * last session on it reported, or flyco's built-in one — stands in.
+   */
+  const models = createMemo<ModelOption[]>(() => {
+    const events = relay.events();
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const entry = events[i];
+      if (entry !== undefined && entry.event.type === "models") {
+        return entry.event.models;
+      }
+    }
+    const harness = session()?.harness;
+    return readiness.harness().find((account) => account.harness === harness)?.models ?? [];
   });
 
   /** Who the machine came from, for the timeline's `Reserving on …` line. */
@@ -231,9 +299,14 @@ export default function SessionDetail() {
   const [resuming, setResuming] = createSignal(false);
   const [archiving, setArchiving] = createSignal(false);
   const [settingBudget, setSettingBudget] = createSignal(false);
+  const [settingModel, setSettingModel] = createSignal(false);
   const [pendingDirtySummary, setPendingDirtySummary] = createSignal<string | null>(null);
-  const [panelRequest, setPanelRequest] =
-    createSignal<{ panel: "machine" | "env"; at: number; resize?: boolean }>();
+  const [drawerOpen, setDrawerOpen] = createSignal(false);
+  const [panelRequest, setPanelRequest] = createSignal<{
+    panel: "machine" | "env";
+    at: number;
+    resize?: boolean;
+  }>();
 
   /**
    * Prefers the relay socket whenever it is live — lower latency, and the
@@ -243,10 +316,7 @@ export default function SessionDetail() {
    * silently dropped. See `sendMessage`/`interruptSession` in
    * src/api/client.ts.
    */
-  async function overRelay(
-    live: () => void,
-    rest: () => Promise<void>,
-  ): Promise<void> {
+  async function overRelay(live: () => void, rest: () => Promise<void>): Promise<void> {
     setError(null);
     try {
       if (relay.state() === "live") {
@@ -281,9 +351,7 @@ export default function SessionDetail() {
     }
     setError(null);
     if (relay.state() !== "live") {
-      setError(
-        new Error("Reconnecting to the session — a shell command needs a live connection."),
-      );
+      setError(new Error("Reconnecting to the session — a shell command needs a live connection."));
       return;
     }
     try {
@@ -352,11 +420,38 @@ export default function SessionDetail() {
     setError(null);
     setSettingBudget(true);
     try {
-      mutateSession(await updateSession(params.id, { budgetLimit: dollarsToUsdMicros(dollars) }));
+      mutateSession(
+        await updateSession(params.id, {
+          budgetLimit: dollarsToUsdMicros(dollars),
+        }),
+      );
     } catch (failure) {
       setError(failure);
     } finally {
       setSettingBudget(false);
+    }
+  }
+
+  /**
+   * Moves the session onto another model.
+   *
+   * Like the budget, not shown before the answer lands: the change has to
+   * reach the running agent through its room, and a chip that read the new
+   * model while the agent was still on the old one would be a claim the
+   * next turn could contradict. The answer is the session already on it.
+   */
+  async function onSetModel(choice: ModelChoice): Promise<void> {
+    if (settingModel()) {
+      return;
+    }
+    setError(null);
+    setSettingModel(true);
+    try {
+      mutateSession(await updateSession(params.id, { model: choice }));
+    } catch (failure) {
+      setError(failure);
+    } finally {
+      setSettingModel(false);
     }
   }
 
@@ -424,9 +519,7 @@ export default function SessionDetail() {
   async function onMachine(action: "start" | "stop"): Promise<void> {
     setError(null);
     try {
-      await (action === "start"
-        ? startSessionMachine(params.id)
-        : stopSessionMachine(params.id));
+      await (action === "start" ? startSessionMachine(params.id) : stopSessionMachine(params.id));
       await refetchMachine();
     } catch (failure) {
       setError(failure);
@@ -451,20 +544,15 @@ export default function SessionDetail() {
       <SessionHeader
         session={session()}
         sessionId={params.id}
-        status={status()}
         connection={relay.state()}
         machine={machine()}
-        budgetSpentUsd={budgetSpentUsd()}
-        budgetLimitUsd={budgetLimitUsd()}
-        contextUsed={latestUsage()?.context?.used_tokens}
-        contextSize={latestUsage()?.context?.size_tokens}
         onRename={(title) => void onRename(title)}
-        onSetBudget={(dollars) => void onSetBudget(dollars)}
-        settingBudget={settingBudget()}
         onArchive={() => void onArchive(false)}
         archiving={archiving()}
         onStartMachine={() => void onMachine("start")}
         onStopMachine={() => void onMachine("stop")}
+        drawerOpen={drawerOpen()}
+        onToggleDrawer={() => setDrawerOpen((was) => !was)}
         onOpenPanel={(request) => setPanelRequest({ ...request, at: Date.now() })}
       />
 
@@ -501,21 +589,22 @@ export default function SessionDetail() {
 
       <div class={styles.body}>
         <div class={styles.column}>
-          {/*
+          <div class={styles.scroller} ref={scroller} onScroll={noteScroll}>
+            {/*
             The banner is sticky so an approval raised a hundred rows ago is
             still one click away, and amber because it is the one thing on
             the page holding everything else up.
           */}
-          <Show when={waiting().length > 0}>
-            <p class={styles.approvalBanner}>
-              <AlertTriangle size={14} aria-hidden="true" />
-              {waiting().length === 1
-                ? "The agent is waiting on your decision."
-                : `The agent is waiting on ${waiting().length} decisions.`}
-            </p>
-          </Show>
+            <Show when={waiting().length > 0}>
+              <p class={styles.approvalBanner}>
+                <AlertTriangle size={14} aria-hidden="true" />
+                {waiting().length === 1
+                  ? "The agent is waiting on your decision."
+                  : `The agent is waiting on ${waiting().length} decisions.`}
+              </p>
+            </Show>
 
-          {/*
+            {/*
             An empty transcript says something different in every state,
             and the first one a new user meets is the one that matters
             most: the prompt has already gone out with `POST /v1/sessions`
@@ -524,44 +613,45 @@ export default function SessionDetail() {
             spoken yet, so the timeline starts from the fact the page does
             hold — when the session was opened — and moves with the clock.
           */}
-          <Show
-            when={transcript().length > 0}
-            fallback={
-              <Switch>
-                <Match when={session()?.state === "provisioning"}>
-                  <p class={styles.empty}>
-                    Your task is queued and will start as soon as the machine is ready.
-                  </p>
-                </Match>
-                <Match when={session()?.state === "active"}>
-                  <p class={styles.empty}>
-                    Nothing has happened yet. Send a message to get the agent started.
-                  </p>
-                </Match>
-                <Match when={session()}>
-                  <p class={styles.empty}>
-                    {status()?.label}
-                    <Show when={status()?.detail}>{(detail) => <> · {detail()}</>}</Show>. Nothing
-                    ran before it stopped.
-                  </p>
-                </Match>
-              </Switch>
-            }
-          >
-            <Transcript
-              items={transcript()}
-              repo={session()?.repo ?? "the repository"}
-              provider={providerLabel()}
-              onDecide={(id, decision) => {
-                void onDecide(id, decision).then(() => refetchSession());
-              }}
-              deciding={deciding()}
-              now={now()}
-              stoppedAtUnix={stoppedAtUnix()}
-            />
-          </Show>
+            <Show
+              when={transcript().length > 0}
+              fallback={
+                <Switch>
+                  <Match when={session()?.state === "provisioning"}>
+                    <p class={styles.empty}>
+                      Your task is queued and will start as soon as the machine is ready.
+                    </p>
+                  </Match>
+                  <Match when={session()?.state === "active"}>
+                    <p class={styles.empty}>
+                      Nothing has happened yet. Send a message to get the agent started.
+                    </p>
+                  </Match>
+                  <Match when={session()}>
+                    <p class={styles.empty}>
+                      {status()?.label}
+                      <Show when={status()?.detail}>{(detail) => <> · {detail()}</>}</Show>. Nothing
+                      ran before it stopped.
+                    </p>
+                  </Match>
+                </Switch>
+              }
+            >
+              <Transcript
+                items={transcript()}
+                repo={session()?.repo ?? "the repository"}
+                provider={providerLabel()}
+                models={models()}
+                onDecide={(id, decision) => {
+                  void onDecide(id, decision).then(() => refetchSession());
+                }}
+                deciding={deciding()}
+                now={now()}
+                stoppedAtUnix={stoppedAtUnix()}
+              />
+            </Show>
 
-          {/*
+            {/*
             Until the queue announces its first stage, the page holds the
             timeline's place from the one fact it has — when the session was
             opened — whether the transcript is empty or already carries the
@@ -569,18 +659,32 @@ export default function SessionDetail() {
             takes over, in the same place, without the page having gone
             blank in between.
           */}
-          <Show when={awaitingFirstStage() && session()}>
-            {(current) => (
-              <ProvisioningTimeline
-                steps={[{ stage: "reserving", atUnix: current().created_at_unix }]}
-                recovery={status()?.status === "migrating"}
-                repo={current().repo}
-                provider={providerLabel()}
-                now={now()}
-                stoppedAtUnix={stoppedAtUnix()}
-              />
-            )}
-          </Show>
+            <Show when={awaitingFirstStage() && session()}>
+              {(current) => (
+                <ProvisioningTimeline
+                  steps={[{ stage: "reserving", atUnix: current().created_at_unix }]}
+                  recovery={status()?.status === "migrating"}
+                  repo={current().repo}
+                  provider={providerLabel()}
+                  now={now()}
+                  stoppedAtUnix={stoppedAtUnix()}
+                />
+              )}
+            </Show>
+
+            {/*
+            The agent at work, said where the work appears (docs/ux.md §6).
+            A pill in the header said `Working` from across the page; this
+            says it at the foot of the transcript, where the next line will
+            land, and goes away the moment it does.
+          */}
+            <Show when={status()?.status === "working"}>
+              <p class={styles.working} aria-live="polite">
+                <span class={styles.workingDot} aria-hidden="true" />
+                Working…
+              </p>
+            </Show>
+          </div>
 
           {/*
             The state notice and the composer are the same slot, because
@@ -590,9 +694,13 @@ export default function SessionDetail() {
             itself first, says it directly above the box.
           */}
           <div class={styles.composer}>
-          <Show when={notice()}>
+            <Show when={notice()}>
               {(state) => (
-                <section class={styles.stateNotice} data-tone={state().tone} aria-label="Session state">
+                <section
+                  class={styles.stateNotice}
+                  data-tone={state().tone}
+                  aria-label="Session state"
+                >
                   <h2 class={styles.stateTitle}>{state().title}</h2>
                   <p class={styles.stateBody}>{state().body}</p>
                   {/*
@@ -649,6 +757,95 @@ export default function SessionDetail() {
                 onSend={onSend}
                 onStop={onStop}
                 onCommand={onCommand}
+                controls={
+                  <>
+                    {/*
+                      The session's own row (docs/ux.md §9.3): what it runs
+                      on, what that costs, and what it may spend — each a
+                      readout that opens the control that changes it, where
+                      the official composers keep the same things.
+                    */}
+                    <div class={composerStyles.chips}>
+                      <Show when={machine()}>
+                        {(view) => (
+                          <button
+                            type="button"
+                            class={composerStyles.chip}
+                            title="Machine"
+                            onClick={() =>
+                              setPanelRequest({
+                                panel: "machine",
+                                at: Date.now(),
+                              })
+                            }
+                          >
+                            <Server size={13} aria-hidden="true" />
+                            <span class={composerStyles.chipLabel}>{machineChip(view())}</span>
+                          </button>
+                        )}
+                      </Show>
+                      <Show when={session()}>
+                        {(current) => (
+                          <BudgetRaise
+                            limitUsd={usdMicrosToDollars(current().budget.limit)}
+                            spentUsd={usdMicrosToDollars(current().budget.spent)}
+                            saving={settingBudget()}
+                            onSet={(dollars) => void onSetBudget(dollars)}
+                            trigger={(attrs) => (
+                              <button
+                                id={attrs.id}
+                                onClick={attrs.onClick}
+                                aria-expanded={attrs.expanded()}
+                                aria-haspopup="dialog"
+                                type="button"
+                                class={composerStyles.chip}
+                                title="Set the compute budget"
+                              >
+                                <Wallet size={13} aria-hidden="true" />
+                                <span class={composerStyles.chipLabel}>
+                                  ${(budgetSpentUsd() ?? 0).toFixed(2)} / $
+                                  {(budgetLimitUsd() ?? 0).toFixed(0)}
+                                </span>
+                              </button>
+                            )}
+                          />
+                        )}
+                      </Show>
+                    </div>
+                    {/*
+                      At the right, beside send, where both official apps
+                      keep their model: the last thing checked before a
+                      message goes out.
+                    */}
+                    <Show when={session() !== undefined && models().length > 0 && session()}>
+                      {(current) => (
+                        <ModelChip
+                          models={models()}
+                          choice={current().model}
+                          saving={settingModel()}
+                          align="end"
+                          onChoose={(choice) => void onSetModel(choice)}
+                        />
+                      )}
+                    </Show>
+                    {/*
+                      Only once the harness has reported a turn. Before that
+                      there is no context to show, and a ring drawn empty
+                      beside an em dash is a shape the eye stops on to learn
+                      nothing.
+                    */}
+                    <Show when={latestUsage()?.context}>
+                      {(context) => (
+                        <Ring
+                          label="Context"
+                          value={context().used_tokens}
+                          total={context().size_tokens}
+                          readout={`${tokens(context().used_tokens)} / ${tokens(context().size_tokens)}`}
+                        />
+                      )}
+                    </Show>
+                  </>
+                }
               />
             </Show>
           </div>
@@ -658,6 +855,8 @@ export default function SessionDetail() {
           sessionId={params.id}
           relay={relay}
           liveRepoSummary={liveRepoSummary()}
+          open={drawerOpen()}
+          onOpenChange={setDrawerOpen}
           openPanel={panelRequest()}
         />
       </div>
