@@ -1,0 +1,15 @@
+{
+  "name": "projects/flyco-sessions/locations/us-central1/operations/6f2a1c0e-run",
+  "metadata": {
+    "@type": "type.googleapis.com/google.cloud.run.v2.Execution",
+    "name": "projects/flyco-sessions/locations/us-central1/jobs/flyco-session/executions/flyco-session-x8k2p",
+    "uid": "1c9f0b3e-6d21-4c58-8f0a-2b7d4e9a1c33",
+    "generation": "1",
+    "createTime": "2026-08-29T12:00:00.412536Z",
+    "job": "flyco-session",
+    "parallelism": 1,
+    "taskCount": 1,
+    "reconciling": true
+  },
+  "done": false
+}

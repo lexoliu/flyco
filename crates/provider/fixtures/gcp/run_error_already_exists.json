@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": 409,
+    "message": "Resource 'flyco-2f8a1c7e-9d64-4a11-b0f2-6e5c3a9d7b41' already exists.",
+    "status": "ALREADY_EXISTS"
+  }
+}

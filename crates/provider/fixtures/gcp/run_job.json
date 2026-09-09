@@ -1,0 +1,42 @@
+{
+  "name": "projects/flyco-sessions/locations/us-central1/jobs/flyco-session",
+  "uid": "8d3c5f21-7b90-4e6a-9c14-0f2a8b6d5e77",
+  "generation": "1",
+  "labels": {
+    "owner": "gcp",
+    "flyco-session": "01J9ZK4Q7X8N2M5PVYB3TC6HDA",
+    "flyco-machine": "2f8a1c7e-9d64-4a11-b0f2-6e5c3a9d7b41"
+  },
+  "createTime": "2026-08-29T12:00:00.104829Z",
+  "updateTime": "2026-08-29T12:00:03.771204Z",
+  "launchStage": "GA",
+  "template": {
+    "parallelism": 1,
+    "taskCount": 1,
+    "template": {
+      "containers": [
+        {
+          "image": "ghcr.io/lexoliu/flyco-session:wire-11",
+          "env": [
+            {
+              "name": "FLYCO_DAEMON_CONFIG",
+              "value": "c2Vzc2lvbiA9ICIwMUo5Wks0UTdYOE4yTTVQVllCM1RDNkhEQSIKcnVudGltZSA9ICJjb250YWluZXIiCmNvbnRyb2xfcGxhbmVfdXJsID0gImh0dHBzOi8vZmx5Y28uZGV2LyIK"
+            }
+          ],
+          "resources": {
+            "limits": {
+              "cpu": "4",
+              "memory": "16Gi"
+            }
+          }
+        }
+      ],
+      "timeout": "604800s",
+      "serviceAccount": "739261048573-compute@developer.gserviceaccount.com",
+      "maxRetries": 0,
+      "executionEnvironment": "EXECUTION_ENVIRONMENT_GEN2"
+    }
+  },
+  "reconciling": false,
+  "etag": "\"CJyq2skGEAE/cHJvamVjdHMvZmx5Y28tc2Vzc2lvbnM\""
+}

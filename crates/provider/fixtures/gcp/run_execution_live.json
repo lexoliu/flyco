@@ -1,0 +1,13 @@
+{
+  "name": "projects/flyco-sessions/locations/us-central1/jobs/flyco-session/executions/flyco-session-x8k2p",
+  "uid": "1c9f0b3e-6d21-4c58-8f0a-2b7d4e9a1c33",
+  "generation": "1",
+  "job": "flyco-session",
+  "createTime": "2026-08-29T12:00:00.412536Z",
+  "startTime": "2026-08-29T12:00:04.881270Z",
+  "parallelism": 1,
+  "taskCount": 1,
+  "runningCount": 1,
+  "reconciling": true,
+  "etag": "\"CJyq2skGEAE/ZXhlY3V0aW9ucy9mbHljby1zZXNzaW9u\""
+}

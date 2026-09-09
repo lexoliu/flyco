@@ -1020,6 +1020,478 @@ async fn a_zone_name_that_is_not_one_is_refused_rather_than_guessed_at() {
     assert!(matches!(error, ProviderError::Malformed(_)));
 }
 
+// ── Cloud Run jobs ──
+
+const RUN_BASE: &str = "https://run.googleapis.com/v2";
+const CONTAINER_TYPE: &str = "cloudrun-4x16";
+const EXECUTION: &str = "flyco-session-x8k2p";
+
+const RUN_OPERATION_DONE: &str = include_str!("../../fixtures/gcp/run_operation_done.json");
+const RUN_OPERATION_STARTED: &str = include_str!("../../fixtures/gcp/run_operation_started.json");
+const RUN_JOB: &str = include_str!("../../fixtures/gcp/run_job.json");
+const RUN_EXECUTION_LIVE: &str = include_str!("../../fixtures/gcp/run_execution_live.json");
+const RUN_EXECUTION_FINISHED: &str = include_str!("../../fixtures/gcp/run_execution_finished.json");
+const RUN_EXECUTIONS_LIVE: &str = include_str!("../../fixtures/gcp/run_executions_live.json");
+const RUN_EXECUTIONS_FINISHED: &str =
+    include_str!("../../fixtures/gcp/run_executions_finished.json");
+const RUN_ERROR_ALREADY_EXISTS: &str =
+    include_str!("../../fixtures/gcp/run_error_already_exists.json");
+const RUN_ERROR_SERVICE_DISABLED: &str =
+    include_str!("../../fixtures/gcp/run_error_service_disabled.json");
+
+/// A provisioning request for a container in [`REGION`], which is where a
+/// Cloud Run job lives: the region, never a zone.
+fn container_request(machine: MachineId, machine_type: &str) -> ProvisionRequest {
+    let mut request = request_in(machine, REGION, machine_type, false);
+    request.spec.runtime = Runtime::Container;
+    request.bootstrap.runtime = Runtime::Container;
+    request
+}
+
+/// A provisioned container machine, as [`provision`](CloudProvider::provision)
+/// answered with it.
+fn container_machine(machine: MachineId) -> Machine {
+    Machine {
+        id: machine,
+        native_id: format!("{}/{EXECUTION}", names::machine(machine)),
+        region: REGION.to_owned(),
+        state: MachineState::Running,
+        capacity_mode: CapacityMode::OnDemand,
+        address: None,
+    }
+}
+
+fn jobs_url() -> String {
+    format!("{RUN_BASE}/projects/{PROJECT}/locations/{REGION}/jobs")
+}
+
+fn job_url(machine: MachineId) -> String {
+    format!("{}/{}", jobs_url(), names::machine(machine))
+}
+
+#[tokio::test]
+async fn provisioning_a_container_creates_the_job_then_runs_it() {
+    use base64::Engine as _;
+
+    let machine = MachineId::generate();
+    let provision = container_request(machine, CONTAINER_TYPE);
+    let mut gcp = provider(vec![
+        token(),
+        json(RUN_OPERATION_DONE),
+        json(RUN_OPERATION_STARTED),
+    ]);
+
+    let provisioned = gcp.provision(&provision).await.expect("provision");
+
+    let transport = gcp.transport();
+    assert_eq!(transport.request_count(), 3);
+
+    let create = transport.request(1);
+    assert_eq!(create.method, Method::Post);
+    assert_eq!(
+        create.url,
+        format!("{}?jobId={}", jobs_url(), names::machine(machine)),
+        "the name is derived from the machine id, so a redelivery finds it"
+    );
+
+    let body = body_of(&create);
+    let task = &body["template"]["template"];
+    assert_eq!(body["template"]["taskCount"], 1);
+    assert_eq!(
+        task["timeout"], "604800s",
+        "168 hours, the documented ceiling"
+    );
+    assert_eq!(
+        task["maxRetries"], 0,
+        "a retry would put a second flycod on one session"
+    );
+    assert_eq!(task["executionEnvironment"], "EXECUTION_ENVIRONMENT_GEN2");
+
+    let container = &task["containers"][0];
+    assert_eq!(
+        container["image"],
+        format!(
+            "ghcr.io/lexoliu/flyco-session:wire-{}",
+            flyco_core::WIRE_PROTOCOL_VERSION
+        ),
+        "pinned to this control plane's wire protocol, never `latest`"
+    );
+    assert_eq!(container["resources"]["limits"]["cpu"], "4");
+    assert_eq!(container["resources"]["limits"]["memory"], "16Gi");
+    assert_eq!(body["labels"]["flyco-machine"], machine.to_string());
+    assert_eq!(
+        body["labels"]["flyco-session"],
+        provision.bootstrap.session.to_string()
+    );
+
+    // The configuration travels base64 in the same environment variable the
+    // host path already uses, so one image reads both.
+    let env = &container["env"][0];
+    assert_eq!(env["name"], "FLYCO_DAEMON_CONFIG");
+    let raw = create.body_text().expect("UTF-8").to_owned();
+    assert!(!raw.contains("fd_a-live-daemon-token"));
+    let config = String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(env["value"].as_str().expect("a string"))
+            .expect("the environment value is base64"),
+    )
+    .expect("the config is UTF-8");
+    assert!(config.contains("daemon_token = \"fd_a-live-daemon-token\""));
+    assert!(
+        config.contains("runtime = \"container\""),
+        "the daemon has to know its filesystem ends with the execution"
+    );
+
+    let run = transport.request(2);
+    assert_eq!(run.url, format!("{}:run", job_url(machine)));
+    assert_eq!(body_of(&run), serde_json::json!({}));
+
+    assert_eq!(
+        provisioned.native_id,
+        format!("{}/{EXECUTION}", names::machine(machine)),
+        "the machine is the job and the execution together"
+    );
+    assert_eq!(provisioned.region, REGION);
+    assert_eq!(provisioned.state, MachineState::Running);
+    assert_eq!(
+        provisioned.capacity_mode,
+        CapacityMode::OnDemand,
+        "Cloud Run sells no interruptible capacity, whatever the spec asked"
+    );
+    assert_eq!(
+        provisioned.address, None,
+        "a job has no inbound address, and flyco never dials one"
+    );
+}
+
+#[tokio::test]
+async fn the_run_operation_is_never_waited_on() {
+    // It finishes when the *task* does, which for a session is up to a week
+    // away: waiting on it would be waiting for the session to end. The
+    // fixture is deliberately `done: false`.
+    let machine = MachineId::generate();
+    let mut gcp = provider(vec![
+        token(),
+        json(RUN_OPERATION_DONE),
+        json(RUN_OPERATION_STARTED),
+    ]);
+
+    gcp.provision(&container_request(machine, CONTAINER_TYPE))
+        .await
+        .expect("provision");
+
+    assert_eq!(
+        gcp.transport().request_count(),
+        3,
+        "a fourth request would be a poll of the run operation"
+    );
+    assert!(
+        gcp.timer().delays().is_empty(),
+        "nothing waits, so nothing sleeps"
+    );
+}
+
+#[tokio::test]
+async fn a_create_operation_is_followed_to_done_before_the_job_is_run() {
+    let machine = MachineId::generate();
+    let mut running: serde_json::Value =
+        serde_json::from_str(RUN_OPERATION_DONE).expect("the fixture parses");
+    running["done"] = serde_json::Value::Bool(false);
+    let mut gcp = provider(vec![
+        token(),
+        json(&running.to_string()),
+        json(RUN_OPERATION_DONE),
+        json(RUN_OPERATION_STARTED),
+    ]);
+
+    gcp.provision(&container_request(machine, CONTAINER_TYPE))
+        .await
+        .expect("provision");
+
+    let transport = gcp.transport();
+    let poll = transport.request(2);
+    assert_eq!(poll.method, Method::Get);
+    assert_eq!(
+        poll.url,
+        format!("{RUN_BASE}/projects/{PROJECT}/locations/{REGION}/operations/4b71e2d9-create"),
+        "a Cloud Run operation is polled at its resource name, not a selfLink"
+    );
+    assert_eq!(
+        transport.request(3).url,
+        format!("{}:run", job_url(machine))
+    );
+}
+
+#[tokio::test]
+async fn a_redelivered_provision_adopts_the_execution_that_is_already_running() {
+    // The queue is at-least-once. Running the job again would put a second
+    // flycod on the same session token.
+    let machine = MachineId::generate();
+    let mut gcp = provider(vec![
+        token(),
+        refused(409, RUN_ERROR_ALREADY_EXISTS),
+        json(RUN_EXECUTIONS_LIVE),
+    ]);
+
+    let provisioned = gcp
+        .provision(&container_request(machine, CONTAINER_TYPE))
+        .await
+        .expect("a redelivery is not a failure");
+
+    let transport = gcp.transport();
+    assert_eq!(transport.request_count(), 3);
+    assert_eq!(
+        transport.request(2).url,
+        format!("{}/executions", job_url(machine))
+    );
+    assert!(
+        !(0..transport.request_count()).any(|index| transport.request(index).url.ends_with(":run")),
+        "the job was already running, so nothing was started"
+    );
+    assert_eq!(
+        provisioned.native_id,
+        format!("{}/{EXECUTION}", names::machine(machine))
+    );
+}
+
+#[tokio::test]
+async fn a_redelivered_provision_runs_the_job_when_nothing_is_running_on_it() {
+    let machine = MachineId::generate();
+    let mut gcp = provider(vec![
+        token(),
+        refused(409, RUN_ERROR_ALREADY_EXISTS),
+        json(RUN_EXECUTIONS_FINISHED),
+        json(RUN_OPERATION_STARTED),
+    ]);
+
+    gcp.provision(&container_request(machine, CONTAINER_TYPE))
+        .await
+        .expect("provision");
+
+    assert_eq!(
+        gcp.transport().request(3).url,
+        format!("{}:run", job_url(machine))
+    );
+}
+
+#[tokio::test]
+async fn a_size_cloud_run_does_not_offer_is_refused_before_any_write() {
+    let mut gcp = provider(vec![token()]);
+    let error = gcp
+        .provision(&container_request(MachineId::generate(), "cloudrun-16x64"))
+        .await
+        .expect_err("Cloud Run tops out at eight vCPUs");
+    assert!(matches!(error, ProviderError::Unavailable { .. }));
+    assert_eq!(
+        gcp.transport().request_count(),
+        0,
+        "nothing is even authenticated for a machine type that cannot exist"
+    );
+}
+
+#[tokio::test]
+async fn a_region_cloud_run_publishes_no_price_for_is_refused_rather_than_guessed_at() {
+    let mut request = container_request(MachineId::generate(), CONTAINER_TYPE);
+    request.spec.region = "us-east7".to_owned();
+
+    let mut gcp = provider(vec![token()]);
+    let error = gcp
+        .provision(&request)
+        .await
+        .expect_err("no published rate");
+    let ProviderError::Unavailable { reason, .. } = &error else {
+        panic!("an unpriced region is an availability failure: {error}");
+    };
+    assert!(
+        reason.contains("no price"),
+        "the refusal says why: {reason}"
+    );
+}
+
+#[tokio::test]
+async fn a_project_without_the_cloud_run_api_is_told_where_to_enable_it() {
+    let mut gcp = provider(vec![token(), refused(403, RUN_ERROR_SERVICE_DISABLED)]);
+
+    let error = gcp
+        .provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
+        .await
+        .expect_err("a disabled API cannot start a container");
+    assert_eq!(error.code(), Some("SERVICE_DISABLED"));
+    assert!(
+        error.to_string().contains(
+            "https://console.cloud.google.com/apis/library/run.googleapis.com\
+             ?project=flyco-sessions"
+        ),
+        "the way out runs through that page: {error}"
+    );
+}
+
+#[tokio::test]
+async fn deallocating_a_container_cancels_the_execution_it_is_running() {
+    let machine = container_machine(MachineId::generate());
+    let mut gcp = provider(vec![
+        token(),
+        json(RUN_EXECUTION_LIVE),
+        json(RUN_OPERATION_DONE),
+    ]);
+
+    gcp.deallocate(&machine).await.expect("deallocate");
+
+    let transport = gcp.transport();
+    let execution = format!("{}/executions/{EXECUTION}", job_url(machine.id));
+    assert_eq!(transport.request(1).method, Method::Get);
+    assert_eq!(transport.request(1).url, execution);
+    assert_eq!(transport.request(2).url, format!("{execution}:cancel"));
+    assert!(
+        !(0..transport.request_count())
+            .any(|index| transport.request(index).method == Method::Delete),
+        "the job definition survives a stop; only the execution ends"
+    );
+}
+
+#[tokio::test]
+async fn an_execution_that_already_finished_is_not_cancelled_again() {
+    // A task that hit its timeout or died on its own is already stopped, and
+    // asking Cloud Run to cancel it would refuse a deallocate that has
+    // nothing left to do.
+    let machine = container_machine(MachineId::generate());
+    let mut gcp = provider(vec![token(), json(RUN_EXECUTION_FINISHED)]);
+
+    gcp.deallocate(&machine).await.expect("deallocate");
+    assert_eq!(gcp.transport().request_count(), 2);
+}
+
+#[tokio::test]
+async fn starting_a_container_is_a_new_execution_of_the_same_job() {
+    let machine = container_machine(MachineId::generate());
+    let mut gcp = provider(vec![
+        token(),
+        json(RUN_EXECUTIONS_FINISHED),
+        json(RUN_OPERATION_STARTED),
+    ]);
+
+    let started = gcp.start(&machine).await.expect("start");
+
+    assert_eq!(
+        gcp.transport().request(2).url,
+        format!("{}:run", job_url(machine.id))
+    );
+    assert_eq!(started.state, MachineState::Running);
+    assert_eq!(
+        started.native_id,
+        format!("{}/{EXECUTION}", names::machine(machine.id)),
+        "the job is the same and the execution is not, so the native id moves"
+    );
+}
+
+#[tokio::test]
+async fn resizing_a_container_stops_it_patches_the_size_and_starts_it_again() {
+    let machine = container_machine(MachineId::generate());
+    let mut gcp = provider(vec![
+        token(),
+        json(RUN_EXECUTION_LIVE),
+        json(RUN_OPERATION_DONE),    // cancel
+        json(RUN_JOB),               // read back the configuration
+        json(RUN_OPERATION_DONE),    // patch
+        json(RUN_OPERATION_STARTED), // run
+    ]);
+
+    let resized = gcp
+        .resize(&machine, "cloudrun-8x32")
+        .await
+        .expect("a container resize is stop and start at the new size");
+
+    let transport = gcp.transport();
+    let job = job_url(machine.id);
+    assert_eq!(
+        transport.request(2).url,
+        format!("{job}/executions/{EXECUTION}:cancel"),
+        "the stop is what writes the workdir patch, so it comes first"
+    );
+    assert_eq!(transport.request(3).method, Method::Get);
+    assert_eq!(transport.request(3).url, job);
+
+    let patch = transport.request(4);
+    assert_eq!(patch.method, Method::Patch);
+    assert_eq!(patch.url, job);
+    let body = body_of(&patch);
+    let container = &body["template"]["template"]["containers"][0];
+    assert_eq!(container["resources"]["limits"]["cpu"], "8");
+    assert_eq!(container["resources"]["limits"]["memory"], "32Gi");
+    // The one thing a resize cannot re-derive is the session's own
+    // configuration, so it is carried over from the job rather than dropped.
+    assert_eq!(
+        container["env"][0]["value"],
+        serde_json::from_str::<serde_json::Value>(RUN_JOB).expect("the fixture parses")["template"]
+            ["template"]["containers"][0]["env"][0]["value"]
+    );
+    assert_eq!(
+        body["labels"]["flyco-session"], "01J9ZK4Q7X8N2M5PVYB3TC6HDA",
+        "the labels name the session, which a resize is never told"
+    );
+
+    assert_eq!(transport.request(5).url, format!("{job}:run"));
+    assert_eq!(resized.state, MachineState::Running);
+}
+
+#[tokio::test]
+async fn destroying_a_container_cancels_the_execution_then_deletes_the_job() {
+    let machine = container_machine(MachineId::generate());
+    let mut gcp = provider(vec![
+        token(),
+        json(RUN_EXECUTION_LIVE),
+        json(RUN_OPERATION_DONE), // cancel
+        json(RUN_OPERATION_DONE), // delete
+    ]);
+
+    gcp.destroy(&machine).await.expect("destroy");
+
+    let transport = gcp.transport();
+    let job = job_url(machine.id);
+    assert_eq!(
+        transport.request(2).url,
+        format!("{job}/executions/{EXECUTION}:cancel"),
+        "a task still flushing its transcript is a session losing its last turn"
+    );
+    let delete = transport.request(3);
+    assert_eq!(delete.method, Method::Delete);
+    assert_eq!(delete.url, job);
+}
+
+#[tokio::test]
+async fn the_catalog_publishes_cloud_run_once_per_region_beside_the_machine_types() {
+    // Two zones of one region: the container entries are regional, so
+    // publishing them per zone would triple them.
+    let workspace =
+        GcpWorkspace::new().with_zones(vec![ZONE.to_owned(), "us-central1-b".to_owned()]);
+    let mut gcp = provider_over(
+        workspace,
+        [
+            catalog_script(),
+            vec![json(REGION_INFO), json(MACHINE_TYPES)],
+        ]
+        .concat(),
+    );
+
+    let catalog = gcp.catalog().await.expect("catalog");
+    let containers: Vec<&flyco_core::MachineCatalogEntry> = catalog
+        .iter()
+        .filter(|entry| entry.runtime == Runtime::Container)
+        .collect();
+
+    assert_eq!(containers.len(), 4, "one entry per offered size, once");
+    for entry in &containers {
+        assert_eq!(entry.region, REGION, "a job has a region, never a zone");
+        assert_eq!(entry.free_grant, Some(super::CLOUD_RUN_FREE_GRANT));
+    }
+    assert!(
+        catalog
+            .iter()
+            .any(|entry| entry.runtime == Runtime::Vm && entry.region == ZONE),
+        "the machine types are still published beside them"
+    );
+}
+
 /// The one test that touches a real project.
 ///
 /// Ignored *and* feature-gated, so neither `cargo test` nor
@@ -1057,6 +1529,9 @@ async fn live_provision_and_destroy() {
 
     let cheapest = catalog
         .iter()
+        // Virtual machines only: this test asserts the compute path, and a
+        // container entry would send it down the Cloud Run one.
+        .filter(|entry| entry.runtime == Runtime::Vm)
         .filter_map(|entry| entry.pricing.hourly(true).map(|price| (price, entry)))
         .min_by_key(|(price, _)| *price)
         .expect("a priced machine type")

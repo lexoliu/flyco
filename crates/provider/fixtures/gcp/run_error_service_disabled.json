@@ -1,0 +1,27 @@
+{
+  "error": {
+    "code": 403,
+    "message": "Cloud Run Admin API has not been used in project flyco-sessions before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/run.googleapis.com/overview?project=flyco-sessions then retry.",
+    "status": "PERMISSION_DENIED",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "SERVICE_DISABLED",
+        "domain": "googleapis.com",
+        "metadata": {
+          "service": "run.googleapis.com",
+          "consumer": "projects/flyco-sessions"
+        }
+      },
+      {
+        "@type": "type.googleapis.com/google.rpc.Help",
+        "links": [
+          {
+            "description": "Google developers console API activation",
+            "url": "https://console.developers.google.com/apis/api/run.googleapis.com/overview?project=flyco-sessions"
+          }
+        ]
+      }
+    ]
+  }
+}

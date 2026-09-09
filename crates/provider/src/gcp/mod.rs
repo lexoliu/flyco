@@ -56,11 +56,27 @@
 //! `Detach`, so it outlives the instance and [`GcpProvider::destroy`]
 //! deletes it explicitly after the instance is gone. Deleting them in the
 //! other order fails on a disk that is still attached.
+//!
+//! # Two runtimes, one driver
+//!
+//! The same project sells a virtual machine and a managed container, so this
+//! driver answers both (issue #235). A spec whose
+//! [`runtime`](MachineSpec::runtime) is [`Runtime::Container`] is a Cloud Run
+//! job, and everything about it that is genuinely different — its URLs, its
+//! bodies, its published rates, its lifecycle — is in [`run`]. Everything
+//! that is not, from the signed assertion to the resource naming, is shared
+//! with the compute path here.
+//!
+//! A later operation is handed a [`Machine`] rather than a spec, so the
+//! runtime is read back off the machine's own provider-native id: a Compute
+//! Engine machine's is an absolute URL and a Cloud Run machine's is
+//! `<job>/<execution>`, and [`run::Handle::parse`] accepts only the second.
 
 pub mod auth;
 pub mod compute;
 pub mod pricing;
 pub mod quotas;
+pub mod run;
 
 #[cfg(test)]
 mod tests;
@@ -191,16 +207,32 @@ pub const SPOT_UNSUPPORTED_CODES: [&str; 3] = [
 pub mod names {
     use flyco_core::MachineId;
 
-    /// A machine's instance, which is also its hostname.
+    /// Prefix every flyco-derived name carries.
+    pub const PREFIX: &str = "flyco-";
+
+    /// A machine's instance, which is also its hostname — and, on a
+    /// container machine, its Cloud Run job.
     #[must_use]
     pub fn machine(id: MachineId) -> String {
-        format!("flyco-{id}")
+        format!("{PREFIX}{id}")
     }
 
     /// A machine's boot disk.
     #[must_use]
     pub fn boot_disk(id: MachineId) -> String {
-        format!("flyco-{id}-boot")
+        format!("{PREFIX}{id}-boot")
+    }
+
+    /// The machine a name identifies, or `None` for a name flyco did not
+    /// derive.
+    ///
+    /// The inverse of [`machine`], and the reason a Cloud Run machine needs
+    /// no extra field to be recognised: a native id whose first segment is a
+    /// name this accepts came from this driver's container path and nowhere
+    /// else. See [`super::run::Handle`].
+    #[must_use]
+    pub fn machine_named(name: &str) -> Option<MachineId> {
+        name.strip_prefix(PREFIX)?.parse().ok()
     }
 }
 
@@ -376,25 +408,41 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
         Ok(self.transport.send(request.bearer(&token)).await?)
     }
 
-    /// Sends one authenticated request and refuses anything but a success.
-    async fn get<R: serde::de::DeserializeOwned>(
+    /// Sends one authenticated request, refuses anything but a success, and
+    /// decodes what came back.
+    ///
+    /// The refusal reader is a parameter because the two Google APIs this
+    /// driver speaks put their actionable code in different places —
+    /// Compute Engine in `error.errors[].reason`, Cloud Run in
+    /// `error.details[].reason` — and a driver that read one document with
+    /// the other's parser would report every refusal without a code. The
+    /// authentication, the 401 retry and the decode are the same for both,
+    /// so only the reader varies.
+    async fn fetch<R: serde::de::DeserializeOwned>(
         &mut self,
-        url: String,
+        request: HttpRequest,
+        refusal: impl FnOnce(&HttpResponse) -> ProviderError,
     ) -> Result<R, ProviderError> {
-        let response = self.send(HttpRequest::new(Method::Get, url)).await?;
+        let response = self.send(request).await?;
         if !response.is_success() {
-            return Err(compute::refusal(&response));
+            return Err(refusal(&response));
         }
         Ok(response.json()?)
     }
 
+    /// Sends one authenticated Compute Engine request and refuses anything
+    /// but a success.
+    async fn get<R: serde::de::DeserializeOwned>(
+        &mut self,
+        url: String,
+    ) -> Result<R, ProviderError> {
+        self.fetch(HttpRequest::new(Method::Get, url), compute::refusal)
+            .await
+    }
+
     /// Sends a mutating request and waits for the operation it started.
     async fn send_and_await(&mut self, request: HttpRequest) -> Result<(), ProviderError> {
-        let response = self.send(request).await?;
-        if !response.is_success() {
-            return Err(compute::refusal(&response));
-        }
-        let operation: Operation = response.json()?;
+        let operation: Operation = self.fetch(request, compute::refusal).await?;
         self.await_operation(operation).await
     }
 
@@ -807,6 +855,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
         };
 
         let mut entries = Vec::new();
+        let mut regions: Vec<String> = Vec::new();
         for zone in zones {
             let report = self.zone_report(&zone).await?;
             tracing::debug!(
@@ -816,11 +865,75 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
                 "read a GCP zone's catalog"
             );
             entries.extend(report.offered);
+
+            // Cloud Run is regional and Compute Engine zonal, so the
+            // container entries are added once per region rather than once
+            // per zone of it — otherwise three zones of `us-central1` would
+            // publish the same four jobs three times.
+            let region = compute::region_of(&zone)?;
+            if !regions.contains(&region) {
+                if let Some(tier) = run::Tier::of(&region) {
+                    entries.extend(run::catalog(&region, tier));
+                } else {
+                    tracing::debug!(
+                        %region,
+                        "Cloud Run publishes no rate for this region, so it offers no container here"
+                    );
+                }
+                regions.push(region);
+            }
         }
         Ok(entries)
     }
 
     async fn provision(&mut self, request: &ProvisionRequest) -> Result<Machine, ProviderError> {
+        match request.spec.runtime {
+            Runtime::Vm => self.provision_instance(request).await,
+            Runtime::Container => self.provision_job(request).await,
+        }
+    }
+
+    /// Stop, `setMachineType`, start on a virtual machine; stop and start at
+    /// the new size on a container — see [`run`].
+    async fn resize(
+        &mut self,
+        machine: &Machine,
+        new_machine_type: &str,
+    ) -> Result<Machine, ProviderError> {
+        match run::Handle::parse(&machine.native_id) {
+            Some(handle) => self.resize_job(machine, &handle, new_machine_type).await,
+            None => self.resize_instance(machine, new_machine_type).await,
+        }
+    }
+
+    async fn deallocate(&mut self, machine: &Machine) -> Result<(), ProviderError> {
+        match run::Handle::parse(&machine.native_id) {
+            Some(handle) => self.deallocate_job(machine, &handle).await,
+            None => self.deallocate_instance(machine).await,
+        }
+    }
+
+    async fn start(&mut self, machine: &Machine) -> Result<Machine, ProviderError> {
+        match run::Handle::parse(&machine.native_id) {
+            Some(handle) => self.start_job(machine, &handle).await,
+            None => self.start_instance(machine).await,
+        }
+    }
+
+    async fn destroy(&mut self, machine: &Machine) -> Result<(), ProviderError> {
+        match run::Handle::parse(&machine.native_id) {
+            Some(handle) => self.destroy_job(machine, &handle).await,
+            None => self.destroy_instance(machine).await,
+        }
+    }
+}
+
+impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T, C, K, W> {
+    /// Provisions a session as a Compute Engine instance.
+    async fn provision_instance(
+        &mut self,
+        request: &ProvisionRequest,
+    ) -> Result<Machine, ProviderError> {
         let MachineSpec {
             region: zone,
             machine_type,
@@ -872,7 +985,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
     /// stopped instance, and the disk survives because it is a separate
     /// resource that was never being deleted. The result is read from the
     /// operations, never from the instance.
-    async fn resize(
+    async fn resize_instance(
         &mut self,
         machine: &Machine,
         new_machine_type: &str,
@@ -910,13 +1023,15 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
         })
     }
 
-    async fn deallocate(&mut self, machine: &Machine) -> Result<(), ProviderError> {
+    /// Stops an instance, keeping the disk it boots from.
+    async fn deallocate_instance(&mut self, machine: &Machine) -> Result<(), ProviderError> {
         let zone = machine.region.clone();
         self.post_action(format!("{}/stop", self.instance_url(machine.id, &zone)))
             .await
     }
 
-    async fn start(&mut self, machine: &Machine) -> Result<Machine, ProviderError> {
+    /// Starts a stopped instance, on the disk it kept.
+    async fn start_instance(&mut self, machine: &Machine) -> Result<Machine, ProviderError> {
         let zone = machine.region.clone();
         self.post_action(format!("{}/start", self.instance_url(machine.id, &zone)))
             .await?;
@@ -936,7 +1051,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
     ///
     /// In that order: a disk that is still attached cannot be deleted, and
     /// the instance's deletion is what detaches it.
-    async fn destroy(&mut self, machine: &Machine) -> Result<(), ProviderError> {
+    async fn destroy_instance(&mut self, machine: &Machine) -> Result<(), ProviderError> {
         let zone = machine.region.clone();
         self.send_and_await(HttpRequest::new(
             Method::Delete,
