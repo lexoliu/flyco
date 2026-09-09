@@ -26,7 +26,7 @@ use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use flyco_core::ApprovalId;
+use flyco_core::{ApprovalId, HarnessCommand};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -36,8 +36,9 @@ use self::normalize::{ApprovalParams, Normalizer, usage_windows};
 use self::protocol::{
     ApprovalDecision, ApprovalDecisionBody, ClientCapabilities, ClientInfo, Envelope,
     InitializeParams, McpServerStatusPage, McpServerStatusParams, ModelListParams,
-    ModelListResponse, RateLimitSnapshot, RateLimitsBody, RequestId, ThreadCompactStartParams,
-    ThreadConfig, ThreadParams, TurnInterruptParams, TurnStartParams, UserInput, method,
+    ModelListResponse, RateLimitSnapshot, RateLimitsBody, RequestId, SkillsListEntry,
+    SkillsListParams, SkillsListResponse, ThreadCompactStartParams, ThreadConfig, ThreadParams,
+    TurnInterruptParams, TurnStartParams, UserInput, method,
 };
 use super::{Harness, HarnessSession, SessionOutput, StartRequest, Started, ToolApproval};
 use crate::config::{CodexAuth, CodexConfig};
@@ -193,7 +194,11 @@ impl Harness for CodexHarness {
 
         let mut lines = BufReader::new(stdout).lines();
         let mut next_id = 1_u64;
-        let Handshaken { thread_id, models } = Box::pin(handshake(
+        let Handshaken {
+            thread_id,
+            models,
+            skills,
+        } = Box::pin(handshake(
             &mut stdin,
             &mut lines,
             &mut next_id,
@@ -224,6 +229,8 @@ impl Harness for CodexHarness {
                 model: self.config.model.clone(),
                 effort: self.config.effort.clone(),
                 models,
+                skills,
+                pending_skills: None,
             }
             .run(inbox, resumed),
         );
@@ -527,6 +534,8 @@ struct Handshaken {
     thread_id: String,
     /// What this build of the app-server said it offers.
     models: Vec<flyco_core::ModelOption>,
+    /// What the checkout's skills are, for the composer's `/` palette.
+    skills: Skills,
 }
 
 async fn handshake<R>(
@@ -599,6 +608,7 @@ where
     })?;
 
     let models = offered_models(stdin, lines, next_id).await?;
+    let skills = offered_skills(stdin, lines, next_id, false).await?;
 
     // Last, and before a single turn: a thread whose agent cannot call
     // `budget_status` is one that will spend the user's money with the
@@ -608,6 +618,7 @@ where
     Ok(Handshaken {
         thread_id: thread,
         models,
+        skills,
     })
 }
 
@@ -646,6 +657,85 @@ where
         .filter(|model| !model.hidden)
         .map(Into::into)
         .collect())
+}
+
+/// The skills a Codex thread offers, in the two shapes flyco needs.
+///
+/// One list for the composer's palette and one index from a name to the
+/// `SKILL.md` behind it, because Codex invokes a skill by naming its file
+/// and the browser only ever sends flyco the name.
+#[derive(Debug, Default)]
+struct Skills {
+    /// What the palette shows, in the order the app-server listed it.
+    listed: Vec<HarnessCommand>,
+    /// Where each listed skill lives.
+    paths: BTreeMap<String, String>,
+}
+
+impl Skills {
+    /// Collects one `skills/list` answer.
+    ///
+    /// Disabled skills are dropped — the palette must not offer a command
+    /// the thread would refuse — and a name that appears twice keeps its
+    /// first path. The duplicate is routine rather than exotic: the same
+    /// skill installed under both `~/.agents/skills` and `~/.codex/skills`
+    /// is listed once per root, and a palette showing it twice would ask
+    /// the user to choose between two identical rows.
+    fn collect(entries: Vec<SkillsListEntry>) -> Self {
+        let mut skills = Self::default();
+        for skill in entries.into_iter().flat_map(|entry| entry.skills) {
+            if !skill.enabled || skills.paths.contains_key(&skill.name) {
+                continue;
+            }
+            skills.paths.insert(skill.name.clone(), skill.path.clone());
+            skills.listed.push(HarnessCommand {
+                name: skill.name.clone(),
+                // Codex skills declare no argument, so every one of them is
+                // a command the palette can send the moment it is chosen.
+                argument_hint: None,
+                description: skill.summary(),
+            });
+        }
+        skills
+    }
+}
+
+/// Every skill this thread's checkout offers.
+///
+/// Asked during the handshake, and again whenever the app-server says a
+/// watched skill file changed: unlike the model list, this is a fact about
+/// the checkout, and the checkout is what the agent is editing.
+async fn offered_skills<R>(
+    stdin: &mut ChildStdin,
+    lines: &mut tokio::io::Lines<R>,
+    next_id: &mut u64,
+    force_reload: bool,
+) -> Result<Skills, CodexError>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let id = take_id(next_id);
+    write_envelope(
+        stdin,
+        &Envelope::request(
+            id.clone(),
+            method::SKILLS_LIST,
+            serde_json::to_value(SkillsListParams { force_reload })
+                .expect("SkillsListParams serializes"),
+        ),
+    )
+    .await?;
+    let result = expect_result(lines, &id, method::SKILLS_LIST).await?;
+    parse_skills(result)
+}
+
+/// Reads a `skills/list` result into the palette's two shapes.
+fn parse_skills(result: Value) -> Result<Skills, CodexError> {
+    let listed: SkillsListResponse =
+        serde_json::from_value(result).map_err(|source| CodexError::Protocol {
+            detail: format!("skills/list returned something else: {source}"),
+        })?;
+    Ok(Skills::collect(listed.data))
 }
 
 /// How long the driver waits for every MCP server to stop dialling.
@@ -866,6 +956,40 @@ where
     }
 }
 
+/// Turns what the user sent into the items `turn/start` takes.
+///
+/// A leading `/name` that matches a skill of this checkout becomes the
+/// skill item Codex invokes it with, and whatever follows stays as prose
+/// beside it. Anything else is prose in its entirety, slash included: a
+/// message that merely starts with a slash is a message, and flyco does not
+/// get to decide that a sentence was a command.
+fn turn_input(skills: &Skills, text: String) -> Vec<UserInput> {
+    let Some(rest) = text.strip_prefix('/') else {
+        return vec![text_input(text)];
+    };
+    let (name, argument) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    let Some(path) = skills.paths.get(name) else {
+        return vec![text_input(text)];
+    };
+    let mut input = vec![UserInput::Skill {
+        name: name.to_owned(),
+        path: path.clone(),
+    }];
+    let argument = argument.trim();
+    if !argument.is_empty() {
+        input.push(text_input(argument.to_owned()));
+    }
+    input
+}
+
+/// One prose item of a `turn/start` input.
+const fn text_input(text: String) -> UserInput {
+    UserInput::Text {
+        text,
+        text_elements: [],
+    }
+}
+
 async fn emit(outputs: &mpsc::Sender<SessionOutput>, output: SessionOutput) -> bool {
     if outputs.send(output).await.is_err() {
         tracing::debug!("nothing is consuming the session's output stream");
@@ -902,6 +1026,17 @@ struct Driver {
     effort: Option<String>,
     /// What the app-server said it offers, reported once at start.
     models: Vec<flyco_core::ModelOption>,
+    /// The checkout's skills, which are the session's `/` commands.
+    ///
+    /// Held rather than reported and forgotten, because a `/name` the user
+    /// picks arrives as a name and `turn/start` needs the file behind it.
+    skills: Skills,
+    /// The `skills/list` this driver is waiting on, if any.
+    ///
+    /// Only the newest one counts: a burst of file changes issues a request
+    /// per notification, and an answer to a superseded request describes a
+    /// checkout that has already moved on.
+    pending_skills: Option<RequestId>,
 }
 
 impl Driver {
@@ -934,6 +1069,9 @@ impl Driver {
         // being answered.
         if let Err(error) = self.read_rate_limits().await {
             tracing::warn!(%error, "could not ask the app-server about the plan's limits");
+        }
+        if !self.announce_skills().await {
+            return;
         }
 
         while let Some(command) = inbox.recv().await {
@@ -1025,14 +1163,52 @@ impl Driver {
         }
     }
 
+    /// Tells the control plane what the `/` palette should offer.
+    async fn announce_skills(&self) -> bool {
+        tracing::info!(
+            count = self.skills.listed.len(),
+            "the app-server listed the skills this checkout offers"
+        );
+        emit(
+            &self.outputs,
+            SessionOutput::Commands {
+                commands: self.skills.listed.clone(),
+            },
+        )
+        .await
+    }
+
+    /// Asks for the skill list again, because the app-server said it moved.
+    ///
+    /// Fire and forget: the answer arrives as a response frame and is
+    /// matched by [`Self::pending_skills`], so the driver never blocks on
+    /// it. A skill list that could not be asked for is not worth ending a
+    /// session over — the palette keeps the set it has — so a write failure
+    /// is logged and the driver carries on.
+    async fn refresh_skills(&mut self) -> bool {
+        let id = take_id(&mut self.next_id);
+        let Some(stdin) = self.stdin.as_mut() else {
+            return false;
+        };
+        let request = Envelope::request(
+            id.clone(),
+            method::SKILLS_LIST,
+            serde_json::to_value(SkillsListParams { force_reload: true })
+                .expect("SkillsListParams serializes"),
+        );
+        if let Err(error) = write_envelope(stdin, &request).await {
+            tracing::warn!(%error, "could not ask the app-server for its skills again");
+            return true;
+        }
+        self.pending_skills = Some(id);
+        true
+    }
+
     async fn start_turn(&mut self, text: String) -> Result<(), CodexError> {
         let id = take_id(&mut self.next_id);
         let params = TurnStartParams {
             thread_id: self.thread_id.clone(),
-            input: vec![UserInput::Text {
-                text,
-                text_elements: [],
-            }],
+            input: turn_input(&self.skills, text),
             model: self.model.clone(),
             effort: self.effort.clone(),
         };
@@ -1130,6 +1306,54 @@ impl Driver {
         .await
     }
 
+    /// One answer to a request this driver sent.
+    ///
+    /// Three requests are outstanding long enough to be answered here:
+    /// a compaction, whose caller is waiting on an acknowledgement; the
+    /// plan's limits, which become rings; and the skill list, which
+    /// becomes the palette. Everything else — `turn/start`,
+    /// `turn/interrupt` — acknowledges with `{}`, and its terminal signal
+    /// is the matching notification.
+    async fn on_response(&mut self, id: RequestId, result: Value) -> bool {
+        if self
+            .pending_compaction
+            .as_ref()
+            .is_some_and(|(pending, _)| pending == &id)
+        {
+            let (_, ack) = self.pending_compaction.take().expect("checked above");
+            let _ = ack.send(Ok(()));
+        }
+        if self.pending_rate_limits.as_ref() == Some(&id) {
+            self.pending_rate_limits = None;
+            return match serde_json::from_value::<RateLimitsBody>(result) {
+                Ok(body) => {
+                    self.rate_limits = body.rate_limits;
+                    self.emit_rate_limits().await
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not read the plan's limits");
+                    true
+                }
+            };
+        }
+        if self.pending_skills.as_ref() == Some(&id) {
+            self.pending_skills = None;
+            match parse_skills(result) {
+                Ok(skills) => {
+                    self.skills = skills;
+                    return self.announce_skills().await;
+                }
+                // The palette keeps the set it has. A refusal here means one
+                // answer about a skill directory was unreadable, which is
+                // not a reason to end a session that is otherwise working.
+                Err(error) => {
+                    tracing::warn!(%error, "the app-server's skill list was unreadable");
+                }
+            }
+        }
+        true
+    }
+
     async fn on_frame(&mut self, frame: Envelope) -> bool {
         match frame {
             Envelope::Notification { method, params } if method == method::RATE_LIMITS_UPDATED => {
@@ -1148,6 +1372,9 @@ impl Driver {
                 }
             }
             Envelope::Notification { method, params } => {
+                if method == method::SKILLS_CHANGED {
+                    return self.refresh_skills().await;
+                }
                 for event in self.normalizer.on_notification(&method, &params) {
                     if !emit(&self.outputs, SessionOutput::Event { event }).await {
                         return false;
@@ -1158,32 +1385,7 @@ impl Driver {
             Envelope::Request { id, method, params } => {
                 self.on_server_request(id, method, params).await
             }
-            Envelope::Response { id, result } => {
-                if self
-                    .pending_compaction
-                    .as_ref()
-                    .is_some_and(|(pending, _)| pending == &id)
-                {
-                    let (_, ack) = self.pending_compaction.take().expect("checked above");
-                    let _ = ack.send(Ok(()));
-                }
-                if self.pending_rate_limits.as_ref() == Some(&id) {
-                    self.pending_rate_limits = None;
-                    return match serde_json::from_value::<RateLimitsBody>(result) {
-                        Ok(body) => {
-                            self.rate_limits = body.rate_limits;
-                            self.emit_rate_limits().await
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "could not read the plan's limits");
-                            true
-                        }
-                    };
-                }
-                // turn/start and turn/interrupt acknowledge with `{}`; the
-                // terminal signal is the matching notification.
-                true
-            }
+            Envelope::Response { id, result } => self.on_response(id, result).await,
             Envelope::Error { id, error } => {
                 if self.pending_rate_limits.as_ref() == Some(&id) {
                     // A build or an account that cannot answer how much of
@@ -1193,6 +1395,14 @@ impl Driver {
                     tracing::warn!(
                         message = error.message,
                         "the app-server refused to state the plan's limits"
+                    );
+                    return true;
+                }
+                if self.pending_skills.as_ref() == Some(&id) {
+                    self.pending_skills = None;
+                    tracing::warn!(
+                        error = error.message,
+                        "the app-server refused to list its skills again"
                     );
                     return true;
                 }
@@ -1323,6 +1533,98 @@ impl Driver {
                 let _ = self.child.wait().await;
                 Err(CodexError::ShutdownTimedOut)
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Skills, protocol::SkillsListResponse, turn_input};
+
+    /// Two roots of one real `skills/list` answer, trimmed to the fields
+    /// flycod reads: the same skill installed under both `~/.agents/skills`
+    /// and `~/.codex/skills`, plus one the user turned off.
+    fn listed() -> Skills {
+        let answer: SkillsListResponse = serde_json::from_str(
+            r#"{"data":[
+                {"cwd":"/w","errors":[],"skills":[
+                    {"name":"cloudflare","description":"Comprehensive Cloudflare platform skill.",
+                     "path":"/Users/lexoliu/.agents/skills/cloudflare/SKILL.md",
+                     "scope":"user","enabled":true,"pluginId":null},
+                    {"name":"ast-grep","description":"Structural code search with ast-grep.",
+                     "path":"/Users/lexoliu/.codex/skills/ast-grep/SKILL.md",
+                     "scope":"user","enabled":false,"pluginId":null}
+                ]},
+                {"cwd":"/w","errors":[],"skills":[
+                    {"name":"cloudflare","description":"Comprehensive Cloudflare platform skill.",
+                     "path":"/Users/lexoliu/.codex/skills/cloudflare/SKILL.md",
+                     "scope":"user","enabled":true,"pluginId":null}
+                ]}
+            ]}"#,
+        )
+        .expect("the fixture matches skills/list");
+        Skills::collect(answer.data)
+    }
+
+    #[test]
+    fn a_skill_installed_under_two_roots_is_offered_once_and_a_disabled_one_never() {
+        let skills = listed();
+        assert_eq!(
+            skills
+                .listed
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect::<Vec<_>>(),
+            ["cloudflare"]
+        );
+        assert_eq!(
+            skills.paths.get("cloudflare").map(String::as_str),
+            Some("/Users/lexoliu/.agents/skills/cloudflare/SKILL.md"),
+            "the first root listed wins"
+        );
+        assert_eq!(skills.listed[0].argument_hint, None);
+    }
+
+    #[test]
+    fn a_chosen_skill_becomes_the_item_codex_invokes_it_with() {
+        let input = turn_input(&listed(), "/cloudflare deploy the worker".to_owned());
+        assert_eq!(
+            serde_json::to_value(&input).expect("UserInput serializes"),
+            serde_json::json!([
+                {
+                    "type": "skill",
+                    "name": "cloudflare",
+                    "path": "/Users/lexoliu/.agents/skills/cloudflare/SKILL.md"
+                },
+                { "type": "text", "text": "deploy the worker", "text_elements": [] }
+            ])
+        );
+    }
+
+    #[test]
+    fn a_skill_chosen_with_nothing_after_it_carries_no_empty_prose() {
+        let input = turn_input(&listed(), "/cloudflare".to_owned());
+        assert_eq!(
+            serde_json::to_value(&input).expect("UserInput serializes"),
+            serde_json::json!([
+                {
+                    "type": "skill",
+                    "name": "cloudflare",
+                    "path": "/Users/lexoliu/.agents/skills/cloudflare/SKILL.md"
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn a_message_that_only_looks_like_a_command_stays_a_message() {
+        for text in ["/etc/hosts is wrong", "/ast-grep", "look at /w"] {
+            let input = turn_input(&listed(), text.to_owned());
+            assert_eq!(
+                serde_json::to_value(&input).expect("UserInput serializes"),
+                serde_json::json!([{ "type": "text", "text": text, "text_elements": [] }]),
+                "{text} is prose, not a skill"
+            );
         }
     }
 }

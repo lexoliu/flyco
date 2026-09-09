@@ -96,8 +96,8 @@ pub use usage::{
 };
 pub use wire::{
     ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-    ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure,
-    ShellOutcome, ShellStream, UsageWindow,
+    HarnessCommand, ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
+    ReportStartupFailure, ShellOutcome, ShellStream, UsageWindow,
 };
 pub use workdir::{
     DIFF_PATCH_BYTES_MAX, DIRECTORY_ENTRIES_MAX, DirectoryEntry, DirectoryListing, EntryKind,
@@ -110,4 +110,4 @@ pub use workdir::{
 /// Bumped on every incompatible change to [`wire`]; the control plane
 /// refuses daemons speaking a different version (fast fail, no
 /// best-effort compatibility).
-pub const WIRE_PROTOCOL_VERSION: u32 = 10;
+pub const WIRE_PROTOCOL_VERSION: u32 = 11;

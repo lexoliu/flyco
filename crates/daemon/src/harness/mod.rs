@@ -20,7 +20,7 @@ pub mod codex;
 use std::future::Future;
 use std::path::PathBuf;
 
-use flyco_core::{ApprovalId, HarnessEvent, ModelChoice, ModelOption, UsageWindow};
+use flyco_core::{ApprovalId, HarnessCommand, HarnessEvent, ModelChoice, ModelOption, UsageWindow};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -114,6 +114,17 @@ pub enum SessionOutput {
     PlanUsage {
         /// Every window the harness reported, in no particular order.
         windows: Vec<UsageWindow>,
+    },
+    /// The slash commands this harness offers.
+    ///
+    /// Unlike [`Self::Models`] this reaches the browser as a relay frame:
+    /// the set is a fact about the checkout this session opened — the
+    /// repository's own skills are in it — so it belongs to the session and
+    /// not to the account. Re-emitted whenever the harness says the set
+    /// changed; the newest list wins.
+    Commands {
+        /// Every command the harness listed, in its own order.
+        commands: Vec<HarnessCommand>,
     },
     /// A normalized harness event.
     Event {

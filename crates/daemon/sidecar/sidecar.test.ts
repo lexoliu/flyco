@@ -15,6 +15,7 @@ import type { StartCommand } from "./protocol.ts";
 import {
   environment,
   lines,
+  offeredCommands,
   sessionIdFor,
   toModelOption,
   sessionOptions,
@@ -225,18 +226,18 @@ describe("session options", () => {
 
   test("an omitted model leaves the CLI's own default in place", () => {
     expect(sessionOptions(start(), "id", callbacks).model).toBeUndefined();
-    expect(sessionOptions(start({ model: "claude-sonnet-4-5-20250929" }), "id", callbacks).model).toBe(
-      "claude-sonnet-4-5-20250929",
-    );
+    expect(
+      sessionOptions(start({ model: "claude-sonnet-4-5-20250929" }), "id", callbacks).model,
+    ).toBe("claude-sonnet-4-5-20250929");
   });
 
   test("an omitted effort leaves the CLI's own default for the model in place", () => {
     // A model that accepts no effort levels at all (Haiku) is started with
     // none, so the key is absent rather than set to something empty.
     expect(sessionOptions(start({ model: "haiku" }), "id", callbacks).effort).toBeUndefined();
-    expect(
-      sessionOptions(start({ model: "sonnet", effort: "high" }), "id", callbacks).effort,
-    ).toBe("high");
+    expect(sessionOptions(start({ model: "sonnet", effort: "high" }), "id", callbacks).effort).toBe(
+      "high",
+    );
   });
 
   test("the permission mode and cwd are passed through unchanged", () => {
@@ -343,9 +344,7 @@ describe("the mount the CLI reports", () => {
     );
     // The deadline is past on the first look, so flycod gets the pending
     // report and refuses the session in the CLI's own words.
-    expect(mounted).toEqual([
-      { name: "flyco", status: "pending", state: "pending", tools: [] },
-    ]);
+    expect(mounted).toEqual([{ name: "flyco", status: "pending", state: "pending", tools: [] }]);
   });
 });
 
@@ -471,5 +470,48 @@ describe("the plan's usage windows", () => {
       used_percent: 26,
       resets_at_unix: null,
     });
+  });
+});
+
+describe("the commands the CLI offers", () => {
+  test("an empty argument hint becomes null, and aliases are dropped", () => {
+    // Verbatim rows from `supportedCommands()` on a real CLI: a skill,
+    // which declares no argument and carries alternate names, and a command
+    // that states exactly what its argument may be.
+    expect(
+      offeredCommands([
+        {
+          name: "usage",
+          description: "Show session cost, plan usage, and what's contributing to your limits",
+          argumentHint: "",
+          aliases: ["cost", "stats"],
+        },
+        {
+          name: "effort",
+          description: "Set effort level for model usage",
+          argumentHint: "<low|medium|high|xhigh|max|ultracode|auto>",
+        },
+      ]),
+    ).toEqual([
+      {
+        name: "usage",
+        description: "Show session cost, plan usage, and what's contributing to your limits",
+        argument_hint: null,
+      },
+      {
+        name: "effort",
+        description: "Set effort level for model usage",
+        argument_hint: "<low|medium|high|xhigh|max|ultracode|auto>",
+      },
+    ]);
+  });
+
+  test("the CLI's own internals are never offered", () => {
+    expect(
+      offeredCommands([
+        { name: "__remote-workflow", description: "internal", argumentHint: "" },
+        { name: "goal", description: "Set a goal", argumentHint: "" },
+      ]).map((command) => command.name),
+    ).toEqual(["goal"]);
   });
 });

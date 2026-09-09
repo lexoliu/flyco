@@ -317,6 +317,19 @@ pub enum SidecarEvent {
         /// Every window the SDK reported, in no particular order.
         windows: Vec<SidecarUsageWindow>,
     },
+    /// Every slash command this session offers, from the SDK's
+    /// `supportedCommands()`.
+    ///
+    /// Emitted once the CLI has answered its `initialize` handshake, and
+    /// again on every `system/commands_changed` frame — the CLI discovers
+    /// skills as the agent walks into subdirectories, so the set a session
+    /// opens with is not the set it ends with. The newest list replaces the
+    /// last one entirely, which is what the SDK documents that frame to
+    /// mean.
+    Commands {
+        /// The commands, in the order the SDK listed them.
+        commands: Vec<flyco_core::HarnessCommand>,
+    },
     /// What the CLI actually mounted, from the SDK's `mcpServerStatus()`.
     ///
     /// Emitted once, as soon as the CLI has finished its `initialize`
@@ -369,6 +382,7 @@ impl SidecarEvent {
             Self::Capabilities { .. } => "capabilities",
             Self::Models { .. } => "models",
             Self::PlanUsage { .. } => "plan_usage",
+            Self::Commands { .. } => "commands",
             Self::McpServers { .. } => "mcp_servers",
             Self::SdkMessage { .. } => "sdk_message",
             Self::ApprovalRequest { .. } => "approval_request",

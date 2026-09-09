@@ -22,6 +22,13 @@
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-panel);
   animation: rise var(--transition-panel);
+  /*
+   * A checkout can offer ninety commands. The list is capped at half the
+   * window and scrolls inside itself, so the palette never grows taller
+   * than the page it is floating over.
+   */
+  max-height: min(50vh, 20rem);
+  overflow-y: auto;
 }
 
 .command {
@@ -43,12 +50,62 @@
 }
 
 .commandName {
+  /*
+   * Never truncated before the description is: the name is the half of the
+   * row the user is reading for, so it keeps its width and the description
+   * gives way. The cap is what stops one very long skill name — Codex and
+   * Claude both allow `plugin:skill` — from eating the whole row.
+   */
   flex: none;
+  max-width: 45%;
   font-family: var(--font-mono);
   font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * The argument the command expects, beside its name and quieter than it.
+ * It gives way before the name does and after the description does: what to
+ * type matters more than what it means, and less than what it is called.
+ */
+.commandHint {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  margin-left: calc(0px - var(--space-2));
+  color: var(--color-text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * Which side runs the command. Only flyco's own three are marked: they are
+ * the ones that do something to the session rather than say something to
+ * the agent, and the harness's own list is the unmarked majority.
+ */
+.commandOwner {
+  flex: none;
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+  line-height: 1.6;
 }
 
 .commandDescription {
+  /*
+   * Takes what is left of the row rather than claiming a share of it, so
+   * the name and the argument hint keep their own width and this is what
+   * gives way first. It is the part a reader can guess from the name.
+   */
+  flex: 1 1 0;
+  min-width: 0;
   color: var(--color-text-muted);
   font-size: var(--text-sm);
   overflow: hidden;

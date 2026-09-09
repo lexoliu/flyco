@@ -33,6 +33,7 @@ const EVENT_TAGS = [
   "capabilities",
   "models",
   "plan_usage",
+  "commands",
   "mcp_servers",
   "sdk_message",
   "approval_request",

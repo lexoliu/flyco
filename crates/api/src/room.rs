@@ -563,6 +563,19 @@ async fn record(
         DaemonToControl::Capabilities { capabilities } => {
             put_latest(kv, KEY_CAPABILITIES, capabilities).await
         }
+        // Appended rather than kept in KV beside the capability set, and
+        // for the reason the model list is appended too: the `/` palette is
+        // built from the room's replayed stream, so a browser that opens
+        // the session long after the daemon reported its commands has to
+        // find them there or open on flyco's own three.
+        DaemonToControl::Commands { commands } => append(
+            db,
+            &ClientEvent::Commands {
+                commands: commands.clone(),
+            },
+        )
+        .await
+        .map(drop),
         // Both halves of a `!` command's answer are appended: the command
         // was recorded when it arrived, and a transcript row that replayed
         // as a command with no output and no exit status would be worse

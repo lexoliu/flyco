@@ -9,9 +9,11 @@ ignored the way a real binary's subcommand would consume it.
 
 The one thing a test can vary is the directory the driver runs it in, which
 is the scratch directory the test named: a scratch called `unmounted` gets
-an app-server whose flyco MCP server is missing `machine_status`. The driver
-gives the app-server no other channel, and a second copy of this file would
-be a second copy of the whole protocol.
+an app-server whose flyco MCP server is missing `machine_status`, and one
+called `skillsreload` announces `skills/changed` when a turn opens, so the
+driver's re-listing can be watched. The driver gives the app-server no other
+channel, and a second copy of this file would be a second copy of the whole
+protocol.
 """
 
 from __future__ import annotations
@@ -140,6 +142,78 @@ def main() -> None:
                     },
                 }
             )
+        elif method == "skills/list":
+            # Two roots of a real answer. The same skill is installed under
+            # both, and one is turned off: the driver has to offer
+            # `cloudflare` once and `ast-grep` never. A forced re-scan is
+            # what a `skills/changed` notification asks for, and it answers
+            # with the set the change produced.
+            reloaded = msg.get("params", {}).get("forceReload") is True
+            send(
+                {
+                    "id": msg["id"],
+                    "result": {
+                        "data": [
+                            {
+                                "cwd": os.getcwd(),
+                                "errors": [],
+                                "skills": [
+                                    {
+                                        "name": "cloudflare",
+                                        "description": (
+                                            "Comprehensive Cloudflare platform skill covering "
+                                            "Workers, Pages, storage, and AI."
+                                        ),
+                                        "path": "/root/.agents/skills/cloudflare/SKILL.md",
+                                        "scope": "user",
+                                        "enabled": True,
+                                        "pluginId": None,
+                                    },
+                                    {
+                                        "name": "ast-grep",
+                                        "description": "Structural code search with ast-grep.",
+                                        "path": "/root/.codex/skills/ast-grep/SKILL.md",
+                                        "scope": "user",
+                                        "enabled": False,
+                                        "pluginId": None,
+                                    },
+                                ]
+                                + (
+                                    [
+                                        {
+                                            "name": "release",
+                                            "description": "Cut a release of this crate.",
+                                            "path": "/work/.codex/skills/release/SKILL.md",
+                                            "scope": "repo",
+                                            "enabled": True,
+                                            "pluginId": None,
+                                        }
+                                    ]
+                                    if reloaded
+                                    else []
+                                ),
+                            },
+                            {
+                                "cwd": os.getcwd(),
+                                "errors": [],
+                                "skills": [
+                                    {
+                                        "name": "cloudflare",
+                                        "description": (
+                                            "Comprehensive Cloudflare platform skill covering "
+                                            "Workers, Pages, storage, and AI."
+                                        ),
+                                        "path": "/root/.codex/skills/cloudflare/SKILL.md",
+                                        "scope": "user",
+                                        "enabled": True,
+                                        "pluginId": None,
+                                    }
+                                ],
+                            },
+                        ]
+                    },
+                }
+            )
         elif method == "mcpServerStatus/list":
             # What the app-server mounted. The driver refuses the session
             # unless flyco's own server is here, connected, with its tools.
@@ -164,6 +238,11 @@ def main() -> None:
                 }
             )
         elif method == "turn/start":
+            if "skillsreload" in os.getcwd():
+                # A skill file changed while the session was open, which is
+                # an invalidation signal and nothing else: the driver has to
+                # ask again.
+                send({"method": "skills/changed", "params": {}})
             send({"id": msg["id"], "result": {}})
             send(
                 {

@@ -119,6 +119,32 @@ fn window_label(minutes: Option<u32>, scope: Option<&str>) -> String {
     }
 }
 
+/// One slash command the running harness offers its user.
+///
+/// Flyco's own vocabulary rather than either harness's: Claude Code answers
+/// `supportedCommands()` with `{name, description, argumentHint}` and Codex
+/// answers `skills/list` with skill metadata, and the composer must not
+/// have to know which one it is looking at. `name` never carries the
+/// leading slash — that belongs to the syntax the palette renders, not to
+/// the command's identity — and it may contain a colon, because a plugin's
+/// skill is named `plugin:skill`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct HarnessCommand {
+    /// The command's name, without the leading slash.
+    pub name: String,
+    /// One line saying what it does, as the harness words it.
+    pub description: String,
+    /// What the command's argument is, when it takes one.
+    ///
+    /// `None` is what makes a command runnable in one keystroke: the
+    /// palette sends a command with no argument the moment it is chosen,
+    /// and only inserts `/name ` into the field when there is something
+    /// left for the user to type. Both harnesses state the absence as an
+    /// empty string; it is normalized to `None` where it enters flyco, so
+    /// nothing downstream has to treat `""` as a special case.
+    pub argument_hint: Option<String>,
+}
+
 /// What the daemon asks the user to approve, mirrored in the approval UI.
 ///
 /// Approvals are enforced by flyco's own UI and API — never by prompt
@@ -365,6 +391,18 @@ pub enum DaemonToControl {
     Capabilities {
         /// The capability tokens, as the harness names them.
         capabilities: Vec<String>,
+    },
+    /// Every slash command the running harness offers, newest list wins.
+    ///
+    /// A relay frame rather than a REST report — which is what makes it
+    /// different from the model list it otherwise resembles — because the
+    /// set is a fact about *this* session's checkout: it carries the repo's
+    /// own skills, and the same account's next session in another repo has
+    /// a different one. Nothing about it belongs to the account, so nothing
+    /// about it belongs in D1.
+    Commands {
+        /// The commands, in the order the harness listed them.
+        commands: Vec<HarnessCommand>,
     },
     /// A normalized harness event.
     Harness {
@@ -872,6 +910,17 @@ pub enum ClientEvent {
         /// UI sorts them by [`UsageWindow::window_minutes`].
         windows: Vec<UsageWindow>,
     },
+    /// The slash commands this session's harness offers.
+    ///
+    /// State rather than conversation, like [`Models`](Self::Models): the
+    /// newest list wins and it is what the composer's `/` palette offers
+    /// for the rest of the session. Appended to the room's stream rather
+    /// than only broadcast, so a browser that opens the session an hour
+    /// after the daemon reported it still gets the real list.
+    Commands {
+        /// Every command the harness listed, in its own order.
+        commands: Vec<HarnessCommand>,
+    },
     /// The machine reached a provisioning milestone.
     ///
     /// Announced by the provisioning queue up to the machine existing and
@@ -907,6 +956,7 @@ impl ClientEvent {
             DaemonToControl::Capabilities { capabilities } => {
                 Some(Self::Capabilities { capabilities })
             }
+            DaemonToControl::Commands { commands } => Some(Self::Commands { commands }),
             DaemonToControl::Harness { event } => Some(Self::Harness { event }),
             DaemonToControl::Usage { usage } => Some(Self::Usage { usage }),
             DaemonToControl::ApprovalRequest { id, payload } => {
@@ -940,8 +990,8 @@ impl ClientEvent {
 mod tests {
     use super::{
         ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-        ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ShellOutcome, ShellStream,
-        UsageWindow,
+        HarnessCommand, ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ShellOutcome,
+        ShellStream, UsageWindow,
     };
     use crate::budget::BudgetSignal;
     use crate::harness::{ContextWindow, HarnessEvent, UsageReport};
@@ -988,6 +1038,23 @@ mod tests {
         }
     }
 
+    /// Two real rows of what Claude Code answers `supportedCommands()`
+    /// with: one that takes an argument and one that takes none.
+    fn sample_commands() -> Vec<HarnessCommand> {
+        vec![
+            HarnessCommand {
+                name: "goal".to_owned(),
+                description: "Keep working until a condition is met".to_owned(),
+                argument_hint: Some("<condition>".to_owned()),
+            },
+            HarnessCommand {
+                name: "context".to_owned(),
+                description: "Visualize current context usage as a colored grid".to_owned(),
+                argument_hint: None,
+            },
+        ]
+    }
+
     fn payload() -> ApprovalPayload {
         ApprovalPayload::ToolUse {
             tool: "Bash".to_owned(),
@@ -1006,6 +1073,9 @@ mod tests {
             },
             DaemonToControl::Capabilities {
                 capabilities: vec!["can_use_tool".to_owned()],
+            },
+            DaemonToControl::Commands {
+                commands: sample_commands(),
             },
             DaemonToControl::Harness {
                 event: harness_event(),
@@ -1185,6 +1255,15 @@ mod tests {
         }
     }
 
+    /// One shell run ending the way `outcome` says.
+    fn shell_exited(outcome: ShellOutcome, truncated: bool) -> ClientEvent {
+        ClientEvent::ShellExited {
+            run: ShellRunId::generate(),
+            outcome,
+            truncated,
+        }
+    }
+
     /// Every [`ClientEvent`] variant, at least once each.
     ///
     /// A builder rather than a `let` inside the test, so the list can keep
@@ -1212,6 +1291,9 @@ mod tests {
             ClientEvent::Capabilities {
                 capabilities: vec!["can_use_tool".to_owned()],
             },
+            ClientEvent::Commands {
+                commands: sample_commands(),
+            },
             ClientEvent::ApprovalPending {
                 id: ApprovalId::generate(),
                 payload: payload(),
@@ -1236,23 +1318,14 @@ mod tests {
                 stream: ShellStream::Stdout,
                 data: " M src/lib.rs\n".to_owned(),
             },
-            ClientEvent::ShellExited {
-                run: ShellRunId::generate(),
-                outcome: ShellOutcome::Exited { code: 0 },
-                truncated: false,
-            },
-            ClientEvent::ShellExited {
-                run: ShellRunId::generate(),
-                outcome: ShellOutcome::TimedOut { after_seconds: 120 },
-                truncated: true,
-            },
-            ClientEvent::ShellExited {
-                run: ShellRunId::generate(),
-                outcome: ShellOutcome::Failed {
+            shell_exited(ShellOutcome::Exited { code: 0 }, false),
+            shell_exited(ShellOutcome::TimedOut { after_seconds: 120 }, true),
+            shell_exited(
+                ShellOutcome::Failed {
                     error: "No such file or directory (os error 2)".to_owned(),
                 },
-                truncated: false,
-            },
+                false,
+            ),
             ClientEvent::RepoDirty {
                 summary: " M src/lib.rs".to_owned(),
             },
