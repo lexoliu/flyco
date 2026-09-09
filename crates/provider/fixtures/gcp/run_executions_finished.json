@@ -1,0 +1,14 @@
+{
+  "executions": [
+    {
+      "name": "projects/flyco-sessions/locations/us-central1/jobs/flyco-session/executions/flyco-session-q4t7w",
+      "uid": "5a2e8c14-3f70-4b9d-a6c8-1e0d7f4b2a95",
+      "job": "flyco-session",
+      "createTime": "2026-08-28T09:11:47.220381Z",
+      "startTime": "2026-08-28T09:11:51.006712Z",
+      "completionTime": "2026-08-28T21:03:19.884510Z",
+      "taskCount": 1,
+      "cancelledCount": 1
+    }
+  ]
+}
