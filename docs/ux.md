@@ -704,6 +704,17 @@ session still has a say over, as the official composers do, left to right:
   `Switched to Sonnet 5 · High`;
 - the **context ring**, `41k / 200k`, once the harness has reported a
   turn — before that there is nothing to draw;
+- one **plan ring per rolling limit window**, shortest window first —
+  `5-hour` at `26%`, then `Weekly`, then any window the vendor scopes to
+  one model (`Weekly (Fable)`) — each naming its turnover in its tooltip,
+  `5-hour: 26% · Resets in 2h 10m`. Read from the harness itself (the
+  Claude Agent SDK's usage call, Codex's `account/rateLimits/read` and the
+  `updated` notification it pushes) at session start and again after every
+  turn, so "how much of my plan is left" has an answer before the limit is
+  hit rather than a `Usage limit` notice after it. Nothing is drawn until a
+  harness has answered: a ring at zero over a plan flyco has never asked
+  about is an invention, and a session running on an API key has no plan at
+  all and shows no rings ever;
 - then send, which becomes `Stop` while a turn is in flight.
 
 The composer sits at the foot of the window even when the transcript is
@@ -786,6 +797,18 @@ cards, not from forms mirroring database rows.
 | Tools | MCP servers as cards with an enable toggle and `Edit`; skills as cards with scope, version, and a drop zone for a zip |
 | Instructions | `AGENTS.md` editor with save; pending change requests from agents render as diffs with `Accept` / `Reject`; memory as an outliner tree |
 | Account | GitHub identity, API keys (create shows the key once), notifications with a single `Enable push` button, appearance, sign out |
+
+The usage bars under an account are the same windows the composer draws as
+rings, in the same order and with the same words — `5-hour`, `26% · Resets
+in 2h 10m` — because they are the same reading, filed by whichever session
+last asked and kept on the account. They are bars here and rings there for
+one reason: a settings card has horizontal room to spend on a track and a
+label, and a composer row is a line of chips where a bar would be the only
+thing asking for width. Below them sits what flyco itself observed — the
+cost the harness reported over the last day, and, once the vendor has
+actually refused a call, how much of the wait for the reset has passed.
+That half is deliberately not a quota; the plan windows above it are the
+quota, and they come from the vendor.
 
 A linked credential with an expiry says how near it is rather than printing
 a date the reader has to subtract from today. Within a week the card's pill

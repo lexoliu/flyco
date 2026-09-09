@@ -547,6 +547,7 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
       case "started":
       case "capabilities":
       case "models":
+      case "plan_usage":
       case "session_state_changed":
       case "machine_connection":
       case "usage":

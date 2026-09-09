@@ -1,0 +1,19 @@
+-- Flyco control plane, issue #234: how much of a harness plan is spent
+-- becomes something the user can read before the limit stops them.
+--
+-- `harness_accounts.usage_json` is the last snapshot a session on this
+-- account reported: a JSON array of flyco_core::wire::UsageWindow, one
+-- entry per rolling window the harness named. A column rather than a table
+-- for the same reason as `models_json` beside it — nothing queries it, it
+-- is read whole and replaced whole, and it is a cache of a fact the vendor
+-- owns.
+--
+-- Replaced rather than accumulated: the vendor answers the whole question
+-- every time it is asked, and merging a new answer into an old one would
+-- leave a window the plan no longer has on the screen forever.
+--
+-- NULL means no session of this account has reported yet, which the API
+-- reads back as an empty list. That is not the same as "nothing is spent":
+-- an account with no reading draws no rings at all, because a ring at zero
+-- over a plan flyco has never asked about would be an invention.
+ALTER TABLE harness_accounts ADD COLUMN usage_json TEXT;

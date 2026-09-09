@@ -20,7 +20,7 @@ pub mod codex;
 use std::future::Future;
 use std::path::PathBuf;
 
-use flyco_core::{ApprovalId, HarnessEvent, ModelChoice, ModelOption};
+use flyco_core::{ApprovalId, HarnessEvent, ModelChoice, ModelOption, UsageWindow};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -102,6 +102,18 @@ pub enum SessionOutput {
     Models {
         /// Every model the harness listed, in its own order.
         models: Vec<ModelOption>,
+    },
+    /// How much of the harness account's plan is spent, per rolling window.
+    ///
+    /// Reported once the harness has answered at session start, and again
+    /// after every turn — a turn is the only thing that moves the number,
+    /// so asking any oftener would be polling the vendor on a timer. Filed
+    /// over REST like [`Self::Models`] and for the same reason: it is
+    /// recorded against the *account*, which lives in D1, and a session
+    /// room is a Durable Object that cannot reach it.
+    PlanUsage {
+        /// Every window the harness reported, in no particular order.
+        windows: Vec<UsageWindow>,
     },
     /// A normalized harness event.
     Event {

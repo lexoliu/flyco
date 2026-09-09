@@ -132,15 +132,17 @@ async fn next(outputs: &mut mpsc::Receiver<SessionOutput>, what: &str) -> Sessio
         .unwrap_or_else(|| panic!("the session ended before {what}"))
 }
 
-/// Steps past the two announcements every session opens with.
+/// Steps past the three announcements every session opens with.
 ///
-/// A thread is identified and its models are listed before any turn, in
-/// that order, so a test about turns walks past both rather than restating
-/// them — `a_session_announces_itself_without_anyone_typing` is where their
-/// content is pinned.
+/// A thread is identified, its models are listed, and its plan's limits are
+/// read, in that order and before any turn — so a test about turns walks
+/// past all three rather than restating them.
+/// `a_session_announces_itself_without_anyone_typing` is where their content
+/// is pinned.
 async fn announcements(outputs: &mut mpsc::Receiver<SessionOutput>) {
     let _ = next(outputs, "started").await;
     let _ = next(outputs, "models").await;
+    let _ = next(outputs, "plan usage").await;
 }
 
 #[tokio::test]
@@ -176,6 +178,22 @@ async fn a_session_announces_itself_without_anyone_typing() {
     assert_eq!(default.id, "gpt-5.6-terra");
     assert_eq!(default.default_effort.as_deref(), Some("medium"));
     assert_eq!(default.efforts, ["low", "medium", "high"]);
+
+    // And how much of the plan is already gone, before the session has
+    // cost anything: the composer's rings are right for the first message
+    // rather than only after the first turn has been paid for. The labels
+    // come from the window lengths the app-server stated.
+    let SessionOutput::PlanUsage { windows } = next(&mut outputs, "plan usage").await else {
+        panic!("a session must announce what is left of its plan");
+    };
+    assert_eq!(
+        windows
+            .iter()
+            .map(|window| (window.label.as_str(), window.used_percent))
+            .collect::<Vec<_>>(),
+        [("5-hour", 12), ("Weekly", 40)]
+    );
+    assert_eq!(windows[0].resets_at_unix, Some(1_789_002_000));
 
     session.shutdown().await.expect("shut the session down");
 }
@@ -239,6 +257,21 @@ async fn a_turn_runs_from_user_message_to_completion() {
     assert_eq!(
         usage.context.expect("codex reports a window").size_tokens,
         200_000
+    );
+
+    // The turn moved the five-hour window, and the app-server said so with
+    // a *sparse* update naming only that window. The weekly one is still
+    // where the opening read left it, because a sparse update revises a
+    // snapshot rather than replacing one.
+    let SessionOutput::PlanUsage { windows } = next(&mut outputs, "plan usage").await else {
+        panic!("a rate-limit update must reach the session");
+    };
+    assert_eq!(
+        windows
+            .iter()
+            .map(|window| (window.label.as_str(), window.used_percent))
+            .collect::<Vec<_>>(),
+        [("5-hour", 13), ("Weekly", 40)]
     );
 
     session.shutdown().await.expect("shut the session down");

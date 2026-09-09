@@ -590,6 +590,25 @@ pub struct HarnessAccountView {
     /// per account would be a picker that renders after the form it belongs
     /// to.
     pub models: Vec<ModelOption>,
+    /// How much of this account's plan is spent, per rolling window.
+    ///
+    /// The last snapshot a session on this account filed, and empty until
+    /// one has. Carried on the account for the same reason
+    /// [`Self::models`] is — Settings reads the account and nothing else —
+    /// and it is what the settings row draws its bars from.
+    pub usage: Vec<crate::wire::UsageWindow>,
+}
+
+/// Request body of `PUT /v1/sessions/{id}/usage`.
+///
+/// What a session's daemon reports when its harness answers how much of the
+/// plan is spent: at start, and after every turn. Recorded against the
+/// account rather than the session, because the plan is the account's and
+/// two sessions on one account share it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ReportUsage {
+    /// Every window the harness reported, in no particular order.
+    pub windows: Vec<crate::wire::UsageWindow>,
 }
 
 /// A normalized event extracted from either harness's native stream.

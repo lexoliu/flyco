@@ -7,9 +7,9 @@
 //! observation reaches exactly the account of the session that posted it.
 
 use flyco_core::{
-    CloudUsageView, HarnessAccountId, HarnessKind, HarnessObservation, LlmUsageView,
-    OBSERVATION_WINDOW_SECONDS, Problem, ProviderAccountView, RateLimitObservation, SessionId, Usd,
-    UserId,
+    CloudUsageView, HarnessAccountId, HarnessAccountView, HarnessKind, HarnessObservation,
+    LlmUsageView, OBSERVATION_WINDOW_SECONDS, Problem, ProviderAccountView, RateLimitObservation,
+    ReportUsage, SessionId, UsageWindow, Usd, UserId,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -362,5 +362,150 @@ async fn a_host_the_user_owns_contributes_no_row(ctx: TestContext, kv: Kv, db: D
         cloud(&client, &token).await,
         [] as [CloudUsageView; 0],
         "an unmetered provider contributes no row rather than a zero"
+    );
+}
+
+// ── The plan's own limits, as the harness reports them ──
+
+/// One window, as a daemon files it.
+fn window(minutes: u32, percent: u8) -> UsageWindow {
+    UsageWindow::new(Some(minutes), None, percent, Some(1_789_002_000))
+}
+
+/// Files a plan-usage snapshot the way a session's daemon does.
+async fn report(
+    client: &TestClient<Router>,
+    token: &str,
+    session: SessionId,
+    windows: Vec<UsageWindow>,
+) -> skyzen_test::TestResponse {
+    client
+        .put(&format!("/v1/sessions/{session}/usage"))
+        .bearer(token)
+        .json(&ReportUsage { windows })
+        .send()
+        .await
+}
+
+/// The caller's linked accounts, as Settings lists them.
+async fn accounts(client: &TestClient<Router>, token: &str) -> Vec<HarnessAccountView> {
+    let response = client
+        .get("/v1/harness-accounts")
+        .bearer(token)
+        .send()
+        .await;
+    response.assert_status(200);
+    response.json()
+}
+
+#[skyzen::test]
+async fn a_reported_snapshot_reaches_the_account_its_session_runs(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+    let claude = link(&db, user.id, HarnessKind::ClaudeCode, "personal").await;
+    let codex = link(&db, user.id, HarnessKind::Codex, "work").await;
+
+    // `seed_session` opens a Claude Code session, so the snapshot belongs
+    // to the Claude account and to that one only: the body says nothing
+    // about whose plan it is, and the session row is what decides.
+    let session = seed_session(&db, &user).await;
+    let daemon = pair(&db, user.id, session).await;
+    let reported = vec![window(300, 26), window(10_080, 15)];
+    report(&client, &daemon, session, reported.clone())
+        .await
+        .assert_status(204);
+
+    let listed = accounts(&client, &token).await;
+    let claude_row = listed
+        .iter()
+        .find(|row| row.id == claude)
+        .expect("the Claude account is listed");
+    let codex_row = listed
+        .iter()
+        .find(|row| row.id == codex)
+        .expect("the Codex account is listed");
+
+    assert_eq!(claude_row.usage, reported);
+    assert_eq!(
+        codex_row.usage,
+        [] as [UsageWindow; 0],
+        "nothing has asked the Codex plan, so nothing is drawn for it"
+    );
+}
+
+#[skyzen::test]
+async fn the_newest_snapshot_replaces_the_last_one_whole(ctx: TestContext, kv: Kv, db: Db) {
+    // The vendor answers the whole question every time it is asked, so a
+    // window the plan no longer has must leave the screen rather than
+    // surviving as the older half of a merge.
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+    link(&db, user.id, HarnessKind::ClaudeCode, "personal").await;
+    let session = seed_session(&db, &user).await;
+    let daemon = pair(&db, user.id, session).await;
+
+    report(
+        &client,
+        &daemon,
+        session,
+        vec![window(300, 26), window(10_080, 15)],
+    )
+    .await
+    .assert_status(204);
+    report(&client, &daemon, session, vec![window(300, 31)])
+        .await
+        .assert_status(204);
+
+    let listed = accounts(&client, &token).await;
+    assert_eq!(listed[0].usage, [window(300, 31)]);
+}
+
+#[skyzen::test]
+async fn a_session_on_no_plan_at_all_reports_an_empty_snapshot(ctx: TestContext, kv: Kv, db: Db) {
+    // What an API-key session answers. Storing it is what makes an account
+    // that moved off a subscription stop showing yesterday's rings, so an
+    // empty list is recorded rather than refused.
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+    link(&db, user.id, HarnessKind::ClaudeCode, "personal").await;
+    let session = seed_session(&db, &user).await;
+    let daemon = pair(&db, user.id, session).await;
+
+    report(&client, &daemon, session, vec![window(300, 26)])
+        .await
+        .assert_status(204);
+    report(&client, &daemon, session, Vec::new())
+        .await
+        .assert_status(204);
+
+    assert_eq!(
+        accounts(&client, &token).await[0].usage,
+        [] as [UsageWindow; 0]
+    );
+}
+
+#[skyzen::test]
+async fn a_snapshot_for_a_harness_the_user_has_no_account_for_is_refused(
+    ctx: TestContext,
+    _kv: Kv,
+    db: Db,
+) {
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let session = seed_session(&db, &user).await;
+    let daemon = pair(&db, user.id, session).await;
+
+    let response = report(&client, &daemon, session, vec![window(300, 26)]).await;
+    response.assert_status(404);
+    assert_eq!(
+        response.json::<Problem>().kind,
+        "https://flyco.dev/problems/harness-account-not-found"
     );
 }

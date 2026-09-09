@@ -1,28 +1,41 @@
 /**
- * What `GET /v1/usage/llm` will actually say about one linked account.
+ * What flyco knows about one linked harness account's spending.
  *
- * Deliberately not a "42% of your quota" bar. The endpoint's own contract is
- * that every field is an observation and never a quota, so the two honest
- * readings are the cost the harness reported over this window and, once the
- * vendor has actually limited the account, how much of the wait for the
- * reset has passed. Nothing renders at all until there is something true to
- * render.
+ * Two halves, from two sources and answering two questions. The *plan*
+ * windows come from the vendor itself, through the account's last session:
+ * how much of the five-hour and weekly limits is gone, and when each turns
+ * over. That is the answer to "how much of my plan is left", and it is the
+ * reason this component exists at all (docs/ux.md §7.4).
  *
- * A component of its own rather than a corner of the settings card, so
- * that wherever a linked account is read out, usage is read out the same
+ * The observed half below it is flyco's own record and is deliberately not
+ * a quota: `GET /v1/usage/llm` reports what the harness said a session cost
+ * and, once the vendor actually refused a call, how much of the wait for
+ * the reset has passed. Nothing renders at all until there is something
+ * true to render.
+ *
+ * A component of its own rather than a corner of the settings card, so that
+ * wherever a linked account is read out, its usage is read out the same
  * way.
  */
-import { Show } from "solid-js";
+import { For, Show } from "solid-js";
 import RatioBar from "./RatioBar";
 import type { LlmUsageRow } from "../api/client";
+import type { UsageWindow } from "../api/wire";
 import { formatDate } from "../lib/dates";
 import { formatUsd } from "../lib/money";
+import { orderedWindows, resetHint } from "../lib/planUsage";
 import { relativeTime } from "../lib/relativeTime";
 import styles from "./HarnessUsage.module.css";
 
+/** How full a window has to be before the bar says so in colour. */
+const WARN_PERCENT = 80;
+const FINAL_WARN_PERCENT = 95;
+
 export interface HarnessUsageProps {
-  /** The account's row, or `undefined` while it has none. */
+  /** The account's observed-usage row, or `undefined` while it has none. */
   row: LlmUsageRow | undefined;
+  /** The plan windows the account last reported. Empty until one has. */
+  windows: readonly UsageWindow[];
 }
 
 export default function HarnessUsage(props: HarnessUsageProps) {
@@ -39,26 +52,60 @@ export default function HarnessUsage(props: HarnessUsageProps) {
   };
 
   return (
-    <Show when={props.row}>
-      {(row) => (
-        <div class={styles.usage}>
-          {/* A cost with no ceiling is a figure, not a bar. */}
-          <Show when={row().observed_cost !== null && row().observed_cost !== undefined}>
-            <p class={styles.line}>
-              {formatUsd(row().observed_cost ?? 0)} reported by the harness since{" "}
-              {formatDate(row().period_start_unix)}
-            </p>
-          </Show>
-          <Show when={waited() !== undefined}>
-            <RatioBar
-              label="Usage limit"
-              ratio={waited()}
-              value={`resets ${relativeTime(resetsAt() ?? 0, now)}`}
-              tier="warn"
-            />
-          </Show>
-        </div>
-      )}
-    </Show>
+    <div class={styles.usage}>
+      {/*
+        Shortest window first: the one about to stop the user, then the one
+        they are pacing against.
+      */}
+      <For each={orderedWindows(props.windows)}>
+        {(window) => (
+          <RatioBar
+            label={window.label}
+            ratio={window.used_percent / 100}
+            value={readout(window, now)}
+            tier={tier(window.used_percent)}
+          />
+        )}
+      </For>
+      <Show when={props.row}>
+        {(row) => (
+          <>
+            {/* A cost with no ceiling is a figure, not a bar. */}
+            <Show when={row().observed_cost !== null && row().observed_cost !== undefined}>
+              <p class={styles.line}>
+                {formatUsd(row().observed_cost ?? 0)} reported by the harness since{" "}
+                {formatDate(row().period_start_unix)}
+              </p>
+            </Show>
+            <Show when={waited() !== undefined}>
+              <RatioBar
+                label="Usage limit"
+                ratio={waited()}
+                value={`resets ${relativeTime(resetsAt() ?? 0, now)}`}
+                tier="warn"
+              />
+            </Show>
+          </>
+        )}
+      </Show>
+    </div>
   );
+}
+
+/** `26% · Resets in 2h 10m`, or the percentage alone where there is no reset. */
+function readout(window: UsageWindow, now: number): string {
+  const hint = resetHint(window, now);
+  return hint === undefined ? `${window.used_percent}%` : `${window.used_percent}% · ${hint}`;
+}
+
+/**
+ * Colour only as the window runs out, which is the whole colour policy in
+ * docs/ux.md §2: colour means something is wrong, never that something
+ * exists.
+ */
+function tier(percent: number): "ok" | "warn" | "final-warn" {
+  if (percent >= FINAL_WARN_PERCENT) {
+    return "final-warn";
+  }
+  return percent >= WARN_PERCENT ? "warn" : "ok";
 }

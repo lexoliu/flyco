@@ -18,6 +18,7 @@ vi.mock("./Readiness", () => ({
         linked_at_unix: 1_787_000_000,
         expires_at_unix: null,
         models: [],
+        usage: [],
       },
     ],
     compute: () => [],

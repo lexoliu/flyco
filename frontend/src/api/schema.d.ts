@@ -2015,6 +2015,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Records how much of this session's harness plan is spent.
+         * @description Records how much of this session's harness plan is spent.
+         *
+         *     Filed by the daemon at session start and after every turn — the two
+         *     moments the number can have moved — and stored against the *account*,
+         *     because the plan belongs to the account and the settings page reads it
+         *     there without a session. The live half goes to the room in the same
+         *     call, so the composer's rings move as the turn ends rather than on the
+         *     next page load.
+         */
+        put: operations["flyco_api::app::report_usage"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/workdir-patch": {
         parameters: {
             query?: never;
@@ -2937,6 +2964,15 @@ export interface components {
              *     to.
              */
             models: components["schemas"]["ModelOption"][];
+            /**
+             * @description How much of this account's plan is spent, per rolling window.
+             *
+             *     The last snapshot a session on this account filed, and empty until
+             *     one has. Carried on the account for the same reason
+             *     [`Self::models`] is — Settings reads the account and nothing else —
+             *     and it is what the settings row draws its bars from.
+             */
+            usage: components["schemas"]["UsageWindow"][];
         };
         /**
          * @description A credential accepted when linking a Claude Code or Codex account.
@@ -4065,6 +4101,18 @@ export interface components {
             message: string;
         };
         /**
+         * @description Request body of `PUT /v1/sessions/{id}/usage`.
+         *
+         *     What a session's daemon reports when its harness answers how much of the
+         *     plan is spent: at start, and after every turn. Recorded against the
+         *     account rather than the session, because the plan is the account's and
+         *     two sessions on one account share it.
+         */
+        ReportUsage: {
+            /** @description Every window the harness reported, in no particular order. */
+            windows: components["schemas"]["UsageWindow"][];
+        };
+        /**
          * @description Request body of `POST /v1/sessions/{id}/machine/resize`.
          *
          *     The disk survives a resize; only compute is replaced. The provider and
@@ -4438,6 +4486,50 @@ export interface components {
              * @description Output tokens produced so far in this session.
              */
             output_tokens: number;
+        };
+        /**
+         * @description One rolling window of the harness plan's rate limit.
+         *
+         *     Both harnesses answer the same question in the same shape — how much of
+         *     a window is spent, and when the window turns over — so flyco states it
+         *     once and both drivers fill it in. This is a *plan* limit, not the
+         *     session's token usage: [`UsageReport`] is what one conversation cost,
+         *     this is what is left of the account it was billed to.
+         *
+         *     A window nobody has reported is absent from the list rather than present
+         *     at zero; there is no "unknown" reading, because a ring drawn empty is
+         *     indistinguishable from a plan that has not been touched.
+         */
+        UsageWindow: {
+            /**
+             * @description What the window is called in the UI, e.g. `5-hour`, `Weekly`,
+             *     `Weekly (Fable)`. Derived by [`UsageWindow::new`].
+             */
+            label: string;
+            /**
+             * Format: int64
+             * @description When the window turns over, seconds since the Unix epoch.
+             *
+             *     `None` for a window whose harness reports a utilization but no
+             *     reset — Codex's `resetsAt` and Claude's `resets_at` are both
+             *     nullable, and inventing a deadline would be worse than showing none.
+             */
+            resets_at_unix?: number | null;
+            /**
+             * Format: int32
+             * @description How much of the window is spent, 0–100.
+             */
+            used_percent: number;
+            /**
+             * Format: int32
+             * @description How long the window is, in minutes.
+             *
+             *     Kept alongside the label because it is what the UI orders by: the
+             *     label is prose and sorts alphabetically into nonsense, while the
+             *     length is the thing a reader scans in order. `None` for a window
+             *     whose harness names no duration.
+             */
+            window_minutes?: number | null;
         };
         /**
          * Format: int64
@@ -4910,6 +5002,15 @@ export interface operations {
                          *     to.
                          */
                         models: components["schemas"]["ModelOption"][];
+                        /**
+                         * @description How much of this account's plan is spent, per rolling window.
+                         *
+                         *     The last snapshot a session on this account filed, and empty until
+                         *     one has. Carried on the account for the same reason
+                         *     [`Self::models`] is — Settings reads the account and nothing else —
+                         *     and it is what the settings row draws its bars from.
+                         */
+                        usage: components["schemas"]["UsageWindow"][];
                     }[];
                 };
             };
@@ -4972,6 +5073,15 @@ export interface operations {
                          *     to.
                          */
                         models: components["schemas"]["ModelOption"][];
+                        /**
+                         * @description How much of this account's plan is spent, per rolling window.
+                         *
+                         *     The last snapshot a session on this account filed, and empty until
+                         *     one has. Carried on the account for the same reason
+                         *     [`Self::models`] is — Settings reads the account and nothing else —
+                         *     and it is what the settings row draws its bars from.
+                         */
+                        usage: components["schemas"]["UsageWindow"][];
                     };
                 };
             };
@@ -5038,6 +5148,15 @@ export interface operations {
                          *     to.
                          */
                         models: components["schemas"]["ModelOption"][];
+                        /**
+                         * @description How much of this account's plan is spent, per rolling window.
+                         *
+                         *     The last snapshot a session on this account filed, and empty until
+                         *     one has. Carried on the account for the same reason
+                         *     [`Self::models`] is — Settings reads the account and nothing else —
+                         *     and it is what the settings row draws its bars from.
+                         */
+                        usage: components["schemas"]["UsageWindow"][];
                     };
                 };
             };
@@ -5170,6 +5289,15 @@ export interface operations {
                          *     to.
                          */
                         models: components["schemas"]["ModelOption"][];
+                        /**
+                         * @description How much of this account's plan is spent, per rolling window.
+                         *
+                         *     The last snapshot a session on this account filed, and empty until
+                         *     one has. Carried on the account for the same reason
+                         *     [`Self::models`] is — Settings reads the account and nothing else —
+                         *     and it is what the settings row draws its bars from.
+                         */
+                        usage: components["schemas"]["UsageWindow"][];
                     };
                 };
             };
@@ -8071,6 +8199,34 @@ export interface operations {
                         turns: components["schemas"]["TurnSummary"][];
                     };
                 };
+            };
+        };
+    };
+    "flyco_api::app::report_usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Every window the harness reported, in no particular order. */
+                    windows: components["schemas"]["UsageWindow"][];
+                };
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

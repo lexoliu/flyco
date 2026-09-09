@@ -270,7 +270,10 @@ export default function AgentsSection() {
                               </Show>
                             </ConfirmDialog>
                           </Show>
-                          <HarnessUsage row={usage()?.find((row) => row.account === account.id)} />
+                          <HarnessUsage
+                            row={usage()?.find((row) => row.account === account.id)}
+                            windows={account.usage}
+                          />
                         </div>
                         );
                       }}

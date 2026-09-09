@@ -7,11 +7,11 @@
 //! failed on the first unknown one would break every time `OpenAI` shipped a
 //! feature.
 
-use flyco_core::{ContextWindow, HarnessEvent, UsageReport};
+use flyco_core::{ContextWindow, HarnessEvent, UsageReport, UsageWindow};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::protocol::method;
+use super::protocol::{RateLimitSnapshot, method};
 
 /// Live turn and usage state the driver needs to stamp events.
 #[derive(Debug)]
@@ -280,11 +280,93 @@ impl ApprovalParams {
     }
 }
 
+/// The plan windows one rate-limit snapshot describes.
+///
+/// `primary` and `secondary` are positions, not names — the app-server does
+/// not say which is the shorter — so both go through the same translation
+/// and the label comes from the duration each one states.
+#[must_use]
+pub fn usage_windows(snapshot: RateLimitSnapshot) -> Vec<UsageWindow> {
+    [snapshot.primary, snapshot.secondary]
+        .into_iter()
+        .flatten()
+        .map(|window| {
+            UsageWindow::new(
+                window.window_duration_mins,
+                None,
+                window.used_percent,
+                window.resets_at,
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Normalizer;
+    use super::{Normalizer, usage_windows};
+    use crate::harness::codex::protocol::RateLimitsBody;
     use flyco_core::HarnessEvent;
     use serde_json::json;
+
+    /// The `account/rateLimits/read` answer recorded from `codex-cli
+    /// 0.153.4` on 2026-09-09, trimmed to the fields flycod reads.
+    #[test]
+    fn a_rate_limit_snapshot_becomes_the_windows_it_names() {
+        let body: RateLimitsBody = serde_json::from_value(json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "limitName": null,
+                "primary": {
+                    "usedPercent": 0,
+                    "windowDurationMins": 43_200,
+                    "resetsAt": 1_791_582_264_i64
+                },
+                "secondary": null,
+                "credits": { "hasCredits": false, "unlimited": false, "balance": "0" },
+                "individualLimit": null,
+                "spendControlReached": false,
+                "planType": "free",
+                "rateLimitReachedType": null
+            }
+        }))
+        .expect("the recorded answer decodes");
+
+        let windows = usage_windows(body.rate_limits);
+        assert_eq!(windows.len(), 1);
+        let window = &windows[0];
+        assert_eq!(window.label, "Monthly");
+        assert_eq!(window.used_percent, 0);
+        assert_eq!(window.window_minutes, Some(43_200));
+        assert_eq!(window.resets_at_unix, Some(1_791_582_264));
+    }
+
+    #[test]
+    fn a_sparse_update_revises_one_window_and_keeps_the_other() {
+        let read: RateLimitsBody = serde_json::from_value(json!({
+            "rateLimits": {
+                "primary": { "usedPercent": 12, "windowDurationMins": 300, "resetsAt": 1_789_002_000_i64 },
+                "secondary": { "usedPercent": 40, "windowDurationMins": 10_080, "resetsAt": 1_789_570_800_i64 }
+            }
+        }))
+        .expect("a read decodes");
+        // What the app-server actually pushes: the window that moved, and
+        // nothing about the one that did not.
+        let update: RateLimitsBody = serde_json::from_value(json!({
+            "rateLimits": {
+                "primary": { "usedPercent": 13, "windowDurationMins": 300, "resetsAt": 1_789_002_000_i64 }
+            }
+        }))
+        .expect("an update decodes");
+
+        let windows = usage_windows(read.rate_limits.merged(update.rate_limits));
+        assert_eq!(
+            windows
+                .iter()
+                .map(|window| (window.label.as_str(), window.used_percent))
+                .collect::<Vec<_>>(),
+            vec![("5-hour", 13), ("Weekly", 40)]
+        );
+    }
 
     #[test]
     fn a_completed_context_compaction_is_reported_without_a_turn() {

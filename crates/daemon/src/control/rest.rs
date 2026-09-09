@@ -34,7 +34,7 @@ use flyco_core::wire::ApprovalPayload;
 use flyco_core::{
     AgentMachineView, ApprovalId, ApprovalView, BudgetView, HarnessObservation, HarnessSessionView,
     MachineCatalogEntry, ModelOption, Problem, ProvisioningStage, ReportProvisioningStage,
-    ReportSpotNotice, ReportStartupFailure, ResizeMachine, SessionId,
+    ReportSpotNotice, ReportStartupFailure, ResizeMachine, SessionId, UsageWindow,
 };
 use url::Url;
 use zenwave::{Client as _, ResponseExt as _};
@@ -247,6 +247,22 @@ pub trait ControlApi: ApprovalRaiser {
     fn report_models(
         &self,
         models: &[ModelOption],
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
+
+    /// Reports how much of this session's harness plan is spent.
+    ///
+    /// Filed at session start and after every turn. The control plane
+    /// records the snapshot against the account the machine was
+    /// provisioned through and announces it to the session's browsers, so
+    /// the composer's rings and the Settings bars read the same numbers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or refused the report.
+    fn report_usage(
+        &self,
+        windows: &[UsageWindow],
     ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 
     /// Reports why this daemon is stopping before it could report in.
@@ -477,6 +493,27 @@ impl ControlApi for HttpControlApi {
 
     async fn harness_session(&self) -> Result<HarnessSessionView, ControlApiError> {
         self.get_json("harness-session").await
+    }
+
+    async fn report_usage(&self, windows: &[UsageWindow]) -> Result<(), ControlApiError> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            windows: &'a [UsageWindow],
+        }
+
+        let url = self.url("usage")?;
+        let mut client = zenwave::client();
+        let response = client
+            .put(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(&Body { windows })
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("PUT", &url, &error))?;
+
+        debug_assert!(response.status().is_success());
+        Ok(())
     }
 
     async fn report_models(&self, models: &[ModelOption]) -> Result<(), ControlApiError> {

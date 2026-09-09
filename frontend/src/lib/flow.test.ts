@@ -26,6 +26,7 @@ const CLAUDE: HarnessAccountView = {
   linked_at_unix: 1_787_000_000,
   expires_at_unix: 1_787_028_800,
   models: [],
+  usage: [],
 };
 
 const CODEX: HarnessAccountView = {
@@ -35,6 +36,7 @@ const CODEX: HarnessAccountView = {
   linked_at_unix: 1_787_000_000,
   expires_at_unix: null,
   models: [],
+  usage: [],
 };
 
 const AZURE_STUDENTS: ProviderBonusHint = {

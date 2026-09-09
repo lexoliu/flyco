@@ -108,6 +108,27 @@ export const modelOptionSchema = z.object({
   default_effort: z.string().nullable(),
 });
 
+/**
+ * One rolling plan window, as this sidecar read it from the SDK.
+ *
+ * The reading and not the finished window: the *label* ("5-hour",
+ * "Weekly (Fable)") is derived in Rust, because the same rule has to serve
+ * Codex and writing it twice would be two vocabularies. What the sidecar
+ * contributes is what only it knows — that the SDK's `five_hour` key means
+ * three hundred minutes, and that a `model_scoped` row is a weekly window
+ * scoped to one model.
+ *
+ * `used_percent` is an integer 0-100: the SDK's `utilization` is an
+ * unbounded number, and it is rounded and clamped here so the wire carries
+ * one spelling of a percentage.
+ */
+export const usageWindowSchema = z.object({
+  window_minutes: z.number().int().nullable(),
+  scope: z.string().nullable(),
+  used_percent: z.number().int().min(0).max(100),
+  resets_at_unix: z.number().int().nullable(),
+});
+
 /** The SDK's `SessionKey`, in this protocol's `snake_case`. */
 export const sessionKeySchema = z.object({
   project_key: z.string(),
@@ -167,6 +188,7 @@ export const sidecarEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("started"), session_id: z.string() }),
   z.object({ type: z.literal("capabilities"), capabilities: z.array(z.string()) }),
   z.object({ type: z.literal("models"), models: z.array(modelOptionSchema) }),
+  z.object({ type: z.literal("plan_usage"), windows: z.array(usageWindowSchema) }),
   z.object({ type: z.literal("mcp_servers"), servers: z.array(mountedServerSchema) }),
   z.object({ type: z.literal("sdk_message"), message: jsonValue }),
   z.object({
@@ -192,6 +214,8 @@ export type SidecarAuth = z.infer<typeof sidecarAuthSchema>;
 export type ClaudeMcpServer = z.infer<typeof claudeMcpServerSchema>;
 /** One model the harness offers. */
 export type ModelOption = z.infer<typeof modelOptionSchema>;
+/** One rolling plan window, as read from the SDK. */
+export type UsageWindow = z.infer<typeof usageWindowSchema>;
 /** Where one mounted MCP server has got to. */
 export type MountState = z.infer<typeof mountStateSchema>;
 /** What the CLI reports about one mounted MCP server. */

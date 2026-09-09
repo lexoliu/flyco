@@ -1,0 +1,1 @@
+{"type":"plan_usage","windows":[{"resets_at_unix":1789002000,"scope":null,"used_percent":26,"window_minutes":300},{"resets_at_unix":1789570800,"scope":null,"used_percent":15,"window_minutes":10080},{"resets_at_unix":1789570800,"scope":"Fable","used_percent":26,"window_minutes":10080}]}

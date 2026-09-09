@@ -19,7 +19,7 @@
 
 use flyco_core::{
     CurrentUser, HarnessAccountId, HarnessAccountView, HarnessCredentialInput, HarnessKind,
-    LinkHarnessAccount, LlmUsageView, ModelOption, UserId, builtin_models,
+    LinkHarnessAccount, LlmUsageView, ModelOption, UsageWindow, UserId, builtin_models,
 };
 use flyco_provider::{ClaudeCredential, CodexCredential, HarnessCredential};
 use serde::{Deserialize, Serialize};
@@ -244,6 +244,11 @@ struct HarnessAccountRow {
     ///
     /// `NULL` until one has, which is what [`builtin_models`] answers for.
     models_json: Option<String>,
+    /// The plan-usage windows this account's last session reported, as JSON.
+    ///
+    /// `NULL` until one has, which reads back as an empty list — no
+    /// session has asked the vendor, so there is nothing true to draw.
+    usage_json: Option<String>,
 }
 
 impl TryFrom<HarnessAccountRow> for HarnessAccountView {
@@ -265,6 +270,7 @@ impl TryFrom<HarnessAccountRow> for HarnessAccountView {
             linked_at_unix: row.linked_at_unix,
             expires_at_unix: row.expires_at_unix,
             models: parse_models(row.harness, row.models_json.as_deref())?,
+            usage: parse_usage(row.usage_json.as_deref())?,
         })
     }
 }
@@ -276,6 +282,21 @@ fn parse_models(harness: HarnessKind, stored: Option<&str>) -> Result<Vec<ModelO
     };
     serde_json::from_str(stored)
         .map_err(|_| ApiError::CorruptRecord("a stored harness model list could not be decoded"))
+}
+
+/// The plan-usage windows an account last reported.
+///
+/// Fails rather than answering "nothing" when the stored JSON will not
+/// parse, for the same reason [`parse_models`] does: no stored snapshot
+/// means nobody has asked the vendor, and a snapshot flyco wrote and cannot
+/// read back is a bug that would otherwise hide behind an empty row.
+fn parse_usage(stored: Option<&str>) -> Result<Vec<UsageWindow>, ApiError> {
+    let Some(stored) = stored else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_str(stored).map_err(|_| {
+        ApiError::CorruptRecord("a stored harness usage snapshot could not be decoded")
+    })
 }
 
 /// The models a session on the caller's account for `harness` may run on.
@@ -306,6 +327,30 @@ pub async fn models(
     // stands. A session cannot be opened without an account anyway — that
     // refusal belongs to provisioning, not to a model list.
     parse_models(harness, stored.flatten().as_deref())
+}
+
+/// The plan-usage windows the caller's account for `harness` last reported.
+///
+/// Empty until a session on it has asked its vendor, which is the honest
+/// answer: nothing has been read, so nothing is drawn.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails or the stored snapshot is
+/// malformed.
+pub async fn usage(
+    db: &Db,
+    user: UserId,
+    harness: HarnessKind,
+) -> Result<Vec<UsageWindow>, ApiError> {
+    let stored: Option<Option<String>> = sql!(
+        db,
+        "SELECT usage_json FROM harness_accounts \
+         WHERE user_id = {user} AND harness = {harness}"
+    )
+    .fetch_scalar_optional()
+    .await?;
+    parse_usage(stored.flatten().as_deref())
 }
 
 /// Records what a session's harness said it offers.
@@ -356,6 +401,48 @@ pub async fn record_models(
     Ok(())
 }
 
+/// Records how much of this account's plan its harness says is spent.
+///
+/// Replaces the stored snapshot wholesale, like [`record_models`]: the
+/// vendor answers the whole question every time, and a window merged out of
+/// two answers would be a reading that was never true at any instant.
+///
+/// An empty list is a legitimate answer here — a session running on an API
+/// key has no plan and no windows, so there is nothing to draw — and it is
+/// stored as such rather than refused, so that an account that moves from a
+/// subscription to a key stops showing yesterday's rings.
+///
+/// # Errors
+///
+/// Returns [`ApiError::HarnessAccountNotFound`] if the user has no account
+/// for that harness, or [`ApiError`] if the database fails.
+pub async fn record_usage(
+    db: &Db,
+    user: UserId,
+    harness: HarnessKind,
+    windows: &[UsageWindow],
+) -> Result<(), ApiError> {
+    let encoded = serde_json::to_string(windows)
+        .map_err(|_| ApiError::CorruptRecord("a harness usage snapshot could not be encoded"))?;
+    // `RETURNING`, like the model list beside it: an account that is not
+    // there is a refusal rather than a write that silently touched nothing.
+    let stored: Option<HarnessAccountId> = sql!(
+        db,
+        "UPDATE harness_accounts SET usage_json = {encoded} \
+         WHERE user_id = {user} AND harness = {harness} RETURNING id"
+    )
+    .fetch_scalar_optional()
+    .await?;
+    let stored = stored.ok_or(ApiError::HarnessAccountNotFound)?;
+    tracing::info!(
+        ?harness,
+        account = %stored,
+        windows = windows.len(),
+        "recorded a harness plan-usage snapshot"
+    );
+    Ok(())
+}
+
 /// Lists the caller's linked harness accounts.
 #[skyzen::openapi]
 async fn list_harness_accounts(
@@ -368,7 +455,7 @@ async fn list_harness_accounts(
 async fn list(db: &Db, user: UserId) -> Result<Vec<HarnessAccountView>, ApiError> {
     let rows: Vec<HarnessAccountRow> = sql!(
         db,
-        "SELECT id, harness, label, linked_at_unix, expires_at_unix, models_json \
+        "SELECT id, harness, label, linked_at_unix, expires_at_unix, models_json, usage_json \
          FROM harness_accounts WHERE user_id = {user} ORDER BY harness"
     )
     .fetch_all()
@@ -508,6 +595,7 @@ pub async fn store(
         // relinked account keeps whatever its sessions have reported; a
         // fresh one has reported nothing and offers the built-in list.
         models: models(db, user, harness).await?,
+        usage: usage(db, user, harness).await?,
     })
 }
 

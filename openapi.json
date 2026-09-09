@@ -649,7 +649,8 @@
                       "harness",
                       "label",
                       "linked_at_unix",
-                      "models"
+                      "models",
+                      "usage"
                     ],
                     "properties": {
                       "expires_at_unix": {
@@ -685,6 +686,13 @@
                           "$ref": "#/components/schemas/ModelOption"
                         },
                         "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
+                      },
+                      "usage": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/UsageWindow"
+                        },
+                        "description": "How much of this account's plan is spent, per rolling window.\n\nThe last snapshot a session on this account filed, and empty until\none has. Carried on the account for the same reason\n[`Self::models`] is — Settings reads the account and nothing else —\nand it is what the settings row draws its bars from."
                       }
                     }
                   }
@@ -737,7 +745,8 @@
                     "harness",
                     "label",
                     "linked_at_unix",
-                    "models"
+                    "models",
+                    "usage"
                   ],
                   "properties": {
                     "expires_at_unix": {
@@ -773,6 +782,13 @@
                         "$ref": "#/components/schemas/ModelOption"
                       },
                       "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
+                    },
+                    "usage": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/UsageWindow"
+                      },
+                      "description": "How much of this account's plan is spent, per rolling window.\n\nThe last snapshot a session on this account filed, and empty until\none has. Carried on the account for the same reason\n[`Self::models`] is — Settings reads the account and nothing else —\nand it is what the settings row draws its bars from."
                     }
                   }
                 }
@@ -826,7 +842,8 @@
                     "harness",
                     "label",
                     "linked_at_unix",
-                    "models"
+                    "models",
+                    "usage"
                   ],
                   "properties": {
                     "expires_at_unix": {
@@ -862,6 +879,13 @@
                         "$ref": "#/components/schemas/ModelOption"
                       },
                       "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
+                    },
+                    "usage": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/UsageWindow"
+                      },
+                      "description": "How much of this account's plan is spent, per rolling window.\n\nThe last snapshot a session on this account filed, and empty until\none has. Carried on the account for the same reason\n[`Self::models`] is — Settings reads the account and nothing else —\nand it is what the settings row draws its bars from."
                     }
                   }
                 }
@@ -1005,7 +1029,8 @@
                     "harness",
                     "label",
                     "linked_at_unix",
-                    "models"
+                    "models",
+                    "usage"
                   ],
                   "properties": {
                     "expires_at_unix": {
@@ -1041,6 +1066,13 @@
                         "$ref": "#/components/schemas/ModelOption"
                       },
                       "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
+                    },
+                    "usage": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/UsageWindow"
+                      },
+                      "description": "How much of this account's plan is spent, per rolling window.\n\nThe last snapshot a session on this account filed, and empty until\none has. Carried on the account for the same reason\n[`Self::models`] is — Settings reads the account and nothing else —\nand it is what the settings row draws its bars from."
                     }
                   }
                 }
@@ -5984,6 +6016,52 @@
         }
       }
     },
+    "/v1/sessions/{id}/usage": {
+      "put": {
+        "summary": "Records how much of this session's harness plan is spent.",
+        "description": "Records how much of this session's harness plan is spent.\n\nFiled by the daemon at session start and after every turn — the two\nmoments the number can have moved — and stored against the *account*,\nbecause the plan belongs to the account and the settings page reads it\nthere without a session. The live half goes to the room in the same\ncall, so the composer's rings move as the turn ends rather than on the\nnext page load.",
+        "operationId": "flyco_api::app::report_usage",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `PUT /v1/sessions/{id}/usage`.\n\nWhat a session's daemon reports when its harness answers how much of the\nplan is spent: at start, and after every turn. Recorded against the\naccount rather than the session, because the plan is the account's and\ntwo sessions on one account share it.",
+                "required": [
+                  "windows"
+                ],
+                "properties": {
+                  "windows": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/UsageWindow"
+                    },
+                    "description": "Every window the harness reported, in no particular order."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/workdir-patch": {
       "get": {
         "summary": "Reads a previously stored uncommitted diff, for a resume onto a new host.",
@@ -7815,7 +7893,8 @@
           "harness",
           "label",
           "linked_at_unix",
-          "models"
+          "models",
+          "usage"
         ],
         "properties": {
           "expires_at_unix": {
@@ -7851,6 +7930,13 @@
               "$ref": "#/components/schemas/ModelOption"
             },
             "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
+          },
+          "usage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageWindow"
+            },
+            "description": "How much of this account's plan is spent, per rolling window.\n\nThe last snapshot a session on this account filed, and empty until\none has. Carried on the account for the same reason\n[`Self::models`] is — Settings reads the account and nothing else —\nand it is what the settings row draws its bars from."
           }
         }
       },
@@ -9712,6 +9798,22 @@
           }
         }
       },
+      "ReportUsage": {
+        "type": "object",
+        "description": "Request body of `PUT /v1/sessions/{id}/usage`.\n\nWhat a session's daemon reports when its harness answers how much of the\nplan is spent: at start, and after every turn. Recorded against the\naccount rather than the session, because the plan is the account's and\ntwo sessions on one account share it.",
+        "required": [
+          "windows"
+        ],
+        "properties": {
+          "windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageWindow"
+            },
+            "description": "Every window the harness reported, in no particular order."
+          }
+        }
+      },
       "ResizeMachine": {
         "type": "object",
         "description": "Request body of `POST /v1/sessions/{id}/machine/resize`.\n\nThe disk survives a resize; only compute is replaced. The provider and\nregion are not part of this, because moving a machine between them would\nmean a new disk, which is a new session's problem rather than a resize.",
@@ -10344,6 +10446,43 @@
             "type": "integer",
             "format": "int64",
             "description": "Output tokens produced so far in this session.",
+            "minimum": 0
+          }
+        }
+      },
+      "UsageWindow": {
+        "type": "object",
+        "description": "One rolling window of the harness plan's rate limit.\n\nBoth harnesses answer the same question in the same shape — how much of\na window is spent, and when the window turns over — so flyco states it\nonce and both drivers fill it in. This is a *plan* limit, not the\nsession's token usage: [`UsageReport`] is what one conversation cost,\nthis is what is left of the account it was billed to.\n\nA window nobody has reported is absent from the list rather than present\nat zero; there is no \"unknown\" reading, because a ring drawn empty is\nindistinguishable from a plan that has not been touched.",
+        "required": [
+          "label",
+          "used_percent"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What the window is called in the UI, e.g. `5-hour`, `Weekly`,\n`Weekly (Fable)`. Derived by [`UsageWindow::new`]."
+          },
+          "resets_at_unix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the window turns over, seconds since the Unix epoch.\n\n`None` for a window whose harness reports a utilization but no\nreset — Codex's `resetsAt` and Claude's `resets_at` are both\nnullable, and inventing a deadline would be worse than showing none."
+          },
+          "used_percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How much of the window is spent, 0–100.",
+            "minimum": 0
+          },
+          "window_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How long the window is, in minutes.\n\nKept alongside the label because it is what the UI orders by: the\nlabel is prose and sorts alphabetically into nonsense, while the\nlength is the thing a reader scans in order. `None` for a window\nwhose harness names no duration.",
             "minimum": 0
           }
         }

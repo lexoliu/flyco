@@ -24,6 +24,7 @@ export type UsageReport = components["schemas"]["UsageReport"];
 export type ContextWindow = components["schemas"]["ContextWindow"];
 export type ModelChoice = components["schemas"]["ModelChoice"];
 export type ModelOption = components["schemas"]["ModelOption"];
+export type UsageWindow = components["schemas"]["UsageWindow"];
 
 /**
  * A normalized event extracted from either harness's native stream.
@@ -110,7 +111,14 @@ export type ClientEvent =
    * The models the agent offers, as it listed them at start. State rather
    * than history: the newest list wins and the page reads the last one.
    */
-  | { type: "models"; models: ModelOption[] };
+  | { type: "models"; models: ModelOption[] }
+  /**
+   * How much of the plan behind the session's harness account is spent.
+   * State, like `models`: the newest snapshot wins and the composer's rings
+   * read the last one. Named `plan_usage` and not `usage` because `usage`
+   * is already this session's own token count.
+   */
+  | { type: "plan_usage"; windows: UsageWindow[] };
 
 /**
  * The five `ControlToDaemon` variants a browser may send directly over the
@@ -166,4 +174,5 @@ const CLIENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "machine_changed",
   "model_changed",
   "models",
+  "plan_usage",
 ]);

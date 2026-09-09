@@ -778,6 +778,15 @@ impl<S: TranscriptStore> Driver<S> {
                 );
                 emit(&self.outputs, SessionOutput::Models { models }).await
             }
+            SidecarEvent::PlanUsage { windows } => {
+                let windows: Vec<flyco_core::UsageWindow> =
+                    windows.into_iter().map(Into::into).collect();
+                tracing::debug!(
+                    count = windows.len(),
+                    "the harness reported the plan's usage windows"
+                );
+                emit(&self.outputs, SessionOutput::PlanUsage { windows }).await
+            }
             SidecarEvent::McpServers { servers } => {
                 // The session's whole point is an agent that can see what
                 // it is spending; one that cannot is stopped here rather

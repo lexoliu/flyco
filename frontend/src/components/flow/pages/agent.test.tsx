@@ -39,6 +39,7 @@ const CLAUDE: HarnessAccountView = {
   linked_at_unix: 1_787_000_000,
   expires_at_unix: 1_787_028_800,
   models: [],
+  usage: [],
 };
 
 /** Matches the poll of a Codex sign-in. */

@@ -32,12 +32,12 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot};
 
-use self::normalize::{ApprovalParams, Normalizer};
+use self::normalize::{ApprovalParams, Normalizer, usage_windows};
 use self::protocol::{
     ApprovalDecision, ApprovalDecisionBody, ClientCapabilities, ClientInfo, Envelope,
     InitializeParams, McpServerStatusPage, McpServerStatusParams, ModelListParams,
-    ModelListResponse, RequestId, ThreadCompactStartParams, ThreadConfig, ThreadParams,
-    TurnInterruptParams, TurnStartParams, UserInput, method,
+    ModelListResponse, RateLimitSnapshot, RateLimitsBody, RequestId, ThreadCompactStartParams,
+    ThreadConfig, ThreadParams, TurnInterruptParams, TurnStartParams, UserInput, method,
 };
 use super::{Harness, HarnessSession, SessionOutput, StartRequest, Started, ToolApproval};
 use crate::config::{CodexAuth, CodexConfig};
@@ -218,6 +218,8 @@ impl Harness for CodexHarness {
                 outputs,
                 pending_approvals: BTreeMap::new(),
                 pending_compaction: None,
+                pending_rate_limits: None,
+                rate_limits: RateLimitSnapshot::default(),
                 stopped: false,
                 model: self.config.model.clone(),
                 effort: self.config.effort.clone(),
@@ -882,6 +884,12 @@ struct Driver {
     outputs: mpsc::Sender<SessionOutput>,
     pending_approvals: BTreeMap<ApprovalId, RequestId>,
     pending_compaction: Option<(RequestId, oneshot::Sender<Result<(), CodexError>>)>,
+    /// The `account/rateLimits/read` still waiting for its answer.
+    pending_rate_limits: Option<RequestId>,
+    /// The account's plan limits as last read, kept so that a *sparse*
+    /// `account/rateLimits/updated` can be merged into a whole snapshot
+    /// rather than replacing one.
+    rate_limits: RateLimitSnapshot,
     stopped: bool,
     /// What the thread runs on, restated on every `turn/start`.
     ///
@@ -919,6 +927,13 @@ impl Driver {
         );
         if !emit(&self.outputs, SessionOutput::Models { models }).await {
             return;
+        }
+        // Asked once. From here the app-server pushes
+        // `account/rateLimits/updated` whenever the numbers move, so a
+        // second read would be flycod asking a question it is already
+        // being answered.
+        if let Err(error) = self.read_rate_limits().await {
+            tracing::warn!(%error, "could not ask the app-server about the plan's limits");
         }
 
         while let Some(command) = inbox.recv().await {
@@ -1032,6 +1047,36 @@ impl Driver {
         .await
     }
 
+    /// Asks the app-server how much of the account's plan is spent.
+    ///
+    /// The answer arrives as a response frame, so the id is remembered
+    /// rather than awaited: the driver has one inbox and blocking it on a
+    /// round trip would stall the turn the user is watching.
+    async fn read_rate_limits(&mut self) -> Result<(), CodexError> {
+        let id = take_id(&mut self.next_id);
+        write_envelope(
+            self.stdin.as_mut().ok_or(CodexError::Stopped)?,
+            &Envelope::request(
+                id.clone(),
+                method::RATE_LIMITS_READ,
+                Value::Object(serde_json::Map::new()),
+            ),
+        )
+        .await?;
+        self.pending_rate_limits = Some(id);
+        Ok(())
+    }
+
+    /// Reports the plan windows the current snapshot describes.
+    async fn emit_rate_limits(&self) -> bool {
+        let windows = usage_windows(self.rate_limits);
+        tracing::debug!(
+            count = windows.len(),
+            "the app-server reported the plan's usage windows"
+        );
+        emit(&self.outputs, SessionOutput::PlanUsage { windows }).await
+    }
+
     async fn interrupt_turn(&mut self) -> Result<(), CodexError> {
         let id = take_id(&mut self.next_id);
         let params = TurnInterruptParams {
@@ -1087,6 +1132,21 @@ impl Driver {
 
     async fn on_frame(&mut self, frame: Envelope) -> bool {
         match frame {
+            Envelope::Notification { method, params } if method == method::RATE_LIMITS_UPDATED => {
+                match serde_json::from_value::<RateLimitsBody>(params) {
+                    Ok(body) => {
+                        self.rate_limits = self.rate_limits.merged(body.rate_limits);
+                        self.emit_rate_limits().await
+                    }
+                    Err(error) => {
+                        // The plan's meters are not the conversation: an
+                        // update flycod cannot read leaves the last good
+                        // snapshot standing rather than ending the session.
+                        tracing::warn!(%error, "could not read a rate-limit update");
+                        true
+                    }
+                }
+            }
             Envelope::Notification { method, params } => {
                 for event in self.normalizer.on_notification(&method, &params) {
                     if !emit(&self.outputs, SessionOutput::Event { event }).await {
@@ -1098,7 +1158,7 @@ impl Driver {
             Envelope::Request { id, method, params } => {
                 self.on_server_request(id, method, params).await
             }
-            Envelope::Response { id, .. } => {
+            Envelope::Response { id, result } => {
                 if self
                     .pending_compaction
                     .as_ref()
@@ -1107,11 +1167,35 @@ impl Driver {
                     let (_, ack) = self.pending_compaction.take().expect("checked above");
                     let _ = ack.send(Ok(()));
                 }
+                if self.pending_rate_limits.as_ref() == Some(&id) {
+                    self.pending_rate_limits = None;
+                    return match serde_json::from_value::<RateLimitsBody>(result) {
+                        Ok(body) => {
+                            self.rate_limits = body.rate_limits;
+                            self.emit_rate_limits().await
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "could not read the plan's limits");
+                            true
+                        }
+                    };
+                }
                 // turn/start and turn/interrupt acknowledge with `{}`; the
                 // terminal signal is the matching notification.
                 true
             }
             Envelope::Error { id, error } => {
+                if self.pending_rate_limits.as_ref() == Some(&id) {
+                    // A build or an account that cannot answer how much of
+                    // the plan is left is still a build that can hold a
+                    // conversation. The rings stay unread; the session runs.
+                    self.pending_rate_limits = None;
+                    tracing::warn!(
+                        message = error.message,
+                        "the app-server refused to state the plan's limits"
+                    );
+                    return true;
+                }
                 if self
                     .pending_compaction
                     .as_ref()
