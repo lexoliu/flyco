@@ -34,6 +34,9 @@ pub mod api_version {
     /// started at another would be two contracts against the same
     /// resource.
     pub const CONTAINER_APPS: &str = "2025-07-01";
+    /// `Microsoft.Resources/providers`, the resource-provider registration
+    /// read and the `register` action on it.
+    pub const RESOURCE_PROVIDERS: &str = "2021-04-01";
     /// `Microsoft.Compute/skus`, the resource-SKUs list.
     pub const SKUS: &str = "2021-07-01";
     /// `Microsoft.Compute/locations/{location}/usages`, the quota read.
@@ -71,6 +74,34 @@ pub fn resource_url(
 #[must_use]
 pub fn subscription_url(subscription: &str, path: &str, api_version: &str) -> String {
     format!("{MANAGEMENT_BASE}/subscriptions/{subscription}/{path}?api-version={api_version}")
+}
+
+/// What `GET /subscriptions/{sub}/providers/{namespace}` answers: whether
+/// the subscription may use that resource provider at all.
+///
+/// A subscription starts with most namespaces unregistered — `Microsoft.App`
+/// among them — and every write into one answers `409
+/// MissingSubscriptionRegistration` until it is. Registration is a
+/// subscription-wide, one-time, asynchronous action, so the driver reads
+/// this state rather than assuming it, and waits on it rather than failing
+/// a session over an account that was linked a minute ago.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRegistration {
+    /// `Registered`, `Registering`, `NotRegistered`, or `Unregistering`.
+    pub registration_state: String,
+}
+
+impl ProviderRegistration {
+    /// The state a write succeeds in.
+    pub const REGISTERED: &str = "Registered";
+
+    /// Whether the namespace can be written to now.
+    #[must_use]
+    pub fn is_registered(&self) -> bool {
+        self.registration_state
+            .eq_ignore_ascii_case(Self::REGISTERED)
+    }
 }
 
 /// The error document ARM returns on a rejection.
