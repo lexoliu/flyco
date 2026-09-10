@@ -235,17 +235,28 @@ pub mod names {
         format!("flyco-{region}-env")
     }
 
+    /// The most characters Azure allows in a Container Apps job name.
+    ///
+    /// A virtual machine takes the whole hyphenated machine id after the
+    /// `flyco-` prefix; a job may not (`ContainerAppInvalidName`, issue
+    /// #250), so the job carries as much of the id's hex form as fits.
+    pub const JOB_NAME_MAX: usize = 32;
+
     /// A machine's job.
     ///
-    /// The same name its virtual machine would have had, derived from the
-    /// machine id rather than allocated, so a job is recoverable from the
-    /// machines table without a column to store it in. Named separately
-    /// from [`super::super::names::machine`] because the two are free to
-    /// diverge — a job is a different resource provider, with its own
-    /// naming rules — and a caller should not have to know they agree.
+    /// Derived from the machine id rather than allocated, so a job is
+    /// recoverable from the machines table without a column to store it
+    /// in: `flyco-` and as many leading hex characters of the id as
+    /// [`JOB_NAME_MAX`] leaves room for — 104 bits of a random uuid, no likelier to collide
+    /// than any two machine ids. Named separately from
+    /// [`super::super::names::machine`] because the two differ — a job is
+    /// a different resource provider, with a length rule a VM does not
+    /// have — and a caller should not have to know how.
     #[must_use]
     pub fn job(id: MachineId) -> String {
-        super::super::names::machine(id)
+        const PREFIX: &str = "flyco-";
+        let hex = id.as_uuid().simple().to_string();
+        format!("{PREFIX}{}", &hex[..JOB_NAME_MAX - PREFIX.len()])
     }
 }
 
@@ -637,8 +648,8 @@ pub fn environment_body(region: &str) -> ManagedEnvironment {
 
 #[cfg(test)]
 mod tests {
-    use super::{Execution, MACHINE_TYPE_PREFIX, Size, template};
-    use flyco_core::release;
+    use super::{Execution, MACHINE_TYPE_PREFIX, Size, names, template};
+    use flyco_core::{MachineId, release};
 
     #[test]
     fn every_offered_size_pairs_two_gibibytes_with_each_core() {
@@ -646,6 +657,24 @@ mod tests {
             assert_eq!(size.memory_gib(), size.vcpus() * 2);
             assert_eq!(size.memory_mib(), u64::from(size.memory_gib()) * 1024);
         }
+    }
+
+    #[test]
+    fn a_job_name_fits_the_limit_azure_puts_on_it() {
+        // 6 + 26 of the id's 32 hex characters, and nothing Azure refuses:
+        // lower-case alphanumerics and single hyphens, starting with a
+        // letter and ending with an alphanumeric.
+        let id = MachineId::generate();
+        let job = names::job(id);
+        assert_eq!(job.len(), names::JOB_NAME_MAX);
+        assert!(job.starts_with("flyco-"));
+        assert!(job.ends_with(|c: char| c.is_ascii_alphanumeric()));
+        assert!(!job.contains("--"));
+        assert!(
+            job.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        );
+        assert!(id.as_uuid().simple().to_string().starts_with(&job[6..]));
     }
 
     #[test]
