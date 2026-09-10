@@ -312,6 +312,84 @@ impl<'a> Execution<'a> {
     }
 }
 
+/// What a container machine's `native_id` names: an execution, or only
+/// the job it belongs to.
+///
+/// A machine whose build was handed back as a
+/// [`Continuation`](crate::Continuation) is recorded by its job alone,
+/// because the execution had no name yet; destroying it means stopping
+/// whatever executions the job has by then and deleting the job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target<'a> {
+    /// The job, with whatever executions it has.
+    Job(&'a str),
+    /// One execution of a job.
+    Execution(Execution<'a>),
+}
+
+impl<'a> Target<'a> {
+    /// Reads a container machine's `native_id`, either form.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError::Malformed`] for an id that names neither,
+    /// which is a row written by something other than this driver.
+    pub fn parse(native_id: &'a str) -> Result<Self, ProviderError> {
+        if native_id.contains(NATIVE_ID_SEPARATOR) {
+            return Execution::parse(native_id).map(Self::Execution);
+        }
+        if native_id.is_empty() {
+            return Err(ProviderError::Malformed(
+                "this machine's provider-native id names no Container Apps job",
+            ));
+        }
+        Ok(Self::Job(native_id))
+    }
+}
+
+/// Where a job start had got to when the invocation's polls ran out: what
+/// a container [`Continuation`](crate::Continuation) carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartInProgress {
+    /// The job whose execution is coming up.
+    pub job: String,
+    /// How to keep following the start.
+    pub follow: super::arm::Follow,
+}
+
+/// What `GET .../jobs/{job}/executions` answers with.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExecutionList {
+    /// The job's executions, every state.
+    #[serde(default)]
+    pub value: Vec<ExecutionRecord>,
+}
+
+/// One execution in an [`ExecutionList`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExecutionRecord {
+    /// Azure's name for it.
+    pub name: String,
+    /// Its state.
+    pub properties: ExecutionProperties,
+}
+
+/// The state half of an [`ExecutionRecord`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExecutionProperties {
+    /// `Running`, `Processing`, `Succeeded`, `Failed`, `Stopped`, …
+    #[serde(default)]
+    pub status: String,
+}
+
+impl ExecutionRecord {
+    /// Whether this execution is still using compute and can be stopped.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        matches!(self.properties.status.as_str(), "Running" | "Processing")
+    }
+}
+
 // ── Managed environment ──
 
 /// Body of a region's managed-environment `PUT`.
@@ -648,7 +726,7 @@ pub fn environment_body(region: &str) -> ManagedEnvironment {
 
 #[cfg(test)]
 mod tests {
-    use super::{Execution, MACHINE_TYPE_PREFIX, Size, names, template};
+    use super::{Execution, MACHINE_TYPE_PREFIX, Size, Target, names, template};
     use flyco_core::{MachineId, release};
 
     #[test]
@@ -706,6 +784,24 @@ mod tests {
         let execution = Execution::parse(&native).expect("the id names an execution");
         assert_eq!(execution.job, "flyco-abc");
         assert_eq!(execution.name, "flyco-abc-xk29p");
+    }
+
+    #[test]
+    fn a_job_only_id_is_the_job_and_an_execution_id_is_the_execution() {
+        assert_eq!(
+            Target::parse("flyco-abc").expect("a job"),
+            Target::Job("flyco-abc")
+        );
+        assert_eq!(
+            Target::parse("flyco-abc/flyco-abc-xk29p").expect("an execution"),
+            Target::Execution(Execution {
+                job: "flyco-abc",
+                name: "flyco-abc-xk29p"
+            })
+        );
+        for native in ["", "/", "flyco-abc/"] {
+            assert!(Target::parse(native).is_err(), "{native:?}");
+        }
     }
 
     #[test]

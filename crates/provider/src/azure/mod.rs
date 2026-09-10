@@ -101,10 +101,10 @@ use flyco_core::{CloudSpend, MachineId};
 use crate::clock::{MonotonicClock, SystemClock, SystemTimer, Timer};
 use crate::http::{HttpRequest, HttpResponse, HttpTransport, Method};
 use crate::login_key::LoginKey;
-use crate::polling::{MAX_POLL_ATTEMPTS, poll_delay};
+use crate::polling::{MAX_POLL_ATTEMPTS, POLLS_PER_INVOCATION, poll_delay};
 use crate::{
-    CapacityMode, CloudProvider, LiveTransport, Machine, ProviderError, ProvisionRequest,
-    cloud_init, flycod,
+    CapacityMode, CloudProvider, Continuation, LiveTransport, Machine, ProviderError,
+    ProvisionRequest, Provisioning, cloud_init, flycod,
 };
 
 use arm::{ErrorBody, Follow, OperationBody, OperationStatus, ProviderRegistration, api_version};
@@ -395,6 +395,26 @@ impl AzureProvider {
     }
 }
 
+/// Where a job start had got to after one invocation's polls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Started {
+    /// The execution came up, and this is Azure's name for it.
+    Running(String),
+    /// Still starting: how to keep following it.
+    Pending(Follow),
+}
+
+/// Where an operation had got to after a bounded number of polls.
+#[derive(Debug)]
+enum Followed {
+    /// Finished, with the response that describes the resource where the
+    /// follow pattern hands one back (`Location`), and nothing where it
+    /// only describes the operation (`Azure-AsyncOperation`).
+    Done(Option<HttpResponse>),
+    /// Still running: where to carry on from.
+    Still(Follow),
+}
+
 impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     /// The driver over an explicit transport, clock and timer.
     pub const fn with_parts(
@@ -506,11 +526,33 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         &mut self,
         accepted: HttpResponse,
     ) -> Result<Option<HttpResponse>, ProviderError> {
-        let mut follow = arm::follow(&accepted)?;
+        let follow = arm::follow(&accepted)?;
+        if follow == Follow::Finished {
+            return Ok(Some(accepted));
+        }
+        match self.follow_operation(follow, MAX_POLL_ATTEMPTS).await? {
+            Followed::Done(resource) => Ok(resource),
+            Followed::Still(_) => Err(ProviderError::Rejected(format!(
+                "an Azure operation was still running after {MAX_POLL_ATTEMPTS} polls"
+            ))),
+        }
+    }
 
-        for attempt in 0..MAX_POLL_ATTEMPTS {
+    /// Polls an operation up to `budget` times, and says where it got to.
+    ///
+    /// The budget is what makes a build resumable: a caller with one
+    /// invocation's worth of polls hands the [`Followed::Still`] back as a
+    /// continuation instead of spending past its subrequest ceiling
+    /// (issue #257), and carries on from it next time.
+    async fn follow_operation(
+        &mut self,
+        mut follow: Follow,
+        budget: usize,
+    ) -> Result<Followed, ProviderError> {
+        for attempt in 0..budget {
             let (url, retry_after, by_status) = match &follow {
-                Follow::Finished => return Ok(Some(accepted)),
+                // Nothing to poll: the call that produced this was done.
+                Follow::Finished => return Ok(Followed::Done(None)),
                 Follow::Operation { url, retry_after } => (url.clone(), *retry_after, false),
                 Follow::Location { url, retry_after } => (url.clone(), *retry_after, true),
             };
@@ -531,7 +573,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
                     continue;
                 }
                 if polled.is_success() {
-                    return Ok(Some(polled));
+                    return Ok(Followed::Done(Some(polled)));
                 }
                 return Err(refusal(&polled));
             }
@@ -542,7 +584,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
 
             let body: OperationBody = polled.json()?;
             match OperationStatus::parse(&body.status) {
-                OperationStatus::Succeeded => return Ok(None),
+                OperationStatus::Succeeded => return Ok(Followed::Done(None)),
                 OperationStatus::Failed | OperationStatus::Canceled => {
                     let error = body.error.unwrap_or_default();
                     return Err(ProviderError::OperationFailed {
@@ -557,9 +599,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             }
         }
 
-        Err(ProviderError::Rejected(format!(
-            "an Azure operation was still running after {MAX_POLL_ATTEMPTS} polls"
-        )))
+        Ok(Followed::Still(follow))
     }
 
     /// Creates the one-time infrastructure a region's machines share.
@@ -1420,6 +1460,21 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     /// what every later call about the *running* half of this machine is
     /// addressed to.
     async fn start_execution(&mut self, job: &str) -> Result<String, ProviderError> {
+        match self.begin_execution(job).await? {
+            Started::Running(execution) => Ok(execution),
+            Started::Pending(follow) => match self.follow_start(follow, MAX_POLL_ATTEMPTS).await? {
+                Started::Running(execution) => Ok(execution),
+                Started::Pending(_) => Err(ProviderError::Rejected(format!(
+                    "an Azure job execution was still starting after {MAX_POLL_ATTEMPTS} polls"
+                ))),
+            },
+        }
+    }
+
+    /// Starts a new execution of a job and follows it for one invocation's
+    /// polls: the execution's name if it came up, or how to keep following
+    /// it if it did not (issue #257).
+    async fn begin_execution(&mut self, job: &str) -> Result<Started, ProviderError> {
         let response = self
             .send(HttpRequest::new(
                 Method::Post,
@@ -1429,21 +1484,58 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         if !response.is_success() {
             return Err(refusal(&response));
         }
+        let follow = arm::follow(&response)?;
+        if follow == Follow::Finished {
+            return Self::started_name(&response).map(Started::Running);
+        }
+        self.follow_start(follow, POLLS_PER_INVOCATION).await
+    }
 
-        let started: containers::StartedExecution = self
-            .await_operation(response)
-            .await?
-            .ok_or(ProviderError::Malformed(
+    /// Keeps following a job start, within `budget` polls.
+    async fn follow_start(
+        &mut self,
+        follow: Follow,
+        budget: usize,
+    ) -> Result<Started, ProviderError> {
+        match self.follow_operation(follow, budget).await? {
+            Followed::Done(Some(response)) => Self::started_name(&response).map(Started::Running),
+            Followed::Done(None) => Err(ProviderError::Malformed(
                 "Azure reported the operation that started a job execution but not the \
                  execution, so there is no name to address it by",
-            ))?
-            .json()?;
+            )),
+            Followed::Still(follow) => Ok(Started::Pending(follow)),
+        }
+    }
+
+    /// The execution a job start named, out of the response that describes it.
+    fn started_name(response: &HttpResponse) -> Result<String, ProviderError> {
+        let started: containers::StartedExecution = response.json()?;
         if started.name.is_empty() {
             return Err(ProviderError::Malformed(
                 "Azure started a job execution without naming it",
             ));
         }
         Ok(started.name)
+    }
+
+    /// Every execution a job has that is still using compute.
+    async fn live_executions(&mut self, job: &str) -> Result<Vec<String>, ProviderError> {
+        let response = self
+            .send(HttpRequest::new(
+                Method::Get,
+                self.job_action_url(&format!("{job}/executions")),
+            ))
+            .await?;
+        if !response.is_success() {
+            return Err(refusal(&response));
+        }
+        let list: containers::ExecutionList = response.json()?;
+        Ok(list
+            .value
+            .into_iter()
+            .filter(containers::ExecutionRecord::is_live)
+            .map(|execution| execution.name)
+            .collect())
     }
 
     /// Stops one execution, leaving the job it belongs to.
@@ -1509,7 +1601,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     async fn provision_container(
         &mut self,
         request: &ProvisionRequest,
-    ) -> Result<Machine, ProviderError> {
+    ) -> Result<Provisioning, ProviderError> {
         let id = request.machine;
         let region = &request.spec.region;
         let size = self
@@ -1530,20 +1622,14 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         self.send_and_await(HttpRequest::new(Method::Put, self.job_url(&job)).json_body(&body)?)
             .await?;
 
-        let execution = self.start_execution(&job).await?;
-        tracing::info!(
-            machine = %id,
-            machine_type = %request.spec.machine_type,
-            region = %region,
-            %execution,
-            "provisioned an Azure Container Apps execution"
-        );
-        Ok(Machine {
+        // What the machine is before its execution has a name: enough to
+        // destroy it by, should the build be given up.
+        let pending = Machine {
             id,
-            native_id: containers::Execution::native_id(&job, &execution),
+            native_id: job.clone(),
             runtime: Runtime::Container,
             region: region.clone(),
-            state: MachineState::Running,
+            state: MachineState::Provisioning,
             // Container Apps sells no interruptible capacity, so a session
             // that asked for spot holds ordinary capacity and is billed for
             // it. Recorded rather than refused: what the machine actually
@@ -1554,7 +1640,71 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             // the control plane, and Container Apps gives a job no inbound
             // address at all.
             address: None,
-        })
+        };
+        match self.begin_execution(&job).await? {
+            Started::Running(execution) => {
+                tracing::info!(
+                    machine = %id,
+                    machine_type = %request.spec.machine_type,
+                    region = %region,
+                    %execution,
+                    "provisioned an Azure Container Apps execution"
+                );
+                Ok(Provisioning::Ready(Self::container_running(
+                    pending, &execution,
+                )))
+            }
+            Started::Pending(follow) => {
+                tracing::info!(
+                    machine = %id,
+                    machine_type = %request.spec.machine_type,
+                    region = %region,
+                    "an Azure Container Apps execution is still starting; handing the build back"
+                );
+                Ok(Provisioning::Pending {
+                    machine: pending,
+                    continuation: Continuation::write(&containers::StartInProgress {
+                        job,
+                        follow,
+                    })?,
+                })
+            }
+        }
+    }
+
+    /// Carries on a container build whose execution was still starting.
+    async fn resume_container(
+        &mut self,
+        machine: &Machine,
+        continuation: &Continuation,
+    ) -> Result<Provisioning, ProviderError> {
+        let containers::StartInProgress { job, follow } = continuation.read()?;
+        match self.follow_start(follow, POLLS_PER_INVOCATION).await? {
+            Started::Running(execution) => {
+                tracing::info!(
+                    machine = %machine.id,
+                    %execution,
+                    "an Azure Container Apps execution came up on a resumed build"
+                );
+                Ok(Provisioning::Ready(Self::container_running(
+                    machine.clone(),
+                    &execution,
+                )))
+            }
+            Started::Pending(follow) => Ok(Provisioning::Pending {
+                machine: machine.clone(),
+                continuation: Continuation::write(&containers::StartInProgress { job, follow })?,
+            }),
+        }
+    }
+
+    /// The machine a pending container becomes once its execution is named.
+    fn container_running(pending: Machine, execution: &str) -> Machine {
+        Machine {
+            native_id: containers::Execution::native_id(&pending.native_id, execution),
+            state: MachineState::Running,
+            ..pending
+        }
     }
 
     /// Moves a container machine to another size: stop, patch, start.
@@ -1608,16 +1758,27 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     /// than sent anyway, because that machine's execution is already gone
     /// and the request would name something that no longer exists.
     async fn destroy_container(&mut self, machine: &Machine) -> Result<(), ProviderError> {
-        let execution = containers::Execution::parse(&machine.native_id)?;
-        if machine.state == MachineState::Running {
-            self.stop_execution(&execution).await?;
-        }
+        let job = match containers::Target::parse(&machine.native_id)? {
+            containers::Target::Execution(execution) => {
+                if machine.state == MachineState::Running {
+                    self.stop_execution(&execution).await?;
+                }
+                execution.job.to_owned()
+            }
+            // A build given up before its execution was named: whatever the
+            // job has started since is stopped, so nothing runs on behind
+            // a machine the control plane has forgotten.
+            containers::Target::Job(job) => {
+                for name in self.live_executions(job).await? {
+                    self.stop_execution(&containers::Execution { job, name: &name })
+                        .await?;
+                }
+                job.to_owned()
+            }
+        };
 
-        self.send_and_await(HttpRequest::new(
-            Method::Delete,
-            self.job_url(execution.job),
-        ))
-        .await?;
+        self.send_and_await(HttpRequest::new(Method::Delete, self.job_url(&job)))
+            .await?;
 
         tracing::info!(machine = %machine.id, "destroyed an Azure Container Apps job");
         Ok(())
@@ -1898,7 +2059,10 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> CloudProvider for AzureProvi
     /// container's configuration, and that daemon would let the platform
     /// take the working tree away without writing the patch that is the only
     /// copy of it.
-    async fn provision(&mut self, request: &ProvisionRequest) -> Result<Machine, ProviderError> {
+    async fn provision(
+        &mut self,
+        request: &ProvisionRequest,
+    ) -> Result<Provisioning, ProviderError> {
         if request.spec.runtime != request.bootstrap.runtime {
             return Err(ProviderError::Malformed(
                 "this request's machine spec and daemon bootstrap disagree about \
@@ -1906,8 +2070,21 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> CloudProvider for AzureProvi
             ));
         }
         match request.spec.runtime {
-            Runtime::Vm => self.provision_vm(request).await,
+            Runtime::Vm => self.provision_vm(request).await.map(Provisioning::Ready),
             Runtime::Container => self.provision_container(request).await,
+        }
+    }
+
+    async fn resume(
+        &mut self,
+        machine: &Machine,
+        continuation: &Continuation,
+    ) -> Result<Provisioning, ProviderError> {
+        match machine.runtime {
+            Runtime::Vm => Err(ProviderError::Malformed(
+                "an Azure virtual machine is built in one call and has nothing to resume",
+            )),
+            Runtime::Container => self.resume_container(machine, continuation).await,
         }
     }
 

@@ -39,7 +39,7 @@ use crate::http::{HttpRequest, HttpResponse, Method};
 use crate::testing::{RecordedTransport, RecordingTimer};
 use crate::{
     CapacityMode, ClaudeCredential, CloudProvider, DaemonBootstrap, HarnessCredential, Machine,
-    ProviderError, ProvisionRequest,
+    ProviderError, ProvisionRequest, Provisioning,
 };
 
 const REGION: &str = "us-west-2";
@@ -326,6 +326,7 @@ async fn provisioning_reads_region_access_availability_and_quota_before_it_write
     let mut aws = provider(provision_script([vec![xml(RUN)], settles()].concat()));
     aws.provision(&request(MachineId::generate(), X64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = aws.transport();
@@ -386,6 +387,7 @@ async fn a_region_the_account_has_not_enabled_is_refused_before_any_other_read()
             true,
         ))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a region the account never enabled cannot be deployed into");
 
     let ProviderError::Unavailable { reason, .. } = &error else {
@@ -414,6 +416,7 @@ async fn the_region_access_read_happens_once_per_driver() {
     let machine = MachineId::generate();
     aws.provision(&request(machine, X64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
     aws.deallocate(&provisioned(machine))
         .await
@@ -436,6 +439,7 @@ async fn an_instance_type_the_region_does_not_offer_is_refused_before_any_write(
     let error = aws
         .provision(&request(MachineId::generate(), UNOFFERED_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("an unoffered instance type cannot be launched");
     assert!(matches!(error, ProviderError::Unavailable { .. }));
     assert_eq!(
@@ -452,6 +456,7 @@ async fn an_instance_type_ec2_does_not_describe_is_refused() {
     let error = aws
         .provision(&request(MachineId::generate(), "t9.enormous", true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("an unknown instance type cannot be launched");
     assert!(matches!(error, ProviderError::Unavailable { .. }));
 }
@@ -467,6 +472,7 @@ async fn a_machine_type_that_runs_macos_is_refused_before_anything_is_created() 
         let error = aws
             .provision(&request(MachineId::generate(), MAC_TYPE, spot))
             .await
+            .and_then(Provisioning::ready)
             .expect_err("flyco boots no macOS machine");
 
         let ProviderError::Unsupported { reason, .. } = &error else {
@@ -487,6 +493,7 @@ async fn the_workspace_network_is_the_accounts_default_vpc_and_one_flyco_group()
     let mut aws = provider(provision_script([vec![xml(RUN)], settles()].concat()));
     aws.provision(&request(MachineId::generate(), ARM64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = aws.transport();
@@ -527,6 +534,7 @@ async fn a_missing_security_group_is_created_and_opened_for_ssh() {
     let mut aws = provider(script);
     aws.provision(&request(MachineId::generate(), ARM64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = aws.transport();
@@ -555,6 +563,7 @@ async fn the_image_is_read_from_canonicals_parameter_for_the_types_own_architect
         let mut aws = provider(provision_script([vec![xml(RUN)], settles()].concat()));
         aws.provision(&request(MachineId::generate(), machine_type, true))
             .await
+            .and_then(Provisioning::ready)
             .expect("provision");
 
         let parameter = aws.transport().request(8);
@@ -589,7 +598,10 @@ async fn the_launch_body_is_the_measured_shape() {
     let provision = request(machine, ARM64_TYPE, true);
     let session = provision.bootstrap.session;
     let mut aws = provider(provision_script([vec![xml(RUN)], settles()].concat()));
-    aws.provision(&provision).await.expect("provision");
+    aws.provision(&provision)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
 
     let launch = aws.transport().request(RUN_INSTANCES);
     assert_eq!(launch.method, Method::Post);
@@ -659,6 +671,7 @@ async fn every_request_is_signed_for_the_region_and_service_it_is_sent_to() {
     let mut aws = provider(provision_script([vec![xml(RUN)], settles()].concat()));
     aws.provision(&request(MachineId::generate(), ARM64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = aws.transport();
@@ -706,6 +719,7 @@ async fn a_json_rpc_call_carries_the_versioned_media_type_the_protocol_selects()
     let mut aws = provider(provision_script([vec![xml(RUN)], settles()].concat()));
     aws.provision(&request(MachineId::generate(), ARM64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     for index in [3, 8] {
@@ -723,7 +737,10 @@ async fn cloud_init_carries_the_daemon_configuration_and_nothing_readable() {
 
     let provision = request(MachineId::generate(), ARM64_TYPE, true);
     let mut aws = provider(provision_script([vec![xml(RUN)], settles()].concat()));
-    aws.provision(&provision).await.expect("provision");
+    aws.provision(&provision)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
 
     let launch = aws.transport().request(RUN_INSTANCES);
     let user_data = field(&launch, "UserData");
@@ -764,6 +781,7 @@ async fn the_address_is_an_elastic_ip_allocated_before_the_launch_and_attached_a
     let provisioned = aws
         .provision(&request(machine, ARM64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = aws.transport();
@@ -811,6 +829,7 @@ async fn a_launch_that_fails_takes_its_address_with_it() {
     let error = aws
         .provision(&request(MachineId::generate(), ARM64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("an unauthorized launch is a failed provision");
     assert_eq!(error.code(), Some("UnauthorizedOperation"));
 
@@ -838,6 +857,7 @@ async fn a_spot_refusal_is_retried_on_demand_for_every_code_that_means_it() {
         let provisioned = aws
             .provision(&request(MachineId::generate(), ARM64_TYPE, true))
             .await
+            .and_then(Provisioning::ready)
             .expect("a spot refusal falls back rather than failing");
 
         assert_eq!(
@@ -906,6 +926,7 @@ async fn the_on_demand_fallback_re_checks_the_pool_it_would_spend() {
     let error = aws
         .provision(&request(MachineId::generate(), X64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("the on-demand pool cannot fund this machine");
     assert!(matches!(error, ProviderError::QuotaExceeded { .. }));
     assert_eq!(
@@ -931,6 +952,7 @@ async fn a_machine_only_the_spot_pool_can_fund_is_still_provisioned() {
     let machine = aws
         .provision(&request(MachineId::generate(), X64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("spot draws on a different pool");
     assert_eq!(machine.capacity_mode, CapacityMode::Spot);
 
@@ -940,6 +962,7 @@ async fn a_machine_only_the_spot_pool_can_fund_is_still_provisioned() {
     let error = aws
         .provision(&request(MachineId::generate(), X64_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("the on-demand pool has no room at all");
     assert!(matches!(error, ProviderError::QuotaExceeded { .. }));
 }
@@ -950,6 +973,7 @@ async fn a_spot_machine_ec2_accepts_records_spot() {
     let machine = aws
         .provision(&request(MachineId::generate(), ARM64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     assert_eq!(machine.capacity_mode, CapacityMode::Spot);
@@ -965,6 +989,7 @@ async fn a_refusal_that_is_not_about_spot_is_not_retried() {
     let error = aws
         .provision(&request(MachineId::generate(), ARM64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a permission failure is a failure");
     assert_eq!(error.code(), Some("UnauthorizedOperation"));
     assert_eq!(
@@ -986,6 +1011,7 @@ async fn an_on_demand_request_never_carries_the_market_options() {
     ]));
     aws.provision(&request(MachineId::generate(), ARM64_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     assert!(!has(
@@ -1010,6 +1036,7 @@ async fn an_instance_is_polled_until_it_settles() {
 
     aws.provision(&request(MachineId::generate(), ARM64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let described = actions(&aws)
@@ -1039,6 +1066,7 @@ async fn an_instance_that_settles_somewhere_else_is_a_failure() {
     let error = aws
         .provision(&request(MachineId::generate(), ARM64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("an instance that terminated is not an instance that started");
     assert!(matches!(
         error,
@@ -1510,7 +1538,10 @@ async fn provisioning_a_container_creates_the_cluster_then_registers_a_revision(
     let provision = container_request(machine, CONTAINER_TYPE);
     let mut aws = provider(container_script(vec![json(ECS_RUN_SPOT)]));
 
-    aws.provision(&provision).await.expect("provision");
+    aws.provision(&provision)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
 
     assert_eq!(
         ecs_actions(&aws),
@@ -1624,6 +1655,7 @@ async fn the_task_a_container_provision_runs_names_one_market_and_every_subnet()
     let provisioned = aws
         .provision(&container_request(machine, CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let run = body_of(&aws.transport().request(RUN_TASK));
@@ -1680,6 +1712,7 @@ async fn a_container_spot_cannot_place_is_run_on_demand_from_the_identical_body(
     let provisioned = aws
         .provision(&container_request(machine, CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("the same task runs on demand");
 
     let spot = body_of(&aws.transport().request(RUN_TASK));
@@ -1712,6 +1745,7 @@ async fn a_capacity_refusal_on_demand_is_the_end_of_the_attempt() {
     let error = aws
         .provision(&request)
         .await
+        .and_then(Provisioning::ready)
         .expect_err("there is no third market to try");
     assert!(matches!(error, ProviderError::NoCapacity(_)));
     assert_eq!(
@@ -1737,6 +1771,7 @@ async fn a_redelivered_container_provision_adopts_the_task_already_running() {
     let provisioned = aws
         .provision(&container_request(machine, CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("the redelivery adopts what is already running");
 
     assert_eq!(
@@ -1768,9 +1803,11 @@ async fn the_cluster_is_confirmed_once_per_driver() {
 
     aws.provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("the first provision");
     aws.provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("the second provision");
 
     let describes = ecs_actions(&aws)
@@ -1799,6 +1836,7 @@ async fn a_size_fargate_does_not_offer_is_refused_before_any_write() {
     let error = aws
         .provision(&container_request(MachineId::generate(), "fargate-4x16"))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("flyco publishes no such container");
     assert!(matches!(error, ProviderError::Unavailable { .. }));
     assert_eq!(aws.transport().request_count(), 0);
@@ -1813,6 +1851,7 @@ async fn a_disk_beyond_fargates_ceiling_is_refused_with_the_ceiling_in_it() {
     let error = aws
         .provision(&request)
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a task's ephemeral disk stops at 200 GiB");
     assert!(error.to_string().contains("200 GiB"));
     assert_eq!(
@@ -2252,6 +2291,10 @@ async fn live_provision_and_destroy() {
         .clone();
 
     let provision = request_in(MachineId::generate(), &region, &cheapest, true);
-    let machine = aws.provision(&provision).await.expect("provision");
+    let machine = aws
+        .provision(&provision)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
     aws.destroy(&machine).await.expect("destroy");
 }
