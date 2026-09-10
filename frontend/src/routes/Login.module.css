@@ -44,11 +44,6 @@
   background: var(--color-primary-hover);
 }
 
-.footnote {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-faint);
-}
 
 .error {
   color: var(--color-danger);

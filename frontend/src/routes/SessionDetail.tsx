@@ -710,6 +710,7 @@ export default function SessionDetail() {
                 <ProvisioningTimeline
                   steps={[{ stage: "reserving", atUnix: current().created_at_unix }]}
                   recovery={status()?.status === "migrating"}
+                  attempt={1}
                   repo={current().repo}
                   provider={providerLabel()}
                   now={now()}

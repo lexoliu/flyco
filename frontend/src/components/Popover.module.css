@@ -59,3 +59,25 @@
     transform: translateY(0);
   }
 }
+
+/*
+ * On a phone the panel is a sheet at the foot of the screen, whatever it is
+ * anchored to. A panel hung off a chip near the right edge opened past the
+ * viewport and could not be closed without scrolling sideways; a sheet is
+ * always fully on screen, always reachable with a thumb, and takes the
+ * width the chips could not spare.
+ */
+@media (max-width: 600px) {
+  .panel,
+  .alignEnd,
+  .sideTop {
+    position: fixed;
+    top: auto;
+    left: var(--space-3);
+    right: var(--space-3);
+    bottom: var(--space-3);
+    max-width: none;
+    max-height: min(70vh, calc(100dvh - 2 * var(--space-3)));
+    animation: settle var(--transition-panel);
+  }
+}

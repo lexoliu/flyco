@@ -29,10 +29,7 @@ export default function Login() {
     <div class={styles.page}>
       <div class={styles.card}>
         <h1 class={styles.wordmark}>flyco</h1>
-        <p class={styles.lede}>
-          The official Claude Code and Codex, on a computer you own. You bring the agent and the
-          machine; flyco runs the session and keeps the budget.
-        </p>
+        <p class={styles.lede}>Claude Code and Codex, on a machine you own.</p>
         <button
           type="button"
           class={styles.githubButton}
@@ -43,10 +40,6 @@ export default function Login() {
           <Logomark mark={GITHUB_MARK} size={15} />
           Sign in with GitHub
         </button>
-        <p class={styles.footnote}>
-          Flyco reads your repositories so an agent can work in them. It never holds your cloud
-          bill or your model tokens — both stay on your own accounts.
-        </p>
         <Show when={error()}>
           <p role="alert" class={styles.error}>
             {error()}
