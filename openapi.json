@@ -3781,6 +3781,17 @@
                         "$ref": "#/components/schemas/ModelChoice",
                         "description": "What it runs on, and at what effort.\n\nAlways concrete, never \"whatever the CLI picks\": a session opened\nwithout a model named carries the harness's default resolved at\ncreation, so the header can state the model on every row rather than\nleaving one blank for the sessions nobody chose one for."
                       },
+                      "paused_reason": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/PausedReason",
+                            "description": "Why the session is [`Paused`](SessionState::Paused).\n\nOn the summary rather than only on [`SessionDetail`] because the\nstatus dot in the rail is drawn from a summary, and a session waiting\nout a plan window is not the same status as one that ran out of money\n(docs/ux.md §6). `None` for every session that is not paused, and for\na pause the user asked for."
+                          }
+                        ]
+                      },
                       "repo": {
                         "$ref": "#/components/schemas/RepoSlug",
                         "description": "Repository it works in."
@@ -3901,6 +3912,17 @@
                             "null"
                           ],
                           "description": "Why the session is [`SessionState::Failed`], in the provider's own\nwords where it has any.\n\n`None` for every other state. A failed session that could not say\nwhy would leave the user with a dead session and no idea whether to\nretry it, pick another region, or ask for a quota increase."
+                        },
+                        "usage_limit": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "$ref": "#/components/schemas/UsageLimitPause",
+                              "description": "What a session waiting out a harness usage limit is waiting for.\n\n`Some` exactly while\n[`paused_reason`](SessionSummary::paused_reason) is\n[`PausedReason::UsageLimit`], and on the detail rather than the\nsummary because this is the page's story and not the rail's dot: a\nlist row says the session is waiting, and the page says which window,\nuntil when, and whether the machine is still costing anything.\n\nIt outlives the [`Paused`](SessionState::Paused) state on purpose.\nThe wake runs through [`Provisioning`](SessionState::Provisioning),\nand this is the only thing that tells that provisioning apart from a\nfirst one — the same job [`InterruptedReason`] does for a\nreclamation."
+                            }
+                          ]
                         }
                       }
                     }
@@ -3955,6 +3977,17 @@
                             "null"
                           ],
                           "description": "Why the session is [`SessionState::Failed`], in the provider's own\nwords where it has any.\n\n`None` for every other state. A failed session that could not say\nwhy would leave the user with a dead session and no idea whether to\nretry it, pick another region, or ask for a quota increase."
+                        },
+                        "usage_limit": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "$ref": "#/components/schemas/UsageLimitPause",
+                              "description": "What a session waiting out a harness usage limit is waiting for.\n\n`Some` exactly while\n[`paused_reason`](SessionSummary::paused_reason) is\n[`PausedReason::UsageLimit`], and on the detail rather than the\nsummary because this is the page's story and not the rail's dot: a\nlist row says the session is waiting, and the page says which window,\nuntil when, and whether the machine is still costing anything.\n\nIt outlives the [`Paused`](SessionState::Paused) state on purpose.\nThe wake runs through [`Provisioning`](SessionState::Provisioning),\nand this is the only thing that tells that provisioning apart from a\nfirst one — the same job [`InterruptedReason`] does for a\nreclamation."
+                            }
+                          ]
                         }
                       }
                     }
@@ -4050,6 +4083,17 @@
                             "null"
                           ],
                           "description": "Why the session is [`SessionState::Failed`], in the provider's own\nwords where it has any.\n\n`None` for every other state. A failed session that could not say\nwhy would leave the user with a dead session and no idea whether to\nretry it, pick another region, or ask for a quota increase."
+                        },
+                        "usage_limit": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "$ref": "#/components/schemas/UsageLimitPause",
+                              "description": "What a session waiting out a harness usage limit is waiting for.\n\n`Some` exactly while\n[`paused_reason`](SessionSummary::paused_reason) is\n[`PausedReason::UsageLimit`], and on the detail rather than the\nsummary because this is the page's story and not the rail's dot: a\nlist row says the session is waiting, and the page says which window,\nuntil when, and whether the machine is still costing anything.\n\nIt outlives the [`Paused`](SessionState::Paused) state on purpose.\nThe wake runs through [`Provisioning`](SessionState::Provisioning),\nand this is the only thing that tells that provisioning apart from a\nfirst one — the same job [`InterruptedReason`] does for a\nreclamation."
+                            }
+                          ]
                         }
                       }
                     }
@@ -4587,6 +4631,17 @@
                             "null"
                           ],
                           "description": "Why the session is [`SessionState::Failed`], in the provider's own\nwords where it has any.\n\n`None` for every other state. A failed session that could not say\nwhy would leave the user with a dead session and no idea whether to\nretry it, pick another region, or ask for a quota increase."
+                        },
+                        "usage_limit": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "$ref": "#/components/schemas/UsageLimitPause",
+                              "description": "What a session waiting out a harness usage limit is waiting for.\n\n`Some` exactly while\n[`paused_reason`](SessionSummary::paused_reason) is\n[`PausedReason::UsageLimit`], and on the detail rather than the\nsummary because this is the page's story and not the rail's dot: a\nlist row says the session is waiting, and the page says which window,\nuntil when, and whether the machine is still costing anything.\n\nIt outlives the [`Paused`](SessionState::Paused) state on purpose.\nThe wake runs through [`Provisioning`](SessionState::Provisioning),\nand this is the only thing that tells that provisioning apart from a\nfirst one — the same job [`InterruptedReason`] does for a\nreclamation."
+                            }
+                          ]
                         }
                       }
                     }
@@ -5742,6 +5797,17 @@
                             "null"
                           ],
                           "description": "Why the session is [`SessionState::Failed`], in the provider's own\nwords where it has any.\n\n`None` for every other state. A failed session that could not say\nwhy would leave the user with a dead session and no idea whether to\nretry it, pick another region, or ask for a quota increase."
+                        },
+                        "usage_limit": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "$ref": "#/components/schemas/UsageLimitPause",
+                              "description": "What a session waiting out a harness usage limit is waiting for.\n\n`Some` exactly while\n[`paused_reason`](SessionSummary::paused_reason) is\n[`PausedReason::UsageLimit`], and on the detail rather than the\nsummary because this is the page's story and not the rail's dot: a\nlist row says the session is waiting, and the page says which window,\nuntil when, and whether the machine is still costing anything.\n\nIt outlives the [`Paused`](SessionState::Paused) state on purpose.\nThe wake runs through [`Provisioning`](SessionState::Provisioning),\nand this is the only thing that tells that provisioning apart from a\nfirst one — the same job [`InterruptedReason`] does for a\nreclamation."
+                            }
+                          ]
                         }
                       }
                     }
@@ -6131,6 +6197,49 @@
         "responses": {
           "204": {
             "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/usage-limit": {
+      "post": {
+        "summary": "Records that this session's harness has run out of plan, and stops the session until the window turns over.",
+        "description": "Records that this session's harness has run out of plan, and stops the\nsession until the window turns over.\n\nThe one thing a daemon reports that stops the session rather than\ndescribing it: the harness has refused a turn because a rolling window of\nthe account's plan is spent, and there is nothing to do until it resets.\nThe machine is released so the wait costs nothing and started again ten\nminutes before the reset, and the conversation is picked back up on the\nuser's behalf — see [`crate::usage_limits`] for the whole sequence.\n\nA route of its own rather than a flag on [`report_usage`] beside it,\nbecause the two are read by different things and filed at different\ntimes: a usage snapshot fills the rings and is filed after every turn,\nand this pauses a session and is filed once per limit.\n\nAnswers `202`: the pause is durable when this returns, and the machine\nthe pause is about is released by the minute sweep rather than in this\nrequest.",
+        "operationId": "flyco_api::app::report_usage_limit",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions/{id}/usage-limit`.\n\nThe one fact a session's daemon holds that stops it working: the\nharness refused a turn because a window of the account's plan is spent.\nReported separately from [`ReportUsage`] beside it because the two are\nread by different things — a snapshot fills the rings, and this pauses\nthe session and schedules its return — and because a snapshot is filed\nafter every turn while this is filed once per limit.\n\nThe control plane refuses a window that names no reset: the whole of\nwhat it does with this is stop the machine until a stated instant, and\nthere is nothing to schedule around a limit with no end.",
+                "required": [
+                  "window"
+                ],
+                "properties": {
+                  "window": {
+                    "$ref": "#/components/schemas/UsageWindow",
+                    "description": "The window that struck, as the harness reported it."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
           }
         }
       }
@@ -9240,6 +9349,14 @@
           "windows"
         ]
       },
+      "PausedReason": {
+        "type": "string",
+        "description": "Why a session is [`SessionState::Paused`].\n\nRecorded beside the state for the reason [`InterruptedReason`] is: the\nstate says the session is stopped on purpose, and this says what would\nstart it again. The two answers point the reader at completely different\nthings — a spent budget is a number only the user can raise, and a spent\nplan window is a wait flyco ends by itself — so a single `Paused` pill\ncovering both would send half the people who read it to the wrong\ncontrol (docs/ux.md §6).\n\n`None` is a session the user paused, which is the only pause with no\nmechanism behind it and nothing to say beyond the word.",
+        "enum": [
+          "budget",
+          "usage_limit"
+        ]
+      },
       "Problem": {
         "allOf": [
           {
@@ -10021,6 +10138,17 @@
                   "null"
                 ],
                 "description": "Why the session is [`SessionState::Failed`], in the provider's own\nwords where it has any.\n\n`None` for every other state. A failed session that could not say\nwhy would leave the user with a dead session and no idea whether to\nretry it, pick another region, or ask for a quota increase."
+              },
+              "usage_limit": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/UsageLimitPause",
+                    "description": "What a session waiting out a harness usage limit is waiting for.\n\n`Some` exactly while\n[`paused_reason`](SessionSummary::paused_reason) is\n[`PausedReason::UsageLimit`], and on the detail rather than the\nsummary because this is the page's story and not the rail's dot: a\nlist row says the session is waiting, and the page says which window,\nuntil when, and whether the machine is still costing anything.\n\nIt outlives the [`Paused`](SessionState::Paused) state on purpose.\nThe wake runs through [`Provisioning`](SessionState::Provisioning),\nand this is the only thing that tells that provisioning apart from a\nfirst one — the same job [`InterruptedReason`] does for a\nreclamation."
+                  }
+                ]
               }
             }
           }
@@ -10159,6 +10287,17 @@
           "model": {
             "$ref": "#/components/schemas/ModelChoice",
             "description": "What it runs on, and at what effort.\n\nAlways concrete, never \"whatever the CLI picks\": a session opened\nwithout a model named carries the harness's default resolved at\ncreation, so the header can state the model on every row rather than\nleaving one blank for the sessions nobody chose one for."
+          },
+          "paused_reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PausedReason",
+                "description": "Why the session is [`Paused`](SessionState::Paused).\n\nOn the summary rather than only on [`SessionDetail`] because the\nstatus dot in the rail is drawn from a summary, and a session waiting\nout a plan window is not the same status as one that ran out of money\n(docs/ux.md §6). `None` for every session that is not paused, and for\na pause the user asked for."
+              }
+            ]
           },
           "repo": {
             "$ref": "#/components/schemas/RepoSlug",
@@ -10560,6 +10699,55 @@
           "name": {
             "type": "string",
             "description": "Name the harness announces the server under. Unique per user."
+          }
+        }
+      },
+      "UsageLimitHit": {
+        "type": "object",
+        "description": "Request body of `POST /v1/sessions/{id}/usage-limit`.\n\nThe one fact a session's daemon holds that stops it working: the\nharness refused a turn because a window of the account's plan is spent.\nReported separately from [`ReportUsage`] beside it because the two are\nread by different things — a snapshot fills the rings, and this pauses\nthe session and schedules its return — and because a snapshot is filed\nafter every turn while this is filed once per limit.\n\nThe control plane refuses a window that names no reset: the whole of\nwhat it does with this is stop the machine until a stated instant, and\nthere is nothing to schedule around a limit with no end.",
+        "required": [
+          "window"
+        ],
+        "properties": {
+          "window": {
+            "$ref": "#/components/schemas/UsageWindow",
+            "description": "The window that struck, as the harness reported it."
+          }
+        }
+      },
+      "UsageLimitPause": {
+        "type": "object",
+        "description": "Everything a session paused on a harness usage limit is waiting for.\n\nPresent exactly while [`SessionSummary::paused_reason`] is\n[`PausedReason::UsageLimit`], and cleared when the window turns over and\nthe session is continued.\n\nWhether the machine was released is *derived* from\n[`resume_at_unix`](Self::resume_at_unix) rather than stored beside it:\nthere is a wake to schedule if and only if there is a machine to start,\nso one field answers both questions and they cannot disagree.",
+        "required": [
+          "window",
+          "resets_at_unix"
+        ],
+        "properties": {
+          "queued_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the user typed while the session was waiting, if anything.\n\nThe composer stays usable through a usage-limit pause, and what is\ntyped into it is held here and sent as the continuation instead of\n[`USAGE_LIMIT_CONTINUE_MESSAGE`]. Shown back to the user so the\nmessage they queued is visibly queued rather than apparently lost."
+          },
+          "resets_at_unix": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When that window turns over, seconds since the Unix epoch.",
+            "minimum": 0
+          },
+          "resume_at_unix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When flyco starts the machine again, seconds since the Unix epoch.\n\n`None` for a pause that kept the machine, which is every reset less\nthan [`USAGE_LIMIT_STOP_AFTER_SECS`] away. Present means the machine\nwas released and costs nothing until this instant, which is what the\nsession page states.",
+            "minimum": 0
+          },
+          "window": {
+            "type": "string",
+            "description": "What the window that struck is called, as\n[`UsageWindow::label`](crate::wire::UsageWindow::label) names it —\n`5-hour`, `Weekly (Opus)`.\n\nThe label and not the whole window: the percentages behind the rings\nare the account's and move while this session waits, and a copy\nfrozen at the moment of the pause would be a second answer going\nstale. What the pause is about is *which* window, and that is a name."
           }
         }
       },

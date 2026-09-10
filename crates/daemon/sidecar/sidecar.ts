@@ -199,6 +199,27 @@ interface SdkWindow {
 }
 
 /**
+ * A utilization reading as a whole percentage, where a hundred means a
+ * hundred.
+ *
+ * Rounded *down* below full rather than to the nearest whole number, which is
+ * the one place this matters: flycod reads `used_percent === 100` as the plan
+ * window being spent and pauses the session until it turns over (issue #244).
+ * Ordinary rounding would turn 99.6% into a hundred, and a session stopped
+ * for five hours over a rounding decision is far worse than a ring that reads
+ * 99 when it is nearly full.
+ *
+ * A vendor number at or above a hundred is clamped to a hundred, so the
+ * predicate is exactly "the vendor said the window is spent".
+ */
+function fullOrRoundedDown(utilization: number): number {
+  if (utilization >= 100) {
+    return 100;
+  }
+  return Math.max(0, Math.floor(utilization));
+}
+
+/**
  * One window in this protocol's spelling, or `null` when there is nothing
  * true to say.
  *
@@ -220,7 +241,7 @@ function toUsageWindow(
   return {
     window_minutes: minutes,
     scope,
-    used_percent: Math.min(100, Math.max(0, Math.round(window.utilization))),
+    used_percent: fullOrRoundedDown(window.utilization),
     // `Date.parse` answers NaN for a string it cannot read. A reset flyco
     // cannot place in time is no reset at all, and reporting NaN as a
     // timestamp would put "resets in 56 years" under the ring.

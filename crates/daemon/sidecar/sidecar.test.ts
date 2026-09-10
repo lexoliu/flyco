@@ -458,6 +458,30 @@ describe("the plan's usage windows", () => {
     expect(toUsageWindows(usage)).toEqual([]);
   });
 
+  test("a window is only reported full when the vendor says it is full", () => {
+    // `used_percent === 100` is what pauses a session for hours (issue #244),
+    // so a nearly-spent window must not round up into a spent one.
+    const usage = recorded();
+    usage.rate_limits = {
+      ...usage.rate_limits,
+      five_hour: { utilization: 99.6, resets_at: "2026-09-10T01:00:00.000Z" },
+    };
+    expect(toUsageWindows(usage)[0]?.used_percent).toBe(99);
+
+    usage.rate_limits = {
+      ...usage.rate_limits,
+      five_hour: { utilization: 100, resets_at: "2026-09-10T01:00:00.000Z" },
+    };
+    expect(toUsageWindows(usage)[0]?.used_percent).toBe(100);
+
+    // A vendor number past full is still exactly full.
+    usage.rate_limits = {
+      ...usage.rate_limits,
+      five_hour: { utilization: 103.2, resets_at: "2026-09-10T01:00:00.000Z" },
+    };
+    expect(toUsageWindows(usage)[0]?.used_percent).toBe(100);
+  });
+
   test("a reset flyco cannot place in time is reported as no reset", () => {
     const usage = recorded();
     usage.rate_limits = {

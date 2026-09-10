@@ -140,32 +140,62 @@ describe("foldTranscript notices", () => {
     });
   });
 
-  it("says how long a usage limit lasts before saying when it ends", () => {
-    // How long the wait is decides whether to stay on the page; the clock
-    // time is for whoever wants to come back at it (issue #136). Both are
+  it("names the window, then how long it lasts, then when it ends", () => {
+    // Which window it was comes first — a five-hour limit and a weekly one
+    // are the same event with different consequences — then how long the
+    // wait is, which decides whether to stay on the page, then the clock
+    // time for whoever wants to come back at it (issue #136). The wait is
     // measured from the moment the limit was announced, so the sentence
     // still says what the user was told when it is read back tomorrow.
     const [known] = foldTranscript([
-      at(0, { type: "harness", event: { type: "usage_limited", resets_at_unix: T0 + 5_400 } }),
+      at(0, {
+        type: "harness",
+        event: {
+          type: "usage_limited",
+          window: {
+            label: "5-hour",
+            used_percent: 100,
+            window_minutes: 300,
+            resets_at_unix: T0 + 5_400,
+          },
+        },
+      }),
     ]);
     expect(known).toMatchObject({ kind: "notice", tone: "warning" });
-    expect((known as { text: string }).text).toContain(
-      `continues by itself in 1h 30m (${formatTimeOfDay(T0 + 5_400)}).`,
+    expect((known as { text: string }).text).toBe(
+      `The 5-hour usage limit is spent. Flyco continues the session in 1h 30m (${formatTimeOfDay(T0 + 5_400)}).`,
     );
     expect((known as { text: string }).text).not.toContain(":00:00");
 
     const [unknown] = foldTranscript([
-      at(0, { type: "harness", event: { type: "usage_limited", resets_at_unix: null } }),
+      at(0, {
+        type: "harness",
+        event: {
+          type: "usage_limited",
+          window: { label: "Weekly", used_percent: 100, window_minutes: 10_080 },
+        },
+      }),
     ]);
     expect((unknown as { text: string }).text).toContain("waits for the account's limit to reset");
   });
 
   it("drops the countdown on a limit that had already reset when it was announced", () => {
     const [notice] = foldTranscript([
-      at(0, { type: "harness", event: { type: "usage_limited", resets_at_unix: T0 - 60 } }),
+      at(0, {
+        type: "harness",
+        event: {
+          type: "usage_limited",
+          window: {
+            label: "Weekly",
+            used_percent: 100,
+            window_minutes: 10_080,
+            resets_at_unix: T0 - 60,
+          },
+        },
+      }),
     ]);
     expect((notice as { text: string }).text).toBe(
-      `Usage limit reached. The agent continues by itself at ${formatTimeOfDay(T0 - 60)}.`,
+      `The Weekly usage limit is spent. Flyco continues the session at ${formatTimeOfDay(T0 - 60)}.`,
     );
   });
 
@@ -306,7 +336,7 @@ describe("foldTranscript approvals", () => {
 
   it("puts an approval inline, where it happened", () => {
     const items = foldTranscript([
-      at(0, { type: "user_message", text: "clean the build" }),
+      at(0, { type: "user_message", text: "clean the build", origin: "user" }),
       at(1, asked),
     ]);
     expect(items.map((item) => item.kind)).toEqual(["user_message", "approval"]);
@@ -367,7 +397,7 @@ describe("foldTranscript provisioning timeline", () => {
     const items = foldTranscript([
       at(100, { type: "provisioning_stage", stage: "reserving", at_unix: T0 }),
       at(101, { type: "provisioning_stage", stage: "ready", at_unix: T0 + 210 }),
-      at(102, { type: "user_message", text: "audit the relay" }),
+      at(102, { type: "user_message", text: "audit the relay", origin: "user" }),
       at(103, { type: "spot_notice", seconds_remaining: 30 }),
       at(104, { type: "provisioning_stage", stage: "reserving", at_unix: T0 + 900 }),
       at(105, { type: "provisioning_stage", stage: "booting", at_unix: T0 + 930 }),
@@ -461,7 +491,7 @@ describe("foldTranscript provisioning timeline", () => {
   it("keeps the timeline where provisioning happened, above the conversation", () => {
     const items = foldTranscript([
       at(0, { type: "provisioning_stage", stage: "reserving", at_unix: T0 }),
-      at(1, { type: "user_message", text: "audit the relay" }),
+      at(1, { type: "user_message", text: "audit the relay", origin: "user" }),
       at(2, { type: "provisioning_stage", stage: "ready", at_unix: T0 + 200 }),
     ]);
     expect(items.map((item) => item.kind)).toEqual(["provisioning", "user_message"]);

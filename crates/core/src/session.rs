@@ -76,6 +76,14 @@ impl SessionState {
     /// [`Failed`](Self::Failed) both releases the machine and carries the
     /// sentence explaining it.
     ///
+    /// `Paused -> Provisioning` is what a usage-limit pause needs: the
+    /// session's machine was released to cost nothing until the plan's
+    /// window turns over, and ten minutes before it does flyco starts that
+    /// machine again on its own disk. The session is genuinely provisioning
+    /// while that happens — its daemon is not connected — and the move back
+    /// to [`Active`](Self::Active) is the ordinary one every provisioning
+    /// session makes when its daemon reaches the control plane.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionTransitionError`] when the move is not part of the
@@ -86,16 +94,16 @@ impl SessionState {
             (
                 Self::Provisioning,
                 Self::Active | Self::Archived | Self::Failed
-            ) | (Self::Paused, Self::Active | Self::Archived)
-                | (
-                    Self::Active,
-                    Self::Paused | Self::Interrupted | Self::Archived | Self::Failed
-                )
-                | (
-                    Self::Interrupted,
-                    Self::Provisioning | Self::Archived | Self::Failed
-                )
-                | (Self::Failed, Self::Provisioning | Self::Archived)
+            ) | (
+                Self::Paused,
+                Self::Active | Self::Archived | Self::Provisioning
+            ) | (
+                Self::Active,
+                Self::Paused | Self::Interrupted | Self::Archived | Self::Failed
+            ) | (
+                Self::Interrupted,
+                Self::Provisioning | Self::Archived | Self::Failed
+            ) | (Self::Failed, Self::Provisioning | Self::Archived)
                 | (Self::Archived, Self::Provisioning)
         );
         if allowed {
@@ -140,6 +148,139 @@ pub enum InterruptedReason {
     /// configured to stop the machine rather than delete it — so the
     /// session is put back on the same disk rather than rebuilt.
     SpotReclaimed,
+}
+
+/// Why a session is [`SessionState::Paused`].
+///
+/// Recorded beside the state for the reason [`InterruptedReason`] is: the
+/// state says the session is stopped on purpose, and this says what would
+/// start it again. The two answers point the reader at completely different
+/// things — a spent budget is a number only the user can raise, and a spent
+/// plan window is a wait flyco ends by itself — so a single `Paused` pill
+/// covering both would send half the people who read it to the wrong
+/// control (docs/ux.md §6).
+///
+/// `None` is a session the user paused, which is the only pause with no
+/// mechanism behind it and nothing to say beyond the word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
+pub enum PausedReason {
+    /// The session's compute budget is spent, and only a higher limit
+    /// releases it.
+    Budget,
+    /// A window of the harness account's plan is spent.
+    ///
+    /// Flyco ends this pause itself: the window turns over at a stated
+    /// instant, and [`UsageLimitPause`] carries everything the wait is
+    /// scheduled around.
+    UsageLimit,
+}
+
+/// How far ahead of a window's reset a stopped session's machine is
+/// started again.
+///
+/// Ten minutes, which is longer than any provision flyco has measured from
+/// a kept disk and short enough that the user is not paying for an idle
+/// machine: the point is that the agent is *already up* when the window
+/// turns over, so the first thing that happens at the reset is a turn and
+/// not a boot.
+pub const USAGE_LIMIT_WAKE_LEAD_SECS: u64 = 10 * 60;
+
+/// How close a reset has to be for the session to keep its machine.
+///
+/// Below this the machine stays up and the session simply waits: stopping
+/// and starting a machine costs minutes at both ends and a provider bills a
+/// stopped disk anyway, so releasing compute for less than half an hour
+/// buys the user a slower resume and almost no money. Above it the machine
+/// is released, because a weekly window can be days out and a session must
+/// not sit on paid compute doing nothing for days.
+pub const USAGE_LIMIT_STOP_AFTER_SECS: u64 = 30 * 60;
+
+/// What flyco says on the user's behalf when the window turns over.
+///
+/// Deliberately a plain instruction and not an explanation: the agent is
+/// being asked to pick up the task it was working on, and a sentence about
+/// rate limits would be context it has to reason about first. Used unless
+/// the user typed something into the composer while the session was
+/// waiting, in which case what they typed is sent instead — they had
+/// something to say, and saying it is a better continuation than a canned
+/// nudge.
+pub const USAGE_LIMIT_CONTINUE_MESSAGE: &str = "usage limit reset, please continue";
+
+/// Everything a session paused on a harness usage limit is waiting for.
+///
+/// Present exactly while [`SessionSummary::paused_reason`] is
+/// [`PausedReason::UsageLimit`], and cleared when the window turns over and
+/// the session is continued.
+///
+/// Whether the machine was released is *derived* from
+/// [`resume_at_unix`](Self::resume_at_unix) rather than stored beside it:
+/// there is a wake to schedule if and only if there is a machine to start,
+/// so one field answers both questions and they cannot disagree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct UsageLimitPause {
+    /// What the window that struck is called, as
+    /// [`UsageWindow::label`](crate::wire::UsageWindow::label) names it —
+    /// `5-hour`, `Weekly (Opus)`.
+    ///
+    /// The label and not the whole window: the percentages behind the rings
+    /// are the account's and move while this session waits, and a copy
+    /// frozen at the moment of the pause would be a second answer going
+    /// stale. What the pause is about is *which* window, and that is a name.
+    pub window: String,
+    /// When that window turns over, seconds since the Unix epoch.
+    pub resets_at_unix: u64,
+    /// When flyco starts the machine again, seconds since the Unix epoch.
+    ///
+    /// `None` for a pause that kept the machine, which is every reset less
+    /// than [`USAGE_LIMIT_STOP_AFTER_SECS`] away. Present means the machine
+    /// was released and costs nothing until this instant, which is what the
+    /// session page states.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_at_unix: Option<u64>,
+    /// What the user typed while the session was waiting, if anything.
+    ///
+    /// The composer stays usable through a usage-limit pause, and what is
+    /// typed into it is held here and sent as the continuation instead of
+    /// [`USAGE_LIMIT_CONTINUE_MESSAGE`]. Shown back to the user so the
+    /// message they queued is visibly queued rather than apparently lost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_message: Option<String>,
+}
+
+impl UsageLimitPause {
+    /// The pause a limit reported at `now` calls for.
+    ///
+    /// The one place the two shapes of pause are decided, so the sweep that
+    /// ends one and the handler that begins it cannot disagree about which
+    /// it is looking at: a reset more than [`USAGE_LIMIT_STOP_AFTER_SECS`]
+    /// away releases the machine and books a wake, and a nearer one keeps
+    /// it.
+    #[must_use]
+    pub fn beginning(window: String, resets_at_unix: u64, now_unix: u64) -> Self {
+        let stop = resets_at_unix.saturating_sub(now_unix) > USAGE_LIMIT_STOP_AFTER_SECS;
+        Self {
+            window,
+            resets_at_unix,
+            resume_at_unix: stop.then(|| resets_at_unix.saturating_sub(USAGE_LIMIT_WAKE_LEAD_SECS)),
+            queued_message: None,
+        }
+    }
+
+    /// Whether this pause released the session's compute.
+    #[must_use]
+    pub const fn machine_stopped(&self) -> bool {
+        self.resume_at_unix.is_some()
+    }
+
+    /// What to say to the agent when the window turns over.
+    #[must_use]
+    pub fn continuation(&self) -> &str {
+        self.queued_message
+            .as_deref()
+            .unwrap_or(USAGE_LIMIT_CONTINUE_MESSAGE)
+    }
 }
 
 /// What a session is doing right now, as the home list reads it.
@@ -438,6 +579,15 @@ pub struct SessionSummary {
     /// provisioning it is watching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interrupted_reason: Option<InterruptedReason>,
+    /// Why the session is [`Paused`](SessionState::Paused).
+    ///
+    /// On the summary rather than only on [`SessionDetail`] because the
+    /// status dot in the rail is drawn from a summary, and a session waiting
+    /// out a plan window is not the same status as one that ran out of money
+    /// (docs/ux.md §6). `None` for every session that is not paused, and for
+    /// a pause the user asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_reason: Option<PausedReason>,
     /// When it was created, seconds since the Unix epoch.
     pub created_at_unix: u64,
     /// Last time anything happened on it, seconds since the Unix epoch.
@@ -466,6 +616,22 @@ pub struct SessionDetail {
     /// why would leave the user with a dead session and no idea whether to
     /// retry it, pick another region, or ask for a quota increase.
     pub failure: Option<String>,
+    /// What a session waiting out a harness usage limit is waiting for.
+    ///
+    /// `Some` exactly while
+    /// [`paused_reason`](SessionSummary::paused_reason) is
+    /// [`PausedReason::UsageLimit`], and on the detail rather than the
+    /// summary because this is the page's story and not the rail's dot: a
+    /// list row says the session is waiting, and the page says which window,
+    /// until when, and whether the machine is still costing anything.
+    ///
+    /// It outlives the [`Paused`](SessionState::Paused) state on purpose.
+    /// The wake runs through [`Provisioning`](SessionState::Provisioning),
+    /// and this is the only thing that tells that provisioning apart from a
+    /// first one — the same job [`InterruptedReason`] does for a
+    /// reclamation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limit: Option<UsageLimitPause>,
 }
 
 /// What `GET /v1/sessions/{id}/harness-session` answers.
@@ -680,6 +846,7 @@ mod tests {
             state: SessionState::Active,
             activity: SessionActivity::Idle,
             interrupted_reason: None,
+            paused_reason: None,
             created_at_unix: 0,
             last_active_unix: 0,
             model: ModelChoice {
@@ -702,6 +869,22 @@ mod tests {
         );
         let back: SessionSummary = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, reclaimed);
+
+        // The same rule for the other reason a session is not running: an
+        // active row says nothing about why it might have been paused, and a
+        // paused one names the mechanism that will release it.
+        let waiting = SessionSummary {
+            state: SessionState::Paused,
+            interrupted_reason: None,
+            paused_reason: Some(PausedReason::UsageLimit),
+            ..back
+        };
+        let json = serde_json::to_string(&waiting).expect("serialize");
+        assert!(json.contains(r#""paused_reason":"usage_limit""#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<SessionSummary>(&json).expect("deserialize"),
+            waiting
+        );
     }
 
     #[test]
@@ -862,5 +1045,77 @@ mod tests {
                 .transition(SessionState::Active)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_session_waiting_out_a_plan_window_can_be_put_back_on_its_machine() {
+        // The wake ten minutes before the reset starts the machine again,
+        // and the session is provisioning while that happens.
+        assert!(
+            SessionState::Paused
+                .transition(SessionState::Provisioning)
+                .is_ok()
+        );
+    }
+
+    /// A weekly window, far enough out that paying for the machine is not
+    /// on the table.
+    #[test]
+    fn a_reset_days_away_releases_the_machine_and_books_a_wake() {
+        let now = 1_800_000_000;
+        let resets = now + 3 * 24 * 60 * 60;
+        let pause = UsageLimitPause::beginning("Weekly".to_owned(), resets, now);
+
+        assert!(pause.machine_stopped());
+        assert_eq!(
+            pause.resume_at_unix,
+            Some(resets - USAGE_LIMIT_WAKE_LEAD_SECS)
+        );
+        assert_eq!(pause.continuation(), USAGE_LIMIT_CONTINUE_MESSAGE);
+    }
+
+    #[test]
+    fn a_reset_within_half_an_hour_keeps_the_machine_and_books_nothing() {
+        let now = 1_800_000_000;
+        let pause = UsageLimitPause::beginning("5-hour".to_owned(), now + 12 * 60, now);
+
+        assert!(!pause.machine_stopped());
+        assert!(
+            pause.resume_at_unix.is_none(),
+            "there is no machine to start, so there is nothing to wake for"
+        );
+    }
+
+    #[test]
+    fn exactly_the_threshold_keeps_the_machine() {
+        // The boundary is stated once, and `>` is what makes "less than
+        // half an hour" and "half an hour" both keep the machine: below the
+        // threshold the stop buys nothing, and at it, nothing either.
+        let now = 1_800_000_000;
+        let pause =
+            UsageLimitPause::beginning("5-hour".to_owned(), now + USAGE_LIMIT_STOP_AFTER_SECS, now);
+        assert!(!pause.machine_stopped());
+    }
+
+    #[test]
+    fn what_the_user_typed_while_waiting_is_what_gets_sent() {
+        let now = 1_800_000_000;
+        let mut pause = UsageLimitPause::beginning("Weekly".to_owned(), now + 86_400, now);
+        pause.queued_message = Some("carry on with the migration".to_owned());
+        assert_eq!(pause.continuation(), "carry on with the migration");
+    }
+
+    #[test]
+    fn a_pause_that_kept_its_machine_serializes_without_the_fields_it_has_no_answer_for() {
+        let now = 1_800_000_000;
+        let json = serde_json::to_value(UsageLimitPause::beginning(
+            "5-hour".to_owned(),
+            now + 600,
+            now,
+        ))
+        .expect("serialize");
+        assert!(json.get("resume_at_unix").is_none());
+        assert!(json.get("queued_message").is_none());
+        assert_eq!(json["window"], "5-hour");
     }
 }

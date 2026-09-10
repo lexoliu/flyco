@@ -159,13 +159,16 @@ pub enum ProvisioningJob {
         machine: MachineId,
         /// Which attempt this is, counting from one.
         attempt: u32,
-        /// When the provider announced the reclamation.
+        /// Why the session is off its machine, which is everything the
+        /// recovery does differently between the two.
+        cause: RecoveryCause,
+        /// When the session came off its machine.
         ///
-        /// Carried rather than read from the clock so the ledger entry this
-        /// job writes is the same entry on every redelivery: an
-        /// at-least-once queue delivers a recovery twice, and the second
-        /// delivery must not bill the replacement a second time.
-        reclaimed_at_unix: u64,
+        /// Carried rather than read from the clock so that whatever this job
+        /// writes is the same on every redelivery: an at-least-once queue
+        /// delivers a recovery twice, and the second delivery must not bill
+        /// a replacement a second time.
+        since_unix: u64,
     },
     /// Read one linked account's catalog into the cache.
     ///
@@ -194,6 +197,47 @@ pub enum ProvisioningJob {
         /// The provider-native region this message covers.
         region: String,
     },
+}
+
+/// Why a session is off the machine a recovery is putting it back on.
+///
+/// The two ways a session comes off a machine it still owns are a provider
+/// taking its spot capacity and flyco releasing it to wait out a spent
+/// harness plan window. *Starting the machine again is the same operation
+/// for both* — same row, same disk, same provider-native names — so they
+/// share the job and this is the whole of what differs: what the recovery
+/// bills, and what it says to the agent when it lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryCause {
+    /// The provider reclaimed the session's interruptible capacity.
+    ///
+    /// The gap is billed as a named zero-amount ledger entry and the agent
+    /// is told its machine was replaced, because from the conversation's
+    /// point of view something happened *to* it that it did not ask for.
+    SpotReclaimed,
+    /// The session released its own machine to wait out a spent plan
+    /// window, and the window is about to turn over (issue #244).
+    ///
+    /// Nothing is billed — there is no replacement, the session simply
+    /// stopped paying for a while — and nothing is said to the agent here.
+    /// What it hears is the continuation [`crate::usage_limits`] sends when
+    /// the window actually resets, which is a minute or ten later and is the
+    /// message that matters.
+    UsageLimit,
+}
+
+/// Why a session is off its machine, and since when.
+///
+/// One argument rather than two, because they are one fact and every use
+/// reads them together: what the recovery bills is decided by the cause, and
+/// the instant it bills *from* is the same instant the cause names.
+#[derive(Debug, Clone, Copy)]
+struct Interruption {
+    /// What took the session off its machine.
+    cause: RecoveryCause,
+    /// When that happened, seconds since the Unix epoch.
+    since_unix: u64,
 }
 
 impl ProvisioningJob {
@@ -229,7 +273,26 @@ impl ProvisioningJob {
             session,
             machine,
             attempt: 1,
-            reclaimed_at_unix,
+            cause: RecoveryCause::SpotReclaimed,
+            since_unix: reclaimed_at_unix,
+        }
+    }
+
+    /// The first attempt at starting a machine a session released itself to
+    /// wait out a spent harness plan window (issue #244).
+    ///
+    /// The same operation as a recovery from a reclamation — start this
+    /// machine, on this disk — and it goes through the same job for that
+    /// reason. What differs is only what the recovery says about itself, and
+    /// [`RecoveryCause`] is the whole of that difference.
+    #[must_use]
+    pub const fn waking(session: SessionId, machine: MachineId, at_unix: u64) -> Self {
+        Self::Recover {
+            session,
+            machine,
+            attempt: 1,
+            cause: RecoveryCause::UsageLimit,
+            since_unix: at_unix,
         }
     }
 
@@ -298,12 +361,14 @@ impl ProvisioningJob {
                 session,
                 machine,
                 attempt,
-                reclaimed_at_unix,
+                cause,
+                since_unix,
             } => Self::Recover {
                 session,
                 machine,
                 attempt: attempt.saturating_add(1),
-                reclaimed_at_unix,
+                cause,
+                since_unix,
             },
             // A catalog refresh has no attempt to raise: nothing retries it
             // here, and asking for it again is the scheduled sweep's job.
@@ -477,7 +542,8 @@ async fn perform(
         ProvisioningJob::Recover {
             session,
             machine,
-            reclaimed_at_unix,
+            cause,
+            since_unix,
             ..
         } => match recover(
             db,
@@ -486,7 +552,7 @@ async fn perform(
             clients,
             session,
             machine,
-            reclaimed_at_unix,
+            Interruption { cause, since_unix },
         )
         .await
         {
@@ -989,7 +1055,7 @@ async fn recover(
     clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
     session: SessionId,
     machine: MachineId,
-    reclaimed_at_unix: u64,
+    interruption: Interruption,
 ) -> Result<Recovered, Provisioned> {
     let Some(target) = sessions::provisioning_target(db, session)
         .await
@@ -1038,11 +1104,31 @@ async fn recover(
         .map_err(|error| classify(&error))?;
     announce(db, rooms, session, ProvisioningStage::Booting).await;
 
+    // Everything from here is about a *reclamation*, and a session waking to
+    // meet its plan window's reset is not one: nothing was replaced, nobody
+    // is being billed twice, and the agent's next message is the
+    // continuation `crate::usage_limits` sends at the reset itself.
+    if interruption.cause == RecoveryCause::UsageLimit {
+        tracing::info!(
+            %session,
+            machine = %row.id,
+            state = ?started.state,
+            "started a waiting session's machine ahead of its plan window reset"
+        );
+        return Ok(Recovered::Ran);
+    }
+
     // The gap is what the user is being asked to pay for twice, so it is
     // named in the ledger rather than folded into the next metering window.
-    budgets::record_replacement(db, session, machine, reclaimed_at_unix, &row.machine_type())
-        .await
-        .map_err(Provisioned::from)?;
+    budgets::record_replacement(
+        db,
+        session,
+        machine,
+        interruption.since_unix,
+        &row.machine_type(),
+    )
+    .await
+    .map_err(Provisioned::from)?;
 
     // Last, and only after the machine is on its way back: the agent is
     // told in the conversation, and the room holds the message until the
@@ -1057,6 +1143,9 @@ async fn recover(
             session,
             &ControlToDaemon::UserMessage {
                 text: notice.trim_end().to_owned(),
+                // Flyco speaking: the machine was replaced under the agent,
+                // which is not something the user said.
+                origin: flyco_core::MessageOrigin::Flyco,
             },
         )
         .await

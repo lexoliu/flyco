@@ -588,6 +588,7 @@ async fn a_user_message_is_forwarded_to_the_daemon_and_echoed_to_browsers() {
     let text = "what does this crate do?";
     let command = ControlToDaemon::UserMessage {
         text: text.to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     };
     room.deliver_json(Which::Client, &command).await;
 
@@ -598,7 +599,8 @@ async fn a_user_message_is_forwarded_to_the_daemon_and_echoed_to_browsers() {
         room.drain(),
         vec![
             to_client(&ClientEvent::UserMessage {
-                text: text.to_owned()
+                text: text.to_owned(),
+                origin: flyco_core::MessageOrigin::User,
             }),
             to_daemon(&command),
         ]
@@ -612,7 +614,8 @@ async fn a_user_message_is_forwarded_to_the_daemon_and_echoed_to_browsers() {
             .collect::<Vec<_>>(),
         vec![
             serde_json::to_value(ClientEvent::UserMessage {
-                text: text.to_owned()
+                text: text.to_owned(),
+                origin: flyco_core::MessageOrigin::User,
             })
             .expect("serialize")
         ],
@@ -777,6 +780,7 @@ async fn every_command_a_client_may_send_is_forwarded() {
     for command in [
         ControlToDaemon::UserMessage {
             text: "go".to_owned(),
+            origin: flyco_core::MessageOrigin::User,
         },
         ControlToDaemon::Interrupt,
         ControlToDaemon::Compact,
@@ -868,6 +872,7 @@ async fn a_message_forwarded_from_the_worker_is_recorded_like_any_other() {
     let text = "keep going";
     let command = ControlToDaemon::UserMessage {
         text: text.to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     };
     let (status, _) = room
         .call(
@@ -880,6 +885,7 @@ async fn a_message_forwarded_from_the_worker_is_recorded_like_any_other() {
 
     let echo = ClientEvent::UserMessage {
         text: text.to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     };
     assert_eq!(room.drain(), vec![to_client(&echo), to_daemon(&command)]);
     assert_eq!(
@@ -1311,6 +1317,7 @@ async fn a_message_sent_before_the_daemon_arrives_is_delivered_on_its_hello() {
     // Worker while the machine is still being provisioned.
     let command = ControlToDaemon::UserMessage {
         text: "add a test for the mailbox".to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     };
     let (status, _) = room
         .call(
@@ -1324,6 +1331,7 @@ async fn a_message_sent_before_the_daemon_arrives_is_delivered_on_its_hello() {
         room.drain(),
         vec![to_client(&ClientEvent::UserMessage {
             text: "add a test for the mailbox".to_owned(),
+            origin: flyco_core::MessageOrigin::User,
         })],
         "browsers see it immediately; the daemon is not there to see anything"
     );
@@ -1352,6 +1360,7 @@ async fn messages_held_for_a_daemon_are_replayed_in_the_order_they_were_written(
                 Some(
                     serde_json::to_vec(&ControlToDaemon::UserMessage {
                         text: text.to_owned(),
+                        origin: flyco_core::MessageOrigin::User,
                     })
                     .expect("serialize"),
                 ),
@@ -1366,6 +1375,7 @@ async fn messages_held_for_a_daemon_are_replayed_in_the_order_they_were_written(
         .chain(["first", "second", "third"].into_iter().map(|text| {
             to_daemon(&ControlToDaemon::UserMessage {
                 text: text.to_owned(),
+                origin: flyco_core::MessageOrigin::User,
             })
         }))
         .chain(core::iter::once(attached()))
@@ -1384,6 +1394,7 @@ async fn a_message_sent_while_the_daemon_is_connected_is_not_replayed_later() {
 
     let command = ControlToDaemon::UserMessage {
         text: "keep going".to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     };
     room.deliver_json(Which::Client, &command).await;
     room.drain();

@@ -269,3 +269,32 @@ describe("Transcript approval card", () => {
     expect(card.querySelector("dl")).toBeNull();
   });
 });
+
+describe("Transcript user messages", () => {
+  /** One message in the conversation, from whoever wrote it. */
+  function said(origin: "user" | "flyco"): TranscriptItem {
+    return {
+      kind: "user_message",
+      key: "user-0",
+      text: "usage limit reset, please continue",
+      atUnix: T0,
+      origin,
+    };
+  }
+
+  it("marks the message flyco sent on the user's behalf", () => {
+    // The continuation sent when a plan window turns over belongs in the
+    // user's half of the conversation, because that is what it is — but a
+    // reader coming back to a session that carried on overnight has to be
+    // able to tell it from a sentence they typed themselves.
+    const { getByText } = show(said("flyco"));
+    expect(getByText("Sent by flyco")).toBeInTheDocument();
+    expect(getByText(/usage limit reset/)).toBeInTheDocument();
+  });
+
+  it("says nothing about the author of a message the user typed", () => {
+    const { queryByText, getByText } = show(said("user"));
+    expect(queryByText("Sent by flyco")).toBeNull();
+    expect(getByText(/usage limit reset/)).toBeInTheDocument();
+  });
+});

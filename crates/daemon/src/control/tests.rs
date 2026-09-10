@@ -219,6 +219,17 @@ impl ControlApi for RecordingApi {
         core::future::ready(recorded)
     }
 
+    fn report_usage_limit(
+        &self,
+        window: &UsageWindow,
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        let recorded = self
+            .calls
+            .send(Call::UsageLimitReported(window.clone()))
+            .map_err(|error| ControlApiError::Transport(error.to_string()));
+        core::future::ready(recorded)
+    }
+
     fn put_workdir_patch(
         &self,
         patch: Vec<u8>,
@@ -986,6 +997,7 @@ async fn user_messages_interrupts_and_compaction_reach_the_harness() {
 
     harness.command(ControlToDaemon::UserMessage {
         text: "what does this crate do?".to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     });
     // The first message carries the machine notice in front of it; every
     // message after it is the user's words alone.
@@ -996,6 +1008,7 @@ async fn user_messages_interrupts_and_compaction_reach_the_harness() {
 
     harness.command(ControlToDaemon::UserMessage {
         text: "and what does it depend on?".to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     });
     assert_eq!(
         harness.next_call().await,
@@ -1115,6 +1128,7 @@ async fn the_agent_is_told_what_machine_it_is_on_before_it_is_given_any_work() {
 
     harness.command(ControlToDaemon::UserMessage {
         text: "port the build to arm64".to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     });
 
     let Call::UserMessage(opening) = harness.next_call().await else {
@@ -1225,6 +1239,7 @@ async fn a_harness_that_stops_answering_ends_the_session_instead_of_the_relay() 
 
     harness.command(ControlToDaemon::UserMessage {
         text: "anyone there?".to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     });
 
     let ended = tokio::time::timeout(Duration::from_secs(5), harness.run)
@@ -1471,6 +1486,7 @@ async fn a_budget_pause_interrupts_the_turn_and_stops_accepting_work() {
     // Nothing new is accepted afterwards…
     harness.command(ControlToDaemon::UserMessage {
         text: "keep going".to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     });
     harness.command(ControlToDaemon::TerminalInput {
         data: "ls\n".to_owned(),
@@ -1529,6 +1545,7 @@ async fn a_raised_budget_lifts_the_pause_and_tells_the_agent_to_carry_on() {
     // pause never let one through, so this is still the first.
     harness.command(ControlToDaemon::UserMessage {
         text: "keep going".to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     });
     let Call::UserMessage(resumed) = harness.next_call().await else {
         panic!("a released session must accept a user message");
@@ -1551,6 +1568,7 @@ async fn a_budget_raised_on_a_session_that_never_paused_says_nothing() {
     });
     harness.command(ControlToDaemon::UserMessage {
         text: "carry on".to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     });
     let Call::UserMessage(first) = harness.next_call().await else {
         panic!("the user's message must be the first thing the harness hears");
@@ -1667,6 +1685,7 @@ async fn nothing_opens_a_turn_between_the_notice_and_the_machine_going() {
 
     harness.command(ControlToDaemon::UserMessage {
         text: "carry on".to_owned(),
+        origin: flyco_core::MessageOrigin::User,
     });
     harness.command(ControlToDaemon::Compact);
     // The socket stays open, so the daemon is still there to answer — and
@@ -1892,7 +1911,7 @@ async fn a_turn_whose_harness_priced_nothing_files_nothing() {
     harness
         .emit(SessionOutput::Event {
             event: HarnessEvent::UsageLimited {
-                resets_at_unix: Some(1_800_007_200),
+                window: UsageWindow::new(Some(300), None, 100, Some(1_800_007_200)),
             },
         })
         .await;
@@ -1920,7 +1939,7 @@ async fn a_refused_observation_does_not_stop_the_session() {
     harness
         .emit(SessionOutput::Event {
             event: HarnessEvent::UsageLimited {
-                resets_at_unix: None,
+                window: UsageWindow::new(None, None, 100, None),
             },
         })
         .await;
@@ -1977,15 +1996,54 @@ async fn a_dirty_tree_is_reported_and_keeps_the_agent_awake() {
     harness.archive().await.expect("the run ended cleanly");
 }
 
+/// A limit the harness can place in time is filed with the control plane,
+/// which is what pauses the session and brings it back (issue #244).
+///
+/// The daemon does *not* continue the conversation itself any more. It cannot:
+/// the control plane releases the machine for a wait that can be days long, so
+/// nothing on the machine is running when the window turns over, and the
+/// continuation is the control plane's to send — with whatever the user typed
+/// into the composer while it waited, which the daemon has never seen.
 #[tokio::test]
-async fn a_usage_limit_with_a_reset_time_auto_continues() {
+async fn a_usage_limit_with_a_reset_time_is_filed_with_the_control_plane() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    let window = UsageWindow::new(Some(300), None, 100, Some(1_800_007_200));
+    harness
+        .emit(SessionOutput::Event {
+            event: HarnessEvent::UsageLimited {
+                window: window.clone(),
+            },
+        })
+        .await;
+
+    assert_eq!(harness.next_call().await, Call::UsageLimitReported(window));
+    assert!(matches!(
+        harness.room.next_frame().await,
+        DaemonToControl::Harness {
+            event: HarnessEvent::UsageLimited { .. }
+        }
+    ));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+/// A limit with no reset is announced and nothing more.
+///
+/// Nothing can be scheduled around it — the control plane refuses such a
+/// report outright — so the daemon does not make a call it knows will be
+/// refused. Claude Code's `api_retry` half of the signal is exactly this
+/// shape, and it arrives before the frame that names the window.
+#[tokio::test]
+async fn a_usage_limit_that_names_no_reset_is_not_filed() {
     let mut harness = Harness::start(Greeting::Welcome).await;
     harness.handshake().await;
 
     harness
         .emit(SessionOutput::Event {
             event: HarnessEvent::UsageLimited {
-                resets_at_unix: Some(0),
+                window: UsageWindow::new(None, None, 100, None),
             },
         })
         .await;
@@ -1995,10 +2053,24 @@ async fn a_usage_limit_with_a_reset_time_auto_continues() {
             event: HarnessEvent::UsageLimited { .. }
         }
     ));
-    assert!(matches!(
-        harness.next_call().await,
-        Call::UserMessage(text) if text.starts_with("[flyco usage notice]")
-    ));
+
+    // A message after it proves nothing was queued for the harness in
+    // between: the next thing the fake session is told is that message — with
+    // the opening machine notice ahead of it, which is the first user message
+    // of every session — and not a canned continuation.
+    harness
+        .room
+        .directives
+        .send(Directive::Send(ControlToDaemon::UserMessage {
+            text: "carry on".to_owned(),
+            origin: flyco_core::MessageOrigin::User,
+        }))
+        .expect("the room is live");
+    let Call::UserMessage(said) = harness.next_call().await else {
+        panic!("a user message must reach the harness as one");
+    };
+    assert!(said.starts_with("[flyco machine notice]"));
+    assert!(said.ends_with("carry on"));
 
     harness.archive().await.expect("the run ended cleanly");
 }
@@ -2271,6 +2343,15 @@ mod remote_store {
         ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
             core::future::ready(Err(ControlApiError::Transport(
                 "the transcript store reports no usage snapshots".to_owned(),
+            )))
+        }
+
+        fn report_usage_limit(
+            &self,
+            _window: &UsageWindow,
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            core::future::ready(Err(ControlApiError::Transport(
+                "the transcript store reports no usage limits".to_owned(),
             )))
         }
 

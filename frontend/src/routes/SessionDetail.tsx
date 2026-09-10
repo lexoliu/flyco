@@ -56,6 +56,7 @@ import { ApiProblem } from "../api/problem";
 import type { UsageWindow } from "../api/wire";
 import { createSessionRelay } from "../api/relay";
 import type { HarnessCommand } from "../api/wire";
+import { formatTimeOfDay } from "../lib/dates";
 import { PROVIDER_LABEL } from "../lib/providers";
 import { machineChip } from "../lib/machines";
 import { orderedWindows, resetHint } from "../lib/planUsage";
@@ -325,7 +326,28 @@ export default function SessionDetail() {
       : sessionNotice(view, {
           failure: session()?.failure,
           budgetLimit: session()?.budget.limit,
+          usageLimit: session()?.usage_limit,
+          now: now(),
         });
+  });
+
+  /**
+   * What the composer says about a message it will not deliver yet.
+   *
+   * Only the plan wait has anything to say: every other state that holds a
+   * message — a machine still being built, a daemon reconnecting — delivers
+   * it within the minute, and a line about it would be chrome that appears
+   * and disappears. This wait is measured in hours, so the field says where
+   * the message goes before it is typed rather than after it is sent.
+   */
+  const deferredNote = createMemo(() => {
+    if (status()?.status !== "usage_limit") {
+      return undefined;
+    }
+    const resets = session()?.usage_limit?.resets_at_unix;
+    return resets === undefined
+      ? "Sent when the plan's window resets"
+      : `Sent when the window resets, at ${formatTimeOfDay(resets)}`;
   });
 
   /**
@@ -363,13 +385,25 @@ export default function SessionDetail() {
    * src/api/client.ts.
    */
   async function overRelay(live: () => void, rest: () => Promise<void>): Promise<void> {
-    setError(null);
-    try {
+    await attempt(async () => {
       if (relay.state() === "live") {
         live();
       } else {
         await rest();
       }
+    });
+  }
+
+  /**
+   * Runs one control, showing whatever it throws instead of losing it.
+   *
+   * Split out of {@link overRelay} for the one control that must not take
+   * the socket even when the socket is there: see {@link onSend}.
+   */
+  async function attempt(action: () => Promise<void>): Promise<void> {
+    setError(null);
+    try {
+      await action();
     } catch (failure) {
       setError(failure);
     }
@@ -389,6 +423,17 @@ export default function SessionDetail() {
   function onSend(text: string): void {
     const command = shellCommandIn(text);
     if (command === null) {
+      // A session waiting out a plan window goes the REST way even with a
+      // live socket. The room hands a message straight to the daemon, whose
+      // harness would refuse it and burn the turn; the handler holds it
+      // against the pause instead and sends it when the window turns over
+      // (docs/ux.md §9.8). The socket is still open the whole time — a
+      // pause that kept its machine keeps its relay — so "is it live" is
+      // the wrong question here and this is asked first.
+      if (status()?.status === "usage_limit") {
+        void attempt(() => sendMessage(params.id, text));
+        return;
+      }
       void overRelay(
         () => relay.send({ type: "user_message", text }),
         () => sendMessage(params.id, text),
@@ -806,6 +851,7 @@ export default function SessionDetail() {
                 onSend={onSend}
                 onStop={onStop}
                 onCommand={onCommand}
+                deferred={deferredNote()}
                 controls={
                   <>
                     {/*

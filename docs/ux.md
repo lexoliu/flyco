@@ -379,14 +379,19 @@ archived, and the UI ignores it there.
 | Working | `active` and a turn is in flight |
 | Needs input | `active` and (a pending approval exists, or the last turn completed and no user message followed it) |
 | Idle | `active`, no turn in flight, last event is a user message or nothing yet |
-| Paused · budget exhausted | `paused` |
+| Paused · budget exhausted | `paused` and `paused_reason` is `budget` |
+| Waiting on the plan | `paused` and `paused_reason` is `usage_limit`: a harness usage limit is spent and flyco is waiting the window out (§9.8) |
 | Interrupted · spot reclaimed | `interrupted`; the clause is `interrupted_reason` |
 | Migrating · 40s | `provisioning` **and** an `interrupted_reason`: flyco is putting the session back on the disk it never lost. Elapsed since the machine went |
 | Failed | `failed`; the row shows the failure reason |
 | Archived | `archived` |
 
 Amber for `Needs input`, green breathing for `Working`, neutral breathing
-for `Provisioning` and `Migrating`, gray for the rest, red for `Failed`.
+for `Provisioning` and `Migrating`, amber unbreathing for `Waiting on the
+plan`, gray for the rest, red for `Failed`. `Waiting on the plan` is the one
+resting state with a colour, because it is the one that ends by itself: a
+session that will be working again this evening without anyone touching it is
+worth seeing in the corner of the eye.
 
 **Where a status is shown.** The rail's dot (§3) is the only place a
 status is a colour beside a name. The session page has no status pill: a
@@ -403,6 +408,7 @@ happens, and only there:
 | Idle | nothing |
 | Disconnected · machine not reachable | a notice above the composer: the machine dropped off the network, it reconnects on its own, anything sent waits for it |
 | Paused, Interrupted, Failed, Archived | the state notice in the composer's place (§9.1) |
+| Waiting on the plan | the state notice **above** a composer that still works, because a message typed now is worth sending (§9.8) |
 | Reconnecting…, Connecting… | one amber word at the right of the header, only while the browser's own socket is not carrying events |
 
 `interrupted_reason` is cleared when the session's daemon reaches the
@@ -839,6 +845,29 @@ So the daemon keeps the last lines the agent process wrote to its stderr and the
 
 What the control plane does with that sentence depends on whether the session had gone live, which is a fact only it holds. A session still provisioning may yet be saved, because `flycod` is restarted on failure: the reason is recorded and shown only if the machine never does come up. A session that had gone live will not be, because a daemon that reports this exits cleanly and systemd does not restart a clean exit — so the session fails there and then, releases its machine, and reads `Failed` with the sentence. A session whose agent died must never bill for a machine nobody is using.
 
+### 9.8 When the plan's usage limit is hit
+
+A subscription plan stops the agent at a limit, and the limit resets by itself: Claude's five-hour and weekly windows, Codex's primary and secondary ones. A session that dies at a usage limit and a session that waits it out are the same session an hour later, and the difference is whether the user has to be at the keyboard for the turnover. So flyco waits it out for them.
+
+The signal is the harness's own, and both harnesses give it three ways: an explicit rate-limit event (the Claude SDK's `rate_limit_event` with `status: rejected`, Codex's `rateLimitReachedType`), the refusal of the turn that hit it, and a plan window the vendor reports at 100 %. All three become one fact — which window is spent, and when it turns over — because the user is owed the same page whichever way flyco learned it. A limit that names no reset is not waited out: there is nothing to wait for, and the session says so and stops as it always did.
+
+The transcript records it where it happened, naming the window first because a five-hour limit and a weekly one are the same event with wildly different consequences: `The 5-hour usage limit is spent. Flyco continues the session in 1h 30m (7:35 PM).`
+
+Then the session pauses, and what happens to the machine depends on how long the wait is. **More than thirty minutes** and the machine is released: an idle VM for four hours is money for nothing, and the session's disk is untouched by the stop. **Less than thirty minutes** and it is kept, because a stop and a start cost more in provisioning time than the wait saves in cents.
+
+The session page says all of it, above a composer that still works:
+
+> **Waiting on the plan**
+> The 5-hour usage limit on this session's plan is spent. It resets at 7:35 PM, in 4h. The machine is stopped and costs nothing until then; flyco starts it again at 7:25 PM. Flyco then asks the agent to continue on your behalf.
+
+Both the countdown and the clock time, because they answer different questions — the countdown decides whether to wait for it, the clock time decides when to come back — and what the machine is doing, because a user who is not told the machine is off reads the whole wait as money burning.
+
+Ten minutes before the reset flyco starts the machine again, so that the agent is up and ready when the window turns over rather than provisioning through it. At the reset the session is continued: `usage limit reset, please continue`, sent on the user's behalf and marked in the transcript as flyco's, because a reader coming back to a session that carried on overnight has to be able to tell that sentence from one they typed. The session reads `Active` again.
+
+The composer stays open the whole time and says where a message goes: `Sent when the window resets, at 7:35 PM`. What is typed there is held against the pause and sent **instead of** flyco's canned continuation, because a user who has said what to do next has said something better than "please continue". A `!` command is not held — it runs on the machine there and then, whatever the plan's limits are doing — and while the machine is stopped it answers `Offline` as it does in §9.6.
+
+Both ends of the wait are a web push, because the whole point is that the user does not have to sit there: one when the session pauses, saying which window and when it resets, and one when it starts working again.
+
 ## 10. Settings
 
 Left-hand vertical navigation, five sections. Each section is built from
@@ -943,6 +972,26 @@ Pre-1.0, the API changes to fit the product; no compatibility shims.
   `ControlToDaemon` gains the same variant, and it is the one command a
   room holds for a daemon that is not connected: a resize restarts the
   machine, so there is never a daemon listening at the moment it is sent.
+- `POST /v1/sessions/{id}/usage-limit` is how the daemon reports a spent
+  plan window, daemon-scoped like the four routes above and taking
+  `UsageLimitHit { window: UsageWindow }`. It answers `202`, or
+  `422 usage-limit-without-reset` for a window the vendor gave no turnover
+  for — there is nothing to wait for, and the control plane says so rather
+  than inventing a time (§9.8).
+- `SessionSummary` gains `paused_reason: budget | usage_limit`, which is
+  what tells the two pauses apart in a list, and `SessionDetail` gains
+  `usage_limit: UsageLimitPause { window, resets_at_unix, resume_at_unix?,
+  queued_message? }`. `resume_at_unix` is present exactly when the machine
+  was released, so one field answers both "when does flyco start it again"
+  and "is it costing anything".
+- `ClientEvent::UserMessage` and `ControlToDaemon::UserMessage` gain
+  `origin: user | flyco`, so the continuation flyco sends at a reset is
+  marked as flyco's in the transcript. The origin never reaches the
+  harness: a model told that its next instruction was written by a program
+  would reason about the framing instead of the work.
+- `HarnessEvent::UsageLimited` carries the whole `UsageWindow` rather than
+  a bare reset time, because which window is spent is the first thing the
+  notice says.
 
 ## 12. Delivery order
 

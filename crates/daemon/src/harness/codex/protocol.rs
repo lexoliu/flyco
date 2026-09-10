@@ -364,6 +364,7 @@ pub struct RateLimitWindow {
 /// question — what the account *is* rather than what is left of it — and
 /// which neither the composer nor the settings page asks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RateLimitSnapshot {
     /// The shorter window, when the account has one.
     #[serde(default)]
@@ -371,6 +372,48 @@ pub struct RateLimitSnapshot {
     /// The longer window, when the account has one.
     #[serde(default)]
     pub secondary: Option<RateLimitWindow>,
+    /// Why the account is blocked, when the backend says it is.
+    ///
+    /// The app-server's own answer to "is this account out of plan right
+    /// now", and the signal issue #244 pauses a session on. `None` is an
+    /// account that is not blocked — it is `null` on every ordinary read, as
+    /// the recorded fixture below shows.
+    #[serde(default)]
+    pub rate_limit_reached_type: Option<RateLimitReached>,
+}
+
+/// Why the app-server says an account is out of plan.
+///
+/// The five tokens `RateLimitReachedType` declares in the app-server's own
+/// JSON Schema (`codex app-server generate-json-schema`, codex-cli 0.153.4).
+/// They divide into two kinds and flyco treats them differently:
+///
+/// * [`RateLimitReached`](Self::RateLimitReached) is a rolling window being
+///   spent, which turns over at a stated instant. That is a wait flyco can
+///   schedule around, and it is what a usage-limit pause is for.
+/// * The four workspace variants are a workspace's *credits* being gone,
+///   which no window reset fixes — somebody has to buy more. They are read so
+///   they can be told apart from the first, and nothing is paused for them.
+///
+/// `Other` is a token this build has not heard of. Treated as blocked and
+/// never as a rolling window, because a limit flyco cannot classify must not
+/// become a wait for a reset that may never come.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitReached {
+    /// A rolling window of the plan is spent.
+    RateLimitReached,
+    /// The workspace owner is out of credits.
+    WorkspaceOwnerCreditsDepleted,
+    /// A workspace member is out of credits.
+    WorkspaceMemberCreditsDepleted,
+    /// The workspace owner is out of plan.
+    WorkspaceOwnerUsageLimitReached,
+    /// A workspace member is out of plan.
+    WorkspaceMemberUsageLimitReached,
+    /// A reason this build does not model.
+    #[serde(other)]
+    Other,
 }
 
 impl RateLimitSnapshot {
@@ -390,6 +433,15 @@ impl RateLimitSnapshot {
             secondary: match update.secondary {
                 Some(window) => Some(window),
                 None => self.secondary,
+            },
+            // The app-server documents the *nullable account metadata* as
+            // possibly unavailable in a rolling update rather than cleared,
+            // so an absent reason means unchanged here too. A limit that has
+            // ended is reported by the windows dropping below full, which is
+            // what `flyco_core::blocking_window` reads.
+            rate_limit_reached_type: match update.rate_limit_reached_type {
+                Some(reached) => Some(reached),
+                None => self.rate_limit_reached_type,
             },
         }
     }

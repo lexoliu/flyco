@@ -248,9 +248,12 @@ async fn a_failing_check_run_wakes_the_session_on_that_repository(
         .assert_status(204);
 
     let events = recorded(&client, &token, session).await;
-    let [ClientEvent::UserMessage { text }] = events.as_slice() else {
+    let [ClientEvent::UserMessage { text, origin }] = events.as_slice() else {
         panic!("a failing check run must wake the session exactly once: {events:?}");
     };
+    // Flyco's, not the user's: the transcript marks a sentence they never
+    // typed, and a CI notice is one of them.
+    assert_eq!(*origin, flyco_core::MessageOrigin::Flyco);
     assert!(text.contains("[flyco CI notice]"));
     assert!(text.contains(REPO));
     assert!(text.contains("cargo clippy"), "the run's name is named");
@@ -274,9 +277,10 @@ async fn a_failing_workflow_run_wakes_it_the_same_way(
         .assert_status(204);
 
     let events = recorded(&client, &token, session).await;
-    let [ClientEvent::UserMessage { text }] = events.as_slice() else {
+    let [ClientEvent::UserMessage { text, origin }] = events.as_slice() else {
         panic!("a failing workflow run must wake the session exactly once: {events:?}");
     };
+    assert_eq!(*origin, flyco_core::MessageOrigin::Flyco);
     assert!(text.contains("a workflow run"));
     assert!(text.contains("CI"));
 }

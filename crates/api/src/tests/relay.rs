@@ -616,6 +616,7 @@ async fn the_event_tail_is_readable_and_scoped_to_its_owner(ctx: TestContext, kv
         vec![
             serde_json::to_value(flyco_core::ClientEvent::UserMessage {
                 text: PROMPT.to_owned(),
+                origin: flyco_core::MessageOrigin::User,
             })
             .expect("serialize")
         ]

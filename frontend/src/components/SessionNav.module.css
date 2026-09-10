@@ -115,6 +115,14 @@
   background: var(--color-neutral-dot);
 }
 
+/* A session waiting out a plan window. Coloured, unlike the other resting
+   states, because it is the one kind of stop that ends by itself: it is
+   worth seeing in the corner of the eye that a session will be working
+   again this evening without anyone touching it. */
+.dot[data-tone="waiting"] {
+  background: var(--color-warning);
+}
+
 .title {
   min-width: 0;
   overflow: hidden;

@@ -100,6 +100,9 @@ pub enum Call {
     ModelsReported(Vec<flyco_core::ModelOption>),
     /// How much of the plan is spent was filed with the control plane.
     UsageReported(Vec<flyco_core::UsageWindow>),
+    /// A spent plan window was filed with the control plane, which is what
+    /// pauses the session until it turns over (issue #244).
+    UsageLimitReported(flyco_core::UsageWindow),
 }
 
 /// The harness never fails in these tests.

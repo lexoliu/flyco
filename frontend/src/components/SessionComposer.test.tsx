@@ -77,6 +77,35 @@ describe("SessionComposer", () => {
 
     expect(getByText("Runs in the machine's bash")).toBeInTheDocument();
   });
+
+  it("says when a message will be sent while a plan window is being waited out", () => {
+    // The composer stays open through a usage-limit pause and the message
+    // is held until the window turns over, so the field says so before a
+    // word is typed rather than after it is sent (docs/ux.md §9.8).
+    const { props, getByLabelText, getByRole, getByText } = mount({
+      deferred: "Sent when the window resets, at 7:35 PM",
+    });
+    expect(getByText("Sent when the window resets, at 7:35 PM")).toBeInTheDocument();
+
+    const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
+    expect(field.disabled).toBe(false);
+    type(field, "then run the migration");
+    getByRole("button", { name: "Send" }).click();
+
+    expect(props.onSend).toHaveBeenCalledWith("then run the migration");
+  });
+
+  it("keeps saying a `!` line runs now, even while a window is being waited out", () => {
+    // A shell command runs on the machine there and then, whatever the
+    // plan's limits are doing, so promising it would wait would be a lie.
+    const { getByLabelText, getByText, queryByText } = mount({
+      deferred: "Sent when the window resets, at 7:35 PM",
+    });
+    type(getByLabelText("Message the agent") as HTMLTextAreaElement, "!cargo test");
+
+    expect(getByText("Runs in the machine's bash")).toBeInTheDocument();
+    expect(queryByText("Sent when the window resets, at 7:35 PM")).toBeNull();
+  });
 });
 
 describe("the palette's rows", () => {

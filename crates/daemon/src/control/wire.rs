@@ -200,10 +200,6 @@ const BUDGET_NOTICE_PREFIX: &str = "[flyco budget notice]";
 /// What the agent is told when a turn finishes on a dirty tree.
 const DIRTY_NOTICE: &str = "[flyco repo notice] the working tree has uncommitted changes. Commit them before considering this task complete. Flyco keeps the session awake while it is dirty, unless the compute budget is exhausted.";
 
-/// What the agent is told when a usage limit has reset.
-const USAGE_RESET_NOTICE: &str =
-    "[flyco usage notice] the account usage limit has reset. Continue.";
-
 /// The daemon could not keep its end of the relay.
 #[derive(Debug, thiserror::Error)]
 pub enum WireError {
@@ -470,10 +466,16 @@ fn observation_in(event: &HarnessEvent) -> Option<HarnessObservation> {
                 rate_limit: None,
             })
         }
-        HarnessEvent::UsageLimited { resets_at_unix } => Some(HarnessObservation {
+        HarnessEvent::UsageLimited { window } => Some(HarnessObservation {
             observed_cost: None,
             rate_limit: Some(RateLimitObservation {
-                resets_at_unix: *resets_at_unix,
+                // The panel records *when* the account was last limited, and
+                // an instant before the epoch is not one: a harness that
+                // named no reset, or named one this build cannot represent,
+                // records the limit with no reset rather than a wrong one.
+                resets_at_unix: window
+                    .resets_at_unix
+                    .and_then(|resets| u64::try_from(resets).ok()),
             }),
         }),
         _ => None,
@@ -556,6 +558,17 @@ async fn collect<A: ControlApi>(
                     && let Err(error) = api.record_observation(observation).await
                 {
                     tracing::debug!(%error, "a usage observation was not recorded");
+                }
+                // The one report that stops the session rather than
+                // describing it, and unlike the observation above it is not
+                // telemetry: without it the machine goes on costing money for
+                // however long the window takes to turn over, so a control
+                // plane that would not take it ends the connection and the
+                // daemon reports the limit again on the next one.
+                if let HarnessEvent::UsageLimited { window } = &event
+                    && window.resets_at_unix.is_some()
+                {
+                    api.report_usage_limit(window).await?;
                 }
                 (DaemonToControl::Harness { event }, None)
             }
@@ -735,8 +748,6 @@ struct Connection<S, T, A, W, D, H> {
     /// has spent. What ends a budget pause is a decision, not a timeout.
     paused: bool,
     tree: Tree,
-    /// When to auto-continue after a usage limit, if one is in force.
-    continue_at: Option<tokio::time::Instant>,
     /// REST-assigned approval id → harness-native id.
     approvals: BTreeMap<ApprovalId, ApprovalId>,
     /// The machine notice waiting to ride on the session's first message.
@@ -887,15 +898,6 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                         return Ok(Ended::Disconnected);
                     }
                 }
-                () = tokio::time::sleep_until(self.continue_at.unwrap_or_else(tokio::time::Instant::now)), if self.continue_at.is_some() => {
-                    self.continue_at = None;
-                    if !self.paused && !self.reclaiming {
-                        self.session
-                            .send_user_message(USAGE_RESET_NOTICE.to_owned())
-                            .await
-                            .map_err(harness)?;
-                    }
-                }
                 notice = self.spot.recv(), if self.alive.spot_watch.armed() => {
                     self.alive.spot_watch = Producing::No;
                     let Some(notice) = notice else {
@@ -1039,7 +1041,6 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
         if completed_dirty {
             self.nudge_if_dirty().await?;
         }
-        self.schedule_usage_continue(&outbound.frame);
         Ok(None)
     }
 
@@ -1329,7 +1330,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                 // Nothing to do: arriving at all is the whole of what this
                 // frame carries, and the pump has already taken that.
             }
-            ControlToDaemon::UserMessage { text } => {
+            ControlToDaemon::UserMessage { text, .. } => {
                 if self.refuse_while_paused("a user message")
                     || self.refuse_while_reclaiming("a user message")
                 {
@@ -1497,20 +1498,6 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                 .map_err(harness)?;
         }
         Ok(())
-    }
-
-    fn schedule_usage_continue(&mut self, frame: &DaemonToControl) {
-        let DaemonToControl::Harness {
-            event:
-                HarnessEvent::UsageLimited {
-                    resets_at_unix: Some(unix),
-                },
-        } = frame
-        else {
-            return;
-        };
-        let wait = unix.saturating_sub(now_unix());
-        self.continue_at = Some(tokio::time::Instant::now() + Duration::from_secs(wait));
     }
 
     /// Hands the user's decision to the tool call waiting on it.
@@ -1742,7 +1729,6 @@ where
             spot_watch: Producing::Yes,
             stop_watch: Producing::Yes,
         },
-        continue_at: None,
         approvals: BTreeMap::new(),
         opening: Some(opening),
         keepalive: relay.keepalive,

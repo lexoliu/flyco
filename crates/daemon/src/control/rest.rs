@@ -266,6 +266,27 @@ pub trait ControlApi: ApprovalRaiser {
         windows: &[UsageWindow],
     ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 
+    /// Reports that this session's harness has run out of plan.
+    ///
+    /// Filed once per limit, and the one report that stops the session rather
+    /// than describing it: the control plane releases the machine so the wait
+    /// costs nothing, starts it again ten minutes before the window turns
+    /// over, and picks the conversation back up (issue #244).
+    ///
+    /// Only for a window that names a reset. A limit flyco cannot place in
+    /// time is nothing a pause can be scheduled around — the control plane
+    /// refuses it — so the daemon does not make the call: the limit is in the
+    /// conversation either way, on the relay frame beside this.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or refused the report.
+    fn report_usage_limit(
+        &self,
+        window: &UsageWindow,
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
+
     /// Reports why this daemon is stopping before it could report in.
     ///
     /// The last thing a dying `flycod` does. It is restarted on failure, so
@@ -535,6 +556,27 @@ impl ControlApi for HttpControlApi {
             .map_err(transport)?
             .await
             .map_err(|error| refused("PUT", &url, &error))?;
+
+        debug_assert!(response.status().is_success());
+        Ok(())
+    }
+
+    async fn report_usage_limit(&self, window: &UsageWindow) -> Result<(), ControlApiError> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            window: &'a UsageWindow,
+        }
+
+        let url = self.url("usage-limit")?;
+        let mut client = zenwave::client();
+        let response = client
+            .post(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(&Body { window })
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("POST", &url, &error))?;
 
         debug_assert!(response.status().is_success());
         Ok(())
