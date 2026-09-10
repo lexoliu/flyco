@@ -44,6 +44,7 @@ describe("Transcript provisioning timeline", () => {
     steps: [{ stage: "reserving", atUnix: T0 - 600 }],
     recovery: false,
     attempt: 1,
+    endedAtUnix: null,
   };
 
   it("counts a stage that is still in progress against the clock", () => {

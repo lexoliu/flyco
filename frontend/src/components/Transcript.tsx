@@ -194,6 +194,7 @@ export default function Transcript(props: TranscriptProps) {
                     steps={timeline().steps}
                     recovery={timeline().recovery}
                     attempt={timeline().attempt}
+                    endedAtUnix={timeline().endedAtUnix}
                     repo={props.repo}
                     provider={props.provider}
                     now={props.now}
@@ -396,14 +397,17 @@ export function ProvisioningTimeline(props: {
   now: number;
   /** When the build stopped with this timeline still open; see {@link TranscriptProps}. */
   stoppedAtUnix: number | null;
+  /** When a later attempt superseded this one; see the transcript's `Provisioning`. */
+  endedAtUnix: number | null;
 }) {
   const done = () => props.steps.some((step) => step.stage === "ready");
   /**
    * The stage in progress is where the failure landed: a timeline that
    * reached `ready` belongs to an earlier, finished episode and keeps its
-   * ticks.
+   * ticks. One a later attempt superseded ended when that attempt began,
+   * whatever the session is doing now.
    */
-  const stoppedAt = () => (done() ? null : props.stoppedAtUnix);
+  const stoppedAt = () => (done() ? null : (props.endedAtUnix ?? props.stoppedAtUnix));
   const label = () => {
     const what = props.recovery ? "Migrating" : "Provisioning";
     // What stopped it — failed, archived — is the notice's sentence, not
