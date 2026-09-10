@@ -92,6 +92,14 @@ export default function Popover(props: PopoverProps) {
       if (panel === undefined) {
         return;
       }
+      // On a phone the stylesheet makes the panel a bottom sheet, fixed to
+      // the viewport with its own height rule, and a measured maximum from
+      // its top would fight it. The stylesheet decides where that starts;
+      // this reads the decision rather than repeating the breakpoint.
+      if (getComputedStyle(panel).position === "fixed") {
+        panel.style.maxHeight = "";
+        return;
+      }
       const box = panel.getBoundingClientRect();
       const room =
         props.side === "top"

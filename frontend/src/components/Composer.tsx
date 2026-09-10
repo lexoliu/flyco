@@ -533,10 +533,9 @@ function ComputeChip(props: {
       <Popover
         label="Compute"
         panelClass={styles.popoverWide}
-        // The one chip that gives way: its label shrinks to an ellipsis so
-        // the row never wraps, and dragging the slider — which rewrites
-        // this label on every detent — never moves the panel under the
-        // pointer.
+        // Whether flyco chose the machine or the user did is the slider's
+        // heading, not a word on the chip: the chip is the name and the
+        // price, and a suffix was what pushed the price into an ellipsis.
         anchorClass={styles.anchorShrink}
         trigger={(attrs) => (
           <button
@@ -555,9 +554,6 @@ function ComputeChip(props: {
             </Show>
             <span class={styles.chipLabel}>
               {summary() ?? props.pendingShort ?? "Choosing\u2026"}
-            </span>
-            <span class={styles.chipDim}>
-              {props.chosenKey === null ? "Auto" : "Chosen"}
             </span>
           </button>
         )}

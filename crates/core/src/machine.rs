@@ -430,12 +430,20 @@ impl MachineCatalogEntry {
     /// size flyco does not learn until a daemon runs on it, and refusing it
     /// for a size nobody stated would rule out the one machine the user
     /// explicitly registered.
+    ///
+    /// A container the provider covers out of a monthly grant clears the
+    /// memory floor on the cores alone. Azure's Consumption jobs top out at
+    /// 4 vCPU and 8 GiB, so holding them to 16 GiB would mean `Auto` never
+    /// picks the one size that costs nothing — which is the reason the
+    /// container path exists (issue #235). The core floor still holds: a
+    /// two-core container is too small for a coding agent whoever pays.
     #[must_use]
     pub fn is_auto_eligible(&self) -> bool {
         self.os == OsFamily::Linux
             && self.account.is_some()
             && self.capacity.as_ref().is_none_or(|capacity| {
-                capacity.vcpus >= AUTO_MIN_VCPUS && capacity.memory_mib >= AUTO_MIN_MEMORY_MIB
+                capacity.vcpus >= AUTO_MIN_VCPUS
+                    && (capacity.memory_mib >= AUTO_MIN_MEMORY_MIB || self.has_free_grant())
             })
     }
 }
@@ -874,6 +882,24 @@ mod tests {
         assert!(!tiny.is_auto_eligible());
         assert!(!starved.is_auto_eligible());
         assert!(eligible.is_auto_eligible());
+
+        // A granted container is held to the cores and not to the memory:
+        // Container Apps stops at 4 vCPU / 8 GiB, and that size is the one
+        // Auto exists to find.
+        let granted = MachineCatalogEntry {
+            runtime: Runtime::Container,
+            free_grant: Some(aca_grant()),
+            ..starved.clone()
+        };
+        assert!(granted.is_auto_eligible());
+        let granted_small = MachineCatalogEntry {
+            capacity: Some(MachineCapacity {
+                vcpus: AUTO_MIN_VCPUS - 2,
+                memory_mib: 4 * 1024,
+            }),
+            ..granted
+        };
+        assert!(!granted_small.is_auto_eligible());
         assert_eq!(
             auto_linux_choice(&[tiny.clone(), starved.clone(), eligible], true)
                 .map(|entry| entry.machine_type.as_str()),

@@ -8,9 +8,24 @@
   gap: var(--space-3);
 }
 
-.panel h2 {
+.headline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.name {
+  font-weight: var(--weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.where {
   margin: 0;
-  font-size: var(--text-md);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
 }
 
 .empty {
@@ -42,7 +57,7 @@
   padding: 2px var(--space-2);
   border-radius: var(--radius-full);
   background: var(--color-surface-sunken);
-  align-self: flex-start;
+  flex: none;
 }
 
 .state[data-state="destroyed"],

@@ -96,22 +96,46 @@
   }
 }
 
+/* Only a phone needs it; on a desktop the header's toggle closes the drawer. */
+.close {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: var(--space-1);
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.close:hover {
+  color: var(--color-text);
+}
+
 /*
  * On a narrow screen there is no room for two columns, so the drawer stops
- * being one: it drops under the transcript at full width.
+ * being one: it covers the transcript, at the full height a terminal needs,
+ * and closes from its own corner. Stacked under the transcript it was a
+ * 70vh block the user had to scroll to, with a terminal too short to use.
  */
 @media (max-width: 900px) {
   .drawer {
-    width: 100%;
-    margin-top: 0;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    margin: 0;
+    padding: var(--space-3);
+    background: var(--color-bg);
   }
 
   .drawerOpen {
-    width: 100%;
+    width: auto;
   }
 
-  .panel {
-    max-height: 70dvh;
+  .close {
+    display: inline-flex;
   }
 }
 

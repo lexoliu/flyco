@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, on } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, on } from "solid-js";
 import { createQuery } from "../lib/query";
 import { MachineResize } from "./MachinePicker";
 import ProblemNotice from "./ProblemNotice";
@@ -10,7 +10,14 @@ import {
   startSessionMachine,
   stopSessionMachine,
 } from "../api/client";
-import { MACHINE_STATE_LABEL } from "../lib/machines";
+import type { MachineCatalogEntry, MachineView } from "../api/client";
+import {
+  MACHINE_STATE_LABEL,
+  capacityParts,
+  hourlyLabel,
+  runtimeOf,
+  shortMachineType,
+} from "../lib/machines";
 import { formatUsd } from "../lib/money";
 import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./MachinePanel.module.css";
@@ -100,58 +107,67 @@ export default function MachinePanel(props: MachinePanelProps) {
     }
   }
 
+  /** The catalog row this machine was chosen from, for what the row lacks. */
+  // The catalog row this machine was picked from, for the capacity a
+  // container's opaque type name does not carry and the price the view has
+  // not learned yet.
+  const entry = createMemo<MachineCatalogEntry | undefined>(() => {
+    const view = machine();
+    if (view === undefined) {
+      return undefined;
+    }
+    return catalog()?.entries.find(
+      (candidate) =>
+        candidate.provider === view.spec.provider &&
+        candidate.region === view.region &&
+        candidate.machine_type === view.spec.machine_type,
+    );
+  });
+
   return (
     <section class={styles.panel} aria-label="Machine">
-      <h2>Machine</h2>
       {/* The catalog is what the resize list is built from, so its failure
           belongs here too: without it the dropdown is empty for a reason the
           panel would otherwise never give. */}
       <ProblemNotice error={machine.error ?? catalog.error} />
       <Show when={!machine.loading}>
-        <Show when={machine()} fallback={<p class={styles.empty}>No machine provisioned for this session yet.</p>}>
+        <Show
+          when={machine()}
+          fallback={<p class={styles.empty}>No machine yet: one is reserved when the session starts.</p>}
+        >
           {(view) => (
             <>
-              <span class={styles.state} data-state={view().state}>
-                {MACHINE_STATE_LABEL[view().state]}
-              </span>
-              <div class={styles.facts}>
-                <div class={styles.factRow}>
-                  <span class={styles.factLabel}>Provider</span>
-                  <span>{PROVIDER_LABEL[view().spec.provider]}</span>
-                </div>
-                <div class={styles.factRow}>
-                  <span class={styles.factLabel}>Type</span>
-                  <span>{view().spec.machine_type}</span>
-                </div>
-                <div class={styles.factRow}>
-                  <span class={styles.factLabel}>Region</span>
-                  <span>{view().region}</span>
-                </div>
-                <div class={styles.factRow}>
-                  <span class={styles.factLabel}>Capacity</span>
-                  <span>{view().spot ? "Spot" : "On-demand"}</span>
-                </div>
-                <div class={styles.factRow}>
-                  <span class={styles.factLabel}>Price</span>
-                  <span>{view().hourly !== null && view().hourly !== undefined ? `${formatUsd(view().hourly as number)}/hr` : "No metered price"}</span>
-                </div>
+              {/* One machine, said once: what it is and where it is in its
+                  life on the first line, where it runs and what it costs on
+                  the second. A session has exactly one, so this is a fact,
+                  not a list. */}
+              <div class={styles.headline}>
+                <span class={styles.name}>{machineName(view(), entry())}</span>
+                <span class={styles.state} data-state={view().state}>
+                  {MACHINE_STATE_LABEL[view().state]}
+                </span>
               </div>
-
+              <p class={styles.where}>{whereLabel(view(), entry())}</p>
               <ProblemNotice error={error()} />
               <div class={styles.actions}>
-                <button type="button" disabled={busy() || view().state === "running"} onClick={() => void onStart()}>
-                  Start
-                </button>
-                <button type="button" disabled={busy() || view().state !== "running"} onClick={() => void onStop()}>
-                  Stop
-                </button>
+                <Show
+                  when={view().state === "running"}
+                  fallback={
+                    <button type="button" disabled={busy()} onClick={() => void onStart()}>
+                      Start
+                    </button>
+                  }
+                >
+                  <button type="button" disabled={busy()} onClick={() => void onStop()}>
+                    Stop
+                  </button>
+                </Show>
                 <Show when={!resizing()}>
                   <button type="button" disabled={busy()} onClick={() => setResizing(true)}>
                     Resize
                   </button>
                 </Show>
               </div>
-
               {/* The same tiered slider the home composer picks a machine
                   with (docs/ux.md §7.7), on the machine this session is
                   already on. */}
@@ -172,4 +188,39 @@ export default function MachinePanel(props: MachinePanelProps) {
       </Show>
     </section>
   );
+}
+
+/**
+ * What the machine is called: the type the user picked for a virtual
+ * machine, and the size for a managed container, because `aca-4x8` is
+ * flyco's key and names nothing to a reader.
+ */
+function machineName(view: MachineView, entry: MachineCatalogEntry | undefined): string {
+  if (entry !== undefined && runtimeOf(entry) === "container") {
+    return ["Container", ...capacityParts(entry)].join(" · ");
+  }
+  return shortMachineType(view.spec.machine_type);
+}
+
+/**
+ * Where the machine runs and what it costs, on one line.
+ *
+ * The price is the row's own hourly once the provider has answered, and
+ * the catalog's before that — a machine still being reserved has no meter
+ * yet, and "no metered price" on it would be a claim about a bill that has
+ * not started. A machine the user owns has no meter at all, and says so.
+ */
+function whereLabel(view: MachineView, entry: MachineCatalogEntry | undefined): string {
+  const price =
+    view.hourly !== null && view.hourly !== undefined
+      ? `${formatUsd(view.hourly)}/hr`
+      : entry === undefined
+        ? "no metered price"
+        : hourlyLabel(entry, view.spot);
+  return [
+    PROVIDER_LABEL[view.spec.provider],
+    view.region,
+    view.spot ? "Spot" : "On-demand",
+    price,
+  ].join(" · ");
 }

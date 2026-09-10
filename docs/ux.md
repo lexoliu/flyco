@@ -62,6 +62,13 @@ color, radius, or size is defined. Component CSS reads tokens.
 /welcome                First run (§4): one linear sequence of pages
 ```
 
+`/login` is the wordmark, one line — `Claude Code and Codex, on a machine
+you own.` — and the sign-in button. Nothing else: a paragraph on what
+flyco holds and does not hold, and a footnote on why it reads
+repositories, were read by nobody who had not already decided to sign in,
+and the sign-in button is where those questions get answered anyway
+(GitHub's own consent page lists the scopes).
+
 The shell is a left rail and nothing else. There is no top bar: a bar
 above the work is a second place to look, and the work is the page.
 
@@ -318,7 +325,7 @@ Every chip is both a status readout and the entry point to change it.
 |---|---|---|
 | Harness | logomark + `Claude Code` (or `Codex`); popover lists the linked agents with the chosen one marked, ending in `Connect another agent` → `/connect/harness` | `+ Connect an agent` → `/connect/harness` |
 | Model | `Fable 5.1 · High`: the model's name and, once one is chosen, the effort after it. The name is the head of the harness's description where it has one (`Fable 5.1 · Most capable…` → `Fable 5.1`; Claude's rows are menu labels like `Default (recommended)`) and the row's label otherwise (`GPT-5.5`). The chip sits at the right of the row beside send, where both official apps keep theirs. The popover lists the agent's own models (`GET /v1/harness-accounts` carries each account's list, as its last session's agent reported it, or flyco's built-in one until then), each with the harness's one-line description, and under the chosen one its effort levels as pills with `Default` first. Choosing a model resets the effort to the model's own default. Switching agents drops the choice, because a Claude id means nothing to Codex | absent until an agent is linked, since there is no list to show |
-| Compute | provider logomark + `B2s · $0.04/hr` and `Auto` or `Chosen`; the logomark names the provider, and region, spot and the account live in the popover. A **managed container** reads `Container · 4 vCPU · 8 GiB · $0.21/hr` instead: `aca-4x8` is flyco's key for a size billed by the second, not a name anybody picked, so the size is what identifies the row — and where the provider covers it out of a monthly allowance the chip ends ` · Free this month`. A machine the user enrolled is a container too and keeps its own hostname, which is the name they gave it. While an account is still being read the chip says `Reading Azure…` and the popover carries the whole sentence | `+ Add compute` → `/connect/compute` |
+| Compute | provider logomark + `B2s · $0.04/hr`; the logomark names the provider, and region, spot, the account and whether flyco or the user chose the type live in the popover — the chip does not say `Auto` or `Chosen`, which is a word about how the choice was made on a row that is for what was chosen. A **managed container** reads `Container · 4 vCPU · 8 GiB · $0.21/hr` instead: `aca-4x8` is flyco's key for a size billed by the second, not a name anybody picked, so the size is what identifies the row — and where the provider covers it out of a monthly allowance the chip ends ` · Free this month`. A machine the user enrolled is a container too and keeps its own hostname, which is the name they gave it. While an account is still being read the chip says `Reading Azure…` and the popover carries the whole sentence | `+ Add compute` → `/connect/compute` |
 | Repository | `owner/name`; popover with a search box, recent repositories first | `Select repository` opens the same popover |
 | Budget | `$10`; popover with a slider (1–200) and the sentence "Covers the machine and its disk. Model tokens are billed by your Claude or Codex plan." | always shown, default `$10` |
 
@@ -552,12 +559,18 @@ provider catalog:
 The default machine is the cheapest Linux entry of the curated catalog,
 except that a **container the provider gives away this month** wins over
 everything, hardware the user owns included: that allowance expires unspent
-at the end of the month and the machine at home does not. The agent's
+at the end of the month and the machine at home does not. The floor for
+`Auto` is 4 vCPU and 16 GiB, and a granted container clears it at 4 vCPU
+alone: a container's memory is sized with its cores, and a rule that let
+a 4×16 VM through while turning down the free 4×8 container spent money
+to avoid the one machine the user is not paying for. The agent's
 `machine_resize` tool sees the same curated list.
 
 ### 7.7 Choosing a machine by hand
 
-The compute chip's popover is a **tiered slider**, not a table. Its detents are the curated catalog of the selected account and region ordered by price; the thumb snaps to a detent and the label above it reads `Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr`, or for a managed container `Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month`. The leftmost position is `Auto`. `Auto` is the cheapest curated Linux type with at least 4 vCPU and 16 GiB, unless the account's catalog offers a container covered by a monthly grant, in which case that is what it picks; the label says which rule decided. An `Advanced ›` disclosure above the slider reveals account, region, architecture (x86-64 / arm64), OS family, and spot. Choosing any detent other than `Auto` sets `machine_origin: user`; the chip then reads `Chosen by you`.
+The compute chip's popover is a **tiered slider**, not a table. Its detents are the curated catalog of the selected account and region ordered by price; the thumb snaps to a detent and the label above it reads `Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr`, or for a managed container `Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month`. The leftmost position is `Auto`. `Auto` is the cheapest curated Linux type with at least 4 vCPU and 16 GiB, unless the account's catalog offers a container covered by a monthly grant, in which case that is what it picks (§7.6); the label says which rule decided. An `Advanced ›` disclosure above the slider reveals account, region, architecture (x86-64 / arm64), OS family, and spot. Choosing any detent other than `Auto` sets `machine_origin: user`; the popover's label then reads `Chosen by you`.
+
+On a phone the popover is a **bottom sheet** rather than a panel hanging off the chip: fixed to the bottom of the viewport, edge to edge, at most 70% of its height. A panel anchored to a chip near the bottom of a phone screen had nowhere to open into.
 
 License-bound types (macOS on EC2 Mac, and any type with a billing minimum) render with an amber badge on their detent and a sentence under the slider: "Starts a 24-hour minimum charge of $X the moment it boots." The sentence must be visible before send is enabled.
 
@@ -756,13 +769,24 @@ says so under the field while typing one. The placeholder is one line:
 ### 9.4 Drawer
 
 A right-side drawer, closed by default, with tabs `Terminal`, `Files`,
-`Diff`, `Machine`, `Env`. `Terminal` is the existing xterm panel.
-`Machine` shows spec, hourly, storage hourly, state, and the
-start/stop/resize controls. `Env` is the existing editor. Its toggle is a
-panel icon in the header beside `⋯`, where the official apps keep theirs;
-a handle at the top of the transcript column sat exactly where the first
-user message lands and read as an avatar on it. Keyboard: `⌘.` toggles
-the drawer. Closed, it takes no room at all.
+`Diff`, `Machine`, `Env`. `Terminal` is the xterm panel, **connected the
+moment the tab shows**: a user who opened a terminal asked for a terminal,
+not for a button that opens one. `Machine` is **one card for the one
+machine** a session has — its name and state on the first line
+(`Standard_D4s_v6 · Running`, or `Container · 4 vCPU · 8 GiB · Running`),
+where and at what price on the second (`Azure · westeurope · Spot ·
+$0.19/hr`), then Stop or Start and Resize. A session never has more than
+one machine, so a table of provider / type / region / capacity rows was a
+form for a fleet that does not exist. `Env` is the existing editor. Its
+toggle is a panel icon in the header beside `⋯`, where the official apps
+keep theirs; a handle at the top of the transcript column sat exactly
+where the first user message lands and read as an avatar on it. Keyboard:
+`⌘.` toggles the drawer. Closed, it takes no room at all.
+
+On a phone (under 900px) the drawer **covers the transcript** at the full
+height of the screen and carries its own close button at the end of the
+tab row: stacked under the transcript it was a block the user had to
+scroll to, with a terminal too short to type in.
 
 `Resize` is the tiered slider of §7.7, on the machine the session is
 already on: the same detents, prices and license-bound badge, opened on the

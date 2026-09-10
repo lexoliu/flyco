@@ -13,10 +13,12 @@
  * to read.
  *
  * `⌘.` (`Ctrl+.` off macOS) toggles it, which is the one keyboard shortcut
- * on the page.
+ * on the page. On a phone there is no room beside the transcript, so the
+ * drawer covers it instead and carries its own close button; the header's
+ * toggle is behind it.
  */
 import { For, Match, Show, Switch, createEffect, createSignal, onCleanup } from "solid-js";
-import { Cpu, FileCode2, GitCompare, SlidersHorizontal, TerminalSquare } from "lucide-solid";
+import { Cpu, FileCode2, GitCompare, SlidersHorizontal, TerminalSquare, X } from "lucide-solid";
 import DiffPanel from "./DiffPanel";
 import EnvEditor from "./EnvEditor";
 import FilesPanel from "./FilesPanel";
@@ -129,6 +131,14 @@ export default function SessionDrawer(props: SessionDrawerProps) {
                 </button>
               )}
             </For>
+            <button
+              type="button"
+              class={styles.close}
+              aria-label="Close the panel"
+              onClick={() => props.onOpenChange(false)}
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
           </div>
 
           <div class={styles.body} role="tabpanel">

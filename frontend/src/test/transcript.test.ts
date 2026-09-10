@@ -348,6 +348,7 @@ describe("foldTranscript provisioning timeline", () => {
       kind: "provisioning",
       key: "provisioning-0",
       recovery: false,
+      attempt: 1,
       steps: [
         { stage: "reserving", atUnix: T0 },
         { stage: "booting", atUnix: T0 + 40 },
@@ -409,6 +410,7 @@ describe("foldTranscript provisioning timeline", () => {
     expect(timelines).toHaveLength(1);
     expect(timelines[0]).toMatchObject({
       recovery: false,
+      attempt: 1,
       steps: [
         { stage: "reserving", atUnix: T0 },
         { stage: "booting", atUnix: T0 + 40 },

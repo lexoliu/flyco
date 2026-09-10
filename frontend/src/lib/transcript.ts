@@ -125,7 +125,9 @@ export type TranscriptItem =
       steps: ProvisioningStep[];
       /**
        * Whether this timeline is flyco putting the session back on a
-       * machine it lost, rather than building its first one.
+       * machine it lost, rather than building its first one — or trying
+       * again after the provider refused the last build, which is
+       * `attempt` above one with this false.
        *
        * A session is reclaimed and recovered any number of times, so the
        * stages arrive in *episodes*: a second `reserving` after a `ready`
@@ -134,6 +136,12 @@ export type TranscriptItem =
        * it happened, and every one after the first is a migration.
        */
       recovery: boolean;
+      /**
+       * Which attempt at a machine this is, counting from one and reset by
+       * every build that came up. A retry headed "Migrating" told the user
+       * their machine had been reclaimed when it had never existed.
+       */
+      attempt: number;
     }
   | {
       /**
@@ -279,8 +287,9 @@ function appendChunk(block: Shell, stream: ShellStream, data: string): void {
  * whatever else arrived. But a session on spot capacity is reclaimed and
  * recovered any number of times, and each recovery is its own build in its
  * own place in the conversation — so a stage that the open timeline has
- * already been through starts a new one, and every timeline after the first
- * is a migration.
+ * already been through starts a new one. A timeline after one that reached
+ * `ready` is a migration; one after a build the provider refused is a
+ * retry, and says so.
  *
  * A stage is identified by when it happened, not by its name: the relay
  * delivers at least once and replays what it already sent after a
@@ -296,6 +305,8 @@ function provisioningTimeline(
 ): Provisioning | null {
   let open: Provisioning | undefined;
   let episodes = 0;
+  // How many episodes in a row ended without a machine.
+  let refused = 0;
   for (const item of items) {
     if (item.kind === "provisioning") {
       if (item.steps.some((step) => step.stage === stage && step.atUnix === atUnix)) {
@@ -303,6 +314,7 @@ function provisioningTimeline(
       }
       open = item;
       episodes += 1;
+      refused = item.steps.some((step) => step.stage === "ready") ? 0 : refused + 1;
     }
   }
   // Only `reserving` opens an episode, and only when the timeline in front
@@ -316,7 +328,8 @@ function provisioningTimeline(
     kind: "provisioning",
     key: `provisioning-${episodes}`,
     steps: [],
-    recovery: episodes > 0,
+    recovery: episodes > 0 && refused === 0,
+    attempt: refused + 1,
   };
   items.push(timeline);
   return timeline;

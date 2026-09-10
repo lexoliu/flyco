@@ -193,6 +193,7 @@ export default function Transcript(props: TranscriptProps) {
                   <ProvisioningTimeline
                     steps={timeline().steps}
                     recovery={timeline().recovery}
+                    attempt={timeline().attempt}
                     repo={props.repo}
                     provider={props.provider}
                     now={props.now}
@@ -389,6 +390,7 @@ function ShellBlock(props: { shell: Extract<TranscriptItem, { kind: "shell" }> }
 export function ProvisioningTimeline(props: {
   steps: ProvisioningStep[];
   recovery: boolean;
+  attempt: number;
   repo: string;
   provider: string | null;
   now: number;
@@ -497,6 +499,11 @@ export function ProvisioningTimeline(props: {
         <Show when={props.recovery}>
           <p class={styles.timelineHeading}>
             Migrating · the machine was reclaimed and is being restarted on its own disk
+          </p>
+        </Show>
+        <Show when={props.attempt > 1}>
+          <p class={styles.timelineHeading}>
+            Attempt {props.attempt} · the provider refused the last machine, so flyco is asking for another
           </p>
         </Show>
         {rows()}
