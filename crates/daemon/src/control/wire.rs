@@ -1397,6 +1397,11 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                 }
                 self.terminal.write(&data)?;
             }
+            // A size is a fact about the pane, not work; a paused session's
+            // shell may still be looked at.
+            ControlToDaemon::TerminalResize { cols, rows } => {
+                self.terminal.resize(cols, rows)?;
+            }
             ControlToDaemon::ApprovalDecision { id, decision } => {
                 self.decide_approval(id, decision).await?;
             }

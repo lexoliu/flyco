@@ -771,7 +771,10 @@ says so under the field while typing one. The placeholder is one line:
 A right-side drawer, closed by default, with tabs `Terminal`, `Files`,
 `Diff`, `Machine`, `Env`. `Terminal` is the xterm panel, **connected the
 moment the tab shows**: a user who opened a terminal asked for a terminal,
-not for a button that opens one. `Machine` is **one card for the one
+not for a button that opens one. It fills the drawer, and the machine's
+PTY is kept at the size the pane shows (`terminal_resize`, on open and
+on every resize), so a line wraps where the pane wraps it; the shell
+runs under `TERM=xterm-256color`. `Machine` is **one card for the one
 machine** a session has — its name and state on the first line
 (`Standard_D4s_v6 · Running`, or `Container · 4 vCPU · 8 GiB · Running`),
 where and at what price on the second (`Azure · westeurope · Spot ·

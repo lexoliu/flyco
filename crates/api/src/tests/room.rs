@@ -783,6 +783,10 @@ async fn every_command_a_client_may_send_is_forwarded() {
         ControlToDaemon::TerminalInput {
             data: "ls\n".to_owned(),
         },
+        ControlToDaemon::TerminalResize {
+            cols: 132,
+            rows: 40,
+        },
     ] {
         room.deliver_json(Which::Client, &command).await;
         let sent = room.drain();

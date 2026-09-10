@@ -610,6 +610,19 @@ pub enum ControlToDaemon {
         /// Bytes to write to the terminal, UTF-8.
         data: String,
     },
+    /// The web terminal's size, as the browser has fitted it.
+    ///
+    /// Sent when the pane opens and whenever it is resized, so the PTY
+    /// agrees with the view about where a line wraps: a PTY at a fixed
+    /// size under a pane of another was a shell whose lines ran off the
+    /// panel's edge (issue #253). Not held for a daemon that is away —
+    /// the browser sends it again when the daemon is back.
+    TerminalResize {
+        /// Columns the pane shows.
+        cols: u16,
+        /// Rows the pane shows.
+        rows: u16,
+    },
     /// The session's machine was replaced, and this is what it is now.
     ///
     /// Sent by the control plane rather than discovered by the daemon,
@@ -710,6 +723,7 @@ impl ControlToDaemon {
             Self::ShellCommand { .. } => "shell_command",
             Self::RunShell { .. } => "run_shell",
             Self::TerminalInput { .. } => "terminal_input",
+            Self::TerminalResize { .. } => "terminal_resize",
             Self::Interrupt => "interrupt",
             Self::Compact => "compact",
             Self::ApprovalDecision { .. } => "approval_decision",
@@ -724,7 +738,7 @@ impl ControlToDaemon {
 
     /// Whether a browser may send this command.
     ///
-    /// A session room accepts exactly five commands from a client socket;
+    /// A session room accepts exactly six commands from a client socket;
     /// everything else is control-plane authority (budget signals, approval
     /// decisions, archival, and the identified [`Self::RunShell`] the room
     /// reissues a [`Self::ShellCommand`] as) and reaches the daemon only
@@ -739,6 +753,7 @@ impl ControlToDaemon {
                 | Self::Interrupt
                 | Self::Compact
                 | Self::TerminalInput { .. }
+                | Self::TerminalResize { .. }
         )
     }
 
@@ -1227,6 +1242,10 @@ mod tests {
             ControlToDaemon::TerminalInput {
                 data: "ls\n".to_owned(),
             },
+            ControlToDaemon::TerminalResize {
+                cols: 132,
+                rows: 40,
+            },
             ControlToDaemon::MachineChanged {
                 machine_type: "Standard_D8s_v6".to_owned(),
                 hourly: Some(Usd::from_cents(38)),
@@ -1518,6 +1537,7 @@ mod tests {
                     | ControlToDaemon::Interrupt
                     | ControlToDaemon::Compact
                     | ControlToDaemon::TerminalInput { .. }
+                    | ControlToDaemon::TerminalResize { .. }
             );
             assert_eq!(frame.is_client_command(), allowed, "{frame:?}");
         }
