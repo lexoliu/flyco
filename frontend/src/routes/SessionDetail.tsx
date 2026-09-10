@@ -711,6 +711,7 @@ export default function SessionDetail() {
                   steps={[{ stage: "reserving", atUnix: current().created_at_unix }]}
                   recovery={status()?.status === "migrating"}
                   attempt={1}
+                  endedAtUnix={null}
                   repo={current().repo}
                   provider={providerLabel()}
                   now={now()}

@@ -142,6 +142,15 @@ export type TranscriptItem =
        * their machine had been reclaimed when it had never existed.
        */
       attempt: number;
+      /**
+       * When a later episode opened with this one still short of `ready`,
+       * which is when this one ended: the build it was waiting on was
+       * given up, and the page has no other way to know. `null` while the
+       * timeline is the latest or reached `ready`. A superseded timeline
+       * left to tick against the clock (issue #254) showed a machine still
+       * being reserved twenty minutes after its replacement came up.
+       */
+      endedAtUnix: number | null;
     }
   | {
       /**
@@ -324,12 +333,16 @@ function provisioningTimeline(
   if (open !== undefined && !starts) {
     return open;
   }
+  if (open !== undefined && !open.steps.some((step) => step.stage === "ready")) {
+    open.endedAtUnix = atUnix;
+  }
   const timeline: Provisioning = {
     kind: "provisioning",
     key: `provisioning-${episodes}`,
     steps: [],
     recovery: episodes > 0 && refused === 0,
     attempt: refused + 1,
+    endedAtUnix: null,
   };
   items.push(timeline);
   return timeline;

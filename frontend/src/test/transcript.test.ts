@@ -349,6 +349,7 @@ describe("foldTranscript provisioning timeline", () => {
       key: "provisioning-0",
       recovery: false,
       attempt: 1,
+      endedAtUnix: null,
       steps: [
         { stage: "reserving", atUnix: T0 },
         { stage: "booting", atUnix: T0 + 40 },
@@ -391,6 +392,35 @@ describe("foldTranscript provisioning timeline", () => {
     ]);
   });
 
+  it("ends a build the provider refused when the next attempt begins", () => {
+    // The first job never came up; `Resume` asked for another. The first
+    // timeline is over at the instant the second opens — it is not a
+    // migration, and it is not still reserving.
+    const items = foldTranscript([
+      at(100, { type: "provisioning_stage", stage: "reserving", at_unix: T0 }),
+      at(101, { type: "provisioning_stage", stage: "reserving", at_unix: T0 + 140 }),
+      at(102, { type: "provisioning_stage", stage: "ready", at_unix: T0 + 199 }),
+    ]);
+
+    const timelines = items.filter((item) => item.kind === "provisioning");
+    expect(timelines).toHaveLength(2);
+    expect(timelines[0]).toMatchObject({
+      recovery: false,
+      attempt: 1,
+      endedAtUnix: T0 + 140,
+      steps: [{ stage: "reserving", atUnix: T0 }],
+    });
+    expect(timelines[1]).toMatchObject({
+      recovery: false,
+      attempt: 2,
+      endedAtUnix: null,
+      steps: [
+        { stage: "reserving", atUnix: T0 + 140 },
+        { stage: "ready", atUnix: T0 + 199 },
+      ],
+    });
+  });
+
   it("treats a whole build replayed after a reconnect as the build it already showed", () => {
     // A reconnect's catch-up hands back frames the page has already seen.
     // Every stage carries the instant it happened, so the same `reserving`
@@ -411,6 +441,7 @@ describe("foldTranscript provisioning timeline", () => {
     expect(timelines[0]).toMatchObject({
       recovery: false,
       attempt: 1,
+      endedAtUnix: null,
       steps: [
         { stage: "reserving", atUnix: T0 },
         { stage: "booting", atUnix: T0 + 40 },
