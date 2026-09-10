@@ -1335,17 +1335,64 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     /// it when the account is linked — would build an environment in every
     /// region the subscription allows for the one region a user turns out to
     /// use.
+    /// Makes sure the region's managed environment exists and is ready
+    /// for a job.
+    ///
+    /// Read before written: an environment takes minutes to build, and a
+    /// `PUT` while that build is under way is refused with
+    /// `ManagedEnvironmentOperationInProgress` — the queue's second attempt
+    /// at a session would then fail on the first attempt's own work. So
+    /// an environment that is being built is waited for, one that is ready
+    /// is used as it is, and only a missing or failed one is written.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::Rejected`] when the environment is still building
+    /// after the driver's polling budget; Azure's own refusals otherwise.
     async fn ensure_environment(&mut self, region: &str) -> Result<(), ProviderError> {
+        let url = self.resource_url(
+            CONTAINER_ENVIRONMENTS_PATH,
+            &containers::names::environment(region),
+            api_version::CONTAINER_APPS,
+        );
+        let mut attempt = 0;
+        loop {
+            let response = self
+                .send(HttpRequest::new(Method::Get, url.clone()))
+                .await?;
+            if response.status == 404 {
+                break;
+            }
+            if !response.is_success() {
+                return Err(refusal(&response));
+            }
+            let record: containers::ManagedEnvironmentRecord = response.json()?;
+            match record.state() {
+                containers::EnvironmentState::Ready => return Ok(()),
+                containers::EnvironmentState::Failed(state) => {
+                    tracing::warn!(
+                        region,
+                        %state,
+                        "the region's Container Apps environment is unusable and is being rewritten"
+                    );
+                    break;
+                }
+                containers::EnvironmentState::InProgress(state) => {
+                    if attempt == MAX_POLL_ATTEMPTS {
+                        return Err(ProviderError::Rejected(format!(
+                            "the Container Apps environment for {region} is still `{state}` after \
+                             {MAX_POLL_ATTEMPTS} reads"
+                        )));
+                    }
+                    tracing::debug!(region, %state, "waiting for the Container Apps environment");
+                    self.timer.sleep(poll_delay(None, attempt)).await;
+                    attempt += 1;
+                }
+            }
+        }
+        tracing::info!(region, "creating the region's Container Apps environment");
         self.send_and_await(
-            HttpRequest::new(
-                Method::Put,
-                self.resource_url(
-                    CONTAINER_ENVIRONMENTS_PATH,
-                    &containers::names::environment(region),
-                    api_version::CONTAINER_APPS,
-                ),
-            )
-            .json_body(&containers::environment_body(region))?,
+            HttpRequest::new(Method::Put, url).json_body(&containers::environment_body(region))?,
         )
         .await
     }

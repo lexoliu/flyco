@@ -1183,14 +1183,42 @@ fn provider_registration(state: &str) -> HttpResponse {
     )
 }
 
-/// The responses a clean container provisioning run consumes, in order:
-/// the token, the policy read, the provider-registration read (already
-/// registered), the environment `PUT`, the job `PUT`, and the start.
+/// What `GET …/managedEnvironments/{name}` answers for an environment in
+/// `state`, trimmed to what the driver reads.
+fn environment_record(state: &str) -> HttpResponse {
+    json(
+        200,
+        &serde_json::to_string(&serde_json::json!({
+            "id": format!(
+                "/subscriptions/{SUBSCRIPTION}/resourceGroups/{RESOURCE_GROUP}\
+                 /providers/Microsoft.App/managedEnvironments/flyco-{REGION}-env"
+            ),
+            "name": format!("flyco-{REGION}-env"),
+            "location": REGION,
+            "properties": { "provisioningState": state },
+        }))
+        .expect("serialize"),
+    )
+}
+
+/// ARM's answer for a resource that does not exist.
+fn not_found() -> HttpResponse {
+    json(
+        404,
+        r#"{"error":{"code":"ResourceNotFound","message":"The Resource 'Microsoft.App/managedEnvironments/flyco-westeurope-env' under resource group 'flyco' was not found."}}"#,
+    )
+}
+
+/// The responses a clean container provisioning run on a fresh region
+/// consumes, in order: the token, the policy read, the provider-registration
+/// read (already registered), the environment read (none yet), the
+/// environment `PUT`, the job `PUT`, and the start.
 fn container_script() -> Vec<HttpResponse> {
     vec![
         token(),
         json(200, POLICY),
         provider_registration("Registered"),
+        not_found(),
         done(),
         done(),
         started(EXECUTION),
@@ -1200,12 +1228,14 @@ fn container_script() -> Vec<HttpResponse> {
 /// Index of the `Microsoft.App` registration read in a
 /// [`container_script`] run.
 const PROVIDER_GET: usize = 2;
+/// Index of the environment read.
+const ENVIRONMENT_GET: usize = 3;
 /// Index of the environment `PUT`.
-const ENVIRONMENT_PUT: usize = 3;
+const ENVIRONMENT_PUT: usize = 4;
 /// Index of the job's own `PUT`.
-const JOB_PUT: usize = 4;
+const JOB_PUT: usize = 5;
 /// Index of the `POST` that starts an execution.
-const JOB_START: usize = 5;
+const JOB_START: usize = 6;
 
 fn provisioned_container(machine: MachineId) -> Machine {
     Machine {
@@ -1240,6 +1270,7 @@ async fn provisioning_a_container_creates_the_environment_then_the_job_then_an_e
         )
     );
 
+    assert_eq!(transport.request(ENVIRONMENT_GET).method, Method::Get);
     let environment = transport.request(ENVIRONMENT_PUT);
     assert_eq!(environment.method, Method::Put);
     assert_eq!(
@@ -1309,6 +1340,7 @@ async fn an_unregistered_subscription_is_registered_for_container_apps_before_th
         provider_registration("Registering"),
         provider_registration("Registering"),
         provider_registration("Registered"),
+        not_found(),
         done(),
         done(),
         started(EXECUTION),
@@ -1402,6 +1434,74 @@ async fn linking_a_subscription_asks_for_the_container_apps_registration() {
             .ends_with("/providers/Microsoft.App/register?api-version=2021-04-01")
     );
     assert_eq!(transport.request_count(), 4, "and nothing waits on it");
+}
+
+#[tokio::test]
+async fn an_environment_still_being_built_is_waited_for_rather_than_written_over() {
+    // The second attempt at the first container session on dev found the
+    // first attempt's environment half-built and `PUT` it again, which
+    // Azure refused as `ManagedEnvironmentOperationInProgress`. The driver
+    // reads the environment first and waits while it is in progress.
+    let id = MachineId::generate();
+    let mut azure = provider(vec![
+        token(),
+        json(200, POLICY),
+        provider_registration("Registered"),
+        environment_record("InfrastructureSetupInProgress"),
+        environment_record("Waiting"),
+        environment_record("Succeeded"),
+        done(),
+        started(EXECUTION),
+    ]);
+
+    let machine = azure
+        .provision(&container_request(id, CONTAINER_TYPE))
+        .await
+        .expect("provision once the environment is ready");
+
+    let transport = azure.transport();
+    for index in 3..=5 {
+        assert_eq!(transport.request(index).method, Method::Get);
+        assert!(
+            transport
+                .request(index)
+                .url
+                .contains("/managedEnvironments/")
+        );
+    }
+    assert!(
+        transport.request(6).url.contains("/jobs/"),
+        "no environment PUT: the job is written straight after the wait"
+    );
+    assert_eq!(azure.timer().delays(), [1, 2]);
+    assert!(machine.native_id.ends_with(EXECUTION));
+}
+
+#[tokio::test]
+async fn a_failed_environment_is_written_again() {
+    let mut azure = provider(vec![
+        token(),
+        json(200, POLICY),
+        provider_registration("Registered"),
+        environment_record("Failed"),
+        done(),
+        done(),
+        started(EXECUTION),
+    ]);
+
+    azure
+        .provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
+        .await
+        .expect("provision after rewriting the environment");
+
+    let transport = azure.transport();
+    assert_eq!(transport.request(ENVIRONMENT_PUT).method, Method::Put);
+    assert!(
+        transport
+            .request(ENVIRONMENT_PUT)
+            .url
+            .contains("/managedEnvironments/")
+    );
 }
 
 #[tokio::test]
@@ -1573,7 +1673,11 @@ async fn a_redelivered_provision_updates_the_job_and_starts_another_execution() 
     // control plane's gate on a machine row that is already running.
     let id = MachineId::generate();
     let mut script = container_script();
-    script.extend([done(), done(), started(NEXT_EXECUTION)]);
+    script.extend([
+        environment_record("Succeeded"),
+        done(),
+        started(NEXT_EXECUTION),
+    ]);
     let mut azure = provider(script);
     let request = container_request(id, CONTAINER_TYPE);
 

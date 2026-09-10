@@ -312,6 +312,56 @@ pub struct ManagedEnvironment {
     pub properties: ManagedEnvironmentProperties,
 }
 
+/// What `GET …/managedEnvironments/{name}` answers, trimmed to the one
+/// property the driver decides on.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManagedEnvironmentRecord {
+    /// Its state, among other things.
+    pub properties: ManagedEnvironmentRecordProperties,
+}
+
+/// The properties of an environment ARM answers with.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedEnvironmentRecordProperties {
+    /// `Succeeded`, `Failed`, `Canceled`, `Waiting`,
+    /// `InitializationInProgress`, `InfrastructureSetupInProgress`,
+    /// `InfrastructureSetupComplete`, `ScheduledForDelete`,
+    /// `UpgradeRequested` or `UpgradeFailed`.
+    pub provisioning_state: String,
+}
+
+/// Where an environment is in its life, as far as a job creation cares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvironmentState {
+    /// Jobs can be created in it.
+    Ready,
+    /// Azure is still building or upgrading it. A `PUT` now is refused
+    /// with `ManagedEnvironmentOperationInProgress` — which is what the
+    /// second attempt at the first container session on dev hit, when the
+    /// first attempt's `PUT` was still being carried out — so the driver
+    /// waits instead of writing.
+    InProgress(String),
+    /// The last operation on it failed, or it is being deleted; a fresh
+    /// `PUT` is the way forward.
+    Failed(String),
+}
+
+impl ManagedEnvironmentRecord {
+    /// Reads the state the way the driver acts on it.
+    #[must_use]
+    pub fn state(&self) -> EnvironmentState {
+        let state = self.properties.provisioning_state.as_str();
+        match state {
+            "Succeeded" | "InfrastructureSetupComplete" => EnvironmentState::Ready,
+            "Failed" | "Canceled" | "UpgradeFailed" | "ScheduledForDelete" => {
+                EnvironmentState::Failed(state.to_owned())
+            }
+            _ => EnvironmentState::InProgress(state.to_owned()),
+        }
+    }
+}
+
 /// A managed environment's properties.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
