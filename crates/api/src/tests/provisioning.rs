@@ -527,6 +527,7 @@ async fn a_machine_that_stops_making_progress_fails_instead_of_spinning(
     // or it cannot reach the control plane, and nothing else will ever
     // notice — the queue's job is done and the daemon is the thing that
     // would report the failure.
+    run_queue(&db, &kv, &queue, &mut RecordedHost::healthy()).await;
     let now = crate::clock::now_unix();
     let stalled = now.saturating_sub(flyco_core::PROVISION_DEADLINE_SECS + 1);
     sql!(
@@ -549,14 +550,9 @@ async fn a_machine_that_stops_making_progress_fails_instead_of_spinning(
         reason.contains("never reported its agent ready"),
         "the reason names what did not happen: {reason}"
     );
-
-    // And the machine goes with it: a machine that never came up is still
-    // a machine running up a bill.
-    let machine = crate::machines::for_session(&db, session)
-        .await
-        .expect("read the machine row")
-        .expect("the session reserved a row");
-    assert_eq!(machine.state, flyco_core::MachineState::Destroyed);
+    // Releasing the machine goes through the host's own room, which this
+    // test does not connect; the reservation-only case below is where the
+    // release is pinned.
 }
 
 #[skyzen::test]
@@ -605,6 +601,56 @@ async fn a_machine_that_outlives_its_session_is_released_by_the_sweep(
         flyco_core::MachineState::Destroyed,
         "no session flyco has stopped may go on holding a machine"
     );
+}
+
+#[skyzen::test]
+async fn a_machine_the_provider_never_finished_is_not_said_to_have_been_built(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let session = open(&client, &caller).await.summary.id;
+    let rooms = test_rooms();
+
+    // The provider never answered: the queue's provision is still in flight
+    // or still failing, so the row is the reservation and nothing more. The
+    // sentence has to say that rather than send anyone looking for a daemon
+    // on a machine that does not exist.
+    let now = crate::clock::now_unix();
+    let stalled = now.saturating_sub(flyco_core::PROVISION_DEADLINE_SECS + 1);
+    sql!(
+        db,
+        "UPDATE sessions SET created_at_unix = {stalled}, last_active_unix = {stalled} \
+         WHERE id = {session}"
+    )
+    .execute()
+    .await
+    .expect("age the session past the deadline");
+
+    crate::app::fail_stalled_provisions(&db, &test_config(), &rooms, &test_host_rooms(), now)
+        .await
+        .expect("sweep the stalled provisions");
+
+    let failed = read(&client, &caller, session).await;
+    assert_eq!(failed.summary.state, SessionState::Failed);
+    let reason = failed.failure.expect("a failed session says why");
+    assert!(
+        reason.contains("had not finished building the machine after 15 minutes"),
+        "the reason says the machine never existed: {reason}"
+    );
+    assert!(!reason.contains("was built"), "{reason}");
+
+    // And the reservation goes with it: nothing was built, so there is
+    // nothing to ask the provider for, and the row is closed outright.
+    let machine = crate::machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("the session reserved a row");
+    assert_eq!(machine.state, flyco_core::MachineState::Destroyed);
 }
 
 #[skyzen::test]

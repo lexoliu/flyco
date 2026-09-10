@@ -1775,22 +1775,30 @@ pub async fn fail_stalled_provisions(
     at_unix: u64,
 ) -> Result<(), ApiError> {
     for stalled in sessions::stalled_provisions(db, at_unix).await? {
+        // A row with no provider-native id is a machine the provider never
+        // finished building — the queue's job is still running or still
+        // failing — and saying it "was built" would send whoever reads the
+        // sentence to look at a daemon that never existed.
+        let built = machines::for_session(db, stalled.id)
+            .await?
+            .is_some_and(|machine| machine.native_id.is_some());
         // The daemon's own sentence when it managed to send one, because
         // "never reported its agent ready" is what flyco saw and not what
         // happened.
-        let reason = sessions::startup_failure(db, stalled.id).await?.map_or_else(
-            || {
-                "the machine was built but never reported its agent ready, so flyco stopped \
+        let reason = match (built, sessions::startup_failure(db, stalled.id).await?) {
+            (false, _) => format!(
+                "the provider had not finished building the machine after {} minutes, so flyco \
+                 stopped waiting for it and released the reservation",
+                flyco_core::PROVISION_DEADLINE_SECS / 60
+            ),
+            (true, None) => "the machine was built but never reported its agent ready, so flyco \
+                             stopped waiting for it and released it"
+                .to_owned(),
+            (true, Some(failure)) => format!(
+                "the machine was built but its agent never started: {failure}. flyco stopped \
                  waiting for it and released it"
-                    .to_owned()
-            },
-            |failure| {
-                format!(
-                    "the machine was built but its agent never started: {failure}. flyco stopped \
-                     waiting for it and released it"
-                )
-            },
-        );
+            ),
+        };
         // Destroyed first: a machine that never came up is still a machine
         // running up a bill, and a session flyco has given up on must not
         // go on paying for one. Resuming builds a new one on the same row.

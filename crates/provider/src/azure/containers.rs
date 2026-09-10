@@ -111,6 +111,15 @@ pub const MACHINE_TYPE_PREFIX: &str = "aca-";
 /// is exactly twice its cores in GiB, and any other pair is rejected.
 pub const MEMORY_GIB_PER_VCPU: u32 = 2;
 
+/// The resource provider every Container Apps type lives under.
+///
+/// Named because a subscription has to be *registered* for it before the
+/// first environment can be created, and a freshly linked subscription is
+/// not: see [`AzureProvider::ensure_container_provider`].
+///
+/// [`AzureProvider::ensure_container_provider`]: super::AzureProvider::ensure_container_provider
+pub const PROVIDER_NAMESPACE: &str = "Microsoft.App";
+
 /// The provider-native family key every container entry carries.
 ///
 /// One family, because Azure sells one: the sizes below are points on a

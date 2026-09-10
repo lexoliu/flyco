@@ -107,7 +107,7 @@ use crate::{
     cloud_init, flycod,
 };
 
-use arm::{ErrorBody, Follow, OperationBody, OperationStatus, api_version};
+use arm::{ErrorBody, Follow, OperationBody, OperationStatus, ProviderRegistration, api_version};
 use auth::{ServicePrincipal, TokenCache};
 use costs::{CostQuery, CostResult};
 use policy::{AssignmentPage, RegionPolicy};
@@ -373,6 +373,12 @@ pub struct AzureProvider<T = LiveTransport, C = SystemClock, K = SystemTimer> {
     workspace: Workspace,
     prices: PriceCatalog,
     region_policy: Option<RegionPolicy>,
+    /// Whether this instance has seen the subscription registered for
+    /// [`containers::PROVIDER_NAMESPACE`]. Registration is permanent once
+    /// done, so one read per driver instance is one too many only in the
+    /// steady state — and that read is a subscription-level `GET` that
+    /// costs nothing next to the environment `PUT` it guards.
+    container_provider_registered: bool,
 }
 
 impl AzureProvider {
@@ -406,6 +412,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             workspace,
             prices: PriceCatalog::new(),
             region_policy: None,
+            container_provider_registered: false,
         }
     }
 
@@ -719,7 +726,107 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             %location,
             "created or refreshed the resource group flyco owns"
         );
+
+        // Asked for now, awaited later. Registering `Microsoft.App` is a
+        // subscription-wide action that takes a minute or two the first
+        // time, and this runs inside the request that links the account, so
+        // it is started here and finished by the first container provision
+        // — which by then usually finds it done.
+        self.register_container_provider().await?;
         Ok(location)
+    }
+
+    /// The URL of the subscription's registration record for
+    /// [`containers::PROVIDER_NAMESPACE`], with `action` appended when there
+    /// is one.
+    fn container_provider_url(&self, action: &str) -> String {
+        arm::subscription_url(
+            self.subscription(),
+            &format!("providers/{}{action}", containers::PROVIDER_NAMESPACE),
+            api_version::RESOURCE_PROVIDERS,
+        )
+    }
+
+    /// Asks Azure to register the subscription for Container Apps.
+    ///
+    /// Idempotent: on a subscription that is already registered the action
+    /// answers the current record and changes nothing. The state it answers
+    /// with is logged and not waited on — see
+    /// [`Self::ensure_container_provider`] for the wait.
+    async fn register_container_provider(&mut self) -> Result<ProviderRegistration, ProviderError> {
+        let response = self
+            .send(HttpRequest::new(
+                Method::Post,
+                self.container_provider_url("/register"),
+            ))
+            .await?;
+        if !response.is_success() {
+            return Err(refusal(&response));
+        }
+        let registration: ProviderRegistration = response.json()?;
+        tracing::info!(
+            namespace = containers::PROVIDER_NAMESPACE,
+            state = %registration.registration_state,
+            "asked the subscription to register the Container Apps provider"
+        );
+        Ok(registration)
+    }
+
+    /// Makes sure the subscription can create Container Apps resources,
+    /// registering [`containers::PROVIDER_NAMESPACE`] and waiting for the
+    /// registration to land when it has not.
+    ///
+    /// Without this the first environment `PUT` on a fresh subscription is
+    /// refused with `MissingSubscriptionRegistration`, and the session it
+    /// was for fails for a reason that is nobody's fault and nothing a user
+    /// can fix from flyco. Registration is one-time per subscription, so
+    /// the read is skipped once this instance has seen it registered.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::Rejected`] when the registration has not landed
+    /// after the driver's polling budget, and [`ProviderError::Refused`]
+    /// when Azure refuses the read or the action outright.
+    async fn ensure_container_provider(&mut self) -> Result<(), ProviderError> {
+        if self.container_provider_registered {
+            return Ok(());
+        }
+        let mut registration = self.read_container_provider().await?;
+        if !registration.is_registered() {
+            registration = self.register_container_provider().await?;
+        }
+        let mut attempt = 0;
+        while !registration.is_registered() {
+            if attempt == MAX_POLL_ATTEMPTS {
+                return Err(ProviderError::Rejected(format!(
+                    "the subscription is still `{}` for {} after {MAX_POLL_ATTEMPTS} reads",
+                    registration.registration_state,
+                    containers::PROVIDER_NAMESPACE
+                )));
+            }
+            self.timer.sleep(poll_delay(None, attempt)).await;
+            attempt += 1;
+            registration = self.read_container_provider().await?;
+        }
+        tracing::info!(
+            namespace = containers::PROVIDER_NAMESPACE,
+            "the subscription is registered for Container Apps"
+        );
+        self.container_provider_registered = true;
+        Ok(())
+    }
+
+    async fn read_container_provider(&mut self) -> Result<ProviderRegistration, ProviderError> {
+        let response = self
+            .send(HttpRequest::new(
+                Method::Get,
+                self.container_provider_url(""),
+            ))
+            .await?;
+        if !response.is_success() {
+            return Err(refusal(&response));
+        }
+        Ok(response.json()?)
     }
 
     /// The regions a catalog covers.
@@ -1362,6 +1469,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             .deployable_container(region, &request.spec.machine_type)
             .await?;
 
+        self.ensure_container_provider().await?;
         self.ensure_environment(region).await?;
 
         let job = containers::names::job(id);

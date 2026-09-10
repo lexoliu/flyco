@@ -43,6 +43,7 @@ use crate::azure::auth::ServicePrincipal;
 use crate::clock::ManualClock;
 use crate::cloud_init::CONFIG_PATH;
 use crate::http::{HttpRequest, HttpResponse, Method};
+use crate::polling::MAX_POLL_ATTEMPTS;
 use crate::testing::{RecordedTransport, RecordingTimer};
 use crate::{
     CapacityMode, ClaudeCredential, CloudProvider, DaemonBootstrap, HarnessCredential, Machine,
@@ -1166,25 +1167,45 @@ fn started(execution: &str) -> HttpResponse {
     )
 }
 
+/// What `GET /subscriptions/{sub}/providers/Microsoft.App` answers, and
+/// what the `register` action answers: the record, trimmed to the field
+/// the driver reads.
+fn provider_registration(state: &str) -> HttpResponse {
+    json(
+        200,
+        &serde_json::to_string(&serde_json::json!({
+            "id": format!("/subscriptions/{SUBSCRIPTION}/providers/Microsoft.App"),
+            "namespace": "Microsoft.App",
+            "registrationState": state,
+            "registrationPolicy": "RegistrationRequired",
+        }))
+        .expect("serialize"),
+    )
+}
+
 /// The responses a clean container provisioning run consumes, in order:
-/// the token, the policy read, the environment `PUT`, the job `PUT`, and
-/// the start.
+/// the token, the policy read, the provider-registration read (already
+/// registered), the environment `PUT`, the job `PUT`, and the start.
 fn container_script() -> Vec<HttpResponse> {
     vec![
         token(),
         json(200, POLICY),
+        provider_registration("Registered"),
         done(),
         done(),
         started(EXECUTION),
     ]
 }
 
-/// Index of the environment `PUT` in a [`container_script`] run.
-const ENVIRONMENT_PUT: usize = 2;
+/// Index of the `Microsoft.App` registration read in a
+/// [`container_script`] run.
+const PROVIDER_GET: usize = 2;
+/// Index of the environment `PUT`.
+const ENVIRONMENT_PUT: usize = 3;
 /// Index of the job's own `PUT`.
-const JOB_PUT: usize = 3;
+const JOB_PUT: usize = 4;
 /// Index of the `POST` that starts an execution.
-const JOB_START: usize = 4;
+const JOB_START: usize = 5;
 
 fn provisioned_container(machine: MachineId) -> Machine {
     Machine {
@@ -1209,6 +1230,16 @@ async fn provisioning_a_container_creates_the_environment_then_the_job_then_an_e
         .expect("provision a container");
 
     let transport = azure.transport();
+    let registration = transport.request(PROVIDER_GET);
+    assert_eq!(registration.method, Method::Get);
+    assert_eq!(
+        registration.url,
+        format!(
+            "https://management.azure.com/subscriptions/{SUBSCRIPTION}\
+             /providers/Microsoft.App?api-version=2021-04-01"
+        )
+    );
+
     let environment = transport.request(ENVIRONMENT_PUT);
     assert_eq!(environment.method, Method::Put);
     assert_eq!(
@@ -1261,6 +1292,116 @@ async fn provisioning_a_container_creates_the_environment_then_the_job_then_an_e
         machine.address, None,
         "nothing dials a container: its daemon opens the connection"
     );
+}
+
+#[tokio::test]
+async fn an_unregistered_subscription_is_registered_for_container_apps_before_the_environment() {
+    // A subscription that has never used Container Apps answers every
+    // environment `PUT` with `MissingSubscriptionRegistration` — what the
+    // first live container session on a student subscription hit. The
+    // driver reads the registration, asks for it, and waits for it to land
+    // before writing anything under `Microsoft.App`.
+    let id = MachineId::generate();
+    let mut azure = provider(vec![
+        token(),
+        json(200, POLICY),
+        provider_registration("NotRegistered"),
+        provider_registration("Registering"),
+        provider_registration("Registering"),
+        provider_registration("Registered"),
+        done(),
+        done(),
+        started(EXECUTION),
+    ]);
+
+    let machine = azure
+        .provision(&container_request(id, CONTAINER_TYPE))
+        .await
+        .expect("provision a container on a subscription registered on the way");
+
+    let transport = azure.transport();
+    let register = transport.request(3);
+    assert_eq!(register.method, Method::Post);
+    assert_eq!(
+        register.url,
+        format!(
+            "https://management.azure.com/subscriptions/{SUBSCRIPTION}\
+             /providers/Microsoft.App/register?api-version=2021-04-01"
+        )
+    );
+    assert_eq!(register.body, [] as [u8; 0]);
+    assert_eq!(
+        transport.request(4).method,
+        Method::Get,
+        "then it is read until it lands"
+    );
+    assert_eq!(transport.request(5).method, Method::Get);
+    assert!(
+        transport.request(6).url.contains("/managedEnvironments/"),
+        "the environment is written only once the namespace is registered"
+    );
+    assert_eq!(
+        azure.timer().delays(),
+        [1, 2],
+        "each read after the action waits the driver's own backoff"
+    );
+    assert!(machine.native_id.ends_with(EXECUTION));
+}
+
+#[tokio::test]
+async fn a_registration_that_never_lands_fails_the_provision_rather_than_writing_into_it() {
+    let mut script = vec![
+        token(),
+        json(200, POLICY),
+        provider_registration("NotRegistered"),
+    ];
+    script.extend((0..=MAX_POLL_ATTEMPTS).map(|_| provider_registration("Registering")));
+    let mut azure = provider(script);
+
+    let error = azure
+        .provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
+        .await
+        .expect_err("a namespace that never registers cannot be written into");
+    assert!(
+        matches!(error, ProviderError::Rejected(ref message) if message.contains("Registering")),
+        "{error}"
+    );
+    let transport = azure.transport();
+    assert!(
+        (0..transport.request_count()).all(|index| !transport
+            .request(index)
+            .url
+            .contains("/managedEnvironments/")),
+        "nothing under Microsoft.App is written"
+    );
+}
+
+#[tokio::test]
+async fn linking_a_subscription_asks_for_the_container_apps_registration() {
+    // At link time the action is fired and not waited on: it runs inside
+    // the request that links the account, and the first container
+    // provision finishes the wait if there is any left.
+    let mut azure = provider(vec![
+        token(),
+        json(200, POLICY),
+        done(),
+        provider_registration("Registering"),
+    ]);
+
+    azure
+        .ensure_resource_group()
+        .await
+        .expect("prepare the subscription");
+
+    let transport = azure.transport();
+    let register = transport.request(3);
+    assert_eq!(register.method, Method::Post);
+    assert!(
+        register
+            .url
+            .ends_with("/providers/Microsoft.App/register?api-version=2021-04-01")
+    );
+    assert_eq!(transport.request_count(), 4, "and nothing waits on it");
 }
 
 #[tokio::test]
