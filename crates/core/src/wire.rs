@@ -91,6 +91,43 @@ impl UsageWindow {
             window_minutes,
         }
     }
+
+    /// Whether this window has nothing left in it.
+    ///
+    /// A full window is what a refused turn means, so this is the predicate
+    /// [`blocking_window`] is built from. It is `>=` rather than `==`
+    /// because both vendors type the percentage as an unbounded number and
+    /// [`new`](Self::new) has already clamped anything above a hundred.
+    ///
+    /// Both drivers round *down* below a hundred, so a hundred here means
+    /// the vendor said a hundred: a window at 99.6% is spent enough to draw
+    /// a full ring and not spent enough to stop a session for five hours.
+    #[must_use]
+    pub const fn is_exhausted(&self) -> bool {
+        self.used_percent >= 100
+    }
+}
+
+/// The window an account blocked on its plan is waiting for.
+///
+/// Not simply "a window at a hundred percent": an account with two spent
+/// windows is unblocked by neither until *both* have turned over, so the
+/// one to wait for is the exhausted window that resets last. That is the
+/// instant flyco schedules the session's return around, and getting it
+/// wrong by taking the soonest reset would wake a session into a limit it
+/// is still inside.
+///
+/// `None` when nothing is exhausted, and also when the exhausted windows
+/// name no reset time: a pause flyco cannot see the end of is a session
+/// stopped for ever, which is worse than one that goes on refusing turns
+/// with its machine up and its user watching.
+#[must_use]
+pub fn blocking_window(windows: &[UsageWindow]) -> Option<&UsageWindow> {
+    windows
+        .iter()
+        .filter(|window| window.is_exhausted())
+        .filter(|window| window.resets_at_unix.is_some())
+        .max_by_key(|window| window.resets_at_unix)
 }
 
 /// What a window of `minutes` covering `scope` is called.
@@ -117,6 +154,34 @@ fn window_label(minutes: Option<u32>, scope: Option<&str>) -> String {
         None => base,
         Some(scope) => format!("{base} ({scope})"),
     }
+}
+
+/// Who put a message into a session's conversation.
+///
+/// Every message the harness sees is shaped like the user's, because that is
+/// the only door a coding agent has: flyco has no channel for saying
+/// something *about* a session to the agent working in it. So the messages
+/// flyco sends on the user's behalf — the notice that a machine was replaced,
+/// a CI failure worth acting on, the continuation after a plan window turned
+/// over — are user messages, and this is the one thing that distinguishes
+/// them.
+///
+/// Read by the transcript and by nothing else. The harness is handed the text
+/// and never this: a model told "the following was written by a program"
+/// would reason about the framing instead of doing the work, and the notices
+/// already say what they are in their own words.
+///
+/// Defaults to [`User`](Self::User), which is what every message that does
+/// not say otherwise is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageOrigin {
+    /// The user typed it, in the composer or through
+    /// `POST /v1/sessions/{id}/messages`.
+    #[default]
+    User,
+    /// Flyco said it on the user's behalf, and the transcript says so.
+    Flyco,
 }
 
 /// One slash command the running harness offers its user.
@@ -546,6 +611,14 @@ pub enum ControlToDaemon {
     UserMessage {
         /// Message text.
         text: String,
+        /// Who is speaking, for the transcript's benefit.
+        ///
+        /// Carried on the command because the room is what turns it into the
+        /// [`ClientEvent::UserMessage`] browsers read, and the room is a
+        /// Durable Object that knows nothing about why the Worker sent this.
+        /// The daemon ignores it: what reaches the harness is the text.
+        #[serde(default)]
+        origin: MessageOrigin,
     },
     /// Run a shell command on the machine, as the composer's `!` prefix
     /// asks for (docs/ux.md §9.3).
@@ -810,6 +883,10 @@ pub enum ClientEvent {
     UserMessage {
         /// What was said to the agent, verbatim.
         text: String,
+        /// Who said it, which is what lets the transcript attribute a
+        /// message flyco sent on the user's behalf to flyco.
+        #[serde(default)]
+        origin: MessageOrigin,
     },
     /// A shell command the user ran on the machine with `!`.
     ///
@@ -1040,8 +1117,9 @@ impl ClientEvent {
 mod tests {
     use super::{
         ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-        HarnessCommand, ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
-        ReportStopping, ShellOutcome, ShellStream, StopReason, UsageWindow,
+        HarnessCommand, MessageOrigin, ProvisioningStage, ReportProvisioningStage,
+        ReportSpotNotice, ReportStopping, ShellOutcome, ShellStream, StopReason, UsageWindow,
+        blocking_window,
     };
     use crate::budget::BudgetSignal;
     use crate::harness::{ContextWindow, HarnessEvent, UsageReport};
@@ -1219,6 +1297,7 @@ mod tests {
             ControlToDaemon::Welcome,
             ControlToDaemon::UserMessage {
                 text: "what does this crate do?".to_owned(),
+                origin: MessageOrigin::User,
             },
             ControlToDaemon::ShellCommand {
                 command: "cargo test -p flyco-core".to_owned(),
@@ -1329,6 +1408,7 @@ mod tests {
             },
             ClientEvent::UserMessage {
                 text: "what does this crate do?".to_owned(),
+                origin: MessageOrigin::Flyco,
             },
             ClientEvent::Started {
                 harness_session_id: "9d0f4b1a".to_owned(),
@@ -1449,11 +1529,78 @@ mod tests {
         assert_eq!(UsageWindow::new(None, None, 0, None).label, "Plan");
     }
 
+    /// A message with no origin stated is the user's, which is what every
+    /// message written before this field existed is.
+    #[test]
+    fn a_message_that_says_nothing_about_its_author_is_the_users() {
+        let event: ClientEvent =
+            serde_json::from_str(r#"{"type":"user_message","text":"carry on"}"#)
+                .expect("deserialize");
+        assert_eq!(
+            event,
+            ClientEvent::UserMessage {
+                text: "carry on".to_owned(),
+                origin: MessageOrigin::User,
+            }
+        );
+        let command: ControlToDaemon =
+            serde_json::from_str(r#"{"type":"user_message","text":"carry on"}"#)
+                .expect("deserialize");
+        assert_eq!(
+            command,
+            ControlToDaemon::UserMessage {
+                text: "carry on".to_owned(),
+                origin: MessageOrigin::User,
+            }
+        );
+    }
+
     #[test]
     fn a_usage_window_cannot_read_past_full() {
         assert_eq!(
             UsageWindow::new(Some(300), None, 103, None).used_percent,
             100
+        );
+        assert!(UsageWindow::new(Some(300), None, 103, None).is_exhausted());
+        assert!(!UsageWindow::new(Some(300), None, 99, None).is_exhausted());
+    }
+
+    #[test]
+    fn two_spent_windows_are_waited_out_by_the_one_that_resets_last() {
+        // The account is blocked until *both* have turned over, so waking
+        // the session at the sooner reset would wake it into the limit it
+        // is still inside.
+        let five_hour = UsageWindow::new(Some(300), None, 100, Some(1_789_002_000));
+        let weekly = UsageWindow::new(Some(10_080), None, 100, Some(1_789_570_800));
+        assert_eq!(
+            blocking_window(&[five_hour, weekly.clone()]),
+            Some(&weekly),
+            "the later reset is the one the session comes back after"
+        );
+    }
+
+    #[test]
+    fn a_plan_with_something_left_in_every_window_is_not_blocked() {
+        assert!(
+            blocking_window(&[
+                UsageWindow::new(Some(300), None, 99, Some(1_789_002_000)),
+                UsageWindow::new(Some(10_080), None, 40, Some(1_789_570_800)),
+            ])
+            .is_none()
+        );
+        assert!(blocking_window(&[]).is_none());
+    }
+
+    #[test]
+    fn a_spent_window_that_names_no_reset_cannot_be_waited_out() {
+        // Nothing to schedule around: a pause with no stated end is a
+        // session stopped for ever.
+        assert!(blocking_window(&[UsageWindow::new(Some(300), None, 100, None)]).is_none());
+        // …and it does not hide a window that *does* name one.
+        let weekly = UsageWindow::new(Some(10_080), None, 100, Some(1_789_570_800));
+        assert_eq!(
+            blocking_window(&[UsageWindow::new(Some(300), None, 100, None), weekly.clone()]),
+            Some(&weekly)
         );
     }
 

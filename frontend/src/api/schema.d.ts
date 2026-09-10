@@ -2075,6 +2075,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/usage-limit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Records that this session's harness has run out of plan, and stops the session until the window turns over.
+         * @description Records that this session's harness has run out of plan, and stops the
+         *     session until the window turns over.
+         *
+         *     The one thing a daemon reports that stops the session rather than
+         *     describing it: the harness has refused a turn because a rolling window of
+         *     the account's plan is spent, and there is nothing to do until it resets.
+         *     The machine is released so the wait costs nothing and started again ten
+         *     minutes before the reset, and the conversation is picked back up on the
+         *     user's behalf — see [`crate::usage_limits`] for the whole sequence.
+         *
+         *     A route of its own rather than a flag on [`report_usage`] beside it,
+         *     because the two are read by different things and filed at different
+         *     times: a usage snapshot fills the rings and is filed after every turn,
+         *     and this pauses a session and is filed once per limit.
+         *
+         *     Answers `202`: the pause is durable when this returns, and the machine
+         *     the pause is about is released by the minute sweep rather than in this
+         *     request.
+         */
+        post: operations["flyco_api::app::report_usage_limit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/workdir-patch": {
         parameters: {
             query?: never;
@@ -3754,6 +3791,22 @@ export interface components {
          */
         OsFamily: "linux" | "mac_os" | "windows";
         /**
+         * @description Why a session is [`SessionState::Paused`].
+         *
+         *     Recorded beside the state for the reason [`InterruptedReason`] is: the
+         *     state says the session is stopped on purpose, and this says what would
+         *     start it again. The two answers point the reader at completely different
+         *     things — a spent budget is a number only the user can raise, and a spent
+         *     plan window is a wait flyco ends by itself — so a single `Paused` pill
+         *     covering both would send half the people who read it to the wrong
+         *     control (docs/ux.md §6).
+         *
+         *     `None` is a session the user paused, which is the only pause with no
+         *     mechanism behind it and nothing to say beyond the word.
+         * @enum {string}
+         */
+        PausedReason: "budget" | "usage_limit";
+        /**
          * @description An RFC 9457 problem detail document.
          *
          *     `instance` is deliberately absent: flyco has no per-occurrence URI to
@@ -4304,6 +4357,7 @@ export interface components {
              *     retry it, pick another region, or ask for a quota increase.
              */
             failure?: string | null;
+            usage_limit?: null | components["schemas"]["UsageLimitPause"];
         };
         /**
          * @description The machine a session is on, as the agent driving it is told about it.
@@ -4380,6 +4434,7 @@ export interface components {
              *     leaving one blank for the sessions nobody chose one for.
              */
             model: components["schemas"]["ModelChoice"];
+            paused_reason?: null | components["schemas"]["PausedReason"];
             /** @description Repository it works in. */
             repo: components["schemas"]["RepoSlug"];
             /** @description Where it is in its lifecycle. */
@@ -4615,6 +4670,73 @@ export interface components {
             enabled: boolean;
             /** @description Name the harness announces the server under. Unique per user. */
             name: string;
+        };
+        /**
+         * @description Request body of `POST /v1/sessions/{id}/usage-limit`.
+         *
+         *     The one fact a session's daemon holds that stops it working: the
+         *     harness refused a turn because a window of the account's plan is spent.
+         *     Reported separately from [`ReportUsage`] beside it because the two are
+         *     read by different things — a snapshot fills the rings, and this pauses
+         *     the session and schedules its return — and because a snapshot is filed
+         *     after every turn while this is filed once per limit.
+         *
+         *     The control plane refuses a window that names no reset: the whole of
+         *     what it does with this is stop the machine until a stated instant, and
+         *     there is nothing to schedule around a limit with no end.
+         */
+        UsageLimitHit: {
+            /** @description The window that struck, as the harness reported it. */
+            window: components["schemas"]["UsageWindow"];
+        };
+        /**
+         * @description Everything a session paused on a harness usage limit is waiting for.
+         *
+         *     Present exactly while [`SessionSummary::paused_reason`] is
+         *     [`PausedReason::UsageLimit`], and cleared when the window turns over and
+         *     the session is continued.
+         *
+         *     Whether the machine was released is *derived* from
+         *     [`resume_at_unix`](Self::resume_at_unix) rather than stored beside it:
+         *     there is a wake to schedule if and only if there is a machine to start,
+         *     so one field answers both questions and they cannot disagree.
+         */
+        UsageLimitPause: {
+            /**
+             * @description What the user typed while the session was waiting, if anything.
+             *
+             *     The composer stays usable through a usage-limit pause, and what is
+             *     typed into it is held here and sent as the continuation instead of
+             *     [`USAGE_LIMIT_CONTINUE_MESSAGE`]. Shown back to the user so the
+             *     message they queued is visibly queued rather than apparently lost.
+             */
+            queued_message?: string | null;
+            /**
+             * Format: int64
+             * @description When that window turns over, seconds since the Unix epoch.
+             */
+            resets_at_unix: number;
+            /**
+             * Format: int64
+             * @description When flyco starts the machine again, seconds since the Unix epoch.
+             *
+             *     `None` for a pause that kept the machine, which is every reset less
+             *     than [`USAGE_LIMIT_STOP_AFTER_SECS`] away. Present means the machine
+             *     was released and costs nothing until this instant, which is what the
+             *     session page states.
+             */
+            resume_at_unix?: number | null;
+            /**
+             * @description What the window that struck is called, as
+             *     [`UsageWindow::label`](crate::wire::UsageWindow::label) names it —
+             *     `5-hour`, `Weekly (Opus)`.
+             *
+             *     The label and not the whole window: the percentages behind the rings
+             *     are the account's and move while this session waits, and a copy
+             *     frozen at the moment of the pause would be a second answer going
+             *     stale. What the pause is about is *which* window, and that is a name.
+             */
+            window: string;
         };
         /** @description Token and context-window accounting reported by the harness. */
         UsageReport: {
@@ -6989,6 +7111,7 @@ export interface operations {
                          *     leaving one blank for the sessions nobody chose one for.
                          */
                         model: components["schemas"]["ModelChoice"];
+                        paused_reason?: null | components["schemas"]["PausedReason"];
                         /** @description Repository it works in. */
                         repo: components["schemas"]["RepoSlug"];
                         /** @description Where it is in its lifecycle. */
@@ -7077,6 +7200,7 @@ export interface operations {
                          *     retry it, pick another region, or ask for a quota increase.
                          */
                         failure?: string | null;
+                        usage_limit?: null | components["schemas"]["UsageLimitPause"];
                     };
                 };
             };
@@ -7111,6 +7235,7 @@ export interface operations {
                          *     retry it, pick another region, or ask for a quota increase.
                          */
                         failure?: string | null;
+                        usage_limit?: null | components["schemas"]["UsageLimitPause"];
                     };
                 };
             };
@@ -7158,6 +7283,7 @@ export interface operations {
                          *     retry it, pick another region, or ask for a quota increase.
                          */
                         failure?: string | null;
+                        usage_limit?: null | components["schemas"]["UsageLimitPause"];
                     };
                 };
             };
@@ -7418,6 +7544,7 @@ export interface operations {
                          *     retry it, pick another region, or ask for a quota increase.
                          */
                         failure?: string | null;
+                        usage_limit?: null | components["schemas"]["UsageLimitPause"];
                     };
                 };
             };
@@ -8155,6 +8282,7 @@ export interface operations {
                          *     retry it, pick another region, or ask for a quota increase.
                          */
                         failure?: string | null;
+                        usage_limit?: null | components["schemas"]["UsageLimitPause"];
                     };
                 };
             };
@@ -8405,6 +8533,34 @@ export interface operations {
         responses: {
             /** @description Done. There is nothing to return. */
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::report_usage_limit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The window that struck, as the harness reported it. */
+                    window: components["schemas"]["UsageWindow"];
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

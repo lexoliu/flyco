@@ -785,6 +785,16 @@ impl<S: TranscriptStore> Driver<S> {
                     count = windows.len(),
                     "the harness reported the plan's usage windows"
                 );
+                // A window the CLI reports spent is a usage limit even though
+                // no turn has been refused yet, and it is the one signal of
+                // issue #244 that arrives from the plan rather than from an
+                // error. The normalizer decides it so that this and the
+                // stream's own `rate_limit_event` reach the conversation once.
+                for event in self.normalizer.on_plan_usage(&windows) {
+                    if !emit(&self.outputs, SessionOutput::Event { event }).await {
+                        return false;
+                    }
+                }
                 emit(&self.outputs, SessionOutput::PlanUsage { windows }).await
             }
             SidecarEvent::Commands { commands } => {

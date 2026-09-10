@@ -142,7 +142,7 @@ impl Fold {
             let event: ClientEvent = serde_json::from_value(stored.event.clone())
                 .map_err(|_| ApiError::CorruptRecord("a room recorded a non-client event"))?;
             match event {
-                ClientEvent::UserMessage { text } => {
+                ClientEvent::UserMessage { text, .. } => {
                     self.prompt = Some(excerpt(&text, PROMPT_EXCERPT_CHARS));
                 }
                 ClientEvent::Harness { event } => self.harness(&event, stored),
@@ -252,6 +252,7 @@ mod tests {
     fn said(text: &str) -> ClientEvent {
         ClientEvent::UserMessage {
             text: text.to_owned(),
+            origin: flyco_core::MessageOrigin::User,
         }
     }
 

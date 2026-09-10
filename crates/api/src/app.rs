@@ -8,11 +8,11 @@ use flyco_core::{
     ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, EnvDocument,
     HarnessFeature, HarnessObservation, HarnessSessionView, MAX_SESSION_TITLE_CHARS,
-    MachineCatalogEntry, MachineOrigin, MachineSpec, ModelChoice, ProvisioningStage, RepoSlug,
-    RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure,
-    ReportStopping, ReportUsage, ResizeMachine, SendMessage, SessionActivity, SessionDetail,
-    SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UserId,
-    wire::ApprovalPayload,
+    MachineCatalogEntry, MachineOrigin, MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage,
+    RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
+    ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, SendMessage, SessionActivity,
+    SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe,
+    UpdateSession, UsageLimitHit, UserId, wire::ApprovalPayload,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -41,7 +41,7 @@ use crate::{
     agents_md, api_keys, approvals, claude_oauth, codex_oauth, daemon_tokens, env,
     harness_accounts, hosts, machines, mcp, memory, oauth, observations, problem,
     provider_accounts, provider_oauth, provisioning, push, relay, releases, repos, responses,
-    sessions, skills, transcripts, turns, users, webhooks, workdirs,
+    sessions, skills, transcripts, turns, usage_limits, users, webhooks, workdirs,
 };
 
 /// Health probe response.
@@ -284,7 +284,13 @@ async fn start_session(
         id,
         "the session's room would not take its first prompt",
         rooms
-            .command(id, &ControlToDaemon::UserMessage { text: prompt })
+            .command(
+                id,
+                &ControlToDaemon::UserMessage {
+                    text: prompt,
+                    origin: MessageOrigin::User,
+                },
+            )
             .await,
     )
     .await?;
@@ -1001,6 +1007,16 @@ async fn say(
     if message.text.trim().is_empty() {
         return Err(ApiError::EmptyMessage);
     }
+    // A session waiting out a spent plan window keeps a usable composer —
+    // the user has something to say and the wait can be days long — and what
+    // they type is held against the pause rather than handed to a harness
+    // that would refuse it. It is sent as the continuation the moment the
+    // window turns over, in place of flyco's canned nudge (docs/ux.md §9.8).
+    // Tried before `drive`, because `drive` refuses a paused session.
+    let queued = queue_while_waiting(user, params, &message.text, db).await?;
+    if queued {
+        return Ok(Accepted);
+    }
     let id = drive(
         user,
         params,
@@ -1008,6 +1024,7 @@ async fn say(
         db,
         ControlToDaemon::UserMessage {
             text: message.text.clone(),
+            origin: MessageOrigin::User,
         },
     )
     .await?;
@@ -1018,6 +1035,32 @@ async fn say(
     // one — and `drive` has already proved the session is the caller's.
     sessions::record_activity(db, id, SessionActivity::Idle).await?;
     Ok(Accepted)
+}
+
+/// Holds a message against a session that is waiting out a plan window.
+///
+/// Answers whether it was held, which is `false` for every session that is
+/// not waiting — the ordinary path, which goes on to hand the message to the
+/// room.
+///
+/// Scoped by owner like every other write on a session, so a message can only
+/// be queued against the caller's own: the update names both the id and the
+/// user, and a session belonging to somebody else simply matches no row.
+async fn queue_while_waiting(
+    user: &CurrentUser,
+    params: &Params,
+    text: &str,
+    db: &Db,
+) -> Result<bool, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    let queued = sessions::queue_usage_limit_message(db, user.id, id, text).await?;
+    if queued {
+        tracing::info!(
+            session = %id,
+            "held a message for a session waiting out a spent plan window"
+        );
+    }
+    Ok(queued)
 }
 
 /// Ends a session's current turn.
@@ -1526,6 +1569,45 @@ async fn record_reported_usage(
         )
         .await?;
     Ok(NoContent)
+}
+
+/// Records that this session's harness has run out of plan, and stops the
+/// session until the window turns over.
+///
+/// The one thing a daemon reports that stops the session rather than
+/// describing it: the harness has refused a turn because a rolling window of
+/// the account's plan is spent, and there is nothing to do until it resets.
+/// The machine is released so the wait costs nothing and started again ten
+/// minutes before the reset, and the conversation is picked back up on the
+/// user's behalf — see [`crate::usage_limits`] for the whole sequence.
+///
+/// A route of its own rather than a flag on [`report_usage`] beside it,
+/// because the two are read by different things and filed at different
+/// times: a usage snapshot fills the rings and is filed after every turn,
+/// and this pauses a session and is filed once per limit.
+///
+/// Answers `202`: the pause is durable when this returns, and the machine
+/// the pause is about is released by the minute sweep rather than in this
+/// request.
+#[skyzen::openapi]
+async fn report_usage_limit(
+    State(session): State<DaemonSession>,
+    State(config): State<ApiConfig>,
+    Json(report): Json<UsageLimitHit>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Accepted> {
+    usage_limits::pause(
+        &db,
+        &config,
+        &rooms,
+        session.0,
+        &report.window,
+        crate::clock::now_unix(),
+    )
+    .await
+    .map(|()| Accepted)
+    .into()
 }
 
 /// Records that this session's machine is being reclaimed by its provider.
@@ -2231,27 +2313,34 @@ fn host_routes() -> Vec<RouteNode> {
 }
 
 fn daemon_routes() -> Vec<RouteNode> {
-    // Two trees, one middleware: what the daemon reports about its session,
-    // and what it asks on the agent's behalf. Split because a route tuple
-    // holds sixteen and this is more than sixteen routes, so the seam is
-    // where the meaning changes rather than wherever the count ran out.
-    let reports = Route::new((
+    // Three trees, one middleware: what the daemon reports about the
+    // conversation, what it reports about the machine, and what it asks on
+    // the agent's behalf. Split because a route tuple holds sixteen and this
+    // is more than sixteen routes, so each seam is where the meaning changes
+    // rather than wherever the count ran out.
+    let conversation = Route::new((
         "/v1/sessions/{id}/approvals".post(raise_approval),
         "/v1/sessions/{id}/harness-session"
             .at(get_harness_session)
             .put(put_harness_session),
         "/v1/sessions/{id}/models".put(report_models),
         "/v1/sessions/{id}/usage".put(report_usage),
-        "/v1/sessions/{id}/spot-notice".post(report_spot_notice),
-        "/v1/sessions/{id}/stopping".post(report_stopping),
-        "/v1/sessions/{id}/startup-failure".post(report_startup_failure),
+        "/v1/sessions/{id}/usage-limit".post(report_usage_limit),
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),
         "/v1/sessions/{id}/turn-started".post(notify_turn_started),
         "/v1/sessions/{id}/turn-completed".post(notify_turn_completed),
         "/v1/sessions/{id}/turn-failed".post(notify_turn_failed),
-        "/v1/sessions/{id}/provisioning-stage".post(report_provisioning_stage),
         "/v1/sessions/{id}/transcript/{stream}".at(get_transcript),
         "/v1/sessions/{id}/transcript/{stream}/batches/{seq}".put(put_transcript_batch),
+    ))
+    .middleware(RequireDaemon::new())
+    .into_route_nodes();
+
+    let machine = Route::new((
+        "/v1/sessions/{id}/spot-notice".post(report_spot_notice),
+        "/v1/sessions/{id}/stopping".post(report_stopping),
+        "/v1/sessions/{id}/startup-failure".post(report_startup_failure),
+        "/v1/sessions/{id}/provisioning-stage".post(report_provisioning_stage),
         "/v1/sessions/{id}/workdir-patch"
             .at(get_workdir_patch)
             .put(put_workdir_patch),
@@ -2268,7 +2357,11 @@ fn daemon_routes() -> Vec<RouteNode> {
     .middleware(RequireDaemon::new())
     .into_route_nodes();
 
-    reports.into_iter().chain(agent).collect()
+    conversation
+        .into_iter()
+        .chain(machine)
+        .chain(agent)
+        .collect()
 }
 
 /// The caller's own account, keys, and approvals.

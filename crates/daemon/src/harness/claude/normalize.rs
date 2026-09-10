@@ -26,6 +26,7 @@
 
 use flyco_core::harness::{ContextWindow, HarnessEvent, UsageReport};
 use flyco_core::money::Usd;
+use flyco_core::wire::UsageWindow;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -194,13 +195,96 @@ enum CompactResult {
     Failed,
 }
 
-/// Subscription rate-limit status. The only place the SDK names a reset
-/// time, which is what [`HarnessEvent::UsageLimited`] wants.
+/// Subscription rate-limit status, as `SDKRateLimitInfo` states it.
+///
+/// The only place the SDK names *which* window struck and when it turns
+/// over, which is the whole of what
+/// [`HarnessEvent::UsageLimited`] carries. Everything else on the SDK's
+/// type is about overage credits — a different product decision the user
+/// makes on claude.ai, not something a paused session waits for.
 #[derive(Debug, Deserialize)]
 struct RateLimitInfo {
     status: RateLimitStatus,
     #[serde(default, rename = "resetsAt")]
-    resets_at: Option<u64>,
+    resets_at: Option<i64>,
+    #[serde(default, rename = "rateLimitType")]
+    kind: Option<RateLimitKind>,
+    /// How much of the window is spent, as an unbounded number.
+    ///
+    /// Read but not trusted: a `rejected` status is the account being
+    /// refused, whatever the percentage rounds to, so the window is drawn
+    /// full and this only fills in the reading for the statuses that are
+    /// not refusals.
+    #[serde(default)]
+    utilization: Option<f64>,
+}
+
+/// Which window the SDK says a rate limit belongs to.
+///
+/// The vendor's own tokens, and the only thing that says whether a limit is
+/// the five-hour one or a weekly per-model bucket. `Other` is a window this
+/// build has not heard of: the limit is real and worth announcing, and
+/// naming it after a guess would be worse than calling it the plan's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RateLimitKind {
+    FiveHour,
+    SevenDay,
+    SevenDayOpus,
+    SevenDaySonnet,
+    SevenDayOverageIncluded,
+    Overage,
+    #[serde(other)]
+    Other,
+}
+
+/// Minutes in the SDK's weekly windows.
+const SEVEN_DAY_MINUTES: u32 = 7 * 24 * 60;
+
+impl RateLimitKind {
+    /// How long the window is and what part of the plan it covers.
+    ///
+    /// The same vocabulary the sidecar uses for the `/usage` snapshot, so a
+    /// limit and the ring it fills are called the same thing: a weekly Opus
+    /// bucket is `Weekly (Opus)` whichever of the two reported it.
+    ///
+    /// Overage is not a rolling window at all — it is credit the account
+    /// buys — so it names no duration and reads as `Plan (overage)`.
+    const fn window(self) -> (Option<u32>, Option<&'static str>) {
+        match self {
+            Self::FiveHour => (Some(5 * 60), None),
+            Self::SevenDay => (Some(SEVEN_DAY_MINUTES), None),
+            Self::SevenDayOpus => (Some(SEVEN_DAY_MINUTES), Some("Opus")),
+            Self::SevenDaySonnet => (Some(SEVEN_DAY_MINUTES), Some("Sonnet")),
+            Self::SevenDayOverageIncluded => (Some(SEVEN_DAY_MINUTES), Some("overage included")),
+            Self::Overage => (None, Some("overage")),
+            Self::Other => (None, None),
+        }
+    }
+}
+
+impl RateLimitInfo {
+    /// This reading as the window flyco states limits in.
+    ///
+    /// A refusal is a full window by definition: the account asked and was
+    /// told no, so the ring is drawn full whatever `utilization` rounds to.
+    fn window(&self) -> UsageWindow {
+        let (minutes, scope) = self.kind.map_or((None, None), RateLimitKind::window);
+        let used = if self.status == RateLimitStatus::Rejected {
+            100
+        } else {
+            self.utilization.map_or(0, |value| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "clamped to the range a percentage has before the cast"
+                )]
+                let percent = value.clamp(0.0, 100.0).round() as u8;
+                percent
+            })
+        };
+        UsageWindow::new(minutes, scope, used, self.resets_at)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Deserialize)]
@@ -270,6 +354,14 @@ enum SdkMessage {
 pub struct Normalizer {
     turn: Option<String>,
     last_assistant: Option<(String, u64)>,
+    /// The usage limit currently in force, as it was announced.
+    ///
+    /// Three different signals name one limit and two of them repeat while
+    /// it lasts, so the conversation would otherwise fill with the same
+    /// line. Cleared when the plan reports room again, which is what makes
+    /// the *next* limit a new announcement rather than a duplicate of this
+    /// one.
+    limited: Option<UsageWindow>,
 }
 
 impl Normalizer {
@@ -279,6 +371,7 @@ impl Normalizer {
         Self {
             turn: None,
             last_assistant: None,
+            limited: None,
         }
     }
 
@@ -321,9 +414,9 @@ impl Normalizer {
             SdkMessage::Assistant { message } => self.on_assistant(message),
             SdkMessage::User { message } => self.on_user(&message),
             SdkMessage::Result(body) => self.on_result(&body),
-            SdkMessage::System(body) => Self::on_system(&body),
+            SdkMessage::System(body) => self.on_system(&body),
             SdkMessage::StreamEvent { event } => self.on_stream_event(&event),
-            SdkMessage::RateLimitEvent { rate_limit_info } => Self::on_rate_limit(&rate_limit_info),
+            SdkMessage::RateLimitEvent { rate_limit_info } => self.on_rate_limit(&rate_limit_info),
             SdkMessage::Unknown => {
                 tracing::debug!(
                     kind = ?message.get("type"),
@@ -410,27 +503,64 @@ impl Normalizer {
     }
 
     /// The subscription rate-limit gauge. `rejected` is the account usage
-    /// limit proper, and unlike `api_retry` it names a reset time.
-    fn on_rate_limit(info: &RateLimitInfo) -> Vec<HarnessEvent> {
-        if info.status == RateLimitStatus::Rejected {
-            vec![HarnessEvent::UsageLimited {
-                resets_at_unix: info.resets_at,
-            }]
-        } else {
+    /// limit proper, and unlike `api_retry` it names both the window and
+    /// when it turns over.
+    ///
+    /// The SDK emits this frame whenever the numbers move, so a session
+    /// sitting inside a limit sees it repeatedly; [`Self::limited`]
+    /// remembers what was announced so the conversation carries one line per
+    /// limit instead of one per update. A status back below `rejected` is
+    /// the limit ending, which clears that memory — the next refusal is a
+    /// new limit and is announced again.
+    fn on_rate_limit(&mut self, info: &RateLimitInfo) -> Vec<HarnessEvent> {
+        if info.status != RateLimitStatus::Rejected {
             tracing::debug!(status = ?info.status, "dropping a non-blocking rate-limit update");
-            Vec::new()
+            self.limited = None;
+            return Vec::new();
         }
+        self.announce(info.window())
     }
 
-    fn on_system(body: &SystemBody) -> Vec<HarnessEvent> {
+    /// One announcement per limit, whichever signal named it.
+    ///
+    /// Three things report the same limit — the retry that precedes it, the
+    /// `rate_limit_event` that names it, and the plan snapshot taken after
+    /// every turn — and the conversation wants the fact once.
+    fn announce(&mut self, window: UsageWindow) -> Vec<HarnessEvent> {
+        if self.limited.as_ref() == Some(&window) {
+            return Vec::new();
+        }
+        self.limited = Some(window.clone());
+        vec![HarnessEvent::UsageLimited { window }]
+    }
+
+    /// The limit a plan snapshot describes, if it describes one.
+    ///
+    /// The third signal of issue #244, and the only one that is not an
+    /// error: the `/usage` answer flycod takes after every turn says a
+    /// window is spent and when it turns over, which is exactly a limit even
+    /// though no turn has been refused yet. Reported through the same
+    /// [`Self::announce`] as the other two, so a limit the stream is about
+    /// to refuse a turn over is not announced twice.
+    pub fn on_plan_usage(&mut self, windows: &[UsageWindow]) -> Vec<HarnessEvent> {
+        if let Some(window) = flyco_core::blocking_window(windows) {
+            return self.announce(window.clone());
+        }
+        // Every window has something left in it, so whatever limit was in
+        // force has ended and the next one is news again.
+        self.limited = None;
+        Vec::new()
+    }
+
+    fn on_system(&mut self, body: &SystemBody) -> Vec<HarnessEvent> {
         match body {
             // An API retry whose cause is the account rate limit. This
-            // arrives before `rate_limit_event` and carries no reset time,
-            // so it is the early half of the same signal.
+            // arrives before `rate_limit_event` and names neither the window
+            // nor a reset time, so it is the early half of the same signal:
+            // the conversation says the plan is out, and the pause waits for
+            // the frame that says which window and until when.
             SystemBody::ApiRetry { error } if error.as_deref() == Some("rate_limit") => {
-                vec![HarnessEvent::UsageLimited {
-                    resets_at_unix: None,
-                }]
+                self.announce(UsageWindow::new(None, None, 100, None))
             }
             SystemBody::ApiRetry { error } => {
                 tracing::debug!(?error, "dropping a non-rate-limit API retry");
@@ -501,6 +631,7 @@ mod tests {
     use super::{Normalizer, cost_in_micros};
     use flyco_core::harness::{ContextWindow, HarnessEvent, UsageReport};
     use flyco_core::money::Usd;
+    use flyco_core::wire::UsageWindow;
     use serde_json::Value;
 
     /// The normalizer dropped everything in the message.
@@ -639,26 +770,51 @@ mod tests {
         assert!(!normalizer.turn_in_flight());
     }
 
+    /// The early half of the signal: the SDK is retrying because the account
+    /// is out, and it says nothing about which window or until when.
     #[test]
     fn a_rate_limit_retry_is_the_usage_limit_signal() {
         let mut normalizer = in_turn();
+        let events = normalizer.normalize(&sdk("system_api_retry_rate_limit.json"));
         assert_eq!(
-            normalizer.normalize(&sdk("system_api_retry_rate_limit.json")),
+            events,
             vec![HarnessEvent::UsageLimited {
-                resets_at_unix: None
+                window: UsageWindow::new(None, None, 100, None)
             }]
         );
+        // A window nobody can place in time reads as the plan itself, which
+        // is the only true thing left to call it.
+        let [HarnessEvent::UsageLimited { window }] = events.as_slice() else {
+            panic!("the retry is a usage limit: {events:?}");
+        };
+        assert_eq!(window.label, "Plan");
     }
 
     #[test]
-    fn a_rejected_rate_limit_event_carries_the_reset_time() {
+    fn a_rejected_rate_limit_event_names_the_window_and_its_reset() {
         let mut normalizer = in_turn();
         assert_eq!(
             normalizer.normalize(&sdk("rate_limit_event_rejected.json")),
             vec![HarnessEvent::UsageLimited {
-                resets_at_unix: Some(1_787_000_000)
+                window: UsageWindow::new(Some(300), None, 100, Some(1_787_000_000))
             }]
         );
+    }
+
+    /// A per-model weekly bucket, which is what the plan's own rings call
+    /// `Weekly (Opus)`: the limit and the ring have to be the same name, or
+    /// the paused state names a window the reader cannot find above the
+    /// composer.
+    #[test]
+    fn a_rejected_per_model_weekly_bucket_is_named_after_the_model() {
+        let mut normalizer = in_turn();
+        let events = normalizer.normalize(&sdk("rate_limit_event_rejected_weekly_opus.json"));
+        let [HarnessEvent::UsageLimited { window }] = events.as_slice() else {
+            panic!("a rejected weekly bucket is a usage limit: {events:?}");
+        };
+        assert_eq!(window.label, "Weekly (Opus)");
+        assert_eq!(window.window_minutes, Some(7 * 24 * 60));
+        assert_eq!(window.resets_at_unix, Some(1_787_568_000));
     }
 
     #[test]
@@ -667,6 +823,68 @@ mod tests {
         assert_eq!(
             normalizer.normalize(&sdk("rate_limit_event_warning.json")),
             NOTHING
+        );
+    }
+
+    /// One line per limit, however many times the vendor repeats itself.
+    ///
+    /// The SDK re-emits `rate_limit_event` whenever the numbers move, and the
+    /// plan snapshot is taken after every turn, so a session sitting inside a
+    /// five-hour limit would otherwise narrate it over and over.
+    #[test]
+    fn a_limit_already_announced_is_not_announced_again() {
+        let mut normalizer = in_turn();
+        assert_eq!(
+            normalizer
+                .normalize(&sdk("rate_limit_event_rejected.json"))
+                .len(),
+            1
+        );
+        assert_eq!(
+            normalizer.normalize(&sdk("rate_limit_event_rejected.json")),
+            NOTHING
+        );
+        // …and the snapshot taken after the refused turn says the same thing
+        // about the same window, which is not a second limit.
+        assert_eq!(
+            normalizer.on_plan_usage(&[UsageWindow::new(
+                Some(300),
+                None,
+                100,
+                Some(1_787_000_000)
+            )]),
+            NOTHING
+        );
+    }
+
+    /// The third signal of issue #244: the `/usage` answer, not an error.
+    ///
+    /// A window the CLI reports spent with a reset time is the limit, whether
+    /// or not a turn has been refused yet — and the window that unblocks the
+    /// account *last* is the one to wait for.
+    #[test]
+    fn a_plan_snapshot_with_a_spent_window_is_a_usage_limit() {
+        let mut normalizer = in_turn();
+        let weekly = UsageWindow::new(Some(10_080), None, 100, Some(1_787_568_000));
+        assert_eq!(
+            normalizer.on_plan_usage(&[
+                UsageWindow::new(Some(300), None, 100, Some(1_787_000_000)),
+                weekly.clone(),
+            ]),
+            vec![HarnessEvent::UsageLimited { window: weekly }]
+        );
+
+        // Room again in every window: the limit is over, and the next one is
+        // news rather than a repeat.
+        assert_eq!(
+            normalizer.on_plan_usage(&[UsageWindow::new(Some(300), None, 4, Some(1_787_100_000))]),
+            NOTHING
+        );
+        assert_eq!(
+            normalizer
+                .normalize(&sdk("rate_limit_event_rejected.json"))
+                .len(),
+            1
         );
     }
 

@@ -711,6 +711,20 @@ pub enum ApiError {
         state: SessionState,
     },
 
+    /// A daemon reported a usage limit whose window names no reset time.
+    ///
+    /// Refused rather than stored, because the whole of what the control
+    /// plane does with a usage limit is stop the machine until an instant and
+    /// start it again before it: a wait with no stated end is a session
+    /// stopped for ever. The harness that cannot name a reset time announces
+    /// the limit in the transcript and nothing else — see
+    /// `crate::usage_limits`.
+    #[error(
+        "a usage limit can only pause a session if it says when the window resets",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    UsageLimitWithoutReset,
+
     /// The submitted repository is not `owner/name`.
     #[error(
         "`{0}` is not a GitHub repository in `owner/name` form",
@@ -1172,6 +1186,7 @@ impl ApiError {
             Self::WorkdirUnreadable(_) => "workdir-unreadable",
             Self::DirtyArchive { .. } => "dirty-archive",
             Self::SessionNotActive { .. } => "session-not-active",
+            Self::UsageLimitWithoutReset => "usage-limit-without-reset",
             Self::SessionCapReached { .. } => "session-cap-reached",
             Self::NoDeployableLinuxMachine { .. } => "no-deployable-linux-machine",
             Self::CatalogNotReady { .. } => "catalog-not-ready",

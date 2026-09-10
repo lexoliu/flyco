@@ -10,8 +10,8 @@
 //! [RFC 8292]: https://www.rfc-editor.org/rfc/rfc8292
 
 use flyco_core::{
-    CurrentUser, PushSubscription, PushSubscriptionId, PushSubscriptionView, SessionId, UserId,
-    VapidPublicKey,
+    CurrentUser, PushSubscription, PushSubscriptionId, PushSubscriptionView, SessionId,
+    UsageLimitPause, UserId, VapidPublicKey,
 };
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::sql;
@@ -207,6 +207,92 @@ pub async fn notify_turn(
     .await
 }
 
+/// Tells every browser the session has stopped itself to wait out a spent
+/// plan window.
+///
+/// Worth waking a phone for, unlike a turn starting: the session has gone
+/// quiet for something between minutes and days, and a person who does not
+/// know why would sit watching a transcript nothing is going to be added to.
+/// The body names the window and what it cost to wait, because those are the
+/// two things a reader wants — which limit, and am I paying for this.
+///
+/// One tag per session, shared with [`notify_usage_limit_over`], so the
+/// pause and the resume replace one another on the lock screen rather than
+/// stacking into two notifications about the same wait.
+///
+/// # Errors
+///
+/// Returns a database or Web Push encoding error.
+pub async fn notify_usage_limit(
+    db: &Db,
+    config: &ApiConfig,
+    session: SessionId,
+    pause: &UsageLimitPause,
+) -> Result<(), ApiError> {
+    let body = usage_limit_body(pause);
+    notify_session(
+        db,
+        config,
+        session,
+        PushNotification {
+            title: "Waiting for the usage limit",
+            body: &body,
+            url: format!("/sessions/{session}"),
+            tag: format!("usage-limit-{session}"),
+        },
+    )
+    .await
+}
+
+/// What a pause notification says, which is the two things a reader wants:
+/// which window, and whether the wait is costing anything.
+fn usage_limit_body(pause: &UsageLimitPause) -> String {
+    if pause.machine_stopped() {
+        format!(
+            "The {} plan window is spent. The machine is stopped and costs nothing; Flyco starts \
+             it again and continues the session when the window resets.",
+            pause.window
+        )
+    } else {
+        format!(
+            "The {} plan window is spent. The machine is kept — the reset is close — and Flyco \
+             continues the session when the window resets.",
+            pause.window
+        )
+    }
+}
+
+/// Tells every browser the window turned over and the session is working
+/// again.
+///
+/// The other half of [`notify_usage_limit`], and the half that is actually
+/// actionable: the agent has been handed the continuation and is answering,
+/// which is the moment to look at the session again.
+///
+/// # Errors
+///
+/// Returns a database or Web Push encoding error.
+pub async fn notify_usage_limit_over(
+    db: &Db,
+    config: &ApiConfig,
+    session: SessionId,
+    window: &str,
+) -> Result<(), ApiError> {
+    let body = format!("The {window} plan window reset. Flyco has told the agent to continue.");
+    notify_session(
+        db,
+        config,
+        session,
+        PushNotification {
+            title: "Session resumed",
+            body: &body,
+            url: format!("/sessions/{session}"),
+            tag: format!("usage-limit-{session}"),
+        },
+    )
+    .await
+}
+
 async fn notify_session(
     db: &Db,
     config: &ApiConfig,
@@ -363,10 +449,39 @@ pub fn public_routes() -> Vec<RouteNode> {
 
 #[cfg(test)]
 mod unit {
-    use flyco_core::{PushKeys, PushSubscription};
+    use flyco_core::{PushKeys, PushSubscription, UsageLimitPause};
 
-    use super::build_message;
+    use super::{build_message, usage_limit_body};
     use crate::testing::test_config;
+
+    /// What the two shapes of usage-limit pause say for themselves.
+    ///
+    /// The sentence is the whole notification, and the difference between the
+    /// two is the one thing a person woken by it wants to know: is the machine
+    /// still costing me money while this waits.
+    #[test]
+    fn a_pause_notification_names_the_window_and_what_it_costs() {
+        let now = 1_800_000_000;
+        let stopped = usage_limit_body(&UsageLimitPause::beginning(
+            "Weekly (Opus)".to_owned(),
+            now + 3 * 24 * 60 * 60,
+            now,
+        ));
+        assert!(stopped.contains("Weekly (Opus)"), "{stopped}");
+        assert!(stopped.contains("costs nothing"), "{stopped}");
+
+        let kept = usage_limit_body(&UsageLimitPause::beginning(
+            "5-hour".to_owned(),
+            now + 10 * 60,
+            now,
+        ));
+        assert!(kept.contains("5-hour"), "{kept}");
+        assert!(kept.contains("machine is kept"), "{kept}");
+        assert!(
+            !kept.contains("costs nothing"),
+            "a machine that is still up must not be described as free: {kept}"
+        );
+    }
 
     #[test]
     fn builds_an_encrypted_vapid_authenticated_request() {

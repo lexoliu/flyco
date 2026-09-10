@@ -1243,13 +1243,26 @@ impl Driver {
         Ok(())
     }
 
-    /// Reports the plan windows the current snapshot describes.
-    async fn emit_rate_limits(&self) -> bool {
+    /// Reports the plan windows the current snapshot describes, and the
+    /// limit it names if it names one.
+    ///
+    /// Two outputs from one snapshot, because it answers two questions: how
+    /// full the rings are, and whether the account is out of plan. The second
+    /// is what pauses the session (issue #244), and the normalizer decides it
+    /// so that a limit reported here and a turn refused for the same limit
+    /// reach the conversation once.
+    async fn emit_rate_limits(&mut self) -> bool {
         let windows = usage_windows(self.rate_limits);
         tracing::debug!(
             count = windows.len(),
+            reached = ?self.rate_limits.rate_limit_reached_type,
             "the app-server reported the plan's usage windows"
         );
+        for event in self.normalizer.on_rate_limits(&windows) {
+            if !emit(&self.outputs, SessionOutput::Event { event }).await {
+                return false;
+            }
+        }
         emit(&self.outputs, SessionOutput::PlanUsage { windows }).await
     }
 

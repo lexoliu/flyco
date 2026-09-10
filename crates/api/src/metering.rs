@@ -208,6 +208,7 @@ mod worker {
     use crate::catalog;
     use crate::config::{ApiConfig, binding};
     use crate::rooms::{HostRooms, Rooms};
+    use crate::usage_limits;
 
     #[skyzen::scheduled]
     async fn budget_meter(
@@ -244,6 +245,13 @@ mod worker {
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         let queue = skyzen_cloudflare::CfQueue::from_env(&env_for_services, binding::PROVISIONING)
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
+        // Two handles onto one binding: the catalog sweep takes ownership of
+        // its producer, and the usage-limit sweep enqueues the job that starts
+        // a waiting session's machine again.
+        let queue_for_waking = Queue::new(
+            skyzen_cloudflare::CfQueue::from_env(&env_for_services, binding::PROVISIONING)
+                .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?,
+        );
 
         accrue(&db, at_unix)
             .await
@@ -258,6 +266,14 @@ mod worker {
             .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         app::archive_idle(&db, &config, &rooms, &hosts, at_unix)
+            .await
+            .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
+        // The clock behind issue #244: a session waiting out a spent harness
+        // plan window is released, woken and continued from here. It rides
+        // this cron rather than a delayed queue message because Cloudflare
+        // Queues cap delivery delay at twelve hours and a weekly window
+        // resets further out than that.
+        usage_limits::sweep(&db, &config, &rooms, &hosts, &queue_for_waking, at_unix)
             .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         // Last, so it sees what the sweeps above have just ended.

@@ -35,6 +35,15 @@
   overflow-wrap: anywhere;
 }
 
+/* The one user message nobody typed. Above the text and quiet, so the
+   sentence still reads first and the attribution is there for whoever
+   wonders where it came from. */
+.userMessageAuthor {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
 .turn {
   display: flex;
   flex-direction: column;

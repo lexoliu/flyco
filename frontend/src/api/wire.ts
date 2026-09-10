@@ -27,6 +27,17 @@ export type ModelOption = components["schemas"]["ModelOption"];
 export type UsageWindow = components["schemas"]["UsageWindow"];
 
 /**
+ * Who wrote a message that appears in the conversation as the user's.
+ *
+ * Mirrors `flyco_core::MessageOrigin`. Almost every user message is the
+ * user's, and the one exception matters to whoever reads the transcript
+ * back: flyco says `usage limit reset, please continue` on their behalf when
+ * a plan window turns over, and a transcript that showed it as theirs would
+ * be crediting them with a sentence they never typed.
+ */
+export type MessageOrigin = "user" | "flyco";
+
+/**
  * A normalized event extracted from either harness's native stream.
  *
  * Mirrors `flyco_core::harness::HarnessEvent` exactly (WS-only, no OpenAPI
@@ -39,7 +50,7 @@ export type HarnessEvent =
   | { type: "tool_completed"; turn_id: string; call_id: string; ok: boolean }
   | { type: "turn_completed"; turn_id: string; usage: UsageReport }
   | { type: "turn_failed"; turn_id: string; error: string }
-  | { type: "usage_limited"; resets_at_unix: number | null }
+  | { type: "usage_limited"; window: UsageWindow }
   | { type: "context_compacted" }
   | { type: "context_compaction_failed"; error: string };
 
@@ -98,7 +109,7 @@ export type ShellOutcome =
  */
 export type ClientEvent =
   | { type: "harness"; event: HarnessEvent }
-  | { type: "user_message"; text: string }
+  | { type: "user_message"; text: string; origin: MessageOrigin }
   | { type: "shell_command"; run: string; command: string }
   | { type: "shell_output"; run: string; stream: ShellStream; data: string }
   | { type: "shell_exited"; run: string; outcome: ShellOutcome; truncated: boolean }

@@ -17,11 +17,13 @@
 import type { TimedEvent } from "../api/relay";
 import type {
   ApprovalPayload,
+  MessageOrigin,
   ModelChoice,
   ProvisioningStage,
   ShellOutcome,
   ShellStream,
   UsageReport,
+  UsageWindow,
 } from "../api/wire";
 import type { ApprovalState } from "../api/client";
 import { formatTimeOfDay } from "./dates";
@@ -71,7 +73,19 @@ export interface ShellChunk {
 export type TurnPart = { kind: "text"; text: string } | { kind: "tools"; calls: ToolCall[] };
 
 export type TranscriptItem =
-  | { kind: "user_message"; key: string; text: string; atUnix: number }
+  | {
+      kind: "user_message";
+      key: string;
+      text: string;
+      atUnix: number;
+      /**
+       * Who wrote it. `flyco` is the continuation sent when a plan window
+       * turned over, and the transcript marks it: a reader who comes back to
+       * a session that carried on overnight has to be able to see which
+       * sentences were theirs.
+       */
+      origin: MessageOrigin;
+    }
   | {
       /**
        * A `!` command the user ran on the machine (docs/ux.md §9.3).
@@ -361,26 +375,29 @@ function findApproval(items: TranscriptItem[], id: string): Approval | undefined
 /**
  * When a usage limit resets, as a sentence rather than an epoch second.
  *
- * How long the wait is comes first, because that is the question — `in 1h
- * 30m` is what decides whether to stay on the page — and the clock time
- * follows it in brackets for whoever wants to come back at it. Both are
- * measured against `atUnix`, the moment the limit was announced, so a
- * transcript read back tomorrow still says what the user was told then
- * rather than a countdown that has long since run out.
+ * The window is named first — a five-hour limit and a weekly one are the
+ * same event with wildly different consequences — then how long the wait is,
+ * because that is the question `in 1h 30m` answers, then the clock time in
+ * brackets for whoever wants to come back at it. The wait is measured
+ * against `atUnix`, the moment the limit was announced, so a transcript read
+ * back tomorrow still says what the user was told then rather than a
+ * countdown that has long since run out.
  *
  * A reset already in the past when it was announced drops the countdown
  * rather than printing `in 0s`.
  */
-export function usageLimitText(resetsAtUnix: number | null, atUnix: number): string {
-  if (resetsAtUnix === null) {
-    return "Usage limit reached. The agent waits for the account's limit to reset.";
+export function usageLimitText(window: UsageWindow, atUnix: number): string {
+  const limit = `The ${window.label} usage limit is spent.`;
+  const resetsAtUnix = window.resets_at_unix;
+  if (resetsAtUnix === null || resetsAtUnix === undefined) {
+    return `${limit} The session waits for the account's limit to reset.`;
   }
   const clock = formatTimeOfDay(resetsAtUnix);
   if (resetsAtUnix <= atUnix) {
-    return `Usage limit reached. The agent continues by itself at ${clock}.`;
+    return `${limit} Flyco continues the session at ${clock}.`;
   }
   const wait = formatDuration(resetsAtUnix - atUnix);
-  return `Usage limit reached. The agent continues by itself in ${wait} (${clock}).`;
+  return `${limit} Flyco continues the session in ${wait} (${clock}).`;
 }
 
 /**
@@ -411,6 +428,7 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
           key: `user-${items.length}`,
           text: event.text,
           atUnix,
+          origin: event.origin,
         });
         break;
       case "shell_command":
@@ -491,7 +509,7 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
             break;
           }
           case "usage_limited":
-            notice(usageLimitText(harness.resets_at_unix, atUnix), "warning", atUnix);
+            notice(usageLimitText(harness.window, atUnix), "warning", atUnix);
             break;
           case "context_compacted":
             notice(

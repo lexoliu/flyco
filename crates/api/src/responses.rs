@@ -79,6 +79,7 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::app::report_startup_failure",
     "flyco_api::app::report_stopping",
     "flyco_api::app::report_usage",
+    "flyco_api::app::report_usage_limit",
     "flyco_api::app::revoke_api_key",
     "flyco_api::app::send_message",
     "flyco_api::harness_accounts::unlink_harness_account",

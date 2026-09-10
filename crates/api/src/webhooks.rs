@@ -323,7 +323,12 @@ async fn dispatch(
     .render()
     .map_err(|_| ApiError::CorruptRecord("the CI failure notice did not render"))?;
 
-    let command = ControlToDaemon::UserMessage { text: notice };
+    // Flyco speaking, not the user: the transcript attributes it so, and the
+    // agent is handed the notice's own words.
+    let command = ControlToDaemon::UserMessage {
+        text: notice,
+        origin: flyco_core::MessageOrigin::Flyco,
+    };
     let mut delivered = 0_usize;
     let mut last_failure = None;
     for session in &sessions {

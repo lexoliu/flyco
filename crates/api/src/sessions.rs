@@ -8,8 +8,9 @@
 use flyco_core::{
     ARCHIVE_AFTER_IDLE_SECS, ApprovalState, BranchName, BudgetConfig, BudgetId, BudgetStage,
     ClientEvent, HarnessKind, HarnessSessionView, InterruptedReason, MAX_SESSION_TITLE_CHARS,
-    MachineOrigin, ModelChoice, PROVISION_DEADLINE_SECS, RepoSlug, SessionActivity, SessionDetail,
-    SessionId, SessionState, SessionSummary, Usd, UserId, builtin_models,
+    MachineOrigin, ModelChoice, PROVISION_DEADLINE_SECS, PausedReason, RepoSlug, SessionActivity,
+    SessionDetail, SessionId, SessionState, SessionSummary, UsageLimitPause, Usd, UserId,
+    builtin_models,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -40,6 +41,17 @@ struct SessionRow {
     budget_id: BudgetId,
     failure_reason: Option<String>,
     interrupted_reason: Option<InterruptedReason>,
+    paused_reason: Option<PausedReason>,
+    /// The four columns of a usage-limit pause; see migration 0024.
+    ///
+    /// Read together because they are one fact — [`UsageLimitPause`] — and
+    /// assembled into it by [`usage_limit_of`], which is also where the
+    /// invariant that they are present exactly for a usage-limit pause is
+    /// enforced rather than assumed.
+    usage_limit_window: Option<String>,
+    usage_limit_resets_at_unix: Option<u64>,
+    usage_limit_resume_at_unix: Option<u64>,
+    usage_limit_queued_message: Option<String>,
     created_at_unix: u64,
     last_active_unix: u64,
     /// The model the session was put on, or `NULL` for one opened before
@@ -79,6 +91,7 @@ impl From<SessionRow> for SessionSummary {
             activity: row.activity.with_pending_approval(row.approval_pending),
             machine_origin: row.machine_origin,
             interrupted_reason: row.interrupted_reason,
+            paused_reason: row.paused_reason,
             created_at_unix: row.created_at_unix,
             last_active_unix: row.last_active_unix,
             model: model_of(row.harness, row.model, row.effort),
@@ -94,11 +107,45 @@ async fn detail_from(db: &Db, row: SessionRow) -> Result<SessionDetail, ApiError
     let failure = (row.state == SessionState::Failed)
         .then(|| row.failure_reason.clone())
         .flatten();
+    let usage_limit = usage_limit_of(&row)?;
     Ok(SessionDetail {
         summary: row.into(),
         budget,
         failure,
+        usage_limit,
     })
+}
+
+/// The wait a usage-limit pause is, as the session page reads it.
+///
+/// `None` for every session that is not waiting on one, which is decided by
+/// [`SessionRow::paused_reason`] and not by whether the columns happen to
+/// hold something: they outlive the pause until the continuation clears
+/// them, and reading them without the reason would keep a finished wait on
+/// the page.
+///
+/// A row whose reason says `usage_limit` and whose window or reset is
+/// missing is corrupt rather than a pause with less detail — nothing writes
+/// one without both, and answering with a partial wait would put a countdown
+/// to nowhere in front of the user — so it is reported as the bug it is.
+fn usage_limit_of(row: &SessionRow) -> Result<Option<UsageLimitPause>, ApiError> {
+    if row.paused_reason != Some(PausedReason::UsageLimit) {
+        return Ok(None);
+    }
+    let (Some(window), Some(resets_at_unix)) = (
+        row.usage_limit_window.clone(),
+        row.usage_limit_resets_at_unix,
+    ) else {
+        return Err(ApiError::CorruptRecord(
+            "a session paused on a usage limit names no window or no reset time",
+        ));
+    };
+    Ok(Some(UsageLimitPause {
+        window,
+        resets_at_unix,
+        resume_at_unix: row.usage_limit_resume_at_unix,
+        queued_message: row.usage_limit_queued_message.clone(),
+    }))
 }
 
 /// How many sessions the user currently holds that still occupy their cap.
@@ -373,6 +420,8 @@ pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError
          EXISTS (SELECT 1 FROM approvals a WHERE a.session_id = s.id AND a.state = {pending}) \
          AS approval_pending, \
          s.machine_origin, s.budget_id, s.failure_reason, s.interrupted_reason, \
+         s.paused_reason, s.usage_limit_window, s.usage_limit_resets_at_unix, \
+         s.usage_limit_resume_at_unix, s.usage_limit_queued_message, \
          s.created_at_unix, s.last_active_unix, s.model, s.effort \
          FROM sessions s WHERE s.user_id = {user} \
          ORDER BY s.created_at_unix DESC, s.id DESC"
@@ -483,6 +532,8 @@ async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiErr
          EXISTS (SELECT 1 FROM approvals a WHERE a.session_id = s.id AND a.state = {pending}) \
          AS approval_pending, \
          s.machine_origin, s.budget_id, s.failure_reason, s.interrupted_reason, \
+         s.paused_reason, s.usage_limit_window, s.usage_limit_resets_at_unix, \
+         s.usage_limit_resume_at_unix, s.usage_limit_queued_message, \
          s.created_at_unix, s.last_active_unix, s.model, s.effort \
          FROM sessions s WHERE s.id = {id} AND s.user_id = {user}"
     )
@@ -798,6 +849,7 @@ pub async fn pause_for_budget(db: &Db, id: SessionId) -> Result<(), ApiError> {
         .fetch_scalar_optional()
         .await?
         .ok_or(ApiError::SessionNotFound)?;
+    let budget = PausedReason::Budget;
     if state == SessionState::Paused {
         return Ok(());
     }
@@ -810,7 +862,8 @@ pub async fn pause_for_budget(db: &Db, id: SessionId) -> Result<(), ApiError> {
             })?;
     sql!(
         db,
-        "UPDATE sessions SET state = {next}, last_active_unix = {now_unix()} WHERE id = {id}"
+        "UPDATE sessions SET state = {next}, paused_reason = {budget}, \
+         last_active_unix = {now_unix()} WHERE id = {id}"
     )
     .execute()
     .await?;
@@ -840,8 +893,15 @@ pub async fn resume(db: &Db, user: UserId, id: SessionId) -> Result<SessionDetai
 
     sql!(
         db,
+        // The usage-limit wait goes with the rest: a session the user has
+        // decided to put back on a machine themselves is not waiting for a
+        // plan window any more, and a stale countdown would go on offering
+        // to continue a conversation nobody is waiting on.
         "UPDATE sessions SET state = {next}, failure_reason = NULL, \
-         interrupted_reason = NULL, last_active_unix = {now_unix()} \
+         interrupted_reason = NULL, paused_reason = NULL, \
+         usage_limit_window = NULL, usage_limit_resets_at_unix = NULL, \
+         usage_limit_resume_at_unix = NULL, usage_limit_queued_message = NULL, \
+         last_active_unix = {now_unix()} \
          WHERE id = {id} AND user_id = {user}"
     )
     .execute()
@@ -1148,4 +1208,219 @@ pub async fn idle_since(db: &Db, at_unix: u64) -> Result<Vec<IdleSession>, ApiEr
     )
     .fetch_all()
     .await?)
+}
+
+// ── The usage-limit pause ──
+//
+// One mechanism, four columns and one reason token (migration 0024). The
+// reads and writes live here because this is the `sessions` table's module;
+// what *decides* to pause a session, stop its machine and continue it lives
+// in `crate::usage_limits`, which is the mechanism and reads none of these
+// columns itself.
+
+/// A session waiting out a spent plan window, as the minute sweep reads it.
+///
+/// Every column of the wait in one row, because the sweep asks three
+/// questions of each waiting session — does it still hold a machine, is it
+/// time to start one, is it time to continue the conversation — and three
+/// queries would be three chances for them to disagree about the same row.
+#[derive(Debug, skyzen::FromRow)]
+pub struct UsageLimitWait {
+    /// The waiting session.
+    pub id: SessionId,
+    /// Its owner, which is whose credentials act on its machine.
+    pub user_id: UserId,
+    /// Where it is in its lifecycle, which is how far through the wait it
+    /// is: [`Paused`](SessionState::Paused) is still waiting,
+    /// [`Provisioning`](SessionState::Provisioning) is coming back, and
+    /// [`Active`](SessionState::Active) is up and waiting for the reset.
+    pub state: SessionState,
+    usage_limit_window: String,
+    usage_limit_resets_at_unix: u64,
+    usage_limit_resume_at_unix: Option<u64>,
+    usage_limit_queued_message: Option<String>,
+}
+
+impl UsageLimitWait {
+    /// The wait itself, in the shape the domain model states it in.
+    #[must_use]
+    pub fn pause(&self) -> UsageLimitPause {
+        UsageLimitPause {
+            window: self.usage_limit_window.clone(),
+            resets_at_unix: self.usage_limit_resets_at_unix,
+            resume_at_unix: self.usage_limit_resume_at_unix,
+            queued_message: self.usage_limit_queued_message.clone(),
+        }
+    }
+}
+
+/// Pauses a session because a window of its harness plan is spent.
+///
+/// Answers whether this call is the one that paused it. A daemon reports the
+/// limit once per limit, but the report is a request that can be retried and
+/// both harnesses can name the same limit twice — a refused turn and the
+/// snapshot that explains it — so a second report of a session already
+/// waiting is a no-op rather than a second pause, a second push and a
+/// second interrupt.
+///
+/// The machine is *not* touched here. Stopping it is a provider call
+/// measured in tens of seconds, and the caller is a daemon that has just
+/// been refused a turn; the durable wait is written now and the minute sweep
+/// releases the compute, which is also what makes the release survive a
+/// request that dies half way through.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is gone, or
+/// [`ApiError::InvalidTransition`] when a session that cannot be paused —
+/// one being archived, one with no machine left — is asked to wait.
+pub async fn pause_for_usage_limit(
+    db: &Db,
+    id: SessionId,
+    pause: &UsageLimitPause,
+) -> Result<bool, ApiError> {
+    let row: PausedState = sql!(
+        db,
+        "SELECT state, paused_reason FROM sessions WHERE id = {id}"
+    )
+    .fetch_optional()
+    .await?
+    .ok_or(ApiError::SessionNotFound)?;
+    let limit = PausedReason::UsageLimit;
+    if row.paused_reason == Some(limit) {
+        return Ok(false);
+    }
+    let next = row
+        .state
+        .transition(SessionState::Paused)
+        .map_err(|error| ApiError::InvalidTransition {
+            from: error.from,
+            to: error.to,
+        })?;
+    let window = pause.window.as_str();
+    let resets_at = pause.resets_at_unix;
+    let resume_at = pause.resume_at_unix;
+    sql!(
+        db,
+        "UPDATE sessions SET state = {next}, paused_reason = {limit}, \
+         usage_limit_window = {window}, usage_limit_resets_at_unix = {resets_at}, \
+         usage_limit_resume_at_unix = {resume_at}, usage_limit_queued_message = NULL, \
+         last_active_unix = {now_unix()} WHERE id = {id}"
+    )
+    .execute()
+    .await?;
+    Ok(true)
+}
+
+/// The two columns that say whether a session is already waiting.
+#[derive(Debug, skyzen::FromRow)]
+struct PausedState {
+    state: SessionState,
+    paused_reason: Option<PausedReason>,
+}
+
+/// Holds what the user typed while their session waits for a plan window.
+///
+/// Answers whether there was a wait to hold it against. The composer stays
+/// usable through a usage-limit pause precisely so that the answer to "can I
+/// tell it what to do next" is yes, and what is typed becomes the
+/// continuation sent at the reset instead of flyco's canned nudge.
+///
+/// The newest message wins rather than accumulating a queue: this is the
+/// next thing the user wants said, and a session that came back with four
+/// half-formed instructions in a row would be a worse conversation than one
+/// that came back with the last of them.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is not the caller's.
+pub async fn queue_usage_limit_message(
+    db: &Db,
+    user: UserId,
+    id: SessionId,
+    text: &str,
+) -> Result<bool, ApiError> {
+    let limit = PausedReason::UsageLimit;
+    let written = sql!(
+        db,
+        "UPDATE sessions SET usage_limit_queued_message = {text}, \
+         last_active_unix = {now_unix()} \
+         WHERE id = {id} AND user_id = {user} AND paused_reason = {limit}"
+    )
+    .execute()
+    .await?;
+    Ok(written.rows_written > 0)
+}
+
+/// Every session waiting out a spent plan window.
+///
+/// Not filtered by time: the sweep has three different deadlines to compare
+/// each row against, and a query per deadline would read the same handful of
+/// rows three times. There are never many — a waiting session is one whose
+/// account is out of plan — so the whole set is read and the arithmetic is
+/// done once in one place.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn usage_limit_waits(db: &Db) -> Result<Vec<UsageLimitWait>, ApiError> {
+    let limit = PausedReason::UsageLimit;
+    Ok(sql!(
+        db,
+        "SELECT id, user_id, state, usage_limit_window, usage_limit_resets_at_unix, \
+         usage_limit_resume_at_unix, usage_limit_queued_message FROM sessions \
+         WHERE paused_reason = {limit} AND usage_limit_window IS NOT NULL \
+         AND usage_limit_resets_at_unix IS NOT NULL \
+         ORDER BY usage_limit_resets_at_unix"
+    )
+    .fetch_all()
+    .await?)
+}
+
+/// Ends a usage-limit wait: the window has turned over and the session is
+/// running again.
+///
+/// `from` is the state the caller read, and it is both the guard and the
+/// decision. A session whose machine was kept is still
+/// [`Paused`](SessionState::Paused) and is moved back to
+/// [`Active`](SessionState::Active) through [`SessionState::transition`],
+/// like every other lifecycle move in this module; one whose machine was
+/// stopped came back through [`recovering`] and [`daemon_arrived`] and is
+/// already active, so its state is left exactly as it is.
+///
+/// The guard is what keeps one continuation per pause: the statement writes
+/// only a row that is still in the state it was read in, so two overlapping
+/// crons cannot both win, and the answer is whether this call is the one
+/// that did.
+///
+/// # Errors
+///
+/// Returns [`ApiError::InvalidTransition`] if the session cannot leave the
+/// state it is in, or [`ApiError`] if the database fails.
+pub async fn end_usage_limit_wait(
+    db: &Db,
+    id: SessionId,
+    from: SessionState,
+) -> Result<bool, ApiError> {
+    let next = if from == SessionState::Paused {
+        from.transition(SessionState::Active)
+            .map_err(|error| ApiError::InvalidTransition {
+                from: error.from,
+                to: error.to,
+            })?
+    } else {
+        from
+    };
+    let limit = PausedReason::UsageLimit;
+    let written = sql!(
+        db,
+        "UPDATE sessions SET state = {next}, paused_reason = NULL, \
+         usage_limit_window = NULL, usage_limit_resets_at_unix = NULL, \
+         usage_limit_resume_at_unix = NULL, usage_limit_queued_message = NULL, \
+         last_active_unix = {now_unix()} \
+         WHERE id = {id} AND paused_reason = {limit} AND state = {from}"
+    )
+    .execute()
+    .await?;
+    Ok(written.rows_written > 0)
 }

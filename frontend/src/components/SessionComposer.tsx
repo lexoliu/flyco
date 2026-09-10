@@ -17,7 +17,7 @@
  *   says so while one is being typed rather than after it is sent.
  */
 import { For, type JSX, Show, createEffect, createMemo, createSignal } from "solid-js";
-import { ArrowUp, Square, TerminalSquare } from "lucide-solid";
+import { ArrowUp, Clock, Square, TerminalSquare } from "lucide-solid";
 import ComposerShell from "./ComposerShell";
 import type { HarnessCommand } from "../api/wire";
 import { cx } from "../lib/cx";
@@ -140,6 +140,17 @@ export interface SessionComposerProps {
    * copy of the session.
    */
   controls?: JSX.Element | undefined;
+  /**
+   * When a message typed now will not be delivered now, and why.
+   *
+   * The one thing a composer must never do is take a message and say
+   * nothing about what happens to it. A session waiting out a spent plan
+   * window still takes messages — the control plane holds the message
+   * against the pause and sends it when the window turns over — and this is
+   * where it says so, in the same place a `!` says it runs in the machine's
+   * bash. Absent while the session is simply running.
+   */
+  deferred?: string | undefined;
 }
 
 export default function SessionComposer(props: SessionComposerProps) {
@@ -357,7 +368,22 @@ export default function SessionComposer(props: SessionComposerProps) {
         </Show>
       }
     >
-      <Show when={isBash()}>
+      <Show
+        when={isBash()}
+        fallback={
+          // The shell hint wins while a `!` is being typed: a command runs on
+          // the machine there and then, whatever the plan's limits are doing,
+          // so saying it would wait for a reset would be wrong.
+          <Show when={props.deferred}>
+            {(note) => (
+              <p class={sessionStyles.hint}>
+                <Clock size={13} aria-hidden="true" />
+                {note()}
+              </p>
+            )}
+          </Show>
+        }
+      >
         <p class={sessionStyles.hint}>
           <TerminalSquare size={13} aria-hidden="true" />
           Runs in the machine's bash

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { SessionActivity, SessionState } from "../api/client";
-import { type SessionStatus, deriveStatus } from "./status";
+import type { SessionActivity, SessionState, UsageLimitPause } from "../api/client";
+import { formatTimeOfDay } from "./dates";
+import { REFUSING, type SessionStatus, deriveStatus, sessionNotice } from "./status";
 
 /** A fixed instant, so nothing here depends on when the suite runs. */
 const NOW_UNIX = 1_800_000_000;
@@ -22,6 +23,11 @@ function reclaimed(state: SessionState, sinceAgo = 0) {
     last_active_unix: NOW_UNIX - sinceAgo,
     interrupted_reason: "spot_reclaimed" as const,
   };
+}
+
+/** A session paused because a plan window is spent. */
+function waiting() {
+  return { ...session("paused"), paused_reason: "usage_limit" as const };
 }
 
 describe("deriveStatus", () => {
@@ -117,6 +123,7 @@ describe("deriveStatus", () => {
       "needs_input",
       "idle",
       "paused",
+      "usage_limit",
       "interrupted",
       "failed",
       "archived",
@@ -124,6 +131,82 @@ describe("deriveStatus", () => {
     for (const state of states) {
       expect(known).toContain(deriveStatus(session(state), NOW).status);
     }
+  });
+});
+
+describe("a session waiting out a spent plan window", () => {
+  /** The notice that session shows, for one shape of pause. */
+  function notice(pause: UsageLimitPause) {
+    return sessionNotice(deriveStatus(waiting(), NOW), {
+      failure: null,
+      budgetLimit: undefined,
+      usageLimit: pause,
+      now: NOW,
+    });
+  }
+
+  it("is its own status, not the pause of a spent budget", () => {
+    const view = deriveStatus(waiting(), NOW);
+    expect(view.status).toBe("usage_limit");
+    expect(view.label).toBe("Waiting on the plan");
+    // The rail's dot is coloured for this one resting state, because it is
+    // the one that ends by itself.
+    expect(view.tone).toBe("waiting");
+    expect(view.breathing).toBe(false);
+    expect(deriveStatus({ ...session("paused"), paused_reason: "budget" }, NOW).status).toBe(
+      "paused",
+    );
+  });
+
+  it("reads a reason it has never heard of as a plain pause", () => {
+    // A newer control plane, not a broken one: `Paused` is true of any
+    // pause, and a snake_case token in front of a person is not.
+    const view = deriveStatus(
+      { ...session("paused"), paused_reason: "solar_flare" as "budget" },
+      NOW,
+    );
+    expect(view.status).toBe("paused");
+  });
+
+  it("still takes messages, unlike every other stopped state", () => {
+    // The control plane holds what is typed against the pause and sends it
+    // when the window turns over, so the composer stays open.
+    expect(REFUSING.has("usage_limit")).toBe(false);
+    expect(REFUSING.has("paused")).toBe(true);
+  });
+
+  it("says which window, when it resets, and that the machine costs nothing", () => {
+    const resets = NOW_UNIX + 4 * 3600;
+    const view = notice({
+      window: "5-hour",
+      resets_at_unix: resets,
+      resume_at_unix: resets - 600,
+    });
+    expect(view?.title).toBe("Waiting on the plan");
+    expect(view?.tone).toBe("waiting");
+    expect(view?.body).toBe(
+      `The 5-hour usage limit on this session's plan is spent. It resets at ${formatTimeOfDay(resets)}, in 4h. ` +
+        `The machine is stopped and costs nothing until then; flyco starts it again at ${formatTimeOfDay(resets - 600)}. ` +
+        "Flyco then asks the agent to continue on your behalf.",
+    );
+  });
+
+  it("says the machine is still running when the reset is close", () => {
+    const view = notice({ window: "5-hour", resets_at_unix: NOW_UNIX + 12 * 60 });
+    expect(view?.body).toContain("in 12m");
+    expect(view?.body).toContain("The machine is still running");
+    expect(view?.body).not.toContain("costs nothing");
+  });
+
+  it("quotes the message the user queued instead of promising flyco's own", () => {
+    const view = notice({
+      window: "Weekly",
+      resets_at_unix: NOW_UNIX + 36 * 3600,
+      queued_message: "then run the migration and open the pull request",
+    });
+    expect(view?.body).toContain("Your message is waiting and is sent then");
+    expect(view?.body).toContain("then run the migration and open the pull request");
+    expect(view?.body).not.toContain("on your behalf");
   });
 });
 

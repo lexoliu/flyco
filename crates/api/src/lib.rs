@@ -60,6 +60,7 @@ pub mod sessions;
 pub mod skills;
 pub mod transcripts;
 pub mod turns;
+pub mod usage_limits;
 pub mod users;
 pub mod vendors;
 pub mod webhooks;

@@ -4,7 +4,7 @@
  * `SessionState` is a lifecycle enum — where the machine is — and it is not
  * what a user wants to know. "Active" answers nothing: an active session may
  * be thinking, waiting for an approval, or sitting idle since yesterday.
- * docs/ux.md §6 defines the eight statuses the UI actually shows, and this
+ * docs/ux.md §6 defines the statuses the UI actually shows, and this
  * module is the single derivation of them, so a row, a group heading and a
  * session header can never disagree.
  *
@@ -23,11 +23,15 @@
  */
 import type {
   InterruptedReason,
+  PausedReason,
   SessionActivity,
   SessionState,
   SessionSummary,
+  UsageLimitPause,
 } from "../api/client";
 import type { TimedEvent } from "../api/relay";
+import { formatTimeOfDay } from "./dates";
+import { formatDuration } from "./duration";
 import { formatUsd } from "./money";
 
 /** What a session looks like to the person who opened it. */
@@ -39,12 +43,13 @@ export type SessionStatus =
   | "needs_input"
   | "idle"
   | "paused"
+  | "usage_limit"
   | "interrupted"
   | "failed"
   | "archived";
 
 /** How a status is coloured; see docs/ux.md §6. */
-export type StatusTone = "neutral" | "working" | "attention" | "failed" | "quiet";
+export type StatusTone = "neutral" | "working" | "attention" | "failed" | "quiet" | "waiting";
 
 /** Everything a row needs to render one status. */
 export interface StatusView {
@@ -101,6 +106,24 @@ const BASE: Record<Exclude<SessionState, "active">, StatusView> = {
 };
 
 /**
+ * A session waiting out a spent plan window (docs/ux.md §9.8).
+ *
+ * `Paused` is the same lifecycle state as a spent budget and reads as
+ * nothing like it: a budget pause ends when the user raises a number, and
+ * this one ends by itself at a time flyco already knows. So it is a status
+ * of its own, with a tone of its own — the rail's dot is coloured, because
+ * a session that will start working again on its own is worth seeing in the
+ * corner of the eye, and it does not breathe, because right now nothing is
+ * happening.
+ */
+const USAGE_LIMIT: StatusView = {
+  status: "usage_limit",
+  label: "Waiting on the plan",
+  tone: "waiting",
+  breathing: false,
+};
+
+/**
  * What flyco is doing while it puts a reclaimed session back.
  *
  * Not a `SessionState` of its own: the session is `provisioning`, exactly
@@ -124,6 +147,17 @@ const MIGRATING: StatusView = {
  */
 function lostItsMachine(reason: InterruptedReason | null | undefined): string | undefined {
   return reason === "spot_reclaimed" ? "spot reclaimed" : undefined;
+}
+
+/**
+ * Why a paused session is paused, as one of the reasons this build renders.
+ *
+ * `undefined` for a reason it has not heard of — a newer control plane — so
+ * that an unknown token reads as the plain `Paused` of a spent budget rather
+ * than as a state the page would then describe wrongly.
+ */
+function pausedFor(reason: PausedReason | null | undefined): PausedReason | undefined {
+  return reason === "usage_limit" || reason === "budget" ? reason : undefined;
 }
 
 /**
@@ -167,7 +201,7 @@ export function deriveStatus(
     SessionSummary,
     "state" | "created_at_unix" | "last_active_unix" | "interrupted_reason"
   > &
-    Partial<Pick<SessionSummary, "activity">>,
+    Partial<Pick<SessionSummary, "activity" | "paused_reason">>,
   now: number,
   live: LiveSignals = {},
 ): StatusView {
@@ -188,6 +222,13 @@ export function deriveStatus(
     // A session interrupted for a reason this build does not know reads as
     // `Interrupted` with nothing after it, rather than with a raw token.
     return lost === undefined ? BASE.interrupted : { ...BASE.interrupted, detail: lost };
+  }
+  if (session.state === "paused") {
+    // Two unrelated waits share one lifecycle state, and only the reason
+    // tells them apart. A reason this build has not heard of falls through
+    // to the budget wording rather than putting a raw token on the page:
+    // `Paused` with no clause is still true of any pause.
+    return pausedFor(session.paused_reason) === "usage_limit" ? USAGE_LIMIT : BASE.paused;
   }
   if (session.state !== "active") {
     return BASE[session.state];
@@ -332,6 +373,41 @@ export interface NoticeFacts {
   failure: string | null | undefined;
   /** What the session may spend, in microdollars: the sum a pause is about. */
   budgetLimit: number | undefined;
+  /**
+   * What a session waiting on a spent plan window is waiting for.
+   *
+   * Only the session document carries it — a summary knows the reason but
+   * not the window — so it is `null` in every other state and for a list
+   * row.
+   */
+  usageLimit: UsageLimitPause | null | undefined;
+  /** The clock, in milliseconds, for the countdown to the reset. */
+  now: number;
+}
+
+/**
+ * What a session waiting out a plan window says about the wait.
+ *
+ * Three facts, in the order they are asked for: which window, when it turns
+ * over, and what the machine is doing meanwhile. The last is the one that
+ * separates this state from every other pause — a session whose reset is
+ * hours away has had its machine released and is costing nothing, and a user
+ * who is not told that reads the whole wait as money burning.
+ *
+ * The countdown and the clock time are both given: the countdown answers
+ * "should I wait for this", the clock time answers "when do I come back".
+ */
+function usageLimitBody(pause: UsageLimitPause, now: number): string {
+  const resets = `The ${pause.window} usage limit on this session's plan is spent. It resets at ${formatTimeOfDay(pause.resets_at_unix)}, in ${formatDuration(pause.resets_at_unix - Math.floor(now / 1000))}.`;
+  const machine =
+    pause.resume_at_unix === null || pause.resume_at_unix === undefined
+      ? "The machine is still running, so the session carries on the moment the window resets."
+      : `The machine is stopped and costs nothing until then; flyco starts it again at ${formatTimeOfDay(pause.resume_at_unix)}.`;
+  const next =
+    pause.queued_message === null || pause.queued_message === undefined
+      ? "Flyco then asks the agent to continue on your behalf."
+      : `Your message is waiting and is sent then: ${pause.queued_message}`;
+  return `${resets} ${machine} ${next}`;
 }
 
 /**
@@ -396,6 +472,19 @@ export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNoti
           : `The ${formatUsd(facts.budgetLimit)} budget is spent. Raise it to continue.`,
         RAISE_BUDGET,
       );
+    case "usage_limit": {
+      const pause = facts.usageLimit;
+      // The pause and the state are two fields of one document, and the
+      // control plane refuses to serve one without the other, so a state
+      // this build read as `usage_limit` always has its pause here. Except
+      // from a caller holding a list row: a summary carries the reason and
+      // not the window, and such a notice says the part it knows.
+      return pause === null || pause === undefined
+        ? notice(
+            "A usage limit on this session's plan is spent. Flyco continues the session by itself when the window resets.",
+          )
+        : notice(usageLimitBody(pause, facts.now));
+    }
     case "disconnected":
       // Nothing to offer: the daemon dials back on its own within a couple
       // of heartbeats (docs/ux.md §9.6). The notice exists because the
@@ -420,6 +509,12 @@ export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNoti
  * Provisioning and migrating are deliberately absent. A message to a
  * session whose machine is still being built waits in the room's mailbox
  * and is worth sending.
+ *
+ * So is `usage_limit`, and for the same reason: a session waiting out a plan
+ * window is coming back at a time flyco already knows, and what the user
+ * wants to type is the next thing to do when it does. The control plane
+ * holds that message against the pause and sends it instead of its own
+ * continuation, so the composer stays open and says so.
  */
 export const REFUSING: ReadonlySet<SessionStatus> = new Set([
   "failed",

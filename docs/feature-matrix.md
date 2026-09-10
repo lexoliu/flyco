@@ -15,7 +15,7 @@ The proposal promises the features of the official apps; this matrix is where th
 | Advisor | planned | — | Claude: `--advisor` flag / `advisorModel` setting. |
 | Monitor | planned | — | Claude: Monitor tool; needs a persistent streaming session. |
 | Background tasks | supported | supported | In-session background shells; background *sessions* are flyco sessions themselves. |
-| Auto continue at usage reset | supported | supported | A `usage_limited` event with a reset time schedules a continue message. |
+| Auto continue at usage reset | supported | supported | A spent plan window pauses the session, releases the machine when the reset is far off, and continues on the user's behalf when it turns over (docs/ux.md §9.8). |
 | Remote control | disabled | disabled | By design (proposal); also requires full-scope claude.ai login flyco doesn't hold. |
 | Resume (harness-native) | disabled | disabled | Flyco owns session persistence (SessionStore / `thread/read`). |
 | Skills | takeover | takeover | Read-only configs; uploads via flycod's MCP `skill_upload`. |

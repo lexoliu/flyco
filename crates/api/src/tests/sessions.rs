@@ -258,6 +258,7 @@ async fn the_prompt_is_recorded_as_the_session_s_first_user_message(
         vec![
             serde_json::to_value(flyco_core::ClientEvent::UserMessage {
                 text: PROMPT.to_owned(),
+                origin: flyco_core::MessageOrigin::User,
             })
             .expect("serialize")
         ]

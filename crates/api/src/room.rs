@@ -48,8 +48,8 @@
 
 use flyco_core::workdir::WorkdirReply;
 use flyco_core::{
-    ClientEvent, ControlToDaemon, DaemonToControl, RepoStatus, SessionId, ShellRunId,
-    WorkdirRequestId,
+    ClientEvent, ControlToDaemon, DaemonToControl, MessageOrigin, RepoStatus, SessionId,
+    ShellRunId, WorkdirRequestId,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::durable::{
@@ -403,8 +403,8 @@ async fn on_client_frame(
     }
 
     match &command {
-        ControlToDaemon::UserMessage { text } => {
-            deliver_user_message(ctx.db(), ctx.connections(), text).await
+        ControlToDaemon::UserMessage { text, origin } => {
+            deliver_user_message(ctx.db(), ctx.connections(), text, *origin).await
         }
         ControlToDaemon::ShellCommand { command } => {
             deliver_shell_command(ctx.db(), ctx.connections(), command).await
@@ -455,9 +455,11 @@ async fn deliver_user_message(
     db: &DurableDb,
     connections: &DurableConnections,
     text: &str,
+    origin: MessageOrigin,
 ) -> Result<(), DurableObjectError> {
     let event = ClientEvent::UserMessage {
         text: text.to_owned(),
+        origin,
     };
     let seq = append(db, &event).await?;
     // The mailbox is an index into the stream, written under the position
@@ -473,8 +475,12 @@ async fn deliver_user_message(
     .map_err(|error| stored(&error))?;
     broadcast(connections, &event)?;
 
+    // The origin travels no further. What reaches the harness is the text:
+    // a model told that its next instruction was written by a program would
+    // reason about the framing instead of the work.
     let command = ControlToDaemon::UserMessage {
         text: text.to_owned(),
+        origin: MessageOrigin::User,
     };
     if forward_to_daemon(connections, &command)? {
         set_delivered(db, seq).await?;
@@ -717,7 +723,10 @@ async fn replay_mailbox(
     };
     let held = pending.len();
     for row in pending {
-        ws.send_json(&ControlToDaemon::UserMessage { text: row.text })?;
+        ws.send_json(&ControlToDaemon::UserMessage {
+            text: row.text,
+            origin: MessageOrigin::User,
+        })?;
     }
     set_delivered(db, last).await?;
     tracing::info!(held, through = last, "replayed a daemon's mailbox");
@@ -1059,8 +1068,8 @@ async fn dispatch_command(
     // it came in by is not something a replay, or the agent, should be able
     // to tell.
     match command {
-        ControlToDaemon::UserMessage { text } => {
-            deliver_user_message(db, connections, text)
+        ControlToDaemon::UserMessage { text, origin } => {
+            deliver_user_message(db, connections, text, *origin)
                 .await
                 .map_err(|error| room_failed(&error))?;
             return Ok(NoContent);

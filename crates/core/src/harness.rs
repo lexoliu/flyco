@@ -611,6 +611,24 @@ pub struct ReportUsage {
     pub windows: Vec<crate::wire::UsageWindow>,
 }
 
+/// Request body of `POST /v1/sessions/{id}/usage-limit`.
+///
+/// The one fact a session's daemon holds that stops it working: the
+/// harness refused a turn because a window of the account's plan is spent.
+/// Reported separately from [`ReportUsage`] beside it because the two are
+/// read by different things — a snapshot fills the rings, and this pauses
+/// the session and schedules its return — and because a snapshot is filed
+/// after every turn while this is filed once per limit.
+///
+/// The control plane refuses a window that names no reset: the whole of
+/// what it does with this is stop the machine until a stated instant, and
+/// there is nothing to schedule around a limit with no end.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct UsageLimitHit {
+    /// The window that struck, as the harness reported it.
+    pub window: crate::wire::UsageWindow,
+}
+
 /// A normalized event extracted from either harness's native stream.
 ///
 /// The daemon translates Claude Code stream-json / Codex `item/*`
@@ -666,10 +684,18 @@ pub enum HarnessEvent {
         error: String,
     },
     /// The harness hit its account usage limit and is waiting for reset.
+    ///
+    /// The window is carried rather than a bare reset time because the
+    /// conversation has to say *which* limit stopped it: "the 5-hour window
+    /// is spent, it turns over at 14:20" is something a reader can act on,
+    /// and "rate limited" is not. A window whose
+    /// [`resets_at_unix`](crate::wire::UsageWindow::resets_at_unix) is
+    /// `None` is a limit flyco cannot see the end of — it is still worth
+    /// putting in the transcript, and it is not something a pause can be
+    /// scheduled around.
     UsageLimited {
-        /// When the limit resets, as a unix timestamp in seconds, when the
-        /// harness reports one.
-        resets_at_unix: Option<u64>,
+        /// The window that struck, as the harness reported it.
+        window: crate::wire::UsageWindow,
     },
     /// The harness compacted the conversation context successfully.
     ContextCompacted,

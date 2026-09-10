@@ -2165,7 +2165,7 @@ async fn a_recovered_session_is_told_afterwards_and_the_ledger_names_the_replace
         .await
         .into_iter()
         .filter_map(|event| match event {
-            flyco_core::ClientEvent::UserMessage { text } => Some(text),
+            flyco_core::ClientEvent::UserMessage { text, .. } => Some(text),
             _ => None,
         })
         .collect();

@@ -107,7 +107,22 @@ export default function Transcript(props: TranscriptProps) {
           <li class={styles.item} data-kind={item.kind}>
             <Switch>
               <Match when={item.kind === "user_message" && item}>
-                {(message) => <p class={styles.userMessage}>{message().text}</p>}
+                {(message) => (
+                  <p class={styles.userMessage} data-origin={message().origin}>
+                    {/*
+                      A message flyco sent on the user's behalf says so. It
+                      sits in the user's own bubble because that is what it
+                      is in the conversation — the agent was told this by
+                      the user's side — and a reader coming back to a
+                      session that carried on through the night has to be
+                      able to tell it from a sentence they typed.
+                    */}
+                    <Show when={message().origin === "flyco"}>
+                      <span class={styles.userMessageAuthor}>Sent by flyco</span>
+                    </Show>
+                    {message().text}
+                  </p>
+                )}
               </Match>
 
               <Match when={item.kind === "turn" && item}>

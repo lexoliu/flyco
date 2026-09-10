@@ -1044,6 +1044,49 @@ async fn stop_session_machine(
     .into()
 }
 
+/// Releases a session's compute and keeps its disk, on flyco's own say-so.
+///
+/// The same operation the user's Stop button performs, called by the sweep
+/// that puts a session waiting out a spent plan window off its machine: the
+/// wait can be days long and paying for idle compute for days is the whole
+/// thing issue #244 exists to stop. It is scoped by owner like every other
+/// lifecycle call — the credentials that act on a machine are the account
+/// owner's — and the owner comes from the session row rather than from a
+/// caller, because nobody is watching.
+///
+/// A machine that is already off is left alone rather than stopped again:
+/// stopping is idempotent at the provider, but a second call spends tens of
+/// seconds of a cron's budget saying nothing.
+///
+/// # Errors
+///
+/// Returns [`ApiError::MachineNotFound`] if the session has no machine row,
+/// or [`ApiError::Provisioning`] if the provider or the host refuses.
+pub(crate) async fn stop_for_flyco(
+    db: &Db,
+    config: &ApiConfig,
+    hosts: &HostRooms,
+    user: UserId,
+    session: SessionId,
+) -> Result<bool, ApiError> {
+    let row = for_session(db, session)
+        .await?
+        .ok_or(ApiError::MachineNotFound)?;
+    if row.state != MachineState::Running {
+        return Ok(false);
+    }
+    run(
+        db,
+        config,
+        hosts,
+        user,
+        session,
+        provisioning::Operation::Stop,
+    )
+    .await?;
+    Ok(true)
+}
+
 /// Runs one lifecycle operation for a route that names its session in a path.
 async fn lifecycle(
     db: &Db,
