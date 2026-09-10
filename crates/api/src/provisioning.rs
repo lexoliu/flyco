@@ -20,7 +20,9 @@ use flyco_provider::azure::{AzureProvider, Workspace};
 use flyco_provider::gcp::auth::ServiceAccountKey;
 use flyco_provider::gcp::{GcpProvider, GcpWorkspace};
 use flyco_provider::host::{ContainerJob, ControlToHost, Host};
-use flyco_provider::{CloudProvider, Machine, ProviderError, ProvisionRequest};
+use flyco_provider::{
+    CloudProvider, Continuation, Machine, ProviderError, ProvisionRequest, Provisioning,
+};
 use skyzen::sql;
 use skyzen_services::Db;
 
@@ -916,12 +918,22 @@ pub async fn deployable(
 /// [`CloudProvider`](flyco_provider::CloudProvider) is not: every future on
 /// this path stays free of boxing on wasm32.
 pub trait Provisioner {
-    /// Brings one machine into existence, or says why it could not.
+    /// Brings one machine into existence, or says why it could not — or
+    /// how far it got, when the provider outlives one invocation's polls.
     fn provision(
         &mut self,
         account: &LinkedAccount,
         request: &ProvisionRequest,
-    ) -> impl Future<Output = Result<Machine, ProviderError>>;
+    ) -> impl Future<Output = Result<Provisioning, ProviderError>>;
+
+    /// Carries on a provision that answered [`Provisioning::Pending`], on
+    /// the machine that answer carried.
+    fn resume(
+        &mut self,
+        account: &LinkedAccount,
+        machine: &Machine,
+        continuation: &Continuation,
+    ) -> impl Future<Output = Result<Provisioning, ProviderError>>;
 
     /// Puts an existing machine back on compute, on the disk it kept.
     ///
@@ -964,15 +976,15 @@ impl Provisioner for CloudProvisioner {
         &mut self,
         account: &LinkedAccount,
         request: &ProvisionRequest,
-    ) -> Result<Machine, ProviderError> {
+    ) -> Result<Provisioning, ProviderError> {
         if let Some(mut azure) = azure_driver_for(account)? {
             return azure.provision(request).await;
         }
 
         match account.credentials() {
-            ProviderCredentials::Host { .. } => {
-                provision_on_host(&self.hosts, account, request).await
-            }
+            ProviderCredentials::Host { .. } => provision_on_host(&self.hosts, account, request)
+                .await
+                .map(Provisioning::Ready),
             // Unreachable: `azure_driver` answered for the Azure variant.
             ProviderCredentials::Azure { .. } => Err(ProviderError::Malformed(
                 "an Azure account produced no Azure driver",
@@ -985,6 +997,37 @@ impl Provisioner for CloudProvisioner {
             ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
                 provider: "GCP",
                 operation: "provision",
+                reason: "flyco has no GCP driver yet",
+            }),
+        }
+    }
+
+    async fn resume(
+        &mut self,
+        account: &LinkedAccount,
+        machine: &Machine,
+        continuation: &Continuation,
+    ) -> Result<Provisioning, ProviderError> {
+        if let Some(mut azure) = azure_driver_for(account)? {
+            return azure.resume(machine, continuation).await;
+        }
+        match account.credentials() {
+            // A machine the user owns takes the job or refuses it on the
+            // spot: there is no build to come back to.
+            ProviderCredentials::Host { .. } => Err(ProviderError::Malformed(
+                "a machine the user owns is provisioned in one call and has nothing to resume",
+            )),
+            ProviderCredentials::Azure { .. } => Err(ProviderError::Malformed(
+                "an Azure account produced no Azure driver",
+            )),
+            ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
+                provider: "AWS",
+                operation: "resume a provision",
+                reason: "flyco has no AWS driver yet",
+            }),
+            ProviderCredentials::Gcp { .. } => Err(ProviderError::Unsupported {
+                provider: "GCP",
+                operation: "resume a provision",
                 reason: "flyco has no GCP driver yet",
             }),
         }

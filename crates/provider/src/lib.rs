@@ -525,6 +525,86 @@ impl ProviderError {
     }
 }
 
+/// Where a driver had got to when its turn ran out.
+///
+/// A provision runs inside one control-plane invocation, and an invocation
+/// has a budget: Cloudflare allows a Worker fifty subrequests on the free
+/// plan, and a machine whose image is cold on the node can take a provider
+/// six minutes of polling to bring up — a poll every ten seconds is the
+/// budget spent before the machine exists (issue #257). So a driver that has
+/// not finished when its polls run out hands back *where it got to*, the
+/// control plane stores that in the queue message that resumes the build,
+/// and [`CloudProvider::resume`] carries on under a fresh budget.
+///
+/// Opaque outside the driver that wrote it: a JSON document in a string,
+/// so each driver keeps its own typed shape and nothing else reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Continuation(String);
+
+impl Continuation {
+    /// Writes a driver's own state down.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError::Malformed`] if the state cannot be
+    /// serialized, which is a driver bug rather than a provider answer.
+    pub fn write<T: Serialize>(state: &T) -> Result<Self, ProviderError> {
+        serde_json::to_string(state).map(Self).map_err(|_| {
+            ProviderError::Malformed("a provisioning continuation could not be written")
+        })
+    }
+
+    /// Reads a driver's own state back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError::Malformed`] for a continuation this driver
+    /// did not write, which is a row from another build of the control
+    /// plane rather than a state to recover from.
+    pub fn read<T: serde::de::DeserializeOwned>(&self) -> Result<T, ProviderError> {
+        serde_json::from_str(&self.0)
+            .map_err(|_| ProviderError::Malformed("a provisioning continuation could not be read"))
+    }
+}
+
+/// What a provision answered: the machine, or how far the provider got.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Provisioning {
+    /// The machine exists and its daemon is on its way.
+    Ready(Machine),
+    /// The provider is still building it.
+    ///
+    /// `machine` is what is known so far — enough of an identity for the
+    /// control plane to destroy it if the build is given up — and
+    /// `continuation` is what [`CloudProvider::resume`] needs to carry on.
+    Pending {
+        /// The machine as far as it exists: its `native_id` names what the
+        /// provider has created, and its state is still provisioning.
+        machine: Machine,
+        /// Where the driver got to.
+        continuation: Continuation,
+    },
+}
+
+impl Provisioning {
+    /// The machine, for a caller that cannot carry a build across calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError::Rejected`] when the provider had not
+    /// finished: the caller has nowhere to keep a continuation, so the
+    /// build is refused rather than waited on past its budget.
+    pub fn ready(self) -> Result<Machine, ProviderError> {
+        match self {
+            Self::Ready(machine) => Ok(machine),
+            Self::Pending { .. } => Err(ProviderError::Rejected(
+                "the provider had not finished building the machine within one call".to_owned(),
+            )),
+        }
+    }
+}
+
 /// A compute provider flyco can provision session machines on.
 ///
 /// Object-unsafe by design: the control plane matches on
@@ -538,10 +618,25 @@ pub trait CloudProvider {
 
     /// Provisions a machine for a session, already carrying its daemon's
     /// credentials.
+    ///
+    /// Answers [`Provisioning::Pending`] rather than waiting past one
+    /// invocation's polling budget; the control plane calls
+    /// [`resume`](Self::resume) later with what came back.
     fn provision(
         &mut self,
         request: &ProvisionRequest,
-    ) -> impl Future<Output = Result<Machine, ProviderError>>;
+    ) -> impl Future<Output = Result<Provisioning, ProviderError>>;
+
+    /// Carries on a provision that answered [`Provisioning::Pending`].
+    ///
+    /// `machine` is the one that answer carried. A driver whose provisions
+    /// never answer pending refuses this with [`ProviderError::Malformed`]:
+    /// there is nothing it could be asked to resume.
+    fn resume(
+        &mut self,
+        machine: &Machine,
+        continuation: &Continuation,
+    ) -> impl Future<Output = Result<Provisioning, ProviderError>>;
 
     /// Changes the machine type in place, preserving the disk
     /// (stop → modify → start).

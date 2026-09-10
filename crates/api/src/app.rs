@@ -1775,13 +1775,14 @@ pub async fn fail_stalled_provisions(
     at_unix: u64,
 ) -> Result<(), ApiError> {
     for stalled in sessions::stalled_provisions(db, at_unix).await? {
-        // A row with no provider-native id is a machine the provider never
-        // finished building — the queue's job is still running or still
-        // failing — and saying it "was built" would send whoever reads the
-        // sentence to look at a daemon that never existed.
+        // A row the provider never finished — the queue's job is still
+        // running, still failing, or still following a build it handed
+        // back — is not a machine that "was built", and saying so would
+        // send whoever reads the sentence to look at a daemon that never
+        // existed.
         let built = machines::for_session(db, stalled.id)
             .await?
-            .is_some_and(|machine| machine.native_id.is_some());
+            .is_some_and(|machine| machine.is_provisioned());
         // The daemon's own sentence when it managed to send one, because
         // "never reported its agent ready" is what flyco saw and not what
         // happened.

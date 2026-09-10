@@ -43,11 +43,11 @@ use crate::azure::auth::ServicePrincipal;
 use crate::clock::ManualClock;
 use crate::cloud_init::CONFIG_PATH;
 use crate::http::{HttpRequest, HttpResponse, Method};
-use crate::polling::MAX_POLL_ATTEMPTS;
+use crate::polling::{MAX_POLL_ATTEMPTS, POLLS_PER_INVOCATION};
 use crate::testing::{RecordedTransport, RecordingTimer};
 use crate::{
     CapacityMode, ClaudeCredential, CloudProvider, DaemonBootstrap, HarnessCredential, Machine,
-    ProviderError, ProvisionRequest,
+    ProviderError, ProvisionRequest, Provisioning,
 };
 
 const SUBSCRIPTION: &str = "e47d07d8-2715-4909-aa56-1bfde801bdf0";
@@ -228,6 +228,7 @@ async fn provisioning_reads_the_policy_availability_and_quota_before_it_writes()
     azure
         .provision(&request(MachineId::generate(), X64_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = azure.transport();
@@ -293,6 +294,7 @@ async fn a_region_the_subscriptions_policy_forbids_is_refused_before_any_read() 
             false,
         ))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a policy-forbidden region cannot be deployed into");
 
     let ProviderError::Unavailable { reason, .. } = &error else {
@@ -331,6 +333,7 @@ async fn a_subscription_with_no_policy_may_deploy_where_it_likes() {
             false,
         ))
         .await
+        .and_then(Provisioning::ready)
         .expect("no assignment means every region, not no region");
 }
 
@@ -341,6 +344,7 @@ async fn the_policy_is_read_once_per_driver() {
     azure
         .provision(&request(machine, X64_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
     azure
         .deallocate(&provisioned(machine))
@@ -364,6 +368,7 @@ async fn a_location_restricted_machine_type_is_refused_before_any_write() {
     let error = azure
         .provision(&request(MachineId::generate(), "Standard_B2ls_v2", false))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a location-restricted SKU cannot be deployed");
     assert!(matches!(error, ProviderError::Unavailable { .. }));
     assert_eq!(
@@ -385,6 +390,7 @@ async fn a_machine_type_with_no_family_quota_is_refused_on_demand() {
     let error = azure
         .provision(&request(MachineId::generate(), NO_FAMILY_QUOTA_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a family with a zero limit cannot take an on-demand machine");
     assert!(matches!(error, ProviderError::QuotaExceeded { .. }));
     assert_eq!(azure.transport().request_count(), 4);
@@ -401,6 +407,7 @@ async fn the_same_machine_type_is_allowed_as_spot_because_spot_has_its_own_pool(
     let machine = azure
         .provision(&request(MachineId::generate(), NO_FAMILY_QUOTA_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("spot draws on a different pool");
     assert_eq!(machine.capacity_mode, CapacityMode::Spot);
 }
@@ -417,6 +424,7 @@ async fn a_spent_low_priority_pool_refuses_spot() {
     let error = azure
         .provision(&request(MachineId::generate(), X64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("two of three spot vCPUs are already spent");
     assert!(matches!(
         error,
@@ -431,6 +439,7 @@ async fn a_machine_type_the_region_does_not_list_is_refused() {
     let error = azure
         .provision(&request(MachineId::generate(), "Standard_NotReal", false))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("an unknown machine type cannot be deployed");
     assert!(matches!(error, ProviderError::Unavailable { .. }));
 }
@@ -443,6 +452,7 @@ async fn the_workspace_network_and_security_group_come_before_the_session_resour
     azure
         .provision(&request(MachineId::generate(), X64_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = azure.transport();
@@ -488,6 +498,7 @@ async fn the_public_ip_is_standard_static_and_named_for_dns() {
     azure
         .provision(&request(machine, X64_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let pip = azure.transport().request(6);
@@ -518,6 +529,7 @@ async fn the_interface_joins_the_subnet_the_address_and_the_security_group() {
     azure
         .provision(&request(machine, X64_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let nic = azure.transport().request(7);
@@ -558,7 +570,11 @@ async fn the_machine_body_is_the_measured_shape() {
     let provision = request(machine, X64_TYPE, true);
     let session = provision.bootstrap.session;
     let mut azure = provider(provision_script(vec![done()]));
-    azure.provision(&provision).await.expect("provision");
+    azure
+        .provision(&provision)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
 
     let vm = azure.transport().request(MACHINE_PUT);
     assert_eq!(vm.method, Method::Put);
@@ -642,6 +658,7 @@ async fn the_image_sku_follows_the_machine_types_instruction_set() {
                 false,
             ))
             .await
+            .and_then(Provisioning::ready)
             .expect("provision");
 
         let body = body_of(&azure.transport().request(MACHINE_PUT));
@@ -658,7 +675,11 @@ async fn cloud_init_carries_the_daemon_configuration_and_nothing_readable() {
 
     let provision = request(MachineId::generate(), X64_TYPE, false);
     let mut azure = provider(provision_script(vec![done()]));
-    azure.provision(&provision).await.expect("provision");
+    azure
+        .provision(&provision)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
 
     let body = body_of(&azure.transport().request(MACHINE_PUT));
     let custom_data = body["properties"]["osProfile"]["customData"]
@@ -714,6 +735,7 @@ async fn a_spot_refusal_is_retried_as_on_demand_for_both_codes() {
         let provisioned = azure
             .provision(&request(MachineId::generate(), X64_TYPE, true))
             .await
+            .and_then(Provisioning::ready)
             .unwrap_or_else(|error| panic!("`{code}` must fall back, not fail: {error}"));
 
         assert_eq!(
@@ -753,6 +775,7 @@ async fn the_on_demand_fallback_re_checks_the_pools_it_would_spend() {
     let error = azure
         .provision(&request(MachineId::generate(), NO_FAMILY_QUOTA_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("the on-demand pools cannot fund this machine");
     assert!(matches!(error, ProviderError::QuotaExceeded { .. }));
     assert_eq!(
@@ -768,6 +791,7 @@ async fn a_spot_machine_that_azure_accepts_records_spot() {
     let machine = azure
         .provision(&request(MachineId::generate(), X64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     assert_eq!(machine.capacity_mode, CapacityMode::Spot);
@@ -781,6 +805,7 @@ async fn a_refusal_that_is_not_about_spot_is_not_retried() {
     let error = azure
         .provision(&request(MachineId::generate(), X64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a capacity failure is a failure");
     assert_eq!(error.code(), Some("SkuNotAvailable"));
     assert_eq!(
@@ -796,6 +821,7 @@ async fn an_on_demand_request_never_carries_the_spot_fields() {
     azure
         .provision(&request(MachineId::generate(), X64_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let body = body_of(&azure.transport().request(MACHINE_PUT));
@@ -850,6 +876,7 @@ async fn an_operation_is_polled_until_it_reaches_a_terminal_status() {
     azure
         .provision(&request(MachineId::generate(), X64_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = azure.transport();
@@ -878,6 +905,7 @@ async fn a_failed_operation_is_a_failure_even_though_the_call_was_accepted() {
     let error = azure
         .provision(&request(MachineId::generate(), X64_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a Failed operation is a failed provision");
     assert!(matches!(
         error,
@@ -895,7 +923,8 @@ async fn a_cancelled_operation_is_terminal_too() {
     assert!(matches!(
         azure
             .provision(&request(MachineId::generate(), X64_TYPE, false))
-            .await,
+            .await
+            .and_then(Provisioning::ready),
         Err(ProviderError::OperationFailed { .. })
     ));
 }
@@ -916,6 +945,7 @@ async fn a_location_only_operation_is_followed_by_http_status() {
     azure
         .provision(&request(MachineId::generate(), X64_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = azure.transport();
@@ -944,6 +974,7 @@ async fn a_spot_refusal_reported_by_the_operation_falls_back_too() {
     let machine = azure
         .provision(&request(MachineId::generate(), X64_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("the operation's refusal falls back to on-demand");
     assert_eq!(machine.capacity_mode, CapacityMode::OnDemand);
 }
@@ -969,6 +1000,7 @@ async fn a_401_re_mints_the_token_and_retries_once() {
     azure
         .provision(&request(MachineId::generate(), X64_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = azure.transport();
@@ -1257,6 +1289,7 @@ async fn provisioning_a_container_creates_the_environment_then_the_job_then_an_e
     let machine = azure
         .provision(&container_request(id, CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision a container");
 
     let transport = azure.transport();
@@ -1349,6 +1382,7 @@ async fn an_unregistered_subscription_is_registered_for_container_apps_before_th
     let machine = azure
         .provision(&container_request(id, CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision a container on a subscription registered on the way");
 
     let transport = azure.transport();
@@ -1393,6 +1427,7 @@ async fn a_registration_that_never_lands_fails_the_provision_rather_than_writing
     let error = azure
         .provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a namespace that never registers cannot be written into");
     assert!(
         matches!(error, ProviderError::Rejected(ref message) if message.contains("Registering")),
@@ -1457,6 +1492,7 @@ async fn an_environment_still_being_built_is_waited_for_rather_than_written_over
     let machine = azure
         .provision(&container_request(id, CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision once the environment is ready");
 
     let transport = azure.transport();
@@ -1492,6 +1528,7 @@ async fn a_failed_environment_is_written_again() {
     azure
         .provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision after rewriting the environment");
 
     let transport = azure.transport();
@@ -1510,6 +1547,7 @@ async fn the_environment_declares_consumption_and_a_logging_destination_needing_
     azure
         .provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision a container");
 
     let body = body_of(&azure.transport().request(ENVIRONMENT_PUT));
@@ -1542,7 +1580,11 @@ async fn the_job_body_is_the_documented_shape() {
     let provision = container_request(id, CONTAINER_TYPE);
     let session = provision.bootstrap.session;
     let mut azure = provider(container_script());
-    azure.provision(&provision).await.expect("provision");
+    azure
+        .provision(&provision)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
 
     let request = azure.transport().request(JOB_PUT);
     let body = body_of(&request);
@@ -1627,6 +1669,7 @@ async fn a_request_whose_spec_and_bootstrap_disagree_about_the_runtime_is_refuse
     let error = azure
         .provision(&request)
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a request that disagrees with itself is not provisioned");
     assert!(matches!(error, ProviderError::Malformed(_)));
     assert_eq!(
@@ -1645,6 +1688,7 @@ async fn a_container_in_a_forbidden_region_is_refused_before_any_write() {
     let error = azure
         .provision(&request)
         .await
+        .and_then(Provisioning::ready)
         .expect_err("the policy refuses an environment's PUT exactly as it refuses a network's");
     assert!(matches!(error, ProviderError::Unavailable { .. }));
     assert_eq!(azure.transport().request_count(), 2);
@@ -1657,6 +1701,7 @@ async fn a_size_flyco_never_offered_is_refused_before_any_write() {
     let error = azure
         .provision(&container_request(MachineId::generate(), "aca-8x16"))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("Container Apps publishes no SKU list, so the size table is the gate");
     let ProviderError::Unavailable { reason, .. } = &error else {
         panic!("an unoffered size is an availability failure: {error}");
@@ -1681,8 +1726,16 @@ async fn a_redelivered_provision_updates_the_job_and_starts_another_execution() 
     let mut azure = provider(script);
     let request = container_request(id, CONTAINER_TYPE);
 
-    let first = azure.provision(&request).await.expect("provision");
-    let second = azure.provision(&request).await.expect("provision again");
+    let first = azure
+        .provision(&request)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
+    let second = azure
+        .provision(&request)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision again");
 
     let transport = azure.transport();
     assert_eq!(
@@ -1707,6 +1760,7 @@ async fn a_start_azure_reports_without_naming_the_execution_is_a_failure() {
     let error = azure
         .provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("an unnamed execution is unusable");
     assert!(matches!(error, ProviderError::Malformed(_)));
 }
@@ -1849,6 +1903,131 @@ async fn a_resize_to_a_size_flyco_never_offered_never_stops_the_machine() {
         2,
         "the running execution is untouched by a resize that was never possible"
     );
+}
+
+/// A job start Azure accepted and is still working on: `202` with the
+/// `Location` to poll, which answers `202` until the execution is up.
+fn start_accepted() -> HttpResponse {
+    HttpResponse::new(202, Vec::new()).header(
+        "Location",
+        "https://management.azure.com/subscriptions/s/providers/Microsoft.App/locations/westeurope/jobOperationResults/op-9",
+    )
+}
+
+fn still_starting() -> HttpResponse {
+    HttpResponse::new(202, Vec::new())
+}
+
+#[tokio::test]
+async fn a_container_whose_execution_outlives_the_polling_budget_is_handed_back_and_resumed() {
+    // Measured: a cold image took Azure six minutes to bring up, and the
+    // invocation that started it died on the Worker's subrequest ceiling
+    // long before (issue #257). The driver spends one invocation's polls
+    // and hands the build back; the next call carries on from there.
+    let id = MachineId::generate();
+    let job = containers::names::job(id);
+    let mut script = vec![
+        token(),
+        json(200, POLICY),
+        provider_registration("Registered"),
+        not_found(),
+        done(),
+        done(),
+        start_accepted(),
+    ];
+    script.extend((0..POLLS_PER_INVOCATION).map(|_| still_starting()));
+    // The resumed call: two more polls, then the execution.
+    script.extend([still_starting(), still_starting(), started(EXECUTION)]);
+    let mut azure = provider(script);
+
+    let Provisioning::Pending {
+        machine,
+        continuation,
+    } = azure
+        .provision(&container_request(id, CONTAINER_TYPE))
+        .await
+        .expect("a build still in progress is not a failure")
+    else {
+        panic!("the execution had not come up within the budget");
+    };
+    assert_eq!(
+        machine.native_id, job,
+        "the job is all the machine is so far: enough to destroy it by"
+    );
+    assert_eq!(machine.state, MachineState::Provisioning);
+    assert_eq!(
+        azure.transport().request_count(),
+        JOB_START + 1 + POLLS_PER_INVOCATION,
+        "the budget is spent and not a poll more"
+    );
+
+    let resumed = azure
+        .resume(&machine, &continuation)
+        .await
+        .expect("resume the build");
+    assert_eq!(
+        resumed,
+        Provisioning::Ready(provisioned_container(id)),
+        "the execution came up on the resumed call, under its own budget"
+    );
+    assert_eq!(
+        azure.transport().request_count(),
+        JOB_START + 1 + POLLS_PER_INVOCATION + 3,
+        "resuming polls the operation and nothing else: no token, no job PUT"
+    );
+    let poll = azure.transport().request(JOB_START + 1);
+    assert_eq!(poll.method, Method::Get);
+    assert!(poll.url.contains("/jobOperationResults/op-9"));
+}
+
+#[tokio::test]
+async fn a_build_given_up_before_its_execution_was_named_stops_whatever_the_job_started() {
+    // The control plane destroys a stalled pending machine by the only id it
+    // has, the job's. By then the execution may well have come up — that is
+    // exactly the slow build that was given up on — so it is found and
+    // stopped rather than left running behind a session that has forgotten
+    // it.
+    let id = MachineId::generate();
+    let job = containers::names::job(id);
+    let machine = Machine {
+        native_id: job.clone(),
+        state: MachineState::Provisioning,
+        ..provisioned_container(id)
+    };
+    let executions = serde_json::json!({
+        "value": [
+            { "name": EXECUTION, "properties": { "status": "Running" } },
+            { "name": NEXT_EXECUTION, "properties": { "status": "Failed" } },
+        ]
+    });
+    let mut azure = provider(vec![
+        token(),
+        json(200, &executions.to_string()),
+        done(),
+        done(),
+    ]);
+
+    azure.destroy(&machine).await.expect("destroy");
+
+    let transport = azure.transport();
+    assert_eq!(transport.request(1).method, Method::Get);
+    assert!(
+        transport
+            .request(1)
+            .url
+            .ends_with(&format!("/jobs/{job}/executions?api-version=2025-07-01"))
+    );
+    assert!(
+        transport
+            .request(2)
+            .url
+            .contains(&format!("/executions/{EXECUTION}/stop")),
+        "the live execution is stopped and the failed one is left alone"
+    );
+    assert_eq!(transport.request(3).method, Method::Delete);
+    assert!(transport.request(3).url.ends_with(&format!(
+        "/providers/Microsoft.App/jobs/{job}?api-version=2025-07-01"
+    )));
 }
 
 #[tokio::test]
@@ -2196,7 +2375,11 @@ async fn live_provision_and_destroy() {
         .clone();
 
     let provision = request_in(MachineId::generate(), &region, &cheapest, true);
-    let machine = azure.provision(&provision).await.expect("provision");
+    let machine = azure
+        .provision(&provision)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
     azure.destroy(&machine).await.expect("destroy");
 }
 

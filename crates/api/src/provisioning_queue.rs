@@ -50,7 +50,10 @@ use flyco_core::{
     PermissionMode, ProviderAccountId, ProvisioningStage, RepoSlug, SessionId, SessionState,
     UserId,
 };
-use flyco_provider::{DaemonBootstrap, GitIdentity, ProviderError, ProvisionRequest, RepoCheckout};
+use flyco_provider::{
+    Continuation, DaemonBootstrap, GitIdentity, ProviderError, ProvisionRequest, Provisioning,
+    RepoCheckout,
+};
 use serde::{Deserialize, Serialize};
 use skyzen_services::queue::{
     QueueBatch, QueueBatchDisposition, QueueMessageDisposition, QueueRetry, SendOptions,
@@ -79,6 +82,13 @@ pub const MAX_ATTEMPTS: u32 = 3;
 
 /// How long a retried job waits before it is delivered again.
 const RETRY_DELAY: Duration = Duration::from_secs(30);
+
+/// How long a build the provider handed back waits before it is resumed.
+///
+/// Short, because the provider is already working and every leg polls
+/// under its own subrequest budget: the delay is what keeps the legs from
+/// being one invocation, not a pause for the provider's sake.
+const CONTINUE_DELAY: Duration = Duration::from_secs(10);
 
 /// One job on the provisioning queue.
 ///
@@ -112,6 +122,22 @@ pub enum ProvisioningJob {
         machine: MachineId,
         /// Which attempt this is, counting from one.
         attempt: u32,
+    },
+    /// Carry on a build the provider handed back (issue #257).
+    ///
+    /// Its own job rather than a `Provision` delivered again, because a
+    /// second `Provision` would start a second machine: the continuation
+    /// names the one already being built.
+    Continue {
+        /// The session the machine is for.
+        session: SessionId,
+        /// The machine the continuation belongs to.
+        machine: MachineId,
+        /// How many times this leg has been asked for; counts like a
+        /// provision's, and gives up the same way.
+        attempt: u32,
+        /// Where the provider's driver got to.
+        continuation: Continuation,
     },
     /// Put a session back on the machine a provider reclaimed.
     ///
@@ -183,6 +209,21 @@ impl ProvisioningJob {
 
     /// The first attempt at putting a reclaimed session back.
     #[must_use]
+    pub const fn continuing(
+        session: SessionId,
+        machine: MachineId,
+        continuation: Continuation,
+    ) -> Self {
+        Self::Continue {
+            session,
+            machine,
+            attempt: 1,
+            continuation,
+        }
+    }
+
+    /// The first attempt at putting a reclaimed session back.
+    #[must_use]
     pub const fn recovery(session: SessionId, machine: MachineId, reclaimed_at_unix: u64) -> Self {
         Self::Recover {
             session,
@@ -196,7 +237,9 @@ impl ProvisioningJob {
     #[must_use]
     pub const fn session(&self) -> Option<SessionId> {
         match self {
-            Self::Provision { session, .. } | Self::Recover { session, .. } => Some(*session),
+            Self::Provision { session, .. }
+            | Self::Continue { session, .. }
+            | Self::Recover { session, .. } => Some(*session),
             Self::RefreshCatalog { .. } | Self::RefreshCatalogRegion { .. } => None,
         }
     }
@@ -205,7 +248,9 @@ impl ProvisioningJob {
     #[must_use]
     pub const fn machine(&self) -> Option<MachineId> {
         match self {
-            Self::Provision { machine, .. } | Self::Recover { machine, .. } => Some(*machine),
+            Self::Provision { machine, .. }
+            | Self::Continue { machine, .. }
+            | Self::Recover { machine, .. } => Some(*machine),
             Self::RefreshCatalog { .. } | Self::RefreshCatalogRegion { .. } => None,
         }
     }
@@ -219,7 +264,9 @@ impl ProvisioningJob {
     #[must_use]
     pub const fn attempt(&self) -> Option<u32> {
         match self {
-            Self::Provision { attempt, .. } | Self::Recover { attempt, .. } => Some(*attempt),
+            Self::Provision { attempt, .. }
+            | Self::Continue { attempt, .. }
+            | Self::Recover { attempt, .. } => Some(*attempt),
             Self::RefreshCatalog { .. } | Self::RefreshCatalogRegion { .. } => None,
         }
     }
@@ -235,6 +282,17 @@ impl ProvisioningJob {
                 session,
                 machine,
                 attempt: attempt.saturating_add(1),
+            },
+            Self::Continue {
+                session,
+                machine,
+                attempt,
+                continuation,
+            } => Self::Continue {
+                session,
+                machine,
+                attempt: attempt.saturating_add(1),
+                continuation,
             },
             Self::Recover {
                 session,
@@ -294,7 +352,7 @@ pub async fn enqueue_after(
     tracing::info!(
         job = ?job,
         delay_secs = delay.as_secs(),
-        "queued a recovery for after the provider takes the machine"
+        "queued a provisioning job for later"
     );
     Ok(())
 }
@@ -396,13 +454,24 @@ async fn perform(
         } => {
             return settle(refresh_region(db, config, kv, *user, *account, region).await);
         }
-        ProvisioningJob::Provision { .. } | ProvisioningJob::Recover { .. } => {}
+        ProvisioningJob::Provision { .. }
+        | ProvisioningJob::Continue { .. }
+        | ProvisioningJob::Recover { .. } => {}
     }
 
     let outcome = match job {
         ProvisioningJob::Provision { .. } => match claim(db, rooms, job.clone()).await {
             Ok(None) => return Settled::Done,
-            Ok(Some(claimed)) => build(db, config, rooms, clients, &claimed).await,
+            Ok(Some(claimed)) => build(db, config, rooms, queue, clients, &claimed).await,
+            Err(error) => return Settled::Redeliver(error),
+        },
+        ProvisioningJob::Continue {
+            ref continuation, ..
+        } => match claim(db, rooms, job.clone()).await {
+            Ok(None) => return Settled::Done,
+            Ok(Some(claimed)) => {
+                carry_on(db, config, rooms, queue, clients, &claimed, continuation).await
+            }
             Err(error) => return Settled::Redeliver(error),
         },
         ProvisioningJob::Recover {
@@ -658,6 +727,29 @@ async fn claim(db: &Db, rooms: &Rooms, job: ProvisioningJob) -> Result<Option<Cl
         );
         return Ok(None);
     }
+    // A row with a provider-native id but no running machine is a build the
+    // provider handed back: a `Continue` owns it, and a `Provision`
+    // delivered again would start a second machine beside it.
+    let pending = machine.native_id.is_some();
+    match &job {
+        ProvisioningJob::Provision { .. } if pending => {
+            tracing::info!(
+                %session,
+                machine = %machine.id,
+                "this session's machine is being built by a continuation; the job was delivered twice"
+            );
+            return Ok(None);
+        }
+        ProvisioningJob::Continue { .. } if !pending => {
+            tracing::info!(
+                %session,
+                machine = %machine.id,
+                "dropping a continuation for a build the provider never handed back"
+            );
+            return Ok(None);
+        }
+        _ => {}
+    }
 
     let model = target.model_choice();
     Ok(Some(Claim {
@@ -695,6 +787,7 @@ async fn build(
     db: &Db,
     config: &ApiConfig,
     rooms: &Rooms,
+    queue: &Queue,
     clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
     claim: &Claim,
 ) -> Result<(), Provisioned> {
@@ -713,7 +806,7 @@ async fn build(
 
     let bootstrap = bootstrap(db, config, clients, claim, &entry, spec.spot).await?;
     announce(db, rooms, claim.session, ProvisioningStage::Reserving).await;
-    let machine = clients
+    let outcome = clients
         .provisioner
         .provision(
             &account,
@@ -725,10 +818,86 @@ async fn build(
         )
         .await
         .map_err(|error| classify(&error))?;
+    settle_build(db, rooms, queue, claim, &entry, outcome).await
+}
+
+/// Carries on a build the provider handed back (issue #257).
+///
+/// The same ending as [`build`], reached without a new bootstrap or a new
+/// `reserving` stage: the machine is the one already being built, and the
+/// user has been watching it since the first leg.
+async fn carry_on(
+    db: &Db,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    queue: &Queue,
+    clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
+    claim: &Claim,
+    continuation: &Continuation,
+) -> Result<(), Provisioned> {
+    let account = provisioning::account(db, config, claim.user, claim.machine.provider_account_id)
+        .await
+        .map_err(Provisioned::from)?;
+    let entry = provisioning::deployable(&account, &claim.machine.spec())
+        .await
+        .map_err(|error| classify(&error))?;
+    let pending = claim
+        .machine
+        .as_provider_machine()
+        .map_err(Provisioned::from)?;
+
+    // Progress, as far as the stall sweep is concerned: the provider is
+    // still working, and a session it is working on is not stalled.
+    sessions::note_progress(db, claim.session)
+        .await
+        .map_err(Provisioned::from)?;
+    let outcome = clients
+        .provisioner
+        .resume(&account, &pending, continuation)
+        .await
+        .map_err(|error| classify(&error))?;
+    settle_build(db, rooms, queue, claim, &entry, outcome).await
+}
+
+/// Records what a provision or a resumed build answered.
+///
+/// A machine is recorded and the session told it is booting; a build still
+/// in progress is recorded by what exists of it and asked for again after
+/// [`CONTINUE_DELAY`], so the next leg polls under its own budget.
+async fn settle_build(
+    db: &Db,
+    rooms: &Rooms,
+    queue: &Queue,
+    claim: &Claim,
+    entry: &flyco_core::MachineCatalogEntry,
+    outcome: Provisioning,
+) -> Result<(), Provisioned> {
+    let machine = match outcome {
+        Provisioning::Ready(machine) => machine,
+        Provisioning::Pending {
+            machine,
+            continuation,
+        } => {
+            machines::record_pending(db, &machine).await?;
+            enqueue_after(
+                queue,
+                ProvisioningJob::continuing(claim.session, machine.id, continuation),
+                CONTINUE_DELAY,
+            )
+            .await?;
+            tracing::info!(
+                session = %claim.session,
+                machine = %machine.id,
+                "the provider is still building a session's machine; the build carries on \
+                 in its next leg"
+            );
+            return Ok(());
+        }
+    };
     // What the machine turned out to be, priced at the capacity it actually
     // holds — which is what the budget meters and what the agent's
     // `machine_status` reads back.
-    let built = flyco_core::SessionMachine::of(&entry, machine.capacity_mode.is_spot());
+    let built = flyco_core::SessionMachine::of(entry, machine.capacity_mode.is_spot());
     let storage_hourly = match &entry.pricing {
         flyco_core::MachinePricing::UserOwned => None,
         flyco_core::MachinePricing::Metered { .. } => Some(

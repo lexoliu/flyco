@@ -25,6 +25,19 @@ pub const DEFAULT_BACKOFF_SECONDS: [u32; 4] = [1, 2, 5, 10];
 /// of the process.
 pub const MAX_POLL_ATTEMPTS: usize = 240;
 
+/// How many polls one control-plane invocation spends on a build before
+/// handing back a [`Continuation`](crate::Continuation).
+///
+/// A Cloudflare Worker on the free plan may make fifty subrequests in one
+/// invocation, and a provision spends some of them before it starts
+/// polling: the token, the region policy, the environment, the job. Twelve
+/// polls is about a hundred seconds of the default backoff — the minute or
+/// two most builds take, so most never yield — and leaves the invocation
+/// well inside the ceiling that ended a six-minute cold-image build
+/// (issue #257). The continuation that carries on gets twelve more under
+/// its own budget, up to [`MAX_POLL_ATTEMPTS`] across all of them.
+pub const POLLS_PER_INVOCATION: usize = 12;
+
 /// The delay before the `attempt`-th poll, honouring `Retry-After` first.
 #[must_use]
 pub const fn poll_delay(retry_after: Option<u32>, attempt: usize) -> u32 {

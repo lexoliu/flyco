@@ -20,8 +20,8 @@ use flyco_core::{
 };
 use flyco_provider::host::container_name;
 use flyco_provider::{
-    ClaudeCredential, DaemonBootstrap, HarnessCredential, HttpError, Machine, MachineOperation,
-    ProviderError, ProvisionRequest,
+    ClaudeCredential, Continuation, DaemonBootstrap, HarnessCredential, HttpError, Machine,
+    MachineOperation, ProviderError, ProvisionRequest, Provisioning,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -65,6 +65,10 @@ enum Answer {
     /// The room could not be reached at all, which is the one failure worth
     /// asking again about.
     Unreachable,
+    /// The room took the job but the machine was still coming up when the
+    /// call's budget ran out: the build is handed back, and the next call
+    /// finds it running.
+    Slow,
 }
 
 /// The real planner, over a room that answers instead of holding a socket.
@@ -73,10 +77,16 @@ enum Answer {
 /// redelivered job does not provision twice" is an assertion about — and
 /// keeps the last bootstrap, which is where the credentials the queue minted
 /// and unsealed become visible.
+/// What a slow build is known by before its execution has a name.
+const SLOW_JOB: &str = "flyco-slow-job";
+/// Where the slow host says it got to.
+const SLOW_CONTINUATION: &str = "still starting";
+
 #[derive(Debug)]
 struct RecordedHost {
     answer: Answer,
     provisions: u32,
+    resumes: u32,
     /// Every machine this host was asked to start again, in order.
     ///
     /// A recovery is a *start*, never a provision, and the two counters are
@@ -92,6 +102,7 @@ impl RecordedHost {
         Self {
             answer,
             provisions: 0,
+            resumes: 0,
             restarts: Vec::new(),
             bootstrap: None,
         }
@@ -108,10 +119,49 @@ impl Provisioner for RecordedHost {
         &mut self,
         account: &LinkedAccount,
         request: &ProvisionRequest,
-    ) -> impl Future<Output = Result<Machine, ProviderError>> {
+    ) -> impl Future<Output = Result<Provisioning, ProviderError>> {
         // Nothing here suspends: planning is pure, and where the deployed
         // provisioner posts the job to a room this one answers for it.
-        core::future::ready(self.plan(account, request))
+        let slow = self.answer == Answer::Slow;
+        core::future::ready(self.plan(account, request).map(|machine| {
+            if slow {
+                Provisioning::Pending {
+                    machine: Machine {
+                        native_id: SLOW_JOB.to_owned(),
+                        state: MachineState::Provisioning,
+                        ..machine
+                    },
+                    continuation: Continuation::write(&SLOW_CONTINUATION).expect("a string"),
+                }
+            } else {
+                Provisioning::Ready(machine)
+            }
+        }))
+    }
+
+    fn resume(
+        &mut self,
+        _account: &LinkedAccount,
+        machine: &Machine,
+        continuation: &Continuation,
+    ) -> impl Future<Output = Result<Provisioning, ProviderError>> {
+        self.resumes = self.resumes.saturating_add(1);
+        assert_eq!(
+            continuation
+                .read::<String>()
+                .expect("the continuation this host wrote"),
+            SLOW_CONTINUATION,
+            "the queue hands back exactly what the provider handed it"
+        );
+        assert_eq!(
+            machine.native_id, SLOW_JOB,
+            "resumed on the pending machine"
+        );
+        core::future::ready(Ok(Provisioning::Ready(Machine {
+            native_id: format!("{SLOW_JOB}/run-1"),
+            state: MachineState::Running,
+            ..machine.clone()
+        })))
     }
 
     fn restart(
@@ -154,7 +204,7 @@ impl RecordedHost {
         let job = planner.plan(&MachineOperation::Provision(Box::new(request.clone())))?;
 
         match self.answer {
-            Answer::Takes => Ok(Machine {
+            Answer::Takes | Answer::Slow => Ok(Machine {
                 id: request.machine,
                 native_id: job.container().to_owned(),
                 runtime: flyco_core::Runtime::Container,
@@ -690,6 +740,79 @@ async fn a_machine_still_making_progress_is_not_called_stalled(
         read(&client, &caller, session).await.summary.state,
         SessionState::Provisioning,
         "a machine that is still reporting stages keeps being built"
+    );
+}
+
+#[skyzen::test]
+async fn a_build_the_provider_hands_back_is_carried_on_in_its_own_leg(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // Measured: a cold image took Azure six minutes, and the one invocation
+    // that started it died on the Worker's subrequest ceiling (issue #257).
+    // The provider now hands the build back; the queue records what exists
+    // of the machine, asks for the rest later, and finishes it then.
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    let session = open(&client, &caller).await.summary.id;
+    let mut host = RecordedHost::answering(Answer::Slow);
+    run_queue(&db, &kv, &queue, &mut host).await;
+
+    assert_eq!(
+        read(&client, &caller, session).await.summary.state,
+        SessionState::Provisioning,
+        "a build in progress is a session still waiting for its machine"
+    );
+    let pending = crate::machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("the session reserved a row");
+    assert_eq!(
+        pending.native_id.as_deref(),
+        Some(SLOW_JOB),
+        "what the provider created so far is recorded, so a stall can destroy it"
+    );
+    assert_eq!(pending.state, flyco_core::MachineState::Provisioning);
+    let mut legs = queued(&backend);
+    assert!(
+        matches!(
+            legs.as_slice(),
+            [ProvisioningJob::Continue { session: queued, machine, attempt: 1, .. }]
+                if *queued == session && *machine == pending.id
+        ),
+        "one continuation, for this machine: {legs:?}"
+    );
+    let leg = legs.remove(0);
+
+    // A `Provision` delivered again meanwhile does not start a second
+    // machine beside the one being built.
+    let redelivered = batch(ProvisioningJob::first(session, pending.id));
+    run_queue_watching(&db, &kv, &queue, &test_rooms(), &mut host, redelivered).await;
+    assert_eq!(host.provisions, 1, "the continuation owns the build");
+
+    // The next leg — delivered after its delay, which the in-memory queue
+    // honours and this test does not wait out — finds the machine up.
+    run_queue_watching(&db, &kv, &queue, &test_rooms(), &mut host, batch(leg)).await;
+    assert_eq!(host.resumes, 1);
+    let built = crate::machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("the session reserved a row");
+    assert_eq!(built.state, flyco_core::MachineState::Running);
+    assert_eq!(built.native_id.as_deref(), Some("flyco-slow-job/run-1"));
+    assert_eq!(
+        queued(&backend)
+            .iter()
+            .filter(|job| matches!(job, ProvisioningJob::Continue { .. }))
+            .count(),
+        1,
+        "a finished build asks for nothing more: the one continuation ever queued is the \
+         leg this test took by hand"
     );
 }
 

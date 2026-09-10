@@ -507,7 +507,7 @@ export function ProvisioningTimeline(props: {
         </Show>
         <Show when={props.attempt > 1}>
           <p class={styles.timelineHeading}>
-            Attempt {props.attempt} · the provider refused the last machine, so flyco is asking for another
+            Attempt {props.attempt} · the last machine never came up, so flyco asked for another
           </p>
         </Show>
         {rows()}

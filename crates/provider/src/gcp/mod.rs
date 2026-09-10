@@ -86,12 +86,14 @@ use flyco_core::machine::{
     MachinePricing, MachineSpec, MachineState, OsFamily, Runtime, StoragePricing,
 };
 
+use core::future::Future;
+
 use crate::clock::{MonotonicClock, SystemClock, SystemTimer, SystemWallClock, Timer, WallClock};
 use crate::http::{HttpRequest, HttpResponse, HttpTransport, Method};
 use crate::polling::{MAX_POLL_ATTEMPTS, poll_delay};
 use crate::{
-    CapacityMode, CloudProvider, LiveTransport, Machine, ProviderError, ProvisionRequest,
-    cloud_init, flycod,
+    CapacityMode, CloudProvider, Continuation, LiveTransport, Machine, ProviderError,
+    ProvisionRequest, Provisioning, cloud_init, flycod,
 };
 
 use auth::{ServiceAccountKey, TokenCache};
@@ -840,6 +842,19 @@ pub fn spot_unsupported(error: &ProviderError) -> bool {
         .is_some_and(|code| SPOT_UNSUPPORTED_CODES.contains(&code))
 }
 
+impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T, C, K, W> {
+    /// A virtual machine on Compute Engine, or a container on Cloud Run.
+    async fn provision_one(
+        &mut self,
+        request: &ProvisionRequest,
+    ) -> Result<Machine, ProviderError> {
+        match request.spec.runtime {
+            Runtime::Vm => self.provision_instance(request).await,
+            Runtime::Container => self.provision_job(request).await,
+        }
+    }
+}
+
 impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
     for GcpProvider<T, C, K, W>
 {
@@ -885,11 +900,21 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
         Ok(entries)
     }
 
-    async fn provision(&mut self, request: &ProvisionRequest) -> Result<Machine, ProviderError> {
-        match request.spec.runtime {
-            Runtime::Vm => self.provision_instance(request).await,
-            Runtime::Container => self.provision_job(request).await,
-        }
+    async fn provision(
+        &mut self,
+        request: &ProvisionRequest,
+    ) -> Result<Provisioning, ProviderError> {
+        self.provision_one(request).await.map(Provisioning::Ready)
+    }
+
+    fn resume(
+        &mut self,
+        _machine: &Machine,
+        _continuation: &Continuation,
+    ) -> impl Future<Output = Result<Provisioning, ProviderError>> {
+        core::future::ready(Err(ProviderError::Malformed(
+            "a Google Cloud machine is built in one call and has nothing to resume",
+        )))
     }
 
     /// Stop, `setMachineType`, start on a virtual machine; stop and start at

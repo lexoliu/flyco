@@ -6,7 +6,7 @@
 //! happened to show — see `docs/research/azure-arm.md`. They are constants so
 //! a change to one is a change to a line of code with a reason beside it.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ProviderError;
 use crate::http::HttpResponse;
@@ -197,7 +197,7 @@ pub struct OperationBody {
 /// present, because the two report different things — the operation's status
 /// versus the final resource — and mixing them reads a `200` on a resource
 /// as success for an operation that has not finished.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Follow {
     /// Nothing to poll: the call already finished.
     Finished,

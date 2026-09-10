@@ -46,7 +46,7 @@ use crate::http::{HttpRequest, HttpResponse, Method};
 use crate::testing::{RecordedTransport, RecordingTimer};
 use crate::{
     CapacityMode, ClaudeCredential, CloudProvider, DaemonBootstrap, HarnessCredential, Machine,
-    ProviderError, ProvisionRequest,
+    ProviderError, ProvisionRequest, Provisioning,
 };
 
 const PROJECT: &str = "flyco-sessions";
@@ -204,6 +204,7 @@ async fn provisioning_reads_the_region_and_the_zones_types_before_it_writes() {
     ]));
     gcp.provision(&request(MachineId::generate(), MACHINE_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = gcp.transport();
@@ -238,6 +239,7 @@ async fn every_authenticated_request_carries_the_minted_token() {
     ]));
     gcp.provision(&request(MachineId::generate(), MACHINE_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = gcp.transport();
@@ -262,6 +264,7 @@ async fn the_token_is_minted_once_per_driver() {
     let machine = MachineId::generate();
     gcp.provision(&request(machine, MACHINE_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
     gcp.deallocate(&provisioned(machine))
         .await
@@ -289,6 +292,7 @@ async fn a_region_that_is_not_up_is_refused_before_the_machine_types_are_read() 
     let error = gcp
         .provision(&request(MachineId::generate(), MACHINE_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a region that is down cannot be deployed into");
     assert!(matches!(error, ProviderError::Unavailable { .. }));
     assert_eq!(
@@ -305,6 +309,7 @@ async fn a_machine_type_the_zone_does_not_offer_is_refused_before_any_write() {
     let error = gcp
         .provision(&request(MachineId::generate(), "e2-standard-4", true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("an unoffered machine type cannot be created");
     assert!(matches!(error, ProviderError::Unavailable { .. }));
     assert_eq!(gcp.transport().request_count(), 3);
@@ -317,6 +322,7 @@ async fn a_withdrawn_machine_type_is_refused_rather_than_attempted() {
     let error = gcp
         .provision(&request(MachineId::generate(), OBSOLETE_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("an obsolete machine type is refused by the API");
     let ProviderError::Unavailable { reason, .. } = &error else {
         panic!("a withdrawn type is an availability failure: {error}");
@@ -346,6 +352,7 @@ async fn a_machine_only_the_preemptible_pool_can_fund_is_still_provisioned() {
     let machine = gcp
         .provision(&request(MachineId::generate(), MACHINE_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("spot draws on a different pool");
     assert_eq!(machine.capacity_mode, CapacityMode::Spot);
 
@@ -353,6 +360,7 @@ async fn a_machine_only_the_preemptible_pool_can_fund_is_still_provisioned() {
     let error = gcp
         .provision(&request(MachineId::generate(), MACHINE_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("the on-demand pool has no room at all");
     assert!(matches!(
         error,
@@ -371,6 +379,7 @@ async fn a_spent_preemptible_pool_refuses_spot() {
     let error = gcp
         .provision(&request(MachineId::generate(), MACHINE_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("the preemptible pool is spent");
     assert!(matches!(
         error,
@@ -385,6 +394,7 @@ async fn a_machine_too_large_for_either_pool_is_refused() {
     let error = gcp
         .provision(&request(MachineId::generate(), LARGE_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("thirty-two vCPUs do not fit under a limit of four");
     assert!(matches!(error, ProviderError::QuotaExceeded { .. }));
 }
@@ -400,7 +410,10 @@ async fn the_instance_body_is_the_measured_shape() {
         json(OPERATION_DONE),
         json(INSTANCE_RUNNING),
     ]));
-    gcp.provision(&provision).await.expect("provision");
+    gcp.provision(&provision)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
 
     let insert = gcp.transport().request(INSERT);
     assert_eq!(insert.method, Method::Post);
@@ -473,6 +486,7 @@ async fn an_on_demand_request_is_scheduled_as_standard_and_may_migrate() {
     ]));
     gcp.provision(&request(MachineId::generate(), MACHINE_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let scheduling = body_of(&gcp.transport().request(INSERT))["scheduling"].clone();
@@ -496,7 +510,10 @@ async fn cloud_init_carries_the_daemon_configuration_and_nothing_readable() {
         json(OPERATION_DONE),
         json(INSTANCE_RUNNING),
     ]));
-    gcp.provision(&provision).await.expect("provision");
+    gcp.provision(&provision)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
 
     let insert = gcp.transport().request(INSERT);
     let body = body_of(&insert);
@@ -549,6 +566,7 @@ async fn a_spot_refusal_is_retried_on_demand_for_every_code_that_means_it() {
         let provisioned = gcp
             .provision(&request(MachineId::generate(), MACHINE_TYPE, true))
             .await
+            .and_then(Provisioning::ready)
             .expect("a spot refusal falls back rather than failing");
         assert_eq!(
             provisioned.capacity_mode,
@@ -602,6 +620,7 @@ async fn the_on_demand_fallback_re_checks_the_pool_it_would_spend() {
     let error = gcp
         .provision(&request(MachineId::generate(), MACHINE_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("the on-demand pool cannot fund this machine");
     assert!(matches!(error, ProviderError::QuotaExceeded { .. }));
     assert_eq!(
@@ -618,6 +637,7 @@ async fn a_refusal_that_is_not_about_capacity_is_not_retried() {
     let error = gcp
         .provision(&request(MachineId::generate(), MACHINE_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a permission failure is a failure");
     assert_eq!(error.code(), Some("PERMISSION_DENIED"));
     assert_eq!(
@@ -640,6 +660,7 @@ async fn an_operation_is_polled_until_it_reaches_a_terminal_status() {
 
     gcp.provision(&request(MachineId::generate(), MACHINE_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = gcp.transport();
@@ -670,6 +691,7 @@ async fn a_done_operation_that_carries_an_error_is_a_failure() {
     let error = gcp
         .provision(&request(MachineId::generate(), MACHINE_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a finished failure is a failure");
     assert!(matches!(
         error,
@@ -684,6 +706,7 @@ async fn a_call_that_is_refused_outright_never_becomes_an_operation() {
     let error = gcp
         .provision(&request(MachineId::generate(), MACHINE_TYPE, false))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a refused insert is a failed provision");
     assert!(matches!(
         error,
@@ -705,6 +728,7 @@ async fn a_401_re_mints_the_token_and_retries_once() {
 
     gcp.provision(&request(MachineId::generate(), MACHINE_TYPE, true))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = gcp.transport();
@@ -1016,6 +1040,7 @@ async fn a_zone_name_that_is_not_one_is_refused_rather_than_guessed_at() {
             true,
         ))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a region is not a zone");
     assert!(matches!(error, ProviderError::Malformed(_)));
 }
@@ -1082,7 +1107,11 @@ async fn provisioning_a_container_creates_the_job_then_runs_it() {
         json(RUN_OPERATION_STARTED),
     ]);
 
-    let provisioned = gcp.provision(&provision).await.expect("provision");
+    let provisioned = gcp
+        .provision(&provision)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
 
     let transport = gcp.transport();
     assert_eq!(transport.request_count(), 3);
@@ -1179,6 +1208,7 @@ async fn the_run_operation_is_never_waited_on() {
 
     gcp.provision(&container_request(machine, CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     assert_eq!(
@@ -1207,6 +1237,7 @@ async fn a_create_operation_is_followed_to_done_before_the_job_is_run() {
 
     gcp.provision(&container_request(machine, CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     let transport = gcp.transport();
@@ -1237,6 +1268,7 @@ async fn a_redelivered_provision_adopts_the_execution_that_is_already_running() 
     let provisioned = gcp
         .provision(&container_request(machine, CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("a redelivery is not a failure");
 
     let transport = gcp.transport();
@@ -1267,6 +1299,7 @@ async fn a_redelivered_provision_runs_the_job_when_nothing_is_running_on_it() {
 
     gcp.provision(&container_request(machine, CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect("provision");
 
     assert_eq!(
@@ -1281,6 +1314,7 @@ async fn a_size_cloud_run_does_not_offer_is_refused_before_any_write() {
     let error = gcp
         .provision(&container_request(MachineId::generate(), "cloudrun-16x64"))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("Cloud Run tops out at eight vCPUs");
     assert!(matches!(error, ProviderError::Unavailable { .. }));
     assert_eq!(
@@ -1299,6 +1333,7 @@ async fn a_region_cloud_run_publishes_no_price_for_is_refused_rather_than_guesse
     let error = gcp
         .provision(&request)
         .await
+        .and_then(Provisioning::ready)
         .expect_err("no published rate");
     let ProviderError::Unavailable { reason, .. } = &error else {
         panic!("an unpriced region is an availability failure: {error}");
@@ -1316,6 +1351,7 @@ async fn a_project_without_the_cloud_run_api_is_told_where_to_enable_it() {
     let error = gcp
         .provision(&container_request(MachineId::generate(), CONTAINER_TYPE))
         .await
+        .and_then(Provisioning::ready)
         .expect_err("a disabled API cannot start a container");
     assert_eq!(error.code(), Some("SERVICE_DISABLED"));
     assert!(
@@ -1541,6 +1577,10 @@ async fn live_provision_and_destroy() {
         .clone();
 
     let provision = request_in(MachineId::generate(), &zone, &cheapest, true);
-    let machine = gcp.provision(&provision).await.expect("provision");
+    let machine = gcp
+        .provision(&provision)
+        .await
+        .and_then(Provisioning::ready)
+        .expect("provision");
     gcp.destroy(&machine).await.expect("destroy");
 }

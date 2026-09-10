@@ -89,12 +89,14 @@ use flyco_core::machine::{
 use flyco_core::{CloudSpend, MachineId};
 use serde::Serialize;
 
+use core::future::Future;
+
 use crate::clock::{MonotonicClock, SystemClock, SystemTimer, SystemWallClock, Timer, WallClock};
 use crate::http::{HttpRequest, HttpResponse, HttpTransport, Method};
 use crate::polling::{MAX_POLL_ATTEMPTS, poll_delay};
 use crate::{
-    CapacityMode, CloudProvider, LiveTransport, Machine, ProviderError, ProvisionRequest,
-    cloud_init, flycod,
+    CapacityMode, CloudProvider, Continuation, LiveTransport, Machine, ProviderError,
+    ProvisionRequest, Provisioning, cloud_init, flycod,
 };
 
 use ec2::InstanceState;
@@ -1446,11 +1448,25 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> CloudProvider
 
     /// A virtual machine on EC2, or a container on Fargate — see
     /// [`fargate`].
-    async fn provision(&mut self, request: &ProvisionRequest) -> Result<Machine, ProviderError> {
+    async fn provision(
+        &mut self,
+        request: &ProvisionRequest,
+    ) -> Result<Provisioning, ProviderError> {
         match request.spec.runtime {
             Runtime::Vm => self.provision_instance(request).await,
             Runtime::Container => self.provision_task(request).await,
         }
+        .map(Provisioning::Ready)
+    }
+
+    fn resume(
+        &mut self,
+        _machine: &Machine,
+        _continuation: &Continuation,
+    ) -> impl Future<Output = Result<Provisioning, ProviderError>> {
+        core::future::ready(Err(ProviderError::Malformed(
+            "an AWS machine is built in one call and has nothing to resume",
+        )))
     }
 
     /// Stop, `ModifyInstanceAttribute`, start on a virtual machine; stop and

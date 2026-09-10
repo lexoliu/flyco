@@ -180,7 +180,7 @@ impl MachineRow {
     /// A row with no `native_id` names nothing the provider can be asked
     /// about — the machine is still being created — so acting on it is a
     /// conflict rather than a request to retry.
-    fn as_provider_machine(&self) -> Result<flyco_provider::Machine, ApiError> {
+    pub(crate) fn as_provider_machine(&self) -> Result<flyco_provider::Machine, ApiError> {
         Ok(flyco_provider::Machine {
             id: self.id,
             native_id: self.native_id.clone().ok_or(ApiError::MachineNotReady)?,
@@ -1273,6 +1273,26 @@ pub async fn deallocate(db: &Db, machine: MachineId) -> Result<(), ApiError> {
         db,
         "UPDATE machines SET state = {deallocated}, compute_metered_at_unix = {now_unix()} \
          WHERE id = {machine}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
+/// Records what the provider has created of a machine it has not finished
+/// building: the id the control plane can destroy it by, and nothing else.
+///
+/// The row stays `provisioning`, so the session is still waiting for a
+/// machine, the stall sweep still counts it, and the queue knows the build
+/// is owned by a continuation rather than open for another attempt.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn record_pending(db: &Db, machine: &flyco_provider::Machine) -> Result<(), ApiError> {
+    sql!(
+        db,
+        "UPDATE machines SET native_id = {machine.native_id.clone()} WHERE id = {machine.id}"
     )
     .execute()
     .await?;
