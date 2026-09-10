@@ -143,7 +143,7 @@ export type ClientEvent =
   | { type: "commands"; commands: HarnessCommand[] };
 
 /**
- * The five `ControlToDaemon` variants a browser may send directly over the
+ * The six `ControlToDaemon` variants a browser may send directly over the
  * relay socket, mirroring `ControlToDaemon::is_client_command()`. Every
  * other command (approval decisions, budget signals, archive, and the
  * identified `run_shell` the room reissues a `shell_command` as) is
@@ -155,7 +155,8 @@ export type ClientCommand =
   | { type: "shell_command"; command: string }
   | { type: "interrupt" }
   | { type: "compact" }
-  | { type: "terminal_input"; data: string };
+  | { type: "terminal_input"; data: string }
+  | { type: "terminal_resize"; cols: number; rows: number };
 
 /**
  * Parses a raw relay frame — from a live WebSocket message or from a

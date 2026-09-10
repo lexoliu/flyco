@@ -22,7 +22,7 @@ use crate::harness::claude::protocol::SessionKey;
 use crate::harness::claude::store::{StoreError, TranscriptStore};
 use crate::shell::{FakeShell, ShellEvent, ShellUpdate, StartedRun};
 use crate::spot::{FakeEviction, SpotNotice};
-use crate::terminal::FakeTerminal;
+use crate::terminal::{FakeTerminal, TerminalCall};
 use crate::testing::{
     Call, ControlPlane, Directive, FakeDisk, FakeSession, Greeting, Reply, Room, Seen,
 };
@@ -265,7 +265,7 @@ struct Harness {
     observations: mpsc::UnboundedReceiver<HarnessObservation>,
     notifications: mpsc::UnboundedReceiver<TurnNotice>,
     approval_id: ApprovalId,
-    terminal_writes: mpsc::UnboundedReceiver<String>,
+    terminal_writes: mpsc::UnboundedReceiver<TerminalCall>,
     terminal_inject: mpsc::Sender<String>,
     /// The `!` commands the daemon asked its shell to run.
     shell_runs: mpsc::UnboundedReceiver<StartedRun>,
@@ -721,8 +721,8 @@ async fn terminal_input_reaches_the_shell_and_output_reaches_the_room() {
         data: "ls\n".to_owned(),
     });
     assert_eq!(
-        harness.terminal_writes.recv().await.as_deref(),
-        Some("ls\n")
+        harness.terminal_writes.recv().await,
+        Some(TerminalCall::Write("ls\n".to_owned()))
     );
 
     harness
@@ -735,6 +735,23 @@ async fn terminal_input_reaches_the_shell_and_output_reaches_the_room() {
         DaemonToControl::TerminalOutput {
             data: "file.txt\n".to_owned()
         }
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn the_pane_size_reaches_the_pty() {
+    let mut harness = Harness::start(Greeting::Welcome).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::TerminalResize {
+        cols: 132,
+        rows: 40,
+    });
+    assert_eq!(
+        harness.terminal_writes.recv().await,
+        Some(TerminalCall::Resize(132, 40))
     );
 
     harness.archive().await.expect("the run ended cleanly");
@@ -1663,7 +1680,7 @@ async fn nothing_opens_a_turn_between_the_notice_and_the_machine_going() {
             .await
             .expect("the relay is still pumping")
             .expect("the terminal is live"),
-        "ls\n"
+        TerminalCall::Write("ls\n".to_owned())
     );
 
     harness.archive().await.expect("the run ended cleanly");

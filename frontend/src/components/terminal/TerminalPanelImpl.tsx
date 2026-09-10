@@ -14,6 +14,11 @@ export interface TerminalPanelImplProps {
  * `terminal_input` commands. Only reachable through `TerminalPanel`'s
  * `lazy()` seam, so this module (and xterm's CSS) is never fetched until a
  * user opens the pane.
+ *
+ * The pane is fitted to the space it has, and the daemon is told the size
+ * (`terminal_resize`) so the PTY wraps where the view does: on open, on
+ * every resize of the pane, and again whenever the relay comes back live,
+ * because a daemon that reconnected opened its PTY at a default size.
  */
 export default function TerminalPanelImpl(props: TerminalPanelImplProps) {
   let container: HTMLDivElement | undefined;
@@ -24,7 +29,11 @@ export default function TerminalPanelImpl(props: TerminalPanelImplProps) {
   });
 
   onMount(async () => {
-    const [{ Terminal }] = await Promise.all([import("@xterm/xterm"), import("@xterm/xterm/css/xterm.css")]);
+    const [{ Terminal }, { FitAddon }] = await Promise.all([
+      import("@xterm/xterm"),
+      import("@xterm/addon-fit"),
+      import("@xterm/xterm/css/xterm.css"),
+    ]);
     if (unmounted || container === undefined || owner === null) {
       return;
     }
@@ -40,6 +49,8 @@ export default function TerminalPanelImpl(props: TerminalPanelImplProps) {
         fontFamily: "var(--font-mono)",
         fontSize: 13,
       });
+      const fit = new FitAddon();
+      term.loadAddon(fit);
       term.open(container);
       term.writeln(`Connected to ${props.sessionId}'s fish shell.`);
 
@@ -50,7 +61,25 @@ export default function TerminalPanelImpl(props: TerminalPanelImplProps) {
         props.relay.send({ type: "terminal_input", data });
       });
 
+      function tellSize(): void {
+        if (props.relay.state() !== "live") {
+          return;
+        }
+        props.relay.send({ type: "terminal_resize", cols: term.cols, rows: term.rows });
+      }
+      const resizeSubscription = term.onResize(tellSize);
+      fit.fit();
+      const observer = new ResizeObserver(() => fit.fit());
+      observer.observe(container);
+      createEffect(() => {
+        if (props.relay.state() === "live") {
+          tellSize();
+        }
+      });
+
       onCleanup(() => {
+        observer.disconnect();
+        resizeSubscription.dispose();
         inputSubscription.dispose();
         term.dispose();
       });
