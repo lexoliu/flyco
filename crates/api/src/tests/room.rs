@@ -1467,6 +1467,52 @@ async fn a_browser_leaving_says_nothing_about_the_machine() {
 }
 
 #[skyzen::test]
+async fn a_pane_size_reported_before_the_daemon_arrives_is_handed_to_it_after_hello() {
+    let mut room = Room::open().await;
+
+    // The pane was fitted while the machine was still being built. Nothing
+    // is announced: a machine not being here yet is the ordinary case.
+    let size = ControlToDaemon::TerminalResize { cols: 40, rows: 48 };
+    room.deliver_json(Which::Client, &size).await;
+    assert_eq!(room.drain(), vec![]);
+
+    room.hello().await;
+    assert_eq!(
+        room.drain(),
+        vec![welcome(), to_daemon(&size), attached()],
+        "the daemon's PTY opens at a default size and the pane is the only \
+         thing that knows the real one"
+    );
+
+    // A daemon restarted later — a resize, a migration — has a fresh PTY
+    // and is told again.
+    room.hello().await;
+    assert_eq!(room.drain(), vec![welcome(), to_daemon(&size), attached()]);
+}
+
+#[skyzen::test]
+async fn a_pane_size_reaches_a_connected_daemon_at_once_and_the_latest_one_is_kept() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    let first = ControlToDaemon::TerminalResize { cols: 40, rows: 48 };
+    let second = ControlToDaemon::TerminalResize {
+        cols: 132,
+        rows: 40,
+    };
+    room.deliver_json(Which::Client, &first).await;
+    room.deliver_json(Which::Client, &second).await;
+    assert_eq!(room.drain(), vec![to_daemon(&first), to_daemon(&second)]);
+
+    room.hello().await;
+    assert_eq!(
+        room.drain(),
+        vec![welcome(), to_daemon(&second), attached()],
+        "a session has one pane size: the last one fitted"
+    );
+}
+
+#[skyzen::test]
 async fn an_interrupt_with_no_daemon_to_take_it_is_not_silently_dropped() {
     let mut room = Room::open().await;
 

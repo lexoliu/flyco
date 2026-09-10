@@ -344,6 +344,7 @@ async fn on_daemon_frame(
         // machine changed *after* a user message would answer that message
         // believing it is somewhere else.
         replay_held_commands(ws, ctx.db()).await?;
+        replay_terminal_size(ws, ctx.db()).await?;
         replay_mailbox(ws, ctx.db()).await?;
         // Last, because it is the room telling browsers the machine is
         // back: a page that heard it before the replay would show a live
@@ -407,6 +408,15 @@ async fn on_client_frame(
         }
         ControlToDaemon::ShellCommand { command } => {
             deliver_shell_command(ctx.db(), ctx.connections(), command).await
+        }
+        // A pane size is a state, not an instant: it is kept for whichever
+        // daemon greets the room next, and one that is here now is told at
+        // once. A daemon not being here is not news worth announcing for
+        // it — the pane was fitted while the machine was still being
+        // built, which is the ordinary case.
+        ControlToDaemon::TerminalResize { cols, rows } => {
+            remember_terminal_size(ctx.db(), *cols, *rows).await?;
+            forward_to_daemon(ctx.connections(), &command).map(drop)
         }
         // An interrupt, a compaction or a keystroke is worthless to a
         // daemon that is not there, so none of them is held — but a browser
@@ -781,6 +791,52 @@ async fn replay_held_commands(
     Ok(())
 }
 
+/// The browser's terminal pane, as it was last fitted.
+#[derive(Debug, skyzen::FromRow)]
+struct TerminalSizeRow {
+    cols: u16,
+    rows: u16,
+}
+
+/// Records the size of the browser's terminal pane.
+async fn remember_terminal_size(
+    db: &DurableDb,
+    cols: u16,
+    rows: u16,
+) -> Result<(), DurableObjectError> {
+    ensure_schema(db).await?;
+    sql!(
+        db,
+        "INSERT INTO terminal_size (id, cols, rows) VALUES (0, {cols}, {rows}) \
+         ON CONFLICT (id) DO UPDATE SET cols = excluded.cols, rows = excluded.rows"
+    )
+    .execute()
+    .await
+    .map_err(|error| stored(&error))?;
+    Ok(())
+}
+
+/// Tells a freshly greeted daemon how big the terminal pane is, when a
+/// browser has fitted one.
+///
+/// Kept rather than deleted after delivery, unlike a held command: the
+/// next daemon needs it just as much, and nothing about it goes stale.
+async fn replay_terminal_size(
+    ws: &WebSocketConnection,
+    db: &DurableDb,
+) -> Result<(), DurableObjectError> {
+    ensure_schema(db).await?;
+    let size: Option<TerminalSizeRow> =
+        sql!(db, "SELECT cols, rows FROM terminal_size WHERE id = 0")
+            .fetch_optional()
+            .await
+            .map_err(|error| stored(&error))?;
+    if let Some(TerminalSizeRow { cols, rows }) = size {
+        ws.send_json(&ControlToDaemon::TerminalResize { cols, rows })?;
+    }
+    Ok(())
+}
+
 /// The stream position through which the daemon has been told everything.
 async fn delivered_through(db: &DurableDb) -> Result<u64, DurableObjectError> {
     Ok(sql!(db, "SELECT seq FROM delivery WHERE id = 0")
@@ -858,6 +914,16 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
         "CREATE TABLE IF NOT EXISTS held_commands (\
              seq  INTEGER PRIMARY KEY AUTOINCREMENT, \
              json TEXT    NOT NULL)",
+        // The size the browser's terminal pane last reported, handed to
+        // every daemon after its `Hello`: a daemon that was still booting
+        // when the pane opened, or one restarted by a resize, has a PTY
+        // at its default size and no other way to learn the real one
+        // (issue #258). One row, like `delivery`, because a session has
+        // one pane size — the last browser to fit its pane wins.
+        "CREATE TABLE IF NOT EXISTS terminal_size (\
+             id   INTEGER PRIMARY KEY CHECK (id = 0), \
+             cols INTEGER NOT NULL, \
+             rows INTEGER NOT NULL)",
         // One row per answered question about the checkout, keyed by the
         // id the Worker minted for it and deleted the moment that Worker
         // collects it. A table rather than KV because these expire: the
