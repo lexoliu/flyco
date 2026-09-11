@@ -153,6 +153,49 @@ export const sessionKeySchema = z.object({
   subpath: z.string().optional(),
 });
 
+/**
+ * One thing occupying the context window, as a context panel lists it.
+ *
+ * One shape for every section the CLI reports — a usage category, an MCP
+ * tool's schema, a memory file, an agent, a skill's frontmatter — because
+ * each answers the same question (what is this, and what does it cost) and
+ * the panel's rows differ only in which list they came from. `deferred` is
+ * counted toward the window but not materialized in it yet — a deferred
+ * MCP tool's schema, for instance, summarized until first called.
+ */
+export const contextCostSchema = z.object({
+  name: z.string(),
+  tokens: z.number().int().nonnegative(),
+  deferred: z.boolean(),
+});
+
+/** How much of a model's context window is spoken for. */
+export const contextWindowSchema = z.object({
+  used_tokens: z.number().int().nonnegative(),
+  size_tokens: z.number().int().nonnegative(),
+});
+
+/**
+ * What the context window is spent on — the answer to `/context`.
+ *
+ * The SDK's `getContextUsage` answers in its own shape (`totalTokens`,
+ * `maxTokens`, `isDeferred`, …) and the mapping lives in the sidecar for
+ * the same reason `usageWindowSchema` does: this shape has to come back
+ * from Codex spelled the same way, so the vocabulary is flyco's from here.
+ * `window.size_tokens` is the SDK's `maxTokens` — the effective ceiling
+ * its `percentage` is measured against, not the model's `rawMaxTokens`.
+ */
+export const contextUsageSchema = z.object({
+  model: z.string().optional(),
+  window: contextWindowSchema.optional(),
+  auto_compact: z.number().int().nonnegative().optional(),
+  categories: z.array(contextCostSchema),
+  mcp_tools: z.array(contextCostSchema),
+  memory_files: z.array(contextCostSchema),
+  agents: z.array(contextCostSchema),
+  skills: z.array(contextCostSchema),
+});
+
 /** One `SessionStore` operation flycod must perform. */
 export const storeOpSchema = z.union([
   z.object({
@@ -179,6 +222,7 @@ export const sidecarCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("user_message"), text: z.string() }),
   z.object({ type: z.literal("interrupt") }),
   z.object({ type: z.literal("compact") }),
+  z.object({ type: z.literal("context_usage") }),
   z.object({
     type: z.literal("set_model"),
     model: z.string(),
@@ -206,6 +250,7 @@ export const sidecarEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("capabilities"), capabilities: z.array(z.string()) }),
   z.object({ type: z.literal("models"), models: z.array(modelOptionSchema) }),
   z.object({ type: z.literal("plan_usage"), windows: z.array(usageWindowSchema) }),
+  z.object({ type: z.literal("context_usage"), usage: contextUsageSchema }),
   z.object({ type: z.literal("commands"), commands: z.array(harnessCommandSchema) }),
   z.object({ type: z.literal("mcp_servers"), servers: z.array(mountedServerSchema) }),
   z.object({ type: z.literal("sdk_message"), message: jsonValue }),
@@ -244,6 +289,10 @@ export type MountedServer = z.infer<typeof mountedServerSchema>;
 export type SessionKey = z.infer<typeof sessionKeySchema>;
 /** One `SessionStore` operation. */
 export type StoreOp = z.infer<typeof storeOpSchema>;
+/** One thing occupying the context window. */
+export type ContextCost = z.infer<typeof contextCostSchema>;
+/** What the context window is spent on. */
+export type ContextUsage = z.infer<typeof contextUsageSchema>;
 /** A command flycod writes to the sidecar. */
 export type SidecarCommand = z.infer<typeof sidecarCommandSchema>;
 /** An event the sidecar writes to flycod. */

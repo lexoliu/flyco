@@ -30,6 +30,7 @@ function show(item: TranscriptItem, stoppedAtUnix: number | null = null) {
       repo="lexoliu/flyco"
       provider="Azure"
       models={[]}
+      plan={[]}
       now={T0 * 1000}
       stoppedAtUnix={stoppedAtUnix}
     />
@@ -41,7 +42,7 @@ describe("Transcript provisioning timeline", () => {
   const reserving: TranscriptItem = {
     kind: "provisioning",
     key: "provisioning-0",
-    steps: [{ stage: "reserving", atUnix: T0 - 600 }],
+    steps: [{ key: `reserving-${T0 - 600}`, stage: "reserving", atUnix: T0 - 600 }],
     recovery: false,
     attempt: 1,
     endedAtUnix: null,
@@ -72,8 +73,8 @@ describe("Transcript provisioning timeline", () => {
     const ready: TranscriptItem = {
       ...reserving,
       steps: [
-        { stage: "reserving", atUnix: T0 - 600 },
-        { stage: "ready", atUnix: T0 - 540 },
+        { key: `reserving-${T0 - 600}`, stage: "reserving", atUnix: T0 - 600 },
+        { key: `ready-${T0 - 540}`, stage: "ready", atUnix: T0 - 540 },
       ],
     };
     const { container, getByLabelText } = show(ready, T0 - 480);
@@ -88,8 +89,8 @@ describe("Transcript shell block", () => {
     const { getByRole } = show(
       shell({
         output: [
-          { stream: "stdout", data: "running 1 test\n" },
-          { stream: "stderr", data: "warning: unused\n" },
+          { key: 0, stream: "stdout", data: "running 1 test\n" },
+          { key: 1, stream: "stderr", data: "warning: unused\n" },
         ],
         outcome: { kind: "exited", code: 0 },
         endedAtUnix: T0 + 12,
@@ -109,8 +110,8 @@ describe("Transcript shell block", () => {
     const { getByRole } = show(
       shell({
         output: [
-          { stream: "stdout", data: "out\n" },
-          { stream: "stderr", data: "err\n" },
+          { key: 0, stream: "stdout", data: "out\n" },
+          { key: 1, stream: "stderr", data: "err\n" },
         ],
         outcome: { kind: "exited", code: 0 },
         endedAtUnix: T0 + 1,
@@ -148,7 +149,7 @@ describe("Transcript shell block", () => {
   it("says when output was dropped rather than eliding it silently", () => {
     const { getByRole } = show(
       shell({
-        output: [{ stream: "stdout", data: "a lot of output\n" }],
+        output: [{ key: 0, stream: "stdout", data: "a lot of output\n" }],
         truncated: true,
         outcome: { kind: "exited", code: 0 },
         endedAtUnix: T0 + 3,
@@ -171,7 +172,7 @@ function turn(overrides: Partial<Extract<TranscriptItem, { kind: "turn" }>> = {}
     kind: "turn",
     key: "turn-t1",
     turnId: "t1",
-    parts: [{ kind: "text", text: "I'll rebase the branch and push it." }],
+    parts: [{ kind: "text", key: 0, text: "I'll rebase the branch and push it." }],
     status: "completed",
     error: null,
     usage: null,
@@ -202,8 +203,10 @@ describe("Transcript turn", () => {
         parts: [
           {
             kind: "tools",
+            key: 0,
             calls: [
               {
+                key: "c1",
                 callId: "c1",
                 tool: "Edit",
                 input: { file_path: "crates/daemon/src/compaction.rs" },
@@ -218,6 +221,73 @@ describe("Transcript turn", () => {
     );
 
     expect(getByText("Could not edit crates/daemon/src/compaction.rs")).toBeInTheDocument();
+  });
+});
+
+describe("Transcript command output and context card", () => {
+  it("renders output the harness printed on its own as a block, not a bubble", async () => {
+    // Markdown paints on the animation frame, so the text arrives a tick
+    // after the block does.
+    const { getByRole, findByText } = show({
+      kind: "command_output",
+      key: "output-0",
+      text: "Context window: 42k of 200k",
+      atUnix: T0,
+    });
+    expect(getByRole("region", { name: "Command output" })).toBeInTheDocument();
+    expect(await findByText("Context window: 42k of 200k")).toBeInTheDocument();
+  });
+
+  it("shows the window's fill, what fills it, and the plan beside it", () => {
+    const { getByRole, getByText } = render(() => (
+      <Transcript
+        items={[
+          {
+            kind: "context",
+            key: "context-0",
+            atUnix: T0,
+            usage: {
+              model: "claude-opus-4-8",
+              window: { used_tokens: 84_000, size_tokens: 200_000 },
+              autoCompact: 160_000,
+              categories: [
+                { key: "category-0", name: "System prompt", tokens: 3_000, deferred: false },
+              ],
+              mcpTools: [{ key: "mcp-0", name: "mcp__github", tokens: 1_200, deferred: true }],
+              memoryFiles: [],
+              agents: [],
+              skills: [],
+            },
+          },
+        ]}
+        repo="lexoliu/flyco"
+        provider="Azure"
+        models={[]}
+        plan={[
+          {
+            label: "5-hour",
+            used_percent: 62,
+            resets_at_unix: T0 + 3600,
+            window_minutes: 300,
+          },
+        ]}
+        now={T0 * 1000}
+        stoppedAtUnix={null}
+      />
+    ));
+
+    const card = getByRole("region", { name: "Context usage" });
+    expect(card.textContent).toContain("claude-opus-4-8");
+    expect(card.textContent).toContain("84k of 200k");
+    expect(card.textContent).toContain("42%");
+    expect(card.textContent).toContain("System prompt");
+    expect(card.textContent).toContain("Compacts on its own at 160k");
+    // The MCP list is behind its disclosure, with the total on the summary.
+    expect(card.textContent).toContain("MCP tools");
+    // And the plan's windows sit in the same card, the way the header's two
+    // rings sit beside each other.
+    expect(getByText("Plan")).toBeInTheDocument();
+    expect(card.textContent).toContain("62%");
   });
 });
 

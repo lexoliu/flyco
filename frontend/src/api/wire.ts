@@ -38,6 +38,40 @@ export type UsageWindow = components["schemas"]["UsageWindow"];
 export type MessageOrigin = "user" | "flyco";
 
 /**
+ * One thing occupying the context window, as a `/context` answer lists it.
+ *
+ * Mirrors `flyco_core::harness::ContextCost` (WS-only, no OpenAPI schema):
+ * one shape for every section the harness reports — a usage category, an
+ * MCP tool's schema, a memory file, an agent, a skill's frontmatter.
+ * `deferred` is counted toward the window but not materialized in it yet.
+ */
+export interface ContextCost {
+  name: string;
+  tokens: number;
+  deferred: boolean;
+}
+
+/**
+ * What the context window is spent on — the answer to `/context`.
+ *
+ * Mirrors `flyco_core::harness::ContextUsage` exactly. `model`, `window`
+ * and `auto_compact` are absent rather than `null`, matching serde's
+ * `skip_serializing_if` on the `Option`s. A harness with no breakdown to
+ * give (Codex) reports the fill alone and every list empty.
+ */
+export interface ContextUsage {
+  model?: string | undefined;
+  window?: ContextWindow | undefined;
+  /** The fill at which the harness compacts on its own, in tokens. */
+  auto_compact?: number | undefined;
+  categories: ContextCost[];
+  mcp_tools: ContextCost[];
+  memory_files: ContextCost[];
+  agents: ContextCost[];
+  skills: ContextCost[];
+}
+
+/**
  * A normalized event extracted from either harness's native stream.
  *
  * Mirrors `flyco_core::harness::HarnessEvent` exactly (WS-only, no OpenAPI
@@ -52,7 +86,15 @@ export type HarnessEvent =
   | { type: "turn_failed"; turn_id: string; error: string }
   | { type: "usage_limited"; window: UsageWindow }
   | { type: "context_compacted" }
-  | { type: "context_compaction_failed"; error: string };
+  | { type: "context_compaction_failed"; error: string }
+  /**
+   * Output the harness printed on its own — a local slash command's answer,
+   * or a synthetic message that never streamed. Never a reply to a user
+   * prompt.
+   */
+  | { type: "local_command_output"; content: string }
+  /** The context-window breakdown answering a `context_usage` command. */
+  | { type: "context_usage"; usage: ContextUsage };
 
 /**
  * One slash command the running harness offers, mirroring
@@ -154,10 +196,10 @@ export type ClientEvent =
   | { type: "commands"; commands: HarnessCommand[] };
 
 /**
- * The six `ControlToDaemon` variants a browser may send directly over the
- * relay socket, mirroring `ControlToDaemon::is_client_command()`. Every
- * other command (approval decisions, budget signals, archive, and the
- * identified `run_shell` the room reissues a `shell_command` as) is
+ * The seven `ControlToDaemon` variants a browser may send directly over
+ * the relay socket, mirroring `ControlToDaemon::is_client_command()`.
+ * Every other command (approval decisions, budget signals, archive, and
+ * the identified `run_shell` the room reissues a `shell_command` as) is
  * control-plane authority and reaches the daemon only through the room
  * itself or an authenticated REST handler.
  */
@@ -166,6 +208,8 @@ export type ClientCommand =
   | { type: "shell_command"; command: string }
   | { type: "interrupt" }
   | { type: "compact" }
+  /** flyco's `/context`: a read-only query, answered by a `context_usage` event. */
+  | { type: "context_usage" }
   | { type: "terminal_input"; data: string }
   | { type: "terminal_resize"; cols: number; rows: number };
 

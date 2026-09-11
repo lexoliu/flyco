@@ -1098,6 +1098,25 @@ async fn compact_session(
         .into()
 }
 
+/// Reports what a session's context window is spent on.
+///
+/// flyco's `/context`: a control request the daemon answers out of band —
+/// the Claude sidecar's `get_context_usage`, or the window gauge a Codex
+/// session already holds — never a message to the model. The answer
+/// arrives on the session relay as a `context_usage` harness event.
+#[skyzen::openapi]
+async fn context_session(
+    State(user): State<CurrentUser>,
+    params: Params,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Accepted> {
+    drive(&user, &params, &rooms, &db, ControlToDaemon::ContextUsage)
+        .await
+        .map(|_| Accepted)
+        .into()
+}
+
 /// Hands one command to a session's room.
 ///
 /// The two checks are in this order for a reason. Ownership settles in D1,
@@ -2390,6 +2409,7 @@ fn session_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/messages".post(send_message),
         "/v1/sessions/{id}/interrupt".post(interrupt_session),
         "/v1/sessions/{id}/compact".post(compact_session),
+        "/v1/sessions/{id}/context".post(context_session),
         "/v1/sessions/{id}/resume".post(resume_session),
         "/v1/sessions/{id}/turns".at(list_turns),
         "/v1/sessions/{id}/env"

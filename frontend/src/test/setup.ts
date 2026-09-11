@@ -24,6 +24,16 @@ Element.prototype.scrollIntoView = () => {
   /* no-op in tests */
 };
 
+// Nor ResizeObserver, which the session page uses to keep a bottom-pinned
+// transcript pinned as it grows.
+class StubResizeObserver implements ResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
+vi.stubGlobal("ResizeObserver", StubResizeObserver);
+
 // vite-plugin-pwa's virtual module only exists inside a real Vite build;
 // components that call registerSW() need a stand-in for it under Vitest.
 vi.mock("virtual:pwa-register", () => ({

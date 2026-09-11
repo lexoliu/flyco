@@ -1321,6 +1321,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reports what a session's context window is spent on.
+         * @description Reports what a session's context window is spent on.
+         *
+         *     flyco's `/context`: a control request the daemon answers out of band —
+         *     the Claude sidecar's `get_context_usage`, or the window gauge a Codex
+         *     session already holds — never a message to the model. The answer
+         *     arrives on the session relay as a `context_usage` harness event.
+         */
+        post: operations["flyco_api::app::context_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/daemon-token": {
         parameters: {
             query?: never;
@@ -7582,6 +7607,26 @@ export interface operations {
         };
     };
     "flyco_api::app::compact_session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::context_session": {
         parameters: {
             query?: never;
             header?: never;

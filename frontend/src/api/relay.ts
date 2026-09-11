@@ -19,9 +19,9 @@
  * 1. A reconnect's catch-up call can return a `Harness` event that was
  *    already shown live, moments before the socket dropped — the seq log
  *    and the live broadcast are two independent deliveries of the same
- *    fact. Guarded by a bounded ring buffer of already-shown
- *    events' canonicalized JSON — {@link canonicalKey}, which sorts object
- *    keys. Comparing the two deliveries byte for byte does not work: a live
+ *    fact. Guarded by a bounded ring buffer of the *live* frames'
+ *    canonicalized JSON — {@link canonicalKey}, which sorts object keys.
+ *    Comparing the two deliveries byte for byte does not work: a live
  *    frame is `serde_json` output of the event struct, with its `type` tag
  *    first, while a catch-up row is read back into a `serde_json::Value`
  *    and re-serialized out of a `BTreeMap`, so its keys come back in
@@ -32,6 +32,16 @@
  *    reconnects could in principle scroll a duplicate back into view. That
  *    trade-off (bounded memory vs. perfect dedup over an unbounded gap) is
  *    deliberate; widen the window if it is ever observed in practice.
+ *
+ *    The dedup is deliberately one-directional. Catch-up rows are checked
+ *    against live frames only — two stored rows with identical content are
+ *    two events (each took its own `seq`), so a transcript that twice
+ *    printed `**` replays both. And a live frame is never compared against
+ *    anything: the room broadcasts each fact to a subscribed socket exactly
+ *    once, so an identical live payload is a *new* occurrence — a second
+ *    identical `assistant_delta` is real output, and a repeated
+ *    `machine_connection` is a real transition. Treating live content
+ *    equality as duplication ate stream chunks whole.
  * 2. Anything that lands on the server between the last catch-up page and
  *    the socket actually being subscribed — including the time spent
  *    minting a ticket and completing the handshake — would otherwise be
@@ -101,7 +111,15 @@ const systemClock: Clock = () => Math.floor(Date.now() / 1000);
  */
 export class EventStream {
   private lastSeq: number | null = null;
-  private readonly recentKeys: string[] = [];
+  /**
+   * Canonical keys of events already shown via a live frame.
+   *
+   * Catch-up checks against this set and nothing else does: it is the one
+   * case where the same fact is genuinely delivered twice, because the seq
+   * log and the broadcast are independent deliveries. See the module
+   * comment for why neither path dedupes against itself.
+   */
+  private readonly liveKeys: string[] = [];
   private readonly clock: Clock;
 
   constructor(clock: Clock = systemClock) {
@@ -125,7 +143,7 @@ export class EventStream {
         continue;
       }
       this.lastSeq = stored.seq;
-      if (this.remember(canonicalKey(stored.event))) {
+      if (!this.liveKeys.includes(canonicalKey(stored.event))) {
         out.push({ event: parseClientEvent(stored.event), atUnix: stored.at_unix });
       }
     }
@@ -133,28 +151,23 @@ export class EventStream {
   }
 
   /**
-   * Feeds one live frame's raw WebSocket text. Returns `null` when it
-   * duplicates an event already shown (from catch-up or an earlier live
-   * frame) rather than emitting it twice.
+   * Feeds one live frame's raw WebSocket text. A live frame is always a new
+   * occurrence — two identical payloads are two events, not a redelivery —
+   * so this never drops a frame. It only records the frame's key, which is
+   * what lets a later catch-up recognise the same fact in the seq log.
    */
-  ingestLive(raw: string): TimedEvent | null {
+  ingestLive(raw: string): TimedEvent {
     const parsed: unknown = JSON.parse(raw);
-    if (!this.remember(canonicalKey(parsed))) {
-      return null;
-    }
+    this.remember(canonicalKey(parsed));
     return { event: parseClientEvent(parsed), atUnix: this.clock() };
   }
 
-  /** Records `key` as shown; returns whether it was new. */
-  private remember(key: string): boolean {
-    if (this.recentKeys.includes(key)) {
-      return false;
+  /** Records `key` as shown live, bounded to [`RECENT_WINDOW`]. */
+  private remember(key: string): void {
+    this.liveKeys.push(key);
+    if (this.liveKeys.length > RECENT_WINDOW) {
+      this.liveKeys.shift();
     }
-    this.recentKeys.push(key);
-    if (this.recentKeys.length > RECENT_WINDOW) {
-      this.recentKeys.shift();
-    }
-    return true;
   }
 }
 
@@ -350,10 +363,7 @@ export function createSessionRelay(sessionId: string, options: CreateSessionRela
         if (typeof message.data !== "string") {
           throw new Error("relay socket sent a non-text frame");
         }
-        const event = stream.ingestLive(message.data);
-        if (event !== null) {
-          pushEvent(event);
-        }
+        pushEvent(stream.ingestLive(message.data));
       });
       ws.addEventListener("close", () => {
         // A socket that closes after a definitive failure has already been

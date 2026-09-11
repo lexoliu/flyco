@@ -331,6 +331,10 @@ impl HarnessSession for ClaudeSession {
         self.ask(|ack| DriverCommand::Compact { ack }).await
     }
 
+    async fn context_usage(&self) -> Result<(), ClaudeError> {
+        self.ask(|ack| DriverCommand::ContextUsage { ack }).await
+    }
+
     async fn set_model(&self, model: flyco_core::ModelChoice) -> Result<(), ClaudeError> {
         self.ask(|ack| DriverCommand::SetModel { model, ack }).await
     }
@@ -369,6 +373,14 @@ enum DriverCommand {
     },
     /// From the handle: compact the conversation context.
     Compact {
+        ack: oneshot::Sender<Result<(), ClaudeError>>,
+    },
+    /// From the handle: ask the CLI what its context window is spent on.
+    ///
+    /// The answer is not this command's result — it arrives from the
+    /// reader as [`SidecarEvent::ContextUsage`] and is emitted there, which
+    /// is what lets the query share the one stdin with everything else.
+    ContextUsage {
         ack: oneshot::Sender<Result<(), ClaudeError>>,
     },
     /// From the handle: put the running query on another model.
@@ -678,6 +690,12 @@ impl<S: TranscriptStore> Driver<S> {
                 let _ = ack.send(result);
                 ok
             }
+            DriverCommand::ContextUsage { ack } => {
+                let result = write_command(&mut self.stdin, &SidecarCommand::ContextUsage).await;
+                let ok = result.is_ok();
+                let _ = ack.send(result);
+                ok
+            }
             DriverCommand::SetModel { model, ack } => {
                 let result = write_command(
                     &mut self.stdin,
@@ -828,6 +846,15 @@ impl<S: TranscriptStore> Driver<S> {
                     }
                 }
                 true
+            }
+            SidecarEvent::ContextUsage { usage } => {
+                emit(
+                    &self.outputs,
+                    SessionOutput::Event {
+                        event: flyco_core::HarnessEvent::ContextUsage { usage },
+                    },
+                )
+                .await
             }
             SidecarEvent::ApprovalRequest {
                 id,

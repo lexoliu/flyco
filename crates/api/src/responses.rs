@@ -65,6 +65,7 @@ pub const BODILESS: &[&str] = &[
     "app::put_transcript_batch",
     "flyco_api::app::agent_resize_machine",
     "flyco_api::app::compact_session",
+    "flyco_api::app::context_session",
     "flyco_api::app::get_workdir_patch",
     "flyco_api::app::interrupt_session",
     "flyco_api::app::notify_turn_completed",

@@ -26,7 +26,7 @@ use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use flyco_core::{ApprovalId, HarnessCommand};
+use flyco_core::{ApprovalId, ContextUsage, HarnessCommand, HarnessEvent};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -282,6 +282,10 @@ impl HarnessSession for CodexSession {
         self.ask(|ack| DriverCommand::Compact { ack }).await
     }
 
+    async fn context_usage(&self) -> Result<(), CodexError> {
+        self.ask(|ack| DriverCommand::ContextUsage { ack }).await
+    }
+
     async fn set_model(&self, model: flyco_core::ModelChoice) -> Result<(), CodexError> {
         self.ask(|ack| DriverCommand::SetModel { model, ack }).await
     }
@@ -321,6 +325,15 @@ enum DriverCommand {
     },
     /// From the handle: compact the conversation context.
     Compact {
+        ack: oneshot::Sender<Result<(), CodexError>>,
+    },
+    /// From the handle: report what the context window is spent on.
+    ///
+    /// Unlike the Claude sidecar there is nothing to *ask*: the app-server
+    /// has no breakdown request, so the driver answers from the last
+    /// `thread/tokenUsage/updated` it recorded rather than making a round
+    /// trip for a number it already holds.
+    ContextUsage {
         ack: oneshot::Sender<Result<(), CodexError>>,
     },
     /// From the handle: run the rest of the thread on another model.
@@ -1116,6 +1129,30 @@ impl Driver {
                         false
                     }
                 }
+            }
+            DriverCommand::ContextUsage { ack } => {
+                // The app-server's window gauge is the whole answer it can
+                // give: no categories, no tool accounting. The panel shows
+                // what Codex measures — the fill — and lists nothing.
+                let _ = ack.send(Ok(()));
+                emit(
+                    &self.outputs,
+                    SessionOutput::Event {
+                        event: HarnessEvent::ContextUsage {
+                            usage: ContextUsage {
+                                model: self.model.clone(),
+                                window: self.normalizer.usage().context,
+                                auto_compact: None,
+                                categories: Vec::new(),
+                                mcp_tools: Vec::new(),
+                                memory_files: Vec::new(),
+                                agents: Vec::new(),
+                                skills: Vec::new(),
+                            },
+                        },
+                    },
+                )
+                .await
             }
             DriverCommand::SetModel { model, ack } => {
                 tracing::info!(

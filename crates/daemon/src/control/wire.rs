@@ -1378,6 +1378,13 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                 }
                 self.session.compact().await.map_err(harness)?;
             }
+            ControlToDaemon::ContextUsage => {
+                // A read, not work: asking what the window holds starts
+                // nothing, spends nothing, and is answerable even while a
+                // turn is running — so unlike a compaction it is refused
+                // for nothing short of the harness being gone.
+                self.session.context_usage().await.map_err(harness)?;
+            }
             ControlToDaemon::SetModel { model } => {
                 // Refused on the same terms as a compaction: both reach the
                 // harness, and a session that has stopped accepting work or

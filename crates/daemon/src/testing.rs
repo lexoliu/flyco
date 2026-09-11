@@ -71,6 +71,8 @@ pub enum Call {
     Flush,
     /// The session context was compacted.
     Compact,
+    /// The session was asked what its context window is spent on.
+    ContextUsage,
     /// The session was put on another model.
     ModelSet(flyco_core::ModelChoice),
     /// A pending approval was answered.
@@ -213,6 +215,10 @@ impl HarnessSession for FakeSession {
 
     fn compact(&self) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
         core::future::ready(self.record(Call::Compact))
+    }
+
+    fn context_usage(&self) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
+        core::future::ready(self.record(Call::ContextUsage))
     }
 
     fn set_model(

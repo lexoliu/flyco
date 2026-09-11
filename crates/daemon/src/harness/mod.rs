@@ -240,6 +240,18 @@ pub trait HarnessSession: Send + Sync {
     /// harness rejects compaction.
     fn compact(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
+    /// Asks the harness what its context window is spent on.
+    ///
+    /// A query, not a turn: the answer is emitted on the session's output
+    /// stream as
+    /// [`HarnessEvent::ContextUsage`](flyco_core::HarnessEvent::ContextUsage),
+    /// and nothing about it enters the conversation the window belongs to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the session has already stopped.
+    fn context_usage(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
     /// Puts the running session on another model, at another effort.
     ///
     /// Applied to the conversation in progress rather than the next one:

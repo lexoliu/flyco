@@ -211,6 +211,65 @@ impl ContextWindow {
     }
 }
 
+/// One thing occupying the context window, as a [`ContextUsage`] lists it.
+///
+/// One shape for every section the harness reports — a usage category, an
+/// MCP tool's schema, a memory file, an agent definition, a skill's
+/// frontmatter — because each answers the same question (what is this, and
+/// what does it cost) and the panel rows differ only in which list they
+/// came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ContextCost {
+    /// What it is called: a category name, a tool, a file path, an agent
+    /// type, a skill name — whatever the harness named it.
+    pub name: String,
+    /// Tokens it occupies.
+    pub tokens: u64,
+    /// Counted toward the window but not materialized in it yet — a
+    /// deferred MCP tool's schema, for instance, which is summarized until
+    /// it is first called.
+    #[serde(default)]
+    pub deferred: bool,
+}
+
+/// What the context window is spent on — the answer to `/context`.
+///
+/// A query answer rather than a meter: the breakdown exists only because a
+/// user asked for it, so it is emitted in reply to
+/// [`crate::wire::ControlToDaemon::ContextUsage`] rather than after every
+/// turn. The *fill* alone is a different matter — that is
+/// [`UsageReport::context`], refreshed on every completed turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ContextUsage {
+    /// The model the window belongs to, when the harness names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The window's fill — `None` when the harness has not measured it yet
+    /// (a Codex session that has not run a turn reports no token count).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<ContextWindow>,
+    /// The fill at which the harness compacts the window on its own, where
+    /// it reports one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compact: Option<u64>,
+    /// The harness's own grouping of what fills the window — system prompt,
+    /// tools, messages, and so on, in the order it reported them.
+    #[serde(default)]
+    pub categories: Vec<ContextCost>,
+    /// MCP tool schemas held in context.
+    #[serde(default)]
+    pub mcp_tools: Vec<ContextCost>,
+    /// Memory files held in context (Claude Code's `CLAUDE.md` tree).
+    #[serde(default)]
+    pub memory_files: Vec<ContextCost>,
+    /// Custom agent definitions held in context.
+    #[serde(default)]
+    pub agents: Vec<ContextCost>,
+    /// Skill frontmatter held in context.
+    #[serde(default)]
+    pub skills: Vec<ContextCost>,
+}
+
 /// Token and context-window accounting reported by the harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct UsageReport {
@@ -703,6 +762,24 @@ pub enum HarnessEvent {
     ContextCompactionFailed {
         /// Harness-reported reason.
         error: String,
+    },
+    /// Output the harness produced outside the model's conversation.
+    ///
+    /// A local slash command's answer (`/usage` and friends are answered
+    /// by the CLI itself, never reaching the API), or the text of a
+    /// synthetic message that never streamed deltas. Rendered as a
+    /// transcript block of its own rather than merged into a turn's prose,
+    /// because it is not the model answering — the harness printed it.
+    LocalCommandOutput {
+        /// What the harness printed, as Markdown.
+        content: String,
+    },
+    /// The harness's answer to
+    /// [`crate::wire::ControlToDaemon::ContextUsage`]: what the context
+    /// window is spent on.
+    ContextUsage {
+        /// The breakdown.
+        usage: ContextUsage,
     },
 }
 

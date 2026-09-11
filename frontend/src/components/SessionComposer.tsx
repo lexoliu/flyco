@@ -26,7 +26,7 @@ import styles from "./Composer.module.css";
 import sessionStyles from "./SessionComposer.module.css";
 
 /** The session-level actions flyco runs itself (docs/ux.md §9.3). */
-export type SessionCommand = "compact" | "archive" | "resize";
+export type SessionCommand = "compact" | "context" | "archive" | "resize";
 
 /** One row of the palette. */
 interface PaletteEntry {
@@ -43,7 +43,7 @@ interface PaletteEntry {
    */
   argumentHint: string | null;
   /**
-   * Who runs it. `flyco`'s three are its own product actions and never
+   * Who runs it. `flyco`'s own are its own product actions and never
    * reach the agent; everything else is sent as the message `/name args`,
    * which is how both harnesses take a slash command.
    */
@@ -54,11 +54,12 @@ interface PaletteEntry {
  * Flyco's own commands, which come first and are marked as flyco's.
  *
  * They are not the harness's: `/archive` and `/resize` are things flyco
- * does to a machine, and `/compact` is routed to the control plane's own
- * compaction request rather than typed at the agent, so that one browser
- * pressing it is a compaction every browser can see. All three are named
- * by both harnesses too; the harness's copy is dropped rather than shown
- * twice.
+ * does to a machine, `/compact` is routed to the control plane's own
+ * compaction request rather than typed at the agent so that one browser
+ * pressing it is a compaction every browser can see, and `/context` asks
+ * the daemon for the window's breakdown out of band — the harness's own
+ * `/context` draws the CLI's version of the panel, so the harness's copy
+ * is dropped rather than shown twice.
  */
 const FLYCO_COMMANDS: readonly (PaletteEntry & { run: SessionCommand })[] = [
   {
@@ -66,6 +67,12 @@ const FLYCO_COMMANDS: readonly (PaletteEntry & { run: SessionCommand })[] = [
     description: "Summarise the conversation to free context",
     argumentHint: null,
     run: "compact",
+  },
+  {
+    name: "context",
+    description: "Show what the context window and the plan are spent on",
+    argumentHint: null,
+    run: "context",
   },
   {
     name: "archive",
@@ -122,7 +129,7 @@ export interface SessionComposerProps {
    * What the running harness said it offers, newest list wins.
    *
    * Empty until the session's daemon has reported one, which is why the
-   * palette is useful from the first keystroke: flyco's own three are
+   * palette is useful from the first keystroke: flyco's own are
    * always there.
    */
   commands: readonly HarnessCommand[];

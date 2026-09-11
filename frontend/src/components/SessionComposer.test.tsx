@@ -111,11 +111,18 @@ describe("SessionComposer", () => {
 describe("the palette's rows", () => {
   it("puts flyco's own first and drops the harness's copy of them", () => {
     const rows = paletteEntries(COMMANDS);
-    expect(rows.slice(0, 3).map((row) => row.name)).toEqual(["compact", "archive", "resize"]);
+    expect(rows.slice(0, 4).map((row) => row.name)).toEqual([
+      "compact",
+      "context",
+      "archive",
+      "resize",
+    ]);
     expect(rows.filter((row) => row.name === "compact")).toHaveLength(1);
+    expect(rows.filter((row) => row.name === "context")).toHaveLength(1);
     expect(rows[0]?.run).toBe("compact");
     expect(rows.map((row) => row.name)).toEqual([
       "compact",
+      "context",
       "archive",
       "resize",
       "goal",
@@ -125,7 +132,12 @@ describe("the palette's rows", () => {
   });
 
   it("shows only flyco's own until the harness has reported a list", () => {
-    expect(paletteEntries([]).map((row) => row.name)).toEqual(["compact", "archive", "resize"]);
+    expect(paletteEntries([]).map((row) => row.name)).toEqual([
+      "compact",
+      "context",
+      "archive",
+      "resize",
+    ]);
   });
 
   it("opens on a slash and closes once an argument is being typed", () => {
@@ -143,7 +155,7 @@ describe("the palette", () => {
     const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
 
     type(field, "/");
-    expect(getAllByRole("option")).toHaveLength(6);
+    expect(getAllByRole("option")).toHaveLength(7);
 
     type(field, "/eff");
     const rows = getAllByRole("option");
@@ -194,10 +206,11 @@ describe("the palette", () => {
     press(field, "ArrowDown");
     press(field, "ArrowDown");
     press(field, "ArrowDown");
-    expect(getAllByRole("option")[3]?.getAttribute("aria-selected")).toBe("true");
+    press(field, "ArrowDown");
+    expect(getAllByRole("option")[4]?.getAttribute("aria-selected")).toBe("true");
 
     press(field, "ArrowUp");
-    expect(getAllByRole("option")[2]?.getAttribute("aria-selected")).toBe("true");
+    expect(getAllByRole("option")[3]?.getAttribute("aria-selected")).toBe("true");
 
     press(field, "Enter");
     expect(props.onCommand).toHaveBeenCalledWith("resize");

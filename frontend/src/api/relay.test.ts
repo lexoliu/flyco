@@ -51,6 +51,16 @@ describe("EventStream.ingestCatchUp", () => {
     expect(stream.cursor).toBe(5);
   });
 
+  it("keeps two stored rows with identical content — each took its own seq", () => {
+    // The log records every occurrence; two identical `assistant_delta`
+    // rows are two real chunks, and a reload has to show both.
+    const stream = freshStream();
+    const delta = { type: "harness", event: { type: "assistant_delta", turn_id: "t-1", text: "- " } };
+    const out = stream.ingestCatchUp([stored(1, delta), stored(2, delta)]);
+    expect(eventsOf(out)).toEqual([delta, delta]);
+    expect(stream.cursor).toBe(2);
+  });
+
   it("returns nothing for an empty page and leaves the cursor untouched", () => {
     const stream = freshStream();
     const out = stream.ingestCatchUp([]);
@@ -74,26 +84,38 @@ describe("EventStream.ingestLive", () => {
     expect(event).toEqual({ event: started, atUnix: LIVE_NOW });
   });
 
-  it("dedupes a live frame byte-identical to one already shown via catch-up", () => {
+  it("keeps a live frame byte-identical to one already shown via catch-up", () => {
+    // A live frame is always a new occurrence: the room broadcasts each
+    // fact to a subscribed socket once, and replays come back through
+    // catch-up. Identical content is a repeated fact, not a redelivery.
     const stream = freshStream();
     stream.ingestCatchUp([stored(1, started)]);
     const event = stream.ingestLive(JSON.stringify(started));
-    expect(event).toBeNull();
+    expect(event).toEqual({ event: started, atUnix: LIVE_NOW });
   });
 
-  it("dedupes a repeated live frame against itself", () => {
+  it("keeps every one of a run of identical live frames — repeated deltas are real output", () => {
+    // The bug this guards: a content-keyed dedup ate the second `**`, `o `
+    // or `"- "` of a markdown stream, which is what malformed assistant
+    // rendering looked like (issue: merged lines and missing characters).
     const stream = freshStream();
-    const first = stream.ingestLive(JSON.stringify(notice));
-    const second = stream.ingestLive(JSON.stringify(notice));
-    expect(first).toEqual({ event: notice, atUnix: LIVE_NOW });
-    expect(second).toBeNull();
+    const delta = JSON.stringify({
+      type: "harness",
+      event: { type: "assistant_delta", turn_id: "t-1", text: "**" },
+    });
+    const frames = [stream.ingestLive(delta), stream.ingestLive(delta), stream.ingestLive(delta)];
+    expect(frames.map((frame) => frame.event)).toEqual([
+      JSON.parse(delta),
+      JSON.parse(delta),
+      JSON.parse(delta),
+    ]);
   });
 
   it("does not dedupe two distinct events", () => {
     const stream = freshStream();
     const first = stream.ingestLive(JSON.stringify(started));
     const second = stream.ingestLive(JSON.stringify(usage));
-    expect(eventsOf([first, second].filter((entry) => entry !== null))).toEqual([started, usage]);
+    expect(eventsOf([first, second])).toEqual([started, usage]);
   });
 
   it("dates each live frame against the clock at the moment it arrived", () => {

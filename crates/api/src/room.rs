@@ -398,7 +398,7 @@ async fn on_client_frame(
         return refuse(
             ws,
             "a client may only send `user_message`, `shell_command`, `interrupt`, `compact`, \
-             `terminal_input` or `terminal_resize`",
+             `context_usage`, `terminal_input` or `terminal_resize`",
         );
     }
 

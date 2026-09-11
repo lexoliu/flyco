@@ -50,6 +50,7 @@ import {
 import {
   describeError,
   sidecarCommandSchema,
+  type ContextUsage,
   type HarnessCommand,
   type ModelOption,
   type MountedServer,
@@ -598,6 +599,54 @@ class Session {
   }
 
   /**
+   * Answers flyco's `/context`: what the window is spent on.
+   *
+   * A control request, not a turn — the CLI computes the breakdown locally
+   * and nothing here is sent to the API. The same request backs the CLI's
+   * own `/context` panel; flyco asks for the structure rather than the
+   * rendered text because the panel is drawn by the client.
+   */
+  async contextUsage(): Promise<void> {
+    const report = await this.session.getContextUsage();
+    const usage: ContextUsage = {
+      model: report.model,
+      window: { used_tokens: report.totalTokens, size_tokens: report.maxTokens },
+      categories: report.categories.map((category) => ({
+        name: category.name,
+        tokens: category.tokens,
+        deferred: category.isDeferred ?? false,
+      })),
+      // A tool whose schema is not yet materialized in the window — the
+      // SDK spells that `isLoaded: false` — still counts toward it.
+      mcp_tools: report.mcpTools.map((tool) => ({
+        name: tool.name,
+        tokens: tool.tokens,
+        deferred: tool.isLoaded === false,
+      })),
+      memory_files: report.memoryFiles.map((file) => ({
+        name: file.path,
+        tokens: file.tokens,
+        deferred: false,
+      })),
+      agents: report.agents.map((agent) => ({
+        name: agent.agentType,
+        tokens: agent.tokens,
+        deferred: false,
+      })),
+      skills:
+        report.skills?.skillFrontmatter.map((skill) => ({
+          name: skill.name,
+          tokens: skill.tokens,
+          deferred: false,
+        })) ?? [],
+    };
+    if (report.isAutoCompactEnabled && report.autoCompactThreshold !== undefined) {
+      usage.auto_compact = report.autoCompactThreshold;
+    }
+    emit({ type: "context_usage", usage });
+  }
+
+  /**
    * Moves the running query onto another model, at another effort.
    *
    * In this order, and both every time: the effort is a level *of a model*,
@@ -735,6 +784,9 @@ async function apply(command: SidecarCommand, session: Session | null): Promise<
       return true;
     case "compact":
       session.compact();
+      return true;
+    case "context_usage":
+      await session.contextUsage();
       return true;
     case "set_model":
       await session.setModel(command.model, command.effort);

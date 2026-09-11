@@ -24,6 +24,7 @@ import {
   on,
   onCleanup,
 } from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 import { createQuery } from "../lib/query";
 import { AlertTriangle, Server, Wallet } from "lucide-solid";
 import { BudgetRaise } from "../components/BudgetPicker";
@@ -40,6 +41,7 @@ import composerStyles from "../components/Composer.module.css";
 import {
   archiveSession,
   compactSession,
+  contextSession,
   decideApproval,
   getSession,
   getSessionMachine,
@@ -53,7 +55,7 @@ import {
   type ModelOption,
 } from "../api/client";
 import { ApiProblem } from "../api/problem";
-import type { UsageWindow } from "../api/wire";
+import type { ContextWindow, UsageWindow } from "../api/wire";
 import { createSessionRelay } from "../api/relay";
 import type { HarnessCommand } from "../api/wire";
 import { formatTimeOfDay } from "../lib/dates";
@@ -62,6 +64,7 @@ import { machineChip } from "../lib/machines";
 import { orderedWindows, resetHint } from "../lib/planUsage";
 import { dollarsToUsdMicros, usdMicrosToDollars } from "../lib/money";
 import { shellCommandIn } from "../lib/shell";
+import { tokens } from "../lib/tokens";
 import {
   REFUSING,
   deriveStatus,
@@ -69,7 +72,11 @@ import {
   sessionNotice,
   type StatusView,
 } from "../lib/status";
-import { foldTranscript, pendingApprovals } from "../lib/transcript";
+import {
+  foldTranscript,
+  pendingApprovals,
+  type TranscriptItem,
+} from "../lib/transcript";
 import styles from "./SessionDetail.module.css";
 
 /**
@@ -80,11 +87,6 @@ import styles from "./SessionDetail.module.css";
  * the smallest unit either of them prints.
  */
 const TICK_MS = 1000;
-
-/** `41k / 200k`, because a context window is read in thousands or not at all. */
-function tokens(count: number): string {
-  return count >= 1000 ? `${Math.round(count / 1000)}k` : `${count}`;
-}
 
 export default function SessionDetail() {
   const params = useParams<{ id: string }>();
@@ -167,20 +169,71 @@ export default function SessionDetail() {
   const awaitingFirstStage = createMemo(
     () =>
       session()?.state === "provisioning" &&
-      !transcript().some((item) => item.kind === "provisioning"),
+      !transcript.some((item) => item.kind === "provisioning"),
   );
 
-  const transcript = createMemo(() => foldTranscript(relay.events()));
+  /**
+   * The transcript as a store, reconciled into place once per frame.
+   *
+   * Two things about why it is built this way rather than as a memo of
+   * `foldTranscript(relay.events())`:
+   *
+   * - A fresh array every delta means `<For>` keys nothing: every row is a
+   *   new object, so the whole column unmounts and remounts on every token.
+   *   That is what made streaming expensive, and — because remounting
+   *   resets the scroll position — what threw a reading user back to the
+   *   top. `reconcile` keys rows by `TranscriptItem.key` and patches them
+   *   in place, so a streamed paragraph is the same DOM node before and
+   *   after its next delta.
+   * - Folding is work, and the relay can deliver a burst of deltas inside
+   *   one frame. Batching the fold onto `requestAnimationFrame` keeps it
+   *   to once a frame without dropping a single event: the callback reads
+   *   the event list as it stands when the frame fires.
+   */
+  const [transcript, setTranscript] = createStore<TranscriptItem[]>([]);
+  // The empty-state copy below reads `transcript`, which lags the event
+  // list by the frame the fold waits on. A fold in flight means items are
+  // coming, so it counts as non-empty — otherwise the "queued" line would
+  // flash for one frame over a prompt that already arrived.
+  const [foldQueued, setFoldQueued] = createSignal(false);
+  let foldFrame = 0;
+  createEffect(() => {
+    // The effect subscribes to the event list; the fold itself runs in the
+    // animation frame so a burst costs one fold, not one per event. The
+    // first run, on an empty list, folds nothing into nothing — skip it so
+    // the empty state does not blink out for a frame on mount.
+    const events = relay.events();
+    if (foldFrame !== 0 || (events.length === 0 && transcript.length === 0)) {
+      return;
+    }
+    setFoldQueued(true);
+    foldFrame = requestAnimationFrame(() => {
+      foldFrame = 0;
+      setTranscript(reconcile(foldTranscript(relay.events()), { key: "key" }));
+      setFoldQueued(false);
+    });
+  });
+  onCleanup(() => {
+    if (foldFrame !== 0) {
+      cancelAnimationFrame(foldFrame);
+    }
+  });
 
   /*
    * The transcript scrolls inside the page, not with it, so the composer
    * stays at the foot of the window. That makes following the agent the
    * page's job: a reader at the bottom is kept there as lines arrive, and
    * one who has scrolled up to reread something is left where they are.
-   * How close counts as "at the bottom" is a few lines, so the last line's
-   * own height never counts as having scrolled away from it.
+   *
+   * Growth is watched, not counted: a streamed delta changes a row's
+   * height without changing the item count, so a `ResizeObserver` on the
+   * column's contents is what notices. "At the bottom" is a few lines of
+   * slack, so the last line's own height never counts as having scrolled
+   * away from it — and a reader who *did* scroll away keeps their place,
+   * because nothing here runs when `pinned` is false.
    */
   let scroller: HTMLDivElement | undefined;
+  let transcriptBody: HTMLDivElement | undefined;
   let pinned = true;
   const PIN_SLACK_PX = 96;
   function noteScroll(): void {
@@ -189,17 +242,20 @@ export default function SessionDetail() {
     }
     pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= PIN_SLACK_PX;
   }
-  createEffect(
-    on(
-      () => transcript().length,
-      () => {
-        if (scroller !== undefined && pinned) {
-          scroller.scrollTop = scroller.scrollHeight;
-        }
-      },
-    ),
-  );
-  const waiting = createMemo(() => pendingApprovals(transcript()));
+  createEffect(() => {
+    const watched = transcriptBody;
+    if (watched === undefined) {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      if (scroller !== undefined && pinned) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
+    });
+    observer.observe(watched);
+    onCleanup(() => observer.disconnect());
+  });
+  const waiting = createMemo(() => pendingApprovals(transcript));
   const signals = createMemo(() => liveSignalsFrom(relay.events()));
 
   const status = createMemo((): StatusView | undefined => {
@@ -226,12 +282,63 @@ export default function SessionDetail() {
    */
   const fatal = createMemo(() => session.error ?? relay.failure());
 
+  /**
+   * The newest token accounting the room has reported.
+   *
+   * A standalone `usage` frame and a turn's closing `turn_completed.usage`
+   * are the same reading on different schedules, so the newest of either
+   * wins. (The context ring below reads `latestContext`, which adds the
+   * `context_usage` answer as a third source.)
+   */
   const latestUsage = createMemo(() => {
     const events = relay.events();
     for (let i = events.length - 1; i >= 0; i -= 1) {
       const entry = events[i];
-      if (entry !== undefined && entry.event.type === "usage") {
-        return entry.event.usage;
+      if (entry === undefined) {
+        continue;
+      }
+      const event = entry.event;
+      if (event.type === "usage") {
+        return event.usage;
+      }
+      if (event.type === "harness" && event.event.type === "turn_completed") {
+        return event.event.usage;
+      }
+    }
+    return null;
+  });
+
+  /**
+   * How full the context window is, from wherever said so last.
+   *
+   * Three frames carry a window reading, newest wins: a `usage` report, a
+   * completed turn's usage, and a `context_usage` answer — the last of
+   * which is what makes the ring move when `/context` is asked mid-turn.
+   */
+  const latestContext = createMemo((): ContextWindow | null => {
+    const events = relay.events();
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const entry = events[i];
+      if (entry === undefined) {
+        continue;
+      }
+      const event = entry.event;
+      if (event.type === "usage" && event.usage.context !== null && event.usage.context !== undefined) {
+        return event.usage.context;
+      }
+      if (event.type !== "harness") {
+        continue;
+      }
+      const harness = event.event;
+      if (harness.type === "context_usage" && harness.usage.window !== undefined) {
+        return harness.usage.window;
+      }
+      if (
+        harness.type === "turn_completed" &&
+        harness.usage.context !== null &&
+        harness.usage.context !== undefined
+      ) {
+        return harness.usage.context;
       }
     }
     return null;
@@ -467,6 +574,16 @@ export default function SessionDetail() {
           () => compactSession(params.id),
         );
         break;
+      case "context":
+        // flyco's own `/context`: a question to the daemon about what the
+        // window holds, never text for the model. The answer comes back on
+        // the relay as a `context_usage` event and lands in the transcript
+        // as the context card.
+        void overRelay(
+          () => relay.send({ type: "context_usage" }),
+          () => contextSession(params.id),
+        );
+        break;
       case "archive":
         void onArchive(false);
         break;
@@ -681,6 +798,7 @@ export default function SessionDetail() {
       <div class={styles.body}>
         <div class={styles.column}>
           <div class={styles.scroller} ref={scroller} onScroll={noteScroll}>
+            <div ref={transcriptBody}>
             {/*
             The banner is sticky so an approval raised a hundred rows ago is
             still one click away, and amber because it is the one thing on
@@ -705,7 +823,7 @@ export default function SessionDetail() {
             hold — when the session was opened — and moves with the clock.
           */}
             <Show
-              when={transcript().length > 0}
+              when={transcript.length > 0 || foldQueued()}
               fallback={
                 <Switch>
                   <Match when={session()?.state === "provisioning"}>
@@ -729,10 +847,11 @@ export default function SessionDetail() {
               }
             >
               <Transcript
-                items={transcript()}
+                items={transcript}
                 repo={session()?.repo ?? "the repository"}
                 provider={providerLabel()}
                 models={models()}
+                plan={planUsage()}
                 onDecide={(id, decision) => {
                   void onDecide(id, decision).then(() => refetchSession());
                 }}
@@ -753,7 +872,13 @@ export default function SessionDetail() {
             <Show when={awaitingFirstStage() && session()}>
               {(current) => (
                 <ProvisioningTimeline
-                  steps={[{ stage: "reserving", atUnix: current().created_at_unix }]}
+                  steps={[
+                    {
+                      key: "awaiting",
+                      stage: "reserving",
+                      atUnix: current().created_at_unix,
+                    },
+                  ]}
                   recovery={status()?.status === "migrating"}
                   attempt={1}
                   endedAtUnix={null}
@@ -777,6 +902,7 @@ export default function SessionDetail() {
                 Working…
               </p>
             </Show>
+            </div>
           </div>
 
           {/*
@@ -929,7 +1055,7 @@ export default function SessionDetail() {
                       beside an em dash is a shape the eye stops on to learn
                       nothing.
                     */}
-                    <Show when={latestUsage()?.context}>
+                    <Show when={latestContext()}>
                       {(context) => (
                         <Ring
                           label="Context"

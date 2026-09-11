@@ -653,6 +653,18 @@ pub enum ControlToDaemon {
     Interrupt,
     /// Compact the session's context through the harness's native command.
     Compact,
+    /// Ask the harness what its context window is spent on.
+    ///
+    /// flyco's own `/context`: a query, not a prompt. The harness answers
+    /// it out of band — the Claude SDK's `get_context_usage` control
+    /// request; Codex from the token readings its stream already carries —
+    /// and the answer comes back as
+    /// [`HarnessEvent::ContextUsage`](crate::harness::HarnessEvent::ContextUsage).
+    /// It is a command of its own rather than a `user_message` carrying the
+    /// text `/context`, because the CLI would treat that text as a *local*
+    /// command whose answer never reaches the relay — and because a query
+    /// about the context should never enter the context it describes.
+    ContextUsage,
     /// The user decided a pending approval.
     ApprovalDecision {
         /// The approval being decided.
@@ -799,6 +811,7 @@ impl ControlToDaemon {
             Self::TerminalResize { .. } => "terminal_resize",
             Self::Interrupt => "interrupt",
             Self::Compact => "compact",
+            Self::ContextUsage => "context_usage",
             Self::ApprovalDecision { .. } => "approval_decision",
             Self::Budget { .. } => "budget",
             Self::BudgetRaised { .. } => "budget_raised",
@@ -825,6 +838,7 @@ impl ControlToDaemon {
                 | Self::ShellCommand { .. }
                 | Self::Interrupt
                 | Self::Compact
+                | Self::ContextUsage
                 | Self::TerminalInput { .. }
                 | Self::TerminalResize { .. }
         )
@@ -1308,6 +1322,7 @@ mod tests {
             },
             ControlToDaemon::Interrupt,
             ControlToDaemon::Compact,
+            ControlToDaemon::ContextUsage,
             ControlToDaemon::ApprovalDecision {
                 id: ApprovalId::generate(),
                 decision: ApprovalDecision::Approved,
@@ -1683,6 +1698,7 @@ mod tests {
                     | ControlToDaemon::ShellCommand { .. }
                     | ControlToDaemon::Interrupt
                     | ControlToDaemon::Compact
+                    | ControlToDaemon::ContextUsage
                     | ControlToDaemon::TerminalInput { .. }
                     | ControlToDaemon::TerminalResize { .. }
             );

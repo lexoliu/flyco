@@ -4730,6 +4730,28 @@
         }
       }
     },
+    "/v1/sessions/{id}/context": {
+      "post": {
+        "summary": "Reports what a session's context window is spent on.",
+        "description": "Reports what a session's context window is spent on.\n\nflyco's `/context`: a control request the daemon answers out of band —\nthe Claude sidecar's `get_context_usage`, or the window gauge a Codex\nsession already holds — never a message to the model. The answer\narrives on the session relay as a `context_usage` harness event.",
+        "operationId": "flyco_api::app::context_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/daemon-token": {
       "post": {
         "summary": "Mints the daemon token that pairs a session with its `flycod`.",

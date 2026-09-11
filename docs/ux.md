@@ -748,15 +748,20 @@ three lines long: the page is at least a window tall, and the composer is
 pushed to its bottom, where the hands already expect it.
 
 `/` opens a command palette listing what the session can actually be told
-to do. Flyco's own three come first, marked `flyco` — `/compact`, which is
+to do. Flyco's own four come first, marked `flyco` — `/compact`, which is
 the control plane's compaction request rather than a message, so every
-browser watching sees the same one; `/archive`; `/resize` — and after them
-everything the running harness reported: `/goal`, `/effort`, `/context`,
-`/usage`, `/advisor`, and every skill of the checkout, ninety of them on a
-well-equipped machine. The list is the harness's own, sent over the relay
-when the agent starts and again whenever it discovers more, so a repository
-that adds a skill has it in the palette without a reload. Until the machine
-has reported one, the three are all there is.
+browser watching sees the same one; `/context`, likewise a control request
+the daemon answers out of band, whose breakdown lands in the transcript as
+a card beside the plan's windows rather than as model prose; `/archive`;
+`/resize` — and after them everything the running harness reported: `/goal`,
+`/effort`, `/usage`, `/advisor`, and every skill of the checkout, ninety of
+them on a well-equipped machine. A harness's own `/context` or `/usage` is
+the CLI's rendering of the same answer, so the palette drops the harness's
+copy of any name flyco owns rather than listing it twice. The list is the
+harness's own, sent over the relay when the agent starts and again whenever
+it discovers more, so a repository that adds a skill has it in the palette
+without a reload. Until the machine has reported one, the four are all
+there is.
 
 Typing after the slash filters by prefix on the name; each row shows the
 name, the argument it expects, and the harness's one-line description,

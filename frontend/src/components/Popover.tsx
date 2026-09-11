@@ -45,9 +45,12 @@ export interface PopoverProps {
   /** Which edge of the trigger the panel lines up with. Defaults to `start`. */
   align?: "start" | "end" | undefined;
   /**
-   * Which side of the trigger the panel opens on. `bottom` by default; a
-   * trigger sitting at the foot of the window — the account row at the
-   * bottom of the rail — needs `top` or the panel opens off screen.
+   * Which side of the trigger the panel opens on.
+   *
+   * Unset, the panel picks for itself: it opens downward when it fits, and
+   * upward when the trigger sits so near the foot of the window — every
+   * composer chip — that the room below cannot hold it. Set it only where
+   * the caller knows better than the viewport.
    */
   side?: "bottom" | "top" | undefined;
   /** Extra class on the panel, for callers that need a width. */
@@ -67,6 +70,13 @@ const MIN_PANEL_PX = 160;
 
 export default function Popover(props: PopoverProps) {
   const [open, setOpen] = createSignal(false);
+  /**
+   * Whether the panel opened upward on its own judgement.
+   *
+   * Only consulted when `side` is unset — an explicit `side` is the
+   * caller's decision and stays where it was put.
+   */
+  const [flipped, setFlipped] = createSignal(false);
   const triggerId = createUniqueId();
   let anchor: HTMLDivElement | undefined;
   let panel: HTMLDivElement | undefined;
@@ -83,13 +93,13 @@ export default function Popover(props: PopoverProps) {
     // and so blurring out of it is a meaningful "done here".
     panel?.focus();
 
-    // The panel hangs below its anchor, so what it may not do is hang
-    // below the viewport: a picker whose bottom half is off screen, on a
-    // page that does not scroll, is a control nobody can reach. The panel
-    // gets the room between its top edge and the viewport's bottom, and
-    // scrolls inside that; re-measured when the window changes size.
+    // What the panel may not do is hang off the viewport: a picker whose
+    // bottom half is off screen, on a page that does not scroll, is a
+    // control nobody can reach. So the panel gets a side and a height from
+    // the room that is actually there — re-measured when the window
+    // changes size.
     function fit(): void {
-      if (panel === undefined) {
+      if (panel === undefined || anchor === undefined) {
         return;
       }
       // On a phone the stylesheet makes the panel a bottom sheet, fixed to
@@ -100,11 +110,31 @@ export default function Popover(props: PopoverProps) {
         panel.style.maxHeight = "";
         return;
       }
-      const box = panel.getBoundingClientRect();
-      const room =
-        props.side === "top"
-          ? box.bottom - VIEWPORT_MARGIN_PX
-          : window.innerHeight - box.top - VIEWPORT_MARGIN_PX;
+
+      // Measuring wants the panel's natural height: a max-height left over
+      // from the last fit would report the clamp as the size it needs.
+      panel.style.maxHeight = "";
+      const wanted = panel.getBoundingClientRect().height;
+
+      if (props.side !== undefined) {
+        const box = panel.getBoundingClientRect();
+        const room =
+          props.side === "top"
+            ? box.bottom - VIEWPORT_MARGIN_PX
+            : window.innerHeight - box.top - VIEWPORT_MARGIN_PX;
+        panel.style.maxHeight = `${Math.max(room, MIN_PANEL_PX)}px`;
+        return;
+      }
+
+      // The room either side of the trigger, and the panel goes where the
+      // room is: down when it fits, up when the room below cannot hold it
+      // and the room above can hold more.
+      const anchorBox = anchor.getBoundingClientRect();
+      const below = window.innerHeight - anchorBox.bottom - VIEWPORT_MARGIN_PX;
+      const above = anchorBox.top - VIEWPORT_MARGIN_PX;
+      const flip = wanted > below && above > below;
+      setFlipped(flip);
+      const room = flip ? above : below;
       panel.style.maxHeight = `${Math.max(room, MIN_PANEL_PX)}px`;
     }
     fit();
@@ -155,7 +185,8 @@ export default function Popover(props: PopoverProps) {
           class={cx(
             styles.panel,
             props.align === "end" && styles.alignEnd,
-            props.side === "top" && styles.sideTop,
+            (props.side === "top" || (props.side === undefined && flipped())) &&
+              styles.sideTop,
             props.panelClass,
           )}
           role="dialog"
