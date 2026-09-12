@@ -237,6 +237,9 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  /* A shrinkable middle: inside a fitted panel the lists below give the
+     height back, the titles keep theirs. */
+  min-height: 0;
 }
 
 .popoverWide {
@@ -275,7 +278,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 240px;
+  /* No cap of its own: a scroll container is the flex child that yields,
+     so it scrolls exactly when the panel around it has run out of room. */
   overflow-y: auto;
 }
 
