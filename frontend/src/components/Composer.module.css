@@ -77,18 +77,21 @@
   gap: var(--space-2);
 }
 
-/* The chips wrap among themselves; send never wraps with them, because a
-   send button in the middle of a row is not a send button. */
+/* The chips wrap among themselves in the island, where wrapping is the
+   point; in the send row a pill never takes a second line — the row is
+   one line or it is an island (the overflow check in ComposerShell). */
 .chips {
   display: flex;
-  /* A chip is never cut short: when the row runs out of room it wraps,
-     and a name with the price after it is worth a second line. */
   flex-wrap: wrap;
   align-items: center;
   margin-right: auto;
   gap: var(--space-2);
   min-width: 0;
   flex: 1;
+}
+
+.controls .chips {
+  flex-wrap: nowrap;
 }
 
 .anchorShrink {
@@ -100,22 +103,12 @@
   min-width: 0;
 }
 
-/* Narrower, the compute chip takes a whole line, so that its label
-   changing length (every slider detent rewrites it) never
-   reflows the chips under an open popover. After the base rule, because
-   `flex` above resets the basis this overrides. */
+/* In the island the compute chip takes a whole line, so that its label
+   changing length (every slider detent rewrites it) never reflows the
+   chips under an open popover — a chip that reflows its neighbours under
+   an open popover is a popover that wanders. After the base rule,
+   because `flex` above resets the basis this overrides. */
 @media (max-width: 900px) {
-  /* The chips have left the row for the island above the box (the
-     matching threshold in ComposerShell); what remains — the model, the
-     context ring, send — may still wrap among itself on a phone. The
-     compute chip takes a whole line of the island for the reason it used
-     to take one of the row: its label rewrites on every slider detent,
-     and a chip that reflows its neighbours under an open popover is a
-     popover that wanders. */
-  .controls {
-    flex-wrap: wrap;
-  }
-
   .anchorShrink {
     flex-basis: 100%;
   }
@@ -124,10 +117,6 @@
 /* The same conditions measured on the composer rather than the viewport —
    the session drawer takes ~480px at any viewport width. */
 @container (max-width: 600px) {
-  .controls {
-    flex-wrap: wrap;
-  }
-
   .anchorShrink {
     flex-basis: 100%;
   }

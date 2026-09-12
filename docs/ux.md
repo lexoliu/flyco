@@ -334,17 +334,19 @@ The compute chip shows the machine flyco will actually choose
 popover lets the user switch account, region, spot, or pick another
 curated type (§7.5).
 
-The chips sit on one line at desktop widths. The compute chip is the one
-that gives way (its label shrinks to an ellipsis), so choosing a machine —
-which rewrites that label on every slider detent — never reflows the row
-under the open popover. When the row cannot hold them — a viewport under
-~900px or a composer under ~600px, the latter being the drawer's width at
-any window size — the chips leave the box entirely and float above it as
-an island, wrapping layer on layer there instead of squeezing the send
-row into a second line inside the card; the compute chip takes a whole
-line of the island for the same reason. A popover never hangs below the
-viewport: it takes the room between its top edge and the bottom of the
-window and scrolls inside it.
+The chips sit on one line at desktop widths, and one line is a hard rule:
+a pill never takes a second line inside the card. The compute chip is the
+one that gives way first (its label shrinks to an ellipsis), so choosing
+a machine — which rewrites that label on every slider detent — never
+reflows the row under the open popover. When even that is not enough —
+a viewport under ~900px, a composer under ~600px (the drawer's width at
+any window size), or simply more chips than the row has room for at any
+width — the chips leave the box entirely and float above it as an island,
+wrapping layer on layer there instead of squeezing the send row into a
+second line inside the card; the compute chip takes a whole line of the
+island for the same reason. A popover never hangs below the viewport: it
+takes the room between its top edge and the bottom of the window and
+scrolls inside it.
 
 GitHub refusing the token flyco holds (`424 github-token-revoked`) is not a
 sign-out. The repository and branch chips show the refusal as a notice with
