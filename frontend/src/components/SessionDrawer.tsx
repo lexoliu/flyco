@@ -9,8 +9,11 @@
  *
  * `Files` and `Diff` are two tabs rather than one because they answer two
  * questions: what is on the disk, and what did the agent change. Both are
- * read live from the machine, so both say plainly when there is no machine
- * to read.
+ * read live from the machine, and so is the terminal — with no machine
+ * there is nothing behind those tabs, so the tabs themselves grey out
+ * rather than open on an apology. `Machine` and `Env` stay: the `.env`
+ * lives in the control plane, and the machine tab is where a stopped
+ * machine is started.
  *
  * `⌘.` (`Ctrl+.` off macOS) toggles it, which is the one keyboard shortcut
  * on the page. On a phone there is no room beside the transcript, so the
@@ -30,10 +33,10 @@ import styles from "./SessionDrawer.module.css";
 
 type Tab = "terminal" | "files" | "diff" | "machine" | "env";
 
-const TABS: readonly { id: Tab; label: string }[] = [
-  { id: "terminal", label: "Terminal" },
-  { id: "files", label: "Files" },
-  { id: "diff", label: "Diff" },
+const TABS: readonly { id: Tab; label: string; needsMachine?: boolean }[] = [
+  { id: "terminal", label: "Terminal", needsMachine: true },
+  { id: "files", label: "Files", needsMachine: true },
+  { id: "diff", label: "Diff", needsMachine: true },
   { id: "machine", label: "Machine" },
   { id: "env", label: "Env" },
 ];
@@ -115,7 +118,18 @@ export default function SessionDrawer(props: SessionDrawerProps) {
                   type="button"
                   role="tab"
                   aria-selected={tab() === entry.id}
-                  class={cx(styles.tab, tab() === entry.id && styles.tabActive)}
+                  aria-disabled={(entry.needsMachine === true && !props.machineUp) || undefined}
+                  disabled={entry.needsMachine === true && !props.machineUp}
+                  title={
+                    entry.needsMachine === true && !props.machineUp
+                      ? "The machine is not connected"
+                      : undefined
+                  }
+                  class={cx(
+                    styles.tab,
+                    tab() === entry.id && styles.tabActive,
+                    entry.needsMachine === true && !props.machineUp && styles.tabDisabled,
+                  )}
                   onClick={() => setTab(entry.id)}
                 >
                   <Switch>

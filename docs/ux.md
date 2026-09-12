@@ -859,7 +859,7 @@ The user is told. The room is the only party that knows whether a daemon is hold
 
 Nothing a browser sends is discarded in silence — and the composer does not let the undeliverable be sent at all. A user message waits in the mailbox and is delivered on the daemon's next `Hello`. What is delivered-or-nothing — a `!` run, `/compact`, a context breakdown, a terminal keystroke — the composer refuses while no machine is connected, saying so where the `!` hint sits, and the terminal pane says the shell is closed rather than showing one that swallows input. Should one still reach the room — a race against the daemon's departure — the sender is told the machine is off the room rather than left watching a Stop button that did nothing.
 
-The same rule governs the drawer: `Files` and `Diff` are answered live by the machine, so with no daemon connected they say the machine is not connected. They never report it as a control-plane failure, which sends the user looking in the wrong place for a problem that is not there.
+The same rule governs the drawer: `Terminal`, `Files`, and `Diff` are answered live by the machine, so with no daemon connected the tabs themselves grey out — a dead end shows as one before it is opened, not after. `Machine` and `Env` stay lit: the `.env` is control-plane data, and the machine tab is where a stopped machine is started. A machine that drops with the drawer already open is the race the pane text remains for.
 
 ### 9.7 When the agent process dies
 

@@ -78,6 +78,17 @@
   color: var(--color-text);
 }
 
+/* The pane reads the machine live; with none connected the tab is a dead
+   end, so it shows as one before it is opened rather than after. */
+.tabDisabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tabDisabled:hover {
+  color: var(--color-text-muted);
+}
+
 .body {
   flex: 1;
   min-height: 0;
