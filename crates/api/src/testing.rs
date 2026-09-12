@@ -1091,6 +1091,31 @@ pub async fn seed_host_account(db: &Db, user: UserId) -> (HostId, ProviderAccoun
     (host, account)
 }
 
+/// Links an Azure account the way the store path does, without a cloud.
+///
+/// Deliberately without a resource group: an account with no group is the
+/// one shape whose provider calls refuse *before* they reach the network —
+/// see `LinkedAccount::azure_workspace` — which is what lets a consumer or
+/// a queue job that asks the provider be driven for real in a unit test.
+pub async fn seed_azure_account(db: &Db, user: UserId) -> ProviderAccountId {
+    crate::provider_accounts::create(
+        db,
+        &test_config(),
+        user,
+        "flyco test subscription".to_owned(),
+        &ProviderCredentials::Azure {
+            tenant_id: "11111111-2222-4333-8444-555555555555".to_owned(),
+            client_id: "66666666-7777-4888-8999-aaaaaaaaaaaa".to_owned(),
+            client_secret: "not-a-real-secret".to_owned(),
+            subscription_id: AZURE_SUBSCRIPTION_ID.to_owned(),
+        },
+        None,
+    )
+    .await
+    .expect("link an Azure account")
+    .id
+}
+
 /// The machine a test session asks for: the enrolled machine itself.
 #[must_use]
 pub fn machine_choice(account: ProviderAccountId) -> MachineChoice {
