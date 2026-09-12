@@ -76,16 +76,24 @@ export function shortName(option: ModelOption): string {
 }
 
 /**
- * The chip's text: the model's short name and, when one is chosen, the
- * effort after it (`Fable 5.1 · High`).
+ * The model's part of {@link choiceLabel}: the short name where the list
+ * knows the id.
  *
  * An id the list does not know is shown as the id: a stale choice reads as
  * exactly what it is rather than as nothing, and the picker beside it
  * offers the way back to something the list does know.
  */
-export function choiceLabel(models: readonly ModelOption[], choice: ModelChoice): string {
+export function modelLabel(models: readonly ModelOption[], choice: ModelChoice): string {
   const option = optionOf(models, choice);
-  const name = option === undefined ? choice.model : shortName(option);
+  return option === undefined ? choice.model : shortName(option);
+}
+
+/**
+ * The choice said in full: the model's short name and, when one is chosen,
+ * the effort after it (`Fable 5.1 · High`).
+ */
+export function choiceLabel(models: readonly ModelOption[], choice: ModelChoice): string {
+  const name = modelLabel(models, choice);
   const effort = choice.effort;
   return effort === undefined || effort === null ? name : `${name} · ${effortLabel(effort)}`;
 }

@@ -29,6 +29,7 @@ import { AlertTriangle, Server, Wallet } from "lucide-solid";
 import { BudgetRaise } from "../components/BudgetPicker";
 import GoalChip from "../components/GoalChip";
 import ConfirmDialog from "../components/ConfirmDialog";
+import EffortChip from "../components/EffortChip";
 import ModelChip from "../components/ModelChip";
 import ModeChip from "../components/ModeChip";
 import MachinePanel from "../components/MachinePanel";
@@ -1205,13 +1206,22 @@ export default function SessionDetail() {
                     </Show>
                     <Show when={session() !== undefined && models().length > 0 && session()}>
                       {(current) => (
-                        <ModelChip
-                          models={models()}
-                          choice={current().model}
-                          saving={settingModel()}
-                          align="end"
-                          onChoose={(choice) => void onSetModel(choice)}
-                        />
+                        <>
+                          <ModelChip
+                            models={models()}
+                            choice={current().model}
+                            saving={settingModel()}
+                            align="end"
+                            onChoose={(choice) => void onSetModel(choice)}
+                          />
+                          <EffortChip
+                            models={models()}
+                            choice={current().model}
+                            saving={settingModel()}
+                            align="end"
+                            onChoose={(choice) => void onSetModel(choice)}
+                          />
+                        </>
                       )}
                     </Show>
                     {/*

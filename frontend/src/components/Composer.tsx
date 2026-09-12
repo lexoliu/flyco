@@ -26,6 +26,7 @@ import {
 import BudgetPicker, { DEFAULT_BUDGET } from "./BudgetPicker";
 import ComposerShell from "./ComposerShell";
 import MachinePicker from "./MachinePicker";
+import EffortChip from "./EffortChip";
 import ModelChip from "./ModelChip";
 import Popover from "./Popover";
 import Logomark, { HARNESS_MARK, PROVIDER_MARK } from "./Logomark";
@@ -365,7 +366,10 @@ export default function Composer(props: ComposerProps) {
          */
         <Show when={model()}>
           {(choice) => (
-            <ModelChip models={models()} choice={choice()} align="end" onChoose={setModelChoice} />
+            <>
+              <ModelChip models={models()} choice={choice()} align="end" onChoose={setModelChoice} />
+              <EffortChip models={models()} choice={choice()} align="end" onChoose={setModelChoice} />
+            </>
           )}
         </Show>
       }

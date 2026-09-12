@@ -11,8 +11,9 @@ import type { HarnessCommand } from "../api/wire";
  * Verbatim rows of what a running harness reports: one command that takes
  * an argument, one that takes none, a plugin-qualified skill, the
  * harness's own `compact`, which flyco routes to its own request instead,
- * and the four the palette drops outright — `context` and `usage` are the
- * ring's panel, `effort` the model chip's, `goal` its own chip.
+ * and the five the palette drops outright — `context` and `usage` are
+ * the ring's panel, `model` the model chip's, `effort` the effort
+ * chip's, `goal` its own chip.
  */
 const COMMANDS: HarnessCommand[] = [
   {

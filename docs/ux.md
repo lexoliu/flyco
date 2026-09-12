@@ -324,7 +324,8 @@ Every chip is both a status readout and the entry point to change it.
 | Chip | Ready | Not ready |
 |---|---|---|
 | Harness | logomark + `Claude Code` (or `Codex`); popover lists the linked agents with the chosen one marked, ending in `Connect another agent` → `/connect/harness` | `+ Connect an agent` → `/connect/harness` |
-| Model | `Fable 5.1 · High`: the model's name and, once one is chosen, the effort after it. The name is the head of the harness's description where it has one (`Fable 5.1 · Most capable…` → `Fable 5.1`; Claude's rows are menu labels like `Default (recommended)`) and the row's label otherwise (`GPT-5.5`). The chip sits at the right of the row beside send, where both official apps keep theirs. The popover lists the agent's own models (`GET /v1/harness-accounts` carries each account's list, as its last session's agent reported it, or flyco's built-in one until then), each with the harness's one-line description, and under the chosen one its effort levels as pills with `Default` first. Choosing a model resets the effort to the model's own default. Switching agents drops the choice, because a Claude id means nothing to Codex | absent until an agent is linked, since there is no list to show |
+| Model | `Fable 5.1`: the model's name. The name is the head of the harness's description where it has one (`Fable 5.1 · Most capable…` → `Fable 5.1`; Claude's rows are menu labels like `Default (recommended)`) and the row's label otherwise (`GPT-5.5`). The chip sits at the right of the row beside send, where both official apps keep theirs. The popover lists the agent's own models (`GET /v1/harness-accounts` carries each account's list, as its last session's agent reported it, or flyco's built-in one until then), each with the harness's one-line description. Choosing a model resets the effort to the model's own default. Switching agents drops the choice, because a Claude id means nothing to Codex | absent until an agent is linked, since there is no list to show |
+| Effort | `High` once chosen, `Effort` while the model's own default stands. The chip sits beside the model's, because the levels are the model's — not every one accepts effort, and the levels differ. The popover is the detented slider the machine picker already teaches (§7.7): the chosen level's name over the rail, the model's name under it, and `Default` as the leftmost stop — the model keeps the choice, the same shape `Auto` has on the machine slider, since not every harness says which level it starts on. Where the harness does say (`default_effort`), the subline names it: `GPT-5.6-Terra · Medium` | absent for a model that names no effort levels |
 | Compute | provider logomark + `B2s · $0.04/hr`; the logomark names the provider, and region, spot, the account and whether flyco or the user chose the type live in the popover — the chip does not say `Auto` or `Chosen`, which is a word about how the choice was made on a row that is for what was chosen. A **managed container** reads `Container · 4 vCPU · 8 GiB · $0.21/hr` instead: `aca-4x8` is flyco's key for a size billed by the second, not a name anybody picked, so the size is what identifies the row — and where the provider covers it out of a monthly allowance the chip ends ` · Free this month`. A machine the user enrolled is a container too and keeps its own hostname, which is the name they gave it. While an account is still being read the chip says `Reading Azure…` and the popover carries the whole sentence | `+ Add compute` → `/connect/compute` |
 | Repository | `owner/name`; popover with a search box, recent repositories first | `Select repository` opens the same popover |
 | Budget | `$10`; popover with a slider (1–200) and the sentence "Covers the machine and its disk. Model tokens are billed by your Claude or Codex plan." | always shown, default `$10` |
@@ -750,11 +751,14 @@ session still has a say over, as the official composers do, left to right:
   boot from the control plane's record rather than the machine's stale
   config). The chip dims until the answer lands, and the transcript
   records the change as one line, `Switched to Plan mode`;
-- the **model chip** of §5, `Fable 5.1 ·
-  High`, whose choice is sent as `PATCH /v1/sessions/{id}` with `model`
-  and reaches the running agent through its room; the chip dims until the
-  answer lands, and the transcript records the change as one line,
-  `Switched to Sonnet 5 · High`;
+- the **model and effort chips** of §5, `Fable
+  5.1` and `High`, two controls where the official apps keep them beside
+  send: the model's a list, the effort's the detented slider, and a list
+  and a scale are different questions asked in different panels. Either
+  choice is sent as `PATCH /v1/sessions/{id}` with `model` — the choice
+  carries the effort — and reaches the running agent through its room;
+  the chips dim until the answer lands, and the transcript records the
+  change as one line, `Switched to Sonnet 5 · High`;
 - the **context ring**, `41k / 200k`, once the harness has reported a
   turn — before that there is nothing to draw. The ring is a control, not
   an ornament: opening it shows the usage panel — the context window's
@@ -782,14 +786,16 @@ session still has a say over, as the official composers do, left to right:
   plan flyco has never asked about is an invention, and a session running
   on an API key has no plan at all and shows no ring ever. Until a context
   window has been reported at all, the fullest plan window stands in for
-  the ring's reading, labelled for what it is;
+  the ring's reading, labelled for what it is. On a row too narrow for
+  every control the readout is what gives way first — the arc still says
+  how full, and the number lives one tap inside the panel;
 - then send, which becomes `Stop` while a turn is in flight.
 
 The island of §5 applies here under the same rule, split along what each
 control is for: when the row cannot hold it, the chips that say where the
 session runs — the machine, the budget, the goal — float above the box
 and stack, while the ones that say what the next turn runs under — the
-mode, the model, the ring — stay beside send inside it. The move is a
+mode, the model, the effort, the ring — stay beside send inside it. The move is a
 move: the chips' live subtree changes parents rather than re-rendering,
 so a popover open mid-crossing rides along and re-anchors to where its
 chip landed.
@@ -805,8 +811,9 @@ browser watching sees the same one; `/archive`; `/resize` — and after them
 everything the running harness reported: `/advisor`, and every skill of
 the checkout, ninety of them on a well-equipped machine. A command a
 control already answers is not listed a second time — the ring's panel is
-the door to `/context` and `/usage`, the model chip's to `/effort`, the
-goal chip's to `/goal` — so the harness's copies of all four are dropped
+the door to `/context` and `/usage`, the model and effort chips' to
+`/model` and `/effort`, the goal chip's to `/goal` — so the harness's
+copies of all five are dropped
 rather than shown, as is the harness's copy of any name flyco owns. The
 list is the harness's own, sent over the relay
 when the agent starts and again whenever it discovers more, so a

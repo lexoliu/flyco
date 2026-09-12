@@ -223,6 +223,7 @@ export default function ContextRing(props: ContextRingProps) {
                 total={view().total}
                 readout={view().readout}
                 hint={view().hint}
+                compact
               />
             )}
           </Show>

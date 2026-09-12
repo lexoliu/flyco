@@ -29,6 +29,14 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Where the row cannot hold every control, the arc still says how full —
+   the number lives one tap inside the panel. */
+@media (max-width: 480px) {
+  .readoutCompact {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .value {
     transition: none;
