@@ -95,49 +95,6 @@
   overflow-y: auto;
 }
 
-/* A machine-bound tab with no machine behind it: not a dead pane, just a
-   note and a way to the one tab that can do something about it. */
-.offline {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  height: 100%;
-  padding: var(--space-4);
-  color: var(--color-text-faint);
-  text-align: center;
-}
-
-.offlineTitle {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
-}
-
-.offlineHint {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-faint);
-}
-
-.offlineGo {
-  margin-top: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-full);
-  background: transparent;
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: color var(--transition-fast), border-color var(--transition-fast);
-}
-
-.offlineGo:hover {
-  color: var(--color-text);
-  border-color: var(--color-text-faint);
-}
-
 @keyframes slide {
   from {
     opacity: 0;

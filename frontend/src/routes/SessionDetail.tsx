@@ -1159,7 +1159,6 @@ export default function SessionDetail() {
           open={drawerOpen()}
           onOpenChange={setDrawerOpen}
           openEnv={envPanelAt()}
-          onOpenMachine={() => requestPanel({ panel: "machine" })}
         />
       </div>
     </section>

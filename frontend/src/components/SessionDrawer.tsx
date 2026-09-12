@@ -10,10 +10,10 @@
  * `Files` and `Diff` are two tabs rather than one because they answer two
  * questions: what is on the disk, and what did the agent change. Both are
  * read live from the machine, and so is the terminal — with no machine
- * there is nothing behind those tabs, so the tabs themselves grey out
- * rather than open on an apology. `Env` stays: the `.env` lives in the
- * control plane. The machine itself is not a tab — its panel hangs off the
- * composer's machine chip, where the readout that names it already is.
+ * there is nothing behind those tabs, so the tabs grey out and selection
+ * moves to one that still answers. `Env` stays lit: the `.env` lives in
+ * the control plane. The machine itself is not a tab — its panel hangs
+ * off the composer's machine chip, where the readout naming it is.
  *
  * `⌘.` (`Ctrl+.` off macOS) toggles it, which is the one keyboard shortcut
  * on the page. On a phone there is no room beside the transcript, so the
@@ -21,7 +21,7 @@
  * toggle is behind it.
  */
 import { For, Match, Show, Switch, createEffect, createSignal, on, onCleanup } from "solid-js";
-import { FileCode2, GitCompare, SlidersHorizontal, TerminalSquare, Unplug, X } from "lucide-solid";
+import { FileCode2, GitCompare, SlidersHorizontal, TerminalSquare, X } from "lucide-solid";
 import DiffPanel from "./DiffPanel";
 import EnvEditor from "./EnvEditor";
 import FilesPanel from "./FilesPanel";
@@ -71,23 +71,23 @@ export interface SessionDrawerProps {
    * would set an unchanged signal and see nothing happen.
    */
   openEnv?: number | undefined;
-  /**
-   * Opens the machine's own panel — the popover on the composer's machine
-   * chip. A notice about the machine owes the user the way to it.
-   */
-  onOpenMachine?: (() => void) | undefined;
 }
 
 export default function SessionDrawer(props: SessionDrawerProps) {
   const open = () => props.open;
   const [tab, setTab] = createSignal<Tab>("terminal");
   /**
-   * A machine-bound tab the machine cannot answer. The tab stays where it
-   * is — selection is the user's — but its body is a notice rather than a
-   * pane that could only apologise.
+   * A disabled tab cannot be the selected one: when the machine leaves,
+   * the tab that was open on it yields to the one that still answers.
    */
-  const offline = () =>
-    props.machineUp === false && TABS.find((entry) => entry.id === tab())?.needsMachine === true;
+  createEffect(() => {
+    if (
+      props.machineUp === false &&
+      TABS.find((entry) => entry.id === tab())?.needsMachine === true
+    ) {
+      setTab("env");
+    }
+  });
 
   createEffect(
     on(
@@ -166,41 +166,23 @@ export default function SessionDrawer(props: SessionDrawerProps) {
           </div>
 
           <div class={styles.body} role="tabpanel">
-            <Show
-              when={!offline()}
-              fallback={
-                <div class={styles.offline}>
-                  <Unplug size={18} aria-hidden="true" />
-                  <p class={styles.offlineTitle}>The machine is not connected</p>
-                  <p class={styles.offlineHint}>This pane answers live — the machine's panel is on its chip below.</p>
-                  <button
-                    type="button"
-                    class={styles.offlineGo}
-                    onClick={() => props.onOpenMachine?.()}
-                  >
-                    Machine
-                  </button>
-                </div>
-              }
-            >
-              <Switch>
-                <Match when={tab() === "terminal"}>
-                  <TerminalPanel sessionId={props.sessionId} relay={props.relay} />
-                </Match>
-                <Match when={tab() === "files"}>
-                  <FilesPanel sessionId={props.sessionId} />
-                </Match>
-                <Match when={tab() === "diff"}>
-                  <DiffPanel
-                    sessionId={props.sessionId}
-                    liveRepoSummary={props.liveRepoSummary}
-                  />
-                </Match>
-                <Match when={tab() === "env"}>
-                  <EnvEditor sessionId={props.sessionId} />
-                </Match>
-              </Switch>
-            </Show>
+            <Switch>
+              <Match when={tab() === "terminal"}>
+                <TerminalPanel sessionId={props.sessionId} relay={props.relay} />
+              </Match>
+              <Match when={tab() === "files"}>
+                <FilesPanel sessionId={props.sessionId} />
+              </Match>
+              <Match when={tab() === "diff"}>
+                <DiffPanel
+                  sessionId={props.sessionId}
+                  liveRepoSummary={props.liveRepoSummary}
+                />
+              </Match>
+              <Match when={tab() === "env"}>
+                <EnvEditor sessionId={props.sessionId} />
+              </Match>
+            </Switch>
           </div>
         </div>
       </div>
