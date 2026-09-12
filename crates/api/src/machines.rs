@@ -1329,13 +1329,21 @@ pub async fn deallocate(db: &Db, machine: MachineId) -> Result<(), ApiError> {
 /// machine, the stall sweep still counts it, and the queue knows the build
 /// is owned by a continuation rather than open for another attempt.
 ///
+/// The write is skipped on a row already running: a redelivered leg hands
+/// back `Pending` while its sibling's `Ready` has already landed, and
+/// writing the pending row's shorter native id over the resolved one
+/// would leave a running machine naming only its job until the next leg
+/// rewrote it.
+///
 /// # Errors
 ///
 /// Returns [`ApiError`] if the database fails.
 pub async fn record_pending(db: &Db, machine: &flyco_provider::Machine) -> Result<(), ApiError> {
+    let running = MachineState::Running;
     sql!(
         db,
-        "UPDATE machines SET native_id = {machine.native_id.clone()} WHERE id = {machine.id}"
+        "UPDATE machines SET native_id = {machine.native_id.clone()} \
+         WHERE id = {machine.id} AND state != {running}"
     )
     .execute()
     .await?;

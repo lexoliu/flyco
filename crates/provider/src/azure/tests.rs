@@ -46,8 +46,8 @@ use crate::http::{HttpRequest, HttpResponse, Method};
 use crate::polling::{MAX_POLL_ATTEMPTS, POLLS_PER_INVOCATION};
 use crate::testing::{RecordedTransport, RecordingTimer};
 use crate::{
-    CapacityMode, ClaudeCredential, CloudProvider, DaemonBootstrap, HarnessCredential, Machine,
-    ProviderError, ProvisionRequest, Provisioning,
+    CapacityMode, ClaudeCredential, CloudProvider, Continuation, DaemonBootstrap,
+    HarnessCredential, Machine, ProviderError, ProvisionRequest, Provisioning,
 };
 
 const SUBSCRIPTION: &str = "e47d07d8-2715-4909-aa56-1bfde801bdf0";
@@ -1241,10 +1241,65 @@ fn not_found() -> HttpResponse {
     )
 }
 
+/// The `409` a job answers a write with while an earlier write to it is
+/// still being carried out.
+fn job_busy() -> HttpResponse {
+    json(
+        409,
+        r#"{"error":{"code":"ContainerAppsJobOperationInProgress","message":"Cannot modify a container apps job 'flyco-job' because there is an active provisioning operation in progress."}}"#,
+    )
+}
+
+/// What `GET …/jobs/{job}` answers for a job whose last write is in
+/// `state`, trimmed to what the driver reads.
+fn job_record(state: &str) -> HttpResponse {
+    json(
+        200,
+        &serde_json::to_string(&serde_json::json!({
+            "id": format!(
+                "/subscriptions/{SUBSCRIPTION}/resourceGroups/{RESOURCE_GROUP}\
+                 /providers/Microsoft.App/jobs/flyco-job"
+            ),
+            "properties": { "provisioningState": state },
+        }))
+        .expect("serialize"),
+    )
+}
+
+/// What `GET …/jobs/{job}/executions` answers: `(name, status, startTime)`
+/// per execution it lists.
+fn executions(records: &[(&str, &str, &str)]) -> HttpResponse {
+    let value: Vec<serde_json::Value> = records
+        .iter()
+        .map(|(name, status, start_time)| {
+            serde_json::json!({
+                "name": name,
+                "properties": { "status": status, "startTime": start_time },
+            })
+        })
+        .collect();
+    json(
+        200,
+        &serde_json::to_string(&serde_json::json!({ "value": value })).expect("serialize"),
+    )
+}
+
+/// A start time stamped on the older of two executions.
+const STARTED_AT: &str = "2026-08-29T11:00:00Z";
+/// And on the younger.
+const STARTED_LATER: &str = "2026-08-29T11:01:00Z";
+
+/// The executions list a clean run's convergence check reads: the one the
+/// start just named, running.
+fn one_running_execution() -> HttpResponse {
+    executions(&[(EXECUTION, "Running", STARTED_AT)])
+}
+
 /// The responses a clean container provisioning run on a fresh region
 /// consumes, in order: the token, the policy read, the provider-registration
 /// read (already registered), the environment read (none yet), the
-/// environment `PUT`, the job `PUT`, and the start.
+/// environment `PUT`, the job `PUT`, the start, and the executions list
+/// the convergence check reads before reporting the machine.
 fn container_script() -> Vec<HttpResponse> {
     vec![
         token(),
@@ -1254,6 +1309,7 @@ fn container_script() -> Vec<HttpResponse> {
         done(),
         done(),
         started(EXECUTION),
+        one_running_execution(),
     ]
 }
 
@@ -1377,6 +1433,7 @@ async fn an_unregistered_subscription_is_registered_for_container_apps_before_th
         done(),
         done(),
         started(EXECUTION),
+        one_running_execution(),
     ]);
 
     let machine = azure
@@ -1487,6 +1544,7 @@ async fn an_environment_still_being_built_is_waited_for_rather_than_written_over
         environment_record("Succeeded"),
         done(),
         started(EXECUTION),
+        one_running_execution(),
     ]);
 
     let machine = azure
@@ -1523,6 +1581,7 @@ async fn a_failed_environment_is_written_again() {
         done(),
         done(),
         started(EXECUTION),
+        one_running_execution(),
     ]);
 
     azure
@@ -1711,17 +1770,23 @@ async fn a_size_flyco_never_offered_is_refused_before_any_write() {
 }
 
 #[tokio::test]
-async fn a_redelivered_provision_updates_the_job_and_starts_another_execution() {
-    // At-least-once delivery: the same request twice. Both `PUT`s are
-    // create-or-update against the same name, so the second is an update
-    // rather than a conflict — suppressing the duplicate start is the
-    // control plane's gate on a machine row that is already running.
+async fn a_redelivered_provision_converges_on_the_execution_already_running() {
+    // At-least-once delivery: the same request twice, the second landing
+    // after the first finished. Its `PUT` is a create-or-update no-op and
+    // its start names a second execution — which the convergence check
+    // stops, because the earliest live execution is the machine and a
+    // second one beside it is a duplicate, not a machine.
     let id = MachineId::generate();
     let mut script = container_script();
     script.extend([
         environment_record("Succeeded"),
         done(),
         started(NEXT_EXECUTION),
+        executions(&[
+            (EXECUTION, "Running", STARTED_AT),
+            (NEXT_EXECUTION, "Running", STARTED_LATER),
+        ]),
+        done(),
     ]);
     let mut azure = provider(script);
     let request = container_request(id, CONTAINER_TYPE);
@@ -1740,12 +1805,144 @@ async fn a_redelivered_provision_updates_the_job_and_starts_another_execution() 
     let transport = azure.transport();
     assert_eq!(
         transport.request(JOB_PUT).url,
-        transport.request(JOB_PUT + 3).url,
+        transport.request(JOB_PUT + 4).url,
         "the same machine is the same job"
     );
-    assert_eq!(transport.request(JOB_PUT + 3).method, Method::Put);
-    assert_ne!(first.native_id, second.native_id);
-    assert!(second.native_id.ends_with(NEXT_EXECUTION));
+    assert_eq!(transport.request(JOB_PUT + 4).method, Method::Put);
+    assert_eq!(
+        first.native_id, second.native_id,
+        "both legs report the execution already running, not the duplicate"
+    );
+    assert_eq!(
+        transport.request(JOB_PUT + 7).url,
+        format!(
+            "https://management.azure.com/subscriptions/{SUBSCRIPTION}\
+             /resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.App/jobs/{}\
+             /executions/{NEXT_EXECUTION}/stop?api-version=2025-07-01",
+            containers::names::job(id)
+        ),
+        "the duplicate execution is stopped"
+    );
+}
+
+#[tokio::test]
+async fn a_redelivered_provision_whose_write_collides_joins_the_build() {
+    // The second delivery arrived while the first leg's `PUT` was still
+    // being carried out — a live session hit exactly this when a queue
+    // redelivery ran beside a build still inside its environment write.
+    // Azure refuses the second write as `ContainerAppsJobOperationInProgress`;
+    // the leg hands back a join rather than a failure.
+    let id = MachineId::generate();
+    let job = containers::names::job(id);
+    let mut script = container_script();
+    script[JOB_PUT] = job_busy();
+    script.truncate(JOB_PUT + 1);
+    let mut azure = provider(script);
+
+    let Provisioning::Pending {
+        machine,
+        continuation,
+    } = azure
+        .provision(&container_request(id, CONTAINER_TYPE))
+        .await
+        .expect("a collided write is joined, not failed")
+    else {
+        panic!("a collided write joins the build rather than failing");
+    };
+    assert_eq!(machine.native_id, job);
+    assert_eq!(machine.state, MachineState::Provisioning);
+    let state: containers::StartInProgress = continuation
+        .read()
+        .expect("the continuation names the job to join");
+    assert_eq!(state.job, job);
+    assert_eq!(
+        state.follow, None,
+        "there is no start to follow: what carries on is a join"
+    );
+    assert_eq!(
+        azure.transport().request_count(),
+        JOB_PUT + 1,
+        "the leg stops at the refused write"
+    );
+}
+
+#[tokio::test]
+async fn a_joined_build_reports_the_execution_its_sibling_started() {
+    // The carrying leg waits out the job's write, finds the execution the
+    // sibling's start named already running, and reports it.
+    let id = MachineId::generate();
+    let job = containers::names::job(id);
+    let machine = Machine {
+        native_id: job.clone(),
+        state: MachineState::Provisioning,
+        ..provisioned_container(id)
+    };
+    let continuation =
+        Continuation::write(&containers::StartInProgress { job, follow: None }).expect("write");
+    let mut azure = provider(vec![
+        token(),
+        job_record("InProgress"),
+        job_record("Succeeded"),
+        one_running_execution(),
+        one_running_execution(),
+    ]);
+
+    let resumed = azure.resume(&machine, &continuation).await.expect("resume");
+
+    assert_eq!(resumed, Provisioning::Ready(provisioned_container(id)));
+    let transport = azure.transport();
+    assert_eq!(
+        transport.request(3).url,
+        format!(
+            "https://management.azure.com/subscriptions/{SUBSCRIPTION}\
+             /resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.App/jobs/{}\
+             /executions?api-version=2025-07-01",
+            containers::names::job(id)
+        ),
+        "the join reads the job's executions"
+    );
+}
+
+#[tokio::test]
+async fn a_joined_build_whose_sibling_died_starts_the_execution_itself() {
+    // The sibling leg died between writing the job and starting it: the
+    // executions list stays empty past the grace polls, so the joining leg
+    // stands in and starts the machine.
+    let id = MachineId::generate();
+    let job = containers::names::job(id);
+    let machine = Machine {
+        native_id: job.clone(),
+        state: MachineState::Provisioning,
+        ..provisioned_container(id)
+    };
+    let continuation =
+        Continuation::write(&containers::StartInProgress { job, follow: None }).expect("write");
+    let mut azure = provider(vec![
+        token(),
+        job_record("Succeeded"),
+        executions(&[]),
+        executions(&[]),
+        executions(&[]),
+        executions(&[]),
+        started(EXECUTION),
+        one_running_execution(),
+    ]);
+
+    let resumed = azure.resume(&machine, &continuation).await.expect("resume");
+
+    assert_eq!(resumed, Provisioning::Ready(provisioned_container(id)));
+    let transport = azure.transport();
+    assert_eq!(
+        transport.request(6).method,
+        Method::Post,
+        "past the grace polls the leg starts the execution itself"
+    );
+    assert!(
+        transport.request(6).url.ends_with(&format!(
+            "/jobs/{}/start?api-version=2025-07-01",
+            containers::names::job(id)
+        ))
+    );
 }
 
 #[tokio::test]
@@ -1936,8 +2133,14 @@ async fn a_container_whose_execution_outlives_the_polling_budget_is_handed_back_
         start_accepted(),
     ];
     script.extend((0..POLLS_PER_INVOCATION).map(|_| still_starting()));
-    // The resumed call: two more polls, then the execution.
-    script.extend([still_starting(), still_starting(), started(EXECUTION)]);
+    // The resumed call: two more polls, then the execution — and the
+    // executions list the convergence check reads before reporting it.
+    script.extend([
+        still_starting(),
+        still_starting(),
+        started(EXECUTION),
+        one_running_execution(),
+    ]);
     let mut azure = provider(script);
 
     let Provisioning::Pending {
@@ -1972,8 +2175,8 @@ async fn a_container_whose_execution_outlives_the_polling_budget_is_handed_back_
     );
     assert_eq!(
         azure.transport().request_count(),
-        JOB_START + 1 + POLLS_PER_INVOCATION + 3,
-        "resuming polls the operation and nothing else: no token, no job PUT"
+        JOB_START + 1 + POLLS_PER_INVOCATION + 4,
+        "resuming polls the operation and reads the executions list once: no token, no job PUT"
     );
     let poll = azure.transport().request(JOB_START + 1);
     assert_eq!(poll.method, Method::Get);
