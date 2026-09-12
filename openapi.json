@@ -4733,7 +4733,7 @@
     "/v1/sessions/{id}/context": {
       "post": {
         "summary": "Reports what a session's context window is spent on.",
-        "description": "Reports what a session's context window is spent on.\n\nflyco's `/context`: a control request the daemon answers out of band —\nthe Claude sidecar's `get_context_usage`, or the window gauge a Codex\nsession already holds — never a message to the model. The answer\narrives on the session relay as a `context_usage` harness event.",
+        "description": "Reports what a session's context window is spent on.\n\nWhat the usage panel's \"detailed breakdown\" asks for: a control request\nthe daemon answers out of band —\nthe Claude sidecar's `get_context_usage`, or the window gauge a Codex\nsession already holds — never a message to the model. The answer\narrives on the session relay as a `context_usage` harness event.",
         "operationId": "flyco_api::app::context_session",
         "parameters": [
           {

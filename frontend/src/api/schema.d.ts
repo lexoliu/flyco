@@ -1334,7 +1334,8 @@ export interface paths {
          * Reports what a session's context window is spent on.
          * @description Reports what a session's context window is spent on.
          *
-         *     flyco's `/context`: a control request the daemon answers out of band —
+         *     What the usage panel's "detailed breakdown" asks for: a control request
+         *     the daemon answers out of band —
          *     the Claude sidecar's `get_context_usage`, or the window gauge a Codex
          *     session already holds — never a message to the model. The answer
          *     arrives on the session relay as a `context_usage` harness event.

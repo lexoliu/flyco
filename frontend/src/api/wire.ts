@@ -38,7 +38,7 @@ export type UsageWindow = components["schemas"]["UsageWindow"];
 export type MessageOrigin = "user" | "flyco";
 
 /**
- * One thing occupying the context window, as a `/context` answer lists it.
+ * One thing occupying the context window, as a `context_usage` answer lists it.
  *
  * Mirrors `flyco_core::harness::ContextCost` (WS-only, no OpenAPI schema):
  * one shape for every section the harness reports — a usage category, an
@@ -52,7 +52,8 @@ export interface ContextCost {
 }
 
 /**
- * What the context window is spent on — the answer to `/context`.
+ * What the context window is spent on — the answer to a `context_usage`
+ * control request, which the usage panel's "detailed breakdown" sends.
  *
  * Mirrors `flyco_core::harness::ContextUsage` exactly. `model`, `window`
  * and `auto_compact` are absent rather than `null`, matching serde's

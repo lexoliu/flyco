@@ -655,7 +655,8 @@ pub enum ControlToDaemon {
     Compact,
     /// Ask the harness what its context window is spent on.
     ///
-    /// flyco's own `/context`: a query, not a prompt. The harness answers
+    /// The usage panel's "detailed breakdown" sends this: a query, not a
+    /// prompt. The harness answers
     /// it out of band — the Claude SDK's `get_context_usage` control
     /// request; Codex from the token readings its stream already carries —
     /// and the answer comes back as

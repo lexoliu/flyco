@@ -626,8 +626,9 @@ is one quiet row, the way the official apps' is; the status is read off
 the transcript (§6), and the machine, the budget and the context window
 are the composer's row (§9.3), where they are acted on.
 
-The budget is a control and the context reading is not: one of the
-budget's two numbers is something the user set. The composer's budget chip
+The budget and the context ring are both controls: one of the budget's two
+numbers is something the user set, and the ring opens the usage panel the
+readings are explained in. The composer's budget chip
 (`$1.20 / $10`) opens the same slider the home composer's does, floored at
 the first whole dollar above what the session has already spent, and an
 explicit `Set budget to $25` commits it. That is the only way out of
@@ -729,18 +730,25 @@ session still has a say over, as the official composers do, left to right:
   answer lands, and the transcript records the change as one line,
   `Switched to Sonnet 5 · High`;
 - the **context ring**, `41k / 200k`, once the harness has reported a
-  turn — before that there is nothing to draw;
-- one **plan ring per rolling limit window**, shortest window first —
-  `5-hour` at `26%`, then `Weekly`, then any window the vendor scopes to
-  one model (`Weekly (Fable)`) — each naming its turnover in its tooltip,
-  `5-hour: 26% · Resets in 2h 10m`. Read from the harness itself (the
-  Claude Agent SDK's usage call, Codex's `account/rateLimits/read` and the
-  `updated` notification it pushes) at session start and again after every
-  turn, so "how much of my plan is left" has an answer before the limit is
-  hit rather than a `Usage limit` notice after it. Nothing is drawn until a
-  harness has answered: a ring at zero over a plan flyco has never asked
-  about is an invention, and a session running on an API key has no plan at
-  all and shows no rings ever;
+  turn — before that there is nothing to draw. The ring is a control, not
+  an ornament: opening it shows the usage panel — the context window's
+  fill, the fill at which the harness compacts on its own
+  (`Compacts automatically at 80%`), and the plan's rolling windows beside
+  it, shortest first, each with its turnover (`5-hour · Resets in 2h 10m ·
+  26%`). The plan is read from the harness itself (the Claude Agent SDK's
+  usage call, Codex's `account/rateLimits/read` and the `updated`
+  notification it pushes) at session start and again after every turn, so
+  "how much of my plan is left" has an answer before the limit is hit
+  rather than a `Usage limit` notice after it. The panel ends with `See
+  the detailed breakdown`, which is what a `/context` command would have
+  been: a control request the daemon answers out of band, whose breakdown
+  lands in the transcript as a card — one category per row, then the MCP
+  tools, memory files, agents and skills, each with its deferred weight.
+  Nothing is drawn until a harness has answered: a ring at zero over a
+  plan flyco has never asked about is an invention, and a session running
+  on an API key has no plan at all and shows no ring ever. Until a context
+  window has been reported at all, the fullest plan window stands in for
+  the ring's reading, labelled for what it is;
 - then send, which becomes `Stop` while a turn is in flight.
 
 The composer sits at the foot of the window even when the transcript is
@@ -748,20 +756,18 @@ three lines long: the page is at least a window tall, and the composer is
 pushed to its bottom, where the hands already expect it.
 
 `/` opens a command palette listing what the session can actually be told
-to do. Flyco's own four come first, marked `flyco` — `/compact`, which is
+to do. Flyco's own three come first, marked `flyco` — `/compact`, which is
 the control plane's compaction request rather than a message, so every
-browser watching sees the same one; `/context`, likewise a control request
-the daemon answers out of band, whose breakdown lands in the transcript as
-a card beside the plan's windows rather than as model prose; `/archive`;
-`/resize` — and after them everything the running harness reported: `/goal`,
-`/effort`, `/usage`, `/advisor`, and every skill of the checkout, ninety of
-them on a well-equipped machine. A harness's own `/context` or `/usage` is
-the CLI's rendering of the same answer, so the palette drops the harness's
-copy of any name flyco owns rather than listing it twice. The list is the
-harness's own, sent over the relay when the agent starts and again whenever
-it discovers more, so a repository that adds a skill has it in the palette
-without a reload. Until the machine has reported one, the four are all
-there is.
+browser watching sees the same one; `/archive`; `/resize` — and after them
+everything the running harness reported: `/goal`, `/effort`, `/usage`,
+`/advisor`, and every skill of the checkout, ninety of them on a
+well-equipped machine. Context is not a command at all — the ring beside
+send is its door — so the harness's own `/context`, the CLI's rendering of
+the same panel, is dropped rather than shown, as is the harness's copy of
+any name flyco owns. The list is the harness's own, sent over the relay
+when the agent starts and again whenever it discovers more, so a
+repository that adds a skill has it in the palette without a reload. Until
+the machine has reported one, the three are all there is.
 
 Typing after the slash filters by prefix on the name; each row shows the
 name, the argument it expects, and the harness's one-line description,

@@ -51,3 +51,22 @@ export function resetHint(window: UsageWindow, now: number): string | undefined 
   const seconds = resets - Math.floor(now / 1000);
   return seconds <= 0 ? "Resets now" : `Resets in ${formatDuration(seconds)}`;
 }
+
+/** How full a window has to be before the bar says so in colour. */
+const WARN_PERCENT = 80;
+const FINAL_WARN_PERCENT = 95;
+
+/**
+ * The colour tier a fullness is drawn at.
+ *
+ * Colour only as the window runs out, which is the whole colour policy in
+ * docs/ux.md §2: colour means something is wrong, never that something
+ * exists. Shared by the settings account page and the composer's usage
+ * panel, which draw the same windows the same way.
+ */
+export function windowTier(percent: number): "ok" | "warn" | "final-warn" {
+  if (percent >= FINAL_WARN_PERCENT) {
+    return "final-warn";
+  }
+  return percent >= WARN_PERCENT ? "warn" : "ok";
+}

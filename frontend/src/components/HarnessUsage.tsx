@@ -23,13 +23,9 @@ import type { LlmUsageRow } from "../api/client";
 import type { UsageWindow } from "../api/wire";
 import { formatDate } from "../lib/dates";
 import { formatUsd } from "../lib/money";
-import { orderedWindows, resetHint } from "../lib/planUsage";
+import { orderedWindows, resetHint, windowTier } from "../lib/planUsage";
 import { relativeTime } from "../lib/relativeTime";
 import styles from "./HarnessUsage.module.css";
-
-/** How full a window has to be before the bar says so in colour. */
-const WARN_PERCENT = 80;
-const FINAL_WARN_PERCENT = 95;
 
 export interface HarnessUsageProps {
   /** The account's observed-usage row, or `undefined` while it has none. */
@@ -63,7 +59,7 @@ export default function HarnessUsage(props: HarnessUsageProps) {
             label={window.label}
             ratio={window.used_percent / 100}
             value={readout(window, now)}
-            tier={tier(window.used_percent)}
+            tier={windowTier(window.used_percent)}
           />
         )}
       </For>
@@ -96,16 +92,4 @@ export default function HarnessUsage(props: HarnessUsageProps) {
 function readout(window: UsageWindow, now: number): string {
   const hint = resetHint(window, now);
   return hint === undefined ? `${window.used_percent}%` : `${window.used_percent}% · ${hint}`;
-}
-
-/**
- * Colour only as the window runs out, which is the whole colour policy in
- * docs/ux.md §2: colour means something is wrong, never that something
- * exists.
- */
-function tier(percent: number): "ok" | "warn" | "final-warn" {
-  if (percent >= FINAL_WARN_PERCENT) {
-    return "final-warn";
-  }
-  return percent >= WARN_PERCENT ? "warn" : "ok";
 }

@@ -231,8 +231,9 @@ export type TranscriptItem =
     }
   | {
       /**
-       * The context-window breakdown answering flyco's `/context` — the
-       * session's own panel, not a harness reply (docs/ux.md §9.3).
+       * The context-window breakdown answering the usage panel's
+       * "detailed breakdown" — the session's own card, not a harness
+       * reply (docs/ux.md §9.3).
        */
       kind: "context";
       key: string;

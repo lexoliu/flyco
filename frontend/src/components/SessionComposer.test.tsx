@@ -9,8 +9,10 @@ import type { HarnessCommand } from "../api/wire";
 
 /**
  * Verbatim rows of what a running harness reports: one command that takes
- * an argument, one that takes none, a plugin-qualified skill, and the
- * harness's own `compact`, which flyco routes to its own request instead.
+ * an argument, one that takes none, a plugin-qualified skill, the
+ * harness's own `compact`, which flyco routes to its own request instead,
+ * and the harness's own `context`, which the palette drops outright —
+ * the usage ring beside send is the only door to that panel.
  */
 const COMMANDS: HarnessCommand[] = [
   {
@@ -27,6 +29,11 @@ const COMMANDS: HarnessCommand[] = [
     name: "compact",
     description: "Free up context by summarizing the conversation so far",
     argument_hint: "<optional custom summarization instructions>",
+  },
+  {
+    name: "context",
+    description: "Visualize current context usage as a colored grid",
+    argument_hint: null,
   },
   {
     name: "presence:status",
@@ -109,20 +116,16 @@ describe("SessionComposer", () => {
 });
 
 describe("the palette's rows", () => {
-  it("puts flyco's own first and drops the harness's copy of them", () => {
+  it("puts flyco's own first and drops the harness's copies of what it owns", () => {
     const rows = paletteEntries(COMMANDS);
-    expect(rows.slice(0, 4).map((row) => row.name)).toEqual([
-      "compact",
-      "context",
-      "archive",
-      "resize",
-    ]);
+    expect(rows.slice(0, 3).map((row) => row.name)).toEqual(["compact", "archive", "resize"]);
     expect(rows.filter((row) => row.name === "compact")).toHaveLength(1);
-    expect(rows.filter((row) => row.name === "context")).toHaveLength(1);
+    // `/context` is not a command at all — the usage ring is its door — so
+    // neither flyco's nor the harness's row may appear.
+    expect(rows.filter((row) => row.name === "context")).toHaveLength(0);
     expect(rows[0]?.run).toBe("compact");
     expect(rows.map((row) => row.name)).toEqual([
       "compact",
-      "context",
       "archive",
       "resize",
       "goal",
@@ -132,12 +135,7 @@ describe("the palette's rows", () => {
   });
 
   it("shows only flyco's own until the harness has reported a list", () => {
-    expect(paletteEntries([]).map((row) => row.name)).toEqual([
-      "compact",
-      "context",
-      "archive",
-      "resize",
-    ]);
+    expect(paletteEntries([]).map((row) => row.name)).toEqual(["compact", "archive", "resize"]);
   });
 
   it("opens on a slash and closes once an argument is being typed", () => {
@@ -155,7 +153,7 @@ describe("the palette", () => {
     const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
 
     type(field, "/");
-    expect(getAllByRole("option")).toHaveLength(7);
+    expect(getAllByRole("option")).toHaveLength(6);
 
     type(field, "/eff");
     const rows = getAllByRole("option");
@@ -206,11 +204,10 @@ describe("the palette", () => {
     press(field, "ArrowDown");
     press(field, "ArrowDown");
     press(field, "ArrowDown");
-    press(field, "ArrowDown");
-    expect(getAllByRole("option")[4]?.getAttribute("aria-selected")).toBe("true");
+    expect(getAllByRole("option")[3]?.getAttribute("aria-selected")).toBe("true");
 
     press(field, "ArrowUp");
-    expect(getAllByRole("option")[3]?.getAttribute("aria-selected")).toBe("true");
+    expect(getAllByRole("option")[2]?.getAttribute("aria-selected")).toBe("true");
 
     press(field, "Enter");
     expect(props.onCommand).toHaveBeenCalledWith("resize");

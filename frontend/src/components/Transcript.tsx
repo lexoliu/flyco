@@ -107,7 +107,7 @@ export interface TranscriptProps {
    */
   stoppedAtUnix: number | null;
   /**
-   * The plan's rolling windows, for the `/context` card's Plan section.
+   * The plan's rolling windows, for the context card's Plan section.
    *
    * The card answers "what is the window spent on" and "how much of the
    * plan is spent" together, because the two questions are one in the
@@ -674,7 +674,7 @@ function ApprovalCard(props: {
 }
 
 /**
- * A `/context` answer as a card (docs/ux.md §9.3).
+ * A `context_usage` answer as a card (docs/ux.md §9.3).
  *
  * Two halves, in the order the questions come to a reader: what the
  * context window is spent on — the fill, then what fills it — and how much

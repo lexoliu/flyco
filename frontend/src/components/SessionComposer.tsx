@@ -11,8 +11,8 @@
  *   only useful thing to do to a running turn is end it;
  * - `/` opens a command palette listing flyco's own session actions and
  *   then everything the running harness said it offers, so `/goal`,
- *   `/effort`, `/context` and every skill of the checkout are reachable
- *   without knowing they exist;
+ *   `/effort` and every skill of the checkout are reachable without
+ *   knowing they exist;
  * - a message beginning with `!` runs in the machine's bash, and the field
  *   says so while one is being typed rather than after it is sent.
  */
@@ -26,7 +26,7 @@ import styles from "./Composer.module.css";
 import sessionStyles from "./SessionComposer.module.css";
 
 /** The session-level actions flyco runs itself (docs/ux.md §9.3). */
-export type SessionCommand = "compact" | "context" | "archive" | "resize";
+export type SessionCommand = "compact" | "archive" | "resize";
 
 /** One row of the palette. */
 interface PaletteEntry {
@@ -54,12 +54,10 @@ interface PaletteEntry {
  * Flyco's own commands, which come first and are marked as flyco's.
  *
  * They are not the harness's: `/archive` and `/resize` are things flyco
- * does to a machine, `/compact` is routed to the control plane's own
+ * does to a machine, and `/compact` is routed to the control plane's own
  * compaction request rather than typed at the agent so that one browser
- * pressing it is a compaction every browser can see, and `/context` asks
- * the daemon for the window's breakdown out of band — the harness's own
- * `/context` draws the CLI's version of the panel, so the harness's copy
- * is dropped rather than shown twice.
+ * pressing it is a compaction every browser can see. Context usage is not
+ * a command at all — the ring beside send is its door (docs/ux.md §9.3).
  */
 const FLYCO_COMMANDS: readonly (PaletteEntry & { run: SessionCommand })[] = [
   {
@@ -67,12 +65,6 @@ const FLYCO_COMMANDS: readonly (PaletteEntry & { run: SessionCommand })[] = [
     description: "Summarise the conversation to free context",
     argumentHint: null,
     run: "compact",
-  },
-  {
-    name: "context",
-    description: "Show what the context window and the plan are spent on",
-    argumentHint: null,
-    run: "context",
   },
   {
     name: "archive",
@@ -89,6 +81,16 @@ const FLYCO_COMMANDS: readonly (PaletteEntry & { run: SessionCommand })[] = [
 ];
 
 const FLYCO_NAMES: ReadonlySet<string> = new Set(FLYCO_COMMANDS.map((entry) => entry.name));
+
+/**
+ * Harness commands the palette never shows even when reported.
+ *
+ * `/context` is the harness's own version of the panel the usage ring
+ * already opens — a second door that types a command flyco has no row for
+ * is worse than none, so the harness's copy is dropped rather than shown
+ * beside the ring it duplicates (docs/ux.md §9.3).
+ */
+const DROPPED_COMMANDS: ReadonlySet<string> = new Set(["context"]);
 
 /**
  * What the field holds while a command is being picked, or `null` when the
@@ -112,7 +114,9 @@ export function paletteEntries(commands: readonly HarnessCommand[]): PaletteEntr
   return [
     ...FLYCO_COMMANDS,
     ...commands
-      .filter((command) => !FLYCO_NAMES.has(command.name))
+      .filter(
+        (command) => !FLYCO_NAMES.has(command.name) && !DROPPED_COMMANDS.has(command.name),
+      )
       .map((command) => ({
         name: command.name,
         description: command.description,
@@ -210,7 +214,7 @@ export default function SessionComposer(props: SessionComposerProps) {
   /**
    * Runs one row, or writes it into the field when it wants an argument.
    *
-   * The split is the whole point of `argumentHint`: `/context` has nothing
+   * The split is the whole point of `argumentHint`: `/archive` has nothing
    * left to ask, so choosing it is sending it, while `/goal` without its
    * condition would be a command that means nothing.
    */

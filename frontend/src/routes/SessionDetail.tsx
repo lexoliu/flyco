@@ -14,7 +14,6 @@
  */
 import { useNavigate, useParams } from "@solidjs/router";
 import {
-  For,
   Match,
   Show,
   Switch,
@@ -32,7 +31,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import ModelChip from "../components/ModelChip";
 import ProblemNotice from "../components/ProblemNotice";
 import { useReadiness } from "../components/Readiness";
-import Ring from "../components/Ring";
+import ContextRing from "../components/ContextRing";
 import SessionComposer, { type SessionCommand } from "../components/SessionComposer";
 import SessionDrawer from "../components/SessionDrawer";
 import SessionHeader from "../components/SessionHeader";
@@ -55,16 +54,15 @@ import {
   type ModelOption,
 } from "../api/client";
 import { ApiProblem } from "../api/problem";
-import type { ContextWindow, UsageWindow } from "../api/wire";
+import type { ContextUsage, ContextWindow, UsageWindow } from "../api/wire";
 import { createSessionRelay } from "../api/relay";
 import type { HarnessCommand } from "../api/wire";
 import { formatTimeOfDay } from "../lib/dates";
 import { PROVIDER_LABEL } from "../lib/providers";
 import { machineChip } from "../lib/machines";
-import { orderedWindows, resetHint } from "../lib/planUsage";
+import { orderedWindows } from "../lib/planUsage";
 import { dollarsToUsdMicros, usdMicrosToDollars } from "../lib/money";
 import { shellCommandIn } from "../lib/shell";
-import { tokens } from "../lib/tokens";
 import {
   REFUSING,
   deriveStatus,
@@ -313,7 +311,8 @@ export default function SessionDetail() {
    *
    * Three frames carry a window reading, newest wins: a `usage` report, a
    * completed turn's usage, and a `context_usage` answer — the last of
-   * which is what makes the ring move when `/context` is asked mid-turn.
+   * which is what makes the ring move when a breakdown is asked for
+   * mid-turn.
    */
   const latestContext = createMemo((): ContextWindow | null => {
     const events = relay.events();
@@ -339,6 +338,30 @@ export default function SessionDetail() {
         harness.usage.context !== undefined
       ) {
         return harness.usage.context;
+      }
+    }
+    return null;
+  });
+
+  /**
+   * The newest `context_usage` answer itself, where one has been asked for.
+   *
+   * `latestContext` above keeps only the window out of it; the usage
+   * panel's compaction threshold and category bar need the whole frame,
+   * which is what this hands them. `null` until a breakdown has been
+   * requested once this page — and that is the honest state, not a
+   * loading skeleton: the panel draws what it has.
+   */
+  const latestContextUsage = createMemo((): ContextUsage | null => {
+    const events = relay.events();
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const entry = events[i];
+      if (
+        entry !== undefined &&
+        entry.event.type === "harness" &&
+        entry.event.event.type === "context_usage"
+      ) {
+        return entry.event.event.usage;
       }
     }
     return null;
@@ -566,22 +589,28 @@ export default function SessionDetail() {
     );
   }
 
+  /**
+   * Asks the daemon what the context window holds.
+   *
+   * The usage panel's "detailed breakdown" is the only caller — there is
+   * no `/context` in the palette; the ring is the door (docs/ux.md §9.3).
+   * The question goes to the daemon, never to the model, and its answer
+   * comes back on the relay as a `context_usage` event, which the
+   * transcript draws as the context card.
+   */
+  function requestContextBreakdown(): void {
+    void overRelay(
+      () => relay.send({ type: "context_usage" }),
+      () => contextSession(params.id),
+    );
+  }
+
   function onCommand(command: SessionCommand): void {
     switch (command) {
       case "compact":
         void overRelay(
           () => relay.send({ type: "compact" }),
           () => compactSession(params.id),
-        );
-        break;
-      case "context":
-        // flyco's own `/context`: a question to the daemon about what the
-        // window holds, never text for the model. The answer comes back on
-        // the relay as a `context_usage` event and lands in the transcript
-        // as the context card.
-        void overRelay(
-          () => relay.send({ type: "context_usage" }),
-          () => contextSession(params.id),
         );
         break;
       case "archive":
@@ -1050,39 +1079,22 @@ export default function SessionDetail() {
                       )}
                     </Show>
                     {/*
-                      Only once the harness has reported a turn. Before that
-                      there is no context to show, and a ring drawn empty
-                      beside an em dash is a shape the eye stops on to learn
-                      nothing.
+                      The usage ring, beside send, where the official
+                      composers keep it: how full the context window is,
+                      and one tap opens the panel with the plan windows
+                      beside it (docs/ux.md §9.3). Nothing is drawn until a
+                      harness has reported something — a ring at zero over
+                      a context flyco has never been told is an invention.
                     */}
-                    <Show when={latestContext()}>
-                      {(context) => (
-                        <Ring
-                          label="Context"
-                          value={context().used_tokens}
-                          total={context().size_tokens}
-                          readout={`${tokens(context().used_tokens)} / ${tokens(context().size_tokens)}`}
-                        />
-                      )}
+                    <Show when={latestContext() !== null || planUsage().length > 0}>
+                      <ContextRing
+                        context={latestContext()}
+                        usage={latestContextUsage()}
+                        windows={planUsage()}
+                        now={now()}
+                        onBreakdown={requestContextBreakdown}
+                      />
                     </Show>
-                    {/*
-                      What is left of the plan, beside the context ring and
-                      on the same terms: nothing is drawn until a harness
-                      has reported, because a ring at zero over a plan flyco
-                      has never asked about is an invention (docs/ux.md
-                      §9.3).
-                    */}
-                    <For each={planUsage()}>
-                      {(window) => (
-                        <Ring
-                          label={window.label}
-                          value={window.used_percent}
-                          total={100}
-                          readout={`${window.used_percent}%`}
-                          hint={resetHint(window, now())}
-                        />
-                      )}
-                    </For>
                   </>
                 }
               />
