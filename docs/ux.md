@@ -725,6 +725,10 @@ session still has a say over, as the official composers do, left to right:
   which opens the machine's own popover — the one card for the one
   machine a session has, §9.4;
 - the **budget**, `$1.20 / $10`, which opens the budget slider of §9.1;
+- the **goal** chip, only where the running harness said it takes one —
+  `Target` opens a small panel that states the condition and sets it,
+  because a goal is a setting of the session rather than a line in it and
+  so gets a control instead of a `/goal` command row;
 - then, at the right beside send, the **model chip** of §5, `Fable 5.1 ·
   High`, whose choice is sent as `PATCH /v1/sessions/{id}` with `model`
   and reaches the running agent through its room; the chip dims until the
@@ -749,6 +753,10 @@ session still has a say over, as the official composers do, left to right:
   it. Asked once, the breakdown stays rendered and the action becomes
   `Refresh the breakdown`. Nothing is added to the transcript: the answer
   is a reading, not something that happened.
+  The session's own accounting lives here too, as `This session` between
+  the window and the plan — tokens in and out, the harness's reported
+  cost, and how long its turns have run: what a `/usage` command used to
+  spell out as text, stated as figures because that is what they are.
   Nothing is drawn until a harness has answered: a ring at zero over a
   plan flyco has never asked about is an invention, and a session running
   on an API key has no plan at all and shows no ring ever. Until a context
@@ -764,12 +772,13 @@ pushed to its bottom, where the hands already expect it.
 to do. Flyco's own three come first, marked `flyco` — `/compact`, which is
 the control plane's compaction request rather than a message, so every
 browser watching sees the same one; `/archive`; `/resize` — and after them
-everything the running harness reported: `/goal`, `/effort`, `/usage`,
-`/advisor`, and every skill of the checkout, ninety of them on a
-well-equipped machine. Context is not a command at all — the ring beside
-send is its door — so the harness's own `/context`, the CLI's rendering of
-the same panel, is dropped rather than shown, as is the harness's copy of
-any name flyco owns. The list is the harness's own, sent over the relay
+everything the running harness reported: `/advisor`, and every skill of
+the checkout, ninety of them on a well-equipped machine. A command a
+control already answers is not listed a second time — the ring's panel is
+the door to `/context` and `/usage`, the model chip's to `/effort`, the
+goal chip's to `/goal` — so the harness's copies of all four are dropped
+rather than shown, as is the harness's copy of any name flyco owns. The
+list is the harness's own, sent over the relay
 when the agent starts and again whenever it discovers more, so a
 repository that adds a skill has it in the palette without a reload. Until
 the machine has reported one, the three are all there is.
@@ -779,7 +788,7 @@ name, the argument it expects, and the harness's one-line description,
 clipped to the row. Arrow keys move, Enter chooses, Escape closes the list
 and leaves what was typed. Choosing a command that takes no argument sends
 it there and then; one that expects an argument is written into the field —
-`/goal ` — for the user to finish. A chosen command reaches the agent as the
+a skill like `/review ` — for the user to finish. A chosen command reaches the agent as the
 ordinary message `/name args`, because that is how both harnesses take a
 slash command; flyco adds no plumbing per command and none of them is a
 feature flyco has to know about.

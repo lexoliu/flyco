@@ -27,13 +27,14 @@ import { createStore, reconcile } from "solid-js/store";
 import { createQuery } from "../lib/query";
 import { AlertTriangle, Server, Wallet } from "lucide-solid";
 import { BudgetRaise } from "../components/BudgetPicker";
+import GoalChip from "../components/GoalChip";
 import ConfirmDialog from "../components/ConfirmDialog";
 import ModelChip from "../components/ModelChip";
 import MachinePanel from "../components/MachinePanel";
 import Popover from "../components/Popover";
 import ProblemNotice from "../components/ProblemNotice";
 import { useReadiness } from "../components/Readiness";
-import ContextRing from "../components/ContextRing";
+import ContextRing, { type SessionTotals } from "../components/ContextRing";
 import SessionComposer, { type SessionCommand } from "../components/SessionComposer";
 import SessionDrawer from "../components/SessionDrawer";
 import SessionHeader from "../components/SessionHeader";
@@ -809,6 +810,33 @@ export default function SessionDetail() {
     return budget === undefined ? undefined : usdMicrosToDollars(budget.limit);
   };
 
+  /**
+   * The session's cumulative accounting, for the ring panel's `This
+   * session` — the answer a `/usage` command used to spell out: what the
+   * last usage report counted, plus how long the turns have run. `null`
+   * while nothing has been metered and no turn has finished.
+   */
+  const sessionTotals = createMemo((): SessionTotals | null => {
+    const usage = latestUsage();
+    const clock = now() / 1000;
+    let worked = 0;
+    for (const item of transcript) {
+      if (item.kind !== "turn") {
+        continue;
+      }
+      worked += Math.max(0, (item.endedAtUnix ?? clock) - item.startedAtUnix);
+    }
+    if (usage === null && worked === 0) {
+      return null;
+    }
+    return {
+      inputTokens: usage?.input_tokens ?? 0,
+      outputTokens: usage?.output_tokens ?? 0,
+      costMicros: usage?.estimated_cost ?? null,
+      workedSeconds: worked,
+    };
+  });
+
   return (
     <section class={styles.page}>
       <SessionHeader
@@ -1109,6 +1137,19 @@ export default function SessionDetail() {
                           />
                         )}
                       </Show>
+                      {/*
+                        The goal is a setting of the session, not a line in
+                        it — a chip like the model's, offered only where the
+                        running harness says it takes one.
+                      */}
+                      <Show when={commands().find((command) => command.name === "goal")}>
+                        {(command) => (
+                          <GoalChip
+                            description={command().description}
+                            onSet={(condition) => onSend(`/goal ${condition}`)}
+                          />
+                        )}
+                      </Show>
                     </div>
                     {/*
                       At the right, beside send, where both official apps
@@ -1139,6 +1180,7 @@ export default function SessionDetail() {
                         context={latestContext()}
                         usage={latestContextUsage()}
                         windows={planUsage()}
+                        session={sessionTotals()}
                         now={now()}
                         machineUp={machineUp()}
                         onBreakdown={requestContextBreakdown}

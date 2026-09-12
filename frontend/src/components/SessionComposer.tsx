@@ -10,9 +10,9 @@
  * - while a turn is in flight the send button becomes `Stop`, because the
  *   only useful thing to do to a running turn is end it;
  * - `/` opens a command palette listing flyco's own session actions and
- *   then everything the running harness said it offers, so `/goal`,
- *   `/effort` and every skill of the checkout are reachable without
- *   knowing they exist;
+ *   then everything the running harness said it offers — minus the ones a
+ *   control already answers, so a skill of the checkout is reachable
+ *   without knowing it exists and `/context` is not listed twice;
  * - a message beginning with `!` runs in the machine's bash, and the field
  *   says so while one is being typed rather than after it is sent.
  */
@@ -104,14 +104,20 @@ const FLYCO_COMMANDS: readonly (PaletteEntry & { run: SessionCommand })[] = [
 const FLYCO_NAMES: ReadonlySet<string> = new Set(FLYCO_COMMANDS.map((entry) => entry.name));
 
 /**
- * Harness commands the palette never shows even when reported.
- *
- * `/context` is the harness's own version of the panel the usage ring
- * already opens — a second door that types a command flyco has no row for
- * is worse than none, so the harness's copy is dropped rather than shown
- * beside the ring it duplicates (docs/ux.md §9.3).
+ * Harness commands the palette never shows even when reported, because a
+ * control is already their door: `/context` and `/usage` are the ring's
+ * panel, `/effort` and `/model` are the model chip, and `/goal` is its
+ * own chip. A second door that types a command is worse than none, so
+ * the harness's copies are dropped rather than listed beside the controls
+ * that answer them (docs/ux.md §9.3).
  */
-const DROPPED_COMMANDS: ReadonlySet<string> = new Set(["context"]);
+const DROPPED_COMMANDS: ReadonlySet<string> = new Set([
+  "context",
+  "usage",
+  "effort",
+  "goal",
+  "model",
+]);
 
 /**
  * What the field holds while a command is being picked, or `null` when the
@@ -278,8 +284,8 @@ export default function SessionComposer(props: SessionComposerProps) {
    * Runs one row, or writes it into the field when it wants an argument.
    *
    * The split is the whole point of `argumentHint`: `/archive` has nothing
-   * left to ask, so choosing it is sending it, while `/goal` without its
-   * condition would be a command that means nothing.
+   * left to ask, so choosing it is sending it, while a command without
+   * its argument would be a command that means nothing.
    */
   function choose(entry: PaletteEntry): void {
     if (entry.disabled === true) {

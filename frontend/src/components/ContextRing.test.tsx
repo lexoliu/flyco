@@ -55,6 +55,7 @@ function mount(overrides: Partial<ContextRingProps> = {}) {
     now: NOW,
     machineUp: true,
     onBreakdown: vi.fn(),
+    session: null,
     ...overrides,
   };
   return { props, ...render(() => <ContextRing {...props} />) };
@@ -152,6 +153,20 @@ describe("ContextRing", () => {
     expect(queryByText(/Compacts automatically/)).toBeNull();
     // The way to the list is still there — asking is how the answer arrives.
     expect(getByRole("button", { name: /See the detailed breakdown/ })).toBeInTheDocument();
+  });
+
+  it("reads the session's own accounting where a /usage answer used to spell it", () => {
+    const { getByRole } = mount({
+      session: { inputTokens: 1100, outputTokens: 4800, costMicros: 34700, workedSeconds: 290 },
+    });
+
+    getByRole("button", { name: /Context/ }).click();
+
+    const panel = getByRole("dialog");
+    expect(within(panel).getByText("This session")).toBeInTheDocument();
+    expect(within(panel).getByText(/1k in · 5k out/)).toBeInTheDocument();
+    expect(within(panel).getByText("$0.03")).toBeInTheDocument();
+    expect(within(panel).getByText("4m 50s")).toBeInTheDocument();
   });
 
   it("stands the fullest plan window in for a context the harness never gave", () => {

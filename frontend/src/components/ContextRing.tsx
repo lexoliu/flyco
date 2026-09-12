@@ -21,6 +21,8 @@ import { cx } from "../lib/cx";
 import type { ContextCost, ContextUsage, ContextWindow, UsageWindow } from "../api/wire";
 import { resetHint, windowTier } from "../lib/planUsage";
 import { tokens } from "../lib/tokens";
+import { formatDuration } from "../lib/duration";
+import { formatUsd } from "../lib/money";
 import styles from "./ContextRing.module.css";
 
 export interface ContextRingProps {
@@ -38,6 +40,12 @@ export interface ContextRingProps {
   usage: ContextUsage | null;
   /** The plan's rolling limit windows, in reading order. Empty until reported. */
   windows: UsageWindow[];
+  /**
+   * The session's cumulative accounting, where it has been reported —
+   * the panel's `This session` rows and the answer `/usage` used to be
+   * asked for. `null` before the first report or the first finished turn.
+   */
+  session: SessionTotals | null;
   /** The page's clock, so every reset hint reads the same instant. */
   now: number;
   /**
@@ -57,6 +65,24 @@ export interface ContextRingProps {
 
 /** How long an unanswered request keeps the button saying it asked. */
 const ASK_TIMEOUT_MS = 15_000;
+
+/**
+ * What the session has done so far, in numbers a `/usage` answer used to
+ * spell out: tokens in and out, the harness's own cost estimate where it
+ * gives one, and how long its turns have run.
+ */
+export interface SessionTotals {
+  inputTokens: number;
+  outputTokens: number;
+  /**
+   * Estimated cost in microdollars — `Usd` on the wire, kept in micros
+   * here because money stays in microdollars until it is displayed.
+   * `null` where the harness says nothing.
+   */
+  costMicros: number | null;
+  /** Seconds the session's turns have run, finished and in flight. */
+  workedSeconds: number;
+}
 
 export default function ContextRing(props: ContextRingProps) {
   /**
@@ -251,6 +277,31 @@ export default function ContextRing(props: ContextRingProps) {
                   {(value) => (
                     <p class={styles.note}>Compacts automatically at {value()}%</p>
                   )}
+                </Show>
+              </section>
+            )}
+          </Show>
+          <Show when={props.session}>
+            {(session) => (
+              <section class={styles.section} aria-label="This session">
+                <p class={styles.heading}>This session</p>
+                <div class={styles.statRow}>
+                  <p class={styles.statLabel}>Tokens</p>
+                  <p class={styles.statReadout}>
+                    {tokens(session().inputTokens)} in · {tokens(session().outputTokens)} out
+                  </p>
+                </div>
+                <Show when={session().costMicros !== null}>
+                  <div class={styles.statRow}>
+                    <p class={styles.statLabel}>Reported cost</p>
+                    <p class={styles.statReadout}>{formatUsd(session().costMicros ?? 0)}</p>
+                  </div>
+                </Show>
+                <Show when={session().workedSeconds > 0}>
+                  <div class={styles.statRow}>
+                    <p class={styles.statLabel}>Working</p>
+                    <p class={styles.statReadout}>{formatDuration(session().workedSeconds)}</p>
+                  </div>
                 </Show>
               </section>
             )}

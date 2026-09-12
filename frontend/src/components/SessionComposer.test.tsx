@@ -11,8 +11,8 @@ import type { HarnessCommand } from "../api/wire";
  * Verbatim rows of what a running harness reports: one command that takes
  * an argument, one that takes none, a plugin-qualified skill, the
  * harness's own `compact`, which flyco routes to its own request instead,
- * and the harness's own `context`, which the palette drops outright —
- * the usage ring beside send is the only door to that panel.
+ * and the four the palette drops outright — `context` and `usage` are the
+ * ring's panel, `effort` the model chip's, `goal` its own chip.
  */
 const COMMANDS: HarnessCommand[] = [
   {
@@ -24,6 +24,16 @@ const COMMANDS: HarnessCommand[] = [
     name: "effort",
     description: "Set effort level for model usage",
     argument_hint: "<low|medium|high|xhigh|max|ultracode|auto>",
+  },
+  {
+    name: "usage",
+    description: "Show session cost, plan usage, and what's contributing to your limits",
+    argument_hint: null,
+  },
+  {
+    name: "release",
+    description: "Cut a release of the checkout",
+    argument_hint: "<version>",
   },
   {
     name: "compact",
@@ -162,16 +172,20 @@ describe("the palette's rows", () => {
     const rows = paletteEntries(COMMANDS);
     expect(rows.slice(0, 3).map((row) => row.name)).toEqual(["compact", "archive", "resize"]);
     expect(rows.filter((row) => row.name === "compact")).toHaveLength(1);
-    // `/context` is not a command at all — the usage ring is its door — so
-    // neither flyco's nor the harness's row may appear.
+    // `/context`, `/usage`, `/effort`, `/goal` and `/model` are not
+    // commands at all — a control is each one's door — so neither flyco's
+    // nor the harness's row may appear.
     expect(rows.filter((row) => row.name === "context")).toHaveLength(0);
+    expect(rows.filter((row) => row.name === "usage")).toHaveLength(0);
+    expect(rows.filter((row) => row.name === "effort")).toHaveLength(0);
+    expect(rows.filter((row) => row.name === "goal")).toHaveLength(0);
+    expect(rows.filter((row) => row.name === "model")).toHaveLength(0);
     expect(rows[0]?.run).toBe("compact");
     expect(rows.map((row) => row.name)).toEqual([
       "compact",
       "archive",
       "resize",
-      "goal",
-      "effort",
+      "release",
       "presence:status",
     ]);
   });
@@ -189,7 +203,7 @@ describe("the palette's rows", () => {
     expect(rows.find((row) => row.name === "compact")?.disabled).toBe(true);
     expect(rows.find((row) => row.name === "archive")?.disabled).toBeUndefined();
     expect(rows.find((row) => row.name === "resize")?.disabled).toBeUndefined();
-    expect(rows.find((row) => row.name === "goal")?.disabled).toBeUndefined();
+    expect(rows.find((row) => row.name === "release")?.disabled).toBeUndefined();
   });
 
   it("opens on a slash and closes once an argument is being typed", () => {
@@ -207,17 +221,17 @@ describe("the palette", () => {
     const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
 
     type(field, "/");
-    expect(getAllByRole("option")).toHaveLength(6);
+    expect(getAllByRole("option")).toHaveLength(5);
 
-    type(field, "/eff");
+    type(field, "/rel");
     const rows = getAllByRole("option");
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.textContent).toContain("/effort");
-    expect(rows[0]?.textContent).toContain("<low|medium|high|xhigh|max|ultracode|auto>");
-    expect(getByText("Set effort level for model usage")).toBeInTheDocument();
+    expect(rows[0]?.textContent).toContain("/release");
+    expect(rows[0]?.textContent).toContain("<version>");
+    expect(getByText("Cut a release of the checkout")).toBeInTheDocument();
   });
 
-  it("sends a command that takes no argument the moment it is chosen", () => {
+  it("sends a typed-out harness command verbatim even where the palette drops its row", () => {
     const { props, getByLabelText } = mount();
     const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
 
@@ -232,11 +246,11 @@ describe("the palette", () => {
     const { props, getByLabelText } = mount();
     const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
 
-    type(field, "/eff");
+    type(field, "/rel");
     press(field, "Enter");
 
     expect(props.onSend).not.toHaveBeenCalled();
-    expect(field.value).toBe("/effort ");
+    expect(field.value).toBe("/release ");
   });
 
   it("runs flyco's own commands itself rather than sending them", () => {
@@ -271,12 +285,12 @@ describe("the palette", () => {
     const { getByLabelText, queryAllByRole } = mount();
     const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
 
-    type(field, "/goa");
-    expect(queryAllByRole("option")).toHaveLength(1);
+    type(field, "/re");
+    expect(queryAllByRole("option")).toHaveLength(2);
 
     press(field, "Escape");
     expect(queryAllByRole("option")).toHaveLength(0);
-    expect(field.value).toBe("/goa");
+    expect(field.value).toBe("/re");
   });
 
   it("sends a command and its argument as one ordinary message", () => {

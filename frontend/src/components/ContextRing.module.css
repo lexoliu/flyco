@@ -199,6 +199,29 @@
   grid-column: 1 / -1;
 }
 
+/* A `label — value` line of the session's own accounting: no bar, because
+   a token total or a cost is a figure, not a fill. */
+.statRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.statLabel {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.statReadout {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 /* The way to the full list: the daemon's answer lands back in the panel
    itself, so this asks and then says it is asking. */
 .breakdown {
