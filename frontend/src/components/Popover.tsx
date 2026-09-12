@@ -111,10 +111,12 @@ export default function Popover(props: PopoverProps) {
         return;
       }
 
-      // Measuring wants the panel's natural height: a max-height left over
-      // from the last fit would report the clamp as the size it needs.
-      panel.style.maxHeight = "";
-      const wanted = panel.getBoundingClientRect().height;
+      // `scrollHeight` answers "how tall would the panel be unclamped"
+      // without touching it. Measuring the cleared `maxHeight` instead
+      // would briefly grow the panel — and a focused panel that grows is
+      // scrolled into view by the browser, moving the anchor under the
+      // measurement it interrupted.
+      const wanted = panel.scrollHeight;
 
       if (props.side !== undefined) {
         const box = panel.getBoundingClientRect();
@@ -138,8 +140,42 @@ export default function Popover(props: PopoverProps) {
       panel.style.maxHeight = `${Math.max(room, MIN_PANEL_PX)}px`;
     }
     fit();
-    window.addEventListener("resize", fit);
-    onCleanup(() => window.removeEventListener("resize", fit));
+    // The panel's own contents settle after it opens — a breakdown answer
+    // arriving, a disclosure opening — and the anchor can move under it
+    // while the page reflows around it, because the panel hangs off the
+    // anchor's place, not its own: a controls row wrapping, a text field
+    // growing, a smooth scroll still landing, a transition on a parent.
+    // No observer hears all of those, so the check is the input itself —
+    // the anchor's rect and the panel's wanted height, each frame while
+    // the panel is open, and a re-fit when either has moved. The reads
+    // are cheap against a settled layout, and silent while nothing moves.
+    let lastTop = NaN;
+    let lastBottom = NaN;
+    let lastWanted = NaN;
+    let lastViewport = NaN;
+    let frame = 0;
+    const watch = (): void => {
+      if (panel !== undefined && anchor !== undefined) {
+        const box = anchor.getBoundingClientRect();
+        const wanted = panel.scrollHeight;
+        const viewport = window.innerHeight;
+        if (
+          box.top !== lastTop ||
+          box.bottom !== lastBottom ||
+          wanted !== lastWanted ||
+          viewport !== lastViewport
+        ) {
+          lastTop = box.top;
+          lastBottom = box.bottom;
+          lastWanted = wanted;
+          lastViewport = viewport;
+          fit();
+        }
+      }
+      frame = requestAnimationFrame(watch);
+    };
+    frame = requestAnimationFrame(watch);
+    onCleanup(() => cancelAnimationFrame(frame));
 
     function onPointerDown(event: PointerEvent): void {
       if (anchor !== undefined && !anchor.contains(event.target as Node)) {

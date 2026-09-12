@@ -17,9 +17,6 @@
 import type { TimedEvent } from "../api/relay";
 import type {
   ApprovalPayload,
-  ContextCost,
-  ContextUsage,
-  ContextWindow,
   MessageOrigin,
   ModelChoice,
   ProvisioningStage,
@@ -228,72 +225,7 @@ export type TranscriptItem =
       key: string;
       text: string;
       atUnix: number;
-    }
-  | {
-      /**
-       * The context-window breakdown answering the usage panel's
-       * "detailed breakdown" — the session's own card, not a harness
-       * reply (docs/ux.md §9.3).
-       */
-      kind: "context";
-      key: string;
-      usage: ContextUsageView;
-      atUnix: number;
     };
-
-/**
- * One row of the context panel, with the `key` reconciliation needs.
- *
- * The wire's `ContextCost` has no key field and should not gain one — a
- * protocol shape is not the place for a renderer's bookkeeping — so the
- * panel's rows are a view on it.
- */
-export interface ContextRow {
-  key: string;
-  name: string;
-  tokens: number;
-  deferred: boolean;
-}
-
-/**
- * A `context_usage` event as the panel renders it.
- *
- * The wire's optional fields are `null`s here — the card asks "is there a
- * window to draw" rather than "was the field on the wire" — and the
- * harness's lists are keyed rows.
- */
-export interface ContextUsageView {
-  model: string | null;
-  window: ContextWindow | null;
-  /** The fill at which the harness compacts on its own, in tokens. */
-  autoCompact: number | null;
-  categories: ContextRow[];
-  mcpTools: ContextRow[];
-  memoryFiles: ContextRow[];
-  agents: ContextRow[];
-  skills: ContextRow[];
-}
-
-/** The wire's `ContextUsage` as a `ContextUsageView`. */
-function contextView(usage: ContextUsage): ContextUsageView {
-  const rows = (section: string, list: readonly ContextCost[]): ContextRow[] =>
-    list.map((row, index) => ({
-      key: `${section}-${index}`,
-      name: row.name,
-      tokens: row.tokens,
-      deferred: row.deferred,
-    }));
-  return {
-    model: usage.model ?? null,
-    window: usage.window ?? null,
-    autoCompact: usage.auto_compact ?? null,
-    categories: rows("category", usage.categories),
-    mcpTools: rows("mcp", usage.mcp_tools),
-    memoryFiles: rows("memory", usage.memory_files),
-    agents: rows("agent", usage.agents),
-    skills: rows("skill", usage.skills),
-  };
-}
 
 /** One milestone on the provisioning timeline. */
 export interface ProvisioningStep {
@@ -632,12 +564,11 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
             });
             break;
           case "context_usage":
-            items.push({
-              kind: "context",
-              key: `context-${items.length}`,
-              usage: contextView(harness.usage),
-              atUnix,
-            });
+            // The answer to the usage panel's "detailed breakdown" — the
+            // panel reads the newest frame out of the stream itself; a
+            // `context_usage` is a control answer, not something that
+            // happened, so the transcript keeps no card of it
+            // (docs/ux.md §9.3).
             break;
         }
         break;

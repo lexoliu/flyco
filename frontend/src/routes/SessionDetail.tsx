@@ -347,8 +347,8 @@ export default function SessionDetail() {
    * The newest `context_usage` answer itself, where one has been asked for.
    *
    * `latestContext` above keeps only the window out of it; the usage
-   * panel's compaction threshold and category bar need the whole frame,
-   * which is what this hands them. `null` until a breakdown has been
+   * panel's compaction threshold, category bar and breakdown need the
+   * whole frame, which is what this hands them. `null` until a breakdown has been
    * requested once this page — and that is the honest state, not a
    * loading skeleton: the panel draws what it has.
    */
@@ -610,8 +610,8 @@ export default function SessionDetail() {
    * The usage panel's "detailed breakdown" is the only caller — there is
    * no `/context` in the palette; the ring is the door (docs/ux.md §9.3).
    * The question goes to the daemon, never to the model, and its answer
-   * comes back on the relay as a `context_usage` event, which the
-   * transcript draws as the context card.
+   * comes back on the relay as a `context_usage` event, which
+   * `latestContextUsage` picks up for the panel.
    */
   function requestContextBreakdown(): void {
     void overRelay(
@@ -895,7 +895,6 @@ export default function SessionDetail() {
                 repo={session()?.repo ?? "the repository"}
                 provider={providerLabel()}
                 models={models()}
-                plan={planUsage()}
                 onDecide={(id, decision) => {
                   void onDecide(id, decision).then(() => refetchSession());
                 }}

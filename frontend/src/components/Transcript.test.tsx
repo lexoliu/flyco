@@ -30,7 +30,6 @@ function show(item: TranscriptItem, stoppedAtUnix: number | null = null) {
       repo="lexoliu/flyco"
       provider="Azure"
       models={[]}
-      plan={[]}
       now={T0 * 1000}
       stoppedAtUnix={stoppedAtUnix}
     />
@@ -224,7 +223,7 @@ describe("Transcript turn", () => {
   });
 });
 
-describe("Transcript command output and context card", () => {
+describe("Transcript command output", () => {
   it("renders output the harness printed on its own as a block, not a bubble", async () => {
     // Markdown paints on the animation frame, so the text arrives a tick
     // after the block does.
@@ -236,58 +235,6 @@ describe("Transcript command output and context card", () => {
     });
     expect(getByRole("region", { name: "Command output" })).toBeInTheDocument();
     expect(await findByText("Context window: 42k of 200k")).toBeInTheDocument();
-  });
-
-  it("shows the window's fill, what fills it, and the plan beside it", () => {
-    const { getByRole, getByText } = render(() => (
-      <Transcript
-        items={[
-          {
-            kind: "context",
-            key: "context-0",
-            atUnix: T0,
-            usage: {
-              model: "claude-opus-4-8",
-              window: { used_tokens: 84_000, size_tokens: 200_000 },
-              autoCompact: 160_000,
-              categories: [
-                { key: "category-0", name: "System prompt", tokens: 3_000, deferred: false },
-              ],
-              mcpTools: [{ key: "mcp-0", name: "mcp__github", tokens: 1_200, deferred: true }],
-              memoryFiles: [],
-              agents: [],
-              skills: [],
-            },
-          },
-        ]}
-        repo="lexoliu/flyco"
-        provider="Azure"
-        models={[]}
-        plan={[
-          {
-            label: "5-hour",
-            used_percent: 62,
-            resets_at_unix: T0 + 3600,
-            window_minutes: 300,
-          },
-        ]}
-        now={T0 * 1000}
-        stoppedAtUnix={null}
-      />
-    ));
-
-    const card = getByRole("region", { name: "Context usage" });
-    expect(card.textContent).toContain("claude-opus-4-8");
-    expect(card.textContent).toContain("84k of 200k");
-    expect(card.textContent).toContain("42%");
-    expect(card.textContent).toContain("System prompt");
-    expect(card.textContent).toContain("Compacts on its own at 160k");
-    // The MCP list is behind its disclosure, with the total on the summary.
-    expect(card.textContent).toContain("MCP tools");
-    // And the plan's windows sit in the same card, the way the header's two
-    // rings sit beside each other.
-    expect(getByText("Plan")).toBeInTheDocument();
-    expect(card.textContent).toContain("62%");
   });
 });
 

@@ -741,9 +741,13 @@ session still has a say over, as the official composers do, left to right:
   "how much of my plan is left" has an answer before the limit is hit
   rather than a `Usage limit` notice after it. The panel ends with `See
   the detailed breakdown`, which is what a `/context` command would have
-  been: a control request the daemon answers out of band, whose breakdown
-  lands in the transcript as a card — one category per row, then the MCP
-  tools, memory files, agents and skills, each with its deferred weight.
+  been: a control request the daemon answers out of band — and the answer
+  unfolds in the panel itself, one category per row beneath the segmented
+  bar, then the MCP tools, memory files, agents and skills behind
+  disclosures, each with its deferred weight, and the model that reported
+  it. Asked once, the breakdown stays rendered and the action becomes
+  `Refresh the breakdown`. Nothing is added to the transcript: the answer
+  is a reading, not something that happened.
   Nothing is drawn until a harness has answered: a ring at zero over a
   plan flyco has never asked about is an invention, and a session running
   on an API key has no plan at all and shows no ring ever. Until a context

@@ -18,7 +18,6 @@ import {
   CircleDashed,
   Cpu,
   Info,
-  Layers,
   Loader,
   Sparkles,
   TerminalSquare,
@@ -27,23 +26,15 @@ import {
 } from "lucide-solid";
 import Markdown from "./Markdown";
 import { shellOutcomeLabel, shellSucceeded } from "../lib/shell";
-import type { ModelOption, ProvisioningStage, UsageWindow } from "../api/wire";
+import type { ModelOption, ProvisioningStage } from "../api/wire";
 import { operation, type OperationDetail } from "../lib/approvals";
 import { cx } from "../lib/cx";
 import { formatDuration } from "../lib/duration";
 import { highlightHtml } from "../lib/highlight";
 import { choiceLabel } from "../lib/models";
-import { resetHint } from "../lib/planUsage";
 import { detailOfTool } from "../lib/toolDetail";
 import { summarizeTool } from "../lib/toolSummary";
-import { tokens } from "../lib/tokens";
-import type {
-  ContextRow,
-  ContextUsageView,
-  ProvisioningStep,
-  ToolCall,
-  TranscriptItem,
-} from "../lib/transcript";
+import type { ProvisioningStep, ToolCall, TranscriptItem } from "../lib/transcript";
 import { machineChangePrice, machineChangeSummary, TURN_FAILED_NOTE } from "../lib/transcript";
 import styles from "./Transcript.module.css";
 
@@ -106,16 +97,6 @@ export interface TranscriptProps {
    * counting on under a `Failed` or `Archived` pill.
    */
   stoppedAtUnix: number | null;
-  /**
-   * The plan's rolling windows, for the context card's Plan section.
-   *
-   * The card answers "what is the window spent on" and "how much of the
-   * plan is spent" together, because the two questions are one in the
-   * reader's head — but the windows themselves are the page's fact (they
-   * stand in for the account until the daemon reports), so they arrive as
-   * a prop rather than being folded out of the stream.
-   */
-  plan: UsageWindow[];
 }
 
 export default function Transcript(props: TranscriptProps) {
@@ -242,12 +223,6 @@ export default function Transcript(props: TranscriptProps) {
                   <div class={styles.commandOutput} role="region" aria-label="Command output">
                     <Markdown text={output().text} />
                   </div>
-                )}
-              </Match>
-
-              <Match when={item.kind === "context" && item}>
-                {(panel) => (
-                  <ContextCard usage={panel().usage} plan={props.plan} now={props.now} />
                 )}
               </Match>
 
@@ -673,120 +648,4 @@ function ApprovalCard(props: {
   );
 }
 
-/**
- * A `context_usage` answer as a card (docs/ux.md §9.3).
- *
- * Two halves, in the order the questions come to a reader: what the
- * context window is spent on — the fill, then what fills it — and how much
- * of the plan is spent beside it. The detail lists (which MCP tools, which
- * memory files) stay behind disclosures: they are where a "why is it
- * full" hunt goes, not part of the headline.
- */
-function ContextCard(props: { usage: ContextUsageView; plan: UsageWindow[]; now: number }) {
-  const percent = () => {
-    const window = props.usage.window;
-    if (window === null || window.size_tokens === 0) {
-      return null;
-    }
-    return Math.min(100, Math.round((window.used_tokens / window.size_tokens) * 100));
-  };
 
-  return (
-    <section class={styles.contextCard} aria-label="Context usage">
-      <p class={styles.contextHeading}>
-        <Layers size={14} aria-hidden="true" />
-        Context
-        <Show when={props.usage.model}>
-          {(model) => <span class={styles.contextModel}>{model()}</span>}
-        </Show>
-      </p>
-      <Show when={props.usage.window}>
-        {(window) => (
-          <>
-            <p class={styles.contextFill}>
-              {tokens(window().used_tokens)} of {tokens(window().size_tokens)}
-              <Show when={percent()}>
-                {(value) => <span class={styles.contextPercent}>{value()}%</span>}
-              </Show>
-            </p>
-            <div class={styles.contextBar} aria-hidden="true">
-              <div class={styles.contextBarFill} style={{ width: `${percent() ?? 0}%` }} />
-            </div>
-          </>
-        )}
-      </Show>
-      <Show when={props.usage.categories.length > 0}>
-        <ul class={styles.contextRows}>
-          <For each={props.usage.categories}>
-            {(row) => <ContextCostRow row={row} />}
-          </For>
-        </ul>
-      </Show>
-      <ContextSection label="MCP tools" rows={props.usage.mcpTools} />
-      <ContextSection label="Memory files" rows={props.usage.memoryFiles} />
-      <ContextSection label="Agents" rows={props.usage.agents} />
-      <ContextSection label="Skills" rows={props.usage.skills} />
-      <Show when={props.usage.autoCompact}>
-        {(at) => <p class={styles.contextFoot}>Compacts on its own at {tokens(at())}</p>}
-      </Show>
-      <Show when={props.plan.length > 0}>
-        <p class={styles.contextSectionHeading}>Plan</p>
-        <ul class={styles.contextRows}>
-          <For each={props.plan}>
-            {(window) => (
-              <li class={styles.contextRow}>
-                <span class={styles.contextName}>
-                  {window.label}
-                  <Show when={resetHint(window, props.now)}>
-                    {(hint) => <span class={styles.contextDeferred}>{hint()}</span>}
-                  </Show>
-                </span>
-                <span class={styles.contextTokens}>{window.used_percent}%</span>
-              </li>
-            )}
-          </For>
-        </ul>
-      </Show>
-    </section>
-  );
-}
-
-/** One `name — 4k` row of a context list. */
-function ContextCostRow(props: { row: ContextRow }) {
-  return (
-    <li class={styles.contextRow}>
-      <span class={styles.contextName}>
-        {props.row.name}
-        <Show when={props.row.deferred}>
-          <span class={styles.contextDeferred}>deferred</span>
-        </Show>
-      </span>
-      <span class={styles.contextTokens}>{tokens(props.row.tokens)}</span>
-    </li>
-  );
-}
-
-/**
- * One of the card's detail lists, behind a disclosure.
- *
- * The summary carries the section's total, so the collapsed card still
- * answers "what do the tools cost" without making forty tool names the
- * price of the answer.
- */
-function ContextSection(props: { label: string; rows: ContextRow[] }) {
-  const total = () => props.rows.reduce((sum, row) => sum + row.tokens, 0);
-  return (
-    <Show when={props.rows.length > 0}>
-      <details class={styles.contextSection}>
-        <summary class={styles.contextSectionSummary}>
-          <ChevronRight size={13} class={cx(styles.toolChevron)} aria-hidden="true" />
-          {props.label}
-          <span class={styles.contextSectionTotal}>{tokens(total())}</span>
-        </summary>
-        <ul class={styles.contextRows}>
-          <For each={props.rows}>{(row) => <ContextCostRow row={row} />}</For>
-        </ul>
-      </details>
-    </Show>
-  );
-}

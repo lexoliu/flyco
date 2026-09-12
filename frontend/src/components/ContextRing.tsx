@@ -4,20 +4,21 @@
  * The ring is the same `Ring` every other readout draws; what makes it a
  * control is the popover behind it: how full the context window is, when
  * the harness will compact it on its own, how much of each plan window is
- * spent and when it turns over, and the way to the full breakdown — which
- * asks the daemon and lands in the transcript as a card.
+ * spent and when it turns over, and — once asked for — the full breakdown
+ * the daemon answered with.
  *
  * One control rather than a ring per reading: the composer's right edge
  * holds the model chip and send, and is not a dashboard (docs/ux.md §9.3).
  * The panel asks for nothing the harness has not said — before the first
- * `context_usage` answer there is no category bar and no compaction
- * threshold, and the panel shows only what is known.
+ * `context_usage` answer there is no category bar, no breakdown list and
+ * no compaction threshold, and the panel shows only what is known.
  */
-import { For, Show, createMemo } from "solid-js";
-import { ListTree } from "lucide-solid";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { ChevronRight, ListTree, Loader } from "lucide-solid";
 import Popover from "./Popover";
 import Ring from "./Ring";
-import type { ContextUsage, ContextWindow, UsageWindow } from "../api/wire";
+import { cx } from "../lib/cx";
+import type { ContextCost, ContextUsage, ContextWindow, UsageWindow } from "../api/wire";
 import { resetHint, windowTier } from "../lib/planUsage";
 import { tokens } from "../lib/tokens";
 import styles from "./ContextRing.module.css";
@@ -48,13 +49,43 @@ export interface ContextRingProps {
   machineUp: boolean;
   /**
    * Sends the `context_usage` control request. The daemon's answer arrives
-   * as a `context_usage` event and renders in the transcript as the
-   * breakdown card, so the panel does not have to carry the whole list.
+   * as a `context_usage` event and lands back in `usage`, which is how the
+   * panel knows the asking is over and the breakdown is in.
    */
   onBreakdown: () => void;
 }
 
+/** How long an unanswered request keeps the button saying it asked. */
+const ASK_TIMEOUT_MS = 15_000;
+
 export default function ContextRing(props: ContextRingProps) {
+  /**
+   * A request is in flight. The panel says so until the answer lands —
+   * `usage` becoming a different object is the answer arriving — or the
+   * machine stays silent long enough that asking again is honest.
+   */
+  const [asking, setAsking] = createSignal(false);
+  let baseline: ContextUsage | null = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  createEffect(() => {
+    const usage = props.usage;
+    if (asking() && usage !== null && usage !== baseline) {
+      setAsking(false);
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  });
+  onCleanup(() => clearTimeout(timer));
+
+  function ask(): void {
+    baseline = props.usage;
+    setAsking(true);
+    props.onBreakdown();
+    clearTimeout(timer);
+    timer = setTimeout(() => setAsking(false), ASK_TIMEOUT_MS);
+  }
+
   /**
    * What the trigger ring draws. The context fill is the reading the ring
    * is named for; before the harness has reported one, the fullest plan
@@ -172,7 +203,7 @@ export default function ContextRing(props: ContextRingProps) {
         </button>
       )}
     >
-      {(close) => (
+      {() => (
         <div class={styles.body}>
           <Show when={props.context}>
             {(context) => (
@@ -224,6 +255,7 @@ export default function ContextRing(props: ContextRingProps) {
               </section>
             )}
           </Show>
+          <Breakdown usage={props.usage} />
           <Show when={props.windows.length > 0}>
             <section class={styles.section} aria-label="Plan usage">
               <p class={styles.heading}>Plan usage</p>
@@ -259,18 +291,92 @@ export default function ContextRing(props: ContextRingProps) {
           <button
             type="button"
             class={styles.breakdown}
-            disabled={!props.machineUp}
+            disabled={!props.machineUp || asking()}
             title={props.machineUp ? undefined : "The machine is not connected"}
-            onClick={() => {
-              props.onBreakdown();
-              close();
-            }}
+            onClick={ask}
           >
-            <ListTree size={13} aria-hidden="true" />
-            See the detailed breakdown
+            <Show when={asking()} fallback={<ListTree size={13} aria-hidden="true" />}>
+              <Loader size={13} class={cx(styles.spin)} aria-hidden="true" />
+            </Show>
+            {asking()
+              ? "Asking the machine…"
+              : props.usage === null
+                ? "See the detailed breakdown"
+                : "Refresh the breakdown"}
           </button>
         </div>
       )}
     </Popover>
+  );
+}
+
+/**
+ * What the window is spent on, once asked for.
+ *
+ * One row per category — the legend of the segmented bar above — then the
+ * detail lists behind disclosures: they are where a "why is it full" hunt
+ * goes, not part of the headline. Nothing until a `context_usage` answer
+ * has arrived; the ask is the button below.
+ */
+function Breakdown(props: { usage: ContextUsage | null }) {
+  return (
+    <Show when={props.usage}>
+      {(usage) => (
+        <>
+          <ul class={styles.costs}>
+            <For each={usage().categories}>
+              {(row) => <CostRow row={row} />}
+            </For>
+          </ul>
+          <CostSection label="MCP tools" rows={usage().mcp_tools} />
+          <CostSection label="Memory files" rows={usage().memory_files} />
+          <CostSection label="Agents" rows={usage().agents} />
+          <CostSection label="Skills" rows={usage().skills} />
+          <Show when={usage().model}>
+            {(model) => <p class={styles.note}>As reported by {model()}</p>}
+          </Show>
+        </>
+      )}
+    </Show>
+  );
+}
+
+/** One `name — 4k` row of a breakdown list. */
+function CostRow(props: { row: ContextCost }) {
+  return (
+    <li class={styles.cost}>
+      <span class={styles.costName}>
+        {props.row.name}
+        <Show when={props.row.deferred}>
+          <span class={styles.deferred}>deferred</span>
+        </Show>
+      </span>
+      <span class={styles.costTokens}>{tokens(props.row.tokens)}</span>
+    </li>
+  );
+}
+
+/**
+ * One of the breakdown's detail lists, behind a disclosure.
+ *
+ * The summary carries the section's total, so the collapsed panel still
+ * answers "what do the tools cost" without making forty tool names the
+ * price of the answer.
+ */
+function CostSection(props: { label: string; rows: ContextCost[] }) {
+  const total = () => props.rows.reduce((sum, row) => sum + row.tokens, 0);
+  return (
+    <Show when={props.rows.length > 0}>
+      <details class={styles.detail}>
+        <summary class={styles.detailSummary}>
+          <ChevronRight size={13} class={cx(styles.detailChevron)} aria-hidden="true" />
+          {props.label}
+          <span class={styles.detailTotal}>{tokens(total())}</span>
+        </summary>
+        <ul class={styles.costs}>
+          <For each={props.rows}>{(row) => <CostRow row={row} />}</For>
+        </ul>
+      </details>
+    </Show>
   );
 }

@@ -21,7 +21,7 @@ function usage(overrides: Partial<ContextUsage> = {}): ContextUsage {
       // A remainder the harness lists as a category; it must never draw.
       { name: "Free space", tokens: 184000, deferred: false },
     ],
-    mcp_tools: [],
+    mcp_tools: [{ name: "mcp__flyco__budget_status", tokens: 130, deferred: false }],
     memory_files: [],
     agents: [],
     skills: [],
@@ -90,25 +90,50 @@ describe("ContextRing", () => {
     expect(within(panel).getByText("5-hour")).toBeInTheDocument();
     expect(within(panel).getByText(/Resets in 2h 10m/)).toBeInTheDocument();
     expect(within(panel).getByText("Weekly")).toBeInTheDocument();
-    expect(within(panel).getByRole("button", { name: /detailed breakdown/ })).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: /Refresh the breakdown/ })).toBeInTheDocument();
   });
 
-  it("asks for the breakdown from inside the panel, which then closes", () => {
-    const { props, getByRole, queryByRole } = mount();
+  it("shows the answered breakdown inside the panel, not as a card", () => {
+    const { getByRole } = mount();
 
     getByRole("button", { name: /Context/ }).click();
-    getByRole("button", { name: /detailed breakdown/ }).click();
+
+    const panel = getByRole("dialog");
+    // One row per category — the segmented bar's legend — the remainder
+    // included, because it was a category the harness reported.
+    expect(within(panel).getByText("System prompt")).toBeInTheDocument();
+    expect(within(panel).getByText("Free space")).toBeInTheDocument();
+    expect(within(panel).getByText("deferred")).toBeInTheDocument();
+    // Detail lists stay behind disclosures, carrying their totals.
+    const detail = panel.querySelector("details");
+    expect(detail).not.toBeNull();
+    expect(detail?.textContent).toContain("MCP tools");
+    expect(detail?.textContent).toContain("mcp__flyco__budget_status");
+    // And who said so.
+    expect(panel.textContent).toContain("claude-sonnet-4-6");
+  });
+
+  it("asks for the breakdown from inside the panel, and stays open to take the answer", () => {
+    const { props, getByRole } = mount({ usage: null });
+
+    getByRole("button", { name: /Context/ }).click();
+    getByRole("button", { name: /See the detailed breakdown/ }).click();
 
     expect(props.onBreakdown).toHaveBeenCalledOnce();
-    expect(queryByRole("dialog")).toBeNull();
+    // The panel stays open and says it asked — the answer lands in it.
+    const panel = getByRole("dialog");
+    expect(within(panel).getByText("Asking the machine…")).toBeInTheDocument();
+    expect(
+      within(panel).getByRole("button", { name: "Asking the machine…" }),
+    ).toBeDisabled();
   });
 
   it("greys the breakdown action while no machine is connected to answer it", () => {
-    const { props, getByRole } = mount({ machineUp: false });
+    const { props, getByRole } = mount({ machineUp: false, usage: null });
 
     getByRole("button", { name: /Context/ }).click();
 
-    const action = getByRole("button", { name: /detailed breakdown/ });
+    const action = getByRole("button", { name: /See the detailed breakdown/ });
     expect(action).toBeDisabled();
     action.click();
     expect(props.onBreakdown).not.toHaveBeenCalled();
@@ -126,7 +151,7 @@ describe("ContextRing", () => {
     expect(track.children).toHaveLength(1);
     expect(queryByText(/Compacts automatically/)).toBeNull();
     // The way to the list is still there — asking is how the answer arrives.
-    expect(getByRole("button", { name: /detailed breakdown/ })).toBeInTheDocument();
+    expect(getByRole("button", { name: /See the detailed breakdown/ })).toBeInTheDocument();
   });
 
   it("stands the fullest plan window in for a context the harness never gave", () => {
@@ -142,6 +167,6 @@ describe("ContextRing", () => {
     trigger.click();
     expect(queryByText("Context window")).toBeNull();
     expect(getByText("Plan usage")).toBeInTheDocument();
-    expect(getByRole("button", { name: /detailed breakdown/ })).toBeInTheDocument();
+    expect(getByRole("button", { name: /See the detailed breakdown/ })).toBeInTheDocument();
   });
 });
