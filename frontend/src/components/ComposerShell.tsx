@@ -12,7 +12,7 @@
  * a second composer written beside the first would have drifted by the next
  * change to either.
  */
-import { type JSX, Show } from "solid-js";
+import { type JSX, Show, onCleanup, onMount } from "solid-js";
 import { cx } from "../lib/cx";
 import styles from "./Composer.module.css";
 
@@ -64,8 +64,73 @@ export default function ComposerShell(props: ComposerShellProps) {
     }
   }
 
+  /*
+   * Codex's answer to "the row ran out of room": the chips leave the box
+   * and float above it as an island, where they can stack layer on layer,
+   * instead of squeezing the send row into a second line inside it.
+   *
+   * The move is a move, not a re-render: `chips` is one live DOM subtree
+   * docked into whichever home is in force, so crossing the threshold —
+   * the viewport (~900px) or the composer itself (~600px), which a drawer
+   * shrinks without touching the viewport — carries an open popover, a
+   * half-typed goal condition, and the focus with it. `display: contents`
+   * keeps the carrier invisible to layout in both homes. It starts docked
+   * in the row because `moveBefore`, the state-preserving move it is
+   * carried by, only accepts a node that is already connected.
+   */
+  let stack: HTMLDivElement | undefined;
+  let islandHome: HTMLDivElement | undefined;
+  let controlsRow: HTMLDivElement | undefined;
+  const chips = (
+    <div class={styles.islandCarry}>{props.controls}</div>
+  ) as HTMLDivElement;
+
+  onMount(() => {
+    const narrow = window.matchMedia("(max-width: 900px)");
+    const dock = () => {
+      const up = (stack?.clientWidth ?? 0) <= 600 || narrow.matches;
+      const home = up ? islandHome : controlsRow;
+      if (home === undefined) {
+        return;
+      }
+      /* A no-op move would still remove and re-insert, dropping focus. */
+      if (chips.parentElement !== home) {
+        /*
+         * `moveBefore` is the state-preserving move: no remove+insert,
+         * so a focused or open chip inside keeps its focus — a plain
+         * `prepend` detaches it for a moment and the popover's focus-out
+         * dismissal reads that as "focus left".
+         */
+        if ("moveBefore" in home) {
+          (home as Element & { moveBefore: (node: Node, child: Node | null) => void }).moveBefore(
+            chips,
+            home.firstChild,
+          );
+        } else {
+          home.prepend(chips);
+        }
+      }
+      if (up) {
+        islandHome?.style.removeProperty("display");
+      } else {
+        islandHome?.style.setProperty("display", "none");
+      }
+    };
+    const observer = new ResizeObserver(dock);
+    if (stack !== undefined) {
+      observer.observe(stack);
+    }
+    dock();
+    narrow.addEventListener("change", dock);
+    onCleanup(() => {
+      observer.disconnect();
+      narrow.removeEventListener("change", dock);
+    });
+  });
+
   return (
-    <div>
+    <div ref={stack} class={styles.stack}>
+      <div ref={islandHome} class={styles.island} style={{ display: "none" }} />
       <div class={cx(styles.composer, styles.composerRelative)}>
         {props.overlay}
         <textarea
@@ -79,8 +144,8 @@ export default function ComposerShell(props: ComposerShellProps) {
           onInput={(event) => props.onInput(event.currentTarget.value)}
           onKeyDown={onKeyDown}
         />
-        <div class={styles.controls}>
-          {props.controls}
+        <div ref={controlsRow} class={styles.controls}>
+          {chips}
           {props.trailing}
           {props.action}
         </div>

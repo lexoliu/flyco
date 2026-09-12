@@ -34,6 +34,20 @@ class StubResizeObserver implements ResizeObserver {
 
 vi.stubGlobal("ResizeObserver", StubResizeObserver);
 
+// Nor window.matchMedia, which ComposerShell reads to decide whether the
+// chips float as an island over the box — never narrow in a test.
+window.matchMedia = (query: string): MediaQueryList =>
+  ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }) as MediaQueryList;
+
 // vite-plugin-pwa's virtual module only exists inside a real Vite build;
 // components that call registerSW() need a stand-in for it under Vitest.
 vi.mock("virtual:pwa-register", () => ({
@@ -121,6 +135,7 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
         repo: "octocat/hello-world",
         harness: "claude_code",
         model: { model: "default" },
+        permission_mode: "auto",
         // Freshly opened, machine still being built: what a new user sees
         // first, and the state whose empty transcript is easiest to get wrong.
         state: "provisioning",

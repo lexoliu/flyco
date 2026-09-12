@@ -185,6 +185,15 @@ export interface SessionComposerProps {
    */
   controls?: JSX.Element | undefined;
   /**
+   * What sits between the chips and send: the mode, the model, the ring.
+   *
+   * Separate from `controls` because they are a different kind of thing
+   * under the island rule — the chips say where the session runs and the
+   * trailing says what the next turn runs under — and when the row runs
+   * out the chips float above the box while these stay beside send.
+   */
+  trailing?: JSX.Element | undefined;
+  /**
    * Whether the session's daemon is there to take what only it can take.
    *
    * Prompts are not gated on it — the room's mailbox holds them for the
@@ -380,6 +389,7 @@ export default function SessionComposer(props: SessionComposerProps) {
       label="Message the agent"
       submitOn="enter"
       controls={props.controls}
+      trailing={props.trailing}
       onKeyDown={onKeyDown}
       ref={(element) => {
         field = element;

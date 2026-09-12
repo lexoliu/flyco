@@ -22,6 +22,25 @@
   border-color: var(--color-border-strong);
 }
 
+/* The composer and whatever floats over it — the chips' island when the
+   row under the field runs out of room. A plain block: `.composer`
+   carries the size container the queries measure. */
+.stack {
+  display: block;
+}
+
+/* The chips escaped from the box: the row they would have been under the
+   field, floated above it instead — Codex's island. It wraps among
+   itself, and each extra row is one more layer over the composer. */
+.island {
+  margin-bottom: var(--space-2);
+}
+
+/* The chips' carrier between its two homes: a box that draws no box. */
+.islandCarry {
+  display: contents;
+}
+
 /* The anchor a floating panel — the session's command palette — sits over. */
 .composerRelative {
   position: relative;
@@ -86,15 +105,14 @@
    reflows the chips under an open popover. After the base rule, because
    `flex` above resets the basis this overrides. */
 @media (max-width: 900px) {
-  /* The chips take the row and what follows them — the model, the
-     context ring, send — takes the next, right-aligned. Sharing one row
-     squeezed the machine chip to `D4…` on a phone, which names nothing. */
+  /* The chips have left the row for the island above the box (the
+     matching threshold in ComposerShell); what remains — the model, the
+     context ring, send — may still wrap among itself on a phone. The
+     compute chip takes a whole line of the island for the reason it used
+     to take one of the row: its label rewrites on every slider detent,
+     and a chip that reflows its neighbours under an open popover is a
+     popover that wanders. */
   .controls {
-    flex-wrap: wrap;
-  }
-
-  .chips {
-    flex: 1 0 100%;
     flex-wrap: wrap;
   }
 
@@ -103,17 +121,11 @@
   }
 }
 
-/* The same split when the composer itself is too narrow for the row —
-   the session drawer takes ~480px at any viewport width. Below ~600px the
-   chips' minimum content does not fit beside the model chip, the ring, and
-   send, and shrinking them mid-row reads as breakage. */
+/* The same conditions measured on the composer rather than the viewport —
+   the session drawer takes ~480px at any viewport width. */
 @container (max-width: 600px) {
   .controls {
     flex-wrap: wrap;
-  }
-
-  .chips {
-    flex: 1 0 100%;
   }
 
   .anchorShrink {

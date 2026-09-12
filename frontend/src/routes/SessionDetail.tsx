@@ -1095,92 +1095,96 @@ export default function SessionDetail() {
                 machineUp={machineUp()}
                 deferred={deferredNote()}
                 controls={
-                  <>
+                  /*
+                    The session's own row (docs/ux.md §9.3): what it runs
+                    on, what that costs, and what it may spend — each a
+                    readout that opens the control that changes it, where
+                    the official composers keep the same things.
+                  */
+                  <div class={composerStyles.chips}>
+                    <Show when={machine()}>
+                      {(view) => (
+                        <Popover
+                          label="Machine"
+                          panelClass={composerStyles.popoverWide}
+                          openAt={machinePanelAt()}
+                          trigger={(attrs) => (
+                            <button
+                              id={attrs.id}
+                              onClick={attrs.onClick}
+                              aria-expanded={attrs.expanded()}
+                              aria-haspopup="dialog"
+                              type="button"
+                              class={composerStyles.chip}
+                              title="Machine"
+                            >
+                              <Server size={13} aria-hidden="true" />
+                              <span class={composerStyles.chipLabel}>{machineChip(view())}</span>
+                            </button>
+                          )}
+                        >
+                          {() => (
+                            <MachinePanel
+                              sessionId={params.id}
+                              machine={view()}
+                              openResize={machineResizeAt()}
+                              onChanged={() => void refetchMachine()}
+                              embedded
+                            />
+                          )}
+                        </Popover>
+                      )}
+                    </Show>
+                    <Show when={session()}>
+                      {(current) => (
+                        <BudgetRaise
+                          limitUsd={usdMicrosToDollars(current().budget.limit)}
+                          spentUsd={usdMicrosToDollars(current().budget.spent)}
+                          saving={settingBudget()}
+                          onSet={(dollars) => void onSetBudget(dollars)}
+                          trigger={(attrs) => (
+                            <button
+                              id={attrs.id}
+                              onClick={attrs.onClick}
+                              aria-expanded={attrs.expanded()}
+                              aria-haspopup="dialog"
+                              type="button"
+                              class={composerStyles.chip}
+                              title="Set the compute budget"
+                            >
+                              <Wallet size={13} aria-hidden="true" />
+                              <span class={composerStyles.chipLabel}>
+                                ${(budgetSpentUsd() ?? 0).toFixed(2)} / $
+                                {(budgetLimitUsd() ?? 0).toFixed(0)}
+                              </span>
+                            </button>
+                          )}
+                        />
+                      )}
+                    </Show>
                     {/*
-                      The session's own row (docs/ux.md §9.3): what it runs
-                      on, what that costs, and what it may spend — each a
-                      readout that opens the control that changes it, where
-                      the official composers keep the same things.
+                      The goal is a setting of the session, not a line in
+                      it — a chip like the model's, offered only where the
+                      running harness says it takes one.
                     */}
-                    <div class={composerStyles.chips}>
-                      <Show when={machine()}>
-                        {(view) => (
-                          <Popover
-                            label="Machine"
-                            panelClass={composerStyles.popoverWide}
-                            openAt={machinePanelAt()}
-                            trigger={(attrs) => (
-                              <button
-                                id={attrs.id}
-                                onClick={attrs.onClick}
-                                aria-expanded={attrs.expanded()}
-                                aria-haspopup="dialog"
-                                type="button"
-                                class={composerStyles.chip}
-                                title="Machine"
-                              >
-                                <Server size={13} aria-hidden="true" />
-                                <span class={composerStyles.chipLabel}>{machineChip(view())}</span>
-                              </button>
-                            )}
-                          >
-                            {() => (
-                              <MachinePanel
-                                sessionId={params.id}
-                                machine={view()}
-                                openResize={machineResizeAt()}
-                                onChanged={() => void refetchMachine()}
-                                embedded
-                              />
-                            )}
-                          </Popover>
-                        )}
-                      </Show>
-                      <Show when={session()}>
-                        {(current) => (
-                          <BudgetRaise
-                            limitUsd={usdMicrosToDollars(current().budget.limit)}
-                            spentUsd={usdMicrosToDollars(current().budget.spent)}
-                            saving={settingBudget()}
-                            onSet={(dollars) => void onSetBudget(dollars)}
-                            trigger={(attrs) => (
-                              <button
-                                id={attrs.id}
-                                onClick={attrs.onClick}
-                                aria-expanded={attrs.expanded()}
-                                aria-haspopup="dialog"
-                                type="button"
-                                class={composerStyles.chip}
-                                title="Set the compute budget"
-                              >
-                                <Wallet size={13} aria-hidden="true" />
-                                <span class={composerStyles.chipLabel}>
-                                  ${(budgetSpentUsd() ?? 0).toFixed(2)} / $
-                                  {(budgetLimitUsd() ?? 0).toFixed(0)}
-                                </span>
-                              </button>
-                            )}
-                          />
-                        )}
-                      </Show>
-                      {/*
-                        The goal is a setting of the session, not a line in
-                        it — a chip like the model's, offered only where the
-                        running harness says it takes one.
-                      */}
-                      <Show when={commands().find((command) => command.name === "goal")}>
-                        {(command) => (
-                          <GoalChip
-                            description={command().description}
-                            onSet={(condition) => onSend(`/goal ${condition}`)}
-                          />
-                        )}
-                      </Show>
-                    </div>
+                    <Show when={commands().find((command) => command.name === "goal")}>
+                      {(command) => (
+                        <GoalChip
+                          description={command().description}
+                          onSet={(condition) => onSend(`/goal ${condition}`)}
+                        />
+                      )}
+                    </Show>
+                  </div>
+                }
+                trailing={
+                  <>
                     {/*
                       At the right, beside send, where both official apps
                       keep their model: the last thing checked before a
-                      message goes out.
+                      message goes out. These stay in the box when the
+                      chips island — the chips say where the session runs,
+                      these say what the next turn runs under.
                     */}
                     {/*
                       The mode, beside the model: both say what the next

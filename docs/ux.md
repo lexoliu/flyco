@@ -337,10 +337,14 @@ curated type (§7.5).
 The chips sit on one line at desktop widths. The compute chip is the one
 that gives way (its label shrinks to an ellipsis), so choosing a machine —
 which rewrites that label on every slider detent — never reflows the row
-under the open popover. Below 900px the row wraps and the compute chip takes
-a whole line for the same reason. A popover never hangs below the viewport:
-it takes the room between its top edge and the bottom of the window and
-scrolls inside it.
+under the open popover. When the row cannot hold them — a viewport under
+~900px or a composer under ~600px, the latter being the drawer's width at
+any window size — the chips leave the box entirely and float above it as
+an island, wrapping layer on layer there instead of squeezing the send
+row into a second line inside the card; the compute chip takes a whole
+line of the island for the same reason. A popover never hangs below the
+viewport: it takes the room between its top edge and the bottom of the
+window and scrolls inside it.
 
 GitHub refusing the token flyco holds (`424 github-token-revoked`) is not a
 sign-out. The repository and branch chips show the refusal as a notice with
@@ -778,6 +782,15 @@ session still has a say over, as the official composers do, left to right:
   window has been reported at all, the fullest plan window stands in for
   the ring's reading, labelled for what it is;
 - then send, which becomes `Stop` while a turn is in flight.
+
+The island of §5 applies here under the same rule, split along what each
+control is for: when the row cannot hold it, the chips that say where the
+session runs — the machine, the budget, the goal — float above the box
+and stack, while the ones that say what the next turn runs under — the
+mode, the model, the ring — stay beside send inside it. The move is a
+move: the chips' live subtree changes parents rather than re-rendering,
+so a popover open mid-crossing rides along and re-anchors to where its
+chip landed.
 
 The composer sits at the foot of the window even when the transcript is
 three lines long: the page is at least a window tall, and the composer is
