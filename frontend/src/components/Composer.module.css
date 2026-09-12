@@ -4,6 +4,10 @@
  * nothing else on the screen is allowed to look like this.
  */
 .composer {
+  /* A size container: the controls split below is decided by how wide the
+     composer is, which a drawer or a narrow pane shrinks without touching
+     the viewport width a media query sees. */
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -92,6 +96,24 @@
   .chips {
     flex: 1 0 100%;
     flex-wrap: wrap;
+  }
+
+  .anchorShrink {
+    flex-basis: 100%;
+  }
+}
+
+/* The same split when the composer itself is too narrow for the row —
+   the session drawer takes ~480px at any viewport width. Below ~600px the
+   chips' minimum content does not fit beside the model chip, the ring, and
+   send, and shrinking them mid-row reads as breakage. */
+@container (max-width: 600px) {
+  .controls {
+    flex-wrap: wrap;
+  }
+
+  .chips {
+    flex: 1 0 100%;
   }
 
   .anchorShrink {
