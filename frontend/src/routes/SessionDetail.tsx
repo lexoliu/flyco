@@ -29,6 +29,8 @@ import { AlertTriangle, Server, Wallet } from "lucide-solid";
 import { BudgetRaise } from "../components/BudgetPicker";
 import ConfirmDialog from "../components/ConfirmDialog";
 import ModelChip from "../components/ModelChip";
+import MachinePanel from "../components/MachinePanel";
+import Popover from "../components/Popover";
 import ProblemNotice from "../components/ProblemNotice";
 import { useReadiness } from "../components/Readiness";
 import ContextRing from "../components/ContextRing";
@@ -515,11 +517,26 @@ export default function SessionDetail() {
   const [settingModel, setSettingModel] = createSignal(false);
   const [pendingDirtySummary, setPendingDirtySummary] = createSignal<string | null>(null);
   const [drawerOpen, setDrawerOpen] = createSignal(false);
-  const [panelRequest, setPanelRequest] = createSignal<{
-    panel: "machine" | "env";
-    at: number;
-    resize?: boolean;
-  }>();
+  /**
+   * Requests to open the machine's popover — `⋯` Resize, `/resize`, the
+   * drawer's offline notice — or the drawer's `.env` tab (`Edit .env`).
+   * Each carries its instant so that asking twice is two requests.
+   */
+  const [machinePanelAt, setMachinePanelAt] = createSignal<number>();
+  const [machineResizeAt, setMachineResizeAt] = createSignal<number>();
+  const [envPanelAt, setEnvPanelAt] = createSignal<number>();
+
+  function requestPanel(request: { panel: "machine" | "env"; resize?: boolean }): void {
+    const at = Date.now();
+    if (request.panel === "machine") {
+      setMachinePanelAt(at);
+      if (request.resize === true) {
+        setMachineResizeAt(at);
+      }
+      return;
+    }
+    setEnvPanelAt(at);
+  }
 
   /**
    * Prefers the relay socket whenever it is live — lower latency, and the
@@ -632,10 +649,11 @@ export default function SessionDetail() {
         void onArchive(false);
         break;
       case "resize":
-        // Resizing is a choice among machine types, and the machine tab is
-        // where that choice is made; the request carries the intent so the
-        // tab opens on the control rather than beside it (issue #138).
-        setPanelRequest({ panel: "machine", at: Date.now(), resize: true });
+        // Resizing is a choice among machine types, and the machine chip's
+        // panel is where that choice is made; the request carries the
+        // intent so the panel opens on the control rather than beside it
+        // (issue #138).
+        requestPanel({ panel: "machine", resize: true });
         break;
     }
   }
@@ -805,7 +823,7 @@ export default function SessionDetail() {
         onStopMachine={() => void onMachine("stop")}
         drawerOpen={drawerOpen()}
         onToggleDrawer={() => setDrawerOpen((was) => !was)}
-        onOpenPanel={(request) => setPanelRequest({ ...request, at: Date.now() })}
+        onOpenPanel={requestPanel}
       />
 
       {/*
@@ -1033,20 +1051,35 @@ export default function SessionDetail() {
                     <div class={composerStyles.chips}>
                       <Show when={machine()}>
                         {(view) => (
-                          <button
-                            type="button"
-                            class={composerStyles.chip}
-                            title="Machine"
-                            onClick={() =>
-                              setPanelRequest({
-                                panel: "machine",
-                                at: Date.now(),
-                              })
-                            }
+                          <Popover
+                            label="Machine"
+                            panelClass={composerStyles.popoverWide}
+                            openAt={machinePanelAt()}
+                            trigger={(attrs) => (
+                              <button
+                                id={attrs.id}
+                                onClick={attrs.onClick}
+                                aria-expanded={attrs.expanded()}
+                                aria-haspopup="dialog"
+                                type="button"
+                                class={composerStyles.chip}
+                                title="Machine"
+                              >
+                                <Server size={13} aria-hidden="true" />
+                                <span class={composerStyles.chipLabel}>{machineChip(view())}</span>
+                              </button>
+                            )}
                           >
-                            <Server size={13} aria-hidden="true" />
-                            <span class={composerStyles.chipLabel}>{machineChip(view())}</span>
-                          </button>
+                            {() => (
+                              <MachinePanel
+                                sessionId={params.id}
+                                machine={view()}
+                                openResize={machineResizeAt()}
+                                onChanged={() => void refetchMachine()}
+                                embedded
+                              />
+                            )}
+                          </Popover>
                         )}
                       </Show>
                       <Show when={session()}>
@@ -1125,7 +1158,8 @@ export default function SessionDetail() {
           liveRepoSummary={liveRepoSummary()}
           open={drawerOpen()}
           onOpenChange={setDrawerOpen}
-          openPanel={panelRequest()}
+          openEnv={envPanelAt()}
+          onOpenMachine={() => requestPanel({ panel: "machine" })}
         />
       </div>
     </section>

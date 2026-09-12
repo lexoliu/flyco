@@ -11,33 +11,31 @@
  * questions: what is on the disk, and what did the agent change. Both are
  * read live from the machine, and so is the terminal — with no machine
  * there is nothing behind those tabs, so the tabs themselves grey out
- * rather than open on an apology. `Machine` and `Env` stay: the `.env`
- * lives in the control plane, and the machine tab is where a stopped
- * machine is started.
+ * rather than open on an apology. `Env` stays: the `.env` lives in the
+ * control plane. The machine itself is not a tab — its panel hangs off the
+ * composer's machine chip, where the readout that names it already is.
  *
  * `⌘.` (`Ctrl+.` off macOS) toggles it, which is the one keyboard shortcut
  * on the page. On a phone there is no room beside the transcript, so the
  * drawer covers it instead and carries its own close button; the header's
  * toggle is behind it.
  */
-import { For, Match, Show, Switch, createEffect, createSignal, onCleanup } from "solid-js";
-import { Cpu, FileCode2, GitCompare, SlidersHorizontal, TerminalSquare, Unplug, X } from "lucide-solid";
+import { For, Match, Show, Switch, createEffect, createSignal, on, onCleanup } from "solid-js";
+import { FileCode2, GitCompare, SlidersHorizontal, TerminalSquare, Unplug, X } from "lucide-solid";
 import DiffPanel from "./DiffPanel";
 import EnvEditor from "./EnvEditor";
 import FilesPanel from "./FilesPanel";
-import MachinePanel from "./MachinePanel";
 import TerminalPanel from "./terminal/TerminalPanel";
 import type { SessionRelay } from "../api/relay";
 import { cx } from "../lib/cx";
 import styles from "./SessionDrawer.module.css";
 
-type Tab = "terminal" | "files" | "diff" | "machine" | "env";
+type Tab = "terminal" | "files" | "diff" | "env";
 
 const TABS: readonly { id: Tab; label: string; needsMachine?: boolean }[] = [
   { id: "terminal", label: "Terminal", needsMachine: true },
   { id: "files", label: "Files", needsMachine: true },
   { id: "diff", label: "Diff", needsMachine: true },
-  { id: "machine", label: "Machine" },
   { id: "env", label: "Env" },
 ];
 
@@ -65,14 +63,19 @@ export interface SessionDrawerProps {
   /** Latest `repo_dirty` summary from the relay, when one has arrived. */
   liveRepoSummary: string | null;
   /**
-   * A request to open the drawer on one tab, from the header's `⋯` menu or
-   * a `/resize` command.
+   * A request to open the drawer on the `.env` tab, from the header's `⋯`
+   * menu.
    *
-   * Carries the instant it was made so that asking for the same tab twice
-   * is two requests: without it, a user who closed the drawer and picked
-   * `Edit .env` again would set an unchanged signal and see nothing happen.
+   * Carries the instant it was made so that asking twice is two requests:
+   * without it, a user who closed the drawer and picked `Edit .env` again
+   * would set an unchanged signal and see nothing happen.
    */
-  openPanel?: { panel: "machine" | "env"; at: number; resize?: boolean } | undefined;
+  openEnv?: number | undefined;
+  /**
+   * Opens the machine's own panel — the popover on the composer's machine
+   * chip. A notice about the machine owes the user the way to it.
+   */
+  onOpenMachine?: (() => void) | undefined;
 }
 
 export default function SessionDrawer(props: SessionDrawerProps) {
@@ -85,23 +88,18 @@ export default function SessionDrawer(props: SessionDrawerProps) {
    */
   const offline = () =>
     props.machineUp === false && TABS.find((entry) => entry.id === tab())?.needsMachine === true;
-  /**
-   * When the machine tab was last asked for a resize, rather than merely
-   * asked for: `/resize` wants the control, and the `⋯` menu's `Resize`
-   * wants the same thing, while `Edit .env` wants neither.
-   */
-  const [resizeAt, setResizeAt] = createSignal<number | undefined>(undefined);
 
-  createEffect(() => {
-    const request = props.openPanel;
-    if (request !== undefined) {
-      setTab(request.panel);
-      props.onOpenChange(true);
-      if (request.resize === true) {
-        setResizeAt(request.at);
-      }
-    }
-  });
+  createEffect(
+    on(
+      () => props.openEnv,
+      (at) => {
+        if (at !== undefined) {
+          setTab("env");
+          props.onOpenChange(true);
+        }
+      },
+    ),
+  );
 
   createEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
@@ -149,9 +147,6 @@ export default function SessionDrawer(props: SessionDrawerProps) {
                     <Match when={entry.id === "diff"}>
                       <GitCompare size={13} aria-hidden="true" />
                     </Match>
-                    <Match when={entry.id === "machine"}>
-                      <Cpu size={13} aria-hidden="true" />
-                    </Match>
                     <Match when={entry.id === "env"}>
                       <SlidersHorizontal size={13} aria-hidden="true" />
                     </Match>
@@ -177,11 +172,11 @@ export default function SessionDrawer(props: SessionDrawerProps) {
                 <div class={styles.offline}>
                   <Unplug size={18} aria-hidden="true" />
                   <p class={styles.offlineTitle}>The machine is not connected</p>
-                  <p class={styles.offlineHint}>This pane answers live — start or inspect it on the Machine tab.</p>
+                  <p class={styles.offlineHint}>This pane answers live — the machine's panel is on its chip below.</p>
                   <button
                     type="button"
                     class={styles.offlineGo}
-                    onClick={() => setTab("machine")}
+                    onClick={() => props.onOpenMachine?.()}
                   >
                     Machine
                   </button>
@@ -200,9 +195,6 @@ export default function SessionDrawer(props: SessionDrawerProps) {
                     sessionId={props.sessionId}
                     liveRepoSummary={props.liveRepoSummary}
                   />
-                </Match>
-                <Match when={tab() === "machine"}>
-                  <MachinePanel sessionId={props.sessionId} openResize={resizeAt()} />
                 </Match>
                 <Match when={tab() === "env"}>
                   <EnvEditor sessionId={props.sessionId} />

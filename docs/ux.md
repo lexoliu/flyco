@@ -722,7 +722,8 @@ Same component as the home composer. Its row carries what a running
 session still has a say over, as the official composers do, left to right:
 
 - the **machine**, `D4ps_v6 · $0.17/hr · spot` (or `D4ps_v6 · Stopped`),
-  which opens the drawer's Machine tab;
+  which opens the machine's own popover — the one card for the one
+  machine a session has, §9.4;
 - the **budget**, `$1.20 / $10`, which opens the budget slider of §9.1;
 - then, at the right beside send, the **model chip** of §5, `Fable 5.1 ·
   High`, whose choice is sent as `PATCH /v1/sessions/{id}` with `model`
@@ -799,22 +800,26 @@ palette keeps `/compact` listed but greyed, next to `/archive` and
 ### 9.4 Drawer
 
 A right-side drawer, closed by default, with tabs `Terminal`, `Files`,
-`Diff`, `Machine`, `Env`. `Terminal` is the xterm panel, **connected the
+`Diff`, `Env`. `Terminal` is the xterm panel, **connected the
 moment the tab shows**: a user who opened a terminal asked for a terminal,
 not for a button that opens one. It fills the drawer, and the machine's
 PTY is kept at the size the pane shows (`terminal_resize`, on open and
 on every resize), so a line wraps where the pane wraps it; the shell
-runs under `TERM=xterm-256color`. `Machine` is **one card for the one
-machine** a session has — its name and state on the first line
-(`Standard_D4s_v6 · Running`, or `Container · 4 vCPU · 8 GiB · Running`),
-where and at what price on the second (`Azure · westeurope · Spot ·
-$0.19/hr`), then Stop or Start and Resize. A session never has more than
-one machine, so a table of provider / type / region / capacity rows was a
-form for a fleet that does not exist. `Env` is the existing editor. Its
+runs under `TERM=xterm-256color`. `Env` is the existing editor. Its
 toggle is a panel icon in the header beside `⋯`, where the official apps
 keep theirs; a handle at the top of the transcript column sat exactly
 where the first user message lands and read as an avatar on it. Keyboard:
 `⌘.` toggles the drawer. Closed, it takes no room at all.
+
+`Machine` is not a tab at all: the machine is **one card for the one
+machine** a session has, and a card that is a control belongs on the
+readout that names it — the composer's machine chip opens it as a
+popover. Its name and state on the first line (`Standard_D4s_v6 ·
+Running`, or `Container · 4 vCPU · 8 GiB · Stopped`), where and at what
+price on the second (`Azure · westeurope · Spot · $0.19/hr`), then Stop
+or Start and Resize. A session never has more than one machine, so a
+table of provider / type / region / capacity rows was a form for a fleet
+that does not exist.
 
 On a phone (under 900px) the drawer **covers the transcript** at the full
 height of the screen and carries its own close button at the end of the
@@ -828,7 +833,7 @@ outcomes — and without the account, region and capacity filters, because
 the resize carries a machine type and nothing else. The commit reads
 `Resize to <type>` over the line `Restarts the machine; the disk is kept.`
 `/resize` in the composer and `Resize` in the header's `⋯` menu both open
-that control, not merely the tab it lives on.
+the chip's panel on that control, not merely beside it.
 
 `Files` is the session's checkout, read-only: a lazy tree that fetches one
 directory at a time, files git ignores shown and marked rather than hidden,
@@ -859,7 +864,7 @@ The user is told. The room is the only party that knows whether a daemon is hold
 
 Nothing a browser sends is discarded in silence — and the composer does not let the undeliverable be sent at all. A user message waits in the mailbox and is delivered on the daemon's next `Hello`. What is delivered-or-nothing — a `!` run, `/compact`, a context breakdown, a terminal keystroke — the composer refuses while no machine is connected, saying so where the `!` hint sits. Should one still reach the room — a race against the daemon's departure — the sender is told the machine is off the room rather than left watching a Stop button that did nothing.
 
-The same rule governs the drawer: `Terminal`, `Files`, and `Diff` are answered live by the machine, so with no daemon connected the tabs themselves grey out — a dead end shows as one before it is opened, not after. A tab that was already open when the machine left keeps its place and shows a notice rather than a pane that could only apologise. `Machine` and `Env` stay lit: the `.env` is control-plane data, and the machine tab is where a stopped machine is started.
+The same rule governs the drawer: `Terminal`, `Files`, and `Diff` are answered live by the machine, so with no daemon connected the tabs themselves grey out — a dead end shows as one before it is opened, not after. A tab that was already open when the machine left keeps its place and shows a notice rather than a pane that could only apologise, and the notice points at the machine chip's popover, where a stopped machine is started. `Env` stays lit: the `.env` is control-plane data.
 
 ### 9.7 When the agent process dies
 

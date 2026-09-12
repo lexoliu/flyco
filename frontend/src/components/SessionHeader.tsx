@@ -69,11 +69,12 @@ export interface SessionHeaderProps {
   /** Opens or closes it; the header holds the toggle, the page holds the state. */
   onToggleDrawer: () => void;
   /**
-   * Opens the drawer on a given tab, for the menu items that live there.
+   * Opens the panel a menu item names: `env` is a drawer tab, `machine` is
+   * the popover on the composer's machine chip.
    *
-   * `Resize` asks for the resize control itself rather than for the tab it
-   * is on: a menu item that opened a panel and left the user to find the
-   * button did half of what it said (issue #138).
+   * `Resize` asks for the resize control itself rather than for the panel
+   * it is on: a menu item that opened a panel and left the user to find
+   * the button did half of what it said (issue #138).
    */
   onOpenPanel: (request: { panel: "machine" | "env"; resize?: boolean }) => void;
 }

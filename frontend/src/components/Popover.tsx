@@ -13,7 +13,7 @@
  * it. Opening moves focus into the panel, which is what makes the keyboard
  * path work and what makes "focus left" a usable close condition.
  */
-import { type JSX, Show, createEffect, createSignal, createUniqueId, onCleanup } from "solid-js";
+import { type JSX, Show, createEffect, createSignal, createUniqueId, on, onCleanup } from "solid-js";
 import { cx } from "../lib/cx";
 import styles from "./Popover.module.css";
 
@@ -53,6 +53,15 @@ export interface PopoverProps {
    * the caller knows better than the viewport.
    */
   side?: "bottom" | "top" | undefined;
+  /**
+   * A request to open the panel from outside its trigger — a `⋯` item or a
+   * `/` command that names the panel it wants.
+   *
+   * Carries the instant it was made rather than a plain flag so that asking
+   * twice is two requests: a user who closes the panel and picks `Resize`
+   * again would otherwise set an unchanged signal and see nothing happen.
+   */
+  openAt?: number | undefined;
   /** Extra class on the panel, for callers that need a width. */
   panelClass?: string | undefined;
   /**
@@ -84,6 +93,17 @@ export default function Popover(props: PopoverProps) {
   function close(): void {
     setOpen(false);
   }
+
+  createEffect(
+    on(
+      () => props.openAt,
+      (at) => {
+        if (at !== undefined) {
+          setOpen(true);
+        }
+      },
+    ),
+  );
 
   createEffect(() => {
     if (!open()) {

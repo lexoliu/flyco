@@ -8,6 +8,15 @@
   gap: var(--space-3);
 }
 
+/* Inside a popover the card chrome doubles the panel's — the chip's panel
+   is already the card. */
+.embedded {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
 .headline {
   display: flex;
   align-items: center;

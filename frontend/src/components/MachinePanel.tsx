@@ -4,7 +4,6 @@ import { MachineResize } from "./MachinePicker";
 import ProblemNotice from "./ProblemNotice";
 import {
   getMachineCatalog,
-  getSessionMachine,
   listProviders,
   resizeSessionMachine,
   startSessionMachine,
@@ -18,12 +17,21 @@ import {
   runtimeOf,
   shortMachineType,
 } from "../lib/machines";
+import { cx } from "../lib/cx";
 import { formatUsd } from "../lib/money";
 import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./MachinePanel.module.css";
 
 export interface MachinePanelProps {
   sessionId: string;
+  /**
+   * The machine the panel acts on, owned by the page.
+   *
+   * Queries share no cache, so a panel that fetched its own view would
+   * leave the composer's chip quoting the state the action replaced; the
+   * page's copy is the one every label reads.
+   */
+  machine: MachineView;
   /**
    * A request to open the resize control, from `/resize` in the composer.
    *
@@ -32,17 +40,24 @@ export interface MachinePanelProps {
    * set an unchanged signal and see nothing happen.
    */
   openResize?: number | undefined;
+  /** A start/stop/resize landed, so the owning query refetches. */
+  onChanged?: (() => void) | undefined;
+  /**
+   * Inside a popover, where the card's own border and padding would double
+   * the panel's.
+   */
+  embedded?: boolean | undefined;
 }
 
 /**
  * The machine a session runs on: type, region, lifecycle state, whether it
  * actually holds spot capacity, and what it costs per hour — plus
  * start/stop/resize. There is no dedicated relay event for machine state
- * changes, so this refetches after every action rather than listening for
- * one.
+ * changes, so `onChanged` refetches after every action rather than
+ * listening for one.
  */
 export default function MachinePanel(props: MachinePanelProps) {
-  const [machine, { refetch }] = createQuery(() => props.sessionId, getSessionMachine);
+  const machine = () => props.machine;
   const [catalog] = createQuery(() => getMachineCatalog());
   // The account labels the slider's filters read; the catalog itself only
   // carries account ids.
@@ -72,7 +87,7 @@ export default function MachinePanel(props: MachinePanelProps) {
     setError(null);
     try {
       await startSessionMachine(props.sessionId);
-      await refetch();
+      props.onChanged?.();
     } catch (err) {
       setError(err);
     } finally {
@@ -85,7 +100,7 @@ export default function MachinePanel(props: MachinePanelProps) {
     setError(null);
     try {
       await stopSessionMachine(props.sessionId);
-      await refetch();
+      props.onChanged?.();
     } catch (err) {
       setError(err);
     } finally {
@@ -98,7 +113,7 @@ export default function MachinePanel(props: MachinePanelProps) {
     setError(null);
     try {
       await resizeSessionMachine(props.sessionId, machineType);
-      await refetch();
+      props.onChanged?.();
       setResizing(false);
     } catch (err) {
       setError(err);
@@ -125,66 +140,53 @@ export default function MachinePanel(props: MachinePanelProps) {
   });
 
   return (
-    <section class={styles.panel} aria-label="Machine">
+    <section class={cx(styles.panel, props.embedded === true && styles.embedded)} aria-label="Machine">
       {/* The catalog is what the resize list is built from, so its failure
           belongs here too: without it the dropdown is empty for a reason the
           panel would otherwise never give. */}
-      <ProblemNotice error={machine.error ?? catalog.error} />
-      <Show when={!machine.loading}>
+      <ProblemNotice error={catalog.error} />
+      {/* One machine, said once: what it is and where it is in its life on
+          the first line, where it runs and what it costs on the second. A
+          session has exactly one, so this is a fact, not a list. */}
+      <div class={styles.headline}>
+        <span class={styles.name}>{machineName(machine(), entry())}</span>
+        <span class={styles.state} data-state={machine().state}>
+          {MACHINE_STATE_LABEL[machine().state]}
+        </span>
+      </div>
+      <p class={styles.where}>{whereLabel(machine(), entry())}</p>
+      <ProblemNotice error={error()} />
+      <div class={styles.actions}>
         <Show
-          when={machine()}
-          fallback={<p class={styles.empty}>No machine yet: one is reserved when the session starts.</p>}
+          when={machine().state === "running"}
+          fallback={
+            <button type="button" disabled={busy()} onClick={() => void onStart()}>
+              Start
+            </button>
+          }
         >
-          {(view) => (
-            <>
-              {/* One machine, said once: what it is and where it is in its
-                  life on the first line, where it runs and what it costs on
-                  the second. A session has exactly one, so this is a fact,
-                  not a list. */}
-              <div class={styles.headline}>
-                <span class={styles.name}>{machineName(view(), entry())}</span>
-                <span class={styles.state} data-state={view().state}>
-                  {MACHINE_STATE_LABEL[view().state]}
-                </span>
-              </div>
-              <p class={styles.where}>{whereLabel(view(), entry())}</p>
-              <ProblemNotice error={error()} />
-              <div class={styles.actions}>
-                <Show
-                  when={view().state === "running"}
-                  fallback={
-                    <button type="button" disabled={busy()} onClick={() => void onStart()}>
-                      Start
-                    </button>
-                  }
-                >
-                  <button type="button" disabled={busy()} onClick={() => void onStop()}>
-                    Stop
-                  </button>
-                </Show>
-                <Show when={!resizing()}>
-                  <button type="button" disabled={busy()} onClick={() => setResizing(true)}>
-                    Resize
-                  </button>
-                </Show>
-              </div>
-              {/* The same tiered slider the home composer picks a machine
-                  with (docs/ux.md §7.7), on the machine this session is
-                  already on. */}
-              <Show when={resizing()}>
-                <MachineResize
-                  catalog={catalog()?.entries ?? []}
-                  accounts={providers() ?? []}
-                  error={catalog.error ?? providers.error}
-                  current={view()}
-                  saving={busy()}
-                  onResize={(machineType) => void onResize(machineType)}
-                  onCancel={() => setResizing(false)}
-                />
-              </Show>
-            </>
-          )}
+          <button type="button" disabled={busy()} onClick={() => void onStop()}>
+            Stop
+          </button>
         </Show>
+        <Show when={!resizing()}>
+          <button type="button" disabled={busy()} onClick={() => setResizing(true)}>
+            Resize
+          </button>
+        </Show>
+      </div>
+      {/* The same tiered slider the home composer picks a machine with
+          (docs/ux.md §7.7), on the machine this session is already on. */}
+      <Show when={resizing()}>
+        <MachineResize
+          catalog={catalog()?.entries ?? []}
+          accounts={providers() ?? []}
+          error={catalog.error ?? providers.error}
+          current={machine()}
+          saving={busy()}
+          onResize={(machineType) => void onResize(machineType)}
+          onCancel={() => setResizing(false)}
+        />
       </Show>
     </section>
   );
