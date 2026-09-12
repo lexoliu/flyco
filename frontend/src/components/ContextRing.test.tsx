@@ -53,6 +53,7 @@ function mount(overrides: Partial<ContextRingProps> = {}) {
       }),
     ],
     now: NOW,
+    machineUp: true,
     onBreakdown: vi.fn(),
     ...overrides,
   };
@@ -100,6 +101,17 @@ describe("ContextRing", () => {
 
     expect(props.onBreakdown).toHaveBeenCalledOnce();
     expect(queryByRole("dialog")).toBeNull();
+  });
+
+  it("greys the breakdown action while no machine is connected to answer it", () => {
+    const { props, getByRole } = mount({ machineUp: false });
+
+    getByRole("button", { name: /Context/ }).click();
+
+    const action = getByRole("button", { name: /detailed breakdown/ });
+    expect(action).toBeDisabled();
+    action.click();
+    expect(props.onBreakdown).not.toHaveBeenCalled();
   });
 
   it("draws the plain fill, not segments, before any breakdown has been asked for", () => {

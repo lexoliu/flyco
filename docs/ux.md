@@ -783,6 +783,15 @@ A message beginning with `!` runs in the machine's bash, and the composer
 says so under the field while typing one. The placeholder is one line:
 `Reply, / for a command, ! for the shell`.
 
+Everything a message carries decides whether it can be held for a machine
+that is not there. A prompt waits in the room's mailbox, so the composer
+takes it in every connected state. A `!` run, a `/compact`, a context
+breakdown and a terminal keystroke are delivered to the daemon or they are
+nothing, so while no machine is connected the composer refuses them rather
+than sending them to die: the `!` line's hint becomes the refusal and the
+palette keeps `/compact` listed but greyed, next to `/archive` and
+`/resize`, which the control plane runs itself and which still work.
+
 ### 9.4 Drawer
 
 A right-side drawer, closed by default, with tabs `Terminal`, `Files`,
@@ -844,7 +853,7 @@ The relay is quiet for as long as the agent is thinking, and a quiet TCP flow is
 
 The user is told. The room is the only party that knows whether a daemon is holding it — a browser sees frames arrive and stop, and cannot tell an agent that is thinking from a machine that fell off the network — so it announces the machine attaching and detaching, and the header reads `Disconnected · machine not reachable` instead of a `Working` pill that breathes forever over a turn nobody is running. Attention, not failure: the daemon comes back on its own, and the pill goes back to what the session was doing when it does.
 
-Nothing a browser sends is discarded in silence. A user message waits in the mailbox and is delivered on the daemon's next `Hello`. An interrupt, a compaction and a terminal keystroke are worth nothing to a daemon that is not there and are not held — but the browser that sent one is told the machine is off the room, rather than being left watching a Stop button that did nothing. A `!` command answers immediately with `Offline`.
+Nothing a browser sends is discarded in silence — and the composer does not let the undeliverable be sent at all. A user message waits in the mailbox and is delivered on the daemon's next `Hello`. What is delivered-or-nothing — a `!` run, `/compact`, a context breakdown, a terminal keystroke — the composer refuses while no machine is connected, saying so where the `!` hint sits, and the terminal pane says the shell is closed rather than showing one that swallows input. Should one still reach the room — a race against the daemon's departure — the sender is told the machine is off the room rather than left watching a Stop button that did nothing.
 
 The same rule governs the drawer: `Files` and `Diff` are answered live by the machine, so with no daemon connected they say the machine is not connected. They never report it as a control-plane failure, which sends the user looking in the wrong place for a problem that is not there.
 
@@ -875,7 +884,7 @@ Both the countdown and the clock time, because they answer different questions �
 
 Ten minutes before the reset flyco starts the machine again, so that the agent is up and ready when the window turns over rather than provisioning through it. At the reset the session is continued: `usage limit reset, please continue`, sent on the user's behalf and marked in the transcript as flyco's, because a reader coming back to a session that carried on overnight has to be able to tell that sentence from one they typed. The session reads `Active` again.
 
-The composer stays open the whole time and says where a message goes: `Sent when the window resets, at 7:35 PM`. What is typed there is held against the pause and sent **instead of** flyco's canned continuation, because a user who has said what to do next has said something better than "please continue". A `!` command is not held — it runs on the machine there and then, whatever the plan's limits are doing — and while the machine is stopped it answers `Offline` as it does in §9.6.
+The composer stays open the whole time and says where a message goes: `Sent when the window resets, at 7:35 PM`. What is typed there is held against the pause and sent **instead of** flyco's canned continuation, because a user who has said what to do next has said something better than "please continue". A `!` command is not held — it runs on the machine there and then, whatever the plan's limits are doing — and while the machine is stopped the composer refuses it, as in §9.6.
 
 Both ends of the wait are a web push, because the whole point is that the user does not have to sit there: one when the session pauses, saying which window and when it resets, and one when it starts working again.
 

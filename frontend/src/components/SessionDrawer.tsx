@@ -51,6 +51,14 @@ export interface SessionDrawerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   relay: SessionRelay;
+  /**
+   * Whether the session's daemon is there to take what the panes send.
+   *
+   * The terminal needs it: a keystroke and a resize are delivered or they
+   * are nothing, and a pane that took them while the machine was off
+   * would be a shell that looked alive and was not.
+   */
+  machineUp: boolean;
   /** Latest `repo_dirty` summary from the relay, when one has arrived. */
   liveRepoSummary: string | null;
   /**
@@ -144,7 +152,11 @@ export default function SessionDrawer(props: SessionDrawerProps) {
           <div class={styles.body} role="tabpanel">
             <Switch>
               <Match when={tab() === "terminal"}>
-                <TerminalPanel sessionId={props.sessionId} relay={props.relay} />
+                <TerminalPanel
+                  sessionId={props.sessionId}
+                  relay={props.relay}
+                  machineUp={props.machineUp}
+                />
               </Match>
               <Match when={tab() === "files"}>
                 <FilesPanel sessionId={props.sessionId} />

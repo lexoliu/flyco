@@ -49,6 +49,7 @@ function mount(overrides: Partial<SessionComposerProps> = {}) {
     onSend: vi.fn(),
     onStop: vi.fn(),
     onCommand: vi.fn(),
+    machineUp: true,
     ...overrides,
   };
   return { props, ...render(() => <SessionComposer {...props} />) };
@@ -113,6 +114,47 @@ describe("SessionComposer", () => {
     expect(getByText("Runs in the machine's bash")).toBeInTheDocument();
     expect(queryByText("Sent when the window resets, at 7:35 PM")).toBeNull();
   });
+
+  it("refuses a `!` line while no machine is connected, and says why", () => {
+    // A shell command is delivered or it is nothing — the room cannot hold
+    // it the way it holds a prompt — so the field refuses it rather than
+    // letting the run die on the way.
+    const { props, getByLabelText, getByRole, getByText } = mount({ machineUp: false });
+    const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
+
+    type(field, "!git status");
+
+    expect(getByText(/no bash to run it/)).toBeInTheDocument();
+    expect(getByRole("button", { name: "Send" })).toBeDisabled();
+    press(field, "Enter");
+    expect(props.onSend).not.toHaveBeenCalled();
+    expect(field.value).toBe("!git status");
+  });
+
+  it("still takes a plain prompt while no machine is connected", () => {
+    // A message waits in the room's mailbox for the machine's return, so
+    // the field keeps taking it.
+    const { props, getByLabelText, getByRole } = mount({ machineUp: false });
+    const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
+
+    type(field, "when you are back, run the tests");
+    getByRole("button", { name: "Send" }).click();
+
+    expect(props.onSend).toHaveBeenCalledWith("when you are back, run the tests");
+  });
+
+  it("refuses a typed-out /compact while no machine is connected", () => {
+    const { props, getByLabelText, getByText } = mount({ machineUp: false });
+    const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
+
+    type(field, "/compact");
+    press(field, "Enter");
+
+    expect(props.onCommand).not.toHaveBeenCalled();
+    expect(props.onSend).not.toHaveBeenCalled();
+    expect(field.value).toBe("/compact");
+    expect(getByText(/\/compact needs it/)).toBeInTheDocument();
+  });
 });
 
 describe("the palette's rows", () => {
@@ -136,6 +178,18 @@ describe("the palette's rows", () => {
 
   it("shows only flyco's own until the harness has reported a list", () => {
     expect(paletteEntries([]).map((row) => row.name)).toEqual(["compact", "archive", "resize"]);
+  });
+
+  it("greys the machine-bound rows while no machine is connected", () => {
+    // `/compact` is delivered to the daemon or it is nothing; `/archive`
+    // and `/resize` are control-plane actions that keep working without
+    // one, and so does everything the harness listed — a harness command
+    // is sent as a message, which the mailbox holds.
+    const rows = paletteEntries(COMMANDS, false);
+    expect(rows.find((row) => row.name === "compact")?.disabled).toBe(true);
+    expect(rows.find((row) => row.name === "archive")?.disabled).toBeUndefined();
+    expect(rows.find((row) => row.name === "resize")?.disabled).toBeUndefined();
+    expect(rows.find((row) => row.name === "goal")?.disabled).toBeUndefined();
   });
 
   it("opens on a slash and closes once an argument is being typed", () => {

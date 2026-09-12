@@ -40,6 +40,13 @@ export interface ContextRingProps {
   /** The page's clock, so every reset hint reads the same instant. */
   now: number;
   /**
+   * Whether the session's daemon is there to answer a breakdown. The
+   * request is delivered or it is nothing — the room cannot hold it the
+   * way it holds a prompt — so while no machine is connected the action
+   * is greyed rather than sent to die.
+   */
+  machineUp: boolean;
+  /**
    * Sends the `context_usage` control request. The daemon's answer arrives
    * as a `context_usage` event and renders in the transcript as the
    * breakdown card, so the panel does not have to carry the whole list.
@@ -252,6 +259,8 @@ export default function ContextRing(props: ContextRingProps) {
           <button
             type="button"
             class={styles.breakdown}
+            disabled={!props.machineUp}
+            title={props.machineUp ? undefined : "The machine is not connected"}
             onClick={() => {
               props.onBreakdown();
               close();

@@ -492,6 +492,21 @@ export default function SessionDetail() {
     return view !== undefined && REFUSING.has(view.status);
   });
 
+  /**
+   * Whether a daemon is holding the room — what a `!` command, a
+   * `/compact`, a terminal keystroke or a context breakdown needs.
+   *
+   * Two facts answer it, because each sees a failure the other cannot: the
+   * machine's own state, which knows a stopped or still-building machine
+   * cannot be holding a daemon; and the room's `machine_connection`
+   * frames, which know a running machine whose daemon fell off the
+   * network. Prompts are deliberately not gated on this — the mailbox
+   * holds them — only what is delivered-or-nothing is.
+   */
+  const machineUp = createMemo(
+    () => machine()?.state === "running" && signals().machineOffline !== true,
+  );
+
   const [error, setError] = createSignal<unknown>(null);
   const [deciding, setDeciding] = createSignal(false);
   const [resuming, setResuming] = createSignal(false);
@@ -1006,6 +1021,7 @@ export default function SessionDetail() {
                 onSend={onSend}
                 onStop={onStop}
                 onCommand={onCommand}
+                machineUp={machineUp()}
                 deferred={deferredNote()}
                 controls={
                   <>
@@ -1092,6 +1108,7 @@ export default function SessionDetail() {
                         usage={latestContextUsage()}
                         windows={planUsage()}
                         now={now()}
+                        machineUp={machineUp()}
                         onBreakdown={requestContextBreakdown}
                       />
                     </Show>
@@ -1105,6 +1122,7 @@ export default function SessionDetail() {
         <SessionDrawer
           sessionId={params.id}
           relay={relay}
+          machineUp={machineUp()}
           liveRepoSummary={liveRepoSummary()}
           open={drawerOpen()}
           onOpenChange={setDrawerOpen}

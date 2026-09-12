@@ -129,7 +129,12 @@
   text-align: left;
 }
 
-.breakdown:hover {
+.breakdown:hover:not(:disabled) {
   color: var(--color-text);
   background: var(--color-surface-sunken);
+}
+
+.breakdown:disabled {
+  opacity: 0.45;
+  cursor: default;
 }

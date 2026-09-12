@@ -21,7 +21,7 @@ import { ArrowUp, Clock, Square, TerminalSquare } from "lucide-solid";
 import ComposerShell from "./ComposerShell";
 import type { HarnessCommand } from "../api/wire";
 import { cx } from "../lib/cx";
-import { BASH_PREFIX } from "../lib/shell";
+import { BASH_PREFIX, shellCommandIn } from "../lib/shell";
 import styles from "./Composer.module.css";
 import sessionStyles from "./SessionComposer.module.css";
 
@@ -48,6 +48,24 @@ interface PaletteEntry {
    * which is how both harnesses take a slash command.
    */
   run: SessionCommand | "harness";
+  /**
+   * Whether the command is delivered to the session's daemon rather than
+   * held by the control plane.
+   *
+   * A machine-bound command with no daemon to take it is dropped where a
+   * prompt would wait in the mailbox — the room cannot hold a compaction
+   * or a shell run the way it holds a message — so the palette greys the
+   * row out while the machine is not connected instead of offering a
+   * command that would die on the way.
+   */
+  needsMachine?: boolean;
+  /**
+   * Whether the row cannot be run right now — the machine it would be
+   * delivered to is not connected. The row stays listed, greyed, because a
+   * command that disappears at exactly the moment it is wanted looks like
+   * a bug rather than a state.
+   */
+  disabled?: boolean;
 }
 
 /**
@@ -65,18 +83,21 @@ const FLYCO_COMMANDS: readonly (PaletteEntry & { run: SessionCommand })[] = [
     description: "Summarise the conversation to free context",
     argumentHint: null,
     run: "compact",
+    needsMachine: true,
   },
   {
     name: "archive",
     description: "End the session and release the machine",
     argumentHint: null,
     run: "archive",
+    needsMachine: false,
   },
   {
     name: "resize",
     description: "Move the session to another machine type",
     argumentHint: null,
     run: "resize",
+    needsMachine: false,
   },
 ];
 
@@ -110,8 +131,11 @@ export function paletteQuery(text: string): string | null {
 }
 
 /** The palette's rows: flyco's own first, then the harness's own list. */
-export function paletteEntries(commands: readonly HarnessCommand[]): PaletteEntry[] {
-  return [
+export function paletteEntries(
+  commands: readonly HarnessCommand[],
+  machineUp = true,
+): PaletteEntry[] {
+  const entries: PaletteEntry[] = [
     ...FLYCO_COMMANDS,
     ...commands
       .filter(
@@ -124,6 +148,9 @@ export function paletteEntries(commands: readonly HarnessCommand[]): PaletteEntr
         run: "harness" as const,
       })),
   ];
+  return entries.map((entry) =>
+    entry.needsMachine === true && !machineUp ? { ...entry, disabled: true } : entry,
+  );
 }
 
 export interface SessionComposerProps {
@@ -151,6 +178,16 @@ export interface SessionComposerProps {
    * copy of the session.
    */
   controls?: JSX.Element | undefined;
+  /**
+   * Whether the session's daemon is there to take what only it can take.
+   *
+   * Prompts are not gated on it — the room's mailbox holds them for the
+   * machine's return — but a `!` shell command, a `/compact`, a terminal
+   * keystroke or a context breakdown are delivered or they are nothing,
+   * so the composer refuses them while the machine is not connected
+   * rather than sending them to die.
+   */
+  machineUp: boolean;
   /**
    * When a message typed now will not be delivered now, and why.
    *
@@ -181,7 +218,33 @@ export default function SessionComposer(props: SessionComposerProps) {
   /** A message beginning with `!` is a shell command, not a prompt. */
   const isBash = createMemo(() => text().startsWith(BASH_PREFIX));
 
-  const entries = createMemo(() => paletteEntries(props.commands));
+  const entries = createMemo(() => paletteEntries(props.commands, props.machineUp));
+
+  /**
+   * Why what is typed cannot be sent right now, or `null` when it can.
+   *
+   * A shell run and a machine-bound command are delivered or nothing —
+   * the room cannot hold them the way it holds a prompt — so while no
+   * daemon is connected the field refuses them and says why, in the same
+   * place the `!` hint says where a command goes.
+   */
+  const blockedReason = createMemo((): string | null => {
+    if (props.machineUp) {
+      return null;
+    }
+    // `shellCommandIn`, not `isBash`: a bare `!` is a prompt, and prompts
+    // are held for the machine rather than refused.
+    if (shellCommandIn(text()) !== null) {
+      return "The machine is not connected — there is no bash to run it.";
+    }
+    const own = FLYCO_COMMANDS.find(
+      (entry) => `/${entry.name}` === text().trim().toLowerCase(),
+    );
+    if (own?.needsMachine === true) {
+      return `The machine is not connected — /${own.name} needs it.`;
+    }
+    return null;
+  });
 
   /** The palette's rows, filtered by whatever has been typed after the slash. */
   const matches = createMemo(() => {
@@ -219,6 +282,9 @@ export default function SessionComposer(props: SessionComposerProps) {
    * condition would be a command that means nothing.
    */
   function choose(entry: PaletteEntry): void {
+    if (entry.disabled === true) {
+      return;
+    }
     if (entry.argumentHint !== null) {
       setText(`/${entry.name} `);
       setHighlighted(0);
@@ -237,7 +303,7 @@ export default function SessionComposer(props: SessionComposerProps) {
 
   function send(): void {
     const message = text().trim();
-    if (message === "") {
+    if (message === "" || blockedReason() !== null) {
       return;
     }
     // A typed-out command flyco runs itself is the same action as picking
@@ -329,9 +395,17 @@ export default function SessionComposer(props: SessionComposerProps) {
                     type="button"
                     role="option"
                     aria-selected={index() === highlighted()}
+                    aria-disabled={entry.disabled === true || undefined}
+                    disabled={entry.disabled === true}
+                    title={
+                      entry.disabled === true
+                        ? "The machine is not connected"
+                        : undefined
+                    }
                     class={cx(
                       sessionStyles.command,
                       index() === highlighted() && sessionStyles.commandHighlighted,
+                      entry.disabled === true && sessionStyles.commandDisabled,
                     )}
                     onMouseEnter={() => setHighlighted(index())}
                     onClick={() => choose(entry)}
@@ -358,7 +432,7 @@ export default function SessionComposer(props: SessionComposerProps) {
             <button
               type="button"
               class={styles.send}
-              disabled={text().trim() === ""}
+              disabled={text().trim() === "" || blockedReason() !== null}
               title="Send"
               aria-label="Send"
               onClick={send}
@@ -380,25 +454,37 @@ export default function SessionComposer(props: SessionComposerProps) {
       }
     >
       <Show
-        when={isBash()}
+        when={blockedReason()}
         fallback={
-          // The shell hint wins while a `!` is being typed: a command runs on
-          // the machine there and then, whatever the plan's limits are doing,
-          // so saying it would wait for a reset would be wrong.
-          <Show when={props.deferred}>
-            {(note) => (
-              <p class={sessionStyles.hint}>
-                <Clock size={13} aria-hidden="true" />
-                {note()}
-              </p>
-            )}
+          <Show
+            when={isBash()}
+            fallback={
+              // The shell hint wins while a `!` is being typed: a command runs on
+              // the machine there and then, whatever the plan's limits are doing,
+              // so saying it would wait for a reset would be wrong.
+              <Show when={props.deferred}>
+                {(note) => (
+                  <p class={sessionStyles.hint}>
+                    <Clock size={13} aria-hidden="true" />
+                    {note()}
+                  </p>
+                )}
+              </Show>
+            }
+          >
+            <p class={sessionStyles.hint}>
+              <TerminalSquare size={13} aria-hidden="true" />
+              Runs in the machine's bash
+            </p>
           </Show>
         }
       >
-        <p class={sessionStyles.hint}>
-          <TerminalSquare size={13} aria-hidden="true" />
-          Runs in the machine's bash
-        </p>
+        {(reason) => (
+          <p class={sessionStyles.refusal}>
+            <TerminalSquare size={13} aria-hidden="true" />
+            {reason()}
+          </p>
+        )}
       </Show>
     </ComposerShell>
   );
