@@ -16,18 +16,12 @@ const TerminalPanelImpl = lazy(() => import("./TerminalPanelImpl"));
 export interface TerminalPanelProps {
   sessionId: string;
   relay: SessionRelay;
-  /** Whether the session's daemon is there to take a keystroke. */
-  machineUp: boolean;
 }
 
 export default function TerminalPanel(props: TerminalPanelProps) {
   return (
     <div class={styles.wrapper}>
-      <TerminalPanelImpl
-        sessionId={props.sessionId}
-        relay={props.relay}
-        machineUp={props.machineUp}
-      />
+      <TerminalPanelImpl sessionId={props.sessionId} relay={props.relay} />
     </div>
   );
 }

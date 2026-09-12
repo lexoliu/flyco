@@ -21,7 +21,7 @@
  * toggle is behind it.
  */
 import { For, Match, Show, Switch, createEffect, createSignal, onCleanup } from "solid-js";
-import { Cpu, FileCode2, GitCompare, SlidersHorizontal, TerminalSquare, X } from "lucide-solid";
+import { Cpu, FileCode2, GitCompare, SlidersHorizontal, TerminalSquare, Unplug, X } from "lucide-solid";
 import DiffPanel from "./DiffPanel";
 import EnvEditor from "./EnvEditor";
 import FilesPanel from "./FilesPanel";
@@ -78,6 +78,13 @@ export interface SessionDrawerProps {
 export default function SessionDrawer(props: SessionDrawerProps) {
   const open = () => props.open;
   const [tab, setTab] = createSignal<Tab>("terminal");
+  /**
+   * A machine-bound tab the machine cannot answer. The tab stays where it
+   * is — selection is the user's — but its body is a notice rather than a
+   * pane that could only apologise.
+   */
+  const offline = () =>
+    props.machineUp === false && TABS.find((entry) => entry.id === tab())?.needsMachine === true;
   /**
    * When the machine tab was last asked for a resize, rather than merely
    * asked for: `/resize` wants the control, and the `⋯` menu's `Resize`
@@ -164,30 +171,44 @@ export default function SessionDrawer(props: SessionDrawerProps) {
           </div>
 
           <div class={styles.body} role="tabpanel">
-            <Switch>
-              <Match when={tab() === "terminal"}>
-                <TerminalPanel
-                  sessionId={props.sessionId}
-                  relay={props.relay}
-                  machineUp={props.machineUp}
-                />
-              </Match>
-              <Match when={tab() === "files"}>
-                <FilesPanel sessionId={props.sessionId} />
-              </Match>
-              <Match when={tab() === "diff"}>
-                <DiffPanel
-                  sessionId={props.sessionId}
-                  liveRepoSummary={props.liveRepoSummary}
-                />
-              </Match>
-              <Match when={tab() === "machine"}>
-                <MachinePanel sessionId={props.sessionId} openResize={resizeAt()} />
-              </Match>
-              <Match when={tab() === "env"}>
-                <EnvEditor sessionId={props.sessionId} />
-              </Match>
-            </Switch>
+            <Show
+              when={!offline()}
+              fallback={
+                <div class={styles.offline}>
+                  <Unplug size={18} aria-hidden="true" />
+                  <p class={styles.offlineTitle}>The machine is not connected</p>
+                  <p class={styles.offlineHint}>This pane answers live — start or inspect it on the Machine tab.</p>
+                  <button
+                    type="button"
+                    class={styles.offlineGo}
+                    onClick={() => setTab("machine")}
+                  >
+                    Machine
+                  </button>
+                </div>
+              }
+            >
+              <Switch>
+                <Match when={tab() === "terminal"}>
+                  <TerminalPanel sessionId={props.sessionId} relay={props.relay} />
+                </Match>
+                <Match when={tab() === "files"}>
+                  <FilesPanel sessionId={props.sessionId} />
+                </Match>
+                <Match when={tab() === "diff"}>
+                  <DiffPanel
+                    sessionId={props.sessionId}
+                    liveRepoSummary={props.liveRepoSummary}
+                  />
+                </Match>
+                <Match when={tab() === "machine"}>
+                  <MachinePanel sessionId={props.sessionId} openResize={resizeAt()} />
+                </Match>
+                <Match when={tab() === "env"}>
+                  <EnvEditor sessionId={props.sessionId} />
+                </Match>
+              </Switch>
+            </Show>
           </div>
         </div>
       </div>

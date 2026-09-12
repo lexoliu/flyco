@@ -6,15 +6,6 @@ import styles from "./TerminalPanel.module.css";
 export interface TerminalPanelImplProps {
   sessionId: string;
   relay: SessionRelay;
-  /**
-   * Whether the session's daemon is there to take a keystroke.
-   *
-   * The pane draws what the daemon's PTY sends and nothing else, so with
-   * no daemon connected the honest thing is to say the shell is closed —
-   * a pane that swallowed input silently would look like a shell that had
-   * stopped echoing.
-   */
-  machineUp: boolean;
 }
 
 /**
@@ -61,23 +52,19 @@ export default function TerminalPanelImpl(props: TerminalPanelImplProps) {
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(container);
-      // What the pane says before the first byte arrives is the truth of
-      // the moment, not of a socket that may already be gone.
-      if (props.machineUp) {
-        term.writeln(`Connected to ${props.sessionId}'s fish shell.`);
-      } else {
-        term.writeln("The machine is not connected — the shell opens when it is back.");
-      }
+      // The pane only mounts while the machine is connected — the drawer
+      // shows its own notice otherwise — so the greeting is always this.
+      term.writeln(`Connected to ${props.sessionId}'s fish shell.`);
 
       const inputSubscription = term.onData((data) => {
-        if (props.relay.state() !== "live" || !props.machineUp) {
+        if (props.relay.state() !== "live") {
           return;
         }
         props.relay.send({ type: "terminal_input", data });
       });
 
       function tellSize(): void {
-        if (props.relay.state() !== "live" || !props.machineUp) {
+        if (props.relay.state() !== "live") {
           return;
         }
         props.relay.send({ type: "terminal_resize", cols: term.cols, rows: term.rows });
@@ -90,23 +77,6 @@ export default function TerminalPanelImpl(props: TerminalPanelImplProps) {
         if (props.relay.state() === "live") {
           tellSize();
         }
-      });
-
-      // A machine leaving or returning mid-session is written into the
-      // scrollback, where the keystroke it just swallowed — or the shell
-      // it is about to open — is otherwise a silent change of behaviour.
-      let wasUp = props.machineUp;
-      createEffect(() => {
-        const up = props.machineUp;
-        if (up === wasUp) {
-          return;
-        }
-        wasUp = up;
-        term.writeln(
-          up
-            ? "\r\nThe machine is back — a fresh shell opens."
-            : "\r\nLost the machine — the shell is closed until it is back.",
-        );
       });
 
       onCleanup(() => {
