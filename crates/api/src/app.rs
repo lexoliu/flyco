@@ -426,7 +426,9 @@ async fn read_session(
 /// stopped accepting work when the pause reached it and nothing in the
 /// database can lift that. The model is recorded and then sent to the
 /// session's room, which echoes it into the transcript and hands it to the
-/// harness mid-conversation.
+/// harness mid-conversation. The permission mode is recorded and announced
+/// on the same path: Claude applies it to the live query and Codex applies
+/// it from the next turn.
 #[skyzen::openapi]
 async fn update_session(
     State(user): State<CurrentUser>,
@@ -481,6 +483,24 @@ async fn apply_session_update(
         None => None,
     };
 
+    let remoded = match update.permission_mode {
+        Some(mode) => {
+            let session = sessions::set_mode(db, user.id, id, mode).await?;
+            // Recorded first, announced second, on the same terms as the
+            // model: the room's echo is what the transcript shows, and an
+            // echo the database had not yet agreed with would be a line
+            // about a change that could still fail. Held for a daemon that
+            // is away — `survives_a_disconnect` — because it is what the
+            // next machine comes up under.
+            rooms
+                .command(id, &ControlToDaemon::SetPermissionMode { mode })
+                .await?;
+            tracing::info!(session = %id, ?mode, "a session was put under another permission mode");
+            Some(session)
+        }
+        None => None,
+    };
+
     let rebudgeted = match update.budget_limit {
         Some(limit) => {
             let raise = sessions::set_budget_limit(db, user.id, id, limit).await?;
@@ -501,6 +521,7 @@ async fn apply_session_update(
     // do, which is the caller's bug rather than a session that happens to
     // be unchanged.
     rebudgeted
+        .or(remoded)
         .or(remodelled)
         .or(renamed)
         .map(Json)

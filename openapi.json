@@ -3724,7 +3724,8 @@
                       "activity",
                       "created_at_unix",
                       "last_active_unix",
-                      "model"
+                      "model",
+                      "permission_mode"
                     ],
                     "properties": {
                       "activity": {
@@ -3791,6 +3792,10 @@
                             "description": "Why the session is [`Paused`](SessionState::Paused).\n\nOn the summary rather than only on [`SessionDetail`] because the\nstatus dot in the rail is drawn from a summary, and a session waiting\nout a plan window is not the same status as one that ran out of money\n(docs/ux.md §6). `None` for every session that is not paused, and for\na pause the user asked for."
                           }
                         ]
+                      },
+                      "permission_mode": {
+                        "$ref": "#/components/schemas/PermissionMode",
+                        "description": "The permission mode the session's agent runs under.\n\nAlways concrete for the same reason `model` is: a session opened\nbefore flyco recorded a mode resolves to\n[`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT)\nat read, so every row states the mode it is on rather than leaving\nthe composer's chip to guess."
                       },
                       "repo": {
                         "$ref": "#/components/schemas/RepoSlug",
@@ -4001,7 +4006,7 @@
       },
       "patch": {
         "summary": "Changes what one of the caller's sessions is called, what it may spend, what it runs on, or any combination of the three.",
-        "description": "Changes what one of the caller's sessions is called, what it may spend,\nwhat it runs on, or any combination of the three.\n\nThe title opens as the excerpt of the prompt the session was created\nwith; this is how it becomes something the user chose. The budget limit\nis the one thing that releases a session paused on an exhausted budget,\nand raising it past the spend both puts the session back to\n[`SessionState::Active`] and tells its daemon to carry on — the daemon\nstopped accepting work when the pause reached it and nothing in the\ndatabase can lift that. The model is recorded and then sent to the\nsession's room, which echoes it into the transcript and hands it to the\nharness mid-conversation.",
+        "description": "Changes what one of the caller's sessions is called, what it may spend,\nwhat it runs on, or any combination of the three.\n\nThe title opens as the excerpt of the prompt the session was created\nwith; this is how it becomes something the user chose. The budget limit\nis the one thing that releases a session paused on an exhausted budget,\nand raising it past the spend both puts the session back to\n[`SessionState::Active`] and tells its daemon to carry on — the daemon\nstopped accepting work when the pause reached it and nothing in the\ndatabase can lift that. The model is recorded and then sent to the\nsession's room, which echoes it into the transcript and hands it to the\nharness mid-conversation. The permission mode is recorded and announced\non the same path: Claude applies it to the live query and Codex applies\nit from the next turn.",
         "operationId": "flyco_api::app::update_session",
         "parameters": [
           {
@@ -4040,6 +4045,17 @@
                       {
                         "$ref": "#/components/schemas/ModelChoice",
                         "description": "What the session should run on from here on.\n\nTakes effect on the conversation already in progress rather than at\nthe next turn's discretion: the control plane records it and sends\nthe session's daemon a\n[`SetModel`](crate::wire::ControlToDaemon::SetModel), which both\nharnesses apply to the running session. Refused when the account's\nown model list does not offer it, so a stale picker cannot put a\nsession on a model its harness has dropped."
+                      }
+                    ]
+                  },
+                  "permission_mode": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/PermissionMode",
+                        "description": "The permission mode the session's agent should run under.\n\nApplied on the same terms as `model`: the control plane records it\nand sends the session's daemon a\n[`SetPermissionMode`](crate::wire::ControlToDaemon::SetPermissionMode),\nwhich Claude applies to the live query and Codex applies from the\nnext `turn/start`. Every declared mode is one both harnesses honor —\nCodex translates it into its approval/sandbox pair — so the body\nneeds no per-harness validation."
                       }
                     ]
                   },
@@ -5248,7 +5264,8 @@
                   "type": "object",
                   "description": "What `GET /v1/sessions/{id}/harness-session` answers.\n\nThe conversation a daemon starting on this session must continue, as the\ncontrol plane last recorded it. Asked rather than read out of the\ndaemon's own configuration, because that file was written when the\nmachine was *created*: a machine that was stopped and started again on\nthe same disk — which is what recovering from a spot reclamation is —\nboots the same file, and a daemon that trusted it would open a second\nconversation beside the one the user is watching.\n\n`None` is a session whose harness has never announced an identity, which\nis every session until its first daemon connects.",
                   "required": [
-                    "model"
+                    "model",
+                    "permission_mode"
                   ],
                   "properties": {
                     "harness_session_id": {
@@ -5261,6 +5278,10 @@
                     "model": {
                       "$ref": "#/components/schemas/ModelChoice",
                       "description": "The model this session runs on, as the control plane last recorded\nit.\n\nAsked for the same reason the conversation is: the model in the\nconfiguration on the machine's disk is the one it was *provisioned*\nwith, so a session whose model was changed while it ran would come\nback on the old one after a reclamation."
+                    },
+                    "permission_mode": {
+                      "$ref": "#/components/schemas/PermissionMode",
+                      "description": "The permission mode this session runs under, as the control plane\nlast recorded it.\n\nSame reason as `model`: the configuration on disk is the one the\nmachine was provisioned with, so a session put on `plan` while it\nran would otherwise come back on whatever it was provisioned under."
                     }
                   }
                 }
@@ -8392,7 +8413,8 @@
         "type": "object",
         "description": "What `GET /v1/sessions/{id}/harness-session` answers.\n\nThe conversation a daemon starting on this session must continue, as the\ncontrol plane last recorded it. Asked rather than read out of the\ndaemon's own configuration, because that file was written when the\nmachine was *created*: a machine that was stopped and started again on\nthe same disk — which is what recovering from a spot reclamation is —\nboots the same file, and a daemon that trusted it would open a second\nconversation beside the one the user is watching.\n\n`None` is a session whose harness has never announced an identity, which\nis every session until its first daemon connects.",
         "required": [
-          "model"
+          "model",
+          "permission_mode"
         ],
         "properties": {
           "harness_session_id": {
@@ -8405,6 +8427,10 @@
           "model": {
             "$ref": "#/components/schemas/ModelChoice",
             "description": "The model this session runs on, as the control plane last recorded\nit.\n\nAsked for the same reason the conversation is: the model in the\nconfiguration on the machine's disk is the one it was *provisioned*\nwith, so a session whose model was changed while it ran would come\nback on the old one after a reclamation."
+          },
+          "permission_mode": {
+            "$ref": "#/components/schemas/PermissionMode",
+            "description": "The permission mode this session runs under, as the control plane\nlast recorded it.\n\nSame reason as `model`: the configuration on disk is the one the\nmachine was provisioned with, so a session put on `plan` while it\nran would otherwise come back on whatever it was provisioned under."
           }
         }
       },
@@ -9379,6 +9405,18 @@
           "usage_limit"
         ]
       },
+      "PermissionMode": {
+        "type": "string",
+        "description": "The permission mode a session runs under.\n\nSpelled the way the Claude Agent SDK spells its `PermissionMode` union,\nin `camelCase`, so the sidecar passes the value straight into `query`'s\n`permissionMode` option. Every mode other than [`Self::Default`] narrows\nwhat reaches flyco's approval UI, because an auto-approved tool never\ncalls back.\n\nIt lives in the domain model rather than in the daemon because it\ncrosses every boundary flyco has: the control plane stores it on the\nsession row and writes it into the `flycod` configuration it provisions\nonto a machine, the daemon reads that configuration back and applies a\nchange to the running harness — `setPermissionMode` on Claude's live\nquery, `approvalPolicy`/`sandboxPolicy` overrides on Codex's next\n`turn/start`.",
+        "enum": [
+          "default",
+          "acceptEdits",
+          "bypassPermissions",
+          "plan",
+          "dontAsk",
+          "auto"
+        ]
+      },
       "Problem": {
         "allOf": [
           {
@@ -10253,7 +10291,8 @@
           "activity",
           "created_at_unix",
           "last_active_unix",
-          "model"
+          "model",
+          "permission_mode"
         ],
         "properties": {
           "activity": {
@@ -10320,6 +10359,10 @@
                 "description": "Why the session is [`Paused`](SessionState::Paused).\n\nOn the summary rather than only on [`SessionDetail`] because the\nstatus dot in the rail is drawn from a summary, and a session waiting\nout a plan window is not the same status as one that ran out of money\n(docs/ux.md §6). `None` for every session that is not paused, and for\na pause the user asked for."
               }
             ]
+          },
+          "permission_mode": {
+            "$ref": "#/components/schemas/PermissionMode",
+            "description": "The permission mode the session's agent runs under.\n\nAlways concrete for the same reason `model` is: a session opened\nbefore flyco recorded a mode resolves to\n[`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT)\nat read, so every row states the mode it is on rather than leaving\nthe composer's chip to guess."
           },
           "repo": {
             "$ref": "#/components/schemas/RepoSlug",
@@ -10671,6 +10714,17 @@
               {
                 "$ref": "#/components/schemas/ModelChoice",
                 "description": "What the session should run on from here on.\n\nTakes effect on the conversation already in progress rather than at\nthe next turn's discretion: the control plane records it and sends\nthe session's daemon a\n[`SetModel`](crate::wire::ControlToDaemon::SetModel), which both\nharnesses apply to the running session. Refused when the account's\nown model list does not offer it, so a stale picker cannot put a\nsession on a model its harness has dropped."
+              }
+            ]
+          },
+          "permission_mode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PermissionMode",
+                "description": "The permission mode the session's agent should run under.\n\nApplied on the same terms as `model`: the control plane records it\nand sends the session's daemon a\n[`SetPermissionMode`](crate::wire::ControlToDaemon::SetPermissionMode),\nwhich Claude applies to the live query and Codex applies from the\nnext `turn/start`. Every declared mode is one both harnesses honor —\nCodex translates it into its approval/sandbox pair — so the body\nneeds no per-harness validation."
               }
             ]
           },

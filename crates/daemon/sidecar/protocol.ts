@@ -229,6 +229,10 @@ export const sidecarCommandSchema = z.discriminatedUnion("type", [
     effort: z.string().nullable(),
   }),
   z.object({
+    type: z.literal("set_permission_mode"),
+    mode: permissionModeSchema,
+  }),
+  z.object({
     type: z.literal("approval_decision"),
     id: z.string(),
     allow: z.boolean(),

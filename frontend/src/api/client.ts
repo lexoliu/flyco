@@ -58,6 +58,7 @@ export type BranchPage = Schemas["BranchPage"];
 export type HarnessKind = Schemas["HarnessKind"];
 export type ModelOption = Schemas["ModelOption"];
 export type ModelChoice = Schemas["ModelChoice"];
+export type PermissionMode = Schemas["PermissionMode"];
 export type SessionState = Schemas["SessionState"];
 export type SessionActivity = Schemas["SessionActivity"];
 export type InterruptedReason = Schemas["InterruptedReason"];
@@ -269,7 +270,12 @@ export function getSession(
  */
 export function updateSession(
   id: string,
-  changes: { title?: string; budgetLimit?: number; model?: ModelChoice },
+  changes: {
+    title?: string;
+    budgetLimit?: number;
+    model?: ModelChoice;
+    permissionMode?: PermissionMode;
+  },
 ): Promise<JsonResponse<"flyco_api::app::update_session", 200>> {
   const body: JsonBody<"flyco_api::app::update_session"> = {
     ...(changes.title === undefined ? {} : { title: changes.title }),
@@ -277,6 +283,9 @@ export function updateSession(
       ? {}
       : { budget_limit: changes.budgetLimit }),
     ...(changes.model === undefined ? {} : { model: changes.model }),
+    ...(changes.permissionMode === undefined
+      ? {}
+      : { permission_mode: changes.permissionMode }),
   };
   return requestJson("PATCH", `/v1/sessions/${id}`, { json: body });
 }

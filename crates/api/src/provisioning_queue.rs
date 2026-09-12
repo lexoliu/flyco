@@ -735,6 +735,8 @@ struct Claim {
     /// model written into the machine's configuration is the one this job
     /// read the session at.
     model: ModelChoice,
+    /// The mode the session runs under, on the same terms.
+    permission_mode: PermissionMode,
 }
 
 /// Decides whether this delivery still has work to do.
@@ -818,6 +820,7 @@ async fn claim(db: &Db, rooms: &Rooms, job: ProvisioningJob) -> Result<Option<Cl
     }
 
     let model = target.model_choice();
+    let permission_mode = target.permission_mode();
     Ok(Some(Claim {
         session,
         user: target.user_id,
@@ -827,6 +830,7 @@ async fn claim(db: &Db, rooms: &Rooms, job: ProvisioningJob) -> Result<Option<Cl
         machine_origin: target.machine_origin,
         machine,
         model,
+        permission_mode,
     }))
 }
 
@@ -1201,10 +1205,11 @@ async fn bootstrap(
         runtime: claim.machine.spec().runtime,
         control_plane_url: config.control_plane_url(),
         daemon_token: token.token,
-        // Auto is the product default. Flyco's managed deny rules still bind
-        // even in this mode, and anything the classifier does not auto-allow
-        // still reaches the approval UI.
-        permission_mode: PermissionMode::Auto,
+        // What the session is recorded as running under, which for a
+        // machine being rebuilt is whatever the user last changed it to
+        // rather than the product default the previous machine booted on —
+        // the same claim-carried fact `model` is.
+        permission_mode: claim.permission_mode,
         auth,
         repo,
         machine_origin: claim.machine_origin,

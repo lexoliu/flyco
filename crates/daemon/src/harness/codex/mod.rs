@@ -36,9 +36,9 @@ use self::normalize::{ApprovalParams, Normalizer, usage_windows};
 use self::protocol::{
     ApprovalDecision, ApprovalDecisionBody, ClientCapabilities, ClientInfo, Envelope,
     InitializeParams, McpServerStatusPage, McpServerStatusParams, ModelListParams,
-    ModelListResponse, RateLimitSnapshot, RateLimitsBody, RequestId, SkillsListEntry,
-    SkillsListParams, SkillsListResponse, ThreadCompactStartParams, ThreadConfig, ThreadParams,
-    TurnInterruptParams, TurnStartParams, UserInput, method,
+    ModelListResponse, RateLimitSnapshot, RateLimitsBody, RequestId, SandboxPolicy,
+    SkillsListEntry, SkillsListParams, SkillsListResponse, ThreadCompactStartParams, ThreadConfig,
+    ThreadParams, TurnInterruptParams, TurnStartParams, UserInput, method,
 };
 use super::{Harness, HarnessSession, SessionOutput, StartRequest, Started, ToolApproval};
 use crate::config::{CodexAuth, CodexConfig};
@@ -228,6 +228,7 @@ impl Harness for CodexHarness {
                 stopped: false,
                 model: self.config.model.clone(),
                 effort: self.config.effort.clone(),
+                mode: self.config.permission_mode,
                 models,
                 skills,
                 pending_skills: None,
@@ -290,6 +291,14 @@ impl HarnessSession for CodexSession {
         self.ask(|ack| DriverCommand::SetModel { model, ack }).await
     }
 
+    async fn set_permission_mode(
+        &self,
+        mode: flyco_core::PermissionMode,
+    ) -> Result<(), CodexError> {
+        self.ask(|ack| DriverCommand::SetPermissionMode { mode, ack })
+            .await
+    }
+
     async fn decide_approval(&self, approval: ToolApproval) -> Result<(), CodexError> {
         self.ask(|ack| DriverCommand::Approval { approval, ack })
             .await
@@ -345,6 +354,17 @@ enum DriverCommand {
     /// documents that field as meaning.
     SetModel {
         model: flyco_core::ModelChoice,
+        ack: oneshot::Sender<Result<(), CodexError>>,
+    },
+    /// From the handle: run the rest of the thread under another
+    /// permission mode.
+    ///
+    /// Nothing is written to the app-server here, on the same terms as
+    /// [`Self::SetModel`]: the mode travels on `turn/start` as the
+    /// `approvalPolicy`/`sandboxPolicy` overrides, so the driver records
+    /// it and every turn from the next one carries it.
+    SetPermissionMode {
+        mode: flyco_core::PermissionMode,
         ack: oneshot::Sender<Result<(), CodexError>>,
     },
     /// From the handle: answer a pending approval.
@@ -592,8 +612,8 @@ where
     let thread_id = take_id(next_id);
     let params = ThreadParams {
         cwd: path_string(&request.workdir),
-        approval_policy: config.approval_policy.as_str().to_owned(),
-        sandbox: config.sandbox.as_str().to_owned(),
+        approval_policy: config.permission_mode.codex_approval_policy().to_owned(),
+        sandbox: config.permission_mode.codex_sandbox().to_owned(),
         model: config.model.clone(),
         thread_id: request.resume_session_id.clone(),
         config: ThreadConfig {
@@ -1037,6 +1057,13 @@ struct Driver {
     model: Option<String>,
     /// The effort it runs at, on the same terms.
     effort: Option<String>,
+    /// The mode the thread runs under, on the same terms.
+    ///
+    /// Replaced by a [`DriverCommand::SetPermissionMode`] and restated on
+    /// every `turn/start` as the `approvalPolicy`/`sandboxPolicy`
+    /// overrides, which is the granularity the app-server offers a mode
+    /// change at: the next turn, not mid-flight.
+    mode: flyco_core::PermissionMode,
     /// What the app-server said it offers, reported once at start.
     models: Vec<flyco_core::ModelOption>,
     /// The checkout's skills, which are the session's `/` commands.
@@ -1165,6 +1192,15 @@ impl Driver {
                 let _ = ack.send(Ok(()));
                 true
             }
+            DriverCommand::SetPermissionMode { mode, ack } => {
+                tracing::info!(
+                    ?mode,
+                    "the thread will run under another permission mode from its next turn"
+                );
+                self.mode = mode;
+                let _ = ack.send(Ok(()));
+                true
+            }
             DriverCommand::Approval { approval, ack } => {
                 let result = self.decide(approval).await;
                 let ok = result.is_ok();
@@ -1248,6 +1284,8 @@ impl Driver {
             input: turn_input(&self.skills, text),
             model: self.model.clone(),
             effort: self.effort.clone(),
+            approval_policy: self.mode.codex_approval_policy(),
+            sandbox_policy: SandboxPolicy::from_token(self.mode.codex_sandbox()),
         };
         write_envelope(
             self.stdin.as_mut().ok_or(CodexError::Stopped)?,

@@ -1100,6 +1100,12 @@ async fn dispatch_command(
         ControlToDaemon::SetModel { model } => Some(Echo::recorded(ClientEvent::ModelChanged {
             model: model.clone(),
         })),
+        // Echoed on the same terms as a model change: the mode is recorded
+        // whether the daemon took the command or the room held it, so a
+        // browser watching a session between machines still sees the line.
+        ControlToDaemon::SetPermissionMode { mode } => {
+            Some(Echo::recorded(ClientEvent::PermissionModeChanged { mode: *mode }))
+        }
         _ => None,
     };
 

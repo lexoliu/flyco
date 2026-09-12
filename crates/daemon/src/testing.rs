@@ -75,6 +75,8 @@ pub enum Call {
     ContextUsage,
     /// The session was put on another model.
     ModelSet(flyco_core::ModelChoice),
+    /// The session was put under another permission mode.
+    PermissionModeSet(flyco_core::PermissionMode),
     /// A pending approval was answered.
     Approval {
         /// The approval that was answered.
@@ -226,6 +228,13 @@ impl HarnessSession for FakeSession {
         model: flyco_core::ModelChoice,
     ) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
         core::future::ready(self.record(Call::ModelSet(model)))
+    }
+
+    fn set_permission_mode(
+        &self,
+        mode: flyco_core::PermissionMode,
+    ) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
+        core::future::ready(self.record(Call::PermissionModeSet(mode)))
     }
 
     fn decide_approval(

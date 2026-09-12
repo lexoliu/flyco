@@ -19,6 +19,7 @@ import {
   Cpu,
   Info,
   Loader,
+  ShieldCheck,
   Sparkles,
   TerminalSquare,
   Wrench,
@@ -32,6 +33,7 @@ import { cx } from "../lib/cx";
 import { formatDuration } from "../lib/duration";
 import { highlightHtml } from "../lib/highlight";
 import { choiceLabel } from "../lib/models";
+import { modeLabel } from "../lib/modes";
 import { detailOfTool } from "../lib/toolDetail";
 import { summarizeTool } from "../lib/toolSummary";
 import type { ProvisioningStep, ToolCall, TranscriptItem } from "../lib/transcript";
@@ -199,6 +201,15 @@ export default function Transcript(props: TranscriptProps) {
                   <p class={styles.machineChange}>
                     <Sparkles size={14} aria-hidden="true" />
                     Switched to {choiceLabel(props.models, change().model)}
+                  </p>
+                )}
+              </Match>
+
+              <Match when={item.kind === "mode_change" && item}>
+                {(change) => (
+                  <p class={styles.machineChange}>
+                    <ShieldCheck size={14} aria-hidden="true" />
+                    Switched to {modeLabel(change().mode)} mode
                   </p>
                 )}
               </Match>

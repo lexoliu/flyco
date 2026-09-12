@@ -267,6 +267,16 @@ describe("foldTranscript machine changes", () => {
   });
 });
 
+describe("foldTranscript mode changes", () => {
+  it("folds a permission_mode_changed into the line the transcript renders", () => {
+    const [change] = foldTranscript([
+      at(0, { type: "permission_mode_changed", mode: "plan" }),
+    ]);
+
+    expect(change).toMatchObject({ kind: "mode_change", mode: "plan", atUnix: T0 });
+  });
+});
+
 describe("foldTranscript turns", () => {
   it("dates a turn from its start and its end, which is what the footer reads", () => {
     const [turn] = foldTranscript([

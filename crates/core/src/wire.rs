@@ -775,6 +775,22 @@ pub enum ControlToDaemon {
         /// What the session runs on now.
         model: crate::harness::ModelChoice,
     },
+    /// Put the session's agent on another permission mode.
+    ///
+    /// Applied to the conversation already in progress: Claude Code takes
+    /// `setPermissionMode` on a live query, and Codex's `turn/start`
+    /// documents `approvalPolicy` and `sandboxPolicy` as overriding "this
+    /// turn and subsequent turns" — so on Codex the change is what the next
+    /// turn runs under, and on Claude it is what the rest of this one does.
+    ///
+    /// Held for a daemon that is not connected on the same terms as
+    /// [`Self::SetModel`]: it describes a state, the control plane has
+    /// already recorded it, and a daemon that missed it would run the
+    /// session under a mode its own row disagrees with.
+    SetPermissionMode {
+        /// The mode the session runs under now.
+        mode: crate::harness::PermissionMode,
+    },
     /// Archive the session: flush state, optionally snapshot the repo, shut
     /// down.
     Archive {
@@ -818,6 +834,7 @@ impl ControlToDaemon {
             Self::BudgetRaised { .. } => "budget_raised",
             Self::MachineChanged { .. } => "machine_changed",
             Self::SetModel { .. } => "set_model",
+            Self::SetPermissionMode { .. } => "set_permission_mode",
             Self::InspectWorkdir { .. } => "inspect_workdir",
             Self::Archive { .. } => "archive",
         }
@@ -858,17 +875,21 @@ impl ControlToDaemon {
     /// exception by construction: the change it reports *is* a restart, so
     /// the daemon is guaranteed to be gone at the moment it is sent, and
     /// the machine is still the new one whenever it comes back.
-    /// [`SetModel`](Self::SetModel) is the exception by consequence: the
-    /// control plane has already recorded the model, and a daemon that
-    /// missed the command would run the session on a model its own row
-    /// disagrees with.
+    /// [`SetModel`](Self::SetModel) and
+    /// [`SetPermissionMode`](Self::SetPermissionMode) are the exceptions by
+    /// consequence: the control plane has already recorded what they carry,
+    /// and a daemon that missed either would run the session on a model or
+    /// under a mode its own row disagrees with.
     ///
     /// A user message survives too, but through the room's mailbox, which
     /// is an index into the replayable stream rather than a queue, because
     /// a conversation must not be reordered.
     #[must_use]
     pub const fn survives_a_disconnect(&self) -> bool {
-        matches!(self, Self::MachineChanged { .. } | Self::SetModel { .. })
+        matches!(
+            self,
+            Self::MachineChanged { .. } | Self::SetModel { .. } | Self::SetPermissionMode { .. }
+        )
     }
 }
 
@@ -1024,6 +1045,17 @@ pub enum ClientEvent {
     ModelChanged {
         /// What the session runs on now.
         model: crate::harness::ModelChoice,
+    },
+    /// The session's agent was put under another permission mode.
+    ///
+    /// Rendered as one line in the transcript, like a model change and for
+    /// the same reason: what the agent may do without asking changes from
+    /// here on, and a conversation whose second half ran under a different
+    /// mode with no note of where the seam is would be a transcript that
+    /// misrepresents itself.
+    PermissionModeChanged {
+        /// The mode the session runs under now.
+        mode: crate::harness::PermissionMode,
     },
     /// The models this session's harness offers.
     ///

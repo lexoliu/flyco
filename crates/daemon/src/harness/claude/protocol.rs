@@ -149,6 +149,15 @@ pub enum SidecarCommand {
         /// the CLI's default for the new model in place.
         effort: Option<String>,
     },
+    /// Put the running query under another permission mode.
+    ///
+    /// One SDK call — `setPermissionMode` on the live query — which the
+    /// SDK applies to the conversation in progress rather than the next
+    /// turn.
+    SetPermissionMode {
+        /// The mode, spelled the SDK's own camelCase.
+        mode: PermissionMode,
+    },
     /// Resolve a pending [`SidecarEvent::ApprovalRequest`].
     ApprovalDecision {
         /// The approval being decided.
@@ -187,6 +196,7 @@ impl SidecarCommand {
             Self::Compact => "compact",
             Self::ContextUsage => "context_usage",
             Self::SetModel { .. } => "set_model",
+            Self::SetPermissionMode { .. } => "set_permission_mode",
             Self::ApprovalDecision { .. } => "approval_decision",
             Self::StoreResponse { .. } => "store_response",
             Self::Shutdown => "shutdown",

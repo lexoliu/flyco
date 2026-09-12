@@ -10,7 +10,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use flyco_core::HarnessEvent;
-use flyco_daemon::config::{CodexApprovalPolicy, CodexAuth, CodexConfig, CodexSandbox};
+use flyco_daemon::config::{CodexAuth, CodexConfig};
 use flyco_daemon::harness::codex::CodexHarness;
 use flyco_daemon::harness::{Harness as _, HarnessSession as _, SessionOutput, StartRequest};
 use flyco_daemon::mount::{FlycoServer, Mount};
@@ -76,8 +76,7 @@ async fn start(
             bin: script("fake-app-server.py"),
             model: None,
             effort: None,
-            approval_policy: CodexApprovalPolicy::OnRequest,
-            sandbox: CodexSandbox::WorkspaceWrite,
+            permission_mode: flyco_core::PermissionMode::Auto,
             auth: CodexAuth::Inherit,
         },
         mount(),
@@ -105,8 +104,7 @@ async fn a_thread_that_opened_without_flycos_tools_never_becomes_a_session() {
             bin: script("fake-app-server.py"),
             model: None,
             effort: None,
-            approval_policy: CodexApprovalPolicy::OnRequest,
-            sandbox: CodexSandbox::WorkspaceWrite,
+            permission_mode: flyco_core::PermissionMode::Auto,
             auth: CodexAuth::Inherit,
         },
         mount(),

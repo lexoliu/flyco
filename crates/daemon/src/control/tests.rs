@@ -194,6 +194,7 @@ impl ControlApi for RecordingApi {
                 model: "sonnet".to_owned(),
                 effort: None,
             },
+            permission_mode: flyco_core::PermissionMode::Auto,
         }))
     }
 
@@ -1029,6 +1030,14 @@ async fn user_messages_interrupts_and_compaction_reach_the_harness() {
         model: model.clone(),
     });
     assert_eq!(harness.next_call().await, Call::ModelSet(model));
+
+    harness.command(ControlToDaemon::SetPermissionMode {
+        mode: flyco_core::PermissionMode::Plan,
+    });
+    assert_eq!(
+        harness.next_call().await,
+        Call::PermissionModeSet(flyco_core::PermissionMode::Plan)
+    );
 
     harness.archive().await.expect("the run ended cleanly");
 }

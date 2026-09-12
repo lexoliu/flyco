@@ -271,22 +271,25 @@ async fn conversation_to_continue(config: &mut DaemonConfig, api: &HttpControlAp
         }
     };
 
-    // The model as well as the conversation, and for the same reason: the
-    // file on this disk was written when the machine was *created*, so a
-    // session whose model the user changed while it ran would come back on
-    // the old one after a reclamation.
+    // The model and the mode as well as the conversation, and for the same
+    // reason: the file on this disk was written when the machine was
+    // *created*, so a session whose model or mode the user changed while it
+    // ran would come back on the old ones after a reclamation.
     tracing::info!(
         model = %view.model.model,
         effort = ?view.model.effort,
-        "running this session on the model the control plane recorded"
+        mode = ?view.permission_mode,
+        "running this session on the model and mode the control plane recorded"
     );
     if let Some(claude) = config.claude.as_mut() {
         claude.model = Some(view.model.model.clone());
         claude.effort.clone_from(&view.model.effort);
+        claude.permission_mode = view.permission_mode;
     }
     if let Some(codex) = config.codex.as_mut() {
         codex.model = Some(view.model.model.clone());
         codex.effort.clone_from(&view.model.effort);
+        codex.permission_mode = view.permission_mode;
     }
 
     match view.harness_session_id {

@@ -19,6 +19,7 @@ import type {
   ApprovalPayload,
   MessageOrigin,
   ModelChoice,
+  PermissionMode,
   ProvisioningStage,
   ShellOutcome,
   ShellStream,
@@ -212,6 +213,20 @@ export type TranscriptItem =
       kind: "model_change";
       key: string;
       model: ModelChoice;
+      atUnix: number;
+    }
+  | {
+      /**
+       * The user moved the session onto another permission mode
+       * (docs/ux.md §9.3).
+       *
+       * Carries the mode's id rather than a sentence, like the model
+       * change it sits beside: what a mode is called is the catalog's
+       * business, which lives with the page and not with the stream.
+       */
+      kind: "mode_change";
+      key: string;
+      mode: PermissionMode;
       atUnix: number;
     }
   | { kind: "notice"; key: string; text: string; tone: NoticeTone; atUnix: number }
@@ -626,6 +641,14 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
           kind: "model_change",
           key: `model-${items.length}`,
           model: event.model,
+          atUnix,
+        });
+        break;
+      case "permission_mode_changed":
+        items.push({
+          kind: "mode_change",
+          key: `mode-${items.length}`,
+          mode: event.mode,
           atUnix,
         });
         break;

@@ -1,0 +1,42 @@
+/*
+ * The permission-mode picker: a list of the modes the session's harness
+ * offers, each with a one-line description of what it lets the agent do.
+ */
+
+.panel {
+  min-width: 300px;
+  max-width: min(380px, calc(100vw - 2 * var(--space-4)));
+}
+
+/* A change on its way to the agent: legible, but visibly not settled. */
+.saving {
+  opacity: 0.6;
+}
+
+.option {
+  align-items: flex-start;
+}
+
+.optionText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.optionName {
+  font-weight: var(--weight-medium);
+}
+
+.optionDescription {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--line-normal);
+}
+
+.check {
+  flex: none;
+  margin-left: auto;
+  margin-top: 2px;
+  color: var(--color-text);
+}

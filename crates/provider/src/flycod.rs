@@ -289,8 +289,10 @@ struct Codex<'a> {
     /// app-server's own `defaultReasoningEffort` for the model stands.
     #[serde(skip_serializing_if = "Option::is_none")]
     effort: Option<&'a str>,
-    approval_policy: &'static str,
-    sandbox: &'static str,
+    /// The mode the thread runs under, flyco's spelling — the daemon's
+    /// Codex driver translates it into the `approval_policy`/`sandbox`
+    /// pair the app-server takes.
+    permission_mode: PermissionMode,
     auth: CodexAuth<'a>,
 }
 
@@ -434,8 +436,7 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
                 bin: "codex",
                 model: Some(model),
                 effort,
-                approval_policy: "on-request",
-                sandbox: "workspace-write",
+                permission_mode: bootstrap.permission_mode,
                 auth: codex_auth(credential),
             }),
         ),
@@ -599,7 +600,7 @@ mod tests {
 
         assert!(rendered.contains("[codex]"));
         assert!(rendered.contains("harness = \"codex\""));
-        assert!(rendered.contains("approval_policy = \"on-request\""));
+        assert!(rendered.contains("permission_mode = \"default\""));
         assert!(rendered.contains(CODEX_HOME));
         assert!(!rendered.contains("[claude]"));
         assert!(!rendered.contains("[sidecar]"));

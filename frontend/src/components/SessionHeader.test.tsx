@@ -12,6 +12,7 @@ const SESSION: SessionDetail = {
   branch: "dev",
   harness: "claude_code",
   model: { model: "default" },
+  permission_mode: "auto",
   state: "active",
   activity: "working",
   machine_origin: "auto",

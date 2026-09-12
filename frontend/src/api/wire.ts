@@ -24,6 +24,7 @@ export type UsageReport = components["schemas"]["UsageReport"];
 export type ContextWindow = components["schemas"]["ContextWindow"];
 export type ModelChoice = components["schemas"]["ModelChoice"];
 export type ModelOption = components["schemas"]["ModelOption"];
+export type PermissionMode = components["schemas"]["PermissionMode"];
 export type UsageWindow = components["schemas"]["UsageWindow"];
 
 /**
@@ -178,6 +179,12 @@ export type ClientEvent =
   /** The session was moved onto another model, by the user (docs/ux.md §9.3). */
   | { type: "model_changed"; model: ModelChoice }
   /**
+   * The session's permission mode changed, by the user — the same shape a
+   * model change takes: recorded by the control plane, echoed to every
+   * browser, applied by the daemon when it can (docs/ux.md §9.3).
+   */
+  | { type: "permission_mode_changed"; mode: PermissionMode }
+  /**
    * The models the agent offers, as it listed them at start. State rather
    * than history: the newest list wins and the page reads the last one.
    */
@@ -252,6 +259,7 @@ const CLIENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "provisioning_stage",
   "machine_changed",
   "model_changed",
+  "permission_mode_changed",
   "models",
   "plan_usage",
   "commands",

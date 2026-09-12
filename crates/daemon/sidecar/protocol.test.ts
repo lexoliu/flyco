@@ -22,6 +22,7 @@ const COMMAND_TAGS = [
   "compact",
   "context_usage",
   "set_model",
+  "set_permission_mode",
   "approval_decision",
   "store_response",
   "shutdown",

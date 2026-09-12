@@ -30,6 +30,7 @@ import { BudgetRaise } from "../components/BudgetPicker";
 import GoalChip from "../components/GoalChip";
 import ConfirmDialog from "../components/ConfirmDialog";
 import ModelChip from "../components/ModelChip";
+import ModeChip from "../components/ModeChip";
 import MachinePanel from "../components/MachinePanel";
 import Popover from "../components/Popover";
 import ProblemNotice from "../components/ProblemNotice";
@@ -55,6 +56,7 @@ import {
   updateSession,
   type ModelChoice,
   type ModelOption,
+  type PermissionMode,
 } from "../api/client";
 import { ApiProblem } from "../api/problem";
 import type { ContextUsage, ContextWindow, UsageWindow } from "../api/wire";
@@ -63,6 +65,7 @@ import type { HarnessCommand } from "../api/wire";
 import { formatTimeOfDay } from "../lib/dates";
 import { PROVIDER_LABEL } from "../lib/providers";
 import { machineChip } from "../lib/machines";
+import { modesFor } from "../lib/modes";
 import { orderedWindows } from "../lib/planUsage";
 import { dollarsToUsdMicros, usdMicrosToDollars } from "../lib/money";
 import { shellCommandIn } from "../lib/shell";
@@ -516,6 +519,7 @@ export default function SessionDetail() {
   const [archiving, setArchiving] = createSignal(false);
   const [settingBudget, setSettingBudget] = createSignal(false);
   const [settingModel, setSettingModel] = createSignal(false);
+  const [settingMode, setSettingMode] = createSignal(false);
   const [pendingDirtySummary, setPendingDirtySummary] = createSignal<string | null>(null);
   const [drawerOpen, setDrawerOpen] = createSignal(false);
   /**
@@ -723,6 +727,28 @@ export default function SessionDetail() {
       setError(failure);
     } finally {
       setSettingModel(false);
+    }
+  }
+
+  /**
+   * Moves the session onto another permission mode.
+   *
+   * On the model's terms exactly: the change has to reach the running
+   * agent through its room, so the chip shows the answer the control
+   * plane returned rather than the click that asked for it.
+   */
+  async function onSetMode(mode: PermissionMode): Promise<void> {
+    if (settingMode()) {
+      return;
+    }
+    setError(null);
+    setSettingMode(true);
+    try {
+      mutateSession(await updateSession(params.id, { permissionMode: mode }));
+    } catch (failure) {
+      setError(failure);
+    } finally {
+      setSettingMode(false);
     }
   }
 
@@ -1156,6 +1182,23 @@ export default function SessionDetail() {
                       keep their model: the last thing checked before a
                       message goes out.
                     */}
+                    {/*
+                      The mode, beside the model: both say what the next
+                      turn runs under, and both reach the agent the same
+                      way. The list is the harness's own — Codex has no
+                      `dontAsk` worth a second row (src/lib/modes.ts).
+                    */}
+                    <Show when={session()}>
+                      {(current) => (
+                        <ModeChip
+                          modes={modesFor(current().harness)}
+                          mode={current().permission_mode}
+                          saving={settingMode()}
+                          align="end"
+                          onChoose={(mode) => void onSetMode(mode)}
+                        />
+                      )}
+                    </Show>
                     <Show when={session() !== undefined && models().length > 0 && session()}>
                       {(current) => (
                         <ModelChip

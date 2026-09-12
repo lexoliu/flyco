@@ -339,6 +339,14 @@ impl HarnessSession for ClaudeSession {
         self.ask(|ack| DriverCommand::SetModel { model, ack }).await
     }
 
+    async fn set_permission_mode(
+        &self,
+        mode: flyco_core::PermissionMode,
+    ) -> Result<(), ClaudeError> {
+        self.ask(|ack| DriverCommand::SetPermissionMode { mode, ack })
+            .await
+    }
+
     async fn decide_approval(&self, approval: ToolApproval) -> Result<(), ClaudeError> {
         self.ask(|ack| DriverCommand::Approval { approval, ack })
             .await
@@ -386,6 +394,12 @@ enum DriverCommand {
     /// From the handle: put the running query on another model.
     SetModel {
         model: flyco_core::ModelChoice,
+        ack: oneshot::Sender<Result<(), ClaudeError>>,
+    },
+    /// From the handle: put the running query under another permission
+    /// mode.
+    SetPermissionMode {
+        mode: flyco_core::PermissionMode,
         ack: oneshot::Sender<Result<(), ClaudeError>>,
     },
     /// From the handle: answer a pending approval.
@@ -703,6 +717,16 @@ impl<S: TranscriptStore> Driver<S> {
                         model: model.model,
                         effort: model.effort,
                     },
+                )
+                .await;
+                let ok = result.is_ok();
+                let _ = ack.send(result);
+                ok
+            }
+            DriverCommand::SetPermissionMode { mode, ack } => {
+                let result = write_command(
+                    &mut self.stdin,
+                    &SidecarCommand::SetPermissionMode { mode },
                 )
                 .await;
                 let ok = result.is_ok();

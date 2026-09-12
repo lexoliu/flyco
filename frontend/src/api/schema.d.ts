@@ -1136,7 +1136,9 @@ export interface paths {
          *     stopped accepting work when the pause reached it and nothing in the
          *     database can lift that. The model is recorded and then sent to the
          *     session's room, which echoes it into the transcript and hands it to the
-         *     harness mid-conversation.
+         *     harness mid-conversation. The permission mode is recorded and announced
+         *     on the same path: Claude applies it to the live query and Codex applies
+         *     it from the next turn.
          */
         patch: operations["flyco_api::app::update_session"];
         trace?: never;
@@ -3216,6 +3218,15 @@ export interface components {
              *     back on the old one after a reclamation.
              */
             model: components["schemas"]["ModelChoice"];
+            /**
+             * @description The permission mode this session runs under, as the control plane
+             *     last recorded it.
+             *
+             *     Same reason as `model`: the configuration on disk is the one the
+             *     machine was provisioned with, so a session put on `plan` while it
+             *     ran would otherwise come back on whatever it was provisioned under.
+             */
+            permission_mode: components["schemas"]["PermissionMode"];
         };
         /** @description One HTTP header sent with every request to a remote MCP server. */
         HeaderEntry: {
@@ -3832,6 +3843,25 @@ export interface components {
          * @enum {string}
          */
         PausedReason: "budget" | "usage_limit";
+        /**
+         * @description The permission mode a session runs under.
+         *
+         *     Spelled the way the Claude Agent SDK spells its `PermissionMode` union,
+         *     in `camelCase`, so the sidecar passes the value straight into `query`'s
+         *     `permissionMode` option. Every mode other than [`Self::Default`] narrows
+         *     what reaches flyco's approval UI, because an auto-approved tool never
+         *     calls back.
+         *
+         *     It lives in the domain model rather than in the daemon because it
+         *     crosses every boundary flyco has: the control plane stores it on the
+         *     session row and writes it into the `flycod` configuration it provisions
+         *     onto a machine, the daemon reads that configuration back and applies a
+         *     change to the running harness — `setPermissionMode` on Claude's live
+         *     query, `approvalPolicy`/`sandboxPolicy` overrides on Codex's next
+         *     `turn/start`.
+         * @enum {string}
+         */
+        PermissionMode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" | "auto";
         /**
          * @description An RFC 9457 problem detail document.
          *
@@ -4461,6 +4491,16 @@ export interface components {
              */
             model: components["schemas"]["ModelChoice"];
             paused_reason?: null | components["schemas"]["PausedReason"];
+            /**
+             * @description The permission mode the session's agent runs under.
+             *
+             *     Always concrete for the same reason `model` is: a session opened
+             *     before flyco recorded a mode resolves to
+             *     [`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT)
+             *     at read, so every row states the mode it is on rather than leaving
+             *     the composer's chip to guess.
+             */
+            permission_mode: components["schemas"]["PermissionMode"];
             /** @description Repository it works in. */
             repo: components["schemas"]["RepoSlug"];
             /** @description Where it is in its lifecycle. */
@@ -4666,6 +4706,7 @@ export interface components {
         UpdateSession: {
             budget_limit?: null | components["schemas"]["Usd"];
             model?: null | components["schemas"]["ModelChoice"];
+            permission_mode?: null | components["schemas"]["PermissionMode"];
             /**
              * @description What to call the session, 1 to
              *     [`MAX_SESSION_TITLE_CHARS`] characters once trimmed.
@@ -7138,6 +7179,16 @@ export interface operations {
                          */
                         model: components["schemas"]["ModelChoice"];
                         paused_reason?: null | components["schemas"]["PausedReason"];
+                        /**
+                         * @description The permission mode the session's agent runs under.
+                         *
+                         *     Always concrete for the same reason `model` is: a session opened
+                         *     before flyco recorded a mode resolves to
+                         *     [`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT)
+                         *     at read, so every row states the mode it is on rather than leaving
+                         *     the composer's chip to guess.
+                         */
+                        permission_mode: components["schemas"]["PermissionMode"];
                         /** @description Repository it works in. */
                         repo: components["schemas"]["RepoSlug"];
                         /** @description Where it is in its lifecycle. */
@@ -7282,6 +7333,7 @@ export interface operations {
                 "application/json": {
                     budget_limit?: null | components["schemas"]["Usd"];
                     model?: null | components["schemas"]["ModelChoice"];
+                    permission_mode?: null | components["schemas"]["PermissionMode"];
                     /**
                      * @description What to call the session, 1 to
                      *     [`MAX_SESSION_TITLE_CHARS`] characters once trimmed.
@@ -7940,6 +7992,15 @@ export interface operations {
                          *     back on the old one after a reclamation.
                          */
                         model: components["schemas"]["ModelChoice"];
+                        /**
+                         * @description The permission mode this session runs under, as the control plane
+                         *     last recorded it.
+                         *
+                         *     Same reason as `model`: the configuration on disk is the one the
+                         *     machine was provisioned with, so a session put on `plan` while it
+                         *     ran would otherwise come back on whatever it was provisioned under.
+                         */
+                        permission_mode: components["schemas"]["PermissionMode"];
                     };
                 };
             };

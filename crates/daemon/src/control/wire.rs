@@ -1399,6 +1399,23 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                 }
                 self.session.set_model(model).await.map_err(harness)?;
             }
+            ControlToDaemon::SetPermissionMode { mode } => {
+                // Refused on the same terms as a model change: the harness
+                // applies it, and a session that has stopped accepting work
+                // has no harness to reach. The control plane has already
+                // recorded the mode, so the change is redelivered on the
+                // next `Hello` rather than lost — `survives_a_disconnect`
+                // is what makes that true.
+                if self.refuse_while_paused("a permission mode change")
+                    || self.refuse_while_reclaiming("a permission mode change")
+                {
+                    return Ok(Ended::Disconnected);
+                }
+                self.session
+                    .set_permission_mode(mode)
+                    .await
+                    .map_err(harness)?;
+            }
             ControlToDaemon::TerminalInput { data } => {
                 if self.refuse_while_paused("terminal input") {
                     return Ok(Ended::Disconnected);

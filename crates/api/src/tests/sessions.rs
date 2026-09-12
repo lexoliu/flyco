@@ -1225,6 +1225,7 @@ async fn an_update_refuses_a_budget_nothing_can_run_on_and_a_body_that_says_noth
             title: Some("Rework the relay mailbox".to_owned()),
             budget_limit: Some(Usd::from_dollars(30)),
             model: None,
+            permission_mode: None,
         })
         .send()
         .await;
@@ -1748,6 +1749,80 @@ async fn a_model_change_on_somebody_elses_session_is_a_404(ctx: TestContext, kv:
         .patch(&format!("/v1/sessions/{}", session.summary.id))
         .bearer(&stranger.token)
         .json(&remodel("sonnet", None))
+        .send()
+        .await
+        .assert_status(404);
+}
+
+// ── The mode a session runs under ──
+
+/// A `PATCH /v1/sessions/{id}` body that only changes the permission mode.
+fn remode(mode: flyco_core::PermissionMode) -> UpdateSession {
+    UpdateSession {
+        permission_mode: Some(mode),
+        ..UpdateSession::default()
+    }
+}
+
+#[skyzen::test]
+async fn a_session_opened_without_a_mode_runs_the_product_default(ctx: TestContext, kv: Kv, db: Db) {
+    // Resolved at read rather than written at create: the default is a
+    // product decision, and a row nobody chose a mode for must still state
+    // what it is on — the composer's chip reads it from here.
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    assert_eq!(
+        session.summary.permission_mode,
+        flyco_core::PermissionMode::PRODUCT_DEFAULT
+    );
+}
+
+#[skyzen::test]
+async fn changing_the_mode_records_it_on_the_session(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    let path = format!("/v1/sessions/{}", session.summary.id);
+
+    let changed = client
+        .patch(&path)
+        .bearer(&caller.token)
+        .json(&remode(flyco_core::PermissionMode::Plan))
+        .send()
+        .await;
+    changed.assert_status(200);
+    assert_eq!(
+        changed.json::<SessionDetail>().summary.permission_mode,
+        flyco_core::PermissionMode::Plan
+    );
+
+    // And it is the row that changed, not just the answer: the next read
+    // of the session names the new mode, and so does the list the rail
+    // renders from.
+    let reread = client.get(&path).bearer(&caller.token).send().await;
+    reread.assert_status(200);
+    assert_eq!(
+        reread.json::<SessionDetail>().summary.permission_mode,
+        flyco_core::PermissionMode::Plan
+    );
+}
+
+#[skyzen::test]
+async fn a_mode_change_reaches_the_session_of_nobody_else(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+
+    let stranger = sign_in(&kv, &db, seed_other_user(&db).await).await;
+    client
+        .patch(&format!("/v1/sessions/{}", session.summary.id))
+        .bearer(&stranger.token)
+        .json(&remode(flyco_core::PermissionMode::BypassPermissions))
         .send()
         .await
         .assert_status(404);

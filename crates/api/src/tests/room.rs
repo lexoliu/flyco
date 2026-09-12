@@ -1217,6 +1217,66 @@ async fn a_model_change_is_held_for_an_absent_daemon_and_still_echoed() {
     );
 }
 
+#[skyzen::test]
+async fn a_permission_mode_change_reaches_the_daemon_and_the_transcript() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    let command = ControlToDaemon::SetPermissionMode {
+        mode: flyco_core::PermissionMode::Plan,
+    };
+    let (status, _) = room
+        .call(
+            Method::POST,
+            "/internal/command",
+            Some(serde_json::to_vec(&command).expect("serialize")),
+        )
+        .await;
+    assert_eq!(status, 204);
+
+    assert_eq!(
+        room.drain(),
+        vec![
+            to_daemon(&command),
+            to_client(&ClientEvent::PermissionModeChanged {
+                mode: flyco_core::PermissionMode::Plan,
+            }),
+        ]
+    );
+}
+
+#[skyzen::test]
+async fn a_permission_mode_change_is_held_for_an_absent_daemon_and_still_echoed() {
+    // No `greet`: the room has no daemon. The mode was already recorded by
+    // the control plane, so the browsers are told and the command waits —
+    // the same shape a model change takes, and for the same reason.
+    let mut room = Room::open().await;
+
+    let command = ControlToDaemon::SetPermissionMode {
+        mode: flyco_core::PermissionMode::BypassPermissions,
+    };
+    let (status, _) = room
+        .call(
+            Method::POST,
+            "/internal/command",
+            Some(serde_json::to_vec(&command).expect("serialize")),
+        )
+        .await;
+    assert_eq!(status, 204);
+    assert_eq!(
+        room.drain(),
+        vec![to_client(&ClientEvent::PermissionModeChanged {
+            mode: flyco_core::PermissionMode::BypassPermissions,
+        })]
+    );
+
+    room.hello().await;
+    assert!(
+        room.drain().contains(&to_daemon(&command)),
+        "a held mode change must be replayed to the daemon that arrives"
+    );
+}
+
 // ── The internal boundary ──
 
 #[skyzen::test]

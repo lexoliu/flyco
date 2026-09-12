@@ -729,7 +729,22 @@ session still has a say over, as the official composers do, left to right:
   `Target` opens a small panel that states the condition and sets it,
   because a goal is a setting of the session rather than a line in it and
   so gets a control instead of a `/goal` command row;
-- then, at the right beside send, the **model chip** of §5, `Fable 5.1 ·
+- then, at the right beside send, the **mode chip** — `ShieldCheck` and
+  the mode's name (`Auto`, `Plan`, `Accept edits`, `Yolo`) — whose popover
+  lists the modes the session's harness offers, each with a line about
+  what it lets the agent do. One union across both harnesses: Claude takes
+  the six natively (`auto`, `default`, `plan`, `acceptEdits`,
+  `bypassPermissions`, `dontAsk`), Codex takes the same modes as the
+  approval/sandbox pair each maps to, and its list stops at five because
+  `dontAsk` maps to the pair `plan` already does — two rows for one
+  behavior is a lie about a choice. A choice is sent as
+  `PATCH /v1/sessions/{id}` with `permission_mode`, persisted on the
+  session like the model is, and reaches the running agent through its
+  room (held for an absent daemon, replayed on reconnect, reapplied at
+  boot from the control plane's record rather than the machine's stale
+  config). The chip dims until the answer lands, and the transcript
+  records the change as one line, `Switched to Plan mode`;
+- the **model chip** of §5, `Fable 5.1 ·
   High`, whose choice is sent as `PATCH /v1/sessions/{id}` with `model`
   and reaches the running agent through its room; the chip dims until the
   answer lands, and the transcript records the change as one line,
@@ -963,6 +978,19 @@ Pre-1.0, the API changes to fit the product; no compatibility shims.
   account and broadcasts `ClientEvent::Models`. `GET
   /v1/sessions/{id}/harness-session` carries the model, so a machine that
   comes back reads it beside the conversation it continues.
+- The permission mode is a session property on the model's terms.
+  `PermissionMode` (`default`, `acceptEdits`, `bypassPermissions`,
+  `plan`, `dontAsk`, `auto` — spelled the way the Claude Agent SDK spells
+  them, because Claude takes the union natively and Codex maps each to an
+  approval/sandbox pair) is what a session runs under.
+  `SessionSummary` carries `permission_mode`, a `NULL` row resolving to
+  `PermissionMode::PRODUCT_DEFAULT` (`auto`) the way a `NULL` model does;
+  `PATCH /v1/sessions/{id}` changes it — the room delivers
+  `ControlToDaemon::SetPermissionMode`, held across a disconnect like a
+  model change, and echoes `ClientEvent::PermissionModeChanged` — and
+  `GET /v1/sessions/{id}/harness-session` carries it, so a machine that
+  comes back runs under the mode the control plane recorded rather than
+  the one its disk was provisioned with.
 - `GET /v1/machines/default?spot=` returns the curated default choice and
   its catalog entry. `GET /v1/machines/catalog` returns the curated
   catalog (§7.6).

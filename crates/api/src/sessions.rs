@@ -8,9 +8,9 @@
 use flyco_core::{
     ARCHIVE_AFTER_IDLE_SECS, ApprovalState, BranchName, BudgetConfig, BudgetId, BudgetStage,
     ClientEvent, HarnessKind, HarnessSessionView, InterruptedReason, MAX_SESSION_TITLE_CHARS,
-    MachineOrigin, ModelChoice, PROVISION_DEADLINE_SECS, PausedReason, RepoSlug, SessionActivity,
-    SessionDetail, SessionId, SessionState, SessionSummary, UsageLimitPause, Usd, UserId,
-    builtin_models,
+    MachineOrigin, ModelChoice, PROVISION_DEADLINE_SECS, PausedReason, PermissionMode, RepoSlug,
+    SessionActivity, SessionDetail, SessionId, SessionState, SessionSummary, UsageLimitPause, Usd,
+    UserId, builtin_models,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -60,6 +60,10 @@ struct SessionRow {
     /// The effort it runs at. `NULL` both for a legacy row and for a
     /// session that chose a model and left the harness's own effort alone.
     effort: Option<String>,
+    /// The permission mode the session's agent runs under. `NULL` for a
+    /// row opened before flyco recorded one — read through [`mode_of`],
+    /// which resolves it the way [`model_of`] resolves a legacy model.
+    permission_mode: Option<PermissionMode>,
 }
 
 /// The choice a stored row names, resolving a legacy `NULL` model.
@@ -74,6 +78,16 @@ fn model_of(harness: HarnessKind, model: Option<String>, effort: Option<String>)
         || ModelChoice::default_of(&builtin_models(harness)),
         |model| ModelChoice { model, effort },
     )
+}
+
+/// The mode a stored row runs under, resolving a legacy `NULL`.
+///
+/// A row written before migration 0025 ran on the product default — that
+/// is what it was provisioned with — so that is what it reads back as,
+/// resolved here rather than backfilled once into the table, where it
+/// would have frozen today's default into rows nobody chose it for.
+fn mode_of(mode: Option<PermissionMode>) -> PermissionMode {
+    mode.unwrap_or(PermissionMode::PRODUCT_DEFAULT)
 }
 
 impl From<SessionRow> for SessionSummary {
@@ -95,6 +109,7 @@ impl From<SessionRow> for SessionSummary {
             created_at_unix: row.created_at_unix,
             last_active_unix: row.last_active_unix,
             model: model_of(row.harness, row.model, row.effort),
+            permission_mode: mode_of(row.permission_mode),
         }
     }
 }
@@ -351,6 +366,46 @@ pub async fn set_model(
     find(db, user, id).await
 }
 
+/// Puts one of the caller's sessions under another permission mode.
+///
+/// The durable half alone, on the same terms as [`set_model`]: the running
+/// harness is told separately, by the
+/// [`SetPermissionMode`](flyco_core::ControlToDaemon::SetPermissionMode)
+/// the caller sends the session's room once this has returned. Written in
+/// that order because the room is the live announcement and the row is
+/// what a daemon reads when it comes back.
+///
+/// Every declared [`PermissionMode`] is one both harnesses honor, so there
+/// is no account-list validation the way a model has: the enum is the
+/// contract, and a body that names one the type does not have is refused
+/// at the boundary by serde rather than here.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is not the
+/// caller's, or [`ApiError`] if the database fails.
+pub async fn set_mode(
+    db: &Db,
+    user: UserId,
+    id: SessionId,
+    mode: PermissionMode,
+) -> Result<SessionDetail, ApiError> {
+    // The row is loaded first so a session that is not the caller's is a
+    // 404 rather than an UPDATE that quietly writes nothing.
+    load(db, user, id).await?;
+
+    let mode = Some(mode);
+    sql!(
+        db,
+        "UPDATE sessions SET permission_mode = {mode} \
+         WHERE id = {id} AND user_id = {user}"
+    )
+    .execute()
+    .await?;
+
+    find(db, user, id).await
+}
+
 /// What changing a session's budget did to the session.
 #[derive(Debug)]
 pub struct BudgetRaise {
@@ -422,7 +477,7 @@ pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError
          s.machine_origin, s.budget_id, s.failure_reason, s.interrupted_reason, \
          s.paused_reason, s.usage_limit_window, s.usage_limit_resets_at_unix, \
          s.usage_limit_resume_at_unix, s.usage_limit_queued_message, \
-         s.created_at_unix, s.last_active_unix, s.model, s.effort \
+         s.created_at_unix, s.last_active_unix, s.model, s.effort, s.permission_mode \
          FROM sessions s WHERE s.user_id = {user} \
          ORDER BY s.created_at_unix DESC, s.id DESC"
     )
@@ -534,7 +589,7 @@ async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiErr
          s.machine_origin, s.budget_id, s.failure_reason, s.interrupted_reason, \
          s.paused_reason, s.usage_limit_window, s.usage_limit_resets_at_unix, \
          s.usage_limit_resume_at_unix, s.usage_limit_queued_message, \
-         s.created_at_unix, s.last_active_unix, s.model, s.effort \
+         s.created_at_unix, s.last_active_unix, s.model, s.effort, s.permission_mode \
          FROM sessions s WHERE s.id = {id} AND s.user_id = {user}"
     )
     .fetch_optional()
@@ -583,6 +638,13 @@ pub struct ProvisioningTarget {
     pub model: Option<String>,
     /// The effort it runs at, where one was chosen.
     pub effort: Option<String>,
+    /// The permission mode the machine's `flycod` is configured to run the
+    /// session under.
+    ///
+    /// `NULL` for a session opened before flyco recorded one; read through
+    /// [`permission_mode`](Self::permission_mode), which resolves that to
+    /// the product default the machine was provisioned under all along.
+    pub permission_mode: Option<PermissionMode>,
 }
 
 impl ProvisioningTarget {
@@ -594,6 +656,16 @@ impl ProvisioningTarget {
     #[must_use]
     pub fn model_choice(&self) -> ModelChoice {
         model_of(self.harness, self.model.clone(), self.effort.clone())
+    }
+
+    /// The mode the machine's `flycod` is configured to run under.
+    ///
+    /// A legacy row resolves to the product default, which is the mode it
+    /// was provisioned under — so this states the fact the machine has
+    /// been living rather than a new decision.
+    #[must_use]
+    pub fn permission_mode(&self) -> PermissionMode {
+        mode_of(self.permission_mode)
     }
 }
 
@@ -611,8 +683,8 @@ pub async fn provisioning_target(
 ) -> Result<Option<ProvisioningTarget>, ApiError> {
     Ok(sql!(
         db,
-        "SELECT user_id, harness, repo, branch, machine_origin, state, model, effort \
-         FROM sessions WHERE id = {id}"
+        "SELECT user_id, harness, repo, branch, machine_origin, state, model, effort, \
+         permission_mode FROM sessions WHERE id = {id}"
     )
     .fetch_optional()
     .await?)
@@ -988,11 +1060,13 @@ pub async fn harness_session(db: &Db, id: SessionId) -> Result<HarnessSessionVie
         harness: HarnessKind,
         model: Option<String>,
         effort: Option<String>,
+        permission_mode: Option<PermissionMode>,
     }
 
     let row: Row = sql!(
         db,
-        "SELECT harness_session_id, harness, model, effort FROM sessions WHERE id = {id}"
+        "SELECT harness_session_id, harness, model, effort, permission_mode \
+         FROM sessions WHERE id = {id}"
     )
     .fetch_optional()
     .await?
@@ -1000,6 +1074,7 @@ pub async fn harness_session(db: &Db, id: SessionId) -> Result<HarnessSessionVie
     Ok(HarnessSessionView {
         harness_session_id: row.harness_session_id,
         model: model_of(row.harness, row.model, row.effort),
+        permission_mode: mode_of(row.permission_mode),
     })
 }
 

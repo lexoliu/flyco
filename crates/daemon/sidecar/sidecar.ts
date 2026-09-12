@@ -55,6 +55,7 @@ import {
   type ModelOption,
   type MountedServer,
   type MountState,
+  type PermissionMode,
   type SessionKey,
   type SidecarCommand,
   type SidecarEvent,
@@ -662,6 +663,17 @@ class Session {
     });
   }
 
+  /**
+   * Puts the running query under another permission mode.
+   *
+   * One SDK call, applied to the conversation in progress: the SDK
+   * resolves the mode against its own rules immediately, so a turn
+   * already streaming answers under the mode this sets.
+   */
+  async setPermissionMode(mode: PermissionMode): Promise<void> {
+    await this.session.setPermissionMode(mode);
+  }
+
   /** Ends the streaming input, which ends the session. */
   close(): void {
     this.closing = true;
@@ -790,6 +802,9 @@ async function apply(command: SidecarCommand, session: Session | null): Promise<
       return true;
     case "set_model":
       await session.setModel(command.model, command.effort);
+      return true;
+    case "set_permission_mode":
+      await session.setPermissionMode(command.mode);
       return true;
     case "approval_decision": {
       const result: PermissionResult = command.allow
