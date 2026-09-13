@@ -185,7 +185,7 @@ pub enum SessionCommand {
         id: String,
         /// Comma-separated: `active`, `idle`, `approval`, `paused`,
         /// `stopped`, `failed`, `archived`. The first to occur wins.
-        #[arg(long, value_delimiter = ',', required = true)]
+        #[arg(long = "for", value_delimiter = ',', required = true)]
         conditions: Vec<String>,
         /// Give up after this long (`300`, `5m`, `1h30m`).
         #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
