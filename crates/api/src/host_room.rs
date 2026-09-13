@@ -165,7 +165,9 @@ async fn attach_inner(
     kv: &DurableKv,
 ) -> Result<Json<HostAttachResponse>, ApiError> {
     internal(headers)?;
-    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+    ensure_schema(db)
+        .await
+        .map_err(|error| room_failed(&error))?;
 
     let live_until = now_unix().saturating_add(PRESENCE_TTL_SECONDS);
     sql!(
@@ -211,7 +213,9 @@ async fn open_command_stream(
     db: DurableDb,
 ) -> Result<Sse, ApiError> {
     internal(headers)?;
-    ensure_schema(&db).await.map_err(|error| room_failed(&error))?;
+    ensure_schema(&db)
+        .await
+        .map_err(|error| room_failed(&error))?;
     let presence = read_presence(&db)
         .await
         .map_err(|error| room_failed(&error))?;
@@ -339,7 +343,9 @@ async fn accept_batch(
     db: &DurableDb,
 ) -> Result<NoContent, ApiError> {
     internal(headers)?;
-    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+    ensure_schema(db)
+        .await
+        .map_err(|error| room_failed(&error))?;
     let Some(presence) = read_presence(db)
         .await
         .map_err(|error| room_failed(&error))?
@@ -559,10 +565,13 @@ fn stored(error: &skyzen_services::DurableDbError) -> DurableObjectError {
 
 /// Reads the presence row, if an attach has ever written one.
 async fn read_presence(db: &DurableDb) -> Result<Option<PresenceRow>, DurableObjectError> {
-    sql!(db, "SELECT epoch, live_until FROM host_presence WHERE id = 0")
-        .fetch_optional()
-        .await
-        .map_err(|error| stored(&error))
+    sql!(
+        db,
+        "SELECT epoch, live_until FROM host_presence WHERE id = 0"
+    )
+    .fetch_optional()
+    .await
+    .map_err(|error| stored(&error))
 }
 
 /// Whether the host's presence marker is still inside its deadline.
@@ -600,11 +609,7 @@ fn internal(headers: &Headers) -> Result<(), ApiError> {
 
 /// Sends one command to the host, holding the container work it cannot
 /// take right now.
-async fn run_command(
-    headers: Headers,
-    body: Bytes,
-    db: DurableDb,
-) -> Outcome<NoContent> {
+async fn run_command(headers: Headers, body: Bytes, db: DurableDb) -> Outcome<NoContent> {
     dispatch(&headers, &body, &db).await.into()
 }
 
@@ -616,11 +621,7 @@ async fn run_command(
 /// identity — and none of that is an API schema anybody publishes. The
 /// room's internal routes are spoken only by this Worker, so the body is
 /// decoded here rather than dragged through `OpenAPI`.
-async fn dispatch(
-    headers: &Headers,
-    body: &[u8],
-    db: &DurableDb,
-) -> Result<NoContent, ApiError> {
+async fn dispatch(headers: &Headers, body: &[u8], db: &DurableDb) -> Result<NoContent, ApiError> {
     let command: ControlToHost = serde_json::from_slice(body)
         .map_err(|error| ApiError::Room(format!("a host command did not decode: {error}")))?;
     dispatch_command(headers, &command, db).await
@@ -632,7 +633,9 @@ async fn dispatch_command(
     db: &DurableDb,
 ) -> Result<NoContent, ApiError> {
     internal(headers)?;
-    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+    ensure_schema(db)
+        .await
+        .map_err(|error| room_failed(&error))?;
 
     // Written before it can be delivered, so a host that takes a job and
     // dies is asked again rather than losing it — and so a job planned
@@ -664,11 +667,7 @@ async fn dispatch_command(
 }
 
 /// Serves what the room knows about its machine.
-async fn read_status(
-    headers: Headers,
-    kv: DurableKv,
-    db: DurableDb,
-) -> Outcome<Json<HostStatus>> {
+async fn read_status(headers: Headers, kv: DurableKv, db: DurableDb) -> Outcome<Json<HostStatus>> {
     status(&headers, &kv, &db).await.into()
 }
 
@@ -678,7 +677,9 @@ async fn status(
     db: &DurableDb,
 ) -> Result<Json<HostStatus>, ApiError> {
     internal(headers)?;
-    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+    ensure_schema(db)
+        .await
+        .map_err(|error| room_failed(&error))?;
     Ok(Json(HostStatus {
         connected: host_live(db).await.map_err(|error| room_failed(&error))?,
         facts: read_facts(kv).await?,

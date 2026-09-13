@@ -239,6 +239,8 @@ export interface SessionEvent {
   session: string;
   /** Position in that session's recorded history, when it has one. */
   seq: number | null;
+  /** When the control plane published it, seconds since the Unix epoch. */
+  at_unix: number;
   /** The event. */
   event: ClientEvent;
 }
@@ -254,13 +256,19 @@ export function parseSessionEvent(value: unknown): SessionEvent {
   if (typeof value !== "object" || value === null || !("session" in value)) {
     throw new Error(`not a SessionEvent: ${JSON.stringify(value)}`);
   }
-  const envelope = value as { session: unknown; seq: unknown; event: unknown };
+  const envelope = value as {
+    session: unknown;
+    seq: unknown;
+    at_unix: unknown;
+    event: unknown;
+  };
   if (typeof envelope.session !== "string") {
     throw new Error(`not a SessionEvent: ${JSON.stringify(value)}`);
   }
   return {
     session: envelope.session,
     seq: typeof envelope.seq === "number" ? envelope.seq : null,
+    at_unix: typeof envelope.at_unix === "number" ? envelope.at_unix : 0,
     event: parseClientEvent(envelope.event),
   };
 }

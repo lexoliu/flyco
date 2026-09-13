@@ -38,8 +38,8 @@ use flyco_core::{
 };
 
 use crate::error::ApiError;
-use crate::room::StoredEvent;
 use crate::rooms::Rooms;
+use flyco_core::wire::StoredEvent;
 
 /// Most turns one page returns.
 pub const MAX_TURNS_PER_PAGE: u32 = 50;
@@ -221,7 +221,7 @@ mod tests {
     use flyco_core::{ClientEvent, ContextWindow, HarnessEvent, TurnPage, UsageReport, Usd};
 
     use super::{Fold, PROMPT_EXCERPT_CHARS};
-    use crate::room::StoredEvent;
+    use flyco_core::wire::StoredEvent;
 
     fn usage() -> UsageReport {
         UsageReport {

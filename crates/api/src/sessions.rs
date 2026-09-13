@@ -232,6 +232,10 @@ pub struct Opening<'a> {
     /// model list — so a row is never written naming a model nobody
     /// checked.
     pub model: &'a ModelChoice,
+    /// The approval policy it opens under — `None` leaves the column
+    /// `NULL`, which [`mode_of`] reads as the product default, so an
+    /// unopinionated create stores no opinion.
+    pub permission_mode: Option<PermissionMode>,
 }
 
 /// Creates a session and the budget it accounts against.
@@ -267,6 +271,7 @@ pub async fn create(db: &Db, cap: u32, opening: Opening<'_>) -> Result<SessionDe
         branch,
         machine_origin,
         model,
+        permission_mode,
         ..
     } = opening;
     let effort = model.effort.as_deref();
@@ -276,10 +281,10 @@ pub async fn create(db: &Db, cap: u32, opening: Opening<'_>) -> Result<SessionDe
         db,
         "INSERT INTO sessions \
          (id, user_id, title, harness, repo, branch, state, machine_origin, budget_id, \
-          created_at_unix, last_active_unix, model, effort) \
+          created_at_unix, last_active_unix, model, effort, permission_mode) \
          VALUES ({id}, {user}, {title}, {harness}, {repo}, {branch}, \
                  {SessionState::Provisioning}, {machine_origin}, {budget_id}, {now}, {now}, \
-                 {model}, {effort})"
+                 {model}, {effort}, {permission_mode})"
     )
     .execute()
     .await?;

@@ -460,6 +460,7 @@ async fn drive_claude_code(config: DaemonConfig, mount: Mount) -> Result<(), Fai
         api,
         terminal,
         terminal_out,
+        tui: flyco_daemon::tui::HarnessTui::resolve(&config).await,
         // The composer's `!` commands run in the same checkout the agent
         // works in, as the same user this daemon runs as.
         shell: config.shell.runner(config.workdir.clone()),
@@ -526,6 +527,7 @@ async fn report<S: HarnessSession + 'static>(
         api,
         terminal,
         terminal_out,
+        tui: flyco_daemon::tui::HarnessTui::resolve(&config).await,
         // The composer's `!` commands run in the same checkout the agent
         // works in, as the same user this daemon runs as.
         shell: config.shell.runner(config.workdir.clone()),

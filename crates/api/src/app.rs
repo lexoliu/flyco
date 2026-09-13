@@ -7,7 +7,7 @@ use flyco_core::{
     AgentMachineView, ApiKeyId, ApiKeySummary, ApprovalDecision, ApprovalId, ApprovalState,
     ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, EnvDocument,
-    HarnessFeature, HarnessObservation, HarnessSessionView, MAX_SESSION_TITLE_CHARS,
+    HarnessFeature, HarnessObservation, HarnessSessionView, HarnessTui, MAX_SESSION_TITLE_CHARS,
     MachineCatalogEntry, MachineOrigin, MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage,
     RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
     ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, RunShell, SendMessage,
@@ -31,20 +31,20 @@ use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::{Headers, path_id, path_segment};
 use crate::github::GithubClient;
+use crate::host_room::HostAttachResponse;
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
 use crate::provisioning_queue::{self, ProvisioningJob};
 use crate::respond::{Accepted, Created, NoContent};
-use crate::room::EventPage;
 use crate::rooms::{HostRooms, Rooms, UserStreams};
-use crate::host_room::HostAttachResponse;
 use crate::vendors::Vendors;
 use crate::{
-    agents_md, api_keys, approvals, claude_oauth, codex_oauth, daemon_tokens, env,
-    harness_accounts, hosts, machines, mcp, memory, oauth, observations, problem,
+    agents_md, api_keys, approvals, claude_oauth, cli, codex_oauth, daemon_tokens, env,
+    harness_accounts, hosts, idempotency, machines, mcp, memory, oauth, observations, problem,
     provider_accounts, provider_oauth, provisioning, push, relay, releases, repos, responses,
     sessions, skills, transcripts, turns, usage_limits, users, webhooks, workdirs,
 };
+use flyco_core::wire::EventPage;
 
 /// Health probe response.
 #[derive(Debug, Serialize, skyzen::ToSchema)]
@@ -171,15 +171,26 @@ async fn create_session(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
     State(github): State<GithubClient>,
+    headers: Headers,
     Json(request): Json<CreateSession>,
     rooms: Rooms,
     queue: Queue,
     db: Db,
     kv: Kv,
 ) -> Outcome<Created<Json<SessionDetail>>> {
-    start_session(&user, request, &config, &github, &rooms, &queue, &db, &kv)
-        .await
-        .into()
+    start_session(
+        &user,
+        request,
+        headers.get("idempotency-key"),
+        &config,
+        &github,
+        &rooms,
+        &queue,
+        &db,
+        &kv,
+    )
+    .await
+    .into()
 }
 
 #[expect(
@@ -189,6 +200,7 @@ async fn create_session(
 async fn start_session(
     user: &CurrentUser,
     request: CreateSession,
+    idempotency_key: Option<&str>,
     config: &ApiConfig,
     github: &GithubClient,
     rooms: &Rooms,
@@ -196,17 +208,155 @@ async fn start_session(
     db: &Db,
     kv: &Kv,
 ) -> Result<Created<Json<SessionDetail>>, ApiError> {
+    let resolved = resolve_request(user, request, config, github, db, kv, queue).await?;
+
+    // Claimed only once everything that could refuse the request has
+    // refused it: a key bound to a request that was never going to be
+    // accepted would poison a corrected retry under the same key.
+    let claim = match idempotency_key {
+        Some(key) => match idempotency::claim(db, user.id, key).await? {
+            idempotency::Claim::Committed(session) => {
+                return sessions::find(db, user.id, session)
+                    .await
+                    .map(|detail| Created(Json(detail)));
+            }
+            idempotency::Claim::InFlight => return Err(ApiError::IdempotencyInFlight),
+            idempotency::Claim::Fresh(claim) => Some(claim),
+        },
+        None => None,
+    };
+
+    let session = match sessions::create(
+        db,
+        user.session_cap,
+        sessions::Opening {
+            user: user.id,
+            title: &flyco_core::excerpt(&resolved.prompt, MAX_SESSION_TITLE_CHARS),
+            harness: resolved.harness,
+            repo: &resolved.repo,
+            branch: &resolved.branch,
+            machine_origin: resolved.machine_origin,
+            budget: resolved.budget,
+            model: &resolved.model,
+            permission_mode: resolved.permission_mode,
+        },
+    )
+    .await
+    {
+        Ok(session) => session,
+        Err(error) => {
+            if let Some(claim) = claim {
+                claim.release(db).await?;
+            }
+            return Err(error);
+        }
+    };
+    if let Some(claim) = claim {
+        claim.record(db, session.summary.id).await?;
+    }
+    let id = session.summary.id;
+    let machine = machines::reserve(db, id, resolved.account.id, &resolved.spec).await?;
+
+    // The prompt is posted to the session's room *before* the machine is
+    // queued, so the agent's first instruction is durable before anything
+    // asynchronous can go wrong. No daemon exists yet — the room holds it
+    // in its mailbox and hands it over on the daemon's first attach.
+    //
+    // Both steps fail the session rather than return early: a session row
+    // whose prompt never reached its room, or whose job never reached the
+    // queue, would sit in `provisioning` waiting for something that is never
+    // going to happen.
+    fail_session_on(
+        db,
+        rooms,
+        id,
+        "the session's room would not take its first prompt",
+        rooms
+            .command(
+                db,
+                id,
+                &ControlToDaemon::UserMessage {
+                    text: resolved.prompt,
+                    origin: MessageOrigin::User,
+                },
+            )
+            .await,
+    )
+    .await?;
+    fail_session_on(
+        db,
+        rooms,
+        id,
+        "the provisioning queue would not accept this session's job",
+        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await,
+    )
+    .await?;
+
+    tracing::info!(
+        repo = %resolved.repo,
+        branch = %resolved.branch,
+        harness = ?resolved.harness,
+        model = %resolved.model.model,
+        effort = ?resolved.model.effort,
+        machine_type = %resolved.spec.machine_type,
+        region = %resolved.spec.region,
+        spot = resolved.spec.spot,
+        "opened a session and queued its machine"
+    );
+    Ok(Created(Json(session)))
+}
+
+/// Everything `start_session` settles before a row is written: the request's
+/// claims each checked against what the control plane can verify, resolved to
+/// the values the session will actually carry.
+struct ResolvedSession {
+    /// The trimmed first prompt.
+    prompt: String,
+    /// The repository the session works on.
+    repo: RepoSlug,
+    /// Its branch — named or the repository's default.
+    branch: BranchName,
+    /// The harness the session runs.
+    harness: flyco_core::HarnessKind,
+    /// How the harness treats its own confirmations — `None` stores no
+    /// opinion and the product default applies.
+    permission_mode: Option<flyco_core::PermissionMode>,
+    /// Who chose the machine: the user, or the automatic picker.
+    machine_origin: MachineOrigin,
+    /// The budget the session enforces.
+    budget: BudgetConfig,
+    /// The model the session opens on, off the account's own list.
+    model: ModelChoice,
+    /// The provider account the machine bills to.
+    account: provisioning::LinkedAccount,
+    /// What the machine is.
+    spec: MachineSpec,
+}
+
+/// The resolution half of `start_session`: every check a create request can
+/// fail, done before anything is written.
+///
+/// Consumes the request: `machine` and `model` are the caller's *claims*,
+/// replaced by what the resolution produced — a machine picked when none
+/// was named, a model defaulted off the account's list.
+async fn resolve_request(
+    user: &CurrentUser,
+    request: CreateSession,
+    config: &ApiConfig,
+    github: &GithubClient,
+    db: &Db,
+    kv: &Kv,
+    queue: &Queue,
+) -> Result<ResolvedSession, ApiError> {
     let prompt = request.prompt.trim();
     if prompt.is_empty() {
         return Err(ApiError::EmptyMessage);
     }
-    let prompt = prompt.to_owned();
     let repo = request
         .repo
         .parse::<RepoSlug>()
         .map_err(|_| ApiError::InvalidRepo(request.repo.clone()))?;
     let branch = resolve_branch(github, config, db, user, &repo, request.branch.as_deref()).await?;
-    let budget = BudgetConfig::new(request.budget_limit).map_err(|_| ApiError::InvalidBudget)?;
 
     let machine_origin = if request.machine.is_some() {
         MachineOrigin::User
@@ -252,72 +402,18 @@ async fn start_session(
         spot: choice.spot && entry.pricing.offers_spot(),
         disk_gib: choice.disk_gib,
     };
-
-    let session = sessions::create(
-        db,
-        user.session_cap,
-        sessions::Opening {
-            user: user.id,
-            title: &flyco_core::excerpt(&prompt, MAX_SESSION_TITLE_CHARS),
-            harness: request.harness,
-            repo: &repo,
-            branch: &branch,
-            machine_origin,
-            budget,
-            model: &model,
-        },
-    )
-    .await?;
-    let id = session.summary.id;
-    let machine = machines::reserve(db, id, account.id, &spec).await?;
-
-    // The prompt is posted to the session's room *before* the machine is
-    // queued, so the agent's first instruction is durable before anything
-    // asynchronous can go wrong. No daemon exists yet — the room holds it
-    // in its mailbox and hands it over on the daemon's first attach.
-    //
-    // Both steps fail the session rather than return early: a session row
-    // whose prompt never reached its room, or whose job never reached the
-    // queue, would sit in `provisioning` waiting for something that is never
-    // going to happen.
-    fail_session_on(
-        db,
-        rooms,
-        id,
-        "the session's room would not take its first prompt",
-        rooms
-            .command(
-                db,
-                id,
-                &ControlToDaemon::UserMessage {
-                    text: prompt,
-                    origin: MessageOrigin::User,
-                },
-            )
-            .await,
-    )
-    .await?;
-    fail_session_on(
-        db,
-        rooms,
-        id,
-        "the provisioning queue would not accept this session's job",
-        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await,
-    )
-    .await?;
-
-    tracing::info!(
-        repo = %repo,
-        branch = %branch,
-        harness = ?request.harness,
-        model = %model.model,
-        effort = ?model.effort,
-        machine_type = %spec.machine_type,
-        region = %spec.region,
-        spot = spec.spot,
-        "opened a session and queued its machine"
-    );
-    Ok(Created(Json(session)))
+    Ok(ResolvedSession {
+        prompt: prompt.to_owned(),
+        repo,
+        branch,
+        harness: request.harness,
+        permission_mode: request.permission_mode,
+        machine_origin,
+        budget: BudgetConfig::new(request.budget_limit).map_err(|_| ApiError::InvalidBudget)?,
+        model,
+        account,
+        spec,
+    })
 }
 
 /// Settles which branch a session works on, before any row is written.
@@ -890,7 +986,9 @@ async fn attach_daemon(
     db: Db,
     Json(attach): Json<DaemonAttach>,
 ) -> Outcome<Json<DaemonAttached>> {
-    daemon_attach(&params, &headers, &rooms, &db, attach).await.into()
+    daemon_attach(&params, &headers, &rooms, &db, attach)
+        .await
+        .into()
 }
 
 async fn daemon_attach(
@@ -977,7 +1075,9 @@ async fn attach_host(
     db: Db,
     Json(attach): Json<HostAttach>,
 ) -> Outcome<Json<HostAttachResponse>> {
-    host_attach(&params, &headers, &rooms, &db, attach).await.into()
+    host_attach(&params, &headers, &rooms, &db, attach)
+        .await
+        .into()
 }
 
 async fn host_attach(
@@ -1346,6 +1446,35 @@ async fn terminal_resize(
         ControlToDaemon::TerminalResize {
             cols: body.cols,
             rows: body.rows,
+        },
+    )
+    .await
+    .map(|_| Accepted)
+    .into()
+}
+
+/// Puts a session's harness TUI in the terminal's foreground.
+///
+/// The `flyco claude`/`flyco codex`/`flyco resume` path: the CLI bridges
+/// the user's local terminal to the machine's PTY and asks for the
+/// harness's own interface rather than the shell. `resume` re-enters the
+/// last conversation and makes the request an ensure — a TUI already in
+/// the foreground is left alone.
+#[skyzen::openapi]
+async fn terminal_harness(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(body): Json<HarnessTui>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Accepted> {
+    drive(
+        &user,
+        &params,
+        &rooms,
+        &db,
+        ControlToDaemon::TerminalHarness {
+            resume: body.resume,
         },
     )
     .await
@@ -2539,6 +2668,7 @@ fn public_routes() -> Vec<RouteNode> {
     nodes.extend(webhooks::routes());
     nodes.extend(hosts::public_routes());
     nodes.extend(provider_oauth::public_routes());
+    nodes.extend(cli::public_routes());
     nodes
 }
 
@@ -2672,6 +2802,7 @@ fn driving_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/messages".post(send_message),
         "/v1/sessions/{id}/shell".post(run_shell),
         "/v1/sessions/{id}/terminal/input".post(terminal_input),
+        "/v1/sessions/{id}/terminal/harness".post(terminal_harness),
         "/v1/sessions/{id}/terminal/resize".post(terminal_resize),
         "/v1/sessions/{id}/interrupt".post(interrupt_session),
         "/v1/sessions/{id}/compact".post(compact_session),
@@ -2700,6 +2831,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
     nodes.extend(session_routes());
     nodes.extend(agents_md::routes());
     nodes.extend(claude_oauth::routes());
+    nodes.extend(cli::routes());
     nodes.extend(codex_oauth::routes());
     nodes.extend(harness_accounts::routes());
     nodes.extend(hosts::routes());

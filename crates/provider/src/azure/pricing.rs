@@ -913,7 +913,10 @@ mod tests {
         // Dedicated is a different plan, and Azure quotes it by the hour
         // rather than by the second — reading it with the same conversion
         // would be off by a factor of 3,600 as well as by the plan.
-        assert_eq!(row("Dedicated vCPU Usage").hourly(), Usd::from_micros(57_077));
+        assert_eq!(
+            row("Dedicated vCPU Usage").hourly(),
+            Usd::from_micros(57_077)
+        );
     }
 
     #[tokio::test]

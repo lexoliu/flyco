@@ -11,8 +11,7 @@ use std::time::Duration;
 use flyco_core::MachineId;
 use flyco_core::host::JobOutcome;
 use flyco_provider::host::{
-    ContainerJob, ControlToHost, HostAttach, HostCommand, HostFrames, HostToControl,
-    container_name,
+    ContainerJob, ControlToHost, HostAttach, HostCommand, HostFrames, HostToControl, container_name,
 };
 use futures_util::StreamExt as _;
 use skyzen::durable::DurableObject as _;

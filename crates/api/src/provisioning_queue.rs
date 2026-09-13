@@ -535,7 +535,17 @@ async fn perform(
         } => match claim(db, rooms, job.clone()).await {
             Ok(None) => return Settled::Done,
             Ok(Some(claimed)) => {
-                carry_on(db, config, kv, rooms, queue, clients, &claimed, continuation).await
+                carry_on(
+                    db,
+                    config,
+                    kv,
+                    rooms,
+                    queue,
+                    clients,
+                    &claimed,
+                    continuation,
+                )
+                .await
             }
             Err(error) => return Settled::Redeliver(error),
         },

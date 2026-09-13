@@ -173,16 +173,21 @@ async fn a_fresh_stream_starts_at_the_live_tail() {
     let mut buffer = Buffer::open().await;
     let session = SessionId::generate();
     buffer
-        .publish(session, &[emitted(Some(1), "old"), emitted(Some(2), "older")])
+        .publish(
+            session,
+            &[emitted(Some(1), "old"), emitted(Some(2), "older")],
+        )
         .await;
 
     let mut stream = buffer.stream("").await;
 
-    buffer
-        .publish(session, &[emitted(Some(3), "live")])
-        .await;
+    buffer.publish(session, &[emitted(Some(3), "live")]).await;
     let (id, envelope) = next(&mut stream).await;
-    assert_eq!(id.as_deref(), Some("3"), "the SSE id is the buffer position");
+    assert_eq!(
+        id.as_deref(),
+        Some("3"),
+        "the SSE id is the buffer position"
+    );
     assert_eq!(envelope.session, session);
     assert_eq!(envelope.seq, Some(3));
     assert_eq!(
@@ -236,12 +241,14 @@ async fn a_stream_filtered_to_a_session_skips_the_others() {
     buffer
         .publish(other, &[emitted(Some(1), "someone else's")])
         .await;
-    buffer
-        .publish(followed, &[emitted(Some(1), "mine")])
-        .await;
+    buffer.publish(followed, &[emitted(Some(1), "mine")]).await;
 
     let (id, envelope) = next(&mut stream).await;
-    assert_eq!(id.as_deref(), Some("2"), "the buffer position counts every row");
+    assert_eq!(
+        id.as_deref(),
+        Some("2"),
+        "the buffer position counts every row"
+    );
     assert_eq!(envelope.session, followed);
     assert_eq!(
         envelope.event,
@@ -285,9 +292,7 @@ async fn an_unsequenced_event_streams_without_a_position() {
 async fn a_call_without_the_internal_marker_is_refused() {
     let mut buffer = Buffer::open().await;
     assert_eq!(
-        buffer
-            .unmarked(Method::GET, "/internal/stream", None)
-            .await,
+        buffer.unmarked(Method::GET, "/internal/stream", None).await,
         502
     );
     let publish = PublishEvents {

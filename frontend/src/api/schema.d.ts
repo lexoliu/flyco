@@ -181,6 +181,104 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/cli-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/cli-sessions` — opens a sign-in attempt.
+         * @description `POST /v1/cli-sessions` — opens a sign-in attempt.
+         *
+         *     Public by necessity: the CLI calling it holds no credential yet — that
+         *     is what the attempt is for. What it returns is a capability anyone may
+         *     mint, which is safe because it authorizes nothing: the poll token only
+         *     collects a key the user chose to approve, and the attempt id only names
+         *     a page that asks the signed-in user to decide.
+         */
+        post: operations["flyco_api::cli::create_cli_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cli-sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /v1/cli-sessions/{id}?s=<poll_token>` — the CLI's poll.
+         * @description `GET /v1/cli-sessions/{id}?s=<poll_token>` — the CLI's poll.
+         *
+         *     `202` while the user has not decided; `200` with the key once they
+         *     approve — the read that delivers it consumes the record, so a repeated
+         *     poll is `410` rather than a second copy. Public because the poller is by
+         *     definition unauthenticated; the poll token is the credential.
+         */
+        get: operations["flyco_api::cli::poll_cli_session"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cli-sessions/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/cli-sessions/{id}/approve` — the PWA's "approve" button.
+         * @description `POST /v1/cli-sessions/{id}/approve` — the PWA's "approve" button.
+         *
+         *     Authenticated like every other user route; the minted key belongs to
+         *     whoever is signed in — a key for somebody else's account would hand the
+         *     CLI the wrong identity, so there is nothing to name but the attempt id.
+         */
+        post: operations["flyco_api::cli::approve_cli_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cli-sessions/{id}/deny": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/cli-sessions/{id}/deny` — the PWA's "deny" button.
+         * @description `POST /v1/cli-sessions/{id}/deny` — the PWA's "deny" button.
+         *
+         *     Recorded rather than just closed: the CLI's poll is answered `403`
+         *     instead of running the attempt's ten minutes out.
+         */
+        post: operations["flyco_api::cli::deny_cli_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/events": {
         parameters: {
             query?: never;
@@ -2061,6 +2159,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/terminal/harness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Puts a session's harness TUI in the terminal's foreground.
+         * @description Puts a session's harness TUI in the terminal's foreground.
+         *
+         *     The `flyco claude`/`flyco codex`/`flyco resume` path: the CLI bridges
+         *     the user's local terminal to the machine's PTY and asks for the
+         *     harness's own interface rather than the shell. `resume` re-enters the
+         *     last conversation and makes the request an ensure — a TUI already in
+         *     the foreground is left alone.
+         */
+        post: operations["flyco_api::app::terminal_harness"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/terminal/input": {
         parameters: {
             query?: never;
@@ -2737,6 +2861,43 @@ export interface components {
             /** @description Fully-formed `https://claude.ai/oauth/authorize` URL to open. */
             authorize_url: string;
         };
+        /** @description Response of `POST /v1/cli-sessions`: a pending sign-in attempt. */
+        CliSession: {
+            /**
+             * @description Where the user approves: the PWA's `/cli/authorize` page with this
+             *     attempt's id. Opened locally when the CLI can open a browser,
+             *     printed otherwise.
+             */
+            authorize_url: string;
+            /**
+             * Format: int64
+             * @description Seconds since the Unix epoch when the attempt stops answering.
+             */
+            expires_at_unix: number;
+            /** @description Identifier the poll and the approval page both name. */
+            id: components["schemas"]["Uuid"];
+            /**
+             * @description Shared secret the poll presents as `?s=`. Proves the poller is the
+             *     same CLI that opened the attempt — it is not the key, only the
+             *     right to collect the key once one exists.
+             */
+            poll_token: string;
+        };
+        /**
+         * @description Response of `GET /v1/cli-sessions/{id}?s=…` once the user approved.
+         *
+         *     Returned exactly once: the read that answers `200` consumes the record,
+         *     so a replayed poll finds `410` rather than a second copy of the key.
+         */
+        CliSessionKey: {
+            /** @description The plaintext `fk_` API key. */
+            key: string;
+            /**
+             * @description Identifier used to revoke the key later — `flyco logout` passes it
+             *     to `DELETE /v1/api-keys/{id}`.
+             */
+            key_id: components["schemas"]["Uuid"];
+        };
         /**
          * @description A supported compute provider.
          * @enum {string}
@@ -2925,6 +3086,21 @@ export interface components {
              */
             label: string;
         };
+        /**
+         * @description Request body of `POST /v1/cli-sessions`.
+         *
+         *     Opens a `flyco login` attempt: the CLI prints the returned
+         *     `authorize_url`, the user approves it in a browser already signed in to
+         *     flyco, and the CLI polls until the key is minted.
+         */
+        CreateCliSession: {
+            /**
+             * @description The machine the CLI runs on — becomes part of the issued key's
+             *     label, so the key list reads `flyco-cli on <hostname>`. Omitted on
+             *     machines that cannot name themselves.
+             */
+            hostname?: string | null;
+        };
         /** @description Request body of `POST /v1/memory`. */
         CreateMemoryNode: {
             /** @description The content to remember. */
@@ -2953,6 +3129,7 @@ export interface components {
             harness: components["schemas"]["HarnessKind"];
             machine?: null | components["schemas"]["MachineChoice"];
             model?: null | components["schemas"]["ModelChoice"];
+            permission_mode?: null | components["schemas"]["PermissionMode"];
             /**
              * @description What the agent should do first.
              *
@@ -3110,6 +3287,14 @@ export interface components {
             data: string;
             /** @enum {string} */
             type: "terminal_output";
+        } | {
+            /**
+             * Format: int32
+             * @description The process's exit code. `None` when a signal ended it.
+             */
+            code?: number | null;
+            /** @enum {string} */
+            type: "terminal_exited";
         } | {
             /** @description The bytes, decoded UTF-8 lossy. */
             data: string;
@@ -3327,7 +3512,7 @@ export interface components {
              */
             after?: number | null;
         };
-        /** @description A page of the room's event tail. */
+        /** @description A page of a session's event tail. */
         EventPage: {
             /** @description The events, oldest first. */
             events: components["schemas"]["StoredEvent"][];
@@ -3710,6 +3895,23 @@ export interface components {
              */
             permission_mode: components["schemas"]["PermissionMode"];
         };
+        /**
+         * @description Request body of `POST /v1/sessions/{id}/terminal/harness`.
+         *
+         *     The `flyco claude`/`flyco codex`/`flyco resume` path: put the session's
+         *     harness TUI in the terminal's foreground. The daemon supplies the
+         *     credentials from its own configuration, so the body carries none.
+         */
+        HarnessTui: {
+            /**
+             * @description Re-enter the last conversation (`claude --continue`,
+             *     `codex resume --last`) rather than start a new one. Also makes the
+             *     request an *ensure*: a TUI already in the foreground is left alone,
+             *     because re-attaching to a session must not kill the turn on its
+             *     screen.
+             */
+            resume?: boolean;
+        };
         /** @description One HTTP header sent with every request to a remote MCP server. */
         HeaderEntry: {
             /** @description Header name. */
@@ -3748,7 +3950,7 @@ export interface components {
          * @description What a host says about itself when it greets the control plane.
          *
          *     Reported by the machine rather than configured by the user, and
-         *     refreshed on every `Hello`: a host that gained memory, filled its disk,
+         *     refreshed on every attach: a host that gained memory, filled its disk,
          *     or was upgraded to another Podman is a different machine to schedule
          *     onto, and flyco has no other way to learn it.
          */
@@ -3841,7 +4043,7 @@ export interface components {
              * @description What it last said about itself.
              *
              *     Absent only between the row being written and the host's first
-             *     `Hello`, which is a window the enrollment route does not leave open —
+             *     attach, which is a window the enrollment route does not leave open —
              *     enrolling carries the facts.
              */
             facts: components["schemas"]["HostFacts"];
@@ -4397,6 +4599,11 @@ export interface components {
          * @enum {string}
          */
         PermissionMode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" | "auto";
+        /** @description Query the poll presents: `?s=<poll_token>`. */
+        Poll: {
+            /** @description The `poll_token` `POST /v1/cli-sessions` issued. */
+            s?: string | null;
+        };
         /**
          * @description An RFC 9457 problem detail document.
          *
@@ -5168,7 +5375,10 @@ export interface components {
              * @description When the room recorded it, seconds since the Unix epoch.
              */
             at_unix: number;
-            /** @description The [`ClientEvent`] this position holds. */
+            /**
+             * @description The [`ClientEvent`] this position holds. Untyped: the room replays
+             *     what the daemon sent, including a variant this build does not know.
+             */
             event: unknown;
             /**
              * Format: int64
@@ -5916,6 +6126,137 @@ export interface operations {
             };
         };
     };
+    "flyco_api::cli::create_cli_session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description The machine the CLI runs on — becomes part of the issued key's
+                     *     label, so the key list reads `flyco-cli on <hostname>`. Omitted on
+                     *     machines that cannot name themselves.
+                     */
+                    hostname?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * @description Where the user approves: the PWA's `/cli/authorize` page with this
+                         *     attempt's id. Opened locally when the CLI can open a browser,
+                         *     printed otherwise.
+                         */
+                        authorize_url: string;
+                        /**
+                         * Format: int64
+                         * @description Seconds since the Unix epoch when the attempt stops answering.
+                         */
+                        expires_at_unix: number;
+                        /** @description Identifier the poll and the approval page both name. */
+                        id: components["schemas"]["Uuid"];
+                        /**
+                         * @description Shared secret the poll presents as `?s=`. Proves the poller is the
+                         *     same CLI that opened the attempt — it is not the key, only the
+                         *     right to collect the key once one exists.
+                         */
+                        poll_token: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::cli::poll_cli_session": {
+        parameters: {
+            query?: {
+                s?: string | null;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The plaintext `fk_` API key. */
+                        key: string;
+                        /**
+                         * @description Identifier used to revoke the key later — `flyco logout` passes it
+                         *     to `DELETE /v1/api-keys/{id}`.
+                         */
+                        key_id: components["schemas"]["Uuid"];
+                    };
+                };
+            };
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::cli::approve_cli_session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::cli::deny_cli_session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     "flyco_api::app::open_event_stream": {
         parameters: {
             query?: {
@@ -6450,7 +6791,7 @@ export interface operations {
                          * @description What it last said about itself.
                          *
                          *     Absent only between the row being written and the host's first
-                         *     `Hello`, which is a window the enrollment route does not leave open —
+                         *     attach, which is a window the enrollment route does not leave open —
                          *     enrolling carries the facts.
                          */
                         facts: components["schemas"]["HostFacts"];
@@ -6594,7 +6935,7 @@ export interface operations {
                          * @description What it last said about itself.
                          *
                          *     Absent only between the row being written and the host's first
-                         *     `Hello`, which is a window the enrollment route does not leave open —
+                         *     attach, which is a window the enrollment route does not leave open —
                          *     enrolling carries the facts.
                          */
                         facts: components["schemas"]["HostFacts"];
@@ -6671,7 +7012,7 @@ export interface operations {
                          * @description What it last said about itself.
                          *
                          *     Absent only between the row being written and the host's first
-                         *     `Hello`, which is a window the enrollment route does not leave open —
+                         *     attach, which is a window the enrollment route does not leave open —
                          *     enrolling carries the facts.
                          */
                         facts: components["schemas"]["HostFacts"];
@@ -8036,6 +8377,7 @@ export interface operations {
                     harness: components["schemas"]["HarnessKind"];
                     machine?: null | components["schemas"]["MachineChoice"];
                     model?: null | components["schemas"]["ModelChoice"];
+                    permission_mode?: null | components["schemas"]["PermissionMode"];
                     /**
                      * @description What the agent should do first.
                      *
@@ -9343,6 +9685,40 @@ export interface operations {
                 "application/json": {
                     /** @description What made the machine stop. */
                     reason: components["schemas"]["StopReason"];
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::terminal_harness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Re-enter the last conversation (`claude --continue`,
+                     *     `codex resume --last`) rather than start a new one. Also makes the
+                     *     request an *ensure*: a TUI already in the foreground is left alone,
+                     *     because re-attaching to a session must not kill the turn on its
+                     *     screen.
+                     */
+                    resume?: boolean;
                 };
             };
         };

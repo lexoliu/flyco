@@ -6,6 +6,7 @@ import { initTheme } from "./lib/theme";
 import AppShell from "./components/AppShell";
 import Login from "./routes/Login";
 import AuthComplete from "./routes/AuthComplete";
+import CliAuthorize from "./routes/CliAuthorize";
 import Home from "./routes/Home";
 import Welcome from "./routes/Welcome";
 import { ConnectCompute, ConnectHarness } from "./routes/connect/Connect";
@@ -34,6 +35,7 @@ render(
     <Router root={AppShell}>
       <Route path="/login" component={Login} />
       <Route path="/auth/complete" component={AuthComplete} />
+      <Route path="/cli/authorize" component={CliAuthorize} />
       <Route path="/" component={Home} />
       <Route path="/welcome" component={Welcome} />
       <Route path="/connect/harness" component={ConnectHarness} />

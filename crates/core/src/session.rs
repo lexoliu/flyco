@@ -526,6 +526,16 @@ pub struct CreateSession {
     /// the CLI happens to default to on the day its machine boots.
     #[serde(default)]
     pub model: Option<ModelChoice>,
+    /// The approval policy the session's agent runs under.
+    ///
+    /// Omitted, the session opens on
+    /// [`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT).
+    /// Named at creation because an autonomous caller cannot answer a
+    /// permission prompt: a mode has to be on the row before the machine
+    /// boots, not patched in after the first turn is already waiting on
+    /// one.
+    #[serde(default)]
+    pub permission_mode: Option<crate::harness::PermissionMode>,
 }
 
 /// A session in a list.
@@ -754,6 +764,22 @@ pub struct TerminalSize {
     pub cols: u16,
     /// Rows the pane shows.
     pub rows: u16,
+}
+
+/// Request body of `POST /v1/sessions/{id}/terminal/harness`.
+///
+/// The `flyco claude`/`flyco codex`/`flyco resume` path: put the session's
+/// harness TUI in the terminal's foreground. The daemon supplies the
+/// credentials from its own configuration, so the body carries none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct HarnessTui {
+    /// Re-enter the last conversation (`claude --continue`,
+    /// `codex resume --last`) rather than start a new one. Also makes the
+    /// request an *ensure*: a TUI already in the foreground is left alone,
+    /// because re-attaching to a session must not kill the turn on its
+    /// screen.
+    #[serde(default, skip_serializing_if = "crate::wire::is_false")]
+    pub resume: bool,
 }
 
 /// One turn of a session, as the history list renders it.

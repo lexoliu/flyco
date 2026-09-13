@@ -147,7 +147,9 @@ async fn publish_inner(
     db: &DurableDb,
 ) -> Result<NoContent, ApiError> {
     internal(headers)?;
-    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+    ensure_schema(db)
+        .await
+        .map_err(|error| room_failed(&error))?;
 
     let session_id = body.session.to_string();
     let session = session_id.as_str();
@@ -156,6 +158,7 @@ async fn publish_inner(
         let envelope = SessionEvent {
             session: body.session,
             seq: emitted.seq,
+            at_unix: now,
             event: emitted.event,
         };
         let json = serde_json::to_string(&envelope)
@@ -195,7 +198,9 @@ async fn open_stream(
     db: DurableDb,
 ) -> Result<Sse, ApiError> {
     internal(headers)?;
-    ensure_schema(&db).await.map_err(|error| room_failed(&error))?;
+    ensure_schema(&db)
+        .await
+        .map_err(|error| room_failed(&error))?;
     let cursor = match after {
         Some(after) => after,
         // The buffer's tail, read in the same call the stream is opened
@@ -207,7 +212,11 @@ async fn open_stream(
             .map_err(|error| room_failed(&error))?,
     };
     Ok(crate::sse::serve(
-        EventFeed { db, cursor, session },
+        EventFeed {
+            db,
+            cursor,
+            session,
+        },
         poll_event_feed,
         crate::sse::HEARTBEAT,
     ))

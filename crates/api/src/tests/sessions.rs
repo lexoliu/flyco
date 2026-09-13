@@ -77,6 +77,7 @@ fn open(caller: &Caller, repo: &str, dollars: u64) -> CreateSession {
         machine: Some(machine_choice(caller.account)),
         spot: true,
         model: None,
+        permission_mode: None,
     }
 }
 
@@ -205,6 +206,7 @@ async fn omitting_the_machine_lets_flyco_pick_one(ctx: TestContext, kv: Kv, db: 
             machine: None,
             spot: true,
             model: None,
+            permission_mode: None,
         },
     )
     .await;
@@ -249,7 +251,7 @@ async fn the_prompt_is_recorded_as_the_session_s_first_user_message(
         .send()
         .await;
     events.assert_status(200);
-    let page: crate::room::EventPage = events.json();
+    let page: flyco_core::wire::EventPage = events.json();
     assert_eq!(
         page.events
             .into_iter()
@@ -464,6 +466,7 @@ async fn flyco_cannot_choose_a_machine_without_a_deployable_linux_type(
             machine: None,
             spot: true,
             model: None,
+            permission_mode: None,
         })
         .send()
         .await;
@@ -1075,8 +1078,8 @@ async fn exhaust_the_budget(db: &Db, caller: &Caller, session: SessionId, dollar
         db,
         &Rooms::from_native(NativeRooms::new(), crate::rooms::NativeUserStreams::new()),
     )
-        .await
-        .expect("deliver the pause");
+    .await
+    .expect("deliver the pause");
 }
 
 #[skyzen::test]
@@ -1186,8 +1189,8 @@ async fn a_budget_raised_and_spent_again_pauses_again(ctx: TestContext, kv: Kv, 
         &db,
         &Rooms::from_native(NativeRooms::new(), crate::rooms::NativeUserStreams::new()),
     )
-        .await
-        .expect("deliver the second pause");
+    .await
+    .expect("deliver the second pause");
     assert_eq!(
         sessions::state_of(&db, caller.user.id, id)
             .await
@@ -1285,6 +1288,7 @@ async fn ownership_is_answered_per_user(db: Db) {
             model: &flyco_core::ModelChoice::default_of(&flyco_core::builtin_models(
                 HarnessKind::Codex,
             )),
+            permission_mode: None,
         },
     )
     .await
@@ -1774,7 +1778,11 @@ fn remode(mode: flyco_core::PermissionMode) -> UpdateSession {
 }
 
 #[skyzen::test]
-async fn a_session_opened_without_a_mode_runs_the_product_default(ctx: TestContext, kv: Kv, db: Db) {
+async fn a_session_opened_without_a_mode_runs_the_product_default(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
     // Resolved at read rather than written at create: the default is a
     // product decision, and a row nobody chose a mode for must still state
     // what it is on — the composer's chip reads it from here.
@@ -1835,4 +1843,166 @@ async fn a_mode_change_reaches_the_session_of_nobody_else(ctx: TestContext, kv: 
         .send()
         .await
         .assert_status(404);
+}
+
+// ── Idempotent creation and permission mode at birth ──
+
+#[skyzen::test]
+async fn a_replayed_create_returns_the_same_session(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let first = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .header("idempotency-key", "create-attempt-1")
+        .json(&open(&caller, REPO, 10))
+        .send()
+        .await;
+    first.assert_status(201);
+    let first: SessionDetail = first.json();
+
+    let replay = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .header("idempotency-key", "create-attempt-1")
+        .json(&open(&caller, REPO, 10))
+        .send()
+        .await;
+    replay.assert_status(201);
+    assert_eq!(
+        replay.json::<SessionDetail>().summary.id,
+        first.summary.id,
+        "the same key replays the same session instead of provisioning twice"
+    );
+
+    let listed: Vec<SessionSummary> = client
+        .get("/v1/sessions")
+        .bearer(&caller.token)
+        .send()
+        .await
+        .json();
+    assert_eq!(listed.len(), 1, "one create, however many retries");
+}
+
+#[skyzen::test]
+async fn distinct_keys_create_distinct_sessions(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let mut ids = Vec::new();
+    for key in ["create-attempt-2", "create-attempt-3"] {
+        let response = client
+            .post("/v1/sessions")
+            .bearer(&caller.token)
+            .header("idempotency-key", key)
+            .json(&open(&caller, REPO, 10))
+            .send()
+            .await;
+        response.assert_status(201);
+        ids.push(response.json::<SessionDetail>().summary.id);
+    }
+    assert_ne!(ids[0], ids[1]);
+}
+
+#[skyzen::test]
+async fn an_unusable_idempotency_key_is_refused(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let too_long = "k".repeat(crate::idempotency::MAX_KEY_CHARS + 1);
+    client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .header("idempotency-key", &too_long)
+        .json(&open(&caller, REPO, 10))
+        .send()
+        .await
+        .assert_status(422);
+}
+
+#[skyzen::test]
+async fn a_failed_create_releases_its_key_for_retry(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    // Cap of one: the second create is refused *after* the key is claimed,
+    // and the refusal must not poison the key — the retry goes through.
+    client
+        .patch("/v1/me")
+        .bearer(&caller.token)
+        .json(&UpdateMe {
+            session_cap: Some(1),
+        })
+        .send()
+        .await
+        .assert_status(200);
+    create(&client, &caller, &open(&caller, REPO, 10)).await;
+
+    client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .header("idempotency-key", "after-the-cap")
+        .json(&open(&caller, REPO, 10))
+        .send()
+        .await
+        .assert_status(409);
+
+    client
+        .patch("/v1/me")
+        .bearer(&caller.token)
+        .json(&UpdateMe {
+            session_cap: Some(2),
+        })
+        .send()
+        .await
+        .assert_status(200);
+    let retried = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .header("idempotency-key", "after-the-cap")
+        .json(&open(&caller, REPO, 10))
+        .send()
+        .await;
+    retried.assert_status(201);
+}
+
+#[skyzen::test]
+async fn a_create_carries_the_permission_mode_it_named(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let mut request = open(&caller, REPO, 10);
+    request.permission_mode = Some(flyco_core::PermissionMode::Plan);
+    let session = create(&client, &caller, &request).await;
+    assert_eq!(
+        session.summary.permission_mode,
+        flyco_core::PermissionMode::Plan,
+        "an agent's mode is born with the session, not patched in later"
+    );
+
+    // And the row agrees: the provisioning read resolves the stored mode.
+    let target = sessions::provisioning_target(&db, session.summary.id)
+        .await
+        .expect("read the provisioning row")
+        .expect("the session exists");
+    assert_eq!(target.permission_mode(), flyco_core::PermissionMode::Plan);
+}
+
+#[skyzen::test]
+async fn a_create_without_a_mode_opens_on_the_product_default(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    assert_eq!(
+        session.summary.permission_mode,
+        flyco_core::PermissionMode::PRODUCT_DEFAULT
+    );
 }

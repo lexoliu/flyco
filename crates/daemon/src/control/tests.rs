@@ -25,7 +25,7 @@ use crate::shell::{FakeShell, ShellEvent, ShellUpdate, StartedRun};
 use crate::spot::{FakeEviction, SpotNotice};
 use crate::terminal::{FakeTerminal, TerminalCall};
 use crate::testing::{
-    Call, ControlPlane, Directive, FakeDisk, FakeSession, AttachAnswer, Reply, Room, Seen,
+    AttachAnswer, Call, ControlPlane, Directive, FakeDisk, FakeSession, Reply, Room, Seen,
 };
 use crate::workdir::Checkout;
 use flyco_core::workdir::{WorkdirRefusal, WorkdirReply, WorkdirRequest};
@@ -88,8 +88,9 @@ struct RecordingApi {
 impl RelayTransport for RecordingApi {
     fn attach(
         &self,
-    ) -> impl core::future::Future<Output = Result<flyco_core::wire::DaemonAttached, ControlApiError>> + Send
-    {
+    ) -> impl core::future::Future<
+        Output = Result<flyco_core::wire::DaemonAttached, ControlApiError>,
+    > + Send {
         self.transport.attach()
     }
 
@@ -309,7 +310,7 @@ struct Harness {
     notifications: mpsc::UnboundedReceiver<TurnNotice>,
     approval_id: ApprovalId,
     terminal_writes: mpsc::UnboundedReceiver<TerminalCall>,
-    terminal_inject: mpsc::Sender<String>,
+    terminal_inject: mpsc::Sender<crate::terminal::TerminalEvent>,
     /// The `!` commands the daemon asked its shell to run.
     shell_runs: mpsc::UnboundedReceiver<StartedRun>,
     repo_inject: mpsc::UnboundedSender<String>,
@@ -435,6 +436,7 @@ impl Harness {
             api,
             terminal,
             terminal_out,
+            tui: crate::tui::HarnessTui::fixture(),
             shell,
             workdir,
             checkout: Checkout::new(checkout_dir.0.clone(), None),
@@ -621,8 +623,7 @@ async fn a_daemon_attaches_with_its_token_and_its_protocol_version() {
         "the attach carries the session's daemon token"
     );
     assert_eq!(
-        body["protocol_version"],
-        WIRE_PROTOCOL_VERSION,
+        body["protocol_version"], WIRE_PROTOCOL_VERSION,
         "and the wire version it speaks"
     );
 
@@ -802,7 +803,9 @@ async fn terminal_input_reaches_the_shell_and_output_reaches_the_room() {
 
     harness
         .terminal_inject
-        .send("file.txt\n".to_owned())
+        .send(crate::terminal::TerminalEvent::Output(
+            "file.txt\n".to_owned(),
+        ))
         .await
         .expect("inject shell output");
     assert_eq!(
@@ -1511,6 +1514,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         api,
         terminal,
         terminal_out,
+        tui: crate::tui::HarnessTui::fixture(),
         shell,
         workdir,
         checkout: Checkout::new(std::env::temp_dir(), None),

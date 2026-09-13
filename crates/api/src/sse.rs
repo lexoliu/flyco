@@ -101,9 +101,7 @@ where
                 ping_at.reset(heartbeat);
             }
             Poll::Idle => {
-                if futures_util::FutureExt::now_or_never(&mut ping_at)
-                    .is_some()
-                {
+                if futures_util::FutureExt::now_or_never(&mut ping_at).is_some() {
                     ping_at.reset(heartbeat);
                     if sender.send(Event::comment("ping")).await.is_err() {
                         return;

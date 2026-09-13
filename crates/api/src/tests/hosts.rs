@@ -439,6 +439,7 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
             machine: Some(machine_choice(caller.account)),
             spot: true,
             model: None,
+            permission_mode: None,
         })
         .send()
         .await;

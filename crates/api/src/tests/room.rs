@@ -10,8 +10,8 @@
 use std::time::Duration;
 
 use flyco_core::{
-    ApprovalId, ClientEvent, ControlToDaemon, DaemonToControl, HarnessEvent,
-    SessionId, ShellOutcome, ShellRunId, ShellStream, WIRE_PROTOCOL_VERSION,
+    ApprovalId, ClientEvent, ControlToDaemon, DaemonToControl, HarnessEvent, SessionId,
+    ShellOutcome, ShellRunId, ShellStream, WIRE_PROTOCOL_VERSION,
     wire::{ApprovalPayload, DaemonAttach, DaemonCommand, DaemonFrames},
 };
 use futures_util::StreamExt as _;
@@ -22,9 +22,9 @@ use skyzen_services::durable::{DurableDb, DurableKv};
 use skyzen_test::mock::{InMemoryDurableDb, InMemoryDurableKv};
 
 use crate::room::{
-    AttachResponse, Emitted, EmittedEvent, EventPage, HEADER_INTERNAL, HEADER_SESSION, INTERNAL,
-    SessionRoom,
+    AttachResponse, Emitted, EmittedEvent, HEADER_INTERNAL, HEADER_SESSION, INTERNAL, SessionRoom,
 };
+use flyco_core::wire::EventPage;
 
 /// How long a test waits for the room to hand a command down the stream.
 ///
@@ -306,7 +306,11 @@ impl Room {
 
     async fn events(&mut self, after: u64) -> EventPage {
         let (status, body) = self
-            .call(Method::GET, &format!("/internal/events?after={after}"), None)
+            .call(
+                Method::GET,
+                &format!("/internal/events?after={after}"),
+                None,
+            )
             .await;
         assert_eq!(
             status,
@@ -342,7 +346,11 @@ fn connected() -> EmittedEvent {
 
 /// The event a call emitted, unwrapped of its stream position.
 fn events_of(emitted: Emitted) -> Vec<ClientEvent> {
-    emitted.events.into_iter().map(|emitted| emitted.event).collect()
+    emitted
+        .events
+        .into_iter()
+        .map(|emitted| emitted.event)
+        .collect()
 }
 
 fn assistant_delta(text: &str) -> HarnessEvent {
@@ -353,7 +361,7 @@ fn assistant_delta(text: &str) -> HarnessEvent {
 }
 
 /// An event tail with nothing in it.
-const NO_EVENTS: [crate::room::StoredEvent; 0] = [];
+const NO_EVENTS: [flyco_core::wire::StoredEvent; 0] = [];
 
 // ── The attach ──
 
@@ -384,7 +392,10 @@ async fn a_daemon_speaking_another_protocol_version_is_refused() {
             ),
         )
         .await;
-    assert_eq!(status, 409, "a version the room does not speak is a conflict");
+    assert_eq!(
+        status, 409,
+        "a version the room does not speak is a conflict"
+    );
 }
 
 #[skyzen::test]
@@ -417,7 +428,10 @@ async fn an_undecodable_body_fails_the_call() {
     // outright rather than producing a problem: these routes are internal,
     // so there is nobody to explain a 400 to.
     for (path, body) in [
-        ("/internal/frames", b"{\"type\":\"from_the_future\"}".as_slice()),
+        (
+            "/internal/frames",
+            b"{\"type\":\"from_the_future\"}".as_slice(),
+        ),
         ("/internal/command", b"not json at all".as_slice()),
     ] {
         let failed = room
@@ -448,10 +462,7 @@ async fn a_batch_that_skips_sequence_numbers_is_refused() {
         .await;
     assert_eq!(status, 409, "a gap in the daemon's stream is a conflict");
     let problem: flyco_core::Problem = serde_json::from_slice(&body).expect("a problem");
-    assert_eq!(
-        problem.kind,
-        "https://flyco.dev/problems/relay-frames-gap"
-    );
+    assert_eq!(problem.kind, "https://flyco.dev/problems/relay-frames-gap");
     assert_eq!(
         room.events(0).await.events,
         NO_EVENTS,
@@ -513,10 +524,7 @@ async fn a_batch_from_a_superseded_attach_is_refused() {
         .await;
     assert_eq!(status, 409, "a stale epoch's frames are refused");
     let problem: flyco_core::Problem = serde_json::from_slice(&body).expect("a problem");
-    assert_eq!(
-        problem.kind,
-        "https://flyco.dev/problems/relay-epoch-stale"
-    );
+    assert_eq!(problem.kind, "https://flyco.dev/problems/relay-epoch-stale");
 }
 
 #[skyzen::test]
@@ -990,10 +998,7 @@ async fn the_remembered_pane_size_is_replayed_ahead_of_queued_commands() {
     );
     let queued = room.next_command().await;
     assert!(queued.seq.is_some());
-    assert!(matches!(
-        queued.command,
-        ControlToDaemon::SetModel { .. }
-    ));
+    assert!(matches!(queued.command, ControlToDaemon::SetModel { .. }));
 }
 
 #[skyzen::test]
@@ -1234,7 +1239,10 @@ async fn a_workdir_question_for_an_offline_daemon_is_refused_rather_than_held() 
             ),
         )
         .await;
-    assert_eq!(status, 503, "a browser is told at once there is nothing to read it");
+    assert_eq!(
+        status, 503,
+        "a browser is told at once there is nothing to read it"
+    );
     let problem: flyco_core::Problem = serde_json::from_slice(&body).expect("a problem");
     assert_eq!(
         problem.kind,
@@ -1254,9 +1262,7 @@ async fn a_quiet_stream_still_says_it_is_alive() {
     struct Idle;
     let sse = crate::sse::serve(
         Idle,
-        |_feed: &mut Idle| -> crate::sse::PollFn<'_> {
-            Box::pin(async { crate::sse::Poll::Idle })
-        },
+        |_feed: &mut Idle| -> crate::sse::PollFn<'_> { Box::pin(async { crate::sse::Poll::Idle }) },
         Duration::from_millis(80),
     );
 

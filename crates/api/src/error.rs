@@ -636,6 +636,66 @@ pub enum ApiError {
         cap: u32,
     },
 
+    /// A create under this `Idempotency-Key` is already in flight.
+    ///
+    /// The claim row has no session bound yet, so the honest answer is a
+    /// conflict: replaying would have nothing to replay, and proceeding
+    /// would be the double-provision the key exists to prevent. The caller
+    /// retries until the in-flight request records its session — or, if it
+    /// failed, released the key.
+    #[error(
+        "a session create under this Idempotency-Key is already in flight; \
+         retry to pick up its result, or list your sessions to reconcile",
+        status = StatusCode::CONFLICT
+    )]
+    IdempotencyInFlight,
+
+    /// The `Idempotency-Key` header named nothing usable.
+    #[error(
+        "an Idempotency-Key must be between 1 and {max} characters",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    InvalidIdempotencyKey {
+        /// Longest key the control plane accepts.
+        max: usize,
+    },
+
+    /// The CLI sign-in being polled or approved is gone.
+    ///
+    /// `410` rather than `404`: a cli-session is born knowing it dies — ten
+    /// minutes after creation, or the moment its key was collected — so an
+    /// absent record is an expired one, not a route the URL was wrong
+    /// about.
+    #[error(
+        "this sign-in attempt expired; run `flyco login` again",
+        status = StatusCode::GONE
+    )]
+    CliSessionGone,
+
+    /// The user refused the CLI sign-in on the approval page.
+    #[error(
+        "this sign-in was refused in the browser",
+        status = StatusCode::FORBIDDEN
+    )]
+    CliSessionDenied,
+
+    /// The `s` token presented does not match the attempt's.
+    #[error(
+        "the poll token does not match this sign-in attempt",
+        status = StatusCode::FORBIDDEN
+    )]
+    CliSessionPollDenied,
+
+    /// The CLI sign-in already carries a decision, and a decision is final.
+    #[error(
+        "this sign-in attempt was already {state}",
+        status = StatusCode::CONFLICT
+    )]
+    CliSessionAlreadyDecided {
+        /// What it was already decided as — `approved` or `denied`.
+        state: &'static str,
+    },
+
     /// The caller asked flyco to pick a machine, but no linked account
     /// offers a Linux type big enough for one.
     ///
@@ -1243,6 +1303,12 @@ impl ApiError {
             Self::SessionNotActive { .. } => "session-not-active",
             Self::UsageLimitWithoutReset => "usage-limit-without-reset",
             Self::SessionCapReached { .. } => "session-cap-reached",
+            Self::IdempotencyInFlight => "idempotency-in-flight",
+            Self::InvalidIdempotencyKey { .. } => "invalid-idempotency-key",
+            Self::CliSessionGone => "cli-session-gone",
+            Self::CliSessionDenied => "cli-session-denied",
+            Self::CliSessionPollDenied => "cli-session-poll-denied",
+            Self::CliSessionAlreadyDecided { .. } => "cli-session-already-decided",
             Self::NoDeployableLinuxMachine { .. } => "no-deployable-linux-machine",
             Self::CatalogNotReady { .. } => "catalog-not-ready",
             Self::InvalidTransition { .. } => "invalid-session-transition",

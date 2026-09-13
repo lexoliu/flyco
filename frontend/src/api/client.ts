@@ -739,6 +739,22 @@ export function revokeApiKey(id: string): Promise<void> {
   return requestVoid("DELETE", `/v1/api-keys/${id}`);
 }
 
+// --- /v1/cli-sessions ---------------------------------------------------------------
+
+/**
+ * Approves a `flyco login` attempt (`/cli/authorize`). The minted key never
+ * reaches the browser: it is held server-side until the CLI's own poll
+ * collects it, so approval here is the whole browser-side job.
+ */
+export function approveCliSession(id: string): Promise<void> {
+  return requestVoid("POST", `/v1/cli-sessions/${id}/approve`);
+}
+
+/** Denies a `flyco login` attempt; the CLI's poll then stops waiting. */
+export function denyCliSession(id: string): Promise<void> {
+  return requestVoid("POST", `/v1/cli-sessions/${id}/deny`);
+}
+
 // --- /v1/harness-accounts -----------------------------------------------------
 
 export function listHarnessAccounts(): Promise<

@@ -86,8 +86,11 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::app::revoke_api_key",
     "flyco_api::app::run_shell",
     "flyco_api::app::send_message",
+    "flyco_api::app::terminal_harness",
     "flyco_api::app::terminal_input",
     "flyco_api::app::terminal_resize",
+    "flyco_api::cli::approve_cli_session",
+    "flyco_api::cli::deny_cli_session",
     "flyco_api::harness_accounts::unlink_harness_account",
     "flyco_api::hosts::delete_host",
     "flyco_api::hosts::report_job_result",
@@ -189,5 +192,5 @@ fn register_schemas(spec: &mut OpenApi) {
     register::<flyco_core::SkillView>(components);
     register::<flyco_core::TurnPage>(components);
     register::<flyco_core::VapidPublicKey>(components);
-    register::<crate::room::EventPage>(components);
+    register::<flyco_core::wire::EventPage>(components);
 }

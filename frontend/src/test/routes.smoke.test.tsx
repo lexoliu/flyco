@@ -9,6 +9,7 @@ import {
 import AppShell from "../components/AppShell";
 import Login from "../routes/Login";
 import AuthComplete from "../routes/AuthComplete";
+import CliAuthorize from "../routes/CliAuthorize";
 import Home from "../routes/Home";
 import Welcome from "../routes/Welcome";
 import { ConnectCompute, ConnectHarness } from "../routes/connect/Connect";
@@ -52,6 +53,7 @@ function renderAt(url: string, signedIn = true, seenWelcome = true) {
     <MemoryRouter history={history} root={AppShell}>
       <Route path="/login" component={Login} />
       <Route path="/auth/complete" component={AuthComplete} />
+      <Route path="/cli/authorize" component={CliAuthorize} />
       <Route path="/" component={Home} />
       <Route path="/welcome" component={Welcome} />
       <Route path="/connect/harness" component={ConnectHarness} />
@@ -127,6 +129,103 @@ describe("route smoke tests", () => {
   it("renders /auth/complete as an explicit error state without a token", () => {
     const { getByRole } = renderAt("/auth/complete", false);
     expect(getByRole("alert")).toBeInTheDocument();
+  });
+
+  it("sends a signed-out /cli/authorize visit through sign-in, and back", async () => {
+    const { findByText } = renderAt("/cli/authorize?id=attempt-1", false);
+    expect(await findByText("Sign in with GitHub")).toBeInTheDocument();
+    // Approving a terminal belongs to an account, so the attempt id rides
+    // the returnTo the shell builds, and sign-in lands back on the ask.
+    expect(fetch).not.toHaveBeenCalled();
+    expect(consumePostLoginPath()).toBe("/cli/authorize?id=attempt-1");
+  });
+
+  it("asks on /cli/authorize, and approving posts the decision", async () => {
+    route(
+      (path, method) =>
+        method === "POST" && path === "/v1/cli-sessions/attempt-1/approve",
+      () => new Response(null, { status: 204 }),
+    );
+    const { findByRole, getByRole, findByText } = renderAt(
+      "/cli/authorize?id=attempt-1",
+    );
+    await findByRole("heading", { level: 1, name: "Sign in the flyco CLI?" });
+
+    fireEvent.click(getByRole("button", { name: "Approve sign-in" }));
+
+    expect(await findByText(/Signed in/)).toBeInTheDocument();
+    expect(
+      vi.mocked(fetch).mock.calls.some(
+        ([input, init]) =>
+          String(input).endsWith("/v1/cli-sessions/attempt-1/approve") &&
+          init?.method === "POST",
+      ),
+    ).toBe(true);
+  });
+
+  it("denies on /cli/authorize, posting the refusal", async () => {
+    route(
+      (path, method) =>
+        method === "POST" && path === "/v1/cli-sessions/attempt-1/deny",
+      () => new Response(null, { status: 204 }),
+    );
+    const { findByRole, getByRole, findByText } = renderAt(
+      "/cli/authorize?id=attempt-1",
+    );
+    await findByRole("heading", { level: 1, name: "Sign in the flyco CLI?" });
+
+    fireEvent.click(getByRole("button", { name: "Deny" }));
+
+    expect(await findByText(/sign-in was refused/)).toBeInTheDocument();
+    expect(
+      vi.mocked(fetch).mock.calls.some(
+        ([input, init]) =>
+          String(input).endsWith("/v1/cli-sessions/attempt-1/deny") &&
+          init?.method === "POST",
+      ),
+    ).toBe(true);
+  });
+
+  it("says so on /cli/authorize when the URL names no attempt", async () => {
+    const { findByRole, queryByRole } = renderAt("/cli/authorize");
+    expect(await findByRole("alert")).toBeInTheDocument();
+    // With nothing to name, neither answer exists to give.
+    expect(
+      queryByRole("button", { name: "Approve sign-in" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("surfaces a refused approval rather than claiming it", async () => {
+    route(
+      (path, method) =>
+        method === "POST" && path === "/v1/cli-sessions/attempt-1/approve",
+      () =>
+        new Response(
+          JSON.stringify({
+            type: "https://flyco.dev/problems/cli-session-gone",
+            title: "Gone",
+            status: 410,
+            detail: "The sign-in attempt has expired.",
+          }),
+          {
+            status: 410,
+            headers: { "content-type": "application/problem+json" },
+          },
+        ),
+    );
+    const { findByRole, getByRole, findByText } = renderAt(
+      "/cli/authorize?id=attempt-1",
+    );
+    await findByRole("heading", { level: 1, name: "Sign in the flyco CLI?" });
+
+    fireEvent.click(getByRole("button", { name: "Approve sign-in" }));
+
+    expect(await findByText("The sign-in attempt has expired.")).toBeInTheDocument();
+    // The ask stays up: the refusal is a fact about the attempt, not a
+    // reason to pretend the approval landed.
+    expect(
+      getByRole("heading", { level: 1, name: "Sign in the flyco CLI?" }),
+    ).toBeInTheDocument();
   });
 
   it("renders / as the composer, with the session list in the rail beside it", async () => {
