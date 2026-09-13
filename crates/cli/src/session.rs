@@ -792,14 +792,21 @@ fn resolve_text(
     stdin_flag: bool,
     naming: &str,
 ) -> Outcome<String> {
-    if let Some(text) = text {
+    // `-` anywhere a text could come from means stdin — the same convention
+    // `ssh`/`cat` use — so it forces the read even on a TTY.
+    let stdin_named = text.as_deref() == Some("-") || file.as_deref() == Some("-");
+    if let Some(text) = text
+        && !stdin_named
+    {
         return Ok(text);
     }
-    if let Some(path) = file {
+    if let Some(path) = file
+        && !stdin_named
+    {
         return std::fs::read_to_string(&path)
             .map_err(|error| Failure::usage(format!("cannot read {path}: {error}")));
     }
-    if stdin_flag || !std::io::stdin().is_terminal() {
+    if stdin_flag || stdin_named || !std::io::stdin().is_terminal() {
         let mut text = String::new();
         std::io::stdin()
             .read_to_string(&mut text)
