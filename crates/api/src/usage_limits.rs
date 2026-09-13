@@ -109,8 +109,11 @@ pub async fn pause(
     // the gap the interrupt is about to open, and a room that took the
     // interrupt and lost the frame would leave a conversation that stops
     // with no reason given.
-    announce(rooms, session, window).await;
-    if let Err(error) = rooms.command(session, &ControlToDaemon::Interrupt).await {
+    announce(db, rooms, session, window).await;
+    if let Err(error) = rooms
+        .command(db, session, &ControlToDaemon::Interrupt)
+        .await
+    {
         // The harness refused the turn on its own — that is how flyco found
         // out — so this is tidying up rather than the thing that stops the
         // work, and a machine that is about to be stopped anyway is not
@@ -140,9 +143,10 @@ pub async fn pause(
 ///
 /// Logged rather than raised: the wait is already durable, and a room that
 /// cannot be reached costs a watcher a live update and nothing else.
-async fn announce(rooms: &Rooms, session: SessionId, window: &UsageWindow) {
+async fn announce(db: &Db, rooms: &Rooms, session: SessionId, window: &UsageWindow) {
     if let Err(error) = rooms
         .broadcast(
+            db,
             session,
             &ClientEvent::Harness {
                 event: HarnessEvent::UsageLimited {
@@ -156,6 +160,7 @@ async fn announce(rooms: &Rooms, session: SessionId, window: &UsageWindow) {
     }
     if let Err(error) = rooms
         .broadcast(
+            db,
             session,
             &ClientEvent::SessionStateChanged {
                 state: SessionState::Paused,
@@ -300,6 +305,7 @@ async fn wake(
     sessions::recovering(db, wait.id).await?;
     if let Err(error) = rooms
         .broadcast(
+            db,
             wait.id,
             &ClientEvent::SessionStateChanged {
                 state: SessionState::Provisioning,
@@ -342,6 +348,7 @@ async fn continue_session(
     let text = pause.continuation().to_owned();
     rooms
         .command(
+            db,
             wait.id,
             &ControlToDaemon::UserMessage {
                 text,
@@ -357,6 +364,7 @@ async fn continue_session(
         .await?;
     if let Err(error) = rooms
         .broadcast(
+            db,
             wait.id,
             &ClientEvent::SessionStateChanged {
                 state: SessionState::Active,

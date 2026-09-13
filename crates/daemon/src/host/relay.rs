@@ -1,69 +1,78 @@
-//! The machine's end of the host relay.
+//! The machine's end of the host relay: REST out, SSE in.
 //!
-//! One outbound WebSocket to this host's room, carrying [`HostToControl`]
-//! out and [`ControlToHost`] in. The control plane never opens a connection
-//! to anybody's hardware — a Cloudflare Worker has no sockets — so this is
-//! the only way work reaches the machine, and it is the machine that dials.
+//! There is no socket. `flycod host` *attaches* over REST for an epoch,
+//! holds one command *stream* open under it, and *posts* its outbound
+//! frames in sequenced batches. The control plane never opens a
+//! connection to anybody's hardware — a Cloudflare Worker has no sockets
+//! — so this is the only way work reaches the machine, and it is the
+//! machine that dials.
 //!
 //! # The loop
 //!
-//! Connect, say [`HostToControl::Hello`] with what this machine currently
-//! is, and then pump: jobs in, results out, a [heartbeat](HEARTBEAT) when
-//! neither has happened for a while. A dropped socket is not an error; it is
-//! reconnected, with the same capped exponential backoff the session relay
-//! uses, and the room hands back every job it is still holding when the next
-//! `Hello` arrives.
+//! Attach, reporting what this machine currently is, then pump: jobs off
+//! the stream, results back in batches. A dropped stream is not an error;
+//! it is reconnected, with the same capped exponential backoff the
+//! session relay uses, and the room replays every command it is still
+//! holding when the next attach opens a stream.
 //!
 //! # A result travels twice, durable half first
 //!
-//! [`ReportJobResult`] over REST completes the machine row: what container
-//! and volume Podman actually made, or why it did not. The frame beside it
-//! is what lets the room *forget* the job it is holding. So the REST call
-//! goes first, and the frame only after it succeeded — a room that forgot a
-//! job whose machine row was never completed is a session waiting on a
-//! container nobody will ever build again. When the REST call fails the
-//! frame is not sent, the result stays queued, and the room redelivers the
-//! job on the next connection; running it twice is safe because
-//! [every job is idempotent](super::podman).
+//! [`ReportJobResult`] over REST completes the machine row: what
+//! container and volume Podman actually made, or why it did not. The
+//! frame beside it is what lets the room *forget* the job it is holding.
+//! So the REST call goes first, and the frame only after it succeeded —
+//! a room that forgot a job whose machine row was never completed is a
+//! session waiting on a container nobody will ever build again. When the
+//! REST call fails the frame is not sent, the result stays queued, and
+//! the room redelivers the job on the next attachment; running it twice
+//! is safe because [every job is idempotent](super::podman).
 //!
-//! # Jobs do not block the socket
+//! # Jobs do not block the stream
 //!
-//! A `podman run` pulling an image takes minutes. It runs on its own task,
-//! so heartbeats keep flowing, a second job can start, and a revocation is
-//! still read the moment it arrives.
+//! A `podman run` pulling an image takes minutes. It runs on its own
+//! task, so a second job can start, and a revocation is still read the
+//! moment it arrives.
 
 use core::time::Duration;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use flyco_core::HostId;
 use flyco_core::host::{HostFacts, ReportJobResult};
-use flyco_provider::host::{ContainerJob, ControlToHost, HostToControl};
+use flyco_provider::host::{ContainerJob, ControlToHost, HostCommand, HostFrames, HostToControl};
+use futures_util::StreamExt as _;
 use tokio::sync::mpsc;
 
-use crate::control::wire::{
-    Socket, WireError, backoff, connect_bearer, next_frame, send, websocket_url,
-};
+use crate::control::rest::CommandStream;
+use crate::control::wire::{WireError, backoff};
 use crate::host::podman::Jobs;
-use crate::host::rest::JobResults;
+use crate::host::rest::{HostTransport, JobResults};
 
-/// How often a machine that has nothing to say says so anyway.
+/// How long the command stream may deliver no bytes before the path is
+/// treated as dead.
 ///
-/// A hibernating socket can sit idle for hours, and an idle socket is
-/// indistinguishable from a machine that was unplugged: until something is
-/// written to it, neither end learns the connection is gone. A minute is
-/// short enough that a host which lost power reads as offline before anybody
-/// is scheduled onto it, and long enough that a fleet of machines is not
-/// waking their Durable Objects for nothing.
-pub const HEARTBEAT: Duration = Duration::from_secs(60);
+/// The room heartbeats the stream far inside this bound, so a gap this
+/// long is a flow a NAT reclaimed rather than a room with nothing to
+/// say. The stream, not a frame of ours, is what keeps a quiet
+/// attachment alive: every poll of it renews this machine's presence
+/// marker, and every byte on it proves the path both ways.
+pub const STREAM_IDLE: Duration = Duration::from_secs(90);
+
+/// How often a result that could not be filed is tried again.
+///
+/// A stuck result is retried rather than dropped, but only while the
+/// relay runs: the room holds the job row regardless, so nothing is lost
+/// by waiting out a control-plane outage at this interval.
+pub const RESULT_RETRY: Duration = Duration::from_secs(60);
 
 /// How many finished jobs may wait for a control plane that is not
 /// answering.
 ///
-/// A machine runs a handful of containers, not thousands, and a result that
-/// cannot be filed is retried rather than dropped — but the queue is bounded
-/// all the same, because an unbounded one turns a control-plane outage into
-/// an out-of-memory kill on somebody's own machine.
+/// A machine runs a handful of containers, not thousands, and a result
+/// that cannot be filed is retried rather than dropped — but the queue
+/// is bounded all the same, because an unbounded one turns a
+/// control-plane outage into an out-of-memory kill on somebody's own
+/// machine.
 pub const RESULT_QUEUE_DEPTH: usize = 256;
 
 /// Why the relay stopped.
@@ -74,102 +83,123 @@ pub enum Stopped {
     Revoked,
 }
 
-/// Everything needed to reach this machine's room.
-#[derive(Clone)]
-pub struct HostEndpoint {
-    /// `wss://…/v1/hosts/{id}/relay`.
-    url: String,
-    /// This machine's `fh_` token.
-    token: String,
-    /// Which host this machine is.
-    host: HostId,
-}
-
-impl core::fmt::Debug for HostEndpoint {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("HostEndpoint")
-            .field("url", &self.url)
-            .field("host", &self.host)
-            .finish_non_exhaustive()
-    }
-}
-
-impl HostEndpoint {
-    /// Derives the relay endpoint from the control plane's base URL.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WireError::Unaddressable`] if the base URL cannot address
-    /// the relay route.
-    pub fn from_base(base: &url::Url, host: HostId, token: String) -> Result<Self, WireError> {
-        Ok(Self {
-            url: websocket_url(base, &format!("v1/hosts/{host}/relay"))?,
-            token,
-            host,
-        })
-    }
-
-    /// Opens one connection and greets the room with this machine's facts.
-    ///
-    /// The facts are re-reported on every connection rather than only at
-    /// enrollment, because they change: memory is added, a disk fills,
-    /// Podman is upgraded.
-    async fn connect(&self, facts: &HostFacts) -> Result<Socket, WireError> {
-        let mut socket = connect_bearer(&self.url, &self.token).await?;
-        send(
-            &mut socket,
-            &HostToControl::Hello {
-                facts: Box::new(facts.clone()),
-            },
-        )
-        .await?;
-        tracing::info!(host = %self.host, "greeted this machine's room");
-        Ok(socket)
-    }
-}
-
-/// One finished job, on its way to the control plane.
-#[derive(Debug, Clone)]
-struct Finished {
-    /// What is reported, both ways.
-    report: ReportJobResult,
-    /// Whether the durable half already landed, so a retry after a dropped
-    /// socket does not file it twice.
-    filed: bool,
-}
-
 /// Everything the relay needs to run one machine.
 pub struct HostRelay<J, A> {
-    /// Where this machine's room is.
-    pub endpoint: HostEndpoint,
-    /// What this machine says about itself.
+    /// Which host this machine is — for logging; the transport itself is
+    /// bound to it inside `api`.
+    pub host: HostId,
+    /// What this machine says about itself, re-reported on every attach.
     pub facts: HostFacts,
     /// Where container jobs are performed.
     pub jobs: Arc<J>,
-    /// Where job results are filed durably.
+    /// Where job results are filed durably, and the relay's transport.
     pub api: A,
 }
 
 impl<J, A> core::fmt::Debug for HostRelay<J, A> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HostRelay")
-            .field("endpoint", &self.endpoint)
+            .field("host", &self.host)
             .field("facts", &self.facts)
             .finish_non_exhaustive()
     }
+}
+
+/// One attach to the host room: the epoch naming it, the command stream
+/// opened under it, and the sequence the next outbound frame takes.
+struct Attachment {
+    /// The attach this stream belongs to.
+    epoch: u64,
+    /// Commands from the room, in the order it sequenced them.
+    commands: CommandStream<HostCommand>,
+    /// The sequence `pending`'s head will carry.
+    next_seq: u64,
+}
+
+/// Attaches to the host room and opens its command stream.
+///
+/// One step rather than two because neither half is useful alone: an
+/// attach without its stream is a machine that can speak but not hear,
+/// and a stream without the attach's epoch is refused.
+async fn attach<A: HostTransport>(api: &A, facts: &HostFacts) -> Result<Attachment, WireError> {
+    let attached = api.attach(facts).await?;
+    let commands = api.commands(attached.epoch, STREAM_IDLE).await?;
+    tracing::info!(epoch = attached.epoch, "attached to this machine's room");
+    Ok(Attachment {
+        epoch: attached.epoch,
+        commands,
+        next_seq: 1,
+    })
+}
+
+/// Problem types an attach can never retry away.
+///
+/// A revoked token is not one of them — it is answered with
+/// [`Stopped::Revoked`], because a machine that was offline when the
+/// command arrived learns its revocation from the refused attach.
+const FATAL_REFUSALS: &[&str] = &["missing-credential", "host-not-found", "host-removed"];
+
+/// One finished job, on its way to the control plane.
+#[derive(Debug, Clone)]
+struct Finished {
+    /// The command sequence that asked for the job.
+    ///
+    /// Kept so a redelivery of the same row is recognized until the
+    /// answer is confirmed stored — which is when the room drops the row
+    /// and the sequence can leave [`Pump::handled`].
+    seq: u64,
+    /// What is reported, both ways.
+    report: ReportJobResult,
+    /// Whether the durable half already landed, so a retry after a
+    /// dropped stream does not file it twice.
+    filed: bool,
+}
+
+/// The transport half of the relay, across attachments.
+struct Pump<J, A> {
+    jobs: Arc<J>,
+    api: A,
+    /// Where a finished job's task reports back: the command sequence and
+    /// the result it produced.
+    results: mpsc::Sender<(u64, ReportJobResult)>,
+    /// Results whose durable half has not landed yet, oldest first.
+    outstanding: VecDeque<Finished>,
+    /// Frames staged but not confirmed stored, each with the command
+    /// sequence whose job it answers.
+    ///
+    /// They outlive the attach they were produced under: a dropped stream
+    /// ends the epoch, and the next attach re-sends the whole tail from
+    /// sequence one.
+    pending: VecDeque<(u64, HostToControl)>,
+    /// Command sequences already acted on, so a redelivered job is
+    /// recognized rather than run again.
+    ///
+    /// A job row is retired by its answer, not by delivery — so a machine
+    /// that took a job and lost its stream is asked again, and this set
+    /// is what makes "again" cheap: an entry leaves when the answer is
+    /// confirmed stored, which is when the row is gone for good.
+    handled: HashSet<u64>,
+}
+
+/// Why one attachment ended.
+enum Ended {
+    /// The stream dropped; re-attach.
+    Disconnected,
+    /// The control plane revoked this machine; stop.
+    Revoked,
 }
 
 /// Runs one machine until its token is revoked.
 ///
 /// # Errors
 ///
-/// Returns [`WireError`] if the endpoint cannot be addressed or the room
-/// sends a frame this daemon cannot read. A dropped socket is not an error:
-/// it is reconnected.
+/// Returns [`WireError`] if the relay queue overflows or the control
+/// plane refuses the attach in a way retrying cannot fix. A dropped
+/// stream is not an error: it is reconnected.
 pub async fn run<J, A>(relay: HostRelay<J, A>) -> Result<Stopped, WireError>
 where
     J: Jobs,
-    A: JobResults,
+    A: JobResults + HostTransport,
 {
     let (results, mut finished) = mpsc::channel(RESULT_QUEUE_DEPTH);
     let mut pump = Pump {
@@ -177,95 +207,150 @@ where
         api: relay.api,
         results,
         outstanding: VecDeque::new(),
+        pending: VecDeque::new(),
+        handled: HashSet::new(),
     };
+    // How far down the room's command log this machine has applied —
+    // global across attachments, exactly as the log's sequences are.
+    let mut applied = 0_u64;
 
     let mut attempt = 0_u32;
     loop {
-        match relay.endpoint.connect(&relay.facts).await {
-            Ok(mut socket) => {
-                attempt = 0;
-                match pump.pump(&mut socket, &mut finished).await? {
-                    Ended::Disconnected => {
-                        tracing::warn!("this machine's room disconnected; reconnecting");
-                    }
-                    Ended::Revoked => {
-                        tracing::warn!(
-                            "the control plane revoked this machine; \
-                             flycod host is stopping and will not reconnect"
-                        );
-                        return Ok(Stopped::Revoked);
-                    }
-                }
-            }
+        let mut attachment = match attach(&pump.api, &relay.facts).await {
+            Ok(attachment) => attachment,
             Err(error) => {
+                if revoked(&error) {
+                    tracing::warn!(
+                        "this machine's credential was refused; treating that as revoked"
+                    );
+                    return Ok(Stopped::Revoked);
+                }
+                if fatal_attach(&error) {
+                    return Err(error);
+                }
                 let wait = backoff(attempt);
                 tracing::warn!(%error, ?wait, attempt, "could not reach this machine's room");
                 attempt = attempt.saturating_add(1);
                 tokio::time::sleep(wait).await;
+                continue;
+            }
+        };
+
+        attempt = 0;
+        match pump
+            .pump(&mut attachment, &mut finished, &mut applied)
+            .await?
+        {
+            Ended::Disconnected => {
+                tracing::warn!("this machine's room disconnected; re-attaching");
+            }
+            Ended::Revoked => {
+                tracing::warn!(
+                    "the control plane revoked this machine; \
+                     flycod host is stopping and will not reconnect"
+                );
+                return Ok(Stopped::Revoked);
             }
         }
     }
 }
 
-/// Why one connection ended.
-enum Ended {
-    /// The socket dropped; reconnect.
-    Disconnected,
-    /// The control plane revoked this machine; stop.
-    Revoked,
+/// Whether an attach refusal is the revocation a host missed.
+///
+/// A host token never rotates while it lives, so a refused token is a
+/// dead one — which for this machine is what `Revoked` would have said,
+/// delivered to the attach instead because the command could not reach
+/// an offline host.
+fn revoked(error: &WireError) -> bool {
+    matches!(
+        error,
+        WireError::ControlApi(api) if api.kind() == Some("invalid-host-credential")
+    )
 }
 
-/// The socket half of the relay, across connections.
-struct Pump<J, A> {
-    jobs: Arc<J>,
-    api: A,
-    /// Where a finished job's task reports back.
-    results: mpsc::Sender<ReportJobResult>,
-    /// Results that have not been fully reported yet, oldest first.
-    outstanding: VecDeque<Finished>,
+/// Whether an attach failure ends the run rather than backing off.
+fn fatal_attach(error: &WireError) -> bool {
+    match error {
+        WireError::Unaddressable(_) | WireError::Unwelcome(_) => true,
+        WireError::ControlApi(api) => api
+            .kind()
+            .is_some_and(|kind| FATAL_REFUSALS.contains(&kind)),
+        _ => false,
+    }
 }
 
-impl<J: Jobs, A: JobResults> Pump<J, A> {
-    /// Pumps one connection until it ends.
+impl<J: Jobs, A: JobResults + HostTransport> Pump<J, A> {
+    /// Pumps one attachment until it ends.
     async fn pump(
         &mut self,
-        socket: &mut Socket,
-        finished: &mut mpsc::Receiver<ReportJobResult>,
+        attach: &mut Attachment,
+        finished: &mut mpsc::Receiver<(u64, ReportJobResult)>,
+        applied: &mut u64,
     ) -> Result<Ended, WireError> {
-        let mut heartbeat = tokio::time::interval(HEARTBEAT);
-        // The first tick is immediate, and a `Hello` has just been written:
-        // nothing needs saying yet.
-        heartbeat.tick().await;
+        // No separate acknowledgement cursor is kept here: a host's log
+        // rows are deleted by the `JobResult` frame that answers them,
+        // not by `ack_through` — every batch `flush` posts carries
+        // `applied` along for the non-job rows, and a `Revoked` ends the
+        // run either way.
+        let mut retry = tokio::time::interval(RESULT_RETRY);
+        // The first tick is immediate; an attach that just succeeded has
+        // nothing to retry yet.
+        retry.tick().await;
 
-        // A job that finished while the socket was down is reported the
-        // moment there is a socket again.
-        if !self.flush(socket).await {
+        // A job that finished while the stream was down is reported the
+        // moment there is a stream again.
+        if !self.flush(attach, *applied).await {
             return Ok(Ended::Disconnected);
         }
 
         loop {
             tokio::select! {
-                inbound = next_frame(socket) => {
-                    let Some(command) = inbound? else {
+                event = attach.commands.next() => {
+                    let Some(command) = event else {
                         return Ok(Ended::Disconnected);
                     };
-                    match command {
-                        ControlToHost::Run { job } => self.start(job),
+                    let command = match command {
+                        Ok(command) => command,
+                        Err(error) => {
+                            tracing::warn!(%error, "the command stream failed");
+                            return Ok(Ended::Disconnected);
+                        }
+                    };
+                    *applied = (*applied).max(command.seq);
+                    match command.command {
+                        ControlToHost::Run { job } => {
+                            // A redelivery means the row is still held —
+                            // the answer never landed. `handled` holds
+                            // exactly the sequences whose job is running
+                            // or whose answer is in flight, so a re-seen
+                            // row is skipped rather than run again.
+                            if self.handled.insert(command.seq) {
+                                self.start(command.seq, job);
+                            } else {
+                                tracing::debug!(
+                                    seq = command.seq,
+                                    "a redelivered job is already handled; skipping it"
+                                );
+                            }
+                        }
                         ControlToHost::Revoked => return Ok(Ended::Revoked),
                     }
                 }
-                Some(report) = finished.recv() => {
-                    self.outstanding.push_back(Finished { report, filed: false });
-                    if !self.flush(socket).await {
+                Some((seq, report)) = finished.recv() => {
+                    self.outstanding.push_back(Finished {
+                        seq,
+                        report,
+                        filed: false,
+                    });
+                    if !self.flush(attach, *applied).await {
                         return Ok(Ended::Disconnected);
                     }
                 }
-                _ = heartbeat.tick() => {
-                    if send(socket, &HostToControl::Heartbeat).await.is_err() {
-                        return Ok(Ended::Disconnected);
-                    }
-                    // A control plane that was refusing reports may be back.
-                    if !self.flush(socket).await {
+                _ = retry.tick() => {
+                    // A control plane that was refusing reports may be
+                    // back, and the retry carries this stream's ack state
+                    // along with it.
+                    if !self.flush(attach, *applied).await {
                         return Ok(Ended::Disconnected);
                     }
                 }
@@ -274,13 +359,14 @@ impl<J: Jobs, A: JobResults> Pump<J, A> {
     }
 
     /// Performs one job on its own task, so a slow `podman run` does not
-    /// hold up the socket.
-    fn start(&self, job: ContainerJob) {
+    /// hold up the stream.
+    fn start(&self, seq: u64, job: ContainerJob) {
         let Some(machine) = job.machine() else {
-            // Unreachable against this control plane — every Podman name it
-            // sends is derived from a machine id — and dropped rather than
-            // guessed at if a later one changes that: the room keeps the
-            // job, so a daemon that learns the new shape still runs it.
+            // Unreachable against this control plane — every Podman name
+            // it sends is derived from a machine id — and dropped rather
+            // than guessed at if a later one changes that: the room keeps
+            // the job, so a daemon that learns the new shape still runs
+            // it.
             tracing::error!(
                 container = job.container(),
                 "a container job names no machine this daemon can report against"
@@ -292,10 +378,13 @@ impl<J: Jobs, A: JobResults> Pump<J, A> {
         tokio::spawn(async move {
             let outcome = jobs.perform(job).await;
             if results
-                .send(ReportJobResult {
-                    job_id: machine,
-                    outcome,
-                })
+                .send((
+                    seq,
+                    ReportJobResult {
+                        job_id: machine,
+                        outcome,
+                    },
+                ))
                 .await
                 .is_err()
             {
@@ -308,14 +397,19 @@ impl<J: Jobs, A: JobResults> Pump<J, A> {
         });
     }
 
-    /// Reports every outstanding result: durable half first, then the frame
-    /// that lets the room forget the job.
+    /// Reports every outstanding result — durable half first, then the
+    /// frame that lets the room forget the job — and posts every staged
+    /// frame as one sequenced batch.
     ///
-    /// Answers whether the socket is still usable. A result that could not
-    /// be filed stays queued and stops the flush — it is retried on the next
-    /// heartbeat or the next connection, and until it lands the room keeps
-    /// the job, which is exactly the state the redelivery is for.
-    async fn flush(&mut self, socket: &mut Socket) -> bool {
+    /// Answers whether the attachment is still usable. A result that
+    /// could not be filed stays queued and stops the flush — it is
+    /// retried on the next tick or the next attachment, and until it
+    /// lands the room keeps the job, which is exactly the state the
+    /// redelivery is for. A refused or lost batch leaves `pending`
+    /// untouched and answers `false`: the attach is dropped and the next
+    /// epoch re-sends the whole tail, which the room deduplicates by
+    /// sequence.
+    async fn flush(&mut self, attach: &mut Attachment, applied: u64) -> bool {
         while let Some(finished) = self.outstanding.front_mut() {
             if !finished.filed {
                 if let Err(error) = self.api.report(finished.report.clone()).await {
@@ -329,15 +423,49 @@ impl<J: Jobs, A: JobResults> Pump<J, A> {
                 }
                 finished.filed = true;
             }
-            let frame = HostToControl::JobResult {
-                job_id: finished.report.job_id,
-                outcome: finished.report.outcome.clone(),
-            };
-            if let Err(error) = send(socket, &frame).await {
-                tracing::warn!(%error, "a job result did not reach this machine's room");
-                return false;
-            }
-            self.outstanding.pop_front();
+            let finished = self
+                .outstanding
+                .pop_front()
+                .expect("the front a front_mut just touched");
+            self.pending.push_back((
+                finished.seq,
+                HostToControl::JobResult {
+                    job_id: finished.report.job_id,
+                    outcome: finished.report.outcome,
+                },
+            ));
+        }
+
+        if self.pending.is_empty() && applied == 0 {
+            return true;
+        }
+        // An empty batch is still a contact: it renews presence, and its
+        // `ack_through` is how the room learns a delivered command is done.
+        let batch = HostFrames {
+            epoch: attach.epoch,
+            from_seq: attach.next_seq,
+            ack_through: applied,
+            frames: self
+                .pending
+                .iter()
+                .map(|(_, frame)| frame.clone())
+                .collect(),
+        };
+        if let Err(error) = self.api.frames(&batch).await {
+            tracing::warn!(
+                %error,
+                frames = batch.frames.len(),
+                "a frame batch did not reach the room; retrying it on the next attach"
+            );
+            return false;
+        }
+        attach.next_seq = attach
+            .next_seq
+            .saturating_add(u64::try_from(batch.frames.len()).unwrap_or(0));
+        // Confirmed means the room retired the job rows these frames
+        // answered, so their sequences can never be delivered again.
+        for (seq, _) in self.pending.drain(..) {
+            self.handled.remove(&seq);
         }
         true
     }
@@ -345,257 +473,423 @@ impl<J: Jobs, A: JobResults> Pump<J, A> {
 
 #[cfg(test)]
 mod tests {
-    use core::future::Future;
+    //! The machine's end of the relay, driven against a real loopback room.
+
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use flyco_core::host::{HostFacts, JobOutcome, ReportJobResult};
     use flyco_core::machine::CpuArchitecture;
     use flyco_core::{HostId, MachineId};
-    use flyco_provider::host::{
-        ContainerJob, ControlToHost, HostToControl, container_name, volume_name,
-    };
-    use tokio::sync::mpsc;
+    use flyco_provider::host::{ContainerJob, ControlToHost, HostToControl, container_name};
+    use tokio::sync::{Notify, mpsc};
 
-    use super::{HostEndpoint, HostRelay, Stopped, run};
-    use crate::control::rest::ControlApiError;
+    use super::{HostRelay, Stopped, run};
+    use crate::control::rest::{CommandStream, ControlApiError};
     use crate::host::podman::Jobs;
-    use crate::host::rest::JobResults;
-    use crate::testing::{Directive, Handshake, HostRelay as Loopback, Seen};
+    use crate::host::rest::{HostTransport, HttpHostApi, JobResults};
+    use crate::testing::{Directive, HostRelay as Room, Seen};
 
+    /// A host token shaped the way the control plane mints them.
     const TOKEN: &str = "fh_the-machines-own-token";
 
+    /// What this machine says about itself.
     fn facts() -> HostFacts {
         HostFacts {
             architecture: CpuArchitecture::Arm64,
-            vcpus: 10,
-            memory_mib: 32 * 1024,
-            disk_free_gib: 400,
+            vcpus: 8,
+            memory_mib: 32768,
+            disk_free_gib: 200,
             podman_version: "5.4.0".to_owned(),
-            kernel: "6.11.0-19-generic".to_owned(),
-            hostname: "build.lexo.cool".to_owned(),
+            kernel: "6.12.1".to_owned(),
+            hostname: "build-box".to_owned(),
         }
     }
 
-    /// Jobs that are never really run, recording what was asked.
+    /// A `stop` on one machine: the smallest job that is still a real row.
+    fn stop_job(machine: MachineId) -> ContainerJob {
+        ContainerJob::Stop {
+            container: container_name(machine),
+        }
+    }
+
+    /// Somewhere jobs are *recorded* rather than performed.
+    ///
+    /// `pending` makes `perform` never return — the shape a job still
+    /// running when the stream drops has, and the one the redelivery tests
+    /// need.
     struct FakeJobs {
         performed: mpsc::UnboundedSender<ContainerJob>,
+        outcome: Option<JobOutcome>,
+        /// Whether a started job's report goes out the moment the relay
+        /// asks for it, or only once the test releases the gate — the hook
+        /// "is the frame sent before the durable write lands?" needs.
+        gate: Arc<Notify>,
     }
 
     impl Jobs for FakeJobs {
-        fn perform(&self, job: ContainerJob) -> impl Future<Output = JobOutcome> + Send {
-            let outcome = match &job {
-                ContainerJob::Create {
-                    container, volume, ..
-                } => JobOutcome::Running {
-                    container: container.clone(),
-                    volume: volume.clone(),
-                },
-                _ => JobOutcome::Done,
-            };
-            self.performed.send(job).expect("record");
-            core::future::ready(outcome)
+        async fn perform(&self, job: ContainerJob) -> JobOutcome {
+            self.performed.send(job).expect("the test is listening");
+            self.gate.notified().await;
+            self.outcome.clone().unwrap_or(JobOutcome::Done)
         }
     }
 
-    /// A control plane that records what was filed, and can refuse.
+    /// The relay's control plane: the relay transport is real HTTP+SSE
+    /// against the loopback room, and `report` records — or refuses — so a
+    /// test can watch the durable half of a result land before its frame.
+    #[derive(Clone)]
     struct FakeApi {
+        transport: HttpHostApi,
         filed: mpsc::UnboundedSender<ReportJobResult>,
-        refusals: std::sync::atomic::AtomicU32,
+        /// When set, the next `report` is refused once — a control plane
+        /// mid-deploy — and the flag clears so the retry lands.
+        refuse_next: Arc<AtomicBool>,
+        /// Lets a test hold a report open, so "the frame only leaves once
+        /// the durable write did" is assertable rather than a race.
+        gate: Arc<Notify>,
     }
 
-    impl FakeApi {
-        fn new(refusals: u32) -> (Arc<Self>, mpsc::UnboundedReceiver<ReportJobResult>) {
-            let (filed, received) = mpsc::unbounded_channel();
-            (
-                Arc::new(Self {
-                    filed,
-                    refusals: std::sync::atomic::AtomicU32::new(refusals),
-                }),
-                received,
-            )
-        }
-    }
-
-    impl JobResults for Arc<FakeApi> {
-        fn report(
-            &self,
-            report: ReportJobResult,
-        ) -> impl Future<Output = Result<(), ControlApiError>> + Send {
-            let refused = self
-                .refusals
-                .fetch_update(
-                    core::sync::atomic::Ordering::SeqCst,
-                    core::sync::atomic::Ordering::SeqCst,
-                    |left| (left > 0).then(|| left - 1),
-                )
-                .is_ok();
-            if !refused {
-                self.filed.send(report).expect("record");
+    impl JobResults for FakeApi {
+        async fn report(&self, report: ReportJobResult) -> Result<(), ControlApiError> {
+            if self.refuse_next.swap(false, Ordering::SeqCst) {
+                return Err(ControlApiError::Transport(
+                    "the control plane is mid-deploy".to_owned(),
+                ));
             }
-            core::future::ready(if refused {
-                Err(ControlApiError::Transport(
-                    "the control plane is down".to_owned(),
-                ))
-            } else {
-                Ok(())
-            })
+            self.filed.send(report).expect("the test is listening");
+            self.gate.notified().await;
+            Ok(())
         }
     }
 
-    fn create(machine: MachineId) -> ContainerJob {
-        ContainerJob::Create {
-            container: container_name(machine),
-            volume: volume_name(machine),
-            image: "ghcr.io/lexoliu/flyco-session:latest".to_owned(),
-            machine,
-            bootstrap: Box::new(crate::testing::bootstrap()),
+    impl HostTransport for FakeApi {
+        fn attach(
+            &self,
+            facts: &HostFacts,
+        ) -> impl core::future::Future<
+            Output = Result<flyco_provider::host::HostAttached, ControlApiError>,
+        > + Send {
+            self.transport.attach(facts)
+        }
+
+        fn commands(
+            &self,
+            epoch: u64,
+            idle: core::time::Duration,
+        ) -> impl core::future::Future<
+            Output = Result<CommandStream<flyco_provider::host::HostCommand>, ControlApiError>,
+        > + Send {
+            self.transport.commands(epoch, idle)
+        }
+
+        fn frames(
+            &self,
+            batch: &flyco_provider::host::HostFrames,
+        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+            self.transport.frames(batch)
         }
     }
 
-    /// Starts a relay against a loopback room.
-    fn start(
-        room: &Loopback,
-        api: Arc<FakeApi>,
-    ) -> (
-        tokio::task::JoinHandle<Result<Stopped, super::WireError>>,
-        mpsc::UnboundedReceiver<ContainerJob>,
-    ) {
-        let (performed, received) = mpsc::unbounded_channel();
-        let host = HostId::generate();
-        let relay = HostRelay {
-            endpoint: HostEndpoint::from_base(&room.base, host, TOKEN.to_owned())
-                .expect("an endpoint"),
-            facts: facts(),
-            jobs: Arc::new(FakeJobs { performed }),
-            api,
-        };
-        (tokio::spawn(run(relay)), received)
+    /// Everything a host relay test drives.
+    struct Harness {
+        room: Room,
+        performed: mpsc::UnboundedReceiver<ContainerJob>,
+        filed: mpsc::UnboundedReceiver<ReportJobResult>,
+        /// Releases a job's `perform` — the job is running until it fires.
+        job_gate: Arc<Notify>,
+        /// Releases a `report` — the durable write lands once it fires.
+        report_gate: Arc<Notify>,
+        refuse_next: Arc<AtomicBool>,
+        run: tokio::task::JoinHandle<Result<Stopped, crate::control::wire::WireError>>,
+    }
+
+    impl Harness {
+        /// Starts a relay against a live room.
+        async fn start() -> Self {
+            Self::against(Room::listen().await)
+        }
+
+        /// Starts a relay whose jobs return `outcome` — or run until the
+        /// gate fires when `outcome` is `None`.
+        fn against(room: Room) -> Self {
+            let host = HostId::generate();
+            let (performed_out, performed) = mpsc::unbounded_channel();
+            let (filed_out, filed) = mpsc::unbounded_channel();
+            let job_gate = Arc::new(Notify::new());
+            let report_gate = Arc::new(Notify::new());
+            let refuse_next = Arc::new(AtomicBool::new(false));
+            let api = FakeApi {
+                transport: HttpHostApi::new(room.base.clone(), host, TOKEN.to_owned()),
+                filed: filed_out,
+                refuse_next: Arc::clone(&refuse_next),
+                gate: Arc::clone(&report_gate),
+            };
+            let run = tokio::spawn(run(HostRelay {
+                host,
+                facts: facts(),
+                jobs: Arc::new(FakeJobs {
+                    performed: performed_out,
+                    outcome: Some(JobOutcome::Done),
+                    gate: Arc::clone(&job_gate),
+                }),
+                api,
+            }));
+            Self {
+                room,
+                performed,
+                filed,
+                job_gate,
+                report_gate,
+                refuse_next,
+                run,
+            }
+        }
+
+        /// Waits for the room to see this machine's attach and stream.
+        async fn attached(&mut self) -> serde_json::Value {
+            let Some(Seen::Attached { body, .. }) = self.room.next().await else {
+                panic!("the machine did not attach");
+            };
+            assert!(
+                matches!(self.room.next().await, Some(Seen::StreamOpened(_))),
+                "an accepted attach opens the command stream"
+            );
+            body
+        }
+
+        /// Ends the open command stream and waits for the re-attach.
+        async fn reconnect(&mut self) {
+            self.room
+                .directives
+                .send(Directive::Close)
+                .expect("the room is live");
+            assert_eq!(self.room.next().await, Some(Seen::StreamClosed));
+            self.attached().await;
+        }
+
+        /// Queues a command the way the room's mailbox does.
+        fn command(&self, command: ControlToHost) {
+            self.room
+                .directives
+                .send(Directive::Send(command))
+                .expect("the room is live");
+        }
     }
 
     #[tokio::test]
-    async fn a_machine_greets_its_room_with_its_own_token_and_its_facts() {
-        let mut room = Loopback::listen(Handshake::Silent).await;
-        let (api, _filed) = FakeApi::new(0);
-        let (relay, _performed) = start(&room, api);
-
-        let connected = room.next().await.expect("a connection");
-        assert_eq!(
-            connected,
-            Seen::Connected(Some(format!("Bearer {TOKEN}"))),
-            "the machine authenticates with its host token"
-        );
-        let HostToControl::Hello { facts: greeted } = room.next_frame().await else {
-            panic!("the first frame is a hello");
+    async fn a_machine_attaches_with_its_token_and_its_facts() {
+        let mut room = Room::listen().await;
+        let host = HostId::generate();
+        let (performed, _) = mpsc::unbounded_channel();
+        let (filed, _) = mpsc::unbounded_channel();
+        let api = FakeApi {
+            transport: HttpHostApi::new(room.base.clone(), host, TOKEN.to_owned()),
+            filed,
+            refuse_next: Arc::new(AtomicBool::new(false)),
+            gate: Arc::new(Notify::new()),
         };
-        assert_eq!(*greeted, facts());
+        let run = tokio::spawn(run(HostRelay {
+            host,
+            facts: facts(),
+            jobs: Arc::new(FakeJobs {
+                performed,
+                outcome: Some(JobOutcome::Done),
+                gate: Arc::new(Notify::new()),
+            }),
+            api,
+        }));
 
-        relay.abort();
+        let Some(Seen::Attached {
+            authorization,
+            body,
+        }) = room.next().await
+        else {
+            panic!("the machine did not attach");
+        };
+        assert_eq!(
+            authorization.as_deref(),
+            Some("Bearer fh_the-machines-own-token"),
+            "the attach carries this machine's own token"
+        );
+        assert_eq!(
+            body["facts"]["hostname"],
+            "build-box",
+            "and what the machine measured about itself"
+        );
+
+        run.abort();
     }
 
     #[tokio::test]
     async fn a_job_is_performed_and_answered_durably_before_the_frame_leaves() {
-        let mut room = Loopback::listen(Handshake::Silent).await;
-        let (api, mut filed) = FakeApi::new(0);
-        let (relay, mut performed) = start(&room, Arc::clone(&api));
+        let mut harness = Harness::start().await;
+        harness.attached().await;
+
         let machine = MachineId::generate();
-
-        assert!(matches!(
-            room.next_frame().await,
-            HostToControl::Hello { .. }
-        ));
-        room.directives
-            .send(Directive::Send(ControlToHost::Run {
-                job: create(machine),
-            }))
-            .expect("send a job");
-
-        let job = performed.recv().await.expect("the job ran");
-        assert_eq!(job.container(), container_name(machine));
-
-        // Durable first: the machine row is completed before the room is
-        // allowed to forget the job.
-        let report = filed.recv().await.expect("the result was filed");
-        assert_eq!(report.job_id, machine);
+        harness.command(ControlToHost::Run {
+            job: stop_job(machine),
+        });
         assert_eq!(
-            report.outcome,
-            JobOutcome::Running {
-                container: container_name(machine),
-                volume: volume_name(machine),
-            }
+            harness.performed.recv().await,
+            Some(stop_job(machine)),
+            "the job reaches the machine"
+        );
+        // The job's `perform` is still gated — release it so the result
+        // exists at all.
+        harness.job_gate.notify_one();
+        // …and the report is still gated: the frame must not leave while
+        // the durable half is in flight.
+        assert_eq!(
+            harness.filed.recv().await.map(|report| report.job_id),
+            Some(machine),
+            "the result is filed with the control plane first"
+        );
+        assert!(
+            tokio::time::timeout(
+                core::time::Duration::from_millis(300),
+                harness.room.next_frame()
+            )
+            .await
+            .is_err(),
+            "the room must not see the frame before the durable write lands"
         );
 
-        let HostToControl::JobResult { job_id, outcome } = room.next_frame().await else {
-            panic!("the room is told the job is done");
-        };
-        assert_eq!(job_id, machine);
-        assert_eq!(outcome, report.outcome);
+        harness.report_gate.notify_one();
+        assert_eq!(
+            harness.room.next_frame().await,
+            HostToControl::JobResult {
+                job_id: machine,
+                outcome: JobOutcome::Done,
+            },
+            "the frame follows once the row is durable"
+        );
 
-        relay.abort();
+        harness.run.abort();
     }
 
     #[tokio::test]
-    async fn a_result_the_control_plane_refused_is_not_announced_to_the_room() {
-        let mut room = Loopback::listen(Handshake::Silent).await;
-        // The first report is refused; the retry, on the next connection,
-        // is not.
-        let (api, mut filed) = FakeApi::new(1);
-        let (relay, mut performed) = start(&room, Arc::clone(&api));
+    async fn a_result_the_room_never_got_is_refiled_on_the_next_attach() {
+        let mut harness = Harness::start().await;
+        harness.attached().await;
+
+        // The first report is refused; the frame that would let the room
+        // forget the job must not leave with the durable half unwritten.
+        harness.refuse_next.store(true, Ordering::SeqCst);
         let machine = MachineId::generate();
+        harness.command(ControlToHost::Run {
+            job: stop_job(machine),
+        });
+        harness.performed.recv().await;
+        harness.job_gate.notify_one();
+        harness.report_gate.notify_one();
+        assert!(
+            tokio::time::timeout(
+                core::time::Duration::from_millis(300),
+                harness.room.next_frame()
+            )
+            .await
+            .is_err(),
+            "a refused report announces nothing to the room"
+        );
 
-        assert!(matches!(
-            room.next_frame().await,
-            HostToControl::Hello { .. }
-        ));
-        room.directives
-            .send(Directive::Send(ControlToHost::Run {
-                job: ContainerJob::Stop {
-                    container: container_name(machine),
-                },
-            }))
-            .expect("send a job");
-        performed.recv().await.expect("the job ran");
+        // A dropped stream is where the retry happens: the next attach's
+        // first flush files the result, then the frame.
+        harness.reconnect().await;
+        assert_eq!(
+            harness.filed.recv().await.map(|report| report.job_id),
+            Some(machine),
+            "the retry lands the durable half"
+        );
+        harness.report_gate.notify_one();
+        assert_eq!(
+            harness.room.next_frame().await,
+            HostToControl::JobResult {
+                job_id: machine,
+                outcome: JobOutcome::Done,
+            }
+        );
 
-        // The room is closed while the result is still unreported, which is
-        // what a machine that lost its socket mid-answer looks like.
-        room.directives.send(Directive::Close).expect("close");
+        harness.run.abort();
+    }
 
-        // The machine reconnects, greets again, and only then does the
-        // result land — durably first, and in the room after.
-        while !matches!(
-            room.next().await.expect("the machine came back"),
-            Seen::Frame(HostToControl::Hello { .. })
-        ) {}
-        let report = filed.recv().await.expect("the retry landed");
-        assert_eq!(report.job_id, machine);
-        assert_eq!(report.outcome, JobOutcome::Done);
+    #[tokio::test]
+    async fn a_redelivered_job_is_not_run_twice() {
+        // A job that is still running when the stream drops is redelivered
+        // on the next attach — the room holds the row until the result
+        // retires it. The machine must recognise the row rather than start
+        // the same container again.
+        let mut harness = Harness::start().await;
+        harness.attached().await;
+        // Jobs never finish on their own in this test: `outcome` never
+        // lands because the gate is never fired.
+        let machine = MachineId::generate();
+        harness.command(ControlToHost::Run {
+            job: stop_job(machine),
+        });
+        harness.performed.recv().await;
 
-        let HostToControl::JobResult { job_id, .. } = room.next_frame().await else {
-            panic!("and only then is the room told");
-        };
-        assert_eq!(job_id, machine);
+        harness.reconnect().await;
 
-        relay.abort();
+        // The replayed row arrives — and is skipped, so nothing else is
+        // performed: the first `stop` is still the only job this machine
+        // ever ran.
+        tokio::time::sleep(core::time::Duration::from_millis(300)).await;
+        assert!(
+            harness.performed.try_recv().is_err(),
+            "a redelivered job must not be performed a second time"
+        );
+
+        harness.run.abort();
     }
 
     #[tokio::test]
     async fn a_revoked_machine_stops_rather_than_reconnecting() {
-        let mut room = Loopback::listen(Handshake::Silent).await;
-        let (api, _filed) = FakeApi::new(0);
-        let (relay, _performed) = start(&room, api);
+        let mut harness = Harness::start().await;
+        harness.attached().await;
 
-        assert!(matches!(
-            room.next_frame().await,
-            HostToControl::Hello { .. }
-        ));
-        room.directives
-            .send(Directive::Send(ControlToHost::Revoked))
-            .expect("revoke");
+        harness.command(ControlToHost::Revoked);
 
-        let stopped = tokio::time::timeout(core::time::Duration::from_secs(5), relay)
+        let stopped = tokio::time::timeout(core::time::Duration::from_secs(5), harness.run)
             .await
-            .expect("the relay stopped")
-            .expect("the task did not panic")
-            .expect("a revocation is not an error");
-        assert_eq!(stopped, Stopped::Revoked);
+            .expect("the run ended")
+            .expect("the run did not panic");
+        assert_eq!(
+            stopped.expect("a revocation is not an error"),
+            Stopped::Revoked
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_attach_is_read_as_the_revocation_it_is() {
+        let room = Room::revoked().await;
+        let host = HostId::generate();
+        let (performed, _) = mpsc::unbounded_channel();
+        let (filed, _) = mpsc::unbounded_channel();
+        let api = FakeApi {
+            transport: HttpHostApi::new(room.base.clone(), host, "fh_a-revoked-token".to_owned()),
+            filed,
+            refuse_next: Arc::new(AtomicBool::new(false)),
+            gate: Arc::new(Notify::new()),
+        };
+        let run = tokio::spawn(run(HostRelay {
+            host,
+            facts: facts(),
+            jobs: Arc::new(FakeJobs {
+                performed,
+                outcome: Some(JobOutcome::Done),
+                gate: Arc::new(Notify::new()),
+            }),
+            api,
+        }));
+
+        let stopped = tokio::time::timeout(core::time::Duration::from_secs(5), run)
+            .await
+            .expect("the run ended")
+            .expect("the run did not panic");
+        assert_eq!(
+            stopped.expect("a revoked credential ends the run, not errors it"),
+            Stopped::Revoked
+        );
     }
 }

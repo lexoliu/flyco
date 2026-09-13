@@ -12,7 +12,7 @@ use std::thread;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem as _};
 use tokio::sync::mpsc;
 
-/// How many output chunks may wait for a socket that is not there.
+/// How many output chunks may wait for a room that is not there.
 const OUTPUT_DEPTH: usize = 256;
 
 /// The control handle of a live web terminal.

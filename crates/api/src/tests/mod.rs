@@ -24,7 +24,7 @@ mod room;
 mod schema;
 mod sessions;
 mod skills;
-mod sockets;
 mod usage;
 mod usage_limits;
+mod user_events;
 mod webhooks;

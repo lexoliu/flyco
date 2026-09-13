@@ -27,7 +27,7 @@
 //!   trait. It *plans*: it turns a [`MachineOperation`] into a
 //!   [`host::ContainerJob`], a serializable description of the container
 //!   lifecycle work, which the control plane sends down that host's own
-//!   outbound socket for `flycod host` to perform.
+//!   command stream for `flycod host` to perform.
 //!
 //! So a Worker build contains no code that dials anybody's machine: there is
 //! none in the crate.

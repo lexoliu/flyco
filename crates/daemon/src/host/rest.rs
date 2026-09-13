@@ -3,7 +3,7 @@
 //! * **Enrolling.** `POST /v1/hosts/enroll` happens before this machine has
 //!   an identity at all: the enrollment token is the credential, and what
 //!   comes back is the host id and the long-lived token every later call
-//!   carries. There is no socket yet, and there is nothing to relay through.
+//!   carries. There is no attachment yet, and there is nothing to relay through.
 //! * **A job result.** `POST /v1/hosts/{id}/job-results` is the *durable*
 //!   half of [`HostToControl::JobResult`](flyco_provider::host::HostToControl):
 //!   the frame beside it lets the machine's room forget the job it was
@@ -15,13 +15,17 @@
 //! daemon's REST calls; what differs is only which credential is presented.
 
 use core::future::Future;
+use core::time::Duration;
 
 use flyco_core::HostId;
-use flyco_core::host::{EnrollHost, EnrolledHost, ReportJobResult};
+use flyco_core::host::{EnrollHost, EnrolledHost, HostFacts, ReportJobResult};
+use flyco_provider::host::{HostAttach, HostAttached, HostCommand, HostFrames};
 use url::Url;
 use zenwave::{Client as _, ResponseExt as _};
 
-use crate::control::rest::{ControlApiError, refused, transport};
+use crate::control::rest::{
+    CommandStream, ControlApiError, command_stream, refused, transport,
+};
 
 /// Registers this machine with the control plane, spending an enrollment
 /// token.
@@ -102,6 +106,117 @@ impl JobResults for HttpHostApi {
             .map_err(|error| refused("POST", &url, &error))?;
 
         debug_assert!(response.status().is_success());
+        Ok(())
+    }
+}
+
+/// The relay half of an enrolled machine's control-plane client.
+///
+/// The host mirror of [`RelayTransport`](crate::control::rest::RelayTransport):
+/// attach over REST for an epoch, hold the room's command stream open under
+/// it, and post outbound frames in sequenced batches whose `ack_through`
+/// retires what the machine has already applied. A dead stream loses
+/// nothing — the room's command log is durable, and re-attaching replays
+/// every row the machine has not answered.
+pub trait HostTransport: Send + Sync + 'static {
+    /// Attaches this machine to its room, reporting its current facts.
+    ///
+    /// The facts ride every attach rather than being reported once,
+    /// because they change between attachments: memory is added, a disk
+    /// fills, Podman is upgraded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or refused the attach — which it does for a revoked token.
+    fn attach(
+        &self,
+        facts: &HostFacts,
+    ) -> impl Future<Output = Result<HostAttached, ControlApiError>> + Send;
+
+    /// Opens the command stream belonging to one attach epoch.
+    ///
+    /// `idle` is how long the stream may deliver no bytes at all before
+    /// the path is treated as dead; the room's heartbeat keeps an honest
+    /// flow far inside any such bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the stream could not be opened —
+    /// including `relay-epoch-stale`, when the epoch names a superseded
+    /// attach.
+    fn commands(
+        &self,
+        epoch: u64,
+        idle: Duration,
+    ) -> impl Future<Output = Result<CommandStream<HostCommand>, ControlApiError>> + Send;
+
+    /// Posts one sequenced batch of outbound frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the batch was not stored —
+    /// `relay-epoch-stale` or `relay-frames-gap` among the refusals, both
+    /// of which the machine answers by re-attaching and re-sending what
+    /// is still unconfirmed.
+    fn frames(
+        &self,
+        batch: &HostFrames,
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
+}
+
+impl HostTransport for HttpHostApi {
+    async fn attach(&self, facts: &HostFacts) -> Result<HostAttached, ControlApiError> {
+        let url = join(&self.base, &format!("v1/hosts/{}/relay/attach", self.host))?;
+        let mut client = zenwave::client();
+        let response = client
+            .post(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(&HostAttach {
+                facts: Box::new(facts.clone()),
+            })
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("POST", &url, &error))?;
+
+        response
+            .into_json::<HostAttached>()
+            .await
+            .map_err(transport)
+    }
+
+    async fn commands(
+        &self,
+        epoch: u64,
+        idle: Duration,
+    ) -> Result<CommandStream<HostCommand>, ControlApiError> {
+        let url = join(
+            &self.base,
+            &format!("v1/hosts/{}/relay/commands?epoch={epoch}", self.host),
+        )?;
+        let mut client = zenwave::client();
+        let response = client
+            .get(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .await
+            .map_err(|error| refused("GET", &url, &error))?;
+
+        Ok(command_stream(response.into_body(), idle))
+    }
+
+    async fn frames(&self, batch: &HostFrames) -> Result<(), ControlApiError> {
+        let url = join(&self.base, &format!("v1/hosts/{}/relay/frames", self.host))?;
+        let mut client = zenwave::client();
+        client
+            .post(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(batch)
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("POST", &url, &error))?;
         Ok(())
     }
 }

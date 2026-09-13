@@ -534,7 +534,7 @@ impl fmt::Display for Invocation {
 /// The wire-protocol coupling between the daemon being published and the
 /// control plane already deployed on the channel.
 ///
-/// A daemon speaking a version the Worker refuses is rejected at `Hello`, so
+/// A daemon speaking a version the Worker refuses is rejected at attach, so
 /// every machine provisioned after such a publish is dead on arrival. The
 /// check is made before the build, not after, so a mismatch costs no
 /// cross-compile.
@@ -554,7 +554,7 @@ pub struct WireCheck {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
     "{origin} speaks wire protocol {deployed} and this build speaks {publishing}: \
-     every machine provisioned from it would be refused at Hello. \
+     every machine provisioned from it would be refused at attach. \
      Deploy the control plane first, or pass --allow-wire-mismatch."
 )]
 pub struct WireMismatch {

@@ -167,6 +167,7 @@ pub async fn deliver(db: &Db, rooms: &Rooms) -> Result<(), ApiError> {
         }
         rooms
             .command(
+                db,
                 pending.session_id,
                 &flyco_core::ControlToDaemon::Budget {
                     signal: pending.signal,

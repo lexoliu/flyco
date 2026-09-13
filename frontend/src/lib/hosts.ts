@@ -38,7 +38,7 @@ export function hostSoftwareLabel(facts: HostFacts): string {
 /**
  * Whether a machine can take a session right now.
  *
- * Only `online` can: a host whose socket has dropped still holds its
+ * Only `online` can: a host whose attachment has dropped still holds its
  * containers, but nothing can be sent to it until it comes back.
  */
 export function isHostReachable(host: HostView): boolean {

@@ -46,9 +46,9 @@ migrations_dir = "../../migrations"
 
 # R2 holds session transcripts: `transcripts/{session}/{stream}/{seq:08}.jsonl`,
 # written batch by batch by flycod. Bulk transcript data must never ride the
-# relay WebSocket — Cloudflare caps a frame at 1 MiB — so this is the write
-# path for History, and the read path a session resuming onto a new machine
-# uses.
+# relay — its frames are sequenced envelopes, not a bulk pipe — so this is the
+# write path for History, and the read path a session resuming onto a new
+# machine uses.
 #
 #   wrangler r2 bucket create flyco-transcripts
 [[service]]
@@ -185,10 +185,12 @@ max_batch_size = 1
 max_concurrency = 1
 max_retries = 3
 
-# One Durable Object per session: the live relay room. The daemon holds one
-# hibernating socket tagged `daemon`, browsers hold sockets tagged `client`,
-# and the room forwards between them. It is addressed by the session id
-# (`get_by_name`), so a session and its room are the same identity.
+# One Durable Object per session: the live relay room. The daemon attaches
+# over REST, holds an SSE command stream, and posts its frames back in
+# sequenced batches; browsers never touch the room — every command lands
+# as an `/internal/*` route from the Worker and every event leaves on the
+# owner's user stream. It is addressed by the session id (`get_by_name`),
+# so a session and its room are the same identity.
 #
 # The binding names the Rust type. `#[skyzen::durable_object]` on `T`
 # exports the JS class as `TObject`; skyzen-cli re-exports that as `T`
@@ -197,18 +199,27 @@ max_retries = 3
 name = "SESSION_ROOMS"
 class_name = "SessionRoom"
 
-# One Durable Object per enrolled machine: the host relay room. `flycod host`
-# holds one hibernating socket tagged `host`, the Worker posts container jobs
-# to `/internal/command`, and the room holds a job until the machine answers
-# it. It is also the only thing that can see whether a machine is connected
-# at all — a Durable Object cannot reach D1, so the `hosts` row is refreshed
-# from the room every time the Worker looks at it.
+# One Durable Object per enrolled machine: the host relay room. `flycod
+# host` attaches over REST, holds an SSE command stream, and posts its
+# frames back; the Worker queues container jobs through `/internal/command`
+# and the room holds a job until the machine answers it. It is also the
+# only thing that can see whether a machine is attached at all — a Durable
+# Object cannot reach D1, so the `hosts` row is refreshed from the room
+# every time the Worker looks at it.
 #
-# Addressed by the host id (`get_by_name`), so a machine and its room are the
-# same identity.
+# Addressed by the host id (`get_by_name`), so a machine and its room are
+# the same identity.
 [[cloudflare.durable_objects.bindings]]
 name = "HOST_ROOMS"
 class_name = "HostRoom"
+
+# One Durable Object per user: the fan-in for `GET /v1/events`. A session
+# room cannot reach the user it belongs to, so the Worker publishes each
+# call's events here and a browser holds one SSE connection for everything
+# it owns. Addressed by the user id (`get_by_name`).
+[[cloudflare.durable_objects.bindings]]
+name = "USER_EVENTS"
+class_name = "UserEvents"
 
 [[cloudflare.durable_objects.migrations]]
 tag = "v1"
@@ -220,3 +231,7 @@ new_sqlite_classes = ["SessionRoom"]
 [[cloudflare.durable_objects.migrations]]
 tag = "v2"
 new_sqlite_classes = ["HostRoom"]
+
+[[cloudflare.durable_objects.migrations]]
+tag = "v3"
+new_sqlite_classes = ["UserEvents"]

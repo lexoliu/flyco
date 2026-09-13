@@ -661,7 +661,10 @@ async fn an_idle_session_is_archived_automatically(ctx: TestContext, kv: Kv, db:
     .await
     .expect("backdate idle time");
 
-    let rooms = crate::rooms::Rooms::from_native(crate::rooms::NativeRooms::new());
+    let rooms = crate::rooms::Rooms::from_native(
+        crate::rooms::NativeRooms::new(),
+        crate::rooms::NativeUserStreams::new(),
+    );
     app::archive_idle(
         &db,
         &testing::test_config(),
@@ -1068,7 +1071,10 @@ async fn exhaust_the_budget(db: &Db, caller: &Caller, session: SessionId, dollar
     )
     .await
     .expect("record spend");
-    metering::deliver(db, &Rooms::from_native(NativeRooms::new()))
+    metering::deliver(
+        db,
+        &Rooms::from_native(NativeRooms::new(), crate::rooms::NativeUserStreams::new()),
+    )
         .await
         .expect("deliver the pause");
 }
@@ -1176,7 +1182,10 @@ async fn a_budget_raised_and_spent_again_pauses_again(ctx: TestContext, kv: Kv, 
         "exhausting a raised budget announces the pause again"
     );
 
-    metering::deliver(&db, &Rooms::from_native(NativeRooms::new()))
+    metering::deliver(
+        &db,
+        &Rooms::from_native(NativeRooms::new(), crate::rooms::NativeUserStreams::new()),
+    )
         .await
         .expect("deliver the second pause");
     assert_eq!(

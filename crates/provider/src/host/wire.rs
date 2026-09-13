@@ -1,11 +1,13 @@
 //! The host⇄control-plane wire protocol.
 //!
-//! One outbound WebSocket per enrolled machine, relayed through that host's
-//! Durable Object. Every frame is one JSON-encoded message from this module,
-//! internally tagged on `type` — and **every variant is a struct variant**,
-//! including the ones carrying a single value, for the reason
-//! [`flyco_core::wire`] spells out: a newtype variant holding another
-//! internally-tagged enum emits a tag twice and cannot be read back.
+//! The transport is HTTP, not a socket: `flycod host` attaches over REST,
+//! holds one SSE stream for the room's [`ControlToHost`] commands, and
+//! posts its own [`HostToControl`] frames back in sequenced batches. Every
+//! frame is one JSON-encoded message from this module, internally tagged on
+//! `type` — and **every variant is a struct variant**, including the ones
+//! carrying a single value, for the reason [`flyco_core::wire`] spells out:
+//! a newtype variant holding another internally-tagged enum emits a tag
+//! twice and cannot be read back.
 //!
 //! Two enums, one per direction:
 //!
@@ -23,19 +25,34 @@ use serde::{Deserialize, Serialize};
 
 use super::ContainerJob;
 
+/// What an enrolled machine offers its room when it attaches.
+///
+/// The facts are re-reported on every attachment rather than only at
+/// enrollment, because they change: memory is added, a disk fills, Podman
+/// is upgraded. The room records them and marks the host online.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct HostAttach {
+    /// What the machine measured about itself.
+    pub facts: Box<HostFacts>,
+}
+
+/// What the room answers an attach with.
+///
+/// The epoch names the attachment the same way
+/// [`DaemonAttached`](flyco_core::wire::DaemonAttached) does for a session
+/// daemon: every later [`HostFrames`] POST and every command on the
+/// machine's command stream carries it, so a retry that raced a previous
+/// attach cannot have its traffic mistaken for the current one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct HostAttached {
+    /// Generation of this attachment; increments per attach.
+    pub epoch: u64,
+}
+
 /// Messages from an enrolled machine to the control plane.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostToControl {
-    /// First frame after connecting: what this machine currently is.
-    ///
-    /// The facts are re-reported on every connection rather than only at
-    /// enrollment, because they change: memory is added, a disk fills,
-    /// Podman is upgraded. The room records them and marks the host online.
-    Hello {
-        /// What the machine measured about itself.
-        facts: Box<HostFacts>,
-    },
     /// What came of one container job.
     ///
     /// The room forgets the job it was holding; the *durable* half of the
@@ -49,12 +66,37 @@ pub enum HostToControl {
         /// What came of it.
         outcome: JobOutcome,
     },
-    /// Nothing has happened and the machine is still here.
+}
+
+/// One POST of a machine's outbound frames.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct HostFrames {
+    /// The attach this batch belongs to.
+    pub epoch: u64,
+    /// Sequence number of `frames[0]` within the epoch.
     ///
-    /// A hibernating socket can sit idle for hours, and an idle socket is
-    /// indistinguishable from a machine that was unplugged until something
-    /// is written to it. This is what moves `last_seen`.
-    Heartbeat,
+    /// Same contract as [`DaemonFrames::from_seq`](flyco_core::wire::DaemonFrames):
+    /// a retransmitted head is answered without touching anything, a gap is
+    /// refused so the machine re-sends from it.
+    pub from_seq: u64,
+    /// The highest command sequence the machine has applied; the room's
+    /// command rows at or below it are delivered and done.
+    pub ack_through: u64,
+    /// The frames, in order.
+    pub frames: Vec<HostToControl>,
+}
+
+/// One `command` event on the machine's command stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostCommand {
+    /// Position in the room's command log.
+    ///
+    /// Every command a host receives is a row — a container job is durable
+    /// work — so the cursor is never absent the way
+    /// [`DaemonCommand::seq`](flyco_core::wire::DaemonCommand)'s can be.
+    pub seq: u64,
+    /// The command.
+    pub command: ControlToHost,
 }
 
 /// Messages from the control plane to an enrolled machine.
@@ -85,8 +127,8 @@ impl ControlToHost {
     /// Container work must: a job dropped because the machine was briefly
     /// offline is a session that never gets its container, or a container
     /// nobody ever removes. A revocation must not — a host that reconnects
-    /// after one is refused at the upgrade, because its token no longer
-    /// authenticates, so holding the frame would be waiting for a socket
+    /// after one is refused at the attach, because its token no longer
+    /// authenticates, so holding the frame would be waiting for a stream
     /// that cannot open.
     #[must_use]
     pub const fn survives_a_disconnect(&self) -> bool {
@@ -99,7 +141,7 @@ mod tests {
     use flyco_core::MachineId;
     use flyco_core::host::JobOutcome;
 
-    use super::{ControlToHost, HostToControl};
+    use super::{ControlToHost, HostAttach, HostToControl};
     use crate::host::tests::{HOSTNAME, facts, host, provision};
 
     /// Round-trips through the JSON *text*, not through a `Value`: only the
@@ -116,9 +158,6 @@ mod tests {
 
     fn every_host_frame() -> Vec<HostToControl> {
         vec![
-            HostToControl::Hello {
-                facts: Box::new(facts()),
-            },
             HostToControl::JobResult {
                 job_id: MachineId::generate(),
                 outcome: JobOutcome::Running {
@@ -132,7 +171,6 @@ mod tests {
                     message: "podman: no space left on device".to_owned(),
                 },
             },
-            HostToControl::Heartbeat,
         ]
     }
 
@@ -175,12 +213,11 @@ mod tests {
     }
 
     #[test]
-    fn a_hello_reports_the_machines_current_facts() {
-        let json = serde_json::to_value(HostToControl::Hello {
+    fn an_attach_reports_the_machines_current_facts() {
+        let json = serde_json::to_value(HostAttach {
             facts: Box::new(facts()),
         })
         .expect("serialize");
-        assert_eq!(json["type"], "hello");
         assert_eq!(json["facts"]["hostname"], HOSTNAME);
     }
 
@@ -194,7 +231,7 @@ mod tests {
         );
         assert!(
             !ControlToHost::Revoked.survives_a_disconnect(),
-            "a revoked host never opens another socket to be told twice"
+            "a revoked host's token no longer authenticates, so it never attaches to be told twice"
         );
     }
 }

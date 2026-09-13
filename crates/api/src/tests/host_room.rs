@@ -1,124 +1,67 @@
 //! The host room, driven the way Cloudflare drives it.
 //!
-//! The room is exercised through the real trait surface —
-//! `WebSocketConnection::new`, `DurableConnections::new`,
-//! `DurableContext::new` — against skyzen's SQLite-backed
-//! [`InMemoryDurableDb`] and the recording sockets of
-//! [`crate::tests::sockets`]. What these tests observe is what the room *did
-//! to its socket*, which is the one thing the runtime cannot supply.
+//! A host room is exercised through the same surface the real one serves:
+//! the REST calls the Worker makes, and the attach / command-stream /
+//! frames trio `flycod host` runs on. What a test observes is what the
+//! room *did* — the status it answers, the commands it hands down the
+//! stream, and the mailbox rows it keeps.
 
-use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
-use flyco_core::host::{HostFacts, JobOutcome};
-use flyco_core::{HostId, MachineId};
+use flyco_core::MachineId;
+use flyco_core::host::JobOutcome;
 use flyco_provider::host::{
-    ContainerJob, ControlToHost, HostToControl, container_name, volume_name,
+    ContainerJob, ControlToHost, HostAttach, HostCommand, HostFrames, HostToControl,
+    container_name,
 };
-use skyzen::durable::{
-    DurableConnections, DurableContext, DurableObject as _, DurableObjectId, WebSocketConnection,
-    WebSocketEvent,
-};
-use skyzen::http_kit::ws::WebSocketMessage;
+use futures_util::StreamExt as _;
+use skyzen::durable::DurableObject as _;
+use skyzen::http_kit::sse::SseStream;
 use skyzen::{Body, Method, Request};
-use skyzen_services::durable::{Alarm, DurableDb, DurableKv};
-use skyzen_test::mock::{InMemoryAlarm, InMemoryDurableDb, InMemoryDurableKv};
+use skyzen_services::durable::{DurableDb, DurableKv};
+use skyzen_test::mock::{InMemoryDurableDb, InMemoryDurableKv};
 
-use crate::host_room::{HEADER_HOST, HostRoom, HostStatus, ROLE_HOST};
+use crate::host_room::{HEADER_HOST, HostAttachResponse, HostRoom, HostStatus};
 use crate::room::{HEADER_INTERNAL, INTERNAL};
-use crate::testing::host_facts;
-use crate::tests::sockets::{FakeConnections, FakeSocket, Sent};
+use crate::testing::host_facts as facts;
 
-/// A room with one host socket and a real database.
+/// How long a test waits for the room to hand a command down the stream.
+const PATIENCE: Duration = Duration::from_secs(10);
+
+/// How long a quiet stream is watched before a test accepts that nothing
+/// is coming.
+const QUIET: Duration = Duration::from_millis(400);
+
+// ── The harness ──
+
 struct Room {
-    host: HostId,
+    host: flyco_core::HostId,
     object: HostRoom,
-    machine: WebSocketConnection,
-    connections: FakeConnections,
     db: InMemoryDurableDb,
     kv: InMemoryDurableKv,
-    sent: Receiver<Sent>,
+    epoch: Option<u64>,
+    out_seq: u64,
+    applied: u64,
+    commands: Option<SseStream>,
 }
 
 impl Room {
     async fn open() -> Self {
-        let host = HostId::generate();
-        let (sender, sent) = channel();
-        let machine = FakeSocket {
-            tags: vec![ROLE_HOST.to_owned(), format!("host:{host}")],
-            sent: sender,
-            attachment: Arc::new(RwLock::new(None)),
-        };
-        let connections = FakeConnections {
-            sockets: vec![machine.clone()],
-        };
-
         Self {
-            host,
+            host: flyco_core::HostId::generate(),
             object: HostRoom,
-            machine: WebSocketConnection::new(Box::new(machine)),
-            connections,
             db: InMemoryDurableDb::in_memory()
                 .await
                 .expect("an in-memory database"),
             kv: InMemoryDurableKv::new(),
-            sent,
+            epoch: None,
+            out_seq: 1,
+            applied: 0,
+            commands: None,
         }
     }
 
-    fn context(&self) -> DurableContext {
-        DurableContext::new(
-            DurableKv::new(self.kv.clone()),
-            DurableDb::new(self.db.clone()),
-            Alarm::new(InMemoryAlarm::new()),
-            DurableConnections::new(Box::new(self.connections.clone())),
-            DurableObjectId::new(self.host.to_string(), Some(self.host.to_string())),
-        )
-    }
-
-    /// Delivers one frame from the machine, exactly as the runtime would.
-    async fn deliver(&mut self, frame: &HostToControl) {
-        let text = serde_json::to_string(frame).expect("serialize");
-        let context = self.context();
-        self.object
-            .websocket(
-                &self.machine,
-                WebSocketEvent::Message(WebSocketMessage::Text(text.into())),
-                &context,
-            )
-            .await
-            .expect("the room handled the frame");
-    }
-
-    /// The machine's handshake, which is also what replays its mailbox.
-    async fn hello(&mut self) {
-        self.deliver(&HostToControl::Hello {
-            facts: Box::new(host_facts()),
-        })
-        .await;
-    }
-
-    /// Everything the room has sent since the last drain.
-    fn drain(&self) -> Vec<Sent> {
-        self.sent.try_iter().collect()
-    }
-
-    /// Every container job the room wrote to the machine, in order.
-    fn jobs_sent(&self) -> Vec<ContainerJob> {
-        self.drain()
-            .into_iter()
-            .filter_map(|sent| match sent {
-                Sent::Text { text, .. } => match serde_json::from_str(&text) {
-                    Ok(ControlToHost::Run { job }) => Some(job),
-                    _ => None,
-                },
-                Sent::Closed { .. } => None,
-            })
-            .collect()
-    }
-
-    /// Calls one of the room's HTTP routes, the way the Worker does.
-    async fn call(&mut self, method: Method, path: &str, body: Option<Vec<u8>>) -> (u16, Vec<u8>) {
+    fn request(&self, method: Method, path: &str, body: Option<Vec<u8>>) -> Request {
         let mut request = Request::new(body.map_or_else(Body::empty, Body::from));
         *request.method_mut() = method;
         *request.uri_mut() = format!("https://host-room.flyco.invalid{path}")
@@ -136,9 +79,6 @@ impl Room {
             skyzen::header::CONTENT_TYPE,
             skyzen::header::HeaderValue::from_static("application/json"),
         );
-
-        // The simulator injects exactly these before dispatching; doing the
-        // same here keeps this an integration test of `fetch`.
         request
             .extensions_mut()
             .insert(DurableDb::new(self.db.clone()));
@@ -146,13 +86,13 @@ impl Room {
             .extensions_mut()
             .insert(DurableKv::new(self.kv.clone()));
         request
-            .extensions_mut()
-            .insert(DurableConnections::new(Box::new(self.connections.clone())));
+    }
 
+    async fn call(&mut self, method: Method, path: &str, body: Option<Vec<u8>>) -> (u16, Vec<u8>) {
         let response = self
             .object
             .fetch()
-            .go(request)
+            .go(self.request(method, path, body))
             .await
             .expect("the room answered");
         let status = response.status().as_u16();
@@ -164,41 +104,158 @@ impl Room {
         (status, bytes.to_vec())
     }
 
-    /// Posts one command, the way the Worker does.
-    async fn command(&mut self, command: &ControlToHost) {
-        let body = serde_json::to_vec(command).expect("serialize");
-        let (status, answer) = self
-            .call(Method::POST, "/internal/command", Some(body))
+    async fn call_streaming(&mut self, path: &str) -> skyzen::Response {
+        self.object
+            .fetch()
+            .go(self.request(Method::GET, path, None))
+            .await
+            .expect("the room answered")
+    }
+
+    /// Attaches the test's machine and answers the epoch it was given.
+    async fn attach(&mut self) -> u64 {
+        let (status, body) = self
+            .call(
+                Method::POST,
+                "/internal/attach",
+                Some(
+                    serde_json::to_vec(&HostAttach {
+                        facts: Box::new(facts()),
+                    })
+                    .expect("serialize"),
+                ),
+            )
+            .await;
+        assert_eq!(status, 200, "an attach: {}", String::from_utf8_lossy(&body));
+        let attached: HostAttachResponse =
+            serde_json::from_slice(&body).expect("an attach response");
+        self.epoch = Some(attached.epoch);
+        self.out_seq = 1;
+        attached.epoch
+    }
+
+    /// Attaches and opens the command stream: a machine coming up.
+    async fn greet(&mut self) {
+        self.attach().await;
+        self.open_commands().await;
+    }
+
+    async fn open_commands(&mut self) {
+        let epoch = self.epoch.expect("attach first");
+        let response = self
+            .call_streaming(&format!("/internal/commands?epoch={epoch}"))
+            .await;
+        assert_eq!(response.status().as_u16(), 200, "the stream opened");
+        self.commands = Some(response.into_body().into_sse());
+    }
+
+    /// Reads the next command the room hands the machine.
+    async fn next_command(&mut self) -> HostCommand {
+        let stream = self.commands.as_mut().expect("a command stream is open");
+        let item = tokio_select_quiet(stream, PATIENCE)
+            .await
+            .expect("a command arrived in time")
+            .expect("the stream is still open")
+            .expect("a decodable SSE frame");
+        assert_eq!(item.event(), Some("command"));
+        let command: HostCommand = item.data().expect("a command envelope");
+        self.applied = self.applied.max(command.seq);
+        command
+    }
+
+    async fn expect_quiet(&mut self) {
+        let stream = self.commands.as_mut().expect("a command stream is open");
+        if let Some(item) = tokio_select_quiet(stream, QUIET).await {
+            panic!("the stream stayed quiet, then produced {item:?}");
+        }
+    }
+
+    async fn expect_end(&mut self) {
+        let stream = self.commands.as_mut().expect("a command stream is open");
+        match tokio_select_quiet(stream, PATIENCE).await {
+            None => panic!("the stream outlived its attach"),
+            Some(None) => {}
+            Some(Some(item)) => panic!("the stream ended, then produced {item:?}"),
+        }
+    }
+
+    /// Posts one frame, the way a host's outbound flush does.
+    async fn deliver(&mut self, frame: &HostToControl) {
+        self.deliver_batch(std::slice::from_ref(frame)).await;
+    }
+
+    async fn deliver_batch(&mut self, frames: &[HostToControl]) {
+        let epoch = self.epoch.expect("attach first");
+        let (status, body) = self
+            .deliver_raw(&HostFrames {
+                epoch,
+                from_seq: self.out_seq,
+                ack_through: self.applied,
+                frames: frames.to_vec(),
+            })
             .await;
         assert_eq!(
             status,
             204,
-            "the room refused a command: {}",
-            String::from_utf8_lossy(&answer)
+            "a frames batch: {}",
+            String::from_utf8_lossy(&body)
         );
+        self.out_seq += frames.len() as u64;
+    }
+
+    async fn deliver_raw(&mut self, batch: &HostFrames) -> (u16, Vec<u8>) {
+        self.call(
+            Method::POST,
+            "/internal/frames",
+            Some(serde_json::to_vec(batch).expect("serialize")),
+        )
+        .await
+    }
+
+    /// Posts a command, the way the Worker does.
+    async fn command(&mut self, command: &ControlToHost) -> u16 {
+        let (status, _) = self
+            .call(
+                Method::POST,
+                "/internal/command",
+                Some(serde_json::to_vec(command).expect("serialize")),
+            )
+            .await;
+        status
     }
 
     async fn status(&mut self) -> HostStatus {
         let (status, body) = self.call(Method::GET, "/internal/status", None).await;
-        assert_eq!(status, 200, "reading the status");
+        assert_eq!(status, 200, "a status read");
         serde_json::from_slice(&body).expect("a host status")
     }
-}
 
-/// A create job for one machine, as the planner produces it.
-fn create(machine: MachineId) -> ControlToHost {
-    ControlToHost::Run {
-        job: ContainerJob::Create {
-            container: container_name(machine),
-            volume: volume_name(machine),
-            image: flyco_provider::host::DEFAULT_IMAGE.to_owned(),
-            machine,
-            bootstrap: Box::new(crate::tests::hosts::bootstrap()),
-        },
+    /// Marks the host's presence expired.
+    async fn expire_presence(&self) {
+        let db = DurableDb::new(self.db.clone());
+        skyzen::sql!(db, "UPDATE host_presence SET live_until = 0 WHERE id = 0")
+            .execute()
+            .await
+            .expect("presence was expired");
     }
 }
 
-fn stop(machine: MachineId) -> ControlToHost {
+/// The next item off an SSE stream, or `None` when `within` passes first.
+async fn tokio_select_quiet(
+    stream: &mut SseStream,
+    within: Duration,
+) -> Option<Option<Result<skyzen::http_kit::sse::Event, skyzen::http_kit::sse::ParseError>>> {
+    let next = stream.next();
+    let quiet = futures_timer::Delay::new(within);
+    futures_util::pin_mut!(next, quiet);
+    match futures_util::future::select(next, quiet).await {
+        futures_util::future::Either::Left((item, _)) => Some(item),
+        futures_util::future::Either::Right(_) => None,
+    }
+}
+
+/// The simplest container job naming `machine`: a stop.
+fn job_for(machine: MachineId) -> ControlToHost {
     ControlToHost::Run {
         job: ContainerJob::Stop {
             container: container_name(machine),
@@ -206,213 +263,233 @@ fn stop(machine: MachineId) -> ControlToHost {
     }
 }
 
+// ── The attach ──
+
 #[skyzen::test]
-async fn a_greeting_records_what_the_machine_says_it_is() {
+async fn an_attach_mints_an_epoch_and_reports_the_machine() {
     let mut room = Room::open().await;
-    assert!(!room.status().await.connected, "nothing has greeted yet");
+    let epoch = room.attach().await;
 
-    room.hello().await;
-
-    let status = room.status().await;
-    assert!(
-        status.connected,
-        "a greeted socket is a machine flyco can reach"
+    assert_eq!(epoch, 1, "the first attach is epoch one");
+    assert_eq!(
+        room.status().await,
+        HostStatus {
+            connected: true,
+            facts: Some(facts()),
+            pending_jobs: 0,
+        },
+        "the room reports the host attached and what it said about itself"
     );
-    assert_eq!(status.facts, Some(host_facts()));
-    assert_eq!(status.pending_jobs, 0);
 }
 
 #[skyzen::test]
-async fn a_machine_that_has_not_greeted_is_written_to_by_nothing() {
+async fn a_superseded_attach_ends_its_command_stream() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    room.attach().await;
+
+    room.expect_end().await;
+}
+
+#[skyzen::test]
+async fn a_stream_or_batch_naming_a_superseded_epoch_is_refused() {
+    let mut room = Room::open().await;
+    room.greet().await;
+    let stale = room.epoch.expect("attached");
+
+    room.attach().await;
+
+    let response = room
+        .call_streaming(&format!("/internal/commands?epoch={stale}"))
+        .await;
+    assert_eq!(response.status().as_u16(), 409, "the dead epoch's stream");
+
+    let (status, _) = room
+        .deliver_raw(&HostFrames {
+            epoch: stale,
+            from_seq: 1,
+            ack_through: 0,
+            frames: vec![],
+        })
+        .await;
+    assert_eq!(status, 409, "the dead epoch's frames");
+}
+
+#[skyzen::test]
+async fn frames_from_a_machine_that_never_attached_are_refused() {
+    let mut room = Room::open().await;
+    let (status, _) = room
+        .deliver_raw(&HostFrames {
+            epoch: 1,
+            from_seq: 1,
+            ack_through: 0,
+            frames: vec![HostToControl::JobResult {
+                job_id: MachineId::generate(),
+                outcome: JobOutcome::Done,
+            }],
+        })
+        .await;
+    assert_eq!(status, 502);
+}
+
+#[skyzen::test]
+async fn a_batch_that_skips_sequence_numbers_is_refused() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    let (status, body) = room
+        .deliver_raw(&HostFrames {
+            epoch: room.epoch.expect("attached"),
+            from_seq: 4,
+            ack_through: 0,
+            frames: vec![],
+        })
+        .await;
+    assert_eq!(status, 409);
+    let problem: flyco_core::Problem = serde_json::from_slice(&body).expect("a problem");
+    assert_eq!(problem.kind, "https://flyco.dev/problems/relay-frames-gap");
+}
+
+// ── The mailbox ──
+
+#[skyzen::test]
+async fn a_job_planned_while_the_machine_is_away_waits_for_it() {
     let mut room = Room::open().await;
     let machine = MachineId::generate();
 
-    room.command(&create(machine)).await;
-
-    assert!(
-        room.jobs_sent().is_empty(),
-        "a socket that has not identified its machine gets no session credentials"
-    );
-    // Held, not lost: the job is what a session is waiting for.
+    // No attach: the machine is rebooting. The job is held, and the room
+    // says one is pending.
+    let status = room.command(&job_for(machine)).await;
+    assert_eq!(status, 204);
     assert_eq!(room.status().await.pending_jobs, 1);
+
+    room.greet().await;
+    let delivered = room.next_command().await;
+    assert_eq!(delivered.command, job_for(machine));
 }
 
 #[skyzen::test]
-async fn a_job_planned_while_the_machine_is_away_is_waiting_when_it_returns() {
+async fn a_job_is_retired_by_its_answer_not_by_being_delivered() {
     let mut room = Room::open().await;
-    let first = MachineId::generate();
-    let second = MachineId::generate();
-
-    room.command(&create(first)).await;
-    room.command(&stop(second)).await;
-    assert_eq!(room.status().await.pending_jobs, 2);
-
-    room.hello().await;
-
-    let replayed = room.jobs_sent();
-    assert_eq!(replayed.len(), 2, "both jobs are handed over");
-    assert_eq!(
-        replayed[0].container(),
-        container_name(first),
-        "oldest first: a container has to exist before anything stops it"
-    );
-    assert_eq!(replayed[1].container(), container_name(second));
-}
-
-#[skyzen::test]
-async fn a_job_is_kept_until_the_machine_answers_it() {
-    let mut room = Room::open().await;
+    room.greet().await;
     let machine = MachineId::generate();
-    room.hello().await;
-    let _ = room.drain();
 
-    room.command(&create(machine)).await;
-    assert_eq!(
-        room.jobs_sent().len(),
-        1,
-        "a connected machine is handed the job at once"
-    );
+    room.command(&job_for(machine)).await;
+    room.next_command().await;
+
+    // The host took the job and died before answering. Acknowledging the
+    // read retires nothing: a job is done when its answer arrives.
+    room.deliver_batch(&[]).await; // carries ack_through
     assert_eq!(
         room.status().await.pending_jobs,
         1,
-        "and it stays outstanding: a machine that died mid-podman gets asked again"
+        "an acknowledged-but-unanswered job is still owed"
     );
 
+    // So the next attach is asked again.
+    room.attach().await;
+    room.open_commands().await;
+    assert_eq!(room.next_command().await.command, job_for(machine));
+
+    // The answer retires it.
     room.deliver(&HostToControl::JobResult {
         job_id: machine,
-        outcome: JobOutcome::Running {
-            container: container_name(machine),
-            volume: volume_name(machine),
-        },
+        outcome: JobOutcome::Done,
+    })
+    .await;
+    assert_eq!(room.status().await.pending_jobs, 0);
+}
+
+#[skyzen::test]
+async fn the_oldest_answer_for_a_container_retires_the_oldest_job() {
+    let mut room = Room::open().await;
+    room.greet().await;
+    let machine = MachineId::generate();
+
+    // Create then stop: two jobs on one container. The answer to the
+    // first says nothing about the second.
+    room.command(&job_for(machine)).await;
+    room.command(&job_for(machine)).await;
+    room.next_command().await;
+    room.next_command().await;
+    room.deliver(&HostToControl::JobResult {
+        job_id: machine,
+        outcome: JobOutcome::Done,
     })
     .await;
 
-    assert_eq!(room.status().await.pending_jobs, 0);
-    room.hello().await;
-    assert!(
-        room.jobs_sent().is_empty(),
-        "an answered job is not handed over again"
+    assert_eq!(
+        room.status().await.pending_jobs,
+        1,
+        "one answer retires one job"
     );
 }
 
 #[skyzen::test]
-async fn answering_one_job_leaves_the_next_one_for_the_same_machine_outstanding() {
+async fn a_revocation_forgets_every_outstanding_job() {
     let mut room = Room::open().await;
     let machine = MachineId::generate();
-    room.hello().await;
 
-    room.command(&create(machine)).await;
-    room.command(&stop(machine)).await;
+    // Planned while away — the mailbox is holding them.
+    room.command(&job_for(machine)).await;
+    room.command(&job_for(MachineId::generate())).await;
     assert_eq!(room.status().await.pending_jobs, 2);
 
-    // The answer to the create says nothing about the stop behind it.
-    room.deliver(&HostToControl::JobResult {
-        job_id: machine,
-        outcome: JobOutcome::Running {
-            container: container_name(machine),
-            volume: volume_name(machine),
-        },
-    })
-    .await;
-    assert_eq!(room.status().await.pending_jobs, 1);
-}
-
-#[skyzen::test]
-async fn a_revoked_machine_is_told_once_and_left_with_no_work() {
-    let mut room = Room::open().await;
-    let machine = MachineId::generate();
-    room.hello().await;
-    room.command(&create(machine)).await;
-    let _ = room.drain();
-
-    room.command(&ControlToHost::Revoked).await;
-
-    let sent = room.drain();
-    assert_eq!(sent.len(), 1, "the machine is told its token is gone");
-    assert!(
-        matches!(&sent[0], Sent::Text { text, .. } if text.contains("revoked")),
-        "{sent:?}"
-    );
+    let status = room.command(&ControlToHost::Revoked).await;
+    assert_eq!(status, 204);
     assert_eq!(
         room.status().await.pending_jobs,
         0,
-        "a machine that will never open another socket has no work outstanding"
+        "a revoked host will never attach again, so its mailbox is emptied"
     );
 }
 
 #[skyzen::test]
-async fn a_frame_before_the_greeting_closes_the_socket() {
+async fn a_command_that_is_not_container_work_is_dropped_for_an_offline_host() {
     let mut room = Room::open().await;
 
-    room.deliver(&HostToControl::Heartbeat).await;
+    // `Revoked` is the one non-job command; a host that is away is a host
+    // whose token will not work again — nothing is held for it. The jobs
+    // are still forgotten, which is what the revocation is *for*.
+    let machine = MachineId::generate();
+    room.command(&job_for(machine)).await;
+    assert_eq!(room.status().await.pending_jobs, 1);
 
-    assert!(
-        matches!(room.drain().as_slice(), [Sent::Closed { .. }]),
-        "the first frame must be `hello`"
-    );
+    room.command(&ControlToHost::Revoked).await;
+    assert_eq!(room.status().await.pending_jobs, 0);
+}
+
+// ── Liveness ──
+
+#[skyzen::test]
+async fn an_expired_attachment_reports_the_machine_gone() {
+    let mut room = Room::open().await;
+    room.attach().await;
+    assert!(room.status().await.connected);
+
+    room.expire_presence().await;
+
+    let status = room.status().await;
+    assert!(!status.connected, "past the deadline the machine is gone");
+    assert_eq!(status.facts, Some(facts()), "its last report is kept");
 }
 
 #[skyzen::test]
-async fn a_frame_this_protocol_does_not_define_closes_the_socket() {
+async fn an_empty_mailbox_replays_nothing_to_a_fresh_attach() {
     let mut room = Room::open().await;
-    let context = room.context();
-    room.object
-        .websocket(
-            &room.machine,
-            WebSocketEvent::Message(WebSocketMessage::Text(r#"{"type":"nonsense"}"#.into())),
-            &context,
-        )
-        .await
-        .expect("the room handled the frame");
+    room.greet().await;
+    let machine = MachineId::generate();
 
-    assert!(matches!(room.drain().as_slice(), [Sent::Closed { .. }]));
-}
-
-#[skyzen::test]
-async fn a_room_route_without_the_internal_marker_is_refused() {
-    let mut room = Room::open().await;
-    let mut request = Request::new(Body::empty());
-    *request.uri_mut() = "https://host-room.flyco.invalid/internal/status"
-        .parse()
-        .expect("a valid room URL");
-    request
-        .extensions_mut()
-        .insert(DurableKv::new(room.kv.clone()));
-    request
-        .extensions_mut()
-        .insert(DurableDb::new(room.db.clone()));
-    request
-        .extensions_mut()
-        .insert(DurableConnections::new(Box::new(room.connections.clone())));
-
-    let response = room
-        .object
-        .fetch()
-        .go(request)
-        .await
-        .expect("the room answered");
-    assert_eq!(
-        response.status().as_u16(),
-        502,
-        "a room route is only ever reached from this Worker, and says so"
-    );
-}
-
-/// The facts a machine reports are the ones the room hands back, whatever it
-/// enrolled with.
-#[skyzen::test]
-async fn the_newest_facts_win() {
-    let mut room = Room::open().await;
-    room.hello().await;
-
-    let grown = HostFacts {
-        memory_mib: 64 * 1024,
-        ..host_facts()
-    };
-    room.deliver(&HostToControl::Hello {
-        facts: Box::new(grown.clone()),
+    room.command(&job_for(machine)).await;
+    room.next_command().await;
+    room.deliver(&HostToControl::JobResult {
+        job_id: machine,
+        outcome: JobOutcome::Done,
     })
     .await;
 
-    assert_eq!(room.status().await.facts, Some(grown));
+    room.attach().await;
+    room.open_commands().await;
+    room.expect_quiet().await;
 }

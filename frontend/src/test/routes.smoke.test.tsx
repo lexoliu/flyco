@@ -1,4 +1,4 @@
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@solidjs/testing-library";
 import {
   MemoryRouter,
@@ -440,33 +440,30 @@ describe("route smoke tests", () => {
 
   it("re-reads the machine when the room says the session moved onto another one", async () => {
     // The header quotes a rate, and a rate for the machine the session used
-    // to be on is a bill nobody is being sent (issue #135). The relay says
+    // to be on is a bill nobody is being sent (issue #135). The stream says
     // the session moved; the page asks the control plane what it moved to.
-    const original = globalThis.WebSocket;
-    const sockets: EventTarget[] = [];
-    class DrivableSocket extends EventTarget {
-      readyState = 1;
-      constructor(readonly url: string) {
-        super();
-        sockets.push(this);
-        queueMicrotask(() => this.dispatchEvent(new Event("open")));
-      }
-      send(): void {
-        /* nothing in this test speaks to the room */
-      }
-      close(): void {
-        this.readyState = 3;
-      }
-    }
-    vi.stubGlobal("WebSocket", DrivableSocket);
-    onTestFinished(() => {
-      vi.stubGlobal("WebSocket", original);
-    });
-
+    //
+    // The user stream is a module singleton shared across the whole file,
+    // so it is driven by standing the `GET /v1/events` fetch up as an
+    // enqueueable SSE body rather than by stubbing a socket class.
     const base = vi.mocked(fetch).getMockImplementation();
+    const encoder = new TextEncoder();
+    const feeds: ReadableStreamDefaultController<Uint8Array>[] = [];
     let reads = 0;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const url = new URL(String(input instanceof Request ? input.url : input));
+      if (url.pathname === "/v1/events") {
+        return Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                feeds.push(controller);
+              },
+            }),
+            { status: 200, headers: { "content-type": "text/event-stream" } },
+          ),
+        );
+      }
       if (!/^\/v1\/sessions\/[^/]+\/machine$/.test(url.pathname)) {
         return base!(input, init);
       }
@@ -495,19 +492,21 @@ describe("route smoke tests", () => {
     const { findByText } = renderAt("/sessions/abc-123");
     expect(await findByText("t3.large · $0.04/hr · spot")).toBeInTheDocument();
 
-    await vi.waitFor(() => expect(sockets.length).toBeGreaterThan(0));
-    const socket = sockets[0];
-    socket?.dispatchEvent(
-      new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "machine_changed",
-          machine_type: "m7g.xlarge",
-          hourly: 163_200,
-          spot: true,
-          restarted: true,
-        }),
-      }),
-    );
+    await vi.waitFor(() => expect(feeds.length).toBeGreaterThan(0));
+    const frame = `id: 1\ndata: ${JSON.stringify({
+      session: "abc-123",
+      seq: null,
+      event: {
+        type: "machine_changed",
+        machine_type: "m7g.xlarge",
+        hourly: 163_200,
+        spot: true,
+        restarted: true,
+      },
+    })}\n\n`;
+    for (const feed of feeds) {
+      feed.enqueue(encoder.encode(frame));
+    }
 
     expect(
       await findByText("m7g.xlarge · $0.16/hr · spot"),

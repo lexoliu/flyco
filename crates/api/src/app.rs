@@ -10,10 +10,12 @@ use flyco_core::{
     HarnessFeature, HarnessObservation, HarnessSessionView, MAX_SESSION_TITLE_CHARS,
     MachineCatalogEntry, MachineOrigin, MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage,
     RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
-    ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, SendMessage, SessionActivity,
-    SessionDetail, SessionId, SessionState, SessionSummary, TurnPage, UpdateEnv, UpdateMe,
-    UpdateSession, UsageLimitHit, UserId, wire::ApprovalPayload,
+    ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, RunShell, SendMessage,
+    SessionActivity, SessionDetail, SessionId, SessionState, SessionSummary, TerminalInput,
+    TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UsageLimitHit, UserId,
+    wire::{ApprovalPayload, DaemonAttach, DaemonAttached, DaemonFrames},
 };
+use flyco_provider::host::{HostAttach, HostFrames};
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
 use skyzen::middleware::ErrorHandlingMiddleware;
@@ -32,10 +34,10 @@ use crate::github::GithubClient;
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
 use crate::provisioning_queue::{self, ProvisioningJob};
-use crate::relay::{RelayTicket, TicketQuery};
 use crate::respond::{Accepted, Created, NoContent};
 use crate::room::EventPage;
-use crate::rooms::{HostRooms, Rooms};
+use crate::rooms::{HostRooms, Rooms, UserStreams};
+use crate::host_room::HostAttachResponse;
 use crate::vendors::Vendors;
 use crate::{
     agents_md, api_keys, approvals, claude_oauth, codex_oauth, daemon_tokens, env,
@@ -272,7 +274,7 @@ async fn start_session(
     // The prompt is posted to the session's room *before* the machine is
     // queued, so the agent's first instruction is durable before anything
     // asynchronous can go wrong. No daemon exists yet — the room holds it
-    // in its mailbox and hands it over on the daemon's first `Hello`.
+    // in its mailbox and hands it over on the daemon's first attach.
     //
     // Both steps fail the session rather than return early: a session row
     // whose prompt never reached its room, or whose job never reached the
@@ -285,6 +287,7 @@ async fn start_session(
         "the session's room would not take its first prompt",
         rooms
             .command(
+                db,
                 id,
                 &ControlToDaemon::UserMessage {
                     text: prompt,
@@ -471,6 +474,7 @@ async fn apply_session_update(
             // with would be a line about a change that could still fail.
             rooms
                 .command(
+                    db,
                     id,
                     &ControlToDaemon::SetModel {
                         model: choice.clone(),
@@ -493,7 +497,7 @@ async fn apply_session_update(
             // is away — `survives_a_disconnect` — because it is what the
             // next machine comes up under.
             rooms
-                .command(id, &ControlToDaemon::SetPermissionMode { mode })
+                .command(db, id, &ControlToDaemon::SetPermissionMode { mode })
                 .await?;
             tracing::info!(session = %id, ?mode, "a session was put under another permission mode");
             Some(session)
@@ -506,7 +510,7 @@ async fn apply_session_update(
             let raise = sessions::set_budget_limit(db, user.id, id, limit).await?;
             if raise.resumed {
                 rooms
-                    .command(id, &ControlToDaemon::BudgetRaised { limit })
+                    .command(db, id, &ControlToDaemon::BudgetRaised { limit })
                     .await?;
                 tracing::info!(session = %id, %limit, "a raised budget released a paused session");
             }
@@ -623,7 +627,7 @@ pub(crate) async fn archive(
     };
 
     rooms
-        .command(id, &ControlToDaemon::Archive { preserve_workdir })
+        .command(db, id, &ControlToDaemon::Archive { preserve_workdir })
         .await?;
     machines::destroy_for_archive(db, config, hosts, user, id).await?;
     sessions::transition(db, user, id, SessionState::Archived).await
@@ -766,6 +770,7 @@ async fn settle_approval(
 
     let announced = rooms
         .command(
+            db,
             decided.session,
             &ControlToDaemon::ApprovalDecision {
                 id,
@@ -873,92 +878,213 @@ async fn pair_daemon(
 
 // ── The live relay ──
 
-/// Mints a single-use ticket a browser exchanges for a relay socket.
-#[skyzen::openapi]
-async fn create_relay_ticket(
-    State(user): State<CurrentUser>,
-    params: Params,
-    kv: Kv,
-    db: Db,
-) -> Outcome<Json<RelayTicket>> {
-    mint_ticket(&user, &params, &kv, &db).await.into()
-}
-
-async fn mint_ticket(
-    user: &CurrentUser,
-    params: &Params,
-    kv: &Kv,
-    db: &Db,
-) -> Result<Json<RelayTicket>, ApiError> {
-    let id = path_id::<SessionId>(params, "id")?;
-    relay::issue_ticket(kv, db, user, id).await.map(Json)
-}
-
-/// Joins a session's room as its daemon.
+/// Attaches a session's daemon to its room.
 ///
 /// Authenticated by the session's `fd_` token rather than by a user
 /// credential, so it sits outside [`RequireAuth`].
-async fn open_daemon_relay(
+#[skyzen::openapi]
+async fn attach_daemon(
     params: Params,
     headers: Headers,
     rooms: Rooms,
     db: Db,
-) -> Outcome<Response> {
-    join_as_daemon(&params, &headers, &rooms, &db).await.into()
+    Json(attach): Json<DaemonAttach>,
+) -> Outcome<Json<DaemonAttached>> {
+    daemon_attach(&params, &headers, &rooms, &db, attach).await.into()
 }
 
-async fn join_as_daemon(
+async fn daemon_attach(
     params: &Params,
     headers: &Headers,
     rooms: &Rooms,
     db: &Db,
-) -> Result<Response, ApiError> {
+    attach: DaemonAttach,
+) -> Result<Json<DaemonAttached>, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
-    relay::open_daemon(rooms, db, id, headers.bearer()).await
+    relay::attach_daemon(rooms, db, id, headers.bearer(), attach)
+        .await
+        .map(Json)
 }
 
-/// Joins a host's room as the machine itself.
+/// Query of the daemon command stream.
+#[derive(Debug, Deserialize, skyzen::ToSchema)]
+struct CommandEpoch {
+    /// The attach this stream serves.
+    epoch: u64,
+}
+
+/// Opens a session daemon's command stream: the room's SSE stream, handed
+/// through still running.
+#[skyzen::openapi]
+async fn open_daemon_commands(
+    params: Params,
+    headers: Headers,
+    Query(query): Query<CommandEpoch>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Response> {
+    daemon_commands(&params, &headers, &query, &rooms, &db)
+        .await
+        .into()
+}
+
+async fn daemon_commands(
+    params: &Params,
+    headers: &Headers,
+    query: &CommandEpoch,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<Response, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    relay::daemon_commands(rooms, db, id, headers.bearer(), query.epoch).await
+}
+
+/// Accepts one batch of a session daemon's outbound frames.
+#[skyzen::openapi]
+async fn post_daemon_frames(
+    params: Params,
+    headers: Headers,
+    rooms: Rooms,
+    db: Db,
+    Json(batch): Json<DaemonFrames>,
+) -> Outcome<NoContent> {
+    daemon_frames(&params, &headers, &rooms, &db, batch)
+        .await
+        .into()
+}
+
+async fn daemon_frames(
+    params: &Params,
+    headers: &Headers,
+    rooms: &Rooms,
+    db: &Db,
+    batch: DaemonFrames,
+) -> Result<NoContent, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    relay::daemon_frames(rooms, db, id, headers.bearer(), batch).await
+}
+
+/// Attaches an enrolled machine to its host room.
 ///
 /// Authenticated by the host's own `fh_` token rather than by a user
 /// credential, exactly as a session daemon's relay is, so it sits outside
 /// [`RequireAuth`].
-async fn open_host_relay(
+#[skyzen::openapi]
+async fn attach_host(
     params: Params,
     headers: Headers,
     rooms: HostRooms,
     db: Db,
-) -> Outcome<Response> {
-    join_as_host(&params, &headers, &rooms, &db).await.into()
+    Json(attach): Json<HostAttach>,
+) -> Outcome<Json<HostAttachResponse>> {
+    host_attach(&params, &headers, &rooms, &db, attach).await.into()
 }
 
-async fn join_as_host(
+async fn host_attach(
     params: &Params,
     headers: &Headers,
     rooms: &HostRooms,
     db: &Db,
+    attach: HostAttach,
+) -> Result<Json<HostAttachResponse>, ApiError> {
+    let id = path_id::<flyco_core::HostId>(params, "id")?;
+    relay::attach_host(rooms, db, id, headers.bearer(), attach)
+        .await
+        .map(Json)
+}
+
+/// Opens an enrolled machine's command stream.
+#[skyzen::openapi]
+async fn open_host_commands(
+    params: Params,
+    headers: Headers,
+    Query(query): Query<CommandEpoch>,
+    rooms: HostRooms,
+    db: Db,
+) -> Outcome<Response> {
+    host_commands(&params, &headers, &query, &rooms, &db)
+        .await
+        .into()
+}
+
+async fn host_commands(
+    params: &Params,
+    headers: &Headers,
+    query: &CommandEpoch,
+    rooms: &HostRooms,
+    db: &Db,
 ) -> Result<Response, ApiError> {
     let id = path_id::<flyco_core::HostId>(params, "id")?;
-    relay::open_host(rooms, db, id, headers.bearer()).await
+    relay::host_commands(rooms, db, id, headers.bearer(), query.epoch).await
 }
 
-/// Joins a session's room as a browser, redeeming a relay ticket.
-async fn open_client_relay(
+/// Accepts one batch of an enrolled machine's outbound frames.
+#[skyzen::openapi]
+async fn post_host_frames(
     params: Params,
-    query: Query<TicketQuery>,
-    rooms: Rooms,
-    kv: Kv,
-) -> Outcome<Response> {
-    join_as_client(&params, &query, &rooms, &kv).await.into()
+    headers: Headers,
+    rooms: HostRooms,
+    db: Db,
+    Json(batch): Json<HostFrames>,
+) -> Outcome<NoContent> {
+    host_frames(&params, &headers, &rooms, &db, batch)
+        .await
+        .into()
 }
 
-async fn join_as_client(
+async fn host_frames(
     params: &Params,
-    query: &Query<TicketQuery>,
-    rooms: &Rooms,
-    kv: &Kv,
+    headers: &Headers,
+    rooms: &HostRooms,
+    db: &Db,
+    batch: HostFrames,
+) -> Result<NoContent, ApiError> {
+    let id = path_id::<flyco_core::HostId>(params, "id")?;
+    relay::host_frames(rooms, db, id, headers.bearer(), batch).await
+}
+
+/// Query of the user event stream.
+#[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
+struct UserStreamCursor {
+    /// Resume strictly after this position in the stream's buffer. A
+    /// reconnecting client passes the `Last-Event-ID` it last saw.
+    after: Option<u64>,
+    /// Emit only this session's events, when the caller is following one.
+    session: Option<SessionId>,
+}
+
+/// The one stream every session event rides.
+///
+/// `GET /v1/events` multiplexes every session the caller owns onto one
+/// SSE connection; each event is a [`SessionEvent`](flyco_core::wire::SessionEvent)
+/// envelope carrying the session it belongs to. Replays are `Last-Event-ID`
+/// deep: past the buffer, the client refills from a session's own
+/// `events?after=` history.
+#[skyzen::openapi]
+async fn open_event_stream(
+    State(user): State<CurrentUser>,
+    Query(cursor): Query<UserStreamCursor>,
+    headers: Headers,
+    streams: UserStreams,
+) -> Outcome<Response> {
+    user_stream(&user, &cursor, &headers, &streams).await.into()
+}
+
+async fn user_stream(
+    user: &CurrentUser,
+    cursor: &UserStreamCursor,
+    headers: &Headers,
+    streams: &UserStreams,
 ) -> Result<Response, ApiError> {
-    let id = path_id::<SessionId>(params, "id")?;
-    relay::open_client(rooms, kv, id, relay::presented_ticket(query)).await
+    // A browser cannot set `Last-Event-ID` on a fetch the way EventSource
+    // can on a reconnect, so the header and the query are the same cursor
+    // and the query wins when both are sent. Absent is a first connect:
+    // the stream opens live and the session's own event pages carry the
+    // past.
+    let after = cursor
+        .after
+        .or_else(|| headers.get("last-event-id").and_then(|v| v.parse().ok()));
+    streams.stream(user.id, after, cursor.session).await
 }
 
 /// Where in a session's event stream to resume reading.
@@ -971,7 +1097,7 @@ struct EventCursor {
 /// Reads a session's recorded event tail.
 ///
 /// The catch-up path a browser takes before — and alongside — its live
-/// socket: replay from the last position it saw, then follow the relay.
+/// stream: replay from the last position it saw, then follow the relay.
 #[skyzen::openapi]
 async fn get_session_events(
     State(user): State<CurrentUser>,
@@ -1038,17 +1164,26 @@ async fn say(
     if queued {
         return Ok(Accepted);
     }
-    let id = drive(
-        user,
-        params,
-        rooms,
-        db,
-        ControlToDaemon::UserMessage {
-            text: message.text.clone(),
-            origin: MessageOrigin::User,
-        },
-    )
-    .await?;
+    let id = path_id::<SessionId>(params, "id")?;
+    // A user message is the one command the room holds for a daemon that
+    // is not there: while the machine is still being built or coming back
+    // from reclamation, the room's command log carries it to the next
+    // attach — which is what the composer means by not gating prompts on
+    // a live machine. Everything else a session can be in refuses.
+    match sessions::state_of(db, user.id, id).await? {
+        SessionState::Provisioning | SessionState::Active | SessionState::Interrupted => {}
+        state => return Err(ApiError::SessionNotActive { state }),
+    }
+    rooms
+        .command(
+            db,
+            id,
+            &ControlToDaemon::UserMessage {
+                text: message.text.clone(),
+                origin: MessageOrigin::User,
+            },
+        )
+        .await?;
 
     // The user has spoken and no turn has started yet, which is exactly
     // `Idle` (docs/ux.md §6). Written after the room took the message, so a
@@ -1139,6 +1274,85 @@ async fn context_session(
         .into()
 }
 
+/// Runs a shell command on a session's machine.
+///
+/// The composer's `!` escape, over REST: the room mints the run id and
+/// reissues the request as [`ControlToDaemon::RunShell`], so every frame
+/// about the run is keyed by an identity the browser never chose.
+#[skyzen::openapi]
+async fn run_shell(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(body): Json<RunShell>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Accepted> {
+    drive(
+        &user,
+        &params,
+        &rooms,
+        &db,
+        ControlToDaemon::ShellCommand {
+            command: body.command,
+        },
+    )
+    .await
+    .map(|_| Accepted)
+    .into()
+}
+
+/// Writes raw input to a session's web terminal.
+///
+/// One keystroke batch per call: the terminal panel sends these as the
+/// user types, and a dropped one is retried by the user, not the client.
+#[skyzen::openapi]
+async fn terminal_input(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(body): Json<TerminalInput>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Accepted> {
+    drive(
+        &user,
+        &params,
+        &rooms,
+        &db,
+        ControlToDaemon::TerminalInput { data: body.data },
+    )
+    .await
+    .map(|_| Accepted)
+    .into()
+}
+
+/// Reports the web terminal's fitted size.
+///
+/// The room remembers it and re-sends it at the head of every daemon
+/// attach, so a machine that reboots comes back with a PTY the same size
+/// as the pane (issue #253).
+#[skyzen::openapi]
+async fn terminal_resize(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(body): Json<TerminalSize>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Accepted> {
+    drive(
+        &user,
+        &params,
+        &rooms,
+        &db,
+        ControlToDaemon::TerminalResize {
+            cols: body.cols,
+            rows: body.rows,
+        },
+    )
+    .await
+    .map(|_| Accepted)
+    .into()
+}
+
 /// Hands one command to a session's room.
 ///
 /// The two checks are in this order for a reason. Ownership settles in D1,
@@ -1162,7 +1376,7 @@ async fn drive(
     let id = path_id::<SessionId>(params, "id")?;
     sessions::require_active(db, user.id, id).await?;
 
-    rooms.command(id, &command).await?;
+    rooms.command(db, id, &command).await?;
     tracing::info!(session = %id, command = ?core::mem::discriminant(&command), "drove a session");
     Ok(id)
 }
@@ -1559,6 +1773,7 @@ async fn record_reported_models(
     harness_accounts::record_models(db, target.user_id, target.harness, &report.models).await?;
     rooms
         .broadcast(
+            db,
             id,
             &ClientEvent::Models {
                 models: report.models,
@@ -1603,6 +1818,7 @@ async fn record_reported_usage(
     harness_accounts::record_usage(db, target.user_id, target.harness, &report.windows).await?;
     rooms
         .broadcast(
+            db,
             id,
             &ClientEvent::PlanUsage {
                 windows: report.windows,
@@ -1840,7 +2056,7 @@ async fn finish_turn(
 /// The queue announces everything up to the machine existing; everything
 /// after it is a fact only the daemon holds. Most of those ride the relay,
 /// but the checkout happens *before* the harness exists and therefore before
-/// there is a relay socket — so the one stage that cannot be a relay frame
+/// there is a command stream — so the one stage that cannot be a relay frame
 /// gets a route (docs/ux.md §9.2).
 ///
 /// The control plane stamps the time rather than taking the daemon's: a
@@ -1867,6 +2083,7 @@ async fn record_provisioning_stage(
     sessions::note_progress(db, session).await?;
     rooms
         .broadcast(
+            db,
             session,
             &ClientEvent::ProvisioningStage {
                 stage,
@@ -2325,19 +2542,22 @@ fn public_routes() -> Vec<RouteNode> {
     nodes
 }
 
-/// The two relay upgrades.
+/// The daemon and host relay routes: REST in, SSE out.
 ///
-/// Neither carries a user credential — one presents a session's daemon
-/// token, the other a single-use ticket — so they authenticate themselves
-/// rather than sitting behind [`RequireAuth`]. Their success is a `101`
-/// with a socket attached, which the `OpenAPI` response model cannot
-/// describe, so they export a path and nothing about what comes back —
-/// see [`responses::UNDECLARED`](crate::responses::UNDECLARED).
+/// None carries a user credential — the daemon presents its session's
+/// `fd_` token, the host its `fh_` token — so they authenticate
+/// themselves rather than sitting behind [`RequireAuth`]. The command
+/// routes answer with an SSE stream that never ends, which the `OpenAPI`
+/// response model cannot describe — see
+/// [`responses::UNDECLARED`](crate::responses::UNDECLARED).
 fn relay_routes() -> Vec<RouteNode> {
     Route::new((
-        "/v1/sessions/{id}/relay/daemon".at(open_daemon_relay),
-        "/v1/sessions/{id}/relay/client".at(open_client_relay),
-        "/v1/hosts/{id}/relay".at(open_host_relay),
+        "/v1/sessions/{id}/relay/attach".post(attach_daemon),
+        "/v1/sessions/{id}/relay/commands".at(open_daemon_commands),
+        "/v1/sessions/{id}/relay/frames".post(post_daemon_frames),
+        "/v1/hosts/{id}/relay/attach".post(attach_host),
+        "/v1/hosts/{id}/relay/commands".at(open_host_commands),
+        "/v1/hosts/{id}/relay/frames".post(post_host_frames),
     ))
     .into_route_nodes()
 }
@@ -2409,6 +2629,9 @@ fn daemon_routes() -> Vec<RouteNode> {
 fn account_routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/me".at(me).patch(update_me),
+        // The one stream every session event rides: a browser follows the
+        // whole account on a single SSE connection.
+        "/v1/events".at(open_event_stream),
         "/v1/harness-features".at(list_harness_features),
         "/v1/api-keys".post(create_api_key).get(list_api_keys),
         "/v1/api-keys/{id}".delete(revoke_api_key),
@@ -2426,12 +2649,7 @@ fn session_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/archive".post(archive_session),
         "/v1/sessions/{id}/budget".at(get_session_budget),
         "/v1/sessions/{id}/daemon-token".post(create_daemon_token),
-        "/v1/sessions/{id}/relay-ticket".post(create_relay_ticket),
         "/v1/sessions/{id}/events".at(get_session_events),
-        "/v1/sessions/{id}/messages".post(send_message),
-        "/v1/sessions/{id}/interrupt".post(interrupt_session),
-        "/v1/sessions/{id}/compact".post(compact_session),
-        "/v1/sessions/{id}/context".post(context_session),
         "/v1/sessions/{id}/resume".post(resume_session),
         "/v1/sessions/{id}/turns".at(list_turns),
         "/v1/sessions/{id}/env"
@@ -2442,8 +2660,24 @@ fn session_routes() -> Vec<RouteNode> {
     .into_route_nodes();
     // Split rather than one tuple: a route tree is a tuple, and tuples stop
     // implementing the trait past sixteen elements.
+    nodes.extend(driving_routes());
     nodes.extend(checkout_routes());
     nodes
+}
+
+/// Sending a session's daemon work: the client commands of
+/// `ControlToDaemon::is_client_command`, one REST route each.
+fn driving_routes() -> Vec<RouteNode> {
+    Route::new((
+        "/v1/sessions/{id}/messages".post(send_message),
+        "/v1/sessions/{id}/shell".post(run_shell),
+        "/v1/sessions/{id}/terminal/input".post(terminal_input),
+        "/v1/sessions/{id}/terminal/resize".post(terminal_resize),
+        "/v1/sessions/{id}/interrupt".post(interrupt_session),
+        "/v1/sessions/{id}/compact".post(compact_session),
+        "/v1/sessions/{id}/context".post(context_session),
+    ))
+    .into_route_nodes()
 }
 
 /// Reading the disk a session works on (docs/ux.md §9.4).
@@ -2518,6 +2752,7 @@ fn with_rooms(route: Route) -> Route {
     route
         .with(State(crate::rooms::NativeRooms::new()))
         .with(State(crate::rooms::NativeHostRooms::new()))
+        .with(State(crate::rooms::NativeUserStreams::new()))
 }
 
 /// See the native counterpart above.

@@ -20,7 +20,7 @@
 //!
 //! A host's room delivers at least once — a job is written to its SQLite
 //! before it is forwarded and stays there until the machine answers, so a
-//! socket that dropped between the work and the answer means the same job
+//! stream that dropped between the work and the answer means the same job
 //! arrives again. Every job therefore has to be safe to repeat:
 //!
 //! * A **create** whose container is already there starts it instead of

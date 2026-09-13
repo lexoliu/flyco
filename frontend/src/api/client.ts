@@ -9,15 +9,14 @@
  * is read straight off the generated `operations`/`components` types in
  * `schema.d.ts` — nothing here is a hand-retyped DTO.
  *
- * `sendMessage`, `interruptSession`, `compactSession` and `contextSession` below
- * hit the REST handlers
- * directly. The live session view (`src/routes/SessionDetail.tsx`) prefers
- * the relay socket instead (`src/api/relay.ts`, `ControlToDaemon::is_client_command`)
- * whenever it is connected — lower latency, and the echo comes back as a
- * `ClientEvent` on the same connection — and falls back to these REST calls
- * only while the socket isn't live (session paused, machine stopped, still
- * reconnecting), so a message or interrupt can still be recorded rather
- * than silently dropped.
+ * The session view reads events off the one per-user SSE stream
+ * (`src/api/events.ts` on `GET /v1/events`) and sends every client
+ * command over REST — `sendMessage`, `runShellCommand`,
+ * `sendTerminalInput`, `resizeSessionTerminal`, `interruptSession`,
+ * `compactSession` and `contextSession` below — which is the whole
+ * transport: there is no socket, and the stream is the only
+ * server-to-client path (`ControlToDaemon::is_client_command` names what
+ * a client may send).
  */
 import type { components, operations } from "./schema";
 import { clearSessionToken, getSessionToken } from "../lib/session";
@@ -30,7 +29,6 @@ export type SessionDetail = Schemas["SessionDetail"];
 export type BudgetView = Schemas["BudgetView"];
 export type EventPage = Schemas["EventPage"];
 export type StoredEvent = Schemas["StoredEvent"];
-export type RelayTicket = Schemas["RelayTicket"];
 export type EnvDocument = Schemas["EnvDocument"];
 export type EnvEntry = Schemas["EnvEntry"];
 export type ApprovalView = Schemas["ApprovalView"];
@@ -128,15 +126,11 @@ export function apiUrl(path: string): URL {
   return new URL(path, resolveBase());
 }
 
-/**
- * Resolves an API path to its `ws:`/`wss:` equivalent, for the relay
- * socket. Mirrors the scheme of the resolved HTTP(S) origin: `wss:` unless
- * the control plane itself is served over plain `http:` (local dev only).
- */
-export function apiWebSocketUrl(path: string): URL {
-  const url = apiUrl(path);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url;
+interface SendOptions {
+  query?: Query;
+  json?: unknown;
+  octetStream?: Blob;
+  signal?: AbortSignal | undefined;
 }
 
 type QueryValue = string | number | boolean | null | undefined;
@@ -151,12 +145,6 @@ function applyQuery(url: URL, query: Query | undefined): void {
       url.searchParams.set(key, String(value));
     }
   }
-}
-
-interface SendOptions {
-  query?: Query;
-  json?: unknown;
-  octetStream?: Blob;
 }
 
 /** Issues one HTTP request, attaching auth and translating any failure. */
@@ -185,7 +173,12 @@ async function send(
 
   let response: Response;
   try {
-    response = await fetch(url, { method, headers, body });
+    response = await fetch(url, {
+      method,
+      headers,
+      body,
+      signal: options.signal ?? null,
+    });
   } catch (cause) {
     throw new NetworkError(cause);
   }
@@ -330,10 +323,27 @@ export function getSessionEvents(
   });
 }
 
-export function createRelayTicket(
-  id: string,
-): Promise<JsonResponse<"flyco_api::app::create_relay_ticket", 200>> {
-  return requestJson("POST", `/v1/sessions/${id}/relay-ticket`);
+/**
+ * Opens the per-user event stream: one SSE response carrying every
+ * session the caller owns, multiplexed by the `session` field of each
+ * `SessionEvent` envelope.
+ *
+ * `after` resumes strictly past a position in the server's reconnect
+ * buffer — the `id:` of the last SSE frame this client saw. Omitted opens
+ * the stream live: the buffer is a reconnect window, not history, and the
+ * past a session view wants is its own `events?after=` pages.
+ *
+ * Returns the raw response — the caller reads `body` as an SSE frame
+ * stream; `signal` is what `dispose` aborts it with.
+ */
+export function openUserStream(
+  after?: number,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return send("GET", "/v1/events", {
+    query: { after: after ?? null },
+    signal,
+  });
 }
 
 export function getSessionEnv(
@@ -386,18 +396,44 @@ export function getSessionDiff(
   return requestJson("GET", `/v1/sessions/${id}/diff`);
 }
 
-/** REST fallback for sending a message; see the module doc comment above. */
+/** Sends a message to a session's agent; see the module doc comment above. */
 export function sendMessage(id: string, text: string): Promise<void> {
   const body: JsonBody<"flyco_api::app::send_message"> = { text };
   return requestVoid("POST", `/v1/sessions/${id}/messages`, { json: body });
 }
 
-/** REST fallback for interrupting a turn; see the module doc comment above. */
+/** Runs a `!` shell command on a session's machine. */
+export function runShellCommand(id: string, command: string): Promise<void> {
+  const body: JsonBody<"flyco_api::app::run_shell"> = { command };
+  return requestVoid("POST", `/v1/sessions/${id}/shell`, { json: body });
+}
+
+/** Writes raw input to a session's web terminal. */
+export function sendTerminalInput(id: string, data: string): Promise<void> {
+  const body: JsonBody<"flyco_api::app::terminal_input"> = { data };
+  return requestVoid("POST", `/v1/sessions/${id}/terminal/input`, {
+    json: body,
+  });
+}
+
+/** Reports the web terminal's fitted size. */
+export function resizeSessionTerminal(
+  id: string,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  const body: JsonBody<"flyco_api::app::terminal_resize"> = { cols, rows };
+  return requestVoid("POST", `/v1/sessions/${id}/terminal/resize`, {
+    json: body,
+  });
+}
+
+/** Interrupts a session's current turn; see the module doc comment above. */
 export function interruptSession(id: string): Promise<void> {
   return requestVoid("POST", `/v1/sessions/${id}/interrupt`);
 }
 
-/** REST fallback for compacting session context; see the module doc comment above. */
+/** Compacts session context; see the module doc comment above. */
 export function compactSession(id: string): Promise<void> {
   return requestVoid("POST", `/v1/sessions/${id}/compact`);
 }

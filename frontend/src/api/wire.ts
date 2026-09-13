@@ -1,11 +1,14 @@
 /**
  * The daemon <-> control-plane wire protocol, as seen by a browser.
  *
- * This is hand-typed rather than generated: `flyco_core::wire` is a WebSocket
- * protocol with no OpenAPI schema (see `crates/core/src/wire.rs`). Only
- * `ClientEvent` and the three client-sendable `ControlToDaemon` variants
- * matter here — everything else in that module (`DaemonToControl`, the
- * control-plane-only `ControlToDaemon` variants) never reaches a browser.
+ * This is hand-typed rather than generated: `flyco_core::wire` is the
+ * event vocabulary the SSE stream carries — `SessionEvent` envelopes on
+ * `GET /v1/events`, `StoredEvent.event` on catch-up pages — with no
+ * OpenAPI schema of its own (see `crates/core/src/wire.rs`). Only
+ * `ClientEvent`, the `SessionEvent` envelope, and the client-sendable
+ * `ControlToDaemon` variants matter here — everything else in that module
+ * (`DaemonToControl`, the control-plane-only `ControlToDaemon` variants)
+ * never reaches a browser.
  *
  * Every enum is internally tagged (`type` for events, `kind` for
  * `ApprovalPayload`) with `snake_case` variant names, matching serde's
@@ -204,10 +207,11 @@ export type ClientEvent =
   | { type: "commands"; commands: HarnessCommand[] };
 
 /**
- * The seven `ControlToDaemon` variants a browser may send directly over
- * the relay socket, mirroring `ControlToDaemon::is_client_command()`.
- * Every other command (approval decisions, budget signals, archive, and
- * the identified `run_shell` the room reissues a `shell_command` as) is
+ * The seven `ControlToDaemon` variants a browser may send, mirroring
+ * `ControlToDaemon::is_client_command()` — each reaches the daemon through
+ * its own REST route (see `send()` in `src/api/relay.ts`). Every other
+ * command (approval decisions, budget signals, archive, and the
+ * identified `run_shell` the room reissues a `shell_command` as) is
  * control-plane authority and reaches the daemon only through the room
  * itself or an authenticated REST handler.
  */
@@ -222,7 +226,47 @@ export type ClientCommand =
   | { type: "terminal_resize"; cols: number; rows: number };
 
 /**
- * Parses a raw relay frame — from a live WebSocket message or from a
+ * One event on the per-user stream, as `GET /v1/events` frames it.
+ *
+ * Mirrors `flyco_core::wire::SessionEvent`: the envelope is what tells the
+ * sessions multiplexed onto the one stream apart, and `seq` — the event's
+ * position in its session's recorded history, when it has one — is what a
+ * subscriber checks for a gap the reconnect buffer dropped (live-only
+ * events like `machine_connection` carry `null` and have no position).
+ */
+export interface SessionEvent {
+  /** Session the event belongs to. */
+  session: string;
+  /** Position in that session's recorded history, when it has one. */
+  seq: number | null;
+  /** The event. */
+  event: ClientEvent;
+}
+
+/**
+ * Parses one `data:` payload off the user stream into a {@link SessionEvent}.
+ *
+ * Fails fast like {@link parseClientEvent}: an envelope that is not an
+ * object with a string `session` is a protocol violation, and the nested
+ * `event` gets the same check.
+ */
+export function parseSessionEvent(value: unknown): SessionEvent {
+  if (typeof value !== "object" || value === null || !("session" in value)) {
+    throw new Error(`not a SessionEvent: ${JSON.stringify(value)}`);
+  }
+  const envelope = value as { session: unknown; seq: unknown; event: unknown };
+  if (typeof envelope.session !== "string") {
+    throw new Error(`not a SessionEvent: ${JSON.stringify(value)}`);
+  }
+  return {
+    session: envelope.session,
+    seq: typeof envelope.seq === "number" ? envelope.seq : null,
+    event: parseClientEvent(envelope.event),
+  };
+}
+
+/**
+ * Parses a raw event — from a live `SessionEvent.event` or from a
  * catch-up `StoredEvent.event` (typed `unknown` in the OpenAPI schema,
  * because `ClientEvent` has no schema of its own).
  *

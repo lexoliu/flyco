@@ -332,7 +332,7 @@ async fn dispatch(
     let mut delivered = 0_usize;
     let mut last_failure = None;
     for session in &sessions {
-        match rooms.command(session.id, &command).await {
+        match rooms.command(db, session.id, &command).await {
             Ok(()) => delivered += 1,
             Err(error) => {
                 tracing::warn!(session = %session.id, %error, "a CI failure did not reach its room");

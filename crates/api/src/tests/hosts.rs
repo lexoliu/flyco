@@ -10,10 +10,9 @@ use flyco_core::host::{HOST_TOKEN_PREFIX, JobOutcome};
 use flyco_core::{
     CreateSession, EnrollHost, EnrolledHost, Enrollment, EnrollmentToken, HarnessKind, HostFacts,
     HostId, HostState, HostView, MachineCatalog, MachineState, Problem, ProviderAccountView,
-    ReportJobResult, SessionDetail, SessionId, SessionState, UpdateHost, Usd, UserId,
+    ReportJobResult, SessionDetail, SessionState, UpdateHost, Usd, UserId,
 };
 use flyco_provider::host::{container_name, volume_name};
-use flyco_provider::{ClaudeCredential, DaemonBootstrap, HarnessCredential};
 use skyzen::routing::Router;
 use skyzen::sql;
 use skyzen_services::queue::{QueueBatch, QueueMessage, ReceiveOptions};
@@ -31,26 +30,6 @@ use crate::testing::{
 use crate::{machines, session, sessions};
 
 const REPO: &str = "lexoliu/flyco";
-
-/// A bootstrap for a container job, for the tests that only need a job to
-/// look at.
-pub fn bootstrap() -> DaemonBootstrap {
-    DaemonBootstrap {
-        session: SessionId::generate(),
-        provider: flyco_core::CloudProviderKind::Host,
-        runtime: flyco_core::Runtime::Container,
-        control_plane_url: "https://flyco.test/".to_owned(),
-        daemon_token: "fd_token".to_owned(),
-        permission_mode: flyco_core::PermissionMode::Auto,
-        auth: HarnessCredential::ClaudeCode(ClaudeCredential::Inherit),
-        repo: flyco_provider::testing::checkout(),
-        machine_origin: flyco_core::MachineOrigin::Auto,
-        machine: flyco_provider::testing::session_machine(),
-        resume_session_id: None,
-        model: flyco_provider::testing::session_model(),
-        mcp_servers: Vec::new(),
-    }
-}
 
 // ── Enrollment ──
 
@@ -261,18 +240,20 @@ async fn an_enrolled_machine_is_a_provider_account_offering_itself(
     assert_eq!(catalog[0].lineage, Some(host_facts().lineage()));
 }
 
-/// Opens the machine's relay, which natively is refused *after* it has been
-/// authenticated — which is exactly the half this asserts.
+/// Attaches the machine to its host room, the call that marks it online.
 async fn connect(client: &TestClient<Router>, host: HostId, token: &str) {
     let response = client
-        .get(&format!("/v1/hosts/{host}/relay"))
+        .post(&format!("/v1/hosts/{host}/relay/attach"))
         .bearer(token)
+        .json(&flyco_provider::host::HostAttach {
+            facts: Box::new(host_facts()),
+        })
         .send()
         .await;
     assert_eq!(
         response.status(),
-        501,
-        "a native control plane authenticates the upgrade and then refuses the socket"
+        200,
+        "an enrolled machine attaches to its room with its own token"
     );
 }
 
@@ -293,13 +274,16 @@ async fn a_machine_that_presents_the_wrong_token_reaches_no_room(ctx: TestContex
 
     for presented in ["fh_another-machines-token", "fd_a-daemon-token", ""] {
         let response = client
-            .get(&format!("/v1/hosts/{}/relay", enrolled.host_id))
+            .post(&format!("/v1/hosts/{}/relay/attach", enrolled.host_id))
             .bearer(presented)
+            .json(&flyco_provider::host::HostAttach {
+                facts: Box::new(host_facts()),
+            })
             .send()
             .await;
         assert!(
             response.status() == 401,
-            "presenting `{presented}` opened a socket"
+            "presenting `{presented}` reached the room"
         );
     }
     assert_eq!(state_of(&db, enrolled.host_id).await, HostState::Offline);
@@ -516,8 +500,8 @@ async fn a_session_on_a_machine_you_own_becomes_a_container_job(
     let session = open(&client, &caller).await.summary.id;
     run_queue(&db, &kv, &queue, &hosts).await;
 
-    // The job is in the machine's room, durably, whether or not the socket
-    // happened to be up at that instant.
+    // The job is in the machine's room, durably, whether or not the
+    // machine happened to be attached at that instant.
     let status = hosts.status(caller.host).await.expect("read the host room");
     assert_eq!(status.pending_jobs, 1);
 
@@ -824,7 +808,7 @@ async fn a_machine_that_is_not_connected_refuses_the_operations_a_user_watches(
     let session = open(&client, &caller).await.summary.id;
     run_queue(&db, &kv, &queue, &hosts).await;
 
-    // Nothing holds a socket in a native control plane, so the room reports
+    // Nothing attaches in a native control plane, so the room reports
     // exactly what a machine that was unplugged reports.
     let response = client
         .post(&format!("/v1/sessions/{session}/machine/stop"))

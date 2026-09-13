@@ -1,6 +1,6 @@
 //! What the machine says about itself.
 //!
-//! Reported at enrollment and again on every `Hello`, because the facts
+//! Reported at enrollment and again on every attach, because the facts
 //! change: memory is added, a disk fills, Podman is upgraded. The control
 //! plane schedules against them and has no other way to learn them — nothing
 //! at flyco can reach this machine to look.

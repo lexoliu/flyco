@@ -6,6 +6,8 @@ import styles from "./TerminalPanel.module.css";
 export interface TerminalPanelImplProps {
   sessionId: string;
   relay: SessionRelay;
+  /** Where a refused keystroke or resize is reported; the page owns the banner. */
+  onError: (failure: unknown) => void;
 }
 
 /**
@@ -60,14 +62,22 @@ export default function TerminalPanelImpl(props: TerminalPanelImplProps) {
         if (props.relay.state() !== "live") {
           return;
         }
-        props.relay.send({ type: "terminal_input", data });
+        // A lost keystroke is its own notice — the echo never comes — and
+        // the refusal is reported rather than swallowed: a `terminal_input`
+        // that the room turned away needs no retry, but the user is owed
+        // the fact that it never landed.
+        void props.relay
+          .send({ type: "terminal_input", data })
+          .catch(props.onError);
       });
 
       function tellSize(): void {
         if (props.relay.state() !== "live") {
           return;
         }
-        props.relay.send({ type: "terminal_resize", cols: term.cols, rows: term.rows });
+        void props.relay
+          .send({ type: "terminal_resize", cols: term.cols, rows: term.rows })
+          .catch(props.onError);
       }
       const resizeSubscription = term.onResize(tellSize);
       fit.fit();

@@ -15,9 +15,9 @@
 //! - [`config`] — the daemon's TOML configuration.
 //! - [`harness`] — the harness abstraction, the Claude Code driver
 //!   (Bun sidecar / Agent SDK), and the Codex driver (`codex app-server`).
-//! - [`control`] — the control-plane connection: the relay WebSocket, the
-//!   REST client behind it, and the transcript store that makes a session
-//!   resumable onto any machine.
+//! - [`control`] — the control-plane connection: the relay's command
+//!   stream and frame posts, the REST client beside them, and the
+//!   transcript store that makes a session resumable onto any machine.
 //! - [`repl`] — a line-oriented stand-in for the control plane, used to
 //!   drive and verify a session from a terminal.
 //! - [`terminal`] — a PTY-backed `fish` shell relayed to the browser.

@@ -3,13 +3,13 @@
 //! # What this is, and what it is not
 //!
 //! In the shipped execution plane, flycod's session loop is driven by the
-//! control plane: one outbound WebSocket to the session's Durable Object,
-//! carrying [`flyco_core::wire::ControlToDaemon`] in and
-//! [`flyco_core::wire::DaemonToControl`] out. That client lands in M3b.
+//! control plane: an SSE command stream from the session's Durable Object
+//! carrying [`flyco_core::wire::ControlToDaemon`] in, and `POST`ed batches
+//! carrying [`flyco_core::wire::DaemonToControl`] out.
 //!
 //! This REPL is the M3a stand-in for it: the same
 //! [`crate::harness::HarnessSession`] surface, driven from stdin instead of
-//! from a socket, emitting the same [`SessionOutput`] values as JSON lines
+//! from a control plane, emitting the same [`SessionOutput`] values as JSON lines
 //! on stdout instead of as wire frames. It is how a Claude Code session is
 //! verified end to end before there is a control plane to verify it
 //! against, and it stays afterwards as the dev tool for reproducing a

@@ -71,6 +71,8 @@ export interface SessionDrawerProps {
    * would set an unchanged signal and see nothing happen.
    */
   openEnv?: number | undefined;
+  /** Where a pane reports what it could not deliver; the page owns the banner. */
+  onError: (failure: unknown) => void;
 }
 
 export default function SessionDrawer(props: SessionDrawerProps) {
@@ -168,7 +170,11 @@ export default function SessionDrawer(props: SessionDrawerProps) {
           <div class={styles.body} role="tabpanel">
             <Switch>
               <Match when={tab() === "terminal"}>
-                <TerminalPanel sessionId={props.sessionId} relay={props.relay} />
+                <TerminalPanel
+                  sessionId={props.sessionId}
+                  relay={props.relay}
+                  onError={props.onError}
+                />
               </Match>
               <Match when={tab() === "files"}>
                 <FilesPanel sessionId={props.sessionId} />

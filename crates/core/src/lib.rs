@@ -90,9 +90,9 @@ pub use session::{
     ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, HarnessSessionView,
     InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS,
     PROVISION_DEADLINE_SECS, PausedReason, SendMessage, SessionActivity, SessionDetail,
-    SessionState, SessionSummary, SessionTransitionError, TurnPage, TurnSummary,
-    USAGE_LIMIT_CONTINUE_MESSAGE, USAGE_LIMIT_STOP_AFTER_SECS, USAGE_LIMIT_WAKE_LEAD_SECS,
-    UpdateSession, UsageLimitPause, excerpt,
+    RunShell, SessionState, SessionSummary, SessionTransitionError, TerminalInput, TerminalSize,
+    TurnPage, TurnSummary, USAGE_LIMIT_CONTINUE_MESSAGE, USAGE_LIMIT_STOP_AFTER_SECS,
+    USAGE_LIMIT_WAKE_LEAD_SECS, UpdateSession, UsageLimitPause, excerpt,
 };
 pub use skills::{SkillScope, SkillView};
 pub use usage::{
@@ -116,4 +116,4 @@ pub use workdir::{
 /// Bumped on every incompatible change to [`wire`]; the control plane
 /// refuses daemons speaking a different version (fast fail, no
 /// best-effort compatibility).
-pub const WIRE_PROTOCOL_VERSION: u32 = 15;
+pub const WIRE_PROTOCOL_VERSION: u32 = 16;

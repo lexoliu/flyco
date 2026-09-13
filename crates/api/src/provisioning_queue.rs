@@ -1275,6 +1275,7 @@ async fn recover(
     .map_err(|error| Provisioned::Failed(format!("the reclaim notice did not render: {error}")))?;
     if let Err(error) = rooms
         .command(
+            db,
             session,
             &ControlToDaemon::UserMessage {
                 text: notice.trim_end().to_owned(),
@@ -1454,6 +1455,7 @@ async fn announce(db: &Db, rooms: &Rooms, session: SessionId, stage: Provisionin
     }
     if let Err(error) = rooms
         .broadcast(
+            db,
             session,
             &ClientEvent::ProvisioningStage {
                 stage,

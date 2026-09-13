@@ -799,6 +799,7 @@ pub async fn fail(db: &Db, rooms: &Rooms, id: SessionId, reason: &str) -> Result
     // failure, so it is logged rather than returned.
     if let Err(error) = rooms
         .broadcast(
+            db,
             id,
             &ClientEvent::SessionStateChanged {
                 state: SessionState::Failed,
@@ -1082,14 +1083,14 @@ pub async fn harness_session(db: &Db, id: SessionId) -> Result<HarnessSessionVie
 ///
 /// A session goes live when its daemon greets the control plane, not when a
 /// provider's API call returns: a machine that exists is not an agent that
-/// is ready. The greeting itself is a `Hello` frame validated inside the
-/// session's room — and a Durable Object cannot reach D1, so the durable
-/// half of it happens here, in the Worker, on the very upgrade the daemon
-/// sends that frame down.
+/// is ready. The greeting itself is the attach the session's room
+/// validates — and a Durable Object cannot reach D1, so the durable half
+/// of it happens here, in the Worker, on the very request the daemon
+/// attaches with.
 ///
 /// Silently a no-op for a session that is already past provisioning: a
-/// daemon reconnects after every eviction, every redeploy and every dropped
-/// socket, and none of those is a lifecycle event.
+/// daemon re-attaches after every eviction, every redeploy and every
+/// dropped stream, and none of those is a lifecycle event.
 ///
 /// # Errors
 ///
@@ -1121,6 +1122,7 @@ pub async fn daemon_arrived(db: &Db, rooms: &Rooms, id: SessionId) -> Result<(),
         // that cannot be reached costs a watcher a live update.
         if let Err(error) = rooms
             .broadcast(
+                db,
                 id,
                 &ClientEvent::SessionStateChanged {
                     state: SessionState::Active,

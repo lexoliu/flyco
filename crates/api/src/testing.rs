@@ -27,7 +27,7 @@ use crate::microsoft::{
 use crate::openai::{
     self, CodexClient, CodexOauth, DeviceAuth, DeviceCode, DevicePoll, OpenAiError,
 };
-use crate::rooms::{HostRooms, NativeHostRooms, NativeRooms, Rooms};
+use crate::rooms::{HostRooms, NativeHostRooms, NativeRooms, NativeUserStreams, Rooms};
 use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
@@ -146,7 +146,7 @@ pub fn test_config() -> ApiConfig {
 /// namespace between tests would share its event streams too.
 #[must_use]
 pub fn test_rooms() -> Rooms {
-    Rooms::from_native(NativeRooms::new())
+    Rooms::from_native(NativeRooms::new(), NativeUserStreams::new())
 }
 
 /// Host rooms backed by skyzen's in-process simulator.

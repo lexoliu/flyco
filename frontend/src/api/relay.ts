@@ -1,60 +1,71 @@
 /**
- * The live session view's WebSocket manager.
+ * The live session view's event pipe.
  *
- * Protocol notes (see docs/ARCHITECTURE.md's "Session relay" section):
+ * The transport is one per-user SSE stream (`GET /v1/events`, owned by
+ * `src/api/events.ts`) plus ordinary REST for client→server commands —
+ * there is no socket. This module is the session-shaped view over that:
+ * a relay follows one session's envelopes off the shared stream, runs
+ * `GET /v1/sessions/{id}/events?after=` catch-up for the recorded past,
+ * and sends the composer's commands through each one's REST route.
  *
- * - Browser auth is a single-use 60-second relay ticket
- *   (`POST /v1/sessions/{id}/relay-ticket`), presented as `?ticket=` on the
- *   socket URL — browsers cannot set headers on a WebSocket handshake, so a
- *   fresh ticket is minted on every connect and every reconnect.
- * - Catch-up (`GET /v1/sessions/{id}/events?after=<seq>`) replays recorded
- *   history; only `Harness`-kind events are ever persisted with a `seq`,
- *   everything else is live-only. Live frames carry no `seq` at all.
- * - Reconnection is capped exponential backoff with full jitter (1s→60s),
- *   and re-sends `Hello` on the daemon's side; from a browser's side that
- *   means re-running catch-up and minting a fresh ticket every time.
+ * Catch-up and live delivery are two independent paths to the same fact,
+ * so [`EventStream`] dedupes between them:
  *
- * Two dedup problems fall out of that shape, both handled by [`EventStream`]:
- *
- * 1. A reconnect's catch-up call can return a `Harness` event that was
- *    already shown live, moments before the socket dropped — the seq log
- *    and the live broadcast are two independent deliveries of the same
- *    fact. Guarded by a bounded ring buffer of the *live* frames'
- *    canonicalized JSON — {@link canonicalKey}, which sorts object keys.
- *    Comparing the two deliveries byte for byte does not work: a live
- *    frame is `serde_json` output of the event struct, with its `type` tag
- *    first, while a catch-up row is read back into a `serde_json::Value`
- *    and re-serialized out of a `BTreeMap`, so its keys come back in
- *    alphabetical order. Nothing ever matched, and every event was rendered
- *    twice: a doubled answer, and a phantom tool row that never finished.
- *    The buffer is bounded, not unbounded: a
- *    burst of more than [`RECENT_WINDOW`] live events between two
- *    reconnects could in principle scroll a duplicate back into view. That
- *    trade-off (bounded memory vs. perfect dedup over an unbounded gap) is
+ * 1. A reconnect's catch-up call can return an event that was already
+ *    shown live, moments before the stream dropped — the seq log and the
+ *    live broadcast are two deliveries of the same fact. Sequenced
+ *    envelopes carry their position (`SessionEvent.seq`), so a live frame
+ *    at or below the catch-up cursor is skipped outright. The cursor
+ *    cannot do the other direction: a live frame arrives ahead of the
+ *    catch-up page that records it, so live frames are also remembered by
+ *    canonicalized content key ({@link canonicalKey}, which sorts object
+ *    keys) and catch-up rows check against that. Comparing the two
+ *    deliveries byte for byte does not work: a live envelope is
+ *    `serde_json` output of the event struct, with its `type` tag first,
+ *    while a catch-up row is read back into a `serde_json::Value` and
+ *    re-serialized out of a `BTreeMap`, so its keys come back in
+ *    alphabetical order. The buffer is bounded, not unbounded: a burst of
+ *    more than [`RECENT_WINDOW`] live events between two reconnects could
+ *    in principle scroll a duplicate back into view. That trade-off
+ *    (bounded memory vs. perfect dedup over an unbounded gap) is
  *    deliberate; widen the window if it is ever observed in practice.
  *
  *    The dedup is deliberately one-directional. Catch-up rows are checked
  *    against live frames only — two stored rows with identical content are
  *    two events (each took its own `seq`), so a transcript that twice
  *    printed `**` replays both. And a live frame is never compared against
- *    anything: the room broadcasts each fact to a subscribed socket exactly
- *    once, so an identical live payload is a *new* occurrence — a second
- *    identical `assistant_delta` is real output, and a repeated
+ *    anything except the cursor: the room emits each fact to the stream
+ *    exactly once, so an identical live payload is a *new* occurrence — a
+ *    second identical `assistant_delta` is real output, and a repeated
  *    `machine_connection` is a real transition. Treating live content
  *    equality as duplication ate stream chunks whole.
  * 2. Anything that lands on the server between the last catch-up page and
- *    the socket actually being subscribed — including the time spent
- *    minting a ticket and completing the handshake — would otherwise be
- *    missed outright. [`createSessionRelay`] closes that window by running
- *    catch-up a second time the moment the socket reports `open`, from
- *    wherever the cursor is; the same dedup guard keeps that second pass
- *    from re-showing anything the first pass (or a live frame that beat it)
- *    already rendered.
+ *    the stream actually delivering would otherwise be missed outright.
+ *    [`createSessionRelay`] closes that window by running catch-up every
+ *    time the stream reports `live` — the first open and every reconnect
+ *    alike, which is also what heals a gap the reconnect buffer swept.
  */
 import { createSignal, type Accessor } from "solid-js";
-import { createRelayTicket, getSessionEvents, apiWebSocketUrl, type StoredEvent } from "./client";
-import { ApiProblem, NotImplementedError } from "./problem";
-import { parseClientEvent, type ClientCommand, type ClientEvent } from "./wire";
+import {
+  compactSession,
+  contextSession,
+  getSessionEvents,
+  interruptSession,
+  resizeSessionTerminal,
+  runShellCommand,
+  sendMessage,
+  sendTerminalInput,
+  type StoredEvent,
+} from "./client";
+import { userStream, type ConnectionState, type UserStream } from "./events";
+import {
+  parseClientEvent,
+  type ClientCommand,
+  type ClientEvent,
+  type SessionEvent,
+} from "./wire";
+
+export type { ConnectionState } from "./events";
 
 const RECENT_WINDOW = 256;
 
@@ -105,9 +116,9 @@ export type Clock = () => number;
 const systemClock: Clock = () => Math.floor(Date.now() / 1000);
 
 /**
- * Turns catch-up pages and live socket text into a deduplicated, dated
+ * Turns catch-up pages and live envelopes into a deduplicated, dated
  * [`ClientEvent`] sequence. Pure and framework-free, so it is unit-testable
- * without a socket or a fetch mock.
+ * without a stream or a fetch mock.
  */
 export class EventStream {
   private lastSeq: number | null = null;
@@ -151,15 +162,23 @@ export class EventStream {
   }
 
   /**
-   * Feeds one live frame's raw WebSocket text. A live frame is always a new
-   * occurrence — two identical payloads are two events, not a redelivery —
-   * so this never drops a frame. It only records the frame's key, which is
-   * what lets a later catch-up recognise the same fact in the seq log.
+   * Feeds one live envelope off the stream. Returns `null` for a replay —
+   * a sequenced event the record already served (`seq` at or below the
+   * cursor). Everything else is a new occurrence — two identical payloads
+   * are two events, not a redelivery — so it is never dropped on content.
+   * It only records the event's key, which is what lets a later catch-up
+   * recognise the same fact in the seq log.
    */
-  ingestLive(raw: string): TimedEvent {
-    const parsed: unknown = JSON.parse(raw);
-    this.remember(canonicalKey(parsed));
-    return { event: parseClientEvent(parsed), atUnix: this.clock() };
+  ingestLive(envelope: SessionEvent): TimedEvent | null {
+    if (
+      envelope.seq !== null &&
+      this.lastSeq !== null &&
+      envelope.seq <= this.lastSeq
+    ) {
+      return null;
+    }
+    this.remember(canonicalKey(envelope.event));
+    return { event: envelope.event, atUnix: this.clock() };
   }
 
   /** Records `key` as shown live, bounded to [`RECENT_WINDOW`]. */
@@ -171,70 +190,8 @@ export class EventStream {
   }
 }
 
-export interface BackoffOptions {
-  /** Delay for the first retry, before jitter. Default 1000ms. */
-  baseMs?: number;
-  /** The cap the exponential grows toward. Default 60000ms. */
-  maxMs?: number;
-  /** Source of randomness in `[0, 1)`, for deterministic tests. Default `Math.random`. */
-  random?: () => number;
-}
-
-/**
- * Capped exponential backoff with full jitter: `random(0, min(max, base *
- * 2^attempt))`. `attempt` is 0 for the first reconnect.
- */
-export function nextBackoffDelay(attempt: number, options: BackoffOptions = {}): number {
-  const base = options.baseMs ?? 1000;
-  const max = options.maxMs ?? 60_000;
-  const random = options.random ?? Math.random;
-  const cap = Math.min(max, base * 2 ** attempt);
-  return random() * cap;
-}
-
-export type ConnectionState = "connecting" | "live" | "reconnecting" | "failed" | "closed";
-
-/**
- * Statuses that a retry can still get past.
- *
- * `401` is an expired session token, which the next request re-mints; `429`
- * is the control plane asking for a slower client. Every other 4xx is a
- * statement about the request itself — this session does not exist, or it
- * is not this account's — and repeating it cannot change the answer.
- */
-const RETRYABLE_CLIENT_STATUSES: readonly number[] = [401, 429];
-
-/**
- * Whether a failure means "not now" or "not ever".
- *
- * A relay that backs off and retries forever is right about a dropped
- * network, a restarting worker and a 5xx, and wrong about a session that
- * does not exist: the page would spin a `Reconnecting…` pill on a socket
- * that will never open (issue #137). So a 4xx problem document other than
- * the two above stops the relay for good, and so does a
- * [`NotImplementedError`] — a build without the relay does not grow one
- * while the page is open.
- *
- * Everything that is not an [`ApiProblem`] — a [`NetworkError`], an
- * [`UnexpectedResponseError`], a socket that closed — is retried, because
- * none of them is the server saying the request was wrong.
- */
-export function isDefinitiveFailure(error: unknown): boolean {
-  if (!(error instanceof ApiProblem)) {
-    return false;
-  }
-  if (error instanceof NotImplementedError) {
-    return true;
-  }
-  return (
-    error.status >= 400 &&
-    error.status < 500 &&
-    !RETRYABLE_CLIENT_STATUSES.includes(error.status)
-  );
-}
-
 export interface SessionRelay {
-  /** Connection lifecycle: never a silently dead socket. */
+  /** Connection lifecycle: never a silently dead stream. */
   state: Accessor<ConnectionState>;
   /**
    * Why the relay stopped, when it stopped for good; `null` otherwise.
@@ -247,39 +204,38 @@ export interface SessionRelay {
   /** Every event shown so far, oldest first, deduplicated and dated. */
   events: Accessor<TimedEvent[]>;
   /**
-   * Sends a client-initiated command over the live socket. Throws — fast
-   * fail, no silent drop — when the socket is not currently live; the UI
-   * must gate input on `state() === "live"` instead of racing this.
+   * Sends a client-initiated command, each through its own REST route —
+   * `/messages`, `/shell`, `/terminal/input`, `/terminal/resize`,
+   * `/interrupt`, `/compact`, `/context` as the variant names it. The call
+   * does not depend on stream state: the room decides what a daemon that
+   * is away does with it, and the answer arrives back on the stream.
    */
-  send(command: ClientCommand): void;
-  /** Tears the relay down for good: no further reconnects. */
+  send(command: ClientCommand): Promise<void>;
+  /** Tears the relay down for good: no further catch-up, no subscription. */
   dispose(): void;
 }
 
 export interface CreateSessionRelayOptions {
-  /** Injectable WebSocket constructor, for tests. Defaults to `WebSocket`. */
-  webSocketImpl?: typeof WebSocket;
-  backoff?: BackoffOptions;
+  /** The shared stream. Injectable for tests; defaults to the app's. */
+  stream?: UserStream;
 }
 
-const OPEN = 1;
-
 /**
- * Opens (and keeps open) the live relay for one session: catch-up, ticket,
- * socket, reconnect-with-backoff, all driven from Solid signals a component
- * can render directly.
+ * Follows one session on the shared stream: catch-up, envelopes demuxed
+ * by session, REST for commands — all driven from Solid signals a
+ * component can render directly.
  */
-export function createSessionRelay(sessionId: string, options: CreateSessionRelayOptions = {}): SessionRelay {
-  const WebSocketImpl = options.webSocketImpl ?? WebSocket;
+export function createSessionRelay(
+  sessionId: string,
+  options: CreateSessionRelayOptions = {},
+): SessionRelay {
   const [state, setState] = createSignal<ConnectionState>("connecting");
   const [failure, setFailure] = createSignal<unknown>(null);
   const [events, setEvents] = createSignal<TimedEvent[]>([]);
   const stream = new EventStream();
+  const user = options.stream ?? userStream();
 
-  let socket: WebSocket | null = null;
-  let attempt = 0;
   let disposed = false;
-  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
   function pushEvent(event: TimedEvent): void {
     setEvents((prev) => [...prev, event]);
@@ -296,105 +252,67 @@ export function createSessionRelay(sessionId: string, options: CreateSessionRela
     }
   }
 
-  /**
-   * What a failed connect attempt does next: back off, or stop.
-   *
-   * The one place the two outcomes are decided, so a failure raised by the
-   * first catch-up, by the ticket, or by the catch-up the socket's `open`
-   * handler fires is treated identically.
-   */
   function onFailure(error: unknown): void {
     if (disposed) {
       return;
     }
-    if (!isDefinitiveFailure(error)) {
-      scheduleReconnect();
-      return;
-    }
-    socket?.close();
-    socket = null;
     setFailure(error);
     setState("failed");
   }
 
-  function scheduleReconnect(): void {
-    if (disposed) {
-      return;
-    }
-    socket = null;
-    setState("reconnecting");
-    const delay = nextBackoffDelay(attempt, options.backoff);
-    attempt += 1;
-    reconnectTimer = setTimeout(() => {
-      void connect();
-    }, delay);
-  }
-
-  async function connect(): Promise<void> {
-    if (disposed) {
-      return;
-    }
-    setState(attempt === 0 ? "connecting" : "reconnecting");
-    try {
-      await catchUp();
-      if (disposed) {
+  const unsubscribe = user.subscribe(sessionId, {
+    event(envelope) {
+      const timed = stream.ingestLive(envelope);
+      if (timed !== null) {
+        pushEvent(timed);
+      }
+    },
+    state(next) {
+      if (next === "live") {
+        // Every open — the first and every reconnect — closes the window
+        // between the last catch-up page and the stream's delivery, and
+        // heals whatever the reconnect buffer swept while we were away.
+        catchUp()
+          .then(() => {
+            if (!disposed) {
+              setState("live");
+            }
+          })
+          .catch(onFailure);
         return;
       }
-      const ticket = await createRelayTicket(sessionId);
-      if (disposed) {
-        return;
-      }
-      const url = apiWebSocketUrl(`/v1/sessions/${sessionId}/relay/client`);
-      url.searchParams.set("ticket", ticket.ticket);
-      const ws = new WebSocketImpl(url.toString());
-      socket = ws;
+      setState(next);
+    },
+    failed: onFailure,
+  });
 
-      ws.addEventListener("open", () => {
-        attempt = 0;
-        setState("live");
-        // Closes the gap between the catch-up page just above and the
-        // socket actually being subscribed: anything that landed on the
-        // server during ticket-minting and the handshake is otherwise
-        // never seen. ingestCatchUp's dedup keeps this from re-showing
-        // anything a live frame already rendered in the meantime.
-        catchUp().catch(onFailure);
-      });
-      ws.addEventListener("message", (message) => {
-        if (typeof message.data !== "string") {
-          throw new Error("relay socket sent a non-text frame");
-        }
-        pushEvent(stream.ingestLive(message.data));
-      });
-      ws.addEventListener("close", () => {
-        // A socket that closes after a definitive failure has already been
-        // accounted for; reconnecting here would undo the stop.
-        if (state() !== "failed") {
-          scheduleReconnect();
-        }
-      });
-    } catch (error) {
-      onFailure(error);
-    }
-  }
+  // The recorded past renders whether or not the stream has opened yet.
+  catchUp().catch(onFailure);
 
-  function send(command: ClientCommand): void {
-    if (socket === null || socket.readyState !== OPEN) {
-      throw new Error("cannot send on the relay: the socket is not live");
+  async function send(command: ClientCommand): Promise<void> {
+    switch (command.type) {
+      case "user_message":
+        return sendMessage(sessionId, command.text);
+      case "shell_command":
+        return runShellCommand(sessionId, command.command);
+      case "terminal_input":
+        return sendTerminalInput(sessionId, command.data);
+      case "terminal_resize":
+        return resizeSessionTerminal(sessionId, command.cols, command.rows);
+      case "interrupt":
+        return interruptSession(sessionId);
+      case "compact":
+        return compactSession(sessionId);
+      case "context_usage":
+        return contextSession(sessionId);
     }
-    socket.send(JSON.stringify(command));
   }
 
   function dispose(): void {
     disposed = true;
-    if (reconnectTimer !== undefined) {
-      clearTimeout(reconnectTimer);
-    }
-    socket?.close();
-    socket = null;
+    unsubscribe();
     setState("closed");
   }
-
-  void connect();
 
   return { state, failure, events, send, dispose };
 }

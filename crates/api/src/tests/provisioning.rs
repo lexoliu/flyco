@@ -3,7 +3,7 @@
 //! Driven against an enrolled host, which is the machine flyco can exercise
 //! without a cloud account: a "machine" is a podman container on hardware
 //! the user owns, and the only thing standing between this test and a real
-//! one is the socket that machine holds. The provisioner below plans with
+//! one is the attachment that machine holds. The provisioner below plans with
 //! the *real* [`Host`] planner and answers where the room would be, so every
 //! container name, every bootstrap and every retry decision is the deployed
 //! one. No cloud call, no cloud resource, no credentials that could be live.
@@ -74,7 +74,8 @@ enum Answer {
     Slow,
 }
 
-/// The real planner, over a room that answers instead of holding a socket.
+/// The real planner, over a room that answers instead of holding an
+/// attachment.
 ///
 /// Counts the provisions it was actually asked for — which is what "a
 /// redelivered job does not provision twice" is an assertion about — and
@@ -534,14 +535,17 @@ async fn a_created_session_gets_the_machine_it_asked_for(
     token.assert_status(200);
     let token: flyco_core::DaemonToken = token.json();
 
-    // Natively the upgrade itself is refused — there is no path that carries
-    // a socket into a room off the Worker — but the credential check and the
-    // lifecycle move both run first, which is the half this asserts.
-    client
-        .get(&format!("/v1/sessions/{session}/relay/daemon"))
+    // The daemon's attach is the lifecycle move: it authenticates the
+    // `fd_` token, mints the room's epoch, and reports the session live.
+    let attached = client
+        .post(&format!("/v1/sessions/{session}/relay/attach"))
         .bearer(&token.token)
+        .json(&flyco_core::wire::DaemonAttach {
+            protocol_version: flyco_core::WIRE_PROTOCOL_VERSION,
+        })
         .send()
         .await;
+    attached.assert_status(200);
 
     let live = read(&client, &caller, session).await;
     assert_eq!(live.summary.state, SessionState::Active);
@@ -2034,8 +2038,8 @@ async fn a_session_going_live_tells_the_room_it_did(
         "the room is told the session went live"
     );
 
-    // A daemon reconnects after every eviction, redeploy and dropped
-    // socket, and none of those is a lifecycle event to announce again.
+    // A daemon re-attaches after every eviction, redeploy and dropped
+    // stream, and none of those is a lifecycle event to announce again.
     let after_first = recorded(&rooms, session).await.len();
     sessions::daemon_arrived(&db, &rooms, session)
         .await

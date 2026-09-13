@@ -165,11 +165,15 @@ async fn observed_costs_sum_over_the_window(ctx: TestContext, kv: Kv, db: Db) {
     )
     .await;
 
+    // The server states the window as of when it answered, so the only
+    // honest assertion brackets it: a wall-clock second may tick between
+    // this read and the one the handler made.
+    let earliest = now_unix() - OBSERVATION_WINDOW_SECONDS;
     let rows = panel(&client, &token).await;
+    let latest = now_unix() - OBSERVATION_WINDOW_SECONDS;
     assert_eq!(rows[0].observed_cost, Some(Usd::from_micros(1_750_000)));
-    assert_eq!(
-        rows[0].period_start_unix,
-        now_unix() - OBSERVATION_WINDOW_SECONDS,
+    assert!(
+        (earliest..=latest).contains(&rows[0].period_start_unix),
         "the panel states the window it summed"
     );
 }

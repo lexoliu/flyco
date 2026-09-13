@@ -34,7 +34,7 @@ import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./SessionHeader.module.css";
 
 /**
- * What a socket that is not carrying events is called.
+ * What a stream that is not carrying events is called.
  *
  * Only the unhappy states have a label. A live relay says nothing: "Live"
  * on a working page is chrome telling the user what they can already see,
@@ -54,7 +54,7 @@ export interface SessionHeaderProps {
   session: SessionDetail | undefined;
   /** The id, for the `Copy session id` action; never shown as a title. */
   sessionId: string;
-  /** The relay socket's state, shown only while it is not carrying events. */
+  /** The event stream's state, shown only while it is not carrying events. */
   connection: ConnectionState;
   /** The machine, for the menu's start/stop and its footer line. */
   machine: MachineView | undefined;
@@ -168,7 +168,7 @@ export default function SessionHeader(props: SessionHeaderProps) {
         {/*
           The one readout the header keeps, and only while it is bad news:
           a page that has gone quiet owes the reader the reason, and the
-          socket is the one fact nothing else on the page can show.
+          stream is the one fact nothing else on the page can show.
         */}
         <Show when={CONNECTION_LABEL[props.connection]}>
           {(label) => <span class={styles.connection}>{label()}</span>}

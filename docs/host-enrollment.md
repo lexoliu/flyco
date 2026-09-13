@@ -8,14 +8,14 @@ no TCP sockets, and `ProviderCredentials::ByoSsh` provisioning is
 ## Shape
 
 A user-owned Linux machine is **enrolled**, not dialled. The host runs
-`flycod host` as a systemd unit, keeps one outbound WebSocket to the
-control plane, and executes container jobs the control plane sends it. The
-control plane never opens a connection to the host. This is the shape of
-GitHub self-hosted runners and Tailscale nodes, and it is the only shape a
-Worker can drive.
+`flycod host` as a systemd unit, attaches to the control plane over REST,
+holds one outbound SSE command stream, and executes the container jobs it
+receives. The control plane never opens a connection to the host. This is
+the shape of GitHub self-hosted runners and Tailscale nodes, and it is the
+only shape a Worker can drive.
 
 ```
-browser ── REST ──▶ Worker ──▶ HostRoom (DO) ◀── outbound WS ── flycod host ── podman ── session container ── flycod (session) ── outbound WS ──▶ SessionRoom (DO)
+browser ── REST ──▶ Worker ──▶ HostRoom (DO) ◀── REST attach + SSE commands + REST frames ── flycod host ── podman ── session container ── flycod (session) ── REST + SSE ──▶ SessionRoom (DO)
 ```
 
 Two daemons, one binary: `flycod host` manages containers on the host;
@@ -37,14 +37,16 @@ from.
    version, kernel, hostname — and receives `{ host_id, host_token: "fh_…" }`.
    The host token is long-lived, hashed at rest, rotated on demand, and
    stored root-only on the host. The enrollment token is spent.
-4. The unit starts `flycod host run`, which opens the outbound WebSocket to
-   `/v1/hosts/{id}/relay` (hibernating, tag `host`) and reports
-   `HostToControl::Hello { facts }`. It heartbeats every **60 seconds**
-   thereafter: a hibernating socket nobody writes to is indistinguishable
-   from a machine that was unplugged, and a minute is short enough that a
-   host which lost power reads as offline before anybody is scheduled onto
-   it. The wizard, polling `GET /v1/hosts/enrollment-tokens/{id}`, flips
-   from "waiting for the machine…" to the compute card.
+4. The unit starts `flycod host run`, which posts
+   `POST /v1/hosts/{id}/relay/attach` with `HostAttach { facts }` and holds
+   the SSE command stream the attach opens (`GET …/relay/commands?epoch=N`),
+   reporting outcomes with `POST …/relay/frames`. The room pings the stream
+   on an interval: a flow nobody writes to is indistinguishable from a
+   machine that was unplugged, and a host that has heard nothing abandons
+   the stream and attaches again rather than trusting a flow it cannot
+   prove is alive. The wizard, polling
+   `GET /v1/hosts/enrollment-tokens/{id}`, flips from "waiting for the
+   machine…" to the compute card.
 
 ## Data model
 
@@ -68,8 +70,8 @@ from.
 `ProvisioningJob` already carries a typed machine spec. For a host
 session the Worker plans a `ContainerJob` — the planner in
 `flyco_provider::byo_ssh` moves to `flyco_provider::host` unchanged — and
-posts it to the `HostRoom` Durable Object, which forwards it down the host
-socket as `ControlToHost::Run(ContainerJob)`. `flycod host` executes it
+posts it to the `HostRoom` Durable Object, which holds it in the mailbox
+the host's command stream drains as `ControlToHost::Run(ContainerJob)`. `flycod host` executes it
 with Podman (the `SshExecutor` becomes a `LocalExecutor` running the same
 rendered script), and answers `HostToControl::JobResult`. The session
 container gets the usual `DaemonBootstrap`, so the session daemon inside it
@@ -84,8 +86,8 @@ eviction watcher is disabled.
 
 ## Lifecycle and failure
 
-- A host whose socket drops is `offline`; sessions on it show
-  `Interrupted · host offline` and resume when it reconnects (the container
+- A host whose attachment lapses is `offline`; sessions on it show
+  `Interrupted · host offline` and resume when it reattaches (the container
   is still there). After a week offline the sessions auto-archive like any
   other.
 - `DELETE /v1/hosts/{id}` drains: refuses while sessions are active unless

@@ -44,14 +44,10 @@ import Transcript, { ProvisioningTimeline } from "../components/Transcript";
 import composerStyles from "../components/Composer.module.css";
 import {
   archiveSession,
-  compactSession,
-  contextSession,
   decideApproval,
   getSession,
   getSessionMachine,
-  interruptSession,
   resumeSession,
-  sendMessage,
   startSessionMachine,
   stopSessionMachine,
   updateSession,
@@ -545,28 +541,7 @@ export default function SessionDetail() {
   }
 
   /**
-   * Prefers the relay socket whenever it is live — lower latency, and the
-   * echo comes back as an event on the same connection — and falls back to
-   * the REST handler while it is not (a paused session, a stopped machine,
-   * a reconnect in progress), so a message is recorded rather than
-   * silently dropped. See `sendMessage`/`interruptSession` in
-   * src/api/client.ts.
-   */
-  async function overRelay(live: () => void, rest: () => Promise<void>): Promise<void> {
-    await attempt(async () => {
-      if (relay.state() === "live") {
-        live();
-      } else {
-        await rest();
-      }
-    });
-  }
-
-  /**
    * Runs one control, showing whatever it throws instead of losing it.
-   *
-   * Split out of {@link overRelay} for the one control that must not take
-   * the socket even when the socket is there: see {@link onSend}.
    */
   async function attempt(action: () => Promise<void>): Promise<void> {
     setError(null);
@@ -581,31 +556,19 @@ export default function SessionDetail() {
    * Sends what was typed to whichever of the two it was addressed to.
    *
    * A message beginning with `!` is for the machine's bash, not for the
-   * agent (docs/ux.md §9.3), and it has no REST door: a user message that
-   * misses the socket is conversation and waits in the room's mailbox, but
-   * a shell command recorded now and run whenever the daemon comes back
-   * would run against a working tree the user is no longer looking at. So
-   * the relay has to be live, and the composer says so when it is not
-   * rather than swallowing the command.
+   * agent (docs/ux.md §9.3). A user message always goes — the room's
+   * command log holds it for a daemon that is away or a machine still
+   * being built, and the `/messages` handler holds it against a plan
+   * window's wait (docs/ux.md §9.8) — but a shell command recorded now and
+   * run whenever the daemon comes back would run against a working tree
+   * the user is no longer looking at. So `!` asks that the stream be
+   * live, and the composer says so when it is not rather than swallowing
+   * the command.
    */
   function onSend(text: string): void {
     const command = shellCommandIn(text);
     if (command === null) {
-      // A session waiting out a plan window goes the REST way even with a
-      // live socket. The room hands a message straight to the daemon, whose
-      // harness would refuse it and burn the turn; the handler holds it
-      // against the pause instead and sends it when the window turns over
-      // (docs/ux.md §9.8). The socket is still open the whole time — a
-      // pause that kept its machine keeps its relay — so "is it live" is
-      // the wrong question here and this is asked first.
-      if (status()?.status === "usage_limit") {
-        void attempt(() => sendMessage(params.id, text));
-        return;
-      }
-      void overRelay(
-        () => relay.send({ type: "user_message", text }),
-        () => sendMessage(params.id, text),
-      );
+      void attempt(() => relay.send({ type: "user_message", text }));
       return;
     }
     setError(null);
@@ -613,18 +576,11 @@ export default function SessionDetail() {
       setError(new Error("Reconnecting to the session — a shell command needs a live connection."));
       return;
     }
-    try {
-      relay.send({ type: "shell_command", command });
-    } catch (failure) {
-      setError(failure);
-    }
+    void attempt(() => relay.send({ type: "shell_command", command }));
   }
 
   function onStop(): void {
-    void overRelay(
-      () => relay.send({ type: "interrupt" }),
-      () => interruptSession(params.id),
-    );
+    void attempt(() => relay.send({ type: "interrupt" }));
   }
 
   /**
@@ -633,23 +589,17 @@ export default function SessionDetail() {
    * The usage panel's "detailed breakdown" is the only caller — there is
    * no `/context` in the palette; the ring is the door (docs/ux.md §9.3).
    * The question goes to the daemon, never to the model, and its answer
-   * comes back on the relay as a `context_usage` event, which
+   * comes back on the stream as a `context_usage` event, which
    * `latestContextUsage` picks up for the panel.
    */
   function requestContextBreakdown(): void {
-    void overRelay(
-      () => relay.send({ type: "context_usage" }),
-      () => contextSession(params.id),
-    );
+    void attempt(() => relay.send({ type: "context_usage" }));
   }
 
   function onCommand(command: SessionCommand): void {
     switch (command) {
       case "compact":
-        void overRelay(
-          () => relay.send({ type: "compact" }),
-          () => compactSession(params.id),
-        );
+        void attempt(() => relay.send({ type: "compact" }));
         break;
       case "archive":
         void onArchive(false);
@@ -1258,6 +1208,7 @@ export default function SessionDetail() {
           open={drawerOpen()}
           onOpenChange={setDrawerOpen}
           openEnv={envPanelAt()}
+          onError={setError}
         />
       </div>
     </section>

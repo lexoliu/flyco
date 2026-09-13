@@ -21,8 +21,8 @@ pub enum CloudProviderKind {
     /// running sessions as Podman containers.
     ///
     /// Not a cloud at all: flyco opens no connection to it. The machine's
-    /// own `flycod host` holds an outbound socket and executes the container
-    /// work the control plane sends down it — see [`crate::host`].
+    /// own `flycod host` holds an outbound attachment and executes the
+    /// container work the control plane sends down it — see [`crate::host`].
     Host,
 }
 

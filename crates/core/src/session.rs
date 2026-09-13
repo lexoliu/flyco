@@ -730,6 +730,32 @@ pub struct SendMessage {
     pub text: String,
 }
 
+/// Request body of `POST /v1/sessions/{id}/shell`.
+///
+/// The composer's `!` escape: a command for the session's machine, not for
+/// the agent. The room assigns the run id it will be tracked under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RunShell {
+    /// The command, without the `!`, to be run through `bash -c`.
+    pub command: String,
+}
+
+/// Request body of `POST /v1/sessions/{id}/terminal/input`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct TerminalInput {
+    /// Bytes to write to the terminal, UTF-8.
+    pub data: String,
+}
+
+/// Request body of `POST /v1/sessions/{id}/terminal/resize`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct TerminalSize {
+    /// Columns the pane shows.
+    pub cols: u16,
+    /// Rows the pane shows.
+    pub rows: u16,
+}
+
 /// One turn of a session, as the history list renders it.
 ///
 /// Folded out of the event stream the session's room records rather than

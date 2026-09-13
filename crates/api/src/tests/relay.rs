@@ -9,7 +9,6 @@ use skyzen::routing::Router;
 use skyzen_services::{Db, Kv, Storage};
 use skyzen_test::{TestClient, TestContext};
 
-use crate::relay::RelayTicket;
 use crate::session;
 use crate::testing::{
     machine_choice, migrated_router, seed_other_user, seed_provider_account, seed_user,
@@ -111,7 +110,7 @@ async fn a_daemon_token_is_minted_once_and_scoped_to_its_session(ctx: TestContex
 #[skyzen::test]
 async fn a_daemon_announces_the_stage_that_cannot_ride_the_relay(ctx: TestContext, kv: Kv, db: Db) {
     // The checkout happens before the harness exists, and therefore before
-    // there is a relay socket to send a frame down. `Cloning` is the one
+    // there is a command stream to send a frame down. `Cloning` is the one
     // stage of the timeline that has to be a REST call (docs/ux.md §9.2).
     let client = ctx.client(migrated_router(&db).await);
     let caller = sign_in(&kv, &db, seed_user(&db).await).await;
@@ -460,8 +459,15 @@ async fn a_daemon_raises_an_approval_against_its_own_session(ctx: TestContext, k
 
 // ── The relay hops ──
 
+/// The attach body every daemon POSTs.
+fn attach_body(version: u32) -> flyco_core::wire::DaemonAttach {
+    flyco_core::wire::DaemonAttach {
+        protocol_version: version,
+    }
+}
+
 #[skyzen::test]
-async fn a_daemon_relay_upgrade_is_authenticated_before_it_reaches_a_room(
+async fn a_daemon_attach_is_authenticated_before_it_reaches_a_room(
     ctx: TestContext,
     kv: Kv,
     db: Db,
@@ -470,123 +476,196 @@ async fn a_daemon_relay_upgrade_is_authenticated_before_it_reaches_a_room(
     let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
     let token = pair(&client, &caller, session).await;
-    let path = format!("/v1/sessions/{session}/relay/daemon");
+    let path = format!("/v1/sessions/{session}/relay/attach");
 
     // No credential.
-    let anonymous = client.get(&path).send().await;
+    let anonymous = client
+        .post(&path)
+        .json(&attach_body(flyco_core::WIRE_PROTOCOL_VERSION))
+        .send()
+        .await;
     anonymous.assert_status(401);
     anonymous.assert_header("www-authenticate", "Bearer");
 
     // A user credential is not a daemon credential.
-    let wrong_kind = client.get(&path).bearer(&caller.token).send().await;
+    let wrong_kind = client
+        .post(&path)
+        .bearer(&caller.token)
+        .json(&attach_body(flyco_core::WIRE_PROTOCOL_VERSION))
+        .send()
+        .await;
     wrong_kind.assert_status(401);
     assert_eq!(
         wrong_kind.json::<Problem>().kind,
         problem_kind("invalid-daemon-credential")
     );
 
-    // The right credential gets past the check and stops only where this
-    // build genuinely cannot go: nothing native forwards a browser's
-    // upgrade into a session room.
-    let accepted = client.get(&path).bearer(&token).send().await;
-    accepted.assert_status(501);
-    let problem: Problem = accepted.json();
-    assert_eq!(problem.kind, problem_kind("relay-unavailable"));
-    assert!(
-        problem.detail.contains("session room"),
-        "a deliberate refusal must say what is missing: {}",
-        problem.detail
+    // A daemon speaking another protocol is refused before either side
+    // moves a frame.
+    let mismatched = client
+        .post(&path)
+        .bearer(&token)
+        .json(&attach_body(flyco_core::WIRE_PROTOCOL_VERSION + 1))
+        .send()
+        .await;
+    mismatched.assert_status(409);
+    assert_eq!(
+        mismatched.json::<Problem>().kind,
+        problem_kind("protocol-mismatch")
     );
+
+    // The right credential attaches, and the session goes live on the
+    // strength of it: a machine that exists is not an agent that is ready.
+    let attached = client
+        .post(&path)
+        .bearer(&token)
+        .json(&attach_body(flyco_core::WIRE_PROTOCOL_VERSION))
+        .send()
+        .await;
+    attached.assert_status(200);
+    let attached: flyco_core::wire::DaemonAttached = attached.json();
+    assert_eq!(attached.epoch, 1, "the first attach is epoch one");
+
+    let detail: flyco_core::SessionDetail = client
+        .get(&format!("/v1/sessions/{session}"))
+        .bearer(&caller.token)
+        .send()
+        .await
+        .json();
+    assert_eq!(detail.summary.state, flyco_core::SessionState::Active);
 }
 
 #[skyzen::test]
-async fn a_relay_ticket_is_minted_redeemed_once_and_scoped(ctx: TestContext, kv: Kv, db: Db) {
+async fn a_daemon_command_stream_is_scoped_to_its_session_and_its_epoch(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
     let client = ctx.client(migrated_router(&db).await);
     let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
-    let other = open_session(&client, &caller, "lexoliu/skyzen").await;
+    let token = pair(&client, &caller, session).await;
 
-    let mint = async || -> RelayTicket {
-        let minted = client
-            .post(&format!("/v1/sessions/{session}/relay-ticket"))
-            .bearer(&caller.token)
-            .send()
-            .await;
-        minted.assert_status(200);
-        minted.json()
-    };
-
-    let first = mint().await;
-    assert!(first.ticket.starts_with(crate::relay::TICKET_PREFIX));
-    assert!(first.expires_at_unix > 0);
-
-    // A ticket does not open another session's room — and presenting it
-    // there spends it anyway. A ticket is consumed by being *presented*,
-    // not by being accepted: that is what makes a ticket seen in a URL, a
-    // proxy log, or a `Referer` worthless, without having to reason about
-    // which failures burn it and which do not.
-    let wrong_room = client
-        .get(&format!(
-            "/v1/sessions/{other}/relay/client?ticket={}",
-            first.ticket
-        ))
+    let attached = client
+        .post(&format!("/v1/sessions/{session}/relay/attach"))
+        .bearer(&token)
+        .json(&attach_body(flyco_core::WIRE_PROTOCOL_VERSION))
         .send()
         .await;
-    wrong_room.assert_status(401);
+    attached.assert_status(200);
+    let epoch = attached.json::<flyco_core::wire::DaemonAttached>().epoch;
+
+    // No credential, a user credential, another session's daemon: all
+    // refused before the room is asked anything.
+    let path = format!("/v1/sessions/{session}/relay/commands?epoch={epoch}");
+    client.get(&path).send().await.assert_status(401);
     client
-        .get(&format!(
-            "/v1/sessions/{session}/relay/client?ticket={}",
-            first.ticket
-        ))
+        .get(&path)
+        .bearer(&caller.token)
         .send()
         .await
         .assert_status(401);
 
-    // A fresh ticket opens its own room, and stops at the same wall the
-    // daemon hop does.
-    let second = mint().await;
-    let path = format!(
-        "/v1/sessions/{session}/relay/client?ticket={}",
-        second.ticket
-    );
-    client.get(&path).send().await.assert_status(501);
-
-    // And it too is spent, whatever happened after it was redeemed.
-    let replayed = client.get(&path).send().await;
-    replayed.assert_status(401);
+    let other = open_session(&client, &caller, "lexoliu/skyzen").await;
+    let other_token = pair(&client, &caller, other).await;
+    let wrong_session = client
+        .get(&path)
+        .bearer(&other_token)
+        .send()
+        .await;
+    wrong_session.assert_status(401);
     assert_eq!(
-        replayed.json::<Problem>().kind,
-        problem_kind("invalid-credential")
+        wrong_session.json::<Problem>().kind,
+        problem_kind("invalid-daemon-credential")
+    );
+
+    // A stream that names a superseded attach is refused — and by the
+    // time the room can say so, the token is already checked.
+    let stale = client
+        .get(&format!(
+            "/v1/sessions/{session}/relay/commands?epoch={}",
+            epoch + 1
+        ))
+        .bearer(&token)
+        .send()
+        .await;
+    stale.assert_status(409);
+    assert_eq!(
+        stale.json::<Problem>().kind,
+        problem_kind("relay-epoch-stale")
     );
 }
 
 #[skyzen::test]
-async fn a_client_relay_upgrade_without_a_ticket_is_challenged(ctx: TestContext, kv: Kv, db: Db) {
+async fn a_daemon_frames_batch_is_authenticated_then_forwarded(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
     let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
+    let token = pair(&client, &caller, session).await;
+    let path = format!("/v1/sessions/{session}/relay/frames");
 
-    let anonymous = client
-        .get(&format!("/v1/sessions/{session}/relay/client"))
+    let attached = client
+        .post(&format!("/v1/sessions/{session}/relay/attach"))
+        .bearer(&token)
+        .json(&attach_body(flyco_core::WIRE_PROTOCOL_VERSION))
         .send()
         .await;
-    anonymous.assert_status(401);
-    anonymous.assert_header("www-authenticate", "Bearer");
-}
+    let epoch = attached.json::<flyco_core::wire::DaemonAttached>().epoch;
 
-#[skyzen::test]
-async fn only_the_owner_may_mint_a_relay_ticket(ctx: TestContext, kv: Kv, db: Db) {
-    let client = ctx.client(migrated_router(&db).await);
-    let owner = sign_in(&kv, &db, seed_user(&db).await).await;
-    let stranger = sign_in(&kv, &db, seed_other_user(&db).await).await;
-    let session = open_session(&client, &owner, REPO).await;
+    let batch = |from_seq| flyco_core::wire::DaemonFrames {
+        epoch,
+        from_seq,
+        ack_through: 0,
+        frames: vec![flyco_core::DaemonToControl::Harness {
+            event: flyco_core::HarnessEvent::AssistantDelta {
+                turn_id: "turn-1".to_owned(),
+                text: "hello".to_owned(),
+            },
+        }],
+    };
 
+    // No credential: refused before the room is asked.
     client
-        .post(&format!("/v1/sessions/{session}/relay-ticket"))
-        .bearer(&stranger.token)
+        .post(&path)
+        .json(&batch(1))
         .send()
         .await
-        .assert_status(404);
+        .assert_status(401);
+
+    // A gap in the daemon's numbering is a conflict, and the body says
+    // where the stream must resume.
+    let skipped = client.post(&path).bearer(&token).json(&batch(7)).send().await;
+    skipped.assert_status(409);
+    assert_eq!(
+        skipped.json::<Problem>().kind,
+        problem_kind("relay-frames-gap")
+    );
+
+    // In order: stored, and the emitted event is published to the owner's
+    // stream — readable back through the session's catch-up history.
+    client
+        .post(&path)
+        .bearer(&token)
+        .json(&batch(1))
+        .send()
+        .await
+        .assert_status(204);
+
+    let page = client
+        .get(&format!("/v1/sessions/{session}/events"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    page.assert_status(200);
+    let page: crate::room::EventPage = page.json();
+    assert!(
+        page.events.iter().any(|stored| {
+            serde_json::from_value::<flyco_core::ClientEvent>(stored.event.clone())
+                .is_ok_and(|event| matches!(event, flyco_core::ClientEvent::Harness { .. }))
+        }),
+        "the daemon's frame was recorded into the session's tail: {:?}",
+        page.events
+    );
 }
 
 // ── Catching up ──
@@ -703,21 +782,22 @@ async fn a_session_that_is_not_running_refuses_to_be_driven(ctx: TestContext, kv
     let caller = sign_in(&kv, &db, seed_user(&db).await).await;
     let session = open_session(&client, &caller, REPO).await;
 
-    // Still provisioning: there is no daemon to hear either command, and a
-    // `202` would promise work nobody is going to do.
-    for (path, body) in [
-        (
-            format!("/v1/sessions/{session}/messages"),
-            Some(message("hello")),
-        ),
-        (format!("/v1/sessions/{session}/interrupt"), None),
-        (format!("/v1/sessions/{session}/compact"), None),
+    // Still provisioning: there is no daemon to hear an interrupt or a
+    // compact, and a `202` would promise work nobody is going to do. A user
+    // message is the exception — the room's command log holds it for the
+    // daemon's first attach, which is what "the mailbox holds them" means.
+    let held = client
+        .post(&format!("/v1/sessions/{session}/messages"))
+        .bearer(&caller.token)
+        .json(&message("hello"))
+        .send()
+        .await;
+    held.assert_status(202);
+    for path in [
+        format!("/v1/sessions/{session}/interrupt"),
+        format!("/v1/sessions/{session}/compact"),
     ] {
-        let request = client.post(&path).bearer(&caller.token);
-        let refused = match &body {
-            Some(body) => request.json(body).send().await,
-            None => request.send().await,
-        };
+        let refused = client.post(&path).bearer(&caller.token).send().await;
         refused.assert_status(409);
         let problem = refused.json::<Problem>();
         assert_eq!(problem.kind, problem_kind("session-not-active"));
