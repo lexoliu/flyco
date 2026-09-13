@@ -972,6 +972,12 @@ pub struct SessionEvent {
     /// Events a session room emits are sequenced there; events the control
     /// plane composes about a session have no position to carry.
     pub seq: Option<u64>,
+    /// When the control plane published it, seconds since the Unix epoch.
+    ///
+    /// Live events carry no recorded timestamp the way a
+    /// [`StoredEvent`] does; this is the publish instant, which is the only
+    /// time a live-only event ever has.
+    pub at_unix: u64,
     /// The event.
     pub event: ClientEvent,
 }

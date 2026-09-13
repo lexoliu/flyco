@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/core", "crates/api", "crates/daemon", "crates/provider", "crates/xtask"]
+members = [
+    "crates/core",
+    "crates/api",
+    "crates/cli",
+    "crates/daemon",
+    "crates/provider",
+    "crates/xtask",
+]
 resolver = "3"
 
 [workspace.package]
@@ -76,6 +83,12 @@ futures-core = "0.3"
 
 # Execution plane only (native). Nothing here may reach the Worker graph.
 clap = { version = "4", features = ["derive"] }
+# The CLI's pickers: a `flyco claude` with no flags asks its way through the
+# choices a session needs, and dialoguer is the library that asks.
+dialoguer = "0.12"
+# `flyco login` opens the approval page in the user's browser when there is
+# one to open.
+open = "5"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 rand = "0.9"
 rust-embed = { version = "8", features = ["debug-embed", "include-exclude"] }
@@ -83,7 +96,7 @@ portable-pty = "0.9"
 # The handful of syscalls the execution plane makes directly. Today that is
 # `statvfs`, which is how an enrolled host measures the space left where
 # Podman keeps its containers.
-rustix = { version = "1", features = ["fs", "event", "termios"] }
+rustix = { version = "1", features = ["fs", "event", "system", "termios"] }
 # The official Rust MCP SDK, for flycod's local stdio server. Only the
 # server half and the stdio transport: the daemon is spoken *to* by the
 # harness it supervises and never speaks MCP itself, and `macros` is off

@@ -21,7 +21,7 @@ const SESSION = "session-1";
 
 /** One live envelope, as the shared stream hands them to a relay. */
 function live(event: unknown, seq: number | null = null): SessionEvent {
-  return { session: SESSION, seq, event: event as SessionEvent["event"] };
+  return { session: SESSION, seq, at_unix: 0, event: event as SessionEvent["event"] };
 }
 
 const started = { type: "started", harness_session_id: "h-1" };

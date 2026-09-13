@@ -1,0 +1,30 @@
+[package]
+name = "flyco-cli"
+description = "flyco: the flyco terminal client — native harness TUIs for humans, a --json surface for agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "flyco"
+path = "src/main.rs"
+
+[dependencies]
+flyco-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zenwave = { workspace = true, features = ["hyper-rustls"] }
+clap.workspace = true
+dialoguer.workspace = true
+open.workspace = true
+rustix.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

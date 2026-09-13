@@ -158,6 +158,7 @@ async fn publish_inner(
         let envelope = SessionEvent {
             session: body.session,
             seq: emitted.seq,
+            at_unix: now,
             event: emitted.event,
         };
         let json = serde_json::to_string(&envelope)

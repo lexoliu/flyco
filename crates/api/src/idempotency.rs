@@ -95,7 +95,8 @@ pub async fn claim(db: &Db, user: UserId, key: &str) -> Result<Claim, ApiError> 
             Some(session) => return Ok(Claim::Committed(session)),
             // An in-flight claim past the window is one whose create died
             // between the claim and the record — the request was told to
-            // reconcile, nobody ever could — so the key is free again.
+            // reconcile, nobody ever could — so the key is free again and
+            // the loop takes another turn at claiming it.
             None if held.created_at_unix < cutoff => {
                 sql!(
                     db,
@@ -104,7 +105,6 @@ pub async fn claim(db: &Db, user: UserId, key: &str) -> Result<Claim, ApiError> 
                 )
                 .execute()
                 .await?;
-                continue;
             }
             None => return Ok(Claim::InFlight),
         }

@@ -208,17 +208,155 @@ async fn start_session(
     db: &Db,
     kv: &Kv,
 ) -> Result<Created<Json<SessionDetail>>, ApiError> {
+    let resolved = resolve_request(user, request, config, github, db, kv, queue).await?;
+
+    // Claimed only once everything that could refuse the request has
+    // refused it: a key bound to a request that was never going to be
+    // accepted would poison a corrected retry under the same key.
+    let claim = match idempotency_key {
+        Some(key) => match idempotency::claim(db, user.id, key).await? {
+            idempotency::Claim::Committed(session) => {
+                return sessions::find(db, user.id, session)
+                    .await
+                    .map(|detail| Created(Json(detail)));
+            }
+            idempotency::Claim::InFlight => return Err(ApiError::IdempotencyInFlight),
+            idempotency::Claim::Fresh(claim) => Some(claim),
+        },
+        None => None,
+    };
+
+    let session = match sessions::create(
+        db,
+        user.session_cap,
+        sessions::Opening {
+            user: user.id,
+            title: &flyco_core::excerpt(&resolved.prompt, MAX_SESSION_TITLE_CHARS),
+            harness: resolved.harness,
+            repo: &resolved.repo,
+            branch: &resolved.branch,
+            machine_origin: resolved.machine_origin,
+            budget: resolved.budget,
+            model: &resolved.model,
+            permission_mode: resolved.permission_mode,
+        },
+    )
+    .await
+    {
+        Ok(session) => session,
+        Err(error) => {
+            if let Some(claim) = claim {
+                claim.release(db).await?;
+            }
+            return Err(error);
+        }
+    };
+    if let Some(claim) = claim {
+        claim.record(db, session.summary.id).await?;
+    }
+    let id = session.summary.id;
+    let machine = machines::reserve(db, id, resolved.account.id, &resolved.spec).await?;
+
+    // The prompt is posted to the session's room *before* the machine is
+    // queued, so the agent's first instruction is durable before anything
+    // asynchronous can go wrong. No daemon exists yet — the room holds it
+    // in its mailbox and hands it over on the daemon's first attach.
+    //
+    // Both steps fail the session rather than return early: a session row
+    // whose prompt never reached its room, or whose job never reached the
+    // queue, would sit in `provisioning` waiting for something that is never
+    // going to happen.
+    fail_session_on(
+        db,
+        rooms,
+        id,
+        "the session's room would not take its first prompt",
+        rooms
+            .command(
+                db,
+                id,
+                &ControlToDaemon::UserMessage {
+                    text: resolved.prompt,
+                    origin: MessageOrigin::User,
+                },
+            )
+            .await,
+    )
+    .await?;
+    fail_session_on(
+        db,
+        rooms,
+        id,
+        "the provisioning queue would not accept this session's job",
+        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await,
+    )
+    .await?;
+
+    tracing::info!(
+        repo = %resolved.repo,
+        branch = %resolved.branch,
+        harness = ?resolved.harness,
+        model = %resolved.model.model,
+        effort = ?resolved.model.effort,
+        machine_type = %resolved.spec.machine_type,
+        region = %resolved.spec.region,
+        spot = resolved.spec.spot,
+        "opened a session and queued its machine"
+    );
+    Ok(Created(Json(session)))
+}
+
+/// Everything `start_session` settles before a row is written: the request's
+/// claims each checked against what the control plane can verify, resolved to
+/// the values the session will actually carry.
+struct ResolvedSession {
+    /// The trimmed first prompt.
+    prompt: String,
+    /// The repository the session works on.
+    repo: RepoSlug,
+    /// Its branch — named or the repository's default.
+    branch: BranchName,
+    /// The harness the session runs.
+    harness: flyco_core::HarnessKind,
+    /// How the harness treats its own confirmations — `None` stores no
+    /// opinion and the product default applies.
+    permission_mode: Option<flyco_core::PermissionMode>,
+    /// Who chose the machine: the user, or the automatic picker.
+    machine_origin: MachineOrigin,
+    /// The budget the session enforces.
+    budget: BudgetConfig,
+    /// The model the session opens on, off the account's own list.
+    model: ModelChoice,
+    /// The provider account the machine bills to.
+    account: provisioning::LinkedAccount,
+    /// What the machine is.
+    spec: MachineSpec,
+}
+
+/// The resolution half of `start_session`: every check a create request can
+/// fail, done before anything is written.
+///
+/// Consumes the request: `machine` and `model` are the caller's *claims*,
+/// replaced by what the resolution produced — a machine picked when none
+/// was named, a model defaulted off the account's list.
+async fn resolve_request(
+    user: &CurrentUser,
+    request: CreateSession,
+    config: &ApiConfig,
+    github: &GithubClient,
+    db: &Db,
+    kv: &Kv,
+    queue: &Queue,
+) -> Result<ResolvedSession, ApiError> {
     let prompt = request.prompt.trim();
     if prompt.is_empty() {
         return Err(ApiError::EmptyMessage);
     }
-    let prompt = prompt.to_owned();
     let repo = request
         .repo
         .parse::<RepoSlug>()
         .map_err(|_| ApiError::InvalidRepo(request.repo.clone()))?;
     let branch = resolve_branch(github, config, db, user, &repo, request.branch.as_deref()).await?;
-    let budget = BudgetConfig::new(request.budget_limit).map_err(|_| ApiError::InvalidBudget)?;
 
     let machine_origin = if request.machine.is_some() {
         MachineOrigin::User
@@ -264,101 +402,18 @@ async fn start_session(
         spot: choice.spot && entry.pricing.offers_spot(),
         disk_gib: choice.disk_gib,
     };
-
-    // Claimed only once everything that could refuse the request has
-    // refused it: a key bound to a request that was never going to be
-    // accepted would poison a corrected retry under the same key.
-    let claim = match idempotency_key {
-        Some(key) => match idempotency::claim(db, user.id, key).await? {
-            idempotency::Claim::Committed(session) => {
-                return sessions::find(db, user.id, session)
-                    .await
-                    .map(|detail| Created(Json(detail)));
-            }
-            idempotency::Claim::InFlight => return Err(ApiError::IdempotencyInFlight),
-            idempotency::Claim::Fresh(claim) => Some(claim),
-        },
-        None => None,
-    };
-
-    let session = match sessions::create(
-        db,
-        user.session_cap,
-        sessions::Opening {
-            user: user.id,
-            title: &flyco_core::excerpt(&prompt, MAX_SESSION_TITLE_CHARS),
-            harness: request.harness,
-            repo: &repo,
-            branch: &branch,
-            machine_origin,
-            budget,
-            model: &model,
-            permission_mode: request.permission_mode,
-        },
-    )
-    .await
-    {
-        Ok(session) => session,
-        Err(error) => {
-            if let Some(claim) = claim {
-                claim.release(db).await?;
-            }
-            return Err(error);
-        }
-    };
-    if let Some(claim) = claim {
-        claim.record(db, session.summary.id).await?;
-    }
-    let id = session.summary.id;
-    let machine = machines::reserve(db, id, account.id, &spec).await?;
-
-    // The prompt is posted to the session's room *before* the machine is
-    // queued, so the agent's first instruction is durable before anything
-    // asynchronous can go wrong. No daemon exists yet — the room holds it
-    // in its mailbox and hands it over on the daemon's first attach.
-    //
-    // Both steps fail the session rather than return early: a session row
-    // whose prompt never reached its room, or whose job never reached the
-    // queue, would sit in `provisioning` waiting for something that is never
-    // going to happen.
-    fail_session_on(
-        db,
-        rooms,
-        id,
-        "the session's room would not take its first prompt",
-        rooms
-            .command(
-                db,
-                id,
-                &ControlToDaemon::UserMessage {
-                    text: prompt,
-                    origin: MessageOrigin::User,
-                },
-            )
-            .await,
-    )
-    .await?;
-    fail_session_on(
-        db,
-        rooms,
-        id,
-        "the provisioning queue would not accept this session's job",
-        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await,
-    )
-    .await?;
-
-    tracing::info!(
-        repo = %repo,
-        branch = %branch,
-        harness = ?request.harness,
-        model = %model.model,
-        effort = ?model.effort,
-        machine_type = %spec.machine_type,
-        region = %spec.region,
-        spot = spec.spot,
-        "opened a session and queued its machine"
-    );
-    Ok(Created(Json(session)))
+    Ok(ResolvedSession {
+        prompt: prompt.to_owned(),
+        repo,
+        branch,
+        harness: request.harness,
+        permission_mode: request.permission_mode,
+        machine_origin,
+        budget: BudgetConfig::new(request.budget_limit).map_err(|_| ApiError::InvalidBudget)?,
+        model,
+        account,
+        spec,
+    })
 }
 
 /// Settles which branch a session works on, before any row is written.
