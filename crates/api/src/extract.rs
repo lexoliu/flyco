@@ -51,10 +51,10 @@ fn raw(params: &Params, name: &'static str) -> Result<String, ApiError> {
 ///
 /// Skyzen's `TypedHeader<T>` reads one RFC-defined header into its typed
 /// form, which is not what these routes need: the relay hops read a
-/// credential out of `Authorization` or `Sec-WebSocket-Protocol`, and the
-/// Worker→room hop reads a role out of an internal header with a name of
-/// flyco's own. Cloning the map is the honest cost of reading arbitrary
-/// headers in a handler rather than in middleware.
+/// credential out of `Authorization`, and the Worker→room hop reads a
+/// role out of an internal header with a name of flyco's own. Cloning the
+/// map is the honest cost of reading arbitrary headers in a handler
+/// rather than in middleware.
 #[derive(Debug, Clone)]
 pub struct Headers(HeaderMap);
 

@@ -240,7 +240,7 @@ describe("deriveStatus, from the summary's activity", () => {
 
   it("lets a live turn override a summary that has not caught up", () => {
     // The relay carries the newer fact: a turn that started a moment ago is
-    // on the socket before the row it was written to is read again.
+    // on the stream before the row it was written to is read again.
     expect(deriveStatus(doing("idle"), NOW, { turnInFlight: true }).status).toBe("working");
     expect(deriveStatus(doing("needs_input"), NOW, { turnInFlight: true }).status).toBe("working");
   });
@@ -250,7 +250,7 @@ describe("deriveStatus, from the summary's activity", () => {
   });
 
   it("keeps the summary's answer while the relay has said nothing", () => {
-    // An open socket that has replayed nothing yet reports both signals
+    // An open stream that has replayed nothing yet reports both signals
     // false; that is silence, not a contradiction.
     const silent = { turnInFlight: false, awaitingUser: false };
     expect(deriveStatus(doing("working"), NOW, silent).status).toBe("working");

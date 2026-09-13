@@ -331,8 +331,20 @@ impl HarnessSession for ClaudeSession {
         self.ask(|ack| DriverCommand::Compact { ack }).await
     }
 
+    async fn context_usage(&self) -> Result<(), ClaudeError> {
+        self.ask(|ack| DriverCommand::ContextUsage { ack }).await
+    }
+
     async fn set_model(&self, model: flyco_core::ModelChoice) -> Result<(), ClaudeError> {
         self.ask(|ack| DriverCommand::SetModel { model, ack }).await
+    }
+
+    async fn set_permission_mode(
+        &self,
+        mode: flyco_core::PermissionMode,
+    ) -> Result<(), ClaudeError> {
+        self.ask(|ack| DriverCommand::SetPermissionMode { mode, ack })
+            .await
     }
 
     async fn decide_approval(&self, approval: ToolApproval) -> Result<(), ClaudeError> {
@@ -371,9 +383,23 @@ enum DriverCommand {
     Compact {
         ack: oneshot::Sender<Result<(), ClaudeError>>,
     },
+    /// From the handle: ask the CLI what its context window is spent on.
+    ///
+    /// The answer is not this command's result — it arrives from the
+    /// reader as [`SidecarEvent::ContextUsage`] and is emitted there, which
+    /// is what lets the query share the one stdin with everything else.
+    ContextUsage {
+        ack: oneshot::Sender<Result<(), ClaudeError>>,
+    },
     /// From the handle: put the running query on another model.
     SetModel {
         model: flyco_core::ModelChoice,
+        ack: oneshot::Sender<Result<(), ClaudeError>>,
+    },
+    /// From the handle: put the running query under another permission
+    /// mode.
+    SetPermissionMode {
+        mode: flyco_core::PermissionMode,
         ack: oneshot::Sender<Result<(), ClaudeError>>,
     },
     /// From the handle: answer a pending approval.
@@ -678,6 +704,12 @@ impl<S: TranscriptStore> Driver<S> {
                 let _ = ack.send(result);
                 ok
             }
+            DriverCommand::ContextUsage { ack } => {
+                let result = write_command(&mut self.stdin, &SidecarCommand::ContextUsage).await;
+                let ok = result.is_ok();
+                let _ = ack.send(result);
+                ok
+            }
             DriverCommand::SetModel { model, ack } => {
                 let result = write_command(
                     &mut self.stdin,
@@ -685,6 +717,16 @@ impl<S: TranscriptStore> Driver<S> {
                         model: model.model,
                         effort: model.effort,
                     },
+                )
+                .await;
+                let ok = result.is_ok();
+                let _ = ack.send(result);
+                ok
+            }
+            DriverCommand::SetPermissionMode { mode, ack } => {
+                let result = write_command(
+                    &mut self.stdin,
+                    &SidecarCommand::SetPermissionMode { mode },
                 )
                 .await;
                 let ok = result.is_ok();
@@ -828,6 +870,15 @@ impl<S: TranscriptStore> Driver<S> {
                     }
                 }
                 true
+            }
+            SidecarEvent::ContextUsage { usage } => {
+                emit(
+                    &self.outputs,
+                    SessionOutput::Event {
+                        event: flyco_core::HarnessEvent::ContextUsage { usage },
+                    },
+                )
+                .await
             }
             SidecarEvent::ApprovalRequest {
                 id,

@@ -6,11 +6,12 @@
 //! every batch of entries here as it produces them, and reads the whole
 //! stream back when a session resumes somewhere else.
 //!
-//! # Why batches, and why not the WebSocket
+//! # Why batches, and why not the relay
 //!
-//! Cloudflare caps a WebSocket frame at 1 MiB and a transcript is
-//! unbounded, so bulk transcript data never rides the relay. It is written
-//! with an ordinary authenticated `PUT`, one object per batch:
+//! A transcript is unbounded and the relay's frame batches are sequenced
+//! envelopes, not a bulk pipe, so bulk transcript data never rides the
+//! relay. It is written with an ordinary authenticated `PUT`, one object
+//! per batch:
 //!
 //! ```text
 //! transcripts/{session}/{stream}/{seq:08}.jsonl

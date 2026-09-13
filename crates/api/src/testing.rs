@@ -27,12 +27,12 @@ use crate::microsoft::{
 use crate::openai::{
     self, CodexClient, CodexOauth, DeviceAuth, DeviceCode, DevicePoll, OpenAiError,
 };
-use crate::rooms::{HostRooms, NativeHostRooms, NativeRooms, Rooms};
+use crate::rooms::{HostRooms, NativeHostRooms, NativeRooms, NativeUserStreams, Rooms};
 use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 23] = [
+pub const MIGRATIONS: [&str; 24] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -56,6 +56,7 @@ pub const MIGRATIONS: [&str; 23] = [
     include_str!("../../../migrations/0022_harness_usage.sql"),
     include_str!("../../../migrations/0023_machine_runtime.sql"),
     include_str!("../../../migrations/0024_usage_limit_pause.sql"),
+    include_str!("../../../migrations/0025_session_permission_mode.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -145,7 +146,7 @@ pub fn test_config() -> ApiConfig {
 /// namespace between tests would share its event streams too.
 #[must_use]
 pub fn test_rooms() -> Rooms {
-    Rooms::from_native(NativeRooms::new())
+    Rooms::from_native(NativeRooms::new(), NativeUserStreams::new())
 }
 
 /// Host rooms backed by skyzen's in-process simulator.
@@ -1088,6 +1089,31 @@ pub async fn seed_host_account(db: &Db, user: UserId) -> (HostId, ProviderAccoun
     .expect("link a host account")
     .id;
     (host, account)
+}
+
+/// Links an Azure account the way the store path does, without a cloud.
+///
+/// Deliberately without a resource group: an account with no group is the
+/// one shape whose provider calls refuse *before* they reach the network —
+/// see `LinkedAccount::azure_workspace` — which is what lets a consumer or
+/// a queue job that asks the provider be driven for real in a unit test.
+pub async fn seed_azure_account(db: &Db, user: UserId) -> ProviderAccountId {
+    crate::provider_accounts::create(
+        db,
+        &test_config(),
+        user,
+        "flyco test subscription".to_owned(),
+        &ProviderCredentials::Azure {
+            tenant_id: "11111111-2222-4333-8444-555555555555".to_owned(),
+            client_id: "66666666-7777-4888-8999-aaaaaaaaaaaa".to_owned(),
+            client_secret: "not-a-real-secret".to_owned(),
+            subscription_id: AZURE_SUBSCRIPTION_ID.to_owned(),
+        },
+        None,
+    )
+    .await
+    .expect("link an Azure account")
+    .id
 }
 
 /// The machine a test session asks for: the enrolled machine itself.

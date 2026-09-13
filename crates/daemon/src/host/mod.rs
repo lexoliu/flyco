@@ -12,16 +12,16 @@
 //!   single-use `fh_` enrollment token the user pasted, and writes
 //!   `/etc/flyco/host.toml` with the long-lived token that comes back. It
 //!   runs once, from the installer, and exits.
-//! * [`run`] is the unit: one outbound WebSocket to this machine's room,
-//!   container jobs in, results out, until the control plane revokes the
-//!   machine.
+//! * [`run`] is the unit: one outbound command stream from this machine's
+//!   room, container jobs in and results posted back, until the control
+//!   plane revokes the machine.
 //!
 //! # Why the machine dials
 //!
 //! The control plane is a Cloudflare Worker and has no TCP sockets, so it
 //! can never open a connection to somebody's hardware. Everything here is
-//! outbound: the enrollment is a `POST`, the relay is a socket this process
-//! opens, and a job result travels back up both.
+//! outbound: the enrollment is a `POST`, the relay is an event stream this
+//! process opens, and a job result is posted back up.
 //!
 //! # What is in each module
 //!
@@ -32,8 +32,8 @@
 //! * [`podman`] — running one [`ContainerJob`](flyco_provider::host::ContainerJob)
 //!   under rootless Podman, from the script the control plane's own planner
 //!   rendered.
-//! * [`relay`] — the socket, its reconnects, and the two halves of a job
-//!   result.
+//! * [`relay`] — the command stream, its reconnects, and the two halves of
+//!   a job result.
 //! * [`rest`] — enrollment, and the durable half of a job result.
 
 pub mod config;
@@ -50,8 +50,8 @@ use url::Url;
 pub use config::{HostConfig, HostConfigError, PodmanConfig};
 pub use facts::FactsError;
 pub use podman::{LocalExecutor, PodmanError, ProcessRunner, Rootless};
-pub use relay::{HostEndpoint, HostRelay, Stopped};
-pub use rest::HttpHostApi;
+pub use relay::{HostRelay, Stopped};
+pub use rest::{HostTransport, HttpHostApi, JobResults};
 
 use crate::control::rest::ControlApiError;
 use crate::control::wire::WireError;
@@ -180,11 +180,7 @@ pub async fn run(path: &Path) -> Result<(), HostError> {
     );
 
     let stopped = relay::run(HostRelay {
-        endpoint: HostEndpoint::from_base(
-            &config.control_plane_url,
-            config.host_id,
-            config.host_token.clone(),
-        )?,
+        host: config.host_id,
         facts,
         jobs: std::sync::Arc::new(LocalExecutor::new(rootless, ProcessRunner)),
         api: HttpHostApi::new(

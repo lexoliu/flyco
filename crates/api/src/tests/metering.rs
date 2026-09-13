@@ -95,7 +95,7 @@ async fn scheduled_metering_records_compute_and_storage_once_and_pauses(_ctx: Te
             .any(|row| row.signal == BudgetSignal::Pause)
     );
 
-    let rooms = Rooms::from_native(NativeRooms::new());
+    let rooms = Rooms::from_native(NativeRooms::new(), crate::rooms::NativeUserStreams::new());
     metering::deliver(&db, &rooms).await.expect("deliver pause");
     assert_eq!(
         sessions::state_of(&db, user.id, session)

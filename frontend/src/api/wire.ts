@@ -1,11 +1,14 @@
 /**
  * The daemon <-> control-plane wire protocol, as seen by a browser.
  *
- * This is hand-typed rather than generated: `flyco_core::wire` is a WebSocket
- * protocol with no OpenAPI schema (see `crates/core/src/wire.rs`). Only
- * `ClientEvent` and the three client-sendable `ControlToDaemon` variants
- * matter here — everything else in that module (`DaemonToControl`, the
- * control-plane-only `ControlToDaemon` variants) never reaches a browser.
+ * This is hand-typed rather than generated: `flyco_core::wire` is the
+ * event vocabulary the SSE stream carries — `SessionEvent` envelopes on
+ * `GET /v1/events`, `StoredEvent.event` on catch-up pages — with no
+ * OpenAPI schema of its own (see `crates/core/src/wire.rs`). Only
+ * `ClientEvent`, the `SessionEvent` envelope, and the client-sendable
+ * `ControlToDaemon` variants matter here — everything else in that module
+ * (`DaemonToControl`, the control-plane-only `ControlToDaemon` variants)
+ * never reaches a browser.
  *
  * Every enum is internally tagged (`type` for events, `kind` for
  * `ApprovalPayload`) with `snake_case` variant names, matching serde's
@@ -24,6 +27,7 @@ export type UsageReport = components["schemas"]["UsageReport"];
 export type ContextWindow = components["schemas"]["ContextWindow"];
 export type ModelChoice = components["schemas"]["ModelChoice"];
 export type ModelOption = components["schemas"]["ModelOption"];
+export type PermissionMode = components["schemas"]["PermissionMode"];
 export type UsageWindow = components["schemas"]["UsageWindow"];
 
 /**
@@ -36,6 +40,41 @@ export type UsageWindow = components["schemas"]["UsageWindow"];
  * be crediting them with a sentence they never typed.
  */
 export type MessageOrigin = "user" | "flyco";
+
+/**
+ * One thing occupying the context window, as a `context_usage` answer lists it.
+ *
+ * Mirrors `flyco_core::harness::ContextCost` (WS-only, no OpenAPI schema):
+ * one shape for every section the harness reports — a usage category, an
+ * MCP tool's schema, a memory file, an agent, a skill's frontmatter.
+ * `deferred` is counted toward the window but not materialized in it yet.
+ */
+export interface ContextCost {
+  name: string;
+  tokens: number;
+  deferred: boolean;
+}
+
+/**
+ * What the context window is spent on — the answer to a `context_usage`
+ * control request, which the usage panel's "detailed breakdown" sends.
+ *
+ * Mirrors `flyco_core::harness::ContextUsage` exactly. `model`, `window`
+ * and `auto_compact` are absent rather than `null`, matching serde's
+ * `skip_serializing_if` on the `Option`s. A harness with no breakdown to
+ * give (Codex) reports the fill alone and every list empty.
+ */
+export interface ContextUsage {
+  model?: string | undefined;
+  window?: ContextWindow | undefined;
+  /** The fill at which the harness compacts on its own, in tokens. */
+  auto_compact?: number | undefined;
+  categories: ContextCost[];
+  mcp_tools: ContextCost[];
+  memory_files: ContextCost[];
+  agents: ContextCost[];
+  skills: ContextCost[];
+}
 
 /**
  * A normalized event extracted from either harness's native stream.
@@ -52,7 +91,15 @@ export type HarnessEvent =
   | { type: "turn_failed"; turn_id: string; error: string }
   | { type: "usage_limited"; window: UsageWindow }
   | { type: "context_compacted" }
-  | { type: "context_compaction_failed"; error: string };
+  | { type: "context_compaction_failed"; error: string }
+  /**
+   * Output the harness printed on its own — a local slash command's answer,
+   * or a synthetic message that never streamed. Never a reply to a user
+   * prompt.
+   */
+  | { type: "local_command_output"; content: string }
+  /** The context-window breakdown answering a `context_usage` command. */
+  | { type: "context_usage"; usage: ContextUsage };
 
 /**
  * One slash command the running harness offers, mirroring
@@ -135,6 +182,12 @@ export type ClientEvent =
   /** The session was moved onto another model, by the user (docs/ux.md §9.3). */
   | { type: "model_changed"; model: ModelChoice }
   /**
+   * The session's permission mode changed, by the user — the same shape a
+   * model change takes: recorded by the control plane, echoed to every
+   * browser, applied by the daemon when it can (docs/ux.md §9.3).
+   */
+  | { type: "permission_mode_changed"; mode: PermissionMode }
+  /**
    * The models the agent offers, as it listed them at start. State rather
    * than history: the newest list wins and the page reads the last one.
    */
@@ -154,9 +207,10 @@ export type ClientEvent =
   | { type: "commands"; commands: HarnessCommand[] };
 
 /**
- * The six `ControlToDaemon` variants a browser may send directly over the
- * relay socket, mirroring `ControlToDaemon::is_client_command()`. Every
- * other command (approval decisions, budget signals, archive, and the
+ * The seven `ControlToDaemon` variants a browser may send, mirroring
+ * `ControlToDaemon::is_client_command()` — each reaches the daemon through
+ * its own REST route (see `send()` in `src/api/relay.ts`). Every other
+ * command (approval decisions, budget signals, archive, and the
  * identified `run_shell` the room reissues a `shell_command` as) is
  * control-plane authority and reaches the daemon only through the room
  * itself or an authenticated REST handler.
@@ -166,11 +220,53 @@ export type ClientCommand =
   | { type: "shell_command"; command: string }
   | { type: "interrupt" }
   | { type: "compact" }
+  /** flyco's `/context`: a read-only query, answered by a `context_usage` event. */
+  | { type: "context_usage" }
   | { type: "terminal_input"; data: string }
   | { type: "terminal_resize"; cols: number; rows: number };
 
 /**
- * Parses a raw relay frame — from a live WebSocket message or from a
+ * One event on the per-user stream, as `GET /v1/events` frames it.
+ *
+ * Mirrors `flyco_core::wire::SessionEvent`: the envelope is what tells the
+ * sessions multiplexed onto the one stream apart, and `seq` — the event's
+ * position in its session's recorded history, when it has one — is what a
+ * subscriber checks for a gap the reconnect buffer dropped (live-only
+ * events like `machine_connection` carry `null` and have no position).
+ */
+export interface SessionEvent {
+  /** Session the event belongs to. */
+  session: string;
+  /** Position in that session's recorded history, when it has one. */
+  seq: number | null;
+  /** The event. */
+  event: ClientEvent;
+}
+
+/**
+ * Parses one `data:` payload off the user stream into a {@link SessionEvent}.
+ *
+ * Fails fast like {@link parseClientEvent}: an envelope that is not an
+ * object with a string `session` is a protocol violation, and the nested
+ * `event` gets the same check.
+ */
+export function parseSessionEvent(value: unknown): SessionEvent {
+  if (typeof value !== "object" || value === null || !("session" in value)) {
+    throw new Error(`not a SessionEvent: ${JSON.stringify(value)}`);
+  }
+  const envelope = value as { session: unknown; seq: unknown; event: unknown };
+  if (typeof envelope.session !== "string") {
+    throw new Error(`not a SessionEvent: ${JSON.stringify(value)}`);
+  }
+  return {
+    session: envelope.session,
+    seq: typeof envelope.seq === "number" ? envelope.seq : null,
+    event: parseClientEvent(envelope.event),
+  };
+}
+
+/**
+ * Parses a raw event — from a live `SessionEvent.event` or from a
  * catch-up `StoredEvent.event` (typed `unknown` in the OpenAPI schema,
  * because `ClientEvent` has no schema of its own).
  *
@@ -207,6 +303,7 @@ const CLIENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "provisioning_stage",
   "machine_changed",
   "model_changed",
+  "permission_mode_changed",
   "models",
   "plan_usage",
   "commands",

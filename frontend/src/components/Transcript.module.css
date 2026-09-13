@@ -650,3 +650,19 @@ details[open] > .timelineSummary .toolChevron {
     transform: none;
   }
 }
+
+/* ── Command output ──────────────────────────────────────────────────── */
+
+/*
+ * What a local command printed — Claude Code's own `/usage` table and
+ * friends. Boxed, because it is output rather than prose: not the agent
+ * answering, and not a notice asking for attention — the frame says it is
+ * a thing the machine produced.
+ */
+.commandOutput {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+

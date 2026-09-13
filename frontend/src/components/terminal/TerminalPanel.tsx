@@ -16,12 +16,18 @@ const TerminalPanelImpl = lazy(() => import("./TerminalPanelImpl"));
 export interface TerminalPanelProps {
   sessionId: string;
   relay: SessionRelay;
+  /** Where a refused keystroke or resize is reported; the page owns the banner. */
+  onError: (failure: unknown) => void;
 }
 
 export default function TerminalPanel(props: TerminalPanelProps) {
   return (
     <div class={styles.wrapper}>
-      <TerminalPanelImpl sessionId={props.sessionId} relay={props.relay} />
+      <TerminalPanelImpl
+        sessionId={props.sessionId}
+        relay={props.relay}
+        onError={props.onError}
+      />
     </div>
   );
 }

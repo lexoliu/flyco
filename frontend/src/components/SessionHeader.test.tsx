@@ -12,6 +12,7 @@ const SESSION: SessionDetail = {
   branch: "dev",
   harness: "claude_code",
   model: { model: "default" },
+  permission_mode: "auto",
   state: "active",
   activity: "working",
   machine_origin: "auto",
@@ -93,7 +94,7 @@ describe("SessionHeader", () => {
     expect(queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
   });
 
-  it("says a socket is coming back while it still is", () => {
+  it("says a stream is coming back while it still is", () => {
     const { getByText } = mount({ session: SESSION, connection: "reconnecting" });
     expect(getByText("Reconnecting…")).toBeInTheDocument();
   });

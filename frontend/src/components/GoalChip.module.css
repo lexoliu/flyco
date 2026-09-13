@@ -1,0 +1,43 @@
+/* The goal chip's popover: the condition, and the button that commits it. */
+
+.note {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.field {
+  width: 100%;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.field::placeholder {
+  color: var(--color-text-faint);
+}
+
+.field:focus-visible {
+  outline: none;
+  border-color: var(--color-text-faint);
+}
+
+.set {
+  align-self: flex-end;
+  border: none;
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.set:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

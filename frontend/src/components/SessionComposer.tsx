@@ -10,9 +10,9 @@
  * - while a turn is in flight the send button becomes `Stop`, because the
  *   only useful thing to do to a running turn is end it;
  * - `/` opens a command palette listing flyco's own session actions and
- *   then everything the running harness said it offers, so `/goal`,
- *   `/effort`, `/context` and every skill of the checkout are reachable
- *   without knowing they exist;
+ *   then everything the running harness said it offers — minus the ones a
+ *   control already answers, so a skill of the checkout is reachable
+ *   without knowing it exists and `/context` is not listed twice;
  * - a message beginning with `!` runs in the machine's bash, and the field
  *   says so while one is being typed rather than after it is sent.
  */
@@ -21,7 +21,7 @@ import { ArrowUp, Clock, Square, TerminalSquare } from "lucide-solid";
 import ComposerShell from "./ComposerShell";
 import type { HarnessCommand } from "../api/wire";
 import { cx } from "../lib/cx";
-import { BASH_PREFIX } from "../lib/shell";
+import { BASH_PREFIX, shellCommandIn } from "../lib/shell";
 import styles from "./Composer.module.css";
 import sessionStyles from "./SessionComposer.module.css";
 
@@ -43,11 +43,29 @@ interface PaletteEntry {
    */
   argumentHint: string | null;
   /**
-   * Who runs it. `flyco`'s three are its own product actions and never
+   * Who runs it. `flyco`'s own are its own product actions and never
    * reach the agent; everything else is sent as the message `/name args`,
    * which is how both harnesses take a slash command.
    */
   run: SessionCommand | "harness";
+  /**
+   * Whether the command is delivered to the session's daemon rather than
+   * held by the control plane.
+   *
+   * A machine-bound command with no daemon to take it is dropped where a
+   * prompt would wait in the mailbox — the room cannot hold a compaction
+   * or a shell run the way it holds a message — so the palette greys the
+   * row out while the machine is not connected instead of offering a
+   * command that would die on the way.
+   */
+  needsMachine?: boolean;
+  /**
+   * Whether the row cannot be run right now — the machine it would be
+   * delivered to is not connected. The row stays listed, greyed, because a
+   * command that disappears at exactly the moment it is wanted looks like
+   * a bug rather than a state.
+   */
+  disabled?: boolean;
 }
 
 /**
@@ -55,10 +73,9 @@ interface PaletteEntry {
  *
  * They are not the harness's: `/archive` and `/resize` are things flyco
  * does to a machine, and `/compact` is routed to the control plane's own
- * compaction request rather than typed at the agent, so that one browser
- * pressing it is a compaction every browser can see. All three are named
- * by both harnesses too; the harness's copy is dropped rather than shown
- * twice.
+ * compaction request rather than typed at the agent so that one browser
+ * pressing it is a compaction every browser can see. Context usage is not
+ * a command at all — the ring beside send is its door (docs/ux.md §9.3).
  */
 const FLYCO_COMMANDS: readonly (PaletteEntry & { run: SessionCommand })[] = [
   {
@@ -66,22 +83,42 @@ const FLYCO_COMMANDS: readonly (PaletteEntry & { run: SessionCommand })[] = [
     description: "Summarise the conversation to free context",
     argumentHint: null,
     run: "compact",
+    needsMachine: true,
   },
   {
     name: "archive",
     description: "End the session and release the machine",
     argumentHint: null,
     run: "archive",
+    needsMachine: false,
   },
   {
     name: "resize",
     description: "Move the session to another machine type",
     argumentHint: null,
     run: "resize",
+    needsMachine: false,
   },
 ];
 
 const FLYCO_NAMES: ReadonlySet<string> = new Set(FLYCO_COMMANDS.map((entry) => entry.name));
+
+/**
+ * Harness commands the palette never shows even when reported, because a
+ * control is already their door: `/context` and `/usage` are the ring's
+ * panel, `/model` is the model chip's, `/effort` the effort chip's, and
+ * `/goal` is its own chip. A second door that types a command is worse
+ * than none, so
+ * the harness's copies are dropped rather than listed beside the controls
+ * that answer them (docs/ux.md §9.3).
+ */
+const DROPPED_COMMANDS: ReadonlySet<string> = new Set([
+  "context",
+  "usage",
+  "effort",
+  "goal",
+  "model",
+]);
 
 /**
  * What the field holds while a command is being picked, or `null` when the
@@ -101,11 +138,16 @@ export function paletteQuery(text: string): string | null {
 }
 
 /** The palette's rows: flyco's own first, then the harness's own list. */
-export function paletteEntries(commands: readonly HarnessCommand[]): PaletteEntry[] {
-  return [
+export function paletteEntries(
+  commands: readonly HarnessCommand[],
+  machineUp = true,
+): PaletteEntry[] {
+  const entries: PaletteEntry[] = [
     ...FLYCO_COMMANDS,
     ...commands
-      .filter((command) => !FLYCO_NAMES.has(command.name))
+      .filter(
+        (command) => !FLYCO_NAMES.has(command.name) && !DROPPED_COMMANDS.has(command.name),
+      )
       .map((command) => ({
         name: command.name,
         description: command.description,
@@ -113,6 +155,9 @@ export function paletteEntries(commands: readonly HarnessCommand[]): PaletteEntr
         run: "harness" as const,
       })),
   ];
+  return entries.map((entry) =>
+    entry.needsMachine === true && !machineUp ? { ...entry, disabled: true } : entry,
+  );
 }
 
 export interface SessionComposerProps {
@@ -122,7 +167,7 @@ export interface SessionComposerProps {
    * What the running harness said it offers, newest list wins.
    *
    * Empty until the session's daemon has reported one, which is why the
-   * palette is useful from the first keystroke: flyco's own three are
+   * palette is useful from the first keystroke: flyco's own are
    * always there.
    */
   commands: readonly HarnessCommand[];
@@ -140,6 +185,25 @@ export interface SessionComposerProps {
    * copy of the session.
    */
   controls?: JSX.Element | undefined;
+  /**
+   * What sits between the chips and send: the mode, the model, the ring.
+   *
+   * Separate from `controls` because they are a different kind of thing
+   * under the island rule — the chips say where the session runs and the
+   * trailing says what the next turn runs under — and when the row runs
+   * out the chips float above the box while these stay beside send.
+   */
+  trailing?: JSX.Element | undefined;
+  /**
+   * Whether the session's daemon is there to take what only it can take.
+   *
+   * Prompts are not gated on it — the room's mailbox holds them for the
+   * machine's return — but a `!` shell command, a `/compact`, a terminal
+   * keystroke or a context breakdown are delivered or they are nothing,
+   * so the composer refuses them while the machine is not connected
+   * rather than sending them to die.
+   */
+  machineUp: boolean;
   /**
    * When a message typed now will not be delivered now, and why.
    *
@@ -170,7 +234,33 @@ export default function SessionComposer(props: SessionComposerProps) {
   /** A message beginning with `!` is a shell command, not a prompt. */
   const isBash = createMemo(() => text().startsWith(BASH_PREFIX));
 
-  const entries = createMemo(() => paletteEntries(props.commands));
+  const entries = createMemo(() => paletteEntries(props.commands, props.machineUp));
+
+  /**
+   * Why what is typed cannot be sent right now, or `null` when it can.
+   *
+   * A shell run and a machine-bound command are delivered or nothing —
+   * the room cannot hold them the way it holds a prompt — so while no
+   * daemon is connected the field refuses them and says why, in the same
+   * place the `!` hint says where a command goes.
+   */
+  const blockedReason = createMemo((): string | null => {
+    if (props.machineUp) {
+      return null;
+    }
+    // `shellCommandIn`, not `isBash`: a bare `!` is a prompt, and prompts
+    // are held for the machine rather than refused.
+    if (shellCommandIn(text()) !== null) {
+      return "The machine is not connected — there is no bash to run it.";
+    }
+    const own = FLYCO_COMMANDS.find(
+      (entry) => `/${entry.name}` === text().trim().toLowerCase(),
+    );
+    if (own?.needsMachine === true) {
+      return `The machine is not connected — /${own.name} needs it.`;
+    }
+    return null;
+  });
 
   /** The palette's rows, filtered by whatever has been typed after the slash. */
   const matches = createMemo(() => {
@@ -203,11 +293,14 @@ export default function SessionComposer(props: SessionComposerProps) {
   /**
    * Runs one row, or writes it into the field when it wants an argument.
    *
-   * The split is the whole point of `argumentHint`: `/context` has nothing
-   * left to ask, so choosing it is sending it, while `/goal` without its
-   * condition would be a command that means nothing.
+   * The split is the whole point of `argumentHint`: `/archive` has nothing
+   * left to ask, so choosing it is sending it, while a command without
+   * its argument would be a command that means nothing.
    */
   function choose(entry: PaletteEntry): void {
+    if (entry.disabled === true) {
+      return;
+    }
     if (entry.argumentHint !== null) {
       setText(`/${entry.name} `);
       setHighlighted(0);
@@ -226,7 +319,7 @@ export default function SessionComposer(props: SessionComposerProps) {
 
   function send(): void {
     const message = text().trim();
-    if (message === "") {
+    if (message === "" || blockedReason() !== null) {
       return;
     }
     // A typed-out command flyco runs itself is the same action as picking
@@ -297,6 +390,7 @@ export default function SessionComposer(props: SessionComposerProps) {
       label="Message the agent"
       submitOn="enter"
       controls={props.controls}
+      trailing={props.trailing}
       onKeyDown={onKeyDown}
       ref={(element) => {
         field = element;
@@ -318,9 +412,17 @@ export default function SessionComposer(props: SessionComposerProps) {
                     type="button"
                     role="option"
                     aria-selected={index() === highlighted()}
+                    aria-disabled={entry.disabled === true || undefined}
+                    disabled={entry.disabled === true}
+                    title={
+                      entry.disabled === true
+                        ? "The machine is not connected"
+                        : undefined
+                    }
                     class={cx(
                       sessionStyles.command,
                       index() === highlighted() && sessionStyles.commandHighlighted,
+                      entry.disabled === true && sessionStyles.commandDisabled,
                     )}
                     onMouseEnter={() => setHighlighted(index())}
                     onClick={() => choose(entry)}
@@ -347,7 +449,7 @@ export default function SessionComposer(props: SessionComposerProps) {
             <button
               type="button"
               class={styles.send}
-              disabled={text().trim() === ""}
+              disabled={text().trim() === "" || blockedReason() !== null}
               title="Send"
               aria-label="Send"
               onClick={send}
@@ -369,25 +471,37 @@ export default function SessionComposer(props: SessionComposerProps) {
       }
     >
       <Show
-        when={isBash()}
+        when={blockedReason()}
         fallback={
-          // The shell hint wins while a `!` is being typed: a command runs on
-          // the machine there and then, whatever the plan's limits are doing,
-          // so saying it would wait for a reset would be wrong.
-          <Show when={props.deferred}>
-            {(note) => (
-              <p class={sessionStyles.hint}>
-                <Clock size={13} aria-hidden="true" />
-                {note()}
-              </p>
-            )}
+          <Show
+            when={isBash()}
+            fallback={
+              // The shell hint wins while a `!` is being typed: a command runs on
+              // the machine there and then, whatever the plan's limits are doing,
+              // so saying it would wait for a reset would be wrong.
+              <Show when={props.deferred}>
+                {(note) => (
+                  <p class={sessionStyles.hint}>
+                    <Clock size={13} aria-hidden="true" />
+                    {note()}
+                  </p>
+                )}
+              </Show>
+            }
+          >
+            <p class={sessionStyles.hint}>
+              <TerminalSquare size={13} aria-hidden="true" />
+              Runs in the machine's bash
+            </p>
           </Show>
         }
       >
-        <p class={sessionStyles.hint}>
-          <TerminalSquare size={13} aria-hidden="true" />
-          Runs in the machine's bash
-        </p>
+        {(reason) => (
+          <p class={sessionStyles.refusal}>
+            <TerminalSquare size={13} aria-hidden="true" />
+            {reason()}
+          </p>
+        )}
       </Show>
     </ComposerShell>
   );

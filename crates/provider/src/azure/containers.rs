@@ -36,6 +36,7 @@
 //! outside the table names a size flyco does not offer, not a size to
 //! attempt.
 
+use core::cmp::Ordering;
 use core::fmt;
 
 use flyco_core::machine::{CpuArchitecture, MachineLineage};
@@ -353,8 +354,12 @@ impl<'a> Target<'a> {
 pub struct StartInProgress {
     /// The job whose execution is coming up.
     pub job: String,
-    /// How to keep following the start.
-    pub follow: super::arm::Follow,
+    /// How to keep following the start, where the leg that wrote this had
+    /// got far enough to start one. `None` means it had not — a redelivered
+    /// leg found the job's own write still being carried out by its sibling
+    /// — and what carries on is a join, not a follow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<super::arm::Follow>,
 }
 
 /// What `GET .../jobs/{job}/executions` answers with.
@@ -376,10 +381,15 @@ pub struct ExecutionRecord {
 
 /// The state half of an [`ExecutionRecord`].
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExecutionProperties {
     /// `Running`, `Processing`, `Succeeded`, `Failed`, `Stopped`, …
     #[serde(default)]
     pub status: String,
+    /// When the execution began, RFC 3339 — the ordering two legs of one
+    /// build agree on when they decide which of them is the duplicate.
+    #[serde(default)]
+    pub start_time: String,
 }
 
 impl ExecutionRecord {
@@ -387,6 +397,73 @@ impl ExecutionRecord {
     #[must_use]
     pub fn is_live(&self) -> bool {
         matches!(self.properties.status.as_str(), "Running" | "Processing")
+    }
+
+    /// Orders executions by when they started, earliest first.
+    ///
+    /// An execution Azure never stamped sorts behind every stamped one: a
+    /// missing start time is nothing to order by, not the oldest there is.
+    #[must_use]
+    pub fn started_before(&self, other: &Self) -> Ordering {
+        (
+            self.properties.start_time.is_empty(),
+            &self.properties.start_time,
+            &self.name,
+        )
+            .cmp(&(
+                other.properties.start_time.is_empty(),
+                &other.properties.start_time,
+                &other.name,
+            ))
+    }
+}
+
+/// What `GET …/jobs/{job}` answers, trimmed to the write state a build
+/// joining it decides on.
+#[derive(Debug, Clone, Deserialize)]
+pub struct JobRecord {
+    /// Its state, among other things.
+    pub properties: JobRecordProperties,
+}
+
+/// The properties of a job ARM answers with.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobRecordProperties {
+    /// `Succeeded` once the last write to the job landed, `InProgress`
+    /// while one is still being carried out, `Failed`/`Canceled` when it
+    /// never will under that operation.
+    #[serde(default)]
+    pub provisioning_state: String,
+}
+
+/// Where a job is in its life, as far as a build joining it cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobState {
+    /// The job's last write landed: its definition is final and it can be
+    /// started.
+    Ready,
+    /// A write to the job is still being carried out — a sibling leg is
+    /// mid-`PUT` — and joining means waiting it out.
+    Writing,
+    /// The job's last write failed; nothing that follows can be made of it.
+    Failed,
+}
+
+impl JobRecord {
+    /// Where the job is, to a build joining it.
+    ///
+    /// Anything that is not a known terminal state reads as
+    /// [`JobState::Writing`]: `InProgress` obviously, but also a state this
+    /// driver does not know — waiting it out is the honest answer to all
+    /// of them.
+    #[must_use]
+    pub fn state(&self) -> JobState {
+        match self.properties.provisioning_state.as_str() {
+            "Succeeded" => JobState::Ready,
+            "Failed" | "Canceled" => JobState::Failed,
+            _ => JobState::Writing,
+        }
     }
 }
 

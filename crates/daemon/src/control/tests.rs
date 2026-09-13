@@ -12,10 +12,11 @@ use flyco_core::{
 use tokio::sync::mpsc;
 
 use crate::control::rest::{
-    ApprovalRaiser, ControlApi, ControlApiError, HttpControlApi, TranscriptRead,
+    ApprovalRaiser, CommandStream, ControlApi, ControlApiError, HttpControlApi, RelayTransport,
+    TranscriptRead,
 };
 use crate::control::store::{RemoteTranscriptStore, stream_key};
-use crate::control::wire::{self, Endpoint, QUEUE_DEPTH, SessionRelay, WireError};
+use crate::control::wire::{self, QUEUE_DEPTH, SessionRelay, WireError};
 use crate::git::FakeWorkdir;
 use crate::harness::SessionOutput;
 use crate::harness::claude::protocol::SessionKey;
@@ -24,7 +25,7 @@ use crate::shell::{FakeShell, ShellEvent, ShellUpdate, StartedRun};
 use crate::spot::{FakeEviction, SpotNotice};
 use crate::terminal::{FakeTerminal, TerminalCall};
 use crate::testing::{
-    Call, ControlPlane, Directive, FakeDisk, FakeSession, Greeting, Reply, Room, Seen,
+    Call, ControlPlane, Directive, FakeDisk, FakeSession, AttachAnswer, Reply, Room, Seen,
 };
 use crate::workdir::Checkout;
 use flyco_core::workdir::{WorkdirRefusal, WorkdirReply, WorkdirRequest};
@@ -63,13 +64,18 @@ enum TurnNotice {
     Failed,
 }
 
-/// A [`ControlApi`] that answers without a network.
+/// A [`ControlApi`] that answers without a network — except for the relay
+/// itself, which is real HTTP+SSE against the loopback [`Room`].
 ///
 /// The relay tests care about *ordering* — that an approval is durable
-/// before it is announced — not about HTTP, which
-/// [`the REST tests`](rest_client) cover against a real server.
+/// before it is announced — so the durable-write half is recorded here,
+/// while attach, the command stream, and the frames batches are delegated
+/// to a real [`HttpControlApi`] so the transport under test is the one
+/// production runs.
 #[derive(Debug, Clone)]
 struct RecordingApi {
+    /// The relay transport, pointed at the test's loopback room.
+    transport: HttpControlApi,
     approvals: mpsc::UnboundedSender<ApprovalPayload>,
     observations: mpsc::UnboundedSender<HarnessObservation>,
     notifications: mpsc::UnboundedSender<TurnNotice>,
@@ -77,6 +83,32 @@ struct RecordingApi {
     /// across the harness, the control plane and the disk is assertable.
     calls: mpsc::UnboundedSender<Call>,
     id: ApprovalId,
+}
+
+impl RelayTransport for RecordingApi {
+    fn attach(
+        &self,
+    ) -> impl core::future::Future<Output = Result<flyco_core::wire::DaemonAttached, ControlApiError>> + Send
+    {
+        self.transport.attach()
+    }
+
+    fn commands(
+        &self,
+        epoch: u64,
+        idle: Duration,
+    ) -> impl core::future::Future<
+        Output = Result<CommandStream<flyco_core::wire::DaemonCommand>, ControlApiError>,
+    > + Send {
+        self.transport.commands(epoch, idle)
+    }
+
+    fn frames(
+        &self,
+        batch: &flyco_core::wire::DaemonFrames,
+    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
+        self.transport.frames(batch)
+    }
 }
 
 impl ApprovalRaiser for RecordingApi {
@@ -194,6 +226,7 @@ impl ControlApi for RecordingApi {
                 model: "sonnet".to_owned(),
                 effort: None,
             },
+            permission_mode: flyco_core::PermissionMode::Auto,
         }))
     }
 
@@ -269,7 +302,6 @@ impl ControlApi for RecordingApi {
 /// Everything a relay test drives.
 struct Harness {
     room: Room,
-    session: SessionId,
     outputs: mpsc::Sender<SessionOutput>,
     calls: mpsc::UnboundedReceiver<Call>,
     approvals: mpsc::UnboundedReceiver<ApprovalPayload>,
@@ -290,10 +322,10 @@ struct Harness {
     run: tokio::task::JoinHandle<Result<(), WireError>>,
     /// Whether the agent-ready stage is still to come.
     ///
-    /// It is announced once a room has *welcomed* the daemon, and never
-    /// again after that, so [`Harness::handshake`] expects it on the first
-    /// greeting a welcoming room answers and never on a re-greeting or on
-    /// a room that refuses the handshake outright.
+    /// It is announced once a room has *accepted* the daemon's attach, and
+    /// never again after that, so [`Harness::handshake`] expects it on the
+    /// first attach a welcoming room answers and never on a re-attach or
+    /// on a room that refuses attaches outright.
     expect_ready: bool,
     /// The scratch directory the relay's checkout reads, removed with the
     /// harness.
@@ -332,41 +364,40 @@ fn scratch_checkout() -> ScratchDir {
 }
 
 impl Harness {
-    async fn start(greeting: Greeting) -> Self {
-        Self::with_capacity(greeting, 32).await
+    async fn start(answer: AttachAnswer) -> Self {
+        Self::with_capacity(answer, 32).await
     }
 
-    async fn with_capacity(greeting: Greeting, outputs: usize) -> Self {
-        Self::build(greeting, outputs, wire::Keepalive::default()).await
+    async fn with_capacity(answer: AttachAnswer, outputs: usize) -> Self {
+        Self::build(answer, outputs, wire::Deadlines::default()).await
     }
 
-    /// A harness whose relay beats fast enough to watch.
+    /// A harness whose relay notices a dead stream fast enough to watch.
     ///
-    /// The production interval is thirty seconds, which is a keepalive and
-    /// not a test; the loop under test is the same one either way.
-    async fn with_keepalive(greeting: Greeting, keepalive: wire::Keepalive) -> Self {
-        Self::build(greeting, 32, keepalive).await
+    /// The production silence limit is ninety seconds, which is a liveness
+    /// budget and not a test; the loop under test is the same one either
+    /// way.
+    async fn with_deadlines(answer: AttachAnswer, deadlines: wire::Deadlines) -> Self {
+        Self::build(answer, 32, deadlines).await
     }
 
     /// A harness whose agent has stopped reading its commands.
-    async fn wedged(keepalive: wire::Keepalive) -> Self {
-        Self::assemble(Greeting::Welcome, 32, keepalive, FakeSession::wedged()).await
+    async fn wedged(deadlines: wire::Deadlines) -> Self {
+        Self::assemble(AttachAnswer::Accept, 32, deadlines, FakeSession::wedged()).await
     }
 
-    async fn build(greeting: Greeting, outputs: usize, keepalive: wire::Keepalive) -> Self {
-        Self::assemble(greeting, outputs, keepalive, FakeSession::new()).await
+    async fn build(answer: AttachAnswer, outputs: usize, deadlines: wire::Deadlines) -> Self {
+        Self::assemble(answer, outputs, deadlines, FakeSession::new()).await
     }
 
     async fn assemble(
-        greeting: Greeting,
+        answer: AttachAnswer,
         outputs: usize,
-        keepalive: wire::Keepalive,
+        deadlines: wire::Deadlines,
         harness: (FakeSession, mpsc::UnboundedReceiver<Call>),
     ) -> Self {
-        let room = Room::start(greeting).await;
+        let room = Room::start(answer).await;
         let session = SessionId::generate();
-        let endpoint = Endpoint::from_base(&room.base, session, TOKEN.to_owned())
-            .expect("a loopback relay endpoint");
 
         let (fake, calls) = harness;
         let recorder = fake.recorder();
@@ -376,6 +407,7 @@ impl Harness {
         let (notification_sender, notifications) = mpsc::unbounded_channel();
         let approval_id = ApprovalId::generate();
         let api = RecordingApi {
+            transport: HttpControlApi::new(room.base.clone(), session, TOKEN.to_owned()),
             approvals: approval_sender,
             observations: observation_sender,
             notifications: notification_sender,
@@ -396,8 +428,8 @@ impl Harness {
             FakeWorkdir::with_snapshot(Some(WORKDIR_PATCH.to_vec()));
         let checkout_dir = scratch_checkout();
         let run = tokio::spawn(wire::run(SessionRelay {
-            endpoint,
-            keepalive,
+            session_id: session,
+            deadlines,
             session: fake,
             outputs: receiver,
             api,
@@ -416,7 +448,6 @@ impl Harness {
 
         Self {
             room,
-            session,
             outputs: sender,
             calls,
             approvals,
@@ -430,7 +461,7 @@ impl Harness {
             evict: Some(evict),
             stopper,
             run,
-            expect_ready: greeting == Greeting::Welcome,
+            expect_ready: answer == AttachAnswer::Accept,
             checkout_dir,
         }
     }
@@ -461,22 +492,20 @@ impl Harness {
             .expect("the watcher is live");
     }
 
-    /// Waits for the room to see this daemon's `Hello`.
+    /// Waits for the room to see this daemon's attach and its stream.
     ///
-    /// On the first connection the greeting is followed by the last stage
+    /// On the first attachment the attach is followed by the last stage
     /// of the provisioning timeline (docs/ux.md §9.2): the harness is up
-    /// and the room has welcomed the socket, which is the whole meaning of
+    /// and the room has the daemon's stream, which is the whole meaning of
     /// "the agent is ready". A reconnect does not repeat it.
     async fn handshake(&mut self) -> Option<String> {
-        let Some(Seen::Connected(authorization)) = self.room.next().await else {
-            panic!("the daemon did not connect");
+        let authorization = match self.room.next().await {
+            Some(Seen::Attached { authorization, .. }) => authorization,
+            other => panic!("the daemon did not attach: {other:?}"),
         };
-        assert_eq!(
-            self.room.next_frame().await,
-            DaemonToControl::Hello {
-                protocol_version: WIRE_PROTOCOL_VERSION,
-                session: self.session,
-            }
+        assert!(
+            matches!(self.room.next().await, Some(Seen::StreamOpened(_))),
+            "an accepted attach opens the command stream"
         );
         if self.expect_ready {
             self.expect_ready = false;
@@ -485,7 +514,7 @@ impl Harness {
                 ..
             } = self.room.next_frame().await
             else {
-                panic!("the first connection did not announce that the agent is ready");
+                panic!("the first attach did not announce that the agent is ready");
             };
         }
         authorization
@@ -573,44 +602,79 @@ fn delta(text: &str) -> HarnessEvent {
     }
 }
 
-// ── The handshake ──
+// ── The attach ──
 
 #[tokio::test]
-async fn a_daemon_greets_with_its_token_and_waits_to_be_welcomed() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
-    let authorization = harness.handshake().await;
+async fn a_daemon_attaches_with_its_token_and_its_protocol_version() {
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
 
+    let Some(Seen::Attached {
+        authorization,
+        body,
+    }) = harness.room.next().await
+    else {
+        panic!("the daemon did not attach");
+    };
     assert_eq!(
         authorization.as_deref(),
         Some("Bearer fd_a-daemon-token"),
-        "the relay upgrade carries the session's daemon token"
+        "the attach carries the session's daemon token"
     );
+    assert_eq!(
+        body["protocol_version"],
+        WIRE_PROTOCOL_VERSION,
+        "and the wire version it speaks"
+    );
+
+    // The room's answer opens the stream, and the first batch announces
+    // the agent is ready — `handshake`'s everyday assertions, run once by
+    // hand so this test can read the attach itself.
+    assert!(matches!(
+        harness.room.next().await,
+        Some(Seen::StreamOpened(1))
+    ));
+    harness.expect_ready = false;
+    let DaemonToControl::ProvisioningStage {
+        stage: ProvisioningStage::Ready,
+        ..
+    } = harness.room.next_frame().await
+    else {
+        panic!("the first attach did not announce that the agent is ready");
+    };
+
     harness.archive().await.expect("the run ended cleanly");
 }
 
 #[tokio::test]
-async fn nothing_is_pumped_before_the_welcome() {
-    // A room that refuses the handshake gets the `Hello` and nothing else,
-    // however much the harness produces: a frame sent into a socket that is
-    // about to close is a frame the session lost.
-    let mut harness = Harness::start(Greeting::Refuse).await;
-    harness.handshake().await;
+async fn nothing_is_pumped_before_an_attach_is_accepted() {
+    // A room that refuses the attach gets the attempt and nothing else,
+    // however much the harness produces: a frame posted to a room that has
+    // not accepted the attach is a frame the session lost.
+    let mut harness = Harness::start(AttachAnswer::Refuse).await;
+
+    // The refusal is a retryable one — a room mid-deploy — so the daemon
+    // backs off and attaches again rather than ending.
+    let Some(Seen::Attached { .. }) = harness.room.next().await else {
+        panic!("the daemon did not attempt an attach");
+    };
     harness
         .emit(SessionOutput::Event { event: delta("hi") })
         .await;
 
-    assert_eq!(
-        harness.room.next().await,
-        Some(Seen::Disconnected),
-        "a refused daemon is disconnected, not pumped"
+    assert!(
+        matches!(harness.room.next().await, Some(Seen::Attached { .. })),
+        "a refused daemon backs off and attaches again"
     );
 
-    // And it comes back rather than giving up — the refusal may have been a
-    // control plane mid-deploy.
-    assert!(matches!(
-        harness.room.next().await,
-        Some(Seen::Connected(_))
-    ));
+    // No stream was ever opened and no batch ever posted: without an epoch
+    // the daemon has nothing to pump into.
+    assert!(
+        !matches!(
+            harness.room.next().await,
+            Some(Seen::StreamOpened(_) | Seen::Batch { .. })
+        ),
+        "a refused attach opens no stream and carries no frames"
+    );
     harness.run.abort();
 }
 
@@ -618,7 +682,7 @@ async fn nothing_is_pumped_before_the_welcome() {
 
 #[tokio::test]
 async fn session_output_reaches_the_room_as_wire_frames() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness
@@ -657,7 +721,7 @@ async fn session_output_reaches_the_room_as_wire_frames() {
 
 #[tokio::test]
 async fn an_approval_is_recorded_over_rest_before_it_is_announced() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness
@@ -692,7 +756,7 @@ async fn an_approval_is_recorded_over_rest_before_it_is_announced() {
 
 #[tokio::test]
 async fn an_approval_decision_reaches_the_harness() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     let native = ApprovalId::generate();
@@ -725,7 +789,7 @@ async fn an_approval_decision_reaches_the_harness() {
 
 #[tokio::test]
 async fn terminal_input_reaches_the_shell_and_output_reaches_the_room() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness.command(ControlToDaemon::TerminalInput {
@@ -753,7 +817,7 @@ async fn terminal_input_reaches_the_shell_and_output_reaches_the_room() {
 
 #[tokio::test]
 async fn the_pane_size_reaches_the_pty() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness.command(ControlToDaemon::TerminalResize {
@@ -772,7 +836,7 @@ async fn the_pane_size_reaches_the_pty() {
 
 #[tokio::test]
 async fn a_shell_command_runs_on_the_machine_and_its_output_reaches_the_room() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     let run = ShellRunId::generate();
@@ -837,7 +901,7 @@ async fn a_shell_command_runs_on_the_machine_and_its_output_reaches_the_room() {
 
 #[tokio::test]
 async fn stop_cancels_a_running_shell_command() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness.command(ControlToDaemon::RunShell {
@@ -860,7 +924,7 @@ async fn stop_cancels_a_running_shell_command() {
 
 #[tokio::test]
 async fn a_second_shell_command_is_refused_while_one_is_running() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness.command(ControlToDaemon::RunShell {
@@ -890,7 +954,7 @@ async fn a_second_shell_command_is_refused_while_one_is_running() {
 
 #[tokio::test]
 async fn a_paused_session_refuses_a_shell_command_rather_than_ignoring_it() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness.command(ControlToDaemon::Budget {
@@ -916,8 +980,8 @@ async fn a_paused_session_refuses_a_shell_command_rather_than_ignoring_it() {
 }
 
 #[tokio::test]
-async fn a_question_about_the_checkout_is_answered_on_the_socket_that_asked() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+async fn a_question_about_the_checkout_is_answered_over_the_relay() {
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     let id = flyco_core::WorkdirRequestId::generate();
@@ -967,7 +1031,7 @@ async fn a_question_about_the_checkout_is_answered_on_the_socket_that_asked() {
 
 #[tokio::test]
 async fn a_refused_question_about_the_checkout_comes_back_as_a_refusal() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     let id = flyco_core::WorkdirRequestId::generate();
@@ -992,7 +1056,7 @@ async fn a_refused_question_about_the_checkout_comes_back_as_a_refusal() {
 
 #[tokio::test]
 async fn user_messages_interrupts_and_compaction_reach_the_harness() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness.command(ControlToDaemon::UserMessage {
@@ -1030,6 +1094,14 @@ async fn user_messages_interrupts_and_compaction_reach_the_harness() {
     });
     assert_eq!(harness.next_call().await, Call::ModelSet(model));
 
+    harness.command(ControlToDaemon::SetPermissionMode {
+        mode: flyco_core::PermissionMode::Plan,
+    });
+    assert_eq!(
+        harness.next_call().await,
+        Call::PermissionModeSet(flyco_core::PermissionMode::Plan)
+    );
+
     harness.archive().await.expect("the run ended cleanly");
 }
 
@@ -1038,7 +1110,7 @@ async fn what_is_left_of_the_plan_is_filed_over_rest_rather_than_sent_as_a_frame
     // The snapshot is recorded against the *account*, which lives in D1,
     // so it leaves the relay by the same door the model list does and the
     // control plane announces it to the browsers itself.
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     let windows = vec![
@@ -1070,7 +1142,7 @@ async fn the_commands_a_harness_offers_travel_as_a_frame_rather_than_over_rest()
     // The other way round from the model list beside it, and for a reason:
     // the command set carries the checkout's own skills, so it is a fact
     // about this session and there is no account row to file it against.
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     let commands = vec![flyco_core::HarnessCommand {
@@ -1097,7 +1169,7 @@ async fn the_models_a_harness_offers_are_filed_over_rest_rather_than_sent_as_a_f
     // session room is a Durable Object that cannot reach it. So this output
     // is the one that leaves the relay by the other door — and the control
     // plane announces it to the browsers itself.
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     let models = flyco_core::builtin_models(flyco_core::HarnessKind::Codex);
@@ -1123,7 +1195,7 @@ async fn the_models_a_harness_offers_are_filed_over_rest_rather_than_sent_as_a_f
 
 #[tokio::test]
 async fn the_agent_is_told_what_machine_it_is_on_before_it_is_given_any_work() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness.command(ControlToDaemon::UserMessage {
@@ -1145,7 +1217,7 @@ async fn the_agent_is_told_what_machine_it_is_on_before_it_is_given_any_work() {
 
 #[tokio::test]
 async fn a_resize_tells_the_agent_the_machine_restarted_and_the_disk_did_not() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness.command(ControlToDaemon::MachineChanged {
@@ -1171,7 +1243,7 @@ async fn a_decision_on_an_approval_the_harness_never_raised_is_not_fatal() {
     // The daemon's own MCP server raises one for a license-bound resize, and
     // the control plane performs that itself; the decision still reaches
     // every daemon because the room echoes it to whoever is connected.
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness.command(ControlToDaemon::ApprovalDecision {
@@ -1188,9 +1260,9 @@ async fn a_decision_on_an_approval_the_harness_never_raised_is_not_fatal() {
 
 #[tokio::test]
 async fn the_agent_ready_stage_is_announced_once_and_not_on_every_reconnect() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
 
-    // The first connection carries it; `handshake` asserts the frame and
+    // The first attachment carries it; `handshake` asserts the frame and
     // its stage.
     harness.handshake().await;
 
@@ -1199,7 +1271,7 @@ async fn the_agent_ready_stage_is_announced_once_and_not_on_every_reconnect() {
         .directives
         .send(Directive::Close)
         .expect("the room is live");
-    assert_eq!(harness.room.next().await, Some(Seen::Disconnected));
+    assert_eq!(harness.room.next().await, Some(Seen::StreamClosed));
     harness.handshake().await;
 
     // A reconnect is not a second provision, so the next frame the room
@@ -1221,20 +1293,22 @@ async fn the_agent_ready_stage_is_announced_once_and_not_on_every_reconnect() {
 
 // ── Reconnection ──
 
-/// A keepalive short enough to watch in a test, with the production shape:
-/// beat, then give up after [`wire::MISSES_BEFORE_DEAD`] unanswered beats.
-fn brisk() -> wire::Keepalive {
-    wire::Keepalive::every(Duration::from_millis(50), wire::MISSES_BEFORE_DEAD)
+/// A silence limit short enough to watch in a test: the fake room pings
+/// every 30ms, so 150ms of byte-level quiet is several missed heartbeats
+/// to a relay built this way, which is what makes a dead path show up
+/// inside a test's patience.
+fn brisk() -> wire::Deadlines {
+    wire::Deadlines::silent(Duration::from_millis(150))
 }
 
 #[tokio::test]
 async fn a_harness_that_stops_answering_ends_the_session_instead_of_the_relay() {
     // The pump awaits the harness inside its own loop, so a command that
-    // never returns takes the socket read and the heartbeat down with it:
+    // never returns takes the stream read and the acks down with it:
     // the daemon stops answering, stops reconnecting, and stops being able
     // to say why (issue #201). It must give up on the harness instead.
-    let keepalive = brisk().waiting_on_the_harness(Duration::from_millis(150));
-    let mut harness = Harness::wedged(keepalive).await;
+    let deadlines = brisk().waiting_on_the_harness(Duration::from_millis(150));
+    let mut harness = Harness::wedged(deadlines).await;
     harness.handshake().await;
 
     harness.command(ControlToDaemon::UserMessage {
@@ -1258,63 +1332,47 @@ async fn a_harness_that_stops_answering_ends_the_session_instead_of_the_relay() 
 }
 
 #[tokio::test]
-async fn an_idle_socket_is_kept_alive_by_a_heartbeat() {
-    let mut harness = Harness::with_keepalive(Greeting::Welcome, brisk()).await;
+async fn an_idle_stream_is_kept_alive_by_the_rooms_heartbeat() {
+    let mut harness = Harness::with_deadlines(AttachAnswer::Accept, brisk()).await;
     harness.handshake().await;
 
-    // Nothing has happened in the session at all, and the daemon still
-    // writes: an idle flow is what a cloud NAT reclaims.
-    assert_eq!(harness.room.next_frame().await, DaemonToControl::Heartbeat);
+    // Nothing has happened in the session at all, for many times the
+    // silence limit. The stream still has to be the same one: the room's
+    // own heartbeat comments are what keep an idle flow alive across the
+    // NATs that reclaim one.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    harness.command(ControlToDaemon::UserMessage {
+        text: "still there?".to_owned(),
+        origin: flyco_core::MessageOrigin::User,
+    });
+    let Call::UserMessage(text) = harness.next_call().await else {
+        panic!("a stream kept alive still delivers the next command");
+    };
+    assert!(text.ends_with("still there?"), "{text}");
 
     harness.archive().await.expect("the run ended cleanly");
 }
 
 #[tokio::test]
-async fn a_room_that_answers_keeps_its_socket() {
-    let mut harness = Harness::with_keepalive(Greeting::Welcome, brisk()).await;
+async fn a_silenced_stream_is_abandoned_and_the_daemon_returns() {
+    let mut harness = Harness::with_deadlines(AttachAnswer::Accept, brisk()).await;
     harness.handshake().await;
 
-    // Well past the silence limit, one answered beat at a time.
-    for _ in 0..3 * wire::MISSES_BEFORE_DEAD {
-        assert_eq!(harness.room.next_frame().await, DaemonToControl::Heartbeat);
-        harness
-            .room
-            .directives
-            .send(Directive::Send(ControlToDaemon::Heartbeat))
-            .expect("the room is live");
-    }
-
-    // Still the same connection: an answered beat is not a reconnect, and
-    // the daemon never re-greeted.
+    // A flow a NAT dropped without a FIN looks exactly like this: the
+    // stream still stands, writes still appear to succeed, and no bytes —
+    // not even the room's ping — ever arrive. The daemon must not
+    // read it forever.
     harness
-        .emit(SessionOutput::Event {
-            event: delta("still here"),
-        })
-        .await;
-    assert_eq!(
-        harness.room.next_frame().await,
-        DaemonToControl::Harness {
-            event: delta("still here")
-        }
-    );
+        .room
+        .directives
+        .send(Directive::Silence)
+        .expect("the room is live");
 
-    harness.archive().await.expect("the run ended cleanly");
-}
-
-#[tokio::test]
-async fn a_room_that_stops_answering_loses_its_socket_and_the_daemon_returns() {
-    let mut harness = Harness::with_keepalive(Greeting::Welcome, brisk()).await;
-    harness.handshake().await;
-
-    // This room never answers, which is what a socket a NAT dropped without
-    // a FIN looks like from the daemon's end: writes still appear to
-    // succeed and nothing ever arrives. The daemon must not read it
-    // forever.
     loop {
         match harness.room.next().await.expect("the daemon went quiet") {
-            Seen::Disconnected => break,
-            Seen::Frame(DaemonToControl::Heartbeat) | Seen::Connected(_) => {}
-            Seen::Frame(other) => panic!("an idle relay sent {other:?}"),
+            Seen::StreamClosed => break,
+            Seen::Batch { .. } => panic!("an idle daemon posted a batch"),
+            Seen::Attached { .. } | Seen::StreamOpened(_) => {}
         }
     }
 
@@ -1336,8 +1394,8 @@ async fn a_room_that_stops_answering_loses_its_socket_and_the_daemon_returns() {
 }
 
 #[tokio::test]
-async fn a_dropped_socket_is_reconnected_and_re_greeted() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+async fn a_dropped_stream_is_reconnected_under_a_fresh_epoch() {
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness
@@ -1345,10 +1403,10 @@ async fn a_dropped_socket_is_reconnected_and_re_greeted() {
         .directives
         .send(Directive::Close)
         .expect("the room is live");
-    assert_eq!(harness.room.next().await, Some(Seen::Disconnected));
+    assert_eq!(harness.room.next().await, Some(Seen::StreamClosed));
 
-    // The daemon comes back and greets again: a room that hibernated and
-    // woke has forgotten the handshake, so re-greeting is the protocol.
+    // The daemon comes back: a new attach, a new epoch, a new stream —
+    // a room that restarted has forgotten the last one.
     let authorization = harness.handshake().await;
     assert_eq!(authorization.as_deref(), Some("Bearer fd_a-daemon-token"));
 
@@ -1370,17 +1428,29 @@ async fn a_dropped_socket_is_reconnected_and_re_greeted() {
 
 #[tokio::test]
 async fn frames_produced_while_disconnected_are_buffered_and_then_sent() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
+    // Gate the next attach, then close the stream: the daemon's notice of
+    // the dead stream is its next attach, and the gate holds it there —
+    // parked, provably detached — while the frames below are produced.
+    harness
+        .room
+        .directives
+        .send(Directive::GateAttaches)
+        .expect("the room is live");
     harness
         .room
         .directives
         .send(Directive::Close)
         .expect("the room is live");
-    assert_eq!(harness.room.next().await, Some(Seen::Disconnected));
+    assert_eq!(harness.room.next().await, Some(Seen::StreamClosed));
 
-    // Produced with no socket to carry them.
+    // The parked attach is the proof the daemon has noticed and has
+    // nowhere to flush to. Anything produced now can only wait.
+    let Some(Seen::Attached { .. }) = harness.room.next().await else {
+        panic!("a dead stream did not bring the daemon back to attach");
+    };
     harness
         .emit(SessionOutput::Event { event: delta("a") })
         .await;
@@ -1388,7 +1458,15 @@ async fn frames_produced_while_disconnected_are_buffered_and_then_sent() {
         .emit(SessionOutput::Event { event: delta("b") })
         .await;
 
-    harness.handshake().await;
+    harness
+        .room
+        .directives
+        .send(Directive::ReleaseAttaches)
+        .expect("the room is live");
+    assert!(
+        matches!(harness.room.next().await, Some(Seen::StreamOpened(_))),
+        "the released attach opens its command stream"
+    );
     assert_eq!(
         harness.room.next_frame().await,
         DaemonToControl::Harness { event: delta("a") }
@@ -1406,7 +1484,6 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
     // No room at all: nothing is ever drained, so the queue fills.
     let session = SessionId::generate();
     let base: url::Url = "http://127.0.0.1:1/".parse().expect("a dead loopback URL");
-    let endpoint = Endpoint::from_base(&base, session, TOKEN.to_owned()).expect("a relay endpoint");
 
     let (fake, _calls) = FakeSession::new();
     let recorder = fake.recorder();
@@ -1415,6 +1492,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
     let (observations, _) = mpsc::unbounded_channel();
     let (notifications, _) = mpsc::unbounded_channel();
     let api = RecordingApi {
+        transport: HttpControlApi::new(base, session, TOKEN.to_owned()),
         approvals,
         observations,
         notifications,
@@ -1426,8 +1504,8 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
     let (workdir, _, repo_status) = FakeWorkdir::pair();
     let stops = crate::stop::nothing_to_watch();
     let run = tokio::spawn(wire::run(SessionRelay {
-        endpoint,
-        keepalive: wire::Keepalive::default(),
+        session_id: session,
+        deadlines: wire::Deadlines::default(),
         session: fake,
         outputs: receiver,
         api,
@@ -1471,7 +1549,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
 
 #[tokio::test]
 async fn a_budget_pause_interrupts_the_turn_and_stops_accepting_work() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness.command(ControlToDaemon::Budget {
@@ -1497,7 +1575,7 @@ async fn a_budget_pause_interrupts_the_turn_and_stops_accepting_work() {
 
 #[tokio::test]
 async fn a_budget_threshold_below_the_pause_is_told_to_the_agent() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     for signal in [
@@ -1520,7 +1598,7 @@ async fn a_budget_threshold_below_the_pause_is_told_to_the_agent() {
 
 #[tokio::test]
 async fn a_raised_budget_lifts_the_pause_and_tells_the_agent_to_carry_on() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness.command(ControlToDaemon::Budget {
@@ -1557,7 +1635,7 @@ async fn a_raised_budget_lifts_the_pause_and_tells_the_agent_to_carry_on() {
 
 #[tokio::test]
 async fn a_budget_raised_on_a_session_that_never_paused_says_nothing() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     // Topping a budget up early is not news the agent has to read: there
@@ -1585,7 +1663,7 @@ async fn a_budget_raised_on_a_session_that_never_paused_says_nothing() {
 
 #[tokio::test]
 async fn archiving_shuts_the_harness_down_and_ends_the_run() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
     // A turn's usage travels inside its completion event: the Claude driver
     // has no periodic meter to sample, so `DaemonToControl::Usage` waits for
@@ -1621,7 +1699,7 @@ async fn a_reclaimed_machine_stops_the_turn_flushes_syncs_and_then_reports() {
     // the disk is synced, and both are done before anything says so — a
     // notice sent first would start a countdown against a session whose
     // last minute of work was still in a page cache.
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
     harness
         .emit(SessionOutput::Started {
@@ -1668,7 +1746,7 @@ async fn nothing_opens_a_turn_between_the_notice_and_the_machine_going() {
     // keeps it in its mailbox and hands it to the daemon on the
     // replacement machine — but starting a turn here would be work the
     // flushed transcript has no record of.
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
     harness.evict(30);
 
@@ -1688,7 +1766,7 @@ async fn nothing_opens_a_turn_between_the_notice_and_the_machine_going() {
         origin: flyco_core::MessageOrigin::User,
     });
     harness.command(ControlToDaemon::Compact);
-    // The socket stays open, so the daemon is still there to answer — and
+    // The stream stays open, so the daemon is still there to answer — and
     // what it does with both is nothing. A terminal keystroke proves the
     // relay is still pumping rather than merely silent.
     harness.command(ControlToDaemon::TerminalInput {
@@ -1712,7 +1790,7 @@ async fn a_stopping_container_flushes_before_it_writes_the_patch_and_reports_las
     // still changing it; and the control plane is told last, because
     // "this machine is stopping" must not be true before the user's
     // uncommitted work has left it.
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
     harness
         .emit(SessionOutput::Started {
@@ -1758,13 +1836,13 @@ async fn a_stopping_container_flushes_before_it_writes_the_patch_and_reports_las
 }
 
 #[tokio::test]
-async fn a_stop_ends_the_run_rather_than_holding_the_socket() {
-    // The container counterpart of a reclamation's held socket. A machine
+async fn a_stop_ends_the_run_rather_than_holding_the_stream() {
+    // The container counterpart of a reclamation's held stream. A machine
     // being reclaimed keeps its connection because it is about to be killed
     // anyway and a clean disconnect would read as "coming back"; a stopping
     // container has been *asked* to exit, and exiting 0 is what stops the
     // platform recording the execution as failed.
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness.stop().await;
@@ -1788,7 +1866,7 @@ async fn a_reclamation_pushes_what_the_room_has_not_seen_yet() {
     // The room's stored tail is what a browser replays, and the frames
     // still in the relay's queue when the notice arrives are the last
     // minute of the session. They go out before the notice does.
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
     harness
         .emit(SessionOutput::Event { event: delta("a") })
@@ -1814,7 +1892,7 @@ async fn a_reclamation_pushes_what_the_room_has_not_seen_yet() {
 
 #[tokio::test]
 async fn terminal_turn_events_notify_the_control_plane_before_relaying() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness
@@ -1842,7 +1920,7 @@ async fn a_turn_starting_is_reported_before_it_is_relayed() {
     // from, and it is a fact a Durable Object cannot write to D1 — so it
     // takes the same REST route the turn's end does, before the frame that
     // announces it (docs/ux.md §6).
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness
@@ -1865,7 +1943,7 @@ async fn a_turn_starting_is_reported_before_it_is_relayed() {
 
 #[tokio::test]
 async fn a_turn_that_reported_a_cost_files_an_observation() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness
@@ -1890,7 +1968,7 @@ async fn a_turn_that_reported_a_cost_files_an_observation() {
 
 #[tokio::test]
 async fn a_turn_whose_harness_priced_nothing_files_nothing() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     // Codex reports tokens and no cost. An observation of "no cost" would
@@ -1929,7 +2007,7 @@ async fn a_turn_whose_harness_priced_nothing_files_nothing() {
 
 #[tokio::test]
 async fn a_refused_observation_does_not_stop_the_session() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
     // A session on inherited developer credentials has no linked account,
     // so the control plane refuses every observation it posts. The turn
@@ -1955,7 +2033,7 @@ async fn a_refused_observation_does_not_stop_the_session() {
 
 #[tokio::test]
 async fn a_dirty_tree_is_reported_and_keeps_the_agent_awake() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness
@@ -2006,7 +2084,7 @@ async fn a_dirty_tree_is_reported_and_keeps_the_agent_awake() {
 /// into the composer while it waited, which the daemon has never seen.
 #[tokio::test]
 async fn a_usage_limit_with_a_reset_time_is_filed_with_the_control_plane() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     let window = UsageWindow::new(Some(300), None, 100, Some(1_800_007_200));
@@ -2037,7 +2115,7 @@ async fn a_usage_limit_with_a_reset_time_is_filed_with_the_control_plane() {
 /// shape, and it arrives before the frame that names the window.
 #[tokio::test]
 async fn a_usage_limit_that_names_no_reset_is_not_filed() {
-    let mut harness = Harness::start(Greeting::Welcome).await;
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
     harness.handshake().await;
 
     harness
@@ -2368,6 +2446,7 @@ mod remote_store {
                     status,
                     title: "Payload Too Large".to_owned(),
                     detail: "the batch is over the 1 MiB a transcript batch may be".to_owned(),
+                    kind: "payload-too-large".to_owned(),
                 }));
             }
             core::future::ready(

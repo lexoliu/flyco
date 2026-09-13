@@ -44,9 +44,9 @@ const COLLECTION_PLACEHOLDER: &str = "Vec";
 ///   `provider_oauth::gcp_callback`, which additionally answer `303` when
 ///   they *fail* — their caller is a browser mid-navigation, and a problem
 ///   document rendered into a tab is a dead end.
-/// * `app::open_daemon_relay`, `app::open_client_relay` and
-///   `app::open_host_relay` answer `101` with a WebSocket attached, which the
-///   response model has no way to describe.
+/// * `app::open_daemon_commands`, `app::open_host_commands` and
+///   `app::open_event_stream` answer `200` with a `text/event-stream` body
+///   that never ends — a stream the response model has no way to describe.
 /// * `app::get_release_artifact`, `app::put_transcript_batch`,
 ///   `app::get_transcript`, and the workdir patch pair carry raw bytes: a
 ///   release is an executable or checksum, a transcript batch is
@@ -59,17 +59,20 @@ const COLLECTION_PLACEHOLDER: &str = "Vec";
 pub const BODILESS: &[&str] = &[
     "app::get_release_artifact",
     "app::get_transcript",
-    "app::open_client_relay",
-    "app::open_daemon_relay",
-    "app::open_host_relay",
     "app::put_transcript_batch",
     "flyco_api::app::agent_resize_machine",
     "flyco_api::app::compact_session",
+    "flyco_api::app::context_session",
     "flyco_api::app::get_workdir_patch",
     "flyco_api::app::interrupt_session",
     "flyco_api::app::notify_turn_completed",
     "flyco_api::app::notify_turn_failed",
     "flyco_api::app::notify_turn_started",
+    "flyco_api::app::open_daemon_commands",
+    "flyco_api::app::open_event_stream",
+    "flyco_api::app::open_host_commands",
+    "flyco_api::app::post_daemon_frames",
+    "flyco_api::app::post_host_frames",
     "flyco_api::app::put_harness_session",
     "flyco_api::app::put_workdir_patch",
     "flyco_api::app::record_harness_observation",
@@ -81,7 +84,10 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::app::report_usage",
     "flyco_api::app::report_usage_limit",
     "flyco_api::app::revoke_api_key",
+    "flyco_api::app::run_shell",
     "flyco_api::app::send_message",
+    "flyco_api::app::terminal_input",
+    "flyco_api::app::terminal_resize",
     "flyco_api::harness_accounts::unlink_harness_account",
     "flyco_api::hosts::delete_host",
     "flyco_api::hosts::report_job_result",
@@ -183,6 +189,5 @@ fn register_schemas(spec: &mut OpenApi) {
     register::<flyco_core::SkillView>(components);
     register::<flyco_core::TurnPage>(components);
     register::<flyco_core::VapidPublicKey>(components);
-    register::<crate::relay::RelayTicket>(components);
     register::<crate::room::EventPage>(components);
 }

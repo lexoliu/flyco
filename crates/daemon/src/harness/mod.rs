@@ -20,7 +20,9 @@ pub mod codex;
 use std::future::Future;
 use std::path::PathBuf;
 
-use flyco_core::{ApprovalId, HarnessCommand, HarnessEvent, ModelChoice, ModelOption, UsageWindow};
+use flyco_core::{
+    ApprovalId, HarnessCommand, HarnessEvent, ModelChoice, ModelOption, PermissionMode, UsageWindow,
+};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -240,6 +242,18 @@ pub trait HarnessSession: Send + Sync {
     /// harness rejects compaction.
     fn compact(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
+    /// Asks the harness what its context window is spent on.
+    ///
+    /// A query, not a turn: the answer is emitted on the session's output
+    /// stream as
+    /// [`HarnessEvent::ContextUsage`](flyco_core::HarnessEvent::ContextUsage),
+    /// and nothing about it enters the conversation the window belongs to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the session has already stopped.
+    fn context_usage(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
     /// Puts the running session on another model, at another effort.
     ///
     /// Applied to the conversation in progress rather than the next one:
@@ -255,6 +269,23 @@ pub trait HarnessSession: Send + Sync {
     /// harness refuses the model.
     fn set_model(&self, model: ModelChoice)
     -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Puts the running session under another permission mode.
+    ///
+    /// Applied to the conversation in progress rather than the next one on
+    /// the same terms as [`Self::set_model`]: the Claude Agent SDK takes
+    /// `setPermissionMode` on a live query, and Codex's `turn/start`
+    /// documents `approvalPolicy` and `sandboxPolicy` as overriding "this
+    /// turn and subsequent turns" — so on Codex the change takes effect
+    /// with the next turn, which is the granularity the app-server offers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the session has already stopped.
+    fn set_permission_mode(
+        &self,
+        mode: PermissionMode,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Answers a pending approval.
     ///

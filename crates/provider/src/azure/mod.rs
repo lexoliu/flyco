@@ -209,6 +209,17 @@ pub const SPOT_UNSUPPORTED_CODES: [&str; 2] = [
     "AzureSpotIsNotSupportedForThisVMSize",
 ];
 
+/// The code a Container Apps job answers a write with while an earlier
+/// write to it is still being carried out — the signature of a second leg
+/// of one build running beside the first.
+const JOB_BUSY_CODE: &str = "ContainerAppsJobOperationInProgress";
+
+/// How many polls a leg joining a build waits for an execution to appear
+/// before starting one itself. The live leg it shadows needs a single
+/// request to reach `start`, so an empty executions list past this means
+/// that leg died in between rather than that there is nothing to join.
+const JOIN_GRACE_POLLS: usize = 3;
+
 /// The names every flyco resource in one workspace answers to.
 ///
 /// Derived from the machine id rather than allocated, so a name is
@@ -402,6 +413,9 @@ enum Started {
     Running(String),
     /// Still starting: how to keep following it.
     Pending(Follow),
+    /// No start to follow yet: the job's own write is still being carried
+    /// out by another leg of this build, and what carries on is a join.
+    Joining,
 }
 
 /// Where an operation had got to after a bounded number of polls.
@@ -1460,20 +1474,37 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     /// what every later call about the *running* half of this machine is
     /// addressed to.
     async fn start_execution(&mut self, job: &str) -> Result<String, ProviderError> {
-        match self.begin_execution(job).await? {
+        let mut started = self.begin_execution(job).await?;
+        // A start refused because a write to the job is still under way is
+        // joined, not retried: the machine that write is making is this
+        // one. Joins spend their own poll budget, so the loop stays bounded.
+        for _ in 0..MAX_POLL_ATTEMPTS / (2 * POLLS_PER_INVOCATION) {
+            if !matches!(started, Started::Joining) {
+                break;
+            }
+            started = self.join_container(job).await?;
+        }
+        match started {
             Started::Running(execution) => Ok(execution),
             Started::Pending(follow) => match self.follow_start(follow, MAX_POLL_ATTEMPTS).await? {
                 Started::Running(execution) => Ok(execution),
-                Started::Pending(_) => Err(ProviderError::Rejected(format!(
+                Started::Pending(_) | Started::Joining => Err(ProviderError::Rejected(format!(
                     "an Azure job execution was still starting after {MAX_POLL_ATTEMPTS} polls"
                 ))),
             },
+            Started::Joining => Err(ProviderError::Rejected(format!(
+                "an Azure job was still being written after {MAX_POLL_ATTEMPTS} polls"
+            ))),
         }
     }
 
     /// Starts a new execution of a job and follows it for one invocation's
     /// polls: the execution's name if it came up, or how to keep following
     /// it if it did not (issue #257).
+    ///
+    /// A start refused with [`JOB_BUSY_CODE`] means another leg of this
+    /// build holds the job's write lock; [`Started::Joining`] is what the
+    /// caller turns into a join rather than a second start beside it.
     async fn begin_execution(&mut self, job: &str) -> Result<Started, ProviderError> {
         let response = self
             .send(HttpRequest::new(
@@ -1481,6 +1512,9 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
                 self.job_action_url(&format!("{job}/start")),
             ))
             .await?;
+        if job_busy(&response) {
+            return Ok(Started::Joining);
+        }
         if !response.is_success() {
             return Err(refusal(&response));
         }
@@ -1518,8 +1552,23 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         Ok(started.name)
     }
 
+    /// A job's record as ARM sees it right now — what a join reads to
+    /// learn whether the write it collided with has landed.
+    async fn read_job(&mut self, job: &str) -> Result<containers::JobRecord, ProviderError> {
+        let response = self
+            .send(HttpRequest::new(Method::Get, self.job_url(job)))
+            .await?;
+        if !response.is_success() {
+            return Err(refusal(&response));
+        }
+        Ok(response.json()?)
+    }
+
     /// Every execution a job has that is still using compute.
-    async fn live_executions(&mut self, job: &str) -> Result<Vec<String>, ProviderError> {
+    async fn live_executions(
+        &mut self,
+        job: &str,
+    ) -> Result<Vec<containers::ExecutionRecord>, ProviderError> {
         let response = self
             .send(HttpRequest::new(
                 Method::Get,
@@ -1534,8 +1583,112 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             .value
             .into_iter()
             .filter(containers::ExecutionRecord::is_live)
-            .map(|execution| execution.name)
             .collect())
+    }
+
+    /// Stops every live execution of a job but the earliest, and answers
+    /// with the earliest's name.
+    ///
+    /// That rule is what two legs of one build both follow: a leg that
+    /// started a second execution beside the first sees the same list,
+    /// keeps the same earliest, and stops its own — so however the legs
+    /// interleave, they converge on one machine.
+    ///
+    /// # Errors
+    ///
+    /// Fails only when a job a start just named shows no live execution —
+    /// the execution ended between the two calls — and reports a stopped
+    /// duplicate it could not stop instead of failing, since one extra
+    /// execution still converges the build.
+    async fn converge_executions(&mut self, job: &str) -> Result<String, ProviderError> {
+        let live = self.live_executions(job).await?;
+        let Some(earliest) = live
+            .iter()
+            .min_by(|a, b| a.started_before(b))
+        else {
+            return Err(ProviderError::Rejected(format!(
+                "the Azure Container Apps job {job} shows no live execution where \
+                 a start named one"
+            )));
+        };
+        let keep = earliest.name.clone();
+        for record in &live {
+            if record.name == keep {
+                continue;
+            }
+            let duplicate = containers::Execution {
+                job,
+                name: &record.name,
+            };
+            if let Err(error) = self.stop_execution(&duplicate).await {
+                tracing::warn!(
+                    %job,
+                    execution = %record.name,
+                    %error,
+                    "could not stop a duplicate Azure Container Apps execution"
+                );
+            }
+        }
+        Ok(keep)
+    }
+
+    /// Joins a build a sibling leg is carrying out: waits for the job's
+    /// write to land, then reports the execution that leg started — or
+    /// starts one itself when that leg died before it could.
+    ///
+    /// A leg reaches here when its own write or start collided with the
+    /// write a redelivered sibling leg is still carrying — or a leg that
+    /// never got to a start resumes. The join is the contract that keeps
+    /// one build to one machine: waiting legs watch the same executions
+    /// list the starting leg does, and every leg keeps the earliest
+    /// execution it finds there — [`Self::converge_executions`] is what
+    /// reports and enforces that at the point a machine is reported.
+    async fn join_container(&mut self, job: &str) -> Result<Started, ProviderError> {
+        // A start issued over a job still being written is refused the
+        // same way the write was, so the job has to settle first.
+        let mut settled = false;
+        for attempt in 0..POLLS_PER_INVOCATION {
+            match self.read_job(job).await?.state() {
+                containers::JobState::Ready => {
+                    settled = true;
+                    break;
+                }
+                containers::JobState::Writing => {}
+                containers::JobState::Failed => {
+                    return Err(ProviderError::Rejected(format!(
+                        "the write to Azure Container Apps job {job} failed while \
+                         a build was waiting to join it"
+                    )));
+                }
+            }
+            self.timer.sleep(poll_delay(None, attempt)).await;
+        }
+        if !settled {
+            return Ok(Started::Joining);
+        }
+
+        // The execution the first leg's start names is the machine. One
+        // still `Processing` is joined by waiting; none at all past the
+        // grace polls means that leg died between writing the job and
+        // starting it, and this leg stands in.
+        for attempt in 0..POLLS_PER_INVOCATION {
+            let live = self.live_executions(job).await?;
+            if live
+                .iter()
+                .any(|record| record.properties.status == "Running")
+            {
+                let earliest = live
+                    .iter()
+                    .min_by(|a, b| a.started_before(b))
+                    .expect("a live execution is running, so the list is not empty");
+                return Ok(Started::Running(earliest.name.clone()));
+            }
+            if live.is_empty() && attempt >= JOIN_GRACE_POLLS {
+                return self.begin_execution(job).await;
+            }
+            self.timer.sleep(poll_delay(None, attempt)).await;
+        }
+        Ok(Started::Joining)
     }
 
     /// Stops one execution, leaving the job it belongs to.
@@ -1593,11 +1746,12 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     /// environment the region's jobs share, then this machine's job, then
     /// the execution that is the machine.
     ///
-    /// A redelivered provisioning message re-`PUT`s the same job — the call
-    /// is create-or-update — and starts a second execution. Suppressing that
-    /// is the control plane's job and already is: a machine row that is
-    /// running and has a provider-native id is one whose provisioning is
-    /// done, and the queue never reaches here twice for it.
+    /// A redelivered provisioning message reaches here while its sibling
+    /// leg's `PUT` is still being carried out — the machine row carries no
+    /// provider-native id until a leg returns, so the queue cannot suppress
+    /// the second delivery that arrives first. Azure refuses that write
+    /// with [`JOB_BUSY_CODE`], and the leg joins the build its sibling is
+    /// running rather than failing on it.
     async fn provision_container(
         &mut self,
         request: &ProvisionRequest,
@@ -1619,8 +1773,6 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             self.environment_id(region),
             size,
         )?;
-        self.send_and_await(HttpRequest::new(Method::Put, self.job_url(&job)).json_body(&body)?)
-            .await?;
 
         // What the machine is before its execution has a name: enough to
         // destroy it by, should the build be given up.
@@ -1641,8 +1793,37 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             // address at all.
             address: None,
         };
+
+        let response = self
+            .send(HttpRequest::new(Method::Put, self.job_url(&job)).json_body(&body)?)
+            .await?;
+        if job_busy(&response) {
+            // A queue redelivery: a sibling leg's write to this same job is
+            // still being carried out, and Azure refuses a second write over
+            // it. This leg joins that build rather than failing on work its
+            // own delivery caused — the continuation that carries on waits
+            // the write out and reports the execution the sibling starts.
+            tracing::info!(
+                machine = %id,
+                %job,
+                "a sibling leg's write to this job is still under way; joining the build"
+            );
+            return Ok(Provisioning::Pending {
+                machine: pending,
+                continuation: Continuation::write(&containers::StartInProgress {
+                    job,
+                    follow: None,
+                })?,
+            });
+        }
+        if !response.is_success() {
+            return Err(refusal(&response));
+        }
+        self.await_operation(response).await?;
+
         match self.begin_execution(&job).await? {
-            Started::Running(execution) => {
+            Started::Running(_) => {
+                let execution = self.converge_executions(&job).await?;
                 tracing::info!(
                     machine = %id,
                     machine_type = %request.spec.machine_type,
@@ -1665,22 +1846,38 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
                     machine: pending,
                     continuation: Continuation::write(&containers::StartInProgress {
                         job,
-                        follow,
+                        follow: Some(follow),
                     })?,
                 })
             }
+            Started::Joining => Ok(Provisioning::Pending {
+                machine: pending,
+                continuation: Continuation::write(&containers::StartInProgress {
+                    job,
+                    follow: None,
+                })?,
+            }),
         }
     }
 
-    /// Carries on a container build whose execution was still starting.
+    /// Carries on a container build whose execution was still starting — or
+    /// joins one whose leg never reached a start.
     async fn resume_container(
         &mut self,
         machine: &Machine,
         continuation: &Continuation,
     ) -> Result<Provisioning, ProviderError> {
         let containers::StartInProgress { job, follow } = continuation.read()?;
-        match self.follow_start(follow, POLLS_PER_INVOCATION).await? {
-            Started::Running(execution) => {
+        let started = match follow {
+            Some(follow) => self.follow_start(follow, POLLS_PER_INVOCATION).await?,
+            // The leg that wrote this never reached a start: it found its
+            // sibling's write to the job still under way and handed back to
+            // join it. Carrying on means joining that build.
+            None => self.join_container(&job).await?,
+        };
+        match started {
+            Started::Running(_) => {
+                let execution = self.converge_executions(&job).await?;
                 tracing::info!(
                     machine = %machine.id,
                     %execution,
@@ -1693,7 +1890,17 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             }
             Started::Pending(follow) => Ok(Provisioning::Pending {
                 machine: machine.clone(),
-                continuation: Continuation::write(&containers::StartInProgress { job, follow })?,
+                continuation: Continuation::write(&containers::StartInProgress {
+                    job,
+                    follow: Some(follow),
+                })?,
+            }),
+            Started::Joining => Ok(Provisioning::Pending {
+                machine: machine.clone(),
+                continuation: Continuation::write(&containers::StartInProgress {
+                    job,
+                    follow: None,
+                })?,
             }),
         }
     }
@@ -1769,9 +1976,12 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             // job has started since is stopped, so nothing runs on behind
             // a machine the control plane has forgotten.
             containers::Target::Job(job) => {
-                for name in self.live_executions(job).await? {
-                    self.stop_execution(&containers::Execution { job, name: &name })
-                        .await?;
+                for record in self.live_executions(job).await? {
+                    self.stop_execution(&containers::Execution {
+                        job,
+                        name: &record.name,
+                    })
+                    .await?;
                 }
                 job.to_owned()
             }
@@ -2006,6 +2216,13 @@ fn container_entry(
             storage: StoragePricing::PerGibHourly { rate: Usd::ZERO },
         },
     }
+}
+
+/// Whether a response is [`JOB_BUSY_CODE`]: a write refused because an
+/// earlier write to the same job is still being carried out.
+fn job_busy(response: &HttpResponse) -> bool {
+    response.status == 409
+        && ErrorBody::of(response).is_some_and(|error| error.code == JOB_BUSY_CODE)
 }
 
 /// Turns a refused response into an error that keeps its code.

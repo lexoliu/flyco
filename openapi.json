@@ -488,6 +488,50 @@
         }
       }
     },
+    "/v1/events": {
+      "get": {
+        "summary": "The one stream every session event rides.",
+        "description": "The one stream every session event rides.\n\n`GET /v1/events` multiplexes every session the caller owns onto one\nSSE connection; each event is a [`SessionEvent`](flyco_core::wire::SessionEvent)\nenvelope carrying the session it belongs to. Replays are `Last-Event-ID`\ndeep: past the buffer, the client refills from a session's own\n`events?after=` history.",
+        "operationId": "flyco_api::app::open_event_stream",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "description": "Resume strictly after this position in the stream's buffer. A\nreconnecting client passes the `Last-Event-ID` it last saw.",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/Uuid",
+                  "description": "Emit only this session's events, when the caller is following one."
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response"
+          }
+        }
+      }
+    },
     "/v1/github/repos": {
       "get": {
         "summary": "Lists the caller's GitHub repositories, for the session-creation picker.",
@@ -1648,10 +1692,11 @@
         }
       }
     },
-    "/v1/hosts/{id}/relay": {
-      "get": {
-        "summary": "app::open_host_relay",
-        "operationId": "app::open_host_relay",
+    "/v1/hosts/{id}/relay/attach": {
+      "post": {
+        "summary": "Attaches an enrolled machine to its host room.",
+        "description": "Attaches an enrolled machine to its host room.\n\nAuthenticated by the host's own `fh_` token rather than by a user\ncredential, exactly as a session daemon's relay is, so it sits outside\n[`RequireAuth`].",
+        "operationId": "flyco_api::app::attach_host",
         "parameters": [
           {
             "name": "id",
@@ -1662,9 +1707,149 @@
             }
           }
         ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "What an enrolled machine offers its room when it attaches.\n\nThe facts are re-reported on every attachment rather than only at\nenrollment, because they change: memory is added, a disk fills, Podman\nis upgraded. The room records them and marks the host online.",
+                "required": [
+                  "facts"
+                ],
+                "properties": {
+                  "facts": {
+                    "$ref": "#/components/schemas/HostFacts",
+                    "description": "What the machine measured about itself."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "What an attach answers with.",
+                  "required": [
+                    "epoch"
+                  ],
+                  "properties": {
+                    "epoch": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Generation of this attachment; increments per attach.",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/hosts/{id}/relay/commands": {
+      "get": {
+        "summary": "Opens an enrolled machine's command stream.",
+        "description": "Opens an enrolled machine's command stream.",
+        "operationId": "flyco_api::app::open_host_commands",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epoch",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "description": "The attach this stream serves.",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response"
+          }
+        }
+      }
+    },
+    "/v1/hosts/{id}/relay/frames": {
+      "post": {
+        "summary": "Accepts one batch of an enrolled machine's outbound frames.",
+        "description": "Accepts one batch of an enrolled machine's outbound frames.",
+        "operationId": "flyco_api::app::post_host_frames",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "One POST of a machine's outbound frames.",
+                "required": [
+                  "epoch",
+                  "from_seq",
+                  "ack_through",
+                  "frames"
+                ],
+                "properties": {
+                  "ack_through": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "The highest command sequence the machine has applied; the room's\ncommand rows at or below it are delivered and done.",
+                    "minimum": 0
+                  },
+                  "epoch": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "The attach this batch belongs to.",
+                    "minimum": 0
+                  },
+                  "frames": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/HostToControl"
+                    },
+                    "description": "The frames, in order."
+                  },
+                  "from_seq": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Sequence number of `frames[0]` within the epoch.\n\nSame contract as [`DaemonFrames::from_seq`](flyco_core::wire::DaemonFrames):\na retransmitted head is answered without touching anything, a gap is\nrefused so the machine re-sends from it.",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
           }
         }
       }
@@ -3724,7 +3909,8 @@
                       "activity",
                       "created_at_unix",
                       "last_active_unix",
-                      "model"
+                      "model",
+                      "permission_mode"
                     ],
                     "properties": {
                       "activity": {
@@ -3791,6 +3977,10 @@
                             "description": "Why the session is [`Paused`](SessionState::Paused).\n\nOn the summary rather than only on [`SessionDetail`] because the\nstatus dot in the rail is drawn from a summary, and a session waiting\nout a plan window is not the same status as one that ran out of money\n(docs/ux.md §6). `None` for every session that is not paused, and for\na pause the user asked for."
                           }
                         ]
+                      },
+                      "permission_mode": {
+                        "$ref": "#/components/schemas/PermissionMode",
+                        "description": "The permission mode the session's agent runs under.\n\nAlways concrete for the same reason `model` is: a session opened\nbefore flyco recorded a mode resolves to\n[`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT)\nat read, so every row states the mode it is on rather than leaving\nthe composer's chip to guess."
                       },
                       "repo": {
                         "$ref": "#/components/schemas/RepoSlug",
@@ -4001,7 +4191,7 @@
       },
       "patch": {
         "summary": "Changes what one of the caller's sessions is called, what it may spend, what it runs on, or any combination of the three.",
-        "description": "Changes what one of the caller's sessions is called, what it may spend,\nwhat it runs on, or any combination of the three.\n\nThe title opens as the excerpt of the prompt the session was created\nwith; this is how it becomes something the user chose. The budget limit\nis the one thing that releases a session paused on an exhausted budget,\nand raising it past the spend both puts the session back to\n[`SessionState::Active`] and tells its daemon to carry on — the daemon\nstopped accepting work when the pause reached it and nothing in the\ndatabase can lift that. The model is recorded and then sent to the\nsession's room, which echoes it into the transcript and hands it to the\nharness mid-conversation.",
+        "description": "Changes what one of the caller's sessions is called, what it may spend,\nwhat it runs on, or any combination of the three.\n\nThe title opens as the excerpt of the prompt the session was created\nwith; this is how it becomes something the user chose. The budget limit\nis the one thing that releases a session paused on an exhausted budget,\nand raising it past the spend both puts the session back to\n[`SessionState::Active`] and tells its daemon to carry on — the daemon\nstopped accepting work when the pause reached it and nothing in the\ndatabase can lift that. The model is recorded and then sent to the\nsession's room, which echoes it into the transcript and hands it to the\nharness mid-conversation. The permission mode is recorded and announced\non the same path: Claude applies it to the live query and Codex applies\nit from the next turn.",
         "operationId": "flyco_api::app::update_session",
         "parameters": [
           {
@@ -4040,6 +4230,17 @@
                       {
                         "$ref": "#/components/schemas/ModelChoice",
                         "description": "What the session should run on from here on.\n\nTakes effect on the conversation already in progress rather than at\nthe next turn's discretion: the control plane records it and sends\nthe session's daemon a\n[`SetModel`](crate::wire::ControlToDaemon::SetModel), which both\nharnesses apply to the running session. Refused when the account's\nown model list does not offer it, so a stale picker cannot put a\nsession on a model its harness has dropped."
+                      }
+                    ]
+                  },
+                  "permission_mode": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/PermissionMode",
+                        "description": "The permission mode the session's agent should run under.\n\nApplied on the same terms as `model`: the control plane records it\nand sends the session's daemon a\n[`SetPermissionMode`](crate::wire::ControlToDaemon::SetPermissionMode),\nwhich Claude applies to the live query and Codex applies from the\nnext `turn/start`. Every declared mode is one both harnesses honor —\nCodex translates it into its approval/sandbox pair — so the body\nneeds no per-harness validation."
                       }
                     ]
                   },
@@ -4730,6 +4931,28 @@
         }
       }
     },
+    "/v1/sessions/{id}/context": {
+      "post": {
+        "summary": "Reports what a session's context window is spent on.",
+        "description": "Reports what a session's context window is spent on.\n\nWhat the usage panel's \"detailed breakdown\" asks for: a control request\nthe daemon answers out of band —\nthe Claude sidecar's `get_context_usage`, or the window gauge a Codex\nsession already holds — never a message to the model. The answer\narrives on the session relay as a `context_usage` harness event.",
+        "operationId": "flyco_api::app::context_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/daemon-token": {
       "post": {
         "summary": "Mints the daemon token that pairs a session with its `flycod`.",
@@ -4959,7 +5182,7 @@
     "/v1/sessions/{id}/events": {
       "get": {
         "summary": "Reads a session's recorded event tail.",
-        "description": "Reads a session's recorded event tail.\n\nThe catch-up path a browser takes before — and alongside — its live\nsocket: replay from the last position it saw, then follow the relay.",
+        "description": "Reads a session's recorded event tail.\n\nThe catch-up path a browser takes before — and alongside — its live\nstream: replay from the last position it saw, then follow the relay.",
         "operationId": "flyco_api::app::get_session_events",
         "parameters": [
           {
@@ -5226,7 +5449,8 @@
                   "type": "object",
                   "description": "What `GET /v1/sessions/{id}/harness-session` answers.\n\nThe conversation a daemon starting on this session must continue, as the\ncontrol plane last recorded it. Asked rather than read out of the\ndaemon's own configuration, because that file was written when the\nmachine was *created*: a machine that was stopped and started again on\nthe same disk — which is what recovering from a spot reclamation is —\nboots the same file, and a daemon that trusted it would open a second\nconversation beside the one the user is watching.\n\n`None` is a session whose harness has never announced an identity, which\nis every session until its first daemon connects.",
                   "required": [
-                    "model"
+                    "model",
+                    "permission_mode"
                   ],
                   "properties": {
                     "harness_session_id": {
@@ -5239,6 +5463,10 @@
                     "model": {
                       "$ref": "#/components/schemas/ModelChoice",
                       "description": "The model this session runs on, as the control plane last recorded\nit.\n\nAsked for the same reason the conversation is: the model in the\nconfiguration on the machine's disk is the one it was *provisioned*\nwith, so a session whose model was changed while it ran would come\nback on the old one after a reclamation."
+                    },
+                    "permission_mode": {
+                      "$ref": "#/components/schemas/PermissionMode",
+                      "description": "The permission mode this session runs under, as the control plane\nlast recorded it.\n\nSame reason as `model`: the configuration on disk is the one the\nmachine was provisioned with, so a session put on `plan` while it\nran would otherwise come back on whatever it was provisioned under."
                     }
                   }
                 }
@@ -5583,7 +5811,7 @@
     "/v1/sessions/{id}/provisioning-stage": {
       "post": {
         "summary": "Records a provisioning milestone the session's own machine reached.",
-        "description": "Records a provisioning milestone the session's own machine reached.\n\nThe queue announces everything up to the machine existing; everything\nafter it is a fact only the daemon holds. Most of those ride the relay,\nbut the checkout happens *before* the harness exists and therefore before\nthere is a relay socket — so the one stage that cannot be a relay frame\ngets a route (docs/ux.md §9.2).\n\nThe control plane stamps the time rather than taking the daemon's: a\nsession VM with a wrong clock must not be able to put a line of the\ntimeline in 1970.",
+        "description": "Records a provisioning milestone the session's own machine reached.\n\nThe queue announces everything up to the machine existing; everything\nafter it is a fact only the daemon holds. Most of those ride the relay,\nbut the checkout happens *before* the harness exists and therefore before\nthere is a command stream — so the one stage that cannot be a relay frame\ngets a route (docs/ux.md §9.2).\n\nThe control plane stamps the time rather than taking the daemon's: a\nsession VM with a wrong clock must not be able to put a line of the\ntimeline in 1970.",
         "operationId": "flyco_api::app::report_provisioning_stage",
         "parameters": [
           {
@@ -5623,11 +5851,11 @@
         }
       }
     },
-    "/v1/sessions/{id}/relay-ticket": {
+    "/v1/sessions/{id}/relay/attach": {
       "post": {
-        "summary": "Mints a single-use ticket a browser exchanges for a relay socket.",
-        "description": "Mints a single-use ticket a browser exchanges for a relay socket.",
-        "operationId": "flyco_api::app::create_relay_ticket",
+        "summary": "Attaches a session's daemon to its room.",
+        "description": "Attaches a session's daemon to its room.\n\nAuthenticated by the session's `fd_` token rather than by a user\ncredential, so it sits outside [`RequireAuth`].",
+        "operationId": "flyco_api::app::attach_daemon",
         "parameters": [
           {
             "name": "id",
@@ -5638,6 +5866,29 @@
             }
           }
         ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "What a daemon offers the room when it attaches.\n\nAttaching is a REST call, not a frame: the bearer token authenticates\nbefore any of this is read, and the version lives here so a daemon\nspeaking another protocol is refused before either side moves a frame.",
+                "required": [
+                  "protocol_version"
+                ],
+                "properties": {
+                  "protocol_version": {
+                    "type": "integer",
+                    "format": "int32",
+                    "description": "Wire protocol version the daemon speaks.",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Response",
@@ -5645,21 +5896,16 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "description": "A minted relay ticket.",
+                  "description": "What the room answers an attach with.\n\nThe epoch names the attachment. Every later [`DaemonFrames`] POST and\nevery command on the daemon's command stream carries it, so a daemon\nthat attached twice — a retry raced the first attempt's response — and\na room that watched the first stream die can agree about which\nattachment the traffic belongs to.",
                   "required": [
-                    "ticket",
-                    "expires_at_unix"
+                    "epoch"
                   ],
                   "properties": {
-                    "expires_at_unix": {
+                    "epoch": {
                       "type": "integer",
                       "format": "int64",
-                      "description": "When it stops being accepted, seconds since the Unix epoch.",
+                      "description": "Generation of this attachment; increments per attach.",
                       "minimum": 0
-                    },
-                    "ticket": {
-                      "type": "string",
-                      "description": "The single-use ticket, to be passed as the `ticket` query parameter\nof the client relay route."
                     }
                   }
                 }
@@ -5669,10 +5915,11 @@
         }
       }
     },
-    "/v1/sessions/{id}/relay/client": {
+    "/v1/sessions/{id}/relay/commands": {
       "get": {
-        "summary": "app::open_client_relay",
-        "operationId": "app::open_client_relay",
+        "summary": "Opens a session daemon's command stream: the room's SSE stream, handed through still running.",
+        "description": "Opens a session daemon's command stream: the room's SSE stream, handed\nthrough still running.",
+        "operationId": "flyco_api::app::open_daemon_commands",
         "parameters": [
           {
             "name": "id",
@@ -5681,19 +5928,31 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "epoch",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "description": "The attach this stream serves.",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Successful response"
+            "description": "Response"
           }
         }
       }
     },
-    "/v1/sessions/{id}/relay/daemon": {
-      "get": {
-        "summary": "app::open_daemon_relay",
-        "operationId": "app::open_daemon_relay",
+    "/v1/sessions/{id}/relay/frames": {
+      "post": {
+        "summary": "Accepts one batch of a session daemon's outbound frames.",
+        "description": "Accepts one batch of a session daemon's outbound frames.",
+        "operationId": "flyco_api::app::post_daemon_frames",
         "parameters": [
           {
             "name": "id",
@@ -5704,9 +5963,54 @@
             }
           }
         ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "One POST of a daemon's outbound frames.",
+                "required": [
+                  "epoch",
+                  "from_seq",
+                  "ack_through",
+                  "frames"
+                ],
+                "properties": {
+                  "ack_through": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "The highest command sequence the daemon has applied.\n\n`daemon_commands` rows at or below it are delivered and done, and\nthe room deletes them. Zero acknowledges nothing.",
+                    "minimum": 0
+                  },
+                  "epoch": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "The attach this batch belongs to.",
+                    "minimum": 0
+                  },
+                  "frames": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/DaemonToControl"
+                    },
+                    "description": "The frames, in order."
+                  },
+                  "from_seq": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Sequence number of `frames[0]` within the epoch.\n\nThe daemon numbers its frames from 1 on each attach and the room\ntracks how far it has stored. A batch whose `from_seq` says its\nhead is already stored is a retransmission — answered without\ntouching anything — and a batch that skips a number is a lost\nPOST, refused so the daemon re-sends from the gap.",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "200": {
-            "description": "Successful response"
+          "204": {
+            "description": "Done. There is nothing to return."
           }
         }
       }
@@ -5816,6 +6120,49 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/shell": {
+      "post": {
+        "summary": "Runs a shell command on a session's machine.",
+        "description": "Runs a shell command on a session's machine.\n\nThe composer's `!` escape, over REST: the room mints the run id and\nreissues the request as [`ControlToDaemon::RunShell`], so every frame\nabout the run is keyed by an identity the browser never chose.",
+        "operationId": "flyco_api::app::run_shell",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions/{id}/shell`.\n\nThe composer's `!` escape: a command for the session's machine, not for\nthe agent. The room assigns the run id it will be tracked under.",
+                "required": [
+                  "command"
+                ],
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "description": "The command, without the `!`, to be run through `bash -c`."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
           }
         }
       }
@@ -5936,6 +6283,101 @@
                   "reason": {
                     "$ref": "#/components/schemas/StopReason",
                     "description": "What made the machine stop."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/terminal/input": {
+      "post": {
+        "summary": "Writes raw input to a session's web terminal.",
+        "description": "Writes raw input to a session's web terminal.\n\nOne keystroke batch per call: the terminal panel sends these as the\nuser types, and a dropped one is retried by the user, not the client.",
+        "operationId": "flyco_api::app::terminal_input",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions/{id}/terminal/input`.",
+                "required": [
+                  "data"
+                ],
+                "properties": {
+                  "data": {
+                    "type": "string",
+                    "description": "Bytes to write to the terminal, UTF-8."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/terminal/resize": {
+      "post": {
+        "summary": "Reports the web terminal's fitted size.",
+        "description": "Reports the web terminal's fitted size.\n\nThe room remembers it and re-sends it at the head of every daemon\nattach, so a machine that reboots comes back with a PTY the same size\nas the pane (issue #253).",
+        "operationId": "flyco_api::app::terminal_resize",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions/{id}/terminal/resize`.",
+                "required": [
+                  "cols",
+                  "rows"
+                ],
+                "properties": {
+                  "cols": {
+                    "type": "integer",
+                    "format": "int32",
+                    "description": "Columns the pane shows.",
+                    "minimum": 0
+                  },
+                  "rows": {
+                    "type": "integer",
+                    "format": "int32",
+                    "description": "Rows the pane shows.",
+                    "minimum": 0
                   }
                 }
               }
@@ -7417,6 +7859,21 @@
           }
         }
       },
+      "CommandEpoch": {
+        "type": "object",
+        "description": "Query of the daemon command stream.",
+        "required": [
+          "epoch"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The attach this stream serves.",
+            "minimum": 0
+          }
+        }
+      },
       "CompleteClaudeOauth": {
         "type": "object",
         "description": "Request body of `POST /v1/harness-accounts/claude/oauth/complete`.",
@@ -7432,6 +7889,98 @@
           "code": {
             "type": "string",
             "description": "What Anthropic showed the user, which is `CODE#STATE` — the bare\ncode alone is accepted too, because a user who selects only the\nfirst half of it has still supplied everything the exchange needs."
+          }
+        }
+      },
+      "ContextCost": {
+        "type": "object",
+        "description": "One thing occupying the context window, as a [`ContextUsage`] lists it.\n\nOne shape for every section the harness reports — a usage category, an\nMCP tool's schema, a memory file, an agent definition, a skill's\nfrontmatter — because each answers the same question (what is this, and\nwhat does it cost) and the panel rows differ only in which list they\ncame from.",
+        "required": [
+          "name",
+          "tokens"
+        ],
+        "properties": {
+          "deferred": {
+            "type": "boolean",
+            "description": "Counted toward the window but not materialized in it yet — a\ndeferred MCP tool's schema, for instance, which is summarized until\nit is first called."
+          },
+          "name": {
+            "type": "string",
+            "description": "What it is called: a category name, a tool, a file path, an agent\ntype, a skill name — whatever the harness named it."
+          },
+          "tokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tokens it occupies.",
+            "minimum": 0
+          }
+        }
+      },
+      "ContextUsage": {
+        "type": "object",
+        "description": "What the context window is spent on — the answer to `/context`.\n\nA query answer rather than a meter: the breakdown exists only because a\nuser asked for it, so it is emitted in reply to\n[`crate::wire::ControlToDaemon::ContextUsage`] rather than after every\nturn. The *fill* alone is a different matter — that is\n[`UsageReport::context`], refreshed on every completed turn.",
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContextCost"
+            },
+            "description": "Custom agent definitions held in context."
+          },
+          "auto_compact": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The fill at which the harness compacts the window on its own, where\nit reports one.",
+            "minimum": 0
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContextCost"
+            },
+            "description": "The harness's own grouping of what fills the window — system prompt,\ntools, messages, and so on, in the order it reported them."
+          },
+          "mcp_tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContextCost"
+            },
+            "description": "MCP tool schemas held in context."
+          },
+          "memory_files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContextCost"
+            },
+            "description": "Memory files held in context (Claude Code's `CLAUDE.md` tree)."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The model the window belongs to, when the harness names one."
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContextCost"
+            },
+            "description": "Skill frontmatter held in context."
+          },
+          "window": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ContextWindow",
+                "description": "The window's fill — `None` when the harness has not measured it yet\n(a Codex session that has not run a turn reports no token count)."
+              }
+            ]
           }
         }
       },
@@ -7633,6 +8182,383 @@
             "minimum": 0
           }
         }
+      },
+      "DaemonAttach": {
+        "type": "object",
+        "description": "What a daemon offers the room when it attaches.\n\nAttaching is a REST call, not a frame: the bearer token authenticates\nbefore any of this is read, and the version lives here so a daemon\nspeaking another protocol is refused before either side moves a frame.",
+        "required": [
+          "protocol_version"
+        ],
+        "properties": {
+          "protocol_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Wire protocol version the daemon speaks.",
+            "minimum": 0
+          }
+        }
+      },
+      "DaemonAttached": {
+        "type": "object",
+        "description": "What the room answers an attach with.\n\nThe epoch names the attachment. Every later [`DaemonFrames`] POST and\nevery command on the daemon's command stream carries it, so a daemon\nthat attached twice — a retry raced the first attempt's response — and\na room that watched the first stream die can agree about which\nattachment the traffic belongs to.",
+        "required": [
+          "epoch"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Generation of this attachment; increments per attach.",
+            "minimum": 0
+          }
+        }
+      },
+      "DaemonFrames": {
+        "type": "object",
+        "description": "One POST of a daemon's outbound frames.",
+        "required": [
+          "epoch",
+          "from_seq",
+          "ack_through",
+          "frames"
+        ],
+        "properties": {
+          "ack_through": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The highest command sequence the daemon has applied.\n\n`daemon_commands` rows at or below it are delivered and done, and\nthe room deletes them. Zero acknowledges nothing.",
+            "minimum": 0
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The attach this batch belongs to.",
+            "minimum": 0
+          },
+          "frames": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DaemonToControl"
+            },
+            "description": "The frames, in order."
+          },
+          "from_seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sequence number of `frames[0]` within the epoch.\n\nThe daemon numbers its frames from 1 on each attach and the room\ntracks how far it has stored. A batch whose `from_seq` says its\nhead is already stored is a retransmission — answered without\ntouching anything — and a batch that skips a number is a lost\nPOST, refused so the daemon re-sends from the gap.",
+            "minimum": 0
+          }
+        }
+      },
+      "DaemonToControl": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The harness is identified and warming.\n\nArrives before any user message, so the room can record the\nharness-native session id that a later resume needs.",
+            "required": [
+              "harness_session_id",
+              "type"
+            ],
+            "properties": {
+              "harness_session_id": {
+                "type": "string",
+                "description": "Harness-native session id; resume uses this."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "started"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The capability tokens this harness build advertises.\n\nTurn-derived and therefore late: Claude Code names them only on a\nturn's `system/init` frame. Newest set wins, and \"unknown yet\" is a\nstate every consumer must tolerate.",
+            "required": [
+              "capabilities",
+              "type"
+            ],
+            "properties": {
+              "capabilities": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The capability tokens, as the harness names them."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "capabilities"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Every slash command the running harness offers, newest list wins.\n\nA relay frame rather than a REST report — which is what makes it\ndifferent from the model list it otherwise resembles — because the\nset is a fact about *this* session's checkout: it carries the repo's\nown skills, and the same account's next session in another repo has\na different one. Nothing about it belongs to the account, so nothing\nabout it belongs in D1.",
+            "required": [
+              "commands",
+              "type"
+            ],
+            "properties": {
+              "commands": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/HarnessCommand"
+                },
+                "description": "The commands, in the order the harness listed them."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "commands"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A normalized harness event.",
+            "required": [
+              "event",
+              "type"
+            ],
+            "properties": {
+              "event": {
+                "$ref": "#/components/schemas/HarnessEvent",
+                "description": "The event."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "harness"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Periodic usage snapshot for the UI meters.",
+            "required": [
+              "usage",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "usage"
+                ]
+              },
+              "usage": {
+                "$ref": "#/components/schemas/UsageReport",
+                "description": "The snapshot."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The daemon needs a user decision before the harness can proceed.\n\nThe durable approval row is created over REST *first*; the `id` here\nis the one the control plane assigned, so a decision routed back\nthrough [`ControlToDaemon::ApprovalDecision`] names the same\napproval the user saw.",
+            "required": [
+              "id",
+              "payload",
+              "type"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/components/schemas/Uuid",
+                "description": "Identifier the decision must echo."
+              },
+              "payload": {
+                "$ref": "#/components/schemas/ApprovalPayload",
+                "description": "What is being approved."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "approval_request"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Raw terminal output for the web terminal.",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "string",
+                "description": "UTF-8 lossy terminal bytes."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "terminal_output"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "One chunk of a running `!` command's output.\n\nStreamed rather than held until the command ends, so a slow build\nshows what it is doing while it does it.",
+            "required": [
+              "run",
+              "stream",
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "string",
+                "description": "The bytes, decoded UTF-8 lossy."
+              },
+              "run": {
+                "$ref": "#/components/schemas/Uuid",
+                "description": "The run this belongs to, as [`ControlToDaemon::RunShell`] named\nit."
+              },
+              "stream": {
+                "$ref": "#/components/schemas/ShellStream",
+                "description": "Which stream the chunk came from."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "shell_output"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A `!` command finished. Exactly one per run.",
+            "required": [
+              "run",
+              "outcome",
+              "truncated",
+              "type"
+            ],
+            "properties": {
+              "outcome": {
+                "$ref": "#/components/schemas/ShellOutcome",
+                "description": "How it ended."
+              },
+              "run": {
+                "$ref": "#/components/schemas/Uuid",
+                "description": "The run that finished."
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "Whether output was dropped after the run's byte cap.\n\nSaid rather than silently elided: a transcript that showed the\nfirst megabyte of a command and no sign that there was more\nwould be a lie about what the machine printed."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "shell_exited"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The repo has uncommitted changes; the agent is kept awake rather\nthan allowed to complete.",
+            "required": [
+              "summary",
+              "type"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "description": "`git status --porcelain` summary shown to the user."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "repo_dirty"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The provider announced imminent spot reclamation.",
+            "required": [
+              "seconds_remaining",
+              "type"
+            ],
+            "properties": {
+              "seconds_remaining": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Seconds until reclamation, as announced.",
+                "minimum": 0
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "spot_notice"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The answer to one\n[`InspectWorkdir`](ControlToDaemon::InspectWorkdir).\n\nThe one frame in this direction that is addressed rather than\nbroadcast: no browser sees it, because the browser that asked is\nwaiting on the HTTP request the control plane is holding open for\nit. The room stores it under `id` and the Worker collects it there.",
+            "required": [
+              "id",
+              "reply",
+              "type"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/components/schemas/Uuid",
+                "description": "The request this answers."
+              },
+              "reply": {
+                "$ref": "#/components/schemas/WorkdirReply",
+                "description": "The listing, the file, the diff, or the refusal."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "workdir_reply"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The machine reached a provisioning milestone the daemon can see.\n\nThe control plane cannot observe anything past the provider's\nanswer — it has no way onto the machine — so the last stages are\nreported from the machine itself.",
+            "required": [
+              "stage",
+              "at_unix",
+              "type"
+            ],
+            "properties": {
+              "at_unix": {
+                "type": "integer",
+                "format": "int64",
+                "description": "When it was reached, seconds since the Unix epoch.",
+                "minimum": 0
+              },
+              "stage": {
+                "$ref": "#/components/schemas/ProvisioningStage",
+                "description": "The milestone reached."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "provisioning_stage"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Messages from the daemon to the control plane."
       },
       "DaemonToken": {
         "type": "object",
@@ -8155,6 +9081,31 @@
           }
         }
       },
+      "HarnessCommand": {
+        "type": "object",
+        "description": "One slash command the running harness offers its user.\n\nFlyco's own vocabulary rather than either harness's: Claude Code answers\n`supportedCommands()` with `{name, description, argumentHint}` and Codex\nanswers `skills/list` with skill metadata, and the composer must not\nhave to know which one it is looking at. `name` never carries the\nleading slash — that belongs to the syntax the palette renders, not to\nthe command's identity — and it may contain a colon, because a plugin's\nskill is named `plugin:skill`.",
+        "required": [
+          "name",
+          "description"
+        ],
+        "properties": {
+          "argument_hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the command's argument is, when it takes one.\n\n`None` is what makes a command runnable in one keystroke: the\npalette sends a command with no argument the moment it is chosen,\nand only inserts `/name ` into the field when there is something\nleft for the user to type. Both harnesses state the absence as an\nempty string; it is normalized to `None` where it enters flyco, so\nnothing downstream has to treat `\"\"` as a special case."
+          },
+          "description": {
+            "type": "string",
+            "description": "One line saying what it does, as the harness words it."
+          },
+          "name": {
+            "type": "string",
+            "description": "The command's name, without the leading slash."
+          }
+        }
+      },
       "HarnessCredentialInput": {
         "oneOf": [
           {
@@ -8294,6 +9245,265 @@
         ],
         "description": "A credential accepted when linking a Claude Code or Codex account.\n\nEach variant determines its harness, so the wire format cannot pair a\nClaude credential with Codex or vice versa. Secret fields are deliberately\nomitted from [`Debug`](core::fmt::Debug)."
       },
+      "HarnessEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A turn began processing a user message.",
+            "required": [
+              "turn_id",
+              "type"
+            ],
+            "properties": {
+              "turn_id": {
+                "type": "string",
+                "description": "Harness-native turn identifier."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "turn_started"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Incremental assistant text.",
+            "required": [
+              "turn_id",
+              "text",
+              "type"
+            ],
+            "properties": {
+              "text": {
+                "type": "string",
+                "description": "The appended text fragment."
+              },
+              "turn_id": {
+                "type": "string",
+                "description": "Harness-native turn identifier."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "assistant_delta"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A tool call started.",
+            "required": [
+              "turn_id",
+              "call_id",
+              "tool",
+              "input",
+              "type"
+            ],
+            "properties": {
+              "call_id": {
+                "type": "string",
+                "description": "Harness-native identifier of this tool invocation."
+              },
+              "input": {
+                "description": "Tool input as the harness reports it."
+              },
+              "tool": {
+                "type": "string",
+                "description": "Tool name as the harness reports it."
+              },
+              "turn_id": {
+                "type": "string",
+                "description": "Harness-native turn identifier."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_started"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A tool call finished.",
+            "required": [
+              "turn_id",
+              "call_id",
+              "ok",
+              "type"
+            ],
+            "properties": {
+              "call_id": {
+                "type": "string",
+                "description": "Harness-native identifier of this tool invocation."
+              },
+              "ok": {
+                "type": "boolean",
+                "description": "Whether the tool reported success."
+              },
+              "turn_id": {
+                "type": "string",
+                "description": "Harness-native turn identifier."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_completed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The turn finished.",
+            "required": [
+              "turn_id",
+              "usage",
+              "type"
+            ],
+            "properties": {
+              "turn_id": {
+                "type": "string",
+                "description": "Harness-native turn identifier."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "turn_completed"
+                ]
+              },
+              "usage": {
+                "$ref": "#/components/schemas/UsageReport",
+                "description": "Usage after this turn."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The harness reported a fatal error for this turn.",
+            "required": [
+              "turn_id",
+              "error",
+              "type"
+            ],
+            "properties": {
+              "error": {
+                "type": "string",
+                "description": "Human-readable error from the harness."
+              },
+              "turn_id": {
+                "type": "string",
+                "description": "Harness-native turn identifier."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "turn_failed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The harness hit its account usage limit and is waiting for reset.\n\nThe window is carried rather than a bare reset time because the\nconversation has to say *which* limit stopped it: \"the 5-hour window\nis spent, it turns over at 14:20\" is something a reader can act on,\nand \"rate limited\" is not. A window whose\n[`resets_at_unix`](crate::wire::UsageWindow::resets_at_unix) is\n`None` is a limit flyco cannot see the end of — it is still worth\nputting in the transcript, and it is not something a pause can be\nscheduled around.",
+            "required": [
+              "window",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "usage_limited"
+                ]
+              },
+              "window": {
+                "$ref": "#/components/schemas/UsageWindow",
+                "description": "The window that struck, as the harness reported it."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The harness compacted the conversation context successfully.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "context_compacted"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The harness could not compact the conversation context.",
+            "required": [
+              "error",
+              "type"
+            ],
+            "properties": {
+              "error": {
+                "type": "string",
+                "description": "Harness-reported reason."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "context_compaction_failed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Output the harness produced outside the model's conversation.\n\nA local slash command's answer (`/usage` and friends are answered\nby the CLI itself, never reaching the API), or the text of a\nsynthetic message that never streamed deltas. Rendered as a\ntranscript block of its own rather than merged into a turn's prose,\nbecause it is not the model answering — the harness printed it.",
+            "required": [
+              "content",
+              "type"
+            ],
+            "properties": {
+              "content": {
+                "type": "string",
+                "description": "What the harness printed, as Markdown."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "local_command_output"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The harness's answer to\n[`crate::wire::ControlToDaemon::ContextUsage`]: what the context\nwindow is spent on.",
+            "required": [
+              "usage",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "context_usage"
+                ]
+              },
+              "usage": {
+                "$ref": "#/components/schemas/ContextUsage",
+                "description": "The breakdown."
+              }
+            }
+          }
+        ],
+        "description": "A normalized event extracted from either harness's native stream.\n\nThe daemon translates Claude Code stream-json / Codex `item/*`\nnotifications into this shape; everything upstream (relay, transcript\nstore, frontend) consumes only this."
+      },
       "HarnessFeature": {
         "type": "object",
         "description": "One row of the per-harness feature matrix.",
@@ -8370,7 +9580,8 @@
         "type": "object",
         "description": "What `GET /v1/sessions/{id}/harness-session` answers.\n\nThe conversation a daemon starting on this session must continue, as the\ncontrol plane last recorded it. Asked rather than read out of the\ndaemon's own configuration, because that file was written when the\nmachine was *created*: a machine that was stopped and started again on\nthe same disk — which is what recovering from a spot reclamation is —\nboots the same file, and a daemon that trusted it would open a second\nconversation beside the one the user is watching.\n\n`None` is a session whose harness has never announced an identity, which\nis every session until its first daemon connects.",
         "required": [
-          "model"
+          "model",
+          "permission_mode"
         ],
         "properties": {
           "harness_session_id": {
@@ -8383,6 +9594,10 @@
           "model": {
             "$ref": "#/components/schemas/ModelChoice",
             "description": "The model this session runs on, as the control plane last recorded\nit.\n\nAsked for the same reason the conversation is: the model in the\nconfiguration on the machine's disk is the one it was *provisioned*\nwith, so a session whose model was changed while it ran would come\nback on the old one after a reclamation."
+          },
+          "permission_mode": {
+            "$ref": "#/components/schemas/PermissionMode",
+            "description": "The permission mode this session runs under, as the control plane\nlast recorded it.\n\nSame reason as `model`: the configuration on disk is the one the\nmachine was provisioned with, so a session put on `plan` while it\nran would otherwise come back on whatever it was provisioned under."
           }
         }
       },
@@ -8415,6 +9630,34 @@
             "type": "integer",
             "format": "int32",
             "description": "Wire protocol version this control plane speaks to daemons.",
+            "minimum": 0
+          }
+        }
+      },
+      "HostAttach": {
+        "type": "object",
+        "description": "What an enrolled machine offers its room when it attaches.\n\nThe facts are re-reported on every attachment rather than only at\nenrollment, because they change: memory is added, a disk fills, Podman\nis upgraded. The room records them and marks the host online.",
+        "required": [
+          "facts"
+        ],
+        "properties": {
+          "facts": {
+            "$ref": "#/components/schemas/HostFacts",
+            "description": "What the machine measured about itself."
+          }
+        }
+      },
+      "HostAttachResponse": {
+        "type": "object",
+        "description": "What an attach answers with.",
+        "required": [
+          "epoch"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Generation of this attachment; increments per attach.",
             "minimum": 0
           }
         }
@@ -8468,6 +9711,43 @@
           }
         }
       },
+      "HostFrames": {
+        "type": "object",
+        "description": "One POST of a machine's outbound frames.",
+        "required": [
+          "epoch",
+          "from_seq",
+          "ack_through",
+          "frames"
+        ],
+        "properties": {
+          "ack_through": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The highest command sequence the machine has applied; the room's\ncommand rows at or below it are delivered and done.",
+            "minimum": 0
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The attach this batch belongs to.",
+            "minimum": 0
+          },
+          "frames": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostToControl"
+            },
+            "description": "The frames, in order."
+          },
+          "from_seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sequence number of `frames[0]` within the epoch.\n\nSame contract as [`DaemonFrames::from_seq`](flyco_core::wire::DaemonFrames):\na retransmitted head is answered without touching anything, a gap is\nrefused so the machine re-sends from it.",
+            "minimum": 0
+          }
+        }
+      },
       "HostState": {
         "type": "string",
         "description": "Where a host is in its life.",
@@ -8477,6 +9757,36 @@
           "draining",
           "removed"
         ]
+      },
+      "HostToControl": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "What came of one container job.\n\nThe room forgets the job it was holding; the *durable* half of the\nsame fact — the machine row's container and volume names — arrives at\nthe Worker over REST as a\n[`ReportJobResult`](flyco_core::host::ReportJobResult), because a\nDurable Object can reach neither D1 nor the provisioning queue.",
+            "required": [
+              "job_id",
+              "outcome",
+              "type"
+            ],
+            "properties": {
+              "job_id": {
+                "$ref": "#/components/schemas/Uuid",
+                "description": "The machine the job acted on, which is the job's identity."
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/JobOutcome",
+                "description": "What came of it."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "job_result"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Messages from an enrolled machine to the control plane."
       },
       "HostView": {
         "type": "object",
@@ -9357,6 +10667,18 @@
           "usage_limit"
         ]
       },
+      "PermissionMode": {
+        "type": "string",
+        "description": "The permission mode a session runs under.\n\nSpelled the way the Claude Agent SDK spells its `PermissionMode` union,\nin `camelCase`, so the sidecar passes the value straight into `query`'s\n`permissionMode` option. Every mode other than [`Self::Default`] narrows\nwhat reaches flyco's approval UI, because an auto-approved tool never\ncalls back.\n\nIt lives in the domain model rather than in the daemon because it\ncrosses every boundary flyco has: the control plane stores it on the\nsession row and writes it into the `flycod` configuration it provisions\nonto a machine, the daemon reads that configuration back and applies a\nchange to the running harness — `setPermissionMode` on Claude's live\nquery, `approvalPolicy`/`sandboxPolicy` overrides on Codex's next\n`turn/start`.",
+        "enum": [
+          "default",
+          "acceptEdits",
+          "bypassPermissions",
+          "plan",
+          "dontAsk",
+          "auto"
+        ]
+      },
       "Problem": {
         "allOf": [
           {
@@ -9865,26 +11187,6 @@
           }
         }
       },
-      "RelayTicket": {
-        "type": "object",
-        "description": "A minted relay ticket.",
-        "required": [
-          "ticket",
-          "expires_at_unix"
-        ],
-        "properties": {
-          "expires_at_unix": {
-            "type": "integer",
-            "format": "int64",
-            "description": "When it stops being accepted, seconds since the Unix epoch.",
-            "minimum": 0
-          },
-          "ticket": {
-            "type": "string",
-            "description": "The single-use ticket, to be passed as the `ticket` query parameter\nof the client relay route."
-          }
-        }
-      },
       "RemoveQuery": {
         "type": "object",
         "description": "Narrows a host removal.",
@@ -10086,6 +11388,19 @@
           }
         }
       },
+      "RunShell": {
+        "type": "object",
+        "description": "Request body of `POST /v1/sessions/{id}/shell`.\n\nThe composer's `!` escape: a command for the session's machine, not for\nthe agent. The room assigns the run id it will be tracked under.",
+        "required": [
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The command, without the `!`, to be run through `bash -c`."
+          }
+        }
+      },
       "Runtime": {
         "type": "string",
         "description": "What kind of thing a machine actually is: a virtual machine, or a\ncontainer the provider runs for the length of one execution.\n\nOne axis on the machine rather than a second set of providers, because\nthe same subscription sells both and the driver that reaches them is the\nsame driver. What it decides is the only thing that differs everywhere\nelse in flyco: **whether the filesystem survives a stop.** A VM\ndeallocates onto a disk that is still there when it starts again; a\nmanaged container's filesystem ends with its execution, so the working\ntree has to travel as the `workdir-patch` flyco already keeps and be\nreplayed onto a fresh clone at the next start.\n\n[`Vm`](Self::Vm) is the default, and that is a statement about history\nrather than a preference: every machine flyco provisioned before this\naxis existed was one, and a row or a request that names no runtime is\none of those.",
@@ -10231,7 +11546,8 @@
           "activity",
           "created_at_unix",
           "last_active_unix",
-          "model"
+          "model",
+          "permission_mode"
         ],
         "properties": {
           "activity": {
@@ -10299,6 +11615,10 @@
               }
             ]
           },
+          "permission_mode": {
+            "$ref": "#/components/schemas/PermissionMode",
+            "description": "The permission mode the session's agent runs under.\n\nAlways concrete for the same reason `model` is: a session opened\nbefore flyco recorded a mode resolves to\n[`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT)\nat read, so every row states the mode it is on rather than leaving\nthe composer's chip to guess."
+          },
           "repo": {
             "$ref": "#/components/schemas/RepoSlug",
             "description": "Repository it works in."
@@ -10312,6 +11632,157 @@
             "description": "What the session is called in a list.\n\nOpens as the excerpt of the first prompt and is editable through\n`PATCH /v1/sessions/{id}`. Never empty: a row with no name would\nleave every list entry identified by a UUID."
           }
         }
+      },
+      "ShellOutcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "`bash` exited with this status code.",
+            "required": [
+              "code",
+              "kind"
+            ],
+            "properties": {
+              "code": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The status code, `0` for success."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "exited"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "It ended on a signal rather than with a status code.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "signalled"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The bounded timeout elapsed and the daemon killed it.",
+            "required": [
+              "after_seconds",
+              "kind"
+            ],
+            "properties": {
+              "after_seconds": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The timeout that elapsed, in seconds.",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "timed_out"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The user pressed Stop while it was running.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "cancelled"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "No daemon was connected, so nothing ran it.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "offline"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Another shell command was still running: the machine runs one at a\ntime, so the second is refused rather than queued behind a command\nthat may never end.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "busy"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The session is paused on an exhausted budget, or its machine is\nbeing reclaimed.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "refused"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "`bash` could not be started, or the daemon lost track of the child\nit started.",
+            "required": [
+              "error",
+              "kind"
+            ],
+            "properties": {
+              "error": {
+                "type": "string",
+                "description": "What the operating system said."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "How a `!` shell command ended.\n\nEvery way a run can finish, including the three where it never started:\na composer that swallowed a command because no machine was listening\nwould leave the user waiting for output that is never coming."
+      },
+      "ShellStream": {
+        "type": "string",
+        "description": "Which of a shell command's two output streams a chunk came from.\n\nKept apart rather than interleaved into one pipe: the two are separate\nfile descriptors and nothing orders them against each other, so merging\nthem would invent an order the machine never had. The transcript renders\nboth in one block and marks which is which.",
+        "enum": [
+          "stdout",
+          "stderr"
+        ]
       },
       "SkillScope": {
         "type": "string",
@@ -10455,6 +11926,41 @@
             "type": "integer",
             "format": "int64",
             "description": "Monotonic position in the room's stream. Pass the last one back as\n`after` to continue.",
+            "minimum": 0
+          }
+        }
+      },
+      "TerminalInput": {
+        "type": "object",
+        "description": "Request body of `POST /v1/sessions/{id}/terminal/input`.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "string",
+            "description": "Bytes to write to the terminal, UTF-8."
+          }
+        }
+      },
+      "TerminalSize": {
+        "type": "object",
+        "description": "Request body of `POST /v1/sessions/{id}/terminal/resize`.",
+        "required": [
+          "cols",
+          "rows"
+        ],
+        "properties": {
+          "cols": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Columns the pane shows.",
+            "minimum": 0
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rows the pane shows.",
             "minimum": 0
           }
         }
@@ -10652,6 +12158,17 @@
               }
             ]
           },
+          "permission_mode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PermissionMode",
+                "description": "The permission mode the session's agent should run under.\n\nApplied on the same terms as `model`: the control plane records it\nand sends the session's daemon a\n[`SetPermissionMode`](crate::wire::ControlToDaemon::SetPermissionMode),\nwhich Claude applies to the live query and Codex applies from the\nnext `turn/start`. Every declared mode is one both harnesses honor —\nCodex translates it into its approval/sandbox pair — so the body\nneeds no per-harness validation."
+              }
+            ]
+          },
           "title": {
             "type": [
               "string",
@@ -10838,6 +12355,32 @@
         "description": "Amount in integer microdollars (1 USD = 1e6)",
         "minimum": 0
       },
+      "UserStreamCursor": {
+        "type": "object",
+        "description": "Query of the user event stream.",
+        "properties": {
+          "after": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Resume strictly after this position in the stream's buffer. A\nreconnecting client passes the `Last-Event-ID` it last saw.",
+            "minimum": 0
+          },
+          "session": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Uuid",
+                "description": "Emit only this session's events, when the caller is following one."
+              }
+            ]
+          }
+        }
+      },
       "Uuid": {
         "type": "string",
         "format": "uuid"
@@ -10894,6 +12437,258 @@
             "description": "Whether some patches were left out for size."
           }
         }
+      },
+      "WorkdirRefusal": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Nothing is at that path.",
+            "required": [
+              "path",
+              "refusal"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The path asked for."
+              },
+              "refusal": {
+                "type": "string",
+                "enum": [
+                  "not_found"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The path leaves the checkout, names its `.git` directory, or is not\na relative path at all.",
+            "required": [
+              "path",
+              "refusal"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The path asked for."
+              },
+              "refusal": {
+                "type": "string",
+                "enum": [
+                  "outside_checkout"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A listing was asked for something that is not a directory.",
+            "required": [
+              "path",
+              "refusal"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The path asked for."
+              },
+              "refusal": {
+                "type": "string",
+                "enum": [
+                  "not_a_directory"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Content was asked for something that is not a regular file.",
+            "required": [
+              "path",
+              "refusal"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The path asked for."
+              },
+              "refusal": {
+                "type": "string",
+                "enum": [
+                  "not_a_file"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The file is not UTF-8 text, so there is nothing to render.",
+            "required": [
+              "path",
+              "refusal"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The path asked for."
+              },
+              "refusal": {
+                "type": "string",
+                "enum": [
+                  "not_text"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The file is larger than [`FILE_BYTES_MAX`].",
+            "required": [
+              "path",
+              "bytes",
+              "refusal"
+            ],
+            "properties": {
+              "bytes": {
+                "type": "integer",
+                "format": "int64",
+                "description": "What it actually measures, in bytes.",
+                "minimum": 0
+              },
+              "path": {
+                "type": "string",
+                "description": "The path asked for."
+              },
+              "refusal": {
+                "type": "string",
+                "enum": [
+                  "too_large"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The session has no base branch to diff against.\n\nA daemon started against a directory rather than a clone — the\ndeveloper-machine shape — has no branch the session began at, and a\ndiff against nothing is not something to invent.",
+            "required": [
+              "refusal"
+            ],
+            "properties": {
+              "refusal": {
+                "type": "string",
+                "enum": [
+                  "no_base_branch"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "git could not be run, or refused.",
+            "required": [
+              "detail",
+              "refusal"
+            ],
+            "properties": {
+              "detail": {
+                "type": "string",
+                "description": "What git said, for the log and for the problem detail."
+              },
+              "refusal": {
+                "type": "string",
+                "enum": [
+                  "unreadable"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Why the daemon would not answer a [`WorkdirRequest`].\n\nTyped rather than a message, because the control plane turns each of\nthese into its own RFC 9457 problem and the UI says something different\nfor every one: a binary file offers the terminal, a file that is too\nlarge says how large, and a path outside the checkout is a bug in the\ncaller rather than a state of the disk."
+      },
+      "WorkdirReply": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A directory listing.",
+            "required": [
+              "listing",
+              "outcome"
+            ],
+            "properties": {
+              "listing": {
+                "$ref": "#/components/schemas/DirectoryListing",
+                "description": "The listing."
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "entries"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A file's content.",
+            "required": [
+              "content",
+              "outcome"
+            ],
+            "properties": {
+              "content": {
+                "$ref": "#/components/schemas/FileContent",
+                "description": "The content."
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "file"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The working tree's diff.",
+            "required": [
+              "diff",
+              "outcome"
+            ],
+            "properties": {
+              "diff": {
+                "$ref": "#/components/schemas/WorkdirDiff",
+                "description": "The diff."
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "diff"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The daemon would not answer, and this is why.",
+            "required": [
+              "refusal",
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "refused"
+                ]
+              },
+              "refusal": {
+                "$ref": "#/components/schemas/WorkdirRefusal",
+                "description": "The refusal."
+              }
+            }
+          }
+        ],
+        "description": "What the daemon answers a [`WorkdirRequest`] with.\n\nOne flat enum rather than a `Result`-shaped pair of them: the reply is a\nwire frame, and a single `outcome` tag is what keeps a refusal from\nhaving to be nested inside a success."
       }
     }
   }

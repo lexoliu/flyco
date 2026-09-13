@@ -3,7 +3,7 @@
 //! Driven against an enrolled host, which is the machine flyco can exercise
 //! without a cloud account: a "machine" is a podman container on hardware
 //! the user owns, and the only thing standing between this test and a real
-//! one is the socket that machine holds. The provisioner below plans with
+//! one is the attachment that machine holds. The provisioner below plans with
 //! the *real* [`Host`] planner and answers where the room would be, so every
 //! container name, every bootstrap and every retry decision is the deployed
 //! one. No cloud call, no cloud resource, no credentials that could be live.
@@ -15,8 +15,10 @@
 use core::future::Future;
 
 use flyco_core::{
-    CreateSession, HarnessKind, MachineId, MachineState, Problem, ProviderAccountId,
-    ProviderCredentials, SessionDetail, SessionId, SessionState, Usd, UserId,
+    CloudProviderKind, CreateSession, HarnessKind, MachineCapacity, MachineCatalogEntry,
+    MachineChoice, MachineId, MachinePricing, MachineState, OsFamily, Problem,
+    ProviderAccountId, ProviderCredentials, Runtime, SessionDetail, SessionId, SessionState,
+    StoragePricing, Usd, UserId,
 };
 use flyco_provider::host::container_name;
 use flyco_provider::{
@@ -32,13 +34,14 @@ use skyzen_services::{Db, Kv, Queue};
 use skyzen_test::mock::InMemoryQueue;
 use skyzen_test::{TestClient, TestContext};
 
+use crate::catalog::{self, RegionCatalog, RegionOutcome};
 use crate::provisioning::{LinkedAccount, Provisioner};
 use crate::provisioning_queue::{self, MAX_ATTEMPTS, ProvisioningJob};
 use crate::rooms::Rooms;
 use crate::testing::{
     GITHUB_ACCESS_TOKEN, GITHUB_COMMIT_EMAIL, GITHUB_NAME, HARNESS_TOKEN, TEST_DEFAULT_BRANCH,
-    TestGithub, machine_choice, migrated_router_on, seed_harness_account, seed_provider_account,
-    seed_user, test_config, test_host_rooms, test_rooms, test_vendors,
+    TestGithub, machine_choice, migrated_router_on, seed_azure_account, seed_harness_account,
+    seed_provider_account, seed_user, test_config, test_host_rooms, test_rooms, test_vendors,
 };
 use crate::vendors::Vendors;
 use crate::{machines, session, sessions};
@@ -71,7 +74,8 @@ enum Answer {
     Slow,
 }
 
-/// The real planner, over a room that answers instead of holding a socket.
+/// The real planner, over a room that answers instead of holding an
+/// attachment.
 ///
 /// Counts the provisions it was actually asked for — which is what "a
 /// redelivered job does not provision twice" is an assertion about — and
@@ -193,9 +197,26 @@ impl RecordedHost {
         self.provisions = self.provisions.saturating_add(1);
         self.bootstrap = Some(request.bootstrap.clone());
 
-        let ProviderCredentials::Host { .. } = account.credentials() else {
-            panic!("these tests only provision onto enrolled machines");
-        };
+        if !matches!(account.credentials(), ProviderCredentials::Host { .. }) {
+            // A cloud account answers the way its driver would: a machine
+            // the provider named, already running. What these tests exercise
+            // is how the queue got to the call — the catalog it priced, the
+            // bootstrap it minted — not the provider's side of it.
+            return match self.answer {
+                Answer::Unreachable => Err(ProviderError::Transport(HttpError::Transport(
+                    "the provider could not be reached".to_owned(),
+                ))),
+                _ => Ok(Machine {
+                    id: request.machine,
+                    native_id: "provider-native".to_owned(),
+                    runtime: request.spec.runtime,
+                    region: request.spec.region.clone(),
+                    state: MachineState::Running,
+                    capacity_mode: flyco_provider::CapacityMode::OnDemand,
+                    address: None,
+                }),
+            };
+        }
         let planner = account
             .host_planner()
             .expect("a host account names the machine it provisions onto");
@@ -514,14 +535,17 @@ async fn a_created_session_gets_the_machine_it_asked_for(
     token.assert_status(200);
     let token: flyco_core::DaemonToken = token.json();
 
-    // Natively the upgrade itself is refused — there is no path that carries
-    // a socket into a room off the Worker — but the credential check and the
-    // lifecycle move both run first, which is the half this asserts.
-    client
-        .get(&format!("/v1/sessions/{session}/relay/daemon"))
+    // The daemon's attach is the lifecycle move: it authenticates the
+    // `fd_` token, mints the room's epoch, and reports the session live.
+    let attached = client
+        .post(&format!("/v1/sessions/{session}/relay/attach"))
         .bearer(&token.token)
+        .json(&flyco_core::wire::DaemonAttach {
+            protocol_version: flyco_core::WIRE_PROTOCOL_VERSION,
+        })
         .send()
         .await;
+    attached.assert_status(200);
 
     let live = read(&client, &caller, session).await;
     assert_eq!(live.summary.state, SessionState::Active);
@@ -1569,6 +1593,167 @@ async fn the_bootstrap_tells_the_daemon_which_machine_and_who_chose_it(
     assert!(!bootstrap.machine.is_license_bound());
 }
 
+/// Where the Azure fixture says its machines are.
+const AZURE_REGION: &str = "eastus";
+/// The type the fixture's catalog offers there.
+const AZURE_MACHINE_TYPE: &str = "Standard_D4als_v6";
+
+/// One Azure machine type, priced so a provision that used it can be told
+/// apart from one that asked the provider — which cannot be asked at all:
+/// the seeded account has no resource group, so any catalog read fails
+/// before it reaches the network.
+fn azure_entry(account: ProviderAccountId) -> MachineCatalogEntry {
+    MachineCatalogEntry {
+        account: Some(account),
+        provider: CloudProviderKind::Azure,
+        region: AZURE_REGION.to_owned(),
+        machine_type: AZURE_MACHINE_TYPE.to_owned(),
+        runtime: Runtime::Vm,
+        free_grant: None,
+        os: OsFamily::Linux,
+        capacity: Some(MachineCapacity {
+            vcpus: 4,
+            memory_mib: 16 * 1024,
+        }),
+        lineage: None,
+        pricing: MachinePricing::Metered {
+            on_demand_hourly: Usd::from_micros(160_000),
+            spot_hourly: Some(Usd::from_micros(30_000)),
+            minimum: None,
+            storage: StoragePricing::PerGibHourly {
+                rate: Usd::from_micros(10),
+            },
+        },
+    }
+}
+
+/// The session a test opens against the Azure fixture.
+async fn open_azure(
+    client: &TestClient<Router>,
+    caller: &Caller,
+    account: ProviderAccountId,
+) -> SessionDetail {
+    let response = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .json(&CreateSession {
+            prompt: PROMPT.to_owned(),
+            harness: HarnessKind::ClaudeCode,
+            repo: REPO.to_owned(),
+            branch: None,
+            budget_limit: Usd::from_dollars(10),
+            machine: Some(MachineChoice {
+                provider_account: account,
+                machine_type: AZURE_MACHINE_TYPE.to_owned(),
+                runtime: Runtime::Vm,
+                region: AZURE_REGION.to_owned(),
+                spot: true,
+                disk_gib: flyco_core::DEFAULT_DISK_GIB,
+            }),
+            spot: true,
+            model: None,
+        })
+        .send()
+        .await;
+    response.assert_status(201);
+    response.json()
+}
+
+#[skyzen::test]
+async fn a_provision_is_priced_from_the_cached_catalog(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    let account = seed_azure_account(&db, caller.user).await;
+    catalog::record_region(
+        &kv,
+        account,
+        RegionCatalog {
+            region: AZURE_REGION.to_owned(),
+            read_at_unix: crate::clock::now_unix(),
+            outcome: RegionOutcome::Offered {
+                entries: vec![azure_entry(account)],
+            },
+        },
+    )
+    .await
+    .expect("cache the account's catalog");
+
+    let session = open_azure(&client, &caller, account).await.summary.id;
+    let mut host = RecordedHost::healthy();
+    run_queue(&db, &kv, &queue, &mut host).await;
+
+    // The provider could not have been read — the account has no resource
+    // group — so a machine that came up was priced by the document the
+    // picker wrote, and the price it carries is the document's.
+    assert_eq!(host.provisions, 1);
+    let machine = machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("the session reserved a machine row");
+    assert_eq!(machine.state, MachineState::Running);
+    let bootstrap = host.bootstrap.expect("the driver was handed a bootstrap");
+    assert_eq!(bootstrap.machine.machine_type, AZURE_MACHINE_TYPE);
+    assert_eq!(bootstrap.machine.hourly, Some(Usd::from_micros(30_000)));
+}
+
+#[skyzen::test]
+async fn a_provision_reads_on_demand_when_the_cache_cannot_answer(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) {
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    let account = seed_azure_account(&db, caller.user).await;
+    catalog::record_region(
+        &kv,
+        account,
+        RegionCatalog {
+            region: AZURE_REGION.to_owned(),
+            read_at_unix: crate::clock::now_unix(),
+            outcome: RegionOutcome::Offered {
+                entries: vec![azure_entry(account)],
+            },
+        },
+    )
+    .await
+    .expect("cache the account's catalog");
+
+    let session = open_azure(&client, &caller, account).await.summary.id;
+
+    // The document is emptied between the choice and the job: the provision
+    // now has to ask the provider, and that read fails the honest way —
+    // before the network — rather than inventing an entry.
+    catalog::record_account(&kv, account, Vec::new(), crate::clock::now_unix())
+        .await
+        .expect("empty the account's document");
+
+    let mut host = RecordedHost::healthy();
+    run_queue(&db, &kv, &queue, &mut host).await;
+
+    assert_eq!(host.provisions, 0);
+    let detail = read(&client, &caller, session).await;
+    assert_eq!(detail.summary.state, SessionState::Failed);
+    assert!(
+        detail
+            .failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains("resource group")),
+        "the session should fail with the provider's own refusal, got {:?}",
+        detail.failure
+    );
+}
+
 #[skyzen::test]
 async fn the_agent_reads_its_machine_and_who_chose_it(
     ctx: TestContext,
@@ -1853,8 +2038,8 @@ async fn a_session_going_live_tells_the_room_it_did(
         "the room is told the session went live"
     );
 
-    // A daemon reconnects after every eviction, redeploy and dropped
-    // socket, and none of those is a lifecycle event to announce again.
+    // A daemon re-attaches after every eviction, redeploy and dropped
+    // stream, and none of those is a lifecycle event to announce again.
     let after_first = recorded(&rooms, session).await.len();
     sessions::daemon_arrived(&db, &rooms, session)
         .await

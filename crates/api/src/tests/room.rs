@@ -1,169 +1,79 @@
 //! The session room, driven the way Cloudflare drives it.
 //!
-//! The room is exercised through the real trait surface —
-//! `WebSocketConnection::new`, `DurableConnections::new`,
-//! `DurableContext::new` — against skyzen's SQLite-backed
-//! [`InMemoryDurableDb`] and a connection registry that records what was
-//! sent. What these tests observe is what the room *did to its sockets*, and
-//! that is the one thing the runtime cannot supply: a socket here reports
-//! every frame the room wrote to it, which is how a broadcast, a targeted
-//! forward and a refusal are told apart. So the sockets are flyco's and
-//! everything behind them is skyzen's.
+//! The room is exercised through the real `fetch` surface — the REST calls
+//! the Worker makes and the three routes a daemon's relay is built on —
+//! against skyzen's SQLite-backed [`InMemoryDurableDb`]. What these tests
+//! observe is what the room *did*: the events a call answered with, which
+//! are what the Worker publishes to the session owner's stream, and the
+//! commands it handed down the daemon's SSE stream.
 
-use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use flyco_core::{
-    ApprovalDecision, ApprovalId, ClientEvent, ControlToDaemon, DaemonToControl, HarnessEvent,
-    SessionId, ShellOutcome, ShellRunId, ShellStream, WIRE_PROTOCOL_VERSION, wire::ApprovalPayload,
+    ApprovalId, ClientEvent, ControlToDaemon, DaemonToControl, HarnessEvent,
+    SessionId, ShellOutcome, ShellRunId, ShellStream, WIRE_PROTOCOL_VERSION,
+    wire::{ApprovalPayload, DaemonAttach, DaemonCommand, DaemonFrames},
 };
-use skyzen::durable::{
-    DurableConnections, DurableContext, DurableObject as _, DurableObjectId, WebSocketConnection,
-    WebSocketEvent,
-};
-use skyzen::http_kit::ws::WebSocketMessage;
+use futures_util::StreamExt as _;
+use skyzen::durable::DurableObject as _;
+use skyzen::http_kit::sse::SseStream;
 use skyzen::{Body, Method, Request};
-use skyzen_services::durable::{Alarm, DurableDb, DurableKv};
-use skyzen_test::mock::{InMemoryAlarm, InMemoryDurableDb, InMemoryDurableKv};
+use skyzen_services::durable::{DurableDb, DurableKv};
+use skyzen_test::mock::{InMemoryDurableDb, InMemoryDurableKv};
 
 use crate::room::{
-    EventPage, HEADER_INTERNAL, HEADER_ROLE, HEADER_SESSION, INTERNAL, ROLE_CLIENT, ROLE_DAEMON,
-    SessionRoom, StoredEvent,
+    AttachResponse, Emitted, EmittedEvent, EventPage, HEADER_INTERNAL, HEADER_SESSION, INTERNAL,
+    SessionRoom,
 };
-use crate::tests::sockets::{FakeConnections, FakeSocket, Sent};
+
+/// How long a test waits for the room to hand a command down the stream.
+///
+/// The stream's feed polls storage every 150ms; an event a call queued is
+/// a couple of ticks away at most, so a wait this long expiring is a
+/// failure, not a race.
+const PATIENCE: Duration = Duration::from_secs(10);
+
+/// How long a quiet stream is watched before a test accepts that nothing
+/// is coming. Two full feed ticks plus margin.
+const QUIET: Duration = Duration::from_millis(400);
 
 // ── The harness ──
 
-/// A room with a daemon socket, a client socket, and a real database.
+/// A room, its storage, and the state of the daemon the test is playing.
 struct Room {
     session: SessionId,
     object: SessionRoom,
-    daemon: WebSocketConnection,
-    client: WebSocketConnection,
-    connections: FakeConnections,
     db: InMemoryDurableDb,
     kv: InMemoryDurableKv,
-    sent: Receiver<Sent>,
+    /// The attach the test's daemon is working under, when it has one.
+    epoch: Option<u64>,
+    /// The daemon's outbound frame number the next batch starts at.
+    out_seq: u64,
+    /// The highest command sequence the daemon has applied, which every
+    /// batch acknowledges back.
+    applied: u64,
+    /// The open command stream, when one is.
+    commands: Option<SseStream>,
 }
 
 impl Room {
     async fn open() -> Self {
-        let session = SessionId::generate();
-        let (sender, sent) = channel();
-
-        let socket = |role: &str| FakeSocket {
-            tags: vec![role.to_owned(), format!("session:{session}")],
-            sent: sender.clone(),
-            attachment: Arc::new(RwLock::new(None)),
-        };
-        let daemon = socket(ROLE_DAEMON);
-        let client = socket(ROLE_CLIENT);
-        let connections = FakeConnections {
-            sockets: vec![daemon.clone(), client.clone()],
-        };
-
         Self {
-            session,
+            session: SessionId::generate(),
             object: SessionRoom,
-            daemon: WebSocketConnection::new(Box::new(daemon)),
-            client: WebSocketConnection::new(Box::new(client)),
-            connections,
             db: InMemoryDurableDb::in_memory()
                 .await
                 .expect("an in-memory database"),
             kv: InMemoryDurableKv::new(),
-            sent,
+            epoch: None,
+            out_seq: 1,
+            applied: 0,
+            commands: None,
         }
     }
 
-    fn context(&self) -> DurableContext {
-        DurableContext::new(
-            DurableKv::new(self.kv.clone()),
-            DurableDb::new(self.db.clone()),
-            Alarm::new(InMemoryAlarm::new()),
-            DurableConnections::new(Box::new(self.connections.clone())),
-            DurableObjectId::new(self.session.to_string(), Some(self.session.to_string())),
-        )
-    }
-
-    /// Delivers one frame from a socket, exactly as the runtime would.
-    async fn deliver(&mut self, from: Which, frame: &str) {
-        let context = self.context();
-        let socket = match from {
-            Which::Daemon => &self.daemon,
-            Which::Client => &self.client,
-        };
-        // The room reports a peer's misbehaviour by closing it, not by
-        // erroring: an `Err` here is a fault in the room itself.
-        self.object
-            .websocket(
-                socket,
-                WebSocketEvent::Message(WebSocketMessage::Text(frame.into())),
-                &context,
-            )
-            .await
-            .expect("the room handled the frame");
-    }
-
-    /// Ends a socket, exactly as the runtime would when a peer goes away.
-    async fn disconnect(&mut self, which: Which) {
-        let context = self.context();
-        let socket = match which {
-            Which::Daemon => &self.daemon,
-            Which::Client => &self.client,
-        };
-        self.object
-            .websocket(
-                socket,
-                WebSocketEvent::Close {
-                    code: 1006,
-                    reason: "the machine stopped answering".to_owned(),
-                    was_clean: false,
-                },
-                &context,
-            )
-            .await
-            .expect("the room handled the disconnect");
-    }
-
-    async fn deliver_json<T: serde::Serialize + Sync>(&mut self, from: Which, frame: &T) {
-        let text = serde_json::to_string(frame).expect("serialize");
-        self.deliver(from, &text).await;
-    }
-
-    /// Sends the daemon's handshake without asserting what came back.
-    ///
-    /// What a `Hello` is answered with is the welcome *plus the mailbox*,
-    /// and the mailbox tests are the ones that care what is in it.
-    async fn hello(&mut self) {
-        self.deliver_json(
-            Which::Daemon,
-            &DaemonToControl::Hello {
-                protocol_version: WIRE_PROTOCOL_VERSION,
-                session: self.session,
-            },
-        )
-        .await;
-    }
-
-    /// Completes the daemon handshake on a room with nothing held for it.
-    async fn greet(&mut self) {
-        self.hello().await;
-        assert_eq!(
-            self.drain(),
-            vec![welcome(), attached()],
-            "a good hello with an empty mailbox is one welcome and one \
-             announcement that the machine is on the room"
-        );
-    }
-
-    /// Everything the room has sent since the last drain.
-    fn drain(&self) -> Vec<Sent> {
-        self.sent.try_iter().collect()
-    }
-
-    /// Calls one of the room's HTTP routes, the way the Worker does.
-    async fn call(&mut self, method: Method, path: &str, body: Option<Vec<u8>>) -> (u16, Vec<u8>) {
+    /// Builds one request the way the Worker would send it.
+    fn request(&self, method: Method, path: &str, body: Option<Vec<u8>>) -> Request {
         let mut request = Request::new(body.map_or_else(Body::empty, Body::from));
         *request.method_mut() = method;
         *request.uri_mut() = format!("https://session-room.flyco.invalid{path}")
@@ -192,13 +102,14 @@ impl Room {
             .extensions_mut()
             .insert(DurableKv::new(self.kv.clone()));
         request
-            .extensions_mut()
-            .insert(DurableConnections::new(Box::new(self.connections.clone())));
+    }
 
+    /// Calls one of the room's HTTP routes, the way the Worker does.
+    async fn call(&mut self, method: Method, path: &str, body: Option<Vec<u8>>) -> (u16, Vec<u8>) {
         let response = self
             .object
             .fetch()
-            .go(request)
+            .go(self.request(method, path, body))
             .await
             .expect("the room answered");
         let status = response.status().as_u16();
@@ -210,13 +121,192 @@ impl Room {
         (status, bytes.to_vec())
     }
 
-    async fn events(&mut self, after: u64) -> EventPage {
+    /// Calls a route and keeps the response, for a body that is a stream.
+    async fn call_streaming(&mut self, path: &str) -> skyzen::Response {
+        self.object
+            .fetch()
+            .go(self.request(Method::GET, path, None))
+            .await
+            .expect("the room answered")
+    }
+
+    /// Attaches the test's daemon and answers the events it produced.
+    async fn attach(&mut self) -> AttachResponse {
         let (status, body) = self
             .call(
-                Method::GET,
-                &format!("/internal/events?after={after}"),
-                None,
+                Method::POST,
+                "/internal/daemon-attach",
+                Some(
+                    serde_json::to_vec(&DaemonAttach {
+                        protocol_version: WIRE_PROTOCOL_VERSION,
+                    })
+                    .expect("serialize"),
+                ),
             )
+            .await;
+        assert_eq!(status, 200, "an attach: {}", String::from_utf8_lossy(&body));
+        let attached: AttachResponse = serde_json::from_slice(&body).expect("an attach response");
+        self.epoch = Some(attached.epoch);
+        self.out_seq = 1;
+        attached
+    }
+
+    /// Opens the command stream for the current attach.
+    async fn open_commands(&mut self) {
+        let epoch = self.epoch.expect("attach first");
+        let response = self
+            .call_streaming(&format!("/internal/commands?epoch={epoch}"))
+            .await;
+        assert_eq!(response.status().as_u16(), 200, "the stream opened");
+        self.commands = Some(response.into_body().into_sse());
+    }
+
+    /// Attaches and opens the stream: a daemon arriving on an empty room.
+    async fn greet(&mut self) {
+        let attached = self.attach().await;
+        assert_eq!(
+            attached.events,
+            vec![connected()],
+            "an attach announces the machine to the session's owner"
+        );
+        self.open_commands().await;
+    }
+
+    /// Reads the next command the room hands the daemon.
+    ///
+    /// Reading a command is applying it: the harness acknowledges it on
+    /// the daemon's next frames POST, which is what retires the row.
+    async fn next_command(&mut self) -> DaemonCommand {
+        let stream = self.commands.as_mut().expect("a command stream is open");
+        let item = tokio_select_quiet(stream, PATIENCE)
+            .await
+            .expect("a command arrived in time")
+            .expect("the stream is still open")
+            .expect("a decodable SSE frame");
+        assert_eq!(
+            item.event(),
+            Some("command"),
+            "the stream carries only commands"
+        );
+        let command: DaemonCommand = item.data().expect("a command envelope");
+        if let Some(seq) = command.seq {
+            self.applied = self.applied.max(seq);
+        }
+        command
+    }
+
+    /// Asserts the stream hands nothing over for a whole quiet window.
+    async fn expect_quiet(&mut self) {
+        let stream = self.commands.as_mut().expect("a command stream is open");
+        if let Some(item) = tokio_select_quiet(stream, QUIET).await {
+            panic!("the stream stayed quiet, then produced {item:?}");
+        }
+    }
+
+    /// Asserts the stream ended — the attach it served was superseded.
+    async fn expect_end(&mut self) {
+        let stream = self.commands.as_mut().expect("a command stream is open");
+        match tokio_select_quiet(stream, PATIENCE).await {
+            None => panic!("the stream outlived its attach"),
+            Some(None) => {}
+            Some(Some(item)) => panic!("the stream ended, then produced {item:?}"),
+        }
+    }
+
+    /// Posts one daemon frame, the way a daemon's outbound flush does.
+    ///
+    /// The batch acknowledges every command the harness has read so far —
+    /// `applied` — which is what retires them from the room's log.
+    async fn deliver(&mut self, frame: &DaemonToControl) -> Emitted {
+        self.deliver_batch(std::slice::from_ref(frame)).await
+    }
+
+    /// Posts one batch of daemon frames.
+    async fn deliver_batch(&mut self, frames: &[DaemonToControl]) -> Emitted {
+        let epoch = self.epoch.expect("attach first");
+        let batch = DaemonFrames {
+            epoch,
+            from_seq: self.out_seq,
+            ack_through: self.applied,
+            frames: frames.to_vec(),
+        };
+        let (status, body) = self
+            .call(
+                Method::POST,
+                "/internal/frames",
+                Some(serde_json::to_vec(&batch).expect("serialize")),
+            )
+            .await;
+        assert_eq!(
+            status,
+            200,
+            "a frames batch: {}",
+            String::from_utf8_lossy(&body)
+        );
+        self.out_seq += frames.len() as u64;
+        serde_json::from_slice(&body).expect("an emitted list")
+    }
+
+    /// Posts one batch with an explicit position, for the ordering tests
+    /// that must lie about where they resume.
+    async fn deliver_raw(&mut self, batch: &DaemonFrames) -> (u16, Vec<u8>) {
+        self.call(
+            Method::POST,
+            "/internal/frames",
+            Some(serde_json::to_vec(batch).expect("serialize")),
+        )
+        .await
+    }
+
+    /// Posts a command, the way the Worker does after authorizing it.
+    ///
+    /// The answer names the events the command produced — the echoes a
+    /// browser watching the session is owed.
+    async fn command(&mut self, command: &ControlToDaemon) -> Emitted {
+        let (status, body) = self
+            .call(
+                Method::POST,
+                "/internal/command",
+                Some(serde_json::to_vec(command).expect("serialize")),
+            )
+            .await;
+        assert_eq!(status, 200, "a command: {}", String::from_utf8_lossy(&body));
+        serde_json::from_slice(&body).expect("an emitted list")
+    }
+
+    /// Marks the daemon's presence expired, the state a daemon that died
+    /// mid-stream leaves behind.
+    async fn expire_presence(&self) {
+        let db = DurableDb::new(self.db.clone());
+        skyzen::sql!(db, "UPDATE daemon_presence SET live_until = 0 WHERE id = 0")
+            .execute()
+            .await
+            .expect("presence was expired");
+    }
+
+    /// The daemon's undelivered command log, oldest first.
+    ///
+    /// A row the stream has handed over stays until an `ack_through`
+    /// retires it, so this is "owed to the daemon", not "not yet sent".
+    async fn command_log(&self) -> Vec<ControlToDaemon> {
+        #[derive(skyzen::FromRow)]
+        struct Row {
+            #[row(json)]
+            json: ControlToDaemon,
+        }
+        let db = DurableDb::new(self.db.clone());
+        skyzen::sql!(db, "SELECT json FROM daemon_commands ORDER BY seq")
+            .fetch_all::<Row>()
+            .await
+            .expect("the command log reads")
+            .into_iter()
+            .map(|row| row.json)
+            .collect()
+    }
+
+    async fn events(&mut self, after: u64) -> EventPage {
+        let (status, body) = self
+            .call(Method::GET, &format!("/internal/events?after={after}"), None)
             .await;
         assert_eq!(
             status,
@@ -228,53 +318,31 @@ impl Room {
     }
 }
 
-/// Which socket a frame came from.
-#[derive(Debug, Clone, Copy)]
-enum Which {
-    Daemon,
-    Client,
-}
-
-/// What every browser is told when a daemon greets the room.
-fn attached() -> Sent {
-    to_client(&ClientEvent::MachineConnection { connected: true })
-}
-
-/// What every browser is told when no daemon is holding the room.
-fn detached() -> Sent {
-    to_client(&ClientEvent::MachineConnection { connected: false })
-}
-
-fn to_client(event: &ClientEvent) -> Sent {
-    Sent::Text {
-        to: ROLE_CLIENT.to_owned(),
-        text: serde_json::to_string(event).expect("serialize"),
+/// The next item off an SSE stream, or `None` when `within` passes first.
+async fn tokio_select_quiet(
+    stream: &mut SseStream,
+    within: Duration,
+) -> Option<Option<Result<skyzen::http_kit::sse::Event, skyzen::http_kit::sse::ParseError>>> {
+    let next = stream.next();
+    let quiet = futures_timer::Delay::new(within);
+    futures_util::pin_mut!(next, quiet);
+    match futures_util::future::select(next, quiet).await {
+        futures_util::future::Either::Left((item, _)) => Some(item),
+        futures_util::future::Either::Right(_) => None,
     }
 }
 
-/// The event a frame the room broadcast carries.
-///
-/// Read back rather than predicted, because the room assigns a shell run's
-/// identity: what a test can assert is what the room *said*, and that the
-/// frames it sent afterwards name the same run.
-fn event_in(sent: &Sent) -> ClientEvent {
-    let Sent::Text { to, text } = sent else {
-        panic!("{sent:?} is not a frame");
-    };
-    assert_eq!(to, ROLE_CLIENT, "this frame did not go to a browser");
-    serde_json::from_str(text).expect("a client event")
-}
-
-/// The welcome every accepted handshake is answered with.
-fn welcome() -> Sent {
-    to_daemon(&ControlToDaemon::Welcome)
-}
-
-fn to_daemon(command: &ControlToDaemon) -> Sent {
-    Sent::Text {
-        to: ROLE_DAEMON.to_owned(),
-        text: serde_json::to_string(command).expect("serialize"),
+/// What the attach answer carries when the machine lands on the room.
+fn connected() -> EmittedEvent {
+    EmittedEvent {
+        seq: None,
+        event: ClientEvent::MachineConnection { connected: true },
     }
+}
+
+/// The event a call emitted, unwrapped of its stream position.
+fn events_of(emitted: Emitted) -> Vec<ClientEvent> {
+    emitted.events.into_iter().map(|emitted| emitted.event).collect()
 }
 
 fn assistant_delta(text: &str) -> HarnessEvent {
@@ -284,110 +352,206 @@ fn assistant_delta(text: &str) -> HarnessEvent {
     }
 }
 
-/// Close code the room uses for a policy violation (RFC 6455 §7.4.1).
-const CLOSE_POLICY: u16 = 1008;
-
 /// An event tail with nothing in it.
-const NO_EVENTS: [StoredEvent; 0] = [];
+const NO_EVENTS: [crate::room::StoredEvent; 0] = [];
 
-// ── The handshake ──
+// ── The attach ──
 
 #[skyzen::test]
-async fn a_matching_hello_is_welcomed() {
+async fn an_attach_mints_an_epoch_and_announces_the_machine() {
+    let mut room = Room::open().await;
+    let attached = room.attach().await;
+
+    assert_eq!(attached.epoch, 1, "the first attach is epoch one");
+    assert_eq!(attached.events, vec![connected()]);
+
+    // The stream the epoch names opens behind it.
+    room.open_commands().await;
+}
+
+#[skyzen::test]
+async fn a_daemon_speaking_another_protocol_version_is_refused() {
+    let mut room = Room::open().await;
+    let (status, _) = room
+        .call(
+            Method::POST,
+            "/internal/daemon-attach",
+            Some(
+                serde_json::to_vec(&DaemonAttach {
+                    protocol_version: WIRE_PROTOCOL_VERSION + 1,
+                })
+                .expect("serialize"),
+            ),
+        )
+        .await;
+    assert_eq!(status, 409, "a version the room does not speak is a conflict");
+}
+
+#[skyzen::test]
+async fn frames_from_a_daemon_that_never_attached_are_refused() {
+    let mut room = Room::open().await;
+    let (status, _) = room
+        .deliver_raw(&DaemonFrames {
+            epoch: 1,
+            from_seq: 1,
+            ack_through: 0,
+            frames: vec![DaemonToControl::Harness {
+                event: assistant_delta("hello"),
+            }],
+        })
+        .await;
+    assert_eq!(status, 502, "a batch with no attach behind it is refused");
+    assert_eq!(
+        room.events(0).await.events,
+        NO_EVENTS,
+        "nothing from an unattached daemon may reach the transcript"
+    );
+}
+
+#[skyzen::test]
+async fn an_undecodable_body_fails_the_call() {
     let mut room = Room::open().await;
     room.greet().await;
+
+    // A body that does not decode is a broken caller, and the fetch fails
+    // outright rather than producing a problem: these routes are internal,
+    // so there is nobody to explain a 400 to.
+    for (path, body) in [
+        ("/internal/frames", b"{\"type\":\"from_the_future\"}".as_slice()),
+        ("/internal/command", b"not json at all".as_slice()),
+    ] {
+        let failed = room
+            .object
+            .fetch()
+            .go(room.request(Method::POST, path, Some(body.to_vec())))
+            .await;
+        assert!(failed.is_err(), "{path} accepted an undecodable body");
+    }
 }
 
-#[skyzen::test]
-async fn a_daemon_speaking_another_protocol_version_is_closed() {
-    let mut room = Room::open().await;
-    room.deliver_json(
-        Which::Daemon,
-        &DaemonToControl::Hello {
-            protocol_version: WIRE_PROTOCOL_VERSION + 1,
-            session: room.session,
-        },
-    )
-    .await;
-
-    assert_eq!(
-        room.drain(),
-        vec![Sent::Closed {
-            to: ROLE_DAEMON.to_owned(),
-            code: CLOSE_POLICY,
-        }]
-    );
-}
+// ── The ordering contract ──
 
 #[skyzen::test]
-async fn a_daemon_greeting_the_wrong_room_is_closed() {
+async fn a_batch_that_skips_sequence_numbers_is_refused() {
     let mut room = Room::open().await;
-    room.deliver_json(
-        Which::Daemon,
-        &DaemonToControl::Hello {
-            protocol_version: WIRE_PROTOCOL_VERSION,
-            session: SessionId::generate(),
-        },
-    )
-    .await;
+    room.greet().await;
 
+    let (status, body) = room
+        .deliver_raw(&DaemonFrames {
+            epoch: room.epoch.expect("attached"),
+            from_seq: 5,
+            ack_through: 0,
+            frames: vec![DaemonToControl::Harness {
+                event: assistant_delta("skipped ahead"),
+            }],
+        })
+        .await;
+    assert_eq!(status, 409, "a gap in the daemon's stream is a conflict");
+    let problem: flyco_core::Problem = serde_json::from_slice(&body).expect("a problem");
     assert_eq!(
-        room.drain(),
-        vec![Sent::Closed {
-            to: ROLE_DAEMON.to_owned(),
-            code: CLOSE_POLICY,
-        }]
-    );
-}
-
-#[skyzen::test]
-async fn a_daemon_that_skips_the_handshake_is_closed() {
-    let mut room = Room::open().await;
-    room.deliver_json(
-        Which::Daemon,
-        &DaemonToControl::Harness {
-            event: assistant_delta("hello"),
-        },
-    )
-    .await;
-
-    assert_eq!(
-        room.drain(),
-        vec![Sent::Closed {
-            to: ROLE_DAEMON.to_owned(),
-            code: CLOSE_POLICY,
-        }]
+        problem.kind,
+        "https://flyco.dev/problems/relay-frames-gap"
     );
     assert_eq!(
         room.events(0).await.events,
         NO_EVENTS,
-        "nothing from an ungreeted daemon may reach the transcript"
+        "a refused batch applies nothing"
     );
 }
 
 #[skyzen::test]
-async fn an_undecodable_frame_closes_the_peer_that_sent_it() {
+async fn a_retransmitted_batch_is_answered_without_reapplying() {
     let mut room = Room::open().await;
     room.greet().await;
 
-    room.deliver(Which::Daemon, "{\"type\":\"from_the_future\"}")
+    let batch = DaemonFrames {
+        epoch: room.epoch.expect("attached"),
+        from_seq: 1,
+        ack_through: 0,
+        frames: vec![DaemonToControl::Harness {
+            event: assistant_delta("once"),
+        }],
+    };
+    let (status, _) = room.deliver_raw(&batch).await;
+    assert_eq!(status, 200);
+    // The POST's answer is lost on the wire; the daemon re-sends the
+    // same batch.
+    let (status, body) = room.deliver_raw(&batch).await;
+    assert_eq!(status, 200, "a retransmission is answered, not refused");
+    let emitted: Emitted = serde_json::from_slice(&body).expect("an emitted list");
+    assert_eq!(
+        emitted.events,
+        vec![],
+        "the already-stored head applies nothing a second time"
+    );
+    assert_eq!(
+        room.events(0).await.events.len(),
+        1,
+        "the transcript has the event once"
+    );
+}
+
+#[skyzen::test]
+async fn a_batch_from_a_superseded_attach_is_refused() {
+    let mut room = Room::open().await;
+    room.greet().await;
+    let stale = room.epoch.expect("attached");
+
+    // A retry raced the first attach's response; the daemon attached
+    // again and the first epoch is dead.
+    room.attach().await;
+
+    let (status, body) = room
+        .deliver_raw(&DaemonFrames {
+            epoch: stale,
+            from_seq: 1,
+            ack_through: 0,
+            frames: vec![DaemonToControl::Harness {
+                event: assistant_delta("from the dead epoch"),
+            }],
+        })
+        .await;
+    assert_eq!(status, 409, "a stale epoch's frames are refused");
+    let problem: flyco_core::Problem = serde_json::from_slice(&body).expect("a problem");
+    assert_eq!(
+        problem.kind,
+        "https://flyco.dev/problems/relay-epoch-stale"
+    );
+}
+
+#[skyzen::test]
+async fn a_superseded_attach_ends_its_command_stream() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    room.attach().await;
+
+    room.expect_end().await;
+}
+
+#[skyzen::test]
+async fn a_command_stream_for_a_superseded_epoch_is_refused() {
+    let mut room = Room::open().await;
+    room.greet().await;
+    let stale = room.epoch.expect("attached");
+
+    room.attach().await;
+
+    let response = room
+        .call_streaming(&format!("/internal/commands?epoch={stale}"))
         .await;
     assert_eq!(
-        room.drain(),
-        vec![Sent::Closed {
-            to: ROLE_DAEMON.to_owned(),
-            code: CLOSE_POLICY,
-        }]
+        response.status().as_u16(),
+        409,
+        "the room serves only the live attach's stream"
     );
+}
 
-    room.deliver(Which::Client, "not json at all").await;
-    assert_eq!(
-        room.drain(),
-        vec![Sent::Closed {
-            to: ROLE_CLIENT.to_owned(),
-            code: CLOSE_POLICY,
-        }]
-    );
+#[skyzen::test]
+async fn a_command_stream_opened_before_any_attach_is_refused() {
+    let mut room = Room::open().await;
+    let response = room.call_streaming("/internal/commands?epoch=1").await;
+    assert_eq!(response.status().as_u16(), 502);
 }
 
 // ── Daemon → browsers ──
@@ -398,30 +562,25 @@ async fn a_harness_event_is_stored_and_broadcast() {
     room.greet().await;
 
     let event = assistant_delta("hello");
-    room.deliver_json(
-        Which::Daemon,
-        &DaemonToControl::Harness {
+    let emitted = room
+        .deliver(&DaemonToControl::Harness {
             event: event.clone(),
-        },
-    )
-    .await;
+        })
+        .await;
 
+    let [emitted] = emitted.events.as_slice() else {
+        panic!("one frame emits one event, not {emitted:?}");
+    };
+    assert_eq!(emitted.event, ClientEvent::Harness { event });
     assert_eq!(
-        room.drain(),
-        vec![to_client(&ClientEvent::Harness {
-            event: event.clone()
-        })],
-        "the event reaches browsers and nothing is echoed to the daemon"
+        emitted.seq,
+        Some(1),
+        "the emitted event names the position it was recorded at"
     );
 
     let page = room.events(0).await;
     assert_eq!(page.events.len(), 1);
     assert!(!page.more);
-    assert_eq!(
-        serde_json::from_value::<ClientEvent>(page.events[0].event.clone())
-            .expect("a client event"),
-        ClientEvent::Harness { event }
-    );
     assert_eq!(page.events[0].seq, 1, "the first event is position 1");
 }
 
@@ -431,12 +590,9 @@ async fn the_event_tail_is_replayed_in_order_and_resumes_from_a_cursor() {
     room.greet().await;
 
     for text in ["a", "b", "c"] {
-        room.deliver_json(
-            Which::Daemon,
-            &DaemonToControl::Harness {
-                event: assistant_delta(text),
-            },
-        )
+        room.deliver(&DaemonToControl::Harness {
+            event: assistant_delta(text),
+        })
         .await;
     }
 
@@ -454,23 +610,21 @@ async fn the_event_tail_is_replayed_in_order_and_resumes_from_a_cursor() {
 async fn a_spot_notice_is_stored_as_well_as_broadcast() {
     // A reclamation is something that happened to the session, and the
     // browser most likely to want it is one opened *after* the machine was
-    // taken away — which reads the stored tail rather than a live frame.
+    // taken away — which reads the stored tail rather than a live event.
     let mut room = Room::open().await;
     room.greet().await;
 
-    room.deliver_json(
-        Which::Daemon,
-        &DaemonToControl::SpotNotice {
+    let emitted = room
+        .deliver(&DaemonToControl::SpotNotice {
             seconds_remaining: 30,
-        },
-    )
-    .await;
+        })
+        .await;
 
     assert_eq!(
-        room.drain(),
-        vec![to_client(&ClientEvent::SpotNotice {
+        events_of(emitted),
+        vec![ClientEvent::SpotNotice {
             seconds_remaining: 30
-        })]
+        }]
     );
     let page = room.events(0).await;
     assert_eq!(page.events.len(), 1);
@@ -494,10 +648,9 @@ async fn a_usage_report_is_broadcast_but_not_stored() {
         context: None,
         estimated_cost: None,
     };
-    room.deliver_json(Which::Daemon, &DaemonToControl::Usage { usage })
-        .await;
+    let emitted = room.deliver(&DaemonToControl::Usage { usage }).await;
 
-    assert_eq!(room.drain(), vec![to_client(&ClientEvent::Usage { usage })]);
+    assert_eq!(events_of(emitted), vec![ClientEvent::Usage { usage }]);
     assert_eq!(
         room.events(0).await.events,
         NO_EVENTS,
@@ -510,31 +663,28 @@ async fn capabilities_and_the_harness_session_id_are_kept_for_a_late_joiner() {
     let mut room = Room::open().await;
     room.greet().await;
 
-    room.deliver_json(
-        Which::Daemon,
-        &DaemonToControl::Started {
+    let started = room
+        .deliver(&DaemonToControl::Started {
             harness_session_id: "9d0f4b1a".to_owned(),
-        },
-    )
-    .await;
-    room.deliver_json(
-        Which::Daemon,
-        &DaemonToControl::Capabilities {
+        })
+        .await;
+    let capabilities = room
+        .deliver(&DaemonToControl::Capabilities {
             capabilities: vec!["can_use_tool".to_owned()],
-        },
-    )
-    .await;
+        })
+        .await;
 
     assert_eq!(
-        room.drain(),
-        vec![
-            to_client(&ClientEvent::Started {
-                harness_session_id: "9d0f4b1a".to_owned()
-            }),
-            to_client(&ClientEvent::Capabilities {
-                capabilities: vec!["can_use_tool".to_owned()]
-            }),
-        ]
+        events_of(started),
+        vec![ClientEvent::Started {
+            harness_session_id: "9d0f4b1a".to_owned()
+        }]
+    );
+    assert_eq!(
+        events_of(capabilities),
+        vec![ClientEvent::Capabilities {
+            capabilities: vec!["can_use_tool".to_owned()]
+        }]
     );
 
     let kv = DurableKv::new(room.kv.clone());
@@ -563,22 +713,20 @@ async fn an_approval_request_reaches_browsers_as_pending() {
         tool: "Bash".to_owned(),
         input: serde_json::json!({ "command": "ls" }),
     };
-    room.deliver_json(
-        Which::Daemon,
-        &DaemonToControl::ApprovalRequest {
+    let emitted = room
+        .deliver(&DaemonToControl::ApprovalRequest {
             id,
             payload: payload.clone(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     assert_eq!(
-        room.drain(),
-        vec![to_client(&ClientEvent::ApprovalPending { id, payload })]
+        events_of(emitted),
+        vec![ClientEvent::ApprovalPending { id, payload }]
     );
 }
 
-// ── Browsers → daemon ──
+// ── The Worker → the daemon ──
 
 #[skyzen::test]
 async fn a_user_message_is_forwarded_to_the_daemon_and_echoed_to_browsers() {
@@ -586,24 +734,32 @@ async fn a_user_message_is_forwarded_to_the_daemon_and_echoed_to_browsers() {
     room.greet().await;
 
     let text = "what does this crate do?";
-    let command = ControlToDaemon::UserMessage {
-        text: text.to_owned(),
-        origin: flyco_core::MessageOrigin::User,
-    };
-    room.deliver_json(Which::Client, &command).await;
+    let emitted = room
+        .command(&ControlToDaemon::UserMessage {
+            text: text.to_owned(),
+            origin: flyco_core::MessageOrigin::User,
+        })
+        .await;
 
     // The browser that typed it already has it; every *other* browser
     // watching the session would otherwise see the agent answer a question
     // it could not see.
     assert_eq!(
-        room.drain(),
-        vec![
-            to_client(&ClientEvent::UserMessage {
-                text: text.to_owned(),
-                origin: flyco_core::MessageOrigin::User,
-            }),
-            to_daemon(&command),
-        ]
+        events_of(emitted),
+        vec![ClientEvent::UserMessage {
+            text: text.to_owned(),
+            origin: flyco_core::MessageOrigin::User,
+        }]
+    );
+    assert_eq!(
+        room.next_command().await.command,
+        ControlToDaemon::UserMessage {
+            text: text.to_owned(),
+            // The origin travels no further: what reaches the harness is
+            // the text alone.
+            origin: flyco_core::MessageOrigin::User,
+        },
+        "the daemon is handed the message"
     );
 
     let page = room.events(0).await;
@@ -628,31 +784,29 @@ async fn a_shell_command_is_recorded_named_and_handed_to_the_daemon() {
     let mut room = Room::open().await;
     room.greet().await;
 
-    room.deliver_json(
-        Which::Client,
-        &ControlToDaemon::ShellCommand {
+    let emitted = room
+        .command(&ControlToDaemon::ShellCommand {
             command: "git status --short".to_owned(),
-        },
-    )
-    .await;
+        })
+        .await;
 
-    // The room names the run: a browser sends a request, and what reaches
+    // The room names the run: a caller sends a request, and what reaches
     // the daemon is an instruction with the identity every frame about it
     // will carry.
-    let sent = room.drain();
-    let [echoed, forwarded] = sent.as_slice() else {
-        panic!("a shell command is echoed once and forwarded once, not {sent:?}");
+    let [asked] = emitted.events.as_slice() else {
+        panic!("a shell command is echoed once, not {emitted:?}");
     };
-    let ClientEvent::ShellCommand { run, command } = event_in(echoed) else {
+    let ClientEvent::ShellCommand { run, command } = &asked.event else {
         panic!("the browsers see the command that was asked for");
     };
     assert_eq!(command, "git status --short");
+    let run = *run;
     assert_eq!(
-        forwarded,
-        &to_daemon(&ControlToDaemon::RunShell {
+        room.next_command().await.command,
+        ControlToDaemon::RunShell {
             run,
             command: "git status --short".to_owned(),
-        }),
+        },
         "the daemon is told which run it is running"
     );
 
@@ -667,37 +821,34 @@ async fn a_shell_command_is_recorded_named_and_handed_to_the_daemon() {
 async fn a_shell_command_with_no_daemon_to_run_it_is_answered_rather_than_dropped() {
     let mut room = Room::open().await;
 
-    // No handshake: the machine is still being provisioned, or its daemon
-    // is mid-reconnect. Nothing runs the command, and the user is told so
+    // No attach: the machine is still being provisioned, or its daemon is
+    // mid-reconnect. Nothing runs the command, and the user is told so
     // instead of watching a row that never finishes.
-    room.deliver_json(
-        Which::Client,
-        &ControlToDaemon::ShellCommand {
+    let emitted = room
+        .command(&ControlToDaemon::ShellCommand {
             command: "ls".to_owned(),
-        },
-    )
-    .await;
+        })
+        .await;
 
-    let sent = room.drain();
-    let [asked, detached_now, answered] = sent.as_slice() else {
-        panic!("an unrunnable command is echoed and then closed off, not {sent:?}");
+    let [asked, detached, answered] = emitted.events.as_slice() else {
+        panic!("an unrunnable command is echoed and then closed off, not {emitted:?}");
     };
     assert_eq!(
-        detached_now,
-        &detached(),
+        detached.event,
+        ClientEvent::MachineConnection { connected: false },
         "the run failed because the machine is not on the room, and that is \
          the part the user has to be told"
     );
-    let ClientEvent::ShellCommand { run, .. } = event_in(asked) else {
+    let ClientEvent::ShellCommand { run, .. } = asked.event else {
         panic!("the command is still recorded");
     };
     assert_eq!(
-        answered,
-        &to_client(&ClientEvent::ShellExited {
+        answered.event,
+        ClientEvent::ShellExited {
             run,
             outcome: ShellOutcome::Offline,
             truncated: false,
-        })
+        }
     );
 
     // And a browser that opens the session afterwards reads the same two.
@@ -742,7 +893,7 @@ async fn a_shell_run_replays_with_its_output_and_its_exit_status() {
             truncated: false,
         },
     ] {
-        room.deliver_json(Which::Daemon, &frame).await;
+        room.deliver(&frame).await;
     }
 
     // Stored as well as broadcast, unlike the web terminal's bytes: this
@@ -773,7 +924,7 @@ async fn a_shell_run_replays_with_its_output_and_its_exit_status() {
 }
 
 #[skyzen::test]
-async fn every_command_a_client_may_send_is_forwarded() {
+async fn every_command_the_worker_may_send_is_forwarded() {
     let mut room = Room::open().await;
     room.greet().await;
 
@@ -792,750 +943,347 @@ async fn every_command_a_client_may_send_is_forwarded() {
             rows: 40,
         },
     ] {
-        room.deliver_json(Which::Client, &command).await;
-        let sent = room.drain();
+        room.command(&command).await;
         assert_eq!(
-            sent.last(),
-            Some(&to_daemon(&command)),
+            room.next_command().await.command,
+            command,
             "{command:?} must reach the daemon"
         );
     }
 }
 
-#[skyzen::test]
-async fn a_client_reaching_for_control_plane_authority_is_closed() {
-    for command in [
-        ControlToDaemon::Archive {
-            preserve_workdir: false,
-        },
-        ControlToDaemon::Budget {
-            signal: flyco_core::BudgetSignal::Pause,
-        },
-        ControlToDaemon::ApprovalDecision {
-            id: ApprovalId::generate(),
-            decision: ApprovalDecision::Approved,
-        },
-    ] {
-        let mut room = Room::open().await;
-        room.greet().await;
-        room.deliver_json(Which::Client, &command).await;
+// ── Reconnect and the command log ──
 
-        assert_eq!(
-            room.drain(),
-            vec![Sent::Closed {
-                to: ROLE_CLIENT.to_owned(),
-                code: CLOSE_POLICY,
-            }],
-            "a browser must not be able to send {command:?}"
-        );
-    }
+#[skyzen::test]
+async fn the_remembered_pane_size_is_replayed_ahead_of_queued_commands() {
+    let mut room = Room::open().await;
+
+    // The pane was fitted while no daemon was attached — the ordinary
+    // case for a session whose machine is still being built. The size is
+    // remembered rather than queued, so it survives the whole gap.
+    room.command(&ControlToDaemon::TerminalResize {
+        cols: 132,
+        rows: 40,
+    })
+    .await;
+    room.command(&ControlToDaemon::SetModel {
+        model: flyco_core::harness::ModelChoice {
+            model: "claude-opus-4-6".to_owned(),
+            effort: None,
+        },
+    })
+    .await;
+
+    room.greet().await;
+
+    // The resize is the stream's first word — before the queued command —
+    // and it carries no sequence: it is a state replay, acknowledged for
+    // nothing.
+    let resized = room.next_command().await;
+    assert_eq!(resized.seq, None, "a state replay is outside the log");
+    assert_eq!(
+        resized.command,
+        ControlToDaemon::TerminalResize {
+            cols: 132,
+            rows: 40
+        }
+    );
+    let queued = room.next_command().await;
+    assert!(queued.seq.is_some());
+    assert!(matches!(
+        queued.command,
+        ControlToDaemon::SetModel { .. }
+    ));
 }
 
-// ── The control plane → the room ──
-
 #[skyzen::test]
-async fn a_decided_approval_reaches_the_daemon_and_every_browser() {
+async fn an_unacknowledged_command_is_replayed_to_the_next_attach_and_an_ack_retires_it() {
     let mut room = Room::open().await;
     room.greet().await;
 
-    let id = ApprovalId::generate();
-    let command = ControlToDaemon::ApprovalDecision {
-        id,
-        decision: ApprovalDecision::Approved,
+    room.command(&ControlToDaemon::Compact).await;
+    let delivered = room.next_command().await;
+    let seq = delivered.seq.expect("a logged command carries a sequence");
+
+    // The daemon died holding the command — it read the row and its
+    // acknowledgement never landed. Re-attaching must hand the row over
+    // again rather than trust a stream that is gone.
+    room.applied = 0;
+    room.attach().await;
+    room.open_commands().await;
+    let replayed = room.next_command().await;
+    assert_eq!(replayed.seq, Some(seq));
+    assert_eq!(replayed.command, ControlToDaemon::Compact);
+
+    // And now the acknowledgement lands: the next batch's `ack_through`
+    // retires the row, and a third attach finds nothing left to replay.
+    room.deliver(&DaemonToControl::Harness {
+        event: assistant_delta("still here"),
+    })
+    .await;
+    room.attach().await;
+    room.open_commands().await;
+    room.expect_quiet().await;
+}
+
+#[skyzen::test]
+async fn an_acknowledgement_keeps_acked_rows_from_replaying() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    room.command(&ControlToDaemon::Compact).await;
+    room.next_command().await;
+    // The daemon's next POST acknowledges the read.
+    room.deliver(&DaemonToControl::Harness {
+        event: assistant_delta("ok"),
+    })
+    .await;
+
+    assert_eq!(
+        room.command_log().await,
+        vec![],
+        "an acknowledged row is retired"
+    );
+}
+
+// ── The room while the daemon is away ──
+
+#[skyzen::test]
+async fn a_state_change_held_for_an_offline_daemon_is_delivered_on_attach() {
+    let mut room = Room::open().await;
+
+    let model = flyco_core::harness::ModelChoice {
+        model: "claude-sonnet-4-6".to_owned(),
+        effort: Some("high".to_owned()),
     };
+    let emitted = room
+        .command(&ControlToDaemon::SetModel {
+            model: model.clone(),
+        })
+        .await;
+
+    // The change is echoed either way — the control plane already
+    // recorded it, so a watcher sees the line regardless of the machine.
+    assert_eq!(
+        events_of(emitted),
+        vec![ClientEvent::ModelChanged {
+            model: model.clone()
+        }]
+    );
+
+    room.greet().await;
+    assert_eq!(
+        room.next_command().await.command,
+        ControlToDaemon::SetModel { model },
+        "a state is still owed to a daemon that was away"
+    );
+}
+
+#[skyzen::test]
+async fn an_instant_command_for_an_offline_daemon_is_dropped_and_announced() {
+    let mut room = Room::open().await;
+
+    let emitted = room.command(&ControlToDaemon::Interrupt).await;
+
+    assert_eq!(
+        events_of(emitted),
+        vec![ClientEvent::MachineConnection { connected: false }],
+        "whoever pressed Stop, and everyone else watching, is told the \
+         machine is off the room"
+    );
+    assert_eq!(
+        room.command_log().await,
+        vec![],
+        "an interrupt is not held for a daemon that is away"
+    );
+}
+
+#[skyzen::test]
+async fn an_expired_attach_is_announced_gone_once_and_then_not_again() {
+    let mut room = Room::open().await;
+    room.attach().await;
+    // No stream is held open: the daemon's last contact has expired.
+    room.expire_presence().await;
+
+    let first = room.command(&ControlToDaemon::Interrupt).await;
+    assert_eq!(
+        events_of(first),
+        vec![ClientEvent::MachineConnection { connected: false }],
+        "the first caller after the deadline is told the daemon is gone"
+    );
+
+    // The marker's flag means "already said"; each later dropped command
+    // still has to say it again, because whoever sent *that* one was never
+    // in the first call's audience.
+    let second = room.command(&ControlToDaemon::Interrupt).await;
+    assert_eq!(
+        events_of(second),
+        vec![ClientEvent::MachineConnection { connected: false }]
+    );
+}
+
+#[skyzen::test]
+async fn a_reattach_resets_the_gone_marker() {
+    let mut room = Room::open().await;
+    room.attach().await;
+    room.expire_presence().await;
+    room.command(&ControlToDaemon::Interrupt).await;
+
+    // The daemon came back; the attach says so, and the next expiry is a
+    // fresh story rather than a continuation.
+    let attached = room.attach().await;
+    assert_eq!(attached.events, vec![connected()]);
+}
+
+// ── The workdir ──
+
+#[skyzen::test]
+async fn a_workdir_question_is_answered_to_the_one_who_asked() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    let id = flyco_core::WorkdirRequestId::generate();
     let (status, _) = room
         .call(
             Method::POST,
-            "/internal/command",
-            Some(serde_json::to_vec(&command).expect("serialize")),
+            "/internal/workdir",
+            Some(
+                serde_json::to_vec(&ControlToDaemon::InspectWorkdir {
+                    id,
+                    request: flyco_core::workdir::WorkdirRequest::Entries {
+                        path: "src".to_owned(),
+                    },
+                })
+                .expect("serialize"),
+            ),
         )
         .await;
-    assert_eq!(status, 204);
+    assert_eq!(status, 204, "a question for a live daemon is accepted");
 
+    let asked = room.next_command().await;
     assert_eq!(
-        room.drain(),
-        vec![
-            to_daemon(&command),
-            to_client(&ClientEvent::ApprovalDecided {
-                id,
-                decision: ApprovalDecision::Approved,
-            }),
-        ]
+        asked.command,
+        ControlToDaemon::InspectWorkdir {
+            id,
+            request: flyco_core::workdir::WorkdirRequest::Entries {
+                path: "src".to_owned()
+            }
+        }
     );
-}
 
-#[skyzen::test]
-async fn a_message_forwarded_from_the_worker_is_recorded_like_any_other() {
-    let mut room = Room::open().await;
-    room.greet().await;
-
-    let text = "keep going";
-    let command = ControlToDaemon::UserMessage {
-        text: text.to_owned(),
-        origin: flyco_core::MessageOrigin::User,
-    };
+    // The collect is pending until the daemon's reply lands.
     let (status, _) = room
-        .call(
-            Method::POST,
-            "/internal/command",
-            Some(serde_json::to_vec(&command).expect("serialize")),
-        )
+        .call(Method::GET, &format!("/internal/workdir?id={id}"), None)
         .await;
-    assert_eq!(status, 204);
+    assert_eq!(status, 404, "an unanswered question is not found yet");
 
-    let echo = ClientEvent::UserMessage {
-        text: text.to_owned(),
-        origin: flyco_core::MessageOrigin::User,
-    };
-    assert_eq!(room.drain(), vec![to_client(&echo), to_daemon(&command)]);
-    assert_eq!(
-        room.events(0)
-            .await
-            .events
-            .into_iter()
-            .map(|stored| stored.event)
-            .collect::<Vec<_>>(),
-        vec![serde_json::to_value(&echo).expect("serialize")],
-        "the route a message came in by is not something a replay can tell"
-    );
-}
-
-// ── The working tree ──
-
-#[skyzen::test]
-async fn a_working_tree_nobody_has_looked_at_is_not_found() {
-    let mut room = Room::open().await;
-    let (status, _) = room.call(Method::GET, "/internal/repo-status", None).await;
-    assert_eq!(
-        status, 404,
-        "an unreported tree is not a clean one, and must not be answered as one"
-    );
-}
-
-#[skyzen::test]
-async fn the_working_tree_the_daemon_reported_is_served_back() {
-    let mut room = Room::open().await;
-    room.greet().await;
-
-    room.deliver_json(
-        Which::Daemon,
-        &DaemonToControl::RepoDirty {
-            summary: " M src/lib.rs".to_owned(),
-        },
-    )
-    .await;
-
-    let (status, body) = room.call(Method::GET, "/internal/repo-status", None).await;
-    assert_eq!(status, 200);
-    let reported: flyco_core::RepoStatus = serde_json::from_slice(&body).expect("a working tree");
-    assert!(reported.dirty);
-    assert_eq!(reported.summary, " M src/lib.rs");
-
-    // A later report replaces it: the tree is a current value, not a log.
-    room.deliver_json(
-        Which::Daemon,
-        &DaemonToControl::RepoDirty {
-            summary: String::new(),
-        },
-    )
-    .await;
-    let (_, body) = room.call(Method::GET, "/internal/repo-status", None).await;
-    let reported: flyco_core::RepoStatus = serde_json::from_slice(&body).expect("a working tree");
-    assert!(
-        !reported.dirty,
-        "an empty `git status --short` is the clean tree"
-    );
-}
-
-// ── Questions about the checkout ──
-
-/// The question the `Files` tab asks, addressed to `id`.
-fn ask(id: flyco_core::WorkdirRequestId) -> ControlToDaemon {
-    ControlToDaemon::InspectWorkdir {
-        id,
-        request: flyco_core::workdir::WorkdirRequest::Entries {
-            path: "src".to_owned(),
-        },
-    }
-}
-
-/// One listing, as a daemon would answer it.
-fn listing() -> flyco_core::workdir::WorkdirReply {
-    flyco_core::workdir::WorkdirReply::Entries {
+    let reply = flyco_core::workdir::WorkdirReply::Entries {
         listing: flyco_core::workdir::DirectoryListing {
             path: "src".to_owned(),
             entries: vec![flyco_core::workdir::DirectoryEntry {
                 name: "lib.rs".to_owned(),
                 path: "src/lib.rs".to_owned(),
                 kind: flyco_core::workdir::EntryKind::File,
-                size_bytes: Some(12),
+                size_bytes: Some(42),
                 ignored: false,
             }],
             truncated: false,
         },
-    }
-}
-
-#[skyzen::test]
-async fn a_question_about_the_checkout_with_no_daemon_to_answer_it_is_refused_at_once() {
-    let mut room = Room::open().await;
-    let id = flyco_core::WorkdirRequestId::generate();
-
-    let (status, _) = room
-        .call(
-            Method::POST,
-            "/internal/workdir",
-            Some(serde_json::to_vec(&ask(id)).expect("serialize")),
-        )
-        .await;
-    assert_eq!(
-        status, 503,
-        "a browser waiting for a listing is told at once that nothing can read it"
-    );
-    assert_eq!(room.drain(), vec![], "there was nobody to forward it to");
-}
-
-#[skyzen::test]
-async fn a_question_reaches_the_daemon_and_its_answer_is_collected_once() {
-    let mut room = Room::open().await;
-    room.greet().await;
-    let id = flyco_core::WorkdirRequestId::generate();
-
-    let (status, _) = room
-        .call(
-            Method::POST,
-            "/internal/workdir",
-            Some(serde_json::to_vec(&ask(id)).expect("serialize")),
-        )
-        .await;
-    assert_eq!(status, 204);
-    assert_eq!(room.drain(), vec![to_daemon(&ask(id))]);
-
-    // Nothing to collect until the daemon has answered.
-    let (status, _) = room
-        .call(Method::GET, &format!("/internal/workdir?id={id}"), None)
-        .await;
-    assert_eq!(status, 404);
-
-    room.deliver_json(
-        Which::Daemon,
-        &DaemonToControl::WorkdirReply {
+    };
+    let emitted = room
+        .deliver(&DaemonToControl::WorkdirReply {
             id,
-            reply: listing(),
-        },
-    )
-    .await;
+            reply: reply.clone(),
+        })
+        .await;
     assert_eq!(
-        room.drain(),
+        emitted.events,
         vec![],
-        "an answer addressed to one request is not shown to every browser watching"
-    );
-    assert_eq!(
-        room.events(0).await.events,
-        Vec::<StoredEvent>::new(),
-        "nor is it part of what a replay carries"
+        "a workdir reply is addressed, not fanned out"
     );
 
     let (status, body) = room
         .call(Method::GET, &format!("/internal/workdir?id={id}"), None)
         .await;
-    assert_eq!(status, 200);
-    assert_eq!(
-        serde_json::from_slice::<flyco_core::workdir::WorkdirReply>(&body).expect("a reply"),
-        listing()
-    );
+    assert_eq!(status, 200, "the reply is collected");
+    let collected: flyco_core::workdir::WorkdirReply =
+        serde_json::from_slice(&body).expect("a workdir reply");
+    assert_eq!(collected, reply);
 
+    // Single use: the row went with the answer.
     let (status, _) = room
         .call(Method::GET, &format!("/internal/workdir?id={id}"), None)
         .await;
-    assert_eq!(
-        status, 404,
-        "the Worker that asked is the only caller there will ever be"
-    );
+    assert_eq!(status, 404, "a collected reply is gone");
 }
 
 #[skyzen::test]
-async fn an_answer_to_a_question_nobody_asked_is_not_served_to_another_one() {
+async fn a_workdir_question_for_an_offline_daemon_is_refused_rather_than_held() {
     let mut room = Room::open().await;
-    room.greet().await;
 
-    let answered = flyco_core::WorkdirRequestId::generate();
-    room.deliver_json(
-        Which::Daemon,
-        &DaemonToControl::WorkdirReply {
-            id: answered,
-            reply: listing(),
+    let (status, body) = room
+        .call(
+            Method::POST,
+            "/internal/workdir",
+            Some(
+                serde_json::to_vec(&ControlToDaemon::InspectWorkdir {
+                    id: flyco_core::WorkdirRequestId::generate(),
+                    request: flyco_core::workdir::WorkdirRequest::Diff,
+                })
+                .expect("serialize"),
+            ),
+        )
+        .await;
+    assert_eq!(status, 503, "a browser is told at once there is nothing to read it");
+    let problem: flyco_core::Problem = serde_json::from_slice(&body).expect("a problem");
+    assert_eq!(
+        problem.kind,
+        "https://flyco.dev/problems/session-daemon-offline"
+    );
+}
+
+// ── The shared SSE machinery ──
+
+#[skyzen::test]
+async fn a_quiet_stream_still_says_it_is_alive() {
+    use skyzen::Responder as _;
+
+    // `serve` with a heartbeat a test can wait for. A daemon's liveness
+    // read is byte-level — the parser throws comments away, so what the
+    // room writes to the wire is what has to be checked.
+    struct Idle;
+    let sse = crate::sse::serve(
+        Idle,
+        |_feed: &mut Idle| -> crate::sse::PollFn<'_> {
+            Box::pin(async { crate::sse::Poll::Idle })
         },
-    )
-    .await;
-
-    let other = flyco_core::WorkdirRequestId::generate();
-    let (status, _) = room
-        .call(Method::GET, &format!("/internal/workdir?id={other}"), None)
-        .await;
-    assert_eq!(status, 404);
-}
-
-#[skyzen::test]
-async fn an_archive_command_announces_the_new_lifecycle_state() {
-    let mut room = Room::open().await;
-    room.greet().await;
-
-    let (status, _) = room
-        .call(
-            Method::POST,
-            "/internal/command",
-            Some(
-                serde_json::to_vec(&ControlToDaemon::Archive {
-                    preserve_workdir: false,
-                })
-                .expect("serialize"),
-            ),
-        )
-        .await;
-    assert_eq!(status, 204);
-
-    assert_eq!(
-        room.drain(),
-        vec![
-            to_daemon(&ControlToDaemon::Archive {
-                preserve_workdir: false,
-            }),
-            to_client(&ClientEvent::SessionStateChanged {
-                state: flyco_core::SessionState::Archived,
-            }),
-        ]
-    );
-}
-
-#[skyzen::test]
-async fn a_budget_signal_reaches_the_daemon_without_disturbing_browsers() {
-    let mut room = Room::open().await;
-    room.greet().await;
-
-    let command = ControlToDaemon::Budget {
-        signal: flyco_core::BudgetSignal::Pause,
-    };
-    let (status, _) = room
-        .call(
-            Method::POST,
-            "/internal/command",
-            Some(serde_json::to_vec(&command).expect("serialize")),
-        )
-        .await;
-    assert_eq!(status, 204);
-    assert_eq!(room.drain(), vec![to_daemon(&command)]);
-}
-
-#[skyzen::test]
-async fn a_raised_budget_reaches_the_daemon_the_way_the_pause_did() {
-    let mut room = Room::open().await;
-    room.greet().await;
-
-    // The symmetric half of the pause takes the symmetric path: straight to
-    // the daemon, with nothing said to the browsers watching — what they
-    // render is the session's state, which the Worker wrote before it
-    // called the room.
-    let command = ControlToDaemon::BudgetRaised {
-        limit: flyco_core::Usd::from_dollars(25),
-    };
-    let (status, _) = room
-        .call(
-            Method::POST,
-            "/internal/command",
-            Some(serde_json::to_vec(&command).expect("serialize")),
-        )
-        .await;
-    assert_eq!(status, 204);
-    assert_eq!(room.drain(), vec![to_daemon(&command)]);
-}
-
-#[skyzen::test]
-async fn a_model_change_reaches_the_daemon_and_the_transcript() {
-    let mut room = Room::open().await;
-    room.greet().await;
-
-    let model = flyco_core::ModelChoice {
-        model: "opus[1m]".to_owned(),
-        effort: Some("max".to_owned()),
-    };
-    let command = ControlToDaemon::SetModel {
-        model: model.clone(),
-    };
-    let (status, _) = room
-        .call(
-            Method::POST,
-            "/internal/command",
-            Some(serde_json::to_vec(&command).expect("serialize")),
-        )
-        .await;
-    assert_eq!(status, 204);
-
-    assert_eq!(
-        room.drain(),
-        vec![
-            to_daemon(&command),
-            to_client(&ClientEvent::ModelChanged { model }),
-        ]
-    );
-}
-
-#[skyzen::test]
-async fn a_model_change_is_held_for_an_absent_daemon_and_still_echoed() {
-    // No `greet`: the room has no daemon. The model was already recorded by
-    // the control plane, so the browsers are told and the command waits —
-    // the same shape a machine change takes, and for the same reason.
-    let mut room = Room::open().await;
-
-    let model = flyco_core::ModelChoice {
-        model: "haiku".to_owned(),
-        effort: None,
-    };
-    let command = ControlToDaemon::SetModel {
-        model: model.clone(),
-    };
-    let (status, _) = room
-        .call(
-            Method::POST,
-            "/internal/command",
-            Some(serde_json::to_vec(&command).expect("serialize")),
-        )
-        .await;
-    assert_eq!(status, 204);
-    assert_eq!(
-        room.drain(),
-        vec![to_client(&ClientEvent::ModelChanged { model })]
+        Duration::from_millis(80),
     );
 
-    // And the daemon that arrives next is handed it, in the same breath as
-    // the welcome — `greet` is not used here precisely because this room's
-    // mailbox is not empty.
-    room.hello().await;
-    assert!(
-        room.drain().contains(&to_daemon(&command)),
-        "a held model change must be replayed to the daemon that arrives"
-    );
-}
+    let mut response = skyzen::Response::new(Body::empty());
+    sse.respond_to(&skyzen::Request::new(Body::empty()), &mut response)
+        .expect("the stream responds");
 
-// ── The internal boundary ──
-
-#[skyzen::test]
-async fn a_room_route_without_the_internal_marker_is_refused() {
-    let mut room = Room::open().await;
-
-    let mut request = Request::new(Body::empty());
-    *request.method_mut() = Method::GET;
-    *request.uri_mut() = "https://session-room.flyco.invalid/internal/events"
-        .parse()
-        .expect("a valid room URL");
-    request
-        .extensions_mut()
-        .insert(DurableDb::new(room.db.clone()));
-
-    let response = room
-        .object
-        .fetch()
-        .go(request)
-        .await
-        .expect("the room answered");
-    assert_eq!(response.status().as_u16(), 502);
-}
-
-#[skyzen::test]
-async fn a_relay_upgrade_names_its_role_and_session() {
-    let mut room = Room::open().await;
-
-    // No role header at all.
-    let (status, _) = room.call(Method::GET, "/relay/daemon", None).await;
-    assert_eq!(status, 502, "an upgrade with no role is refused");
-
-    // The right role reaches the accept path, which native builds refuse
-    // with 501: nothing native carries a browser's upgrade this far.
-    let mut request = Request::new(Body::empty());
-    *request.method_mut() = Method::GET;
-    *request.uri_mut() = "https://session-room.flyco.invalid/relay/daemon"
-        .parse()
-        .expect("a valid room URL");
-    for (name, value) in [
-        (HEADER_INTERNAL, INTERNAL.to_owned()),
-        (HEADER_SESSION, room.session.to_string()),
-        (HEADER_ROLE, ROLE_DAEMON.to_owned()),
-    ] {
-        request
-            .headers_mut()
-            .insert(name, value.parse().expect("a valid header"));
+    let mut body = response.into_body();
+    let mut seen = Vec::new();
+    let deadline = futures_timer::Delay::new(PATIENCE);
+    futures_util::pin_mut!(deadline);
+    loop {
+        let next = body.next();
+        futures_util::pin_mut!(next);
+        match futures_util::future::select(next, deadline.as_mut()).await {
+            futures_util::future::Either::Left((Some(Ok(chunk)), _)) => {
+                seen.extend_from_slice(&chunk);
+                if seen.windows(2).any(|pair| pair == b"\n:") || seen.starts_with(b":") {
+                    return;
+                }
+            }
+            futures_util::future::Either::Left((other, _)) => {
+                panic!("the stream ended or errored before its heartbeat: {other:?}")
+            }
+            futures_util::future::Either::Right(_) => {
+                panic!("no heartbeat bytes within {PATIENCE:?}: {seen:?}")
+            }
+        }
     }
-    let response = room
-        .object
-        .fetch()
-        .go(request)
-        .await
-        .expect("the room answered");
-    assert_eq!(response.status().as_u16(), 501);
-
-    // A daemon's credentials must not open a browser's socket.
-    let mut request = Request::new(Body::empty());
-    *request.method_mut() = Method::GET;
-    *request.uri_mut() = "https://session-room.flyco.invalid/relay/client"
-        .parse()
-        .expect("a valid room URL");
-    for (name, value) in [
-        (HEADER_INTERNAL, INTERNAL.to_owned()),
-        (HEADER_SESSION, room.session.to_string()),
-        (HEADER_ROLE, ROLE_DAEMON.to_owned()),
-    ] {
-        request
-            .headers_mut()
-            .insert(name, value.parse().expect("a valid header"));
-    }
-    let response = room
-        .object
-        .fetch()
-        .go(request)
-        .await
-        .expect("the room answered");
-    assert_eq!(
-        response.status().as_u16(),
-        502,
-        "a daemon upgrade must not be accepted on the client route"
-    );
-}
-
-// ── The daemon's mailbox ──
-//
-// A user message is conversation: it must reach the agent whether or not a
-// daemon happened to be connected when it was written. Both orders are
-// covered, because they are the two real ones — the prompt `POST
-// /v1/sessions` writes minutes before a machine exists, and every message
-// after that.
-
-#[skyzen::test]
-async fn a_message_sent_before_the_daemon_arrives_is_delivered_on_its_hello() {
-    let mut room = Room::open().await;
-
-    // No handshake yet: this is the session's opening prompt, written by the
-    // Worker while the machine is still being provisioned.
-    let command = ControlToDaemon::UserMessage {
-        text: "add a test for the mailbox".to_owned(),
-        origin: flyco_core::MessageOrigin::User,
-    };
-    let (status, _) = room
-        .call(
-            Method::POST,
-            "/internal/command",
-            Some(serde_json::to_vec(&command).expect("serialize")),
-        )
-        .await;
-    assert_eq!(status, 204);
-    assert_eq!(
-        room.drain(),
-        vec![to_client(&ClientEvent::UserMessage {
-            text: "add a test for the mailbox".to_owned(),
-            origin: flyco_core::MessageOrigin::User,
-        })],
-        "browsers see it immediately; the daemon is not there to see anything"
-    );
-
-    room.hello().await;
-    assert_eq!(
-        room.drain(),
-        vec![welcome(), to_daemon(&command), attached()],
-        "the greeting is answered with everything the daemon missed, and \
-         then browsers are told the machine is back"
-    );
-
-    // A reconnect does not replay it a second time: the cursor moved.
-    room.greet().await;
-}
-
-#[skyzen::test]
-async fn messages_held_for_a_daemon_are_replayed_in_the_order_they_were_written() {
-    let mut room = Room::open().await;
-
-    for text in ["first", "second", "third"] {
-        let (status, _) = room
-            .call(
-                Method::POST,
-                "/internal/command",
-                Some(
-                    serde_json::to_vec(&ControlToDaemon::UserMessage {
-                        text: text.to_owned(),
-                        origin: flyco_core::MessageOrigin::User,
-                    })
-                    .expect("serialize"),
-                ),
-            )
-            .await;
-        assert_eq!(status, 204);
-    }
-    room.drain();
-
-    room.hello().await;
-    let expected: Vec<Sent> = core::iter::once(welcome())
-        .chain(["first", "second", "third"].into_iter().map(|text| {
-            to_daemon(&ControlToDaemon::UserMessage {
-                text: text.to_owned(),
-                origin: flyco_core::MessageOrigin::User,
-            })
-        }))
-        .chain(core::iter::once(attached()))
-        .collect();
-    assert_eq!(
-        room.drain(),
-        expected,
-        "a conversation replayed out of order is a different conversation"
-    );
-}
-
-#[skyzen::test]
-async fn a_message_sent_while_the_daemon_is_connected_is_not_replayed_later() {
-    let mut room = Room::open().await;
-    room.greet().await;
-
-    let command = ControlToDaemon::UserMessage {
-        text: "keep going".to_owned(),
-        origin: flyco_core::MessageOrigin::User,
-    };
-    room.deliver_json(Which::Client, &command).await;
-    room.drain();
-
-    // The daemon dropped its socket and came back. It already has that
-    // message, and hearing it again would run the turn twice.
-    room.greet().await;
-}
-
-#[skyzen::test]
-async fn only_user_messages_wait_for_a_daemon() {
-    let mut room = Room::open().await;
-
-    // An interrupt for a daemon that is not there is about a turn that is
-    // not running; replaying it into a later one would be an instruction
-    // nobody gave.
-    let (status, _) = room
-        .call(
-            Method::POST,
-            "/internal/command",
-            Some(
-                serde_json::to_vec(&ControlToDaemon::Budget {
-                    signal: flyco_core::BudgetSignal::Pause,
-                })
-                .expect("serialize"),
-            ),
-        )
-        .await;
-    assert_eq!(status, 204);
-    room.drain();
-
-    room.greet().await;
-}
-
-// ── Liveness ──
-
-#[skyzen::test]
-async fn a_heartbeat_is_answered_and_is_not_part_of_the_session() {
-    let mut room = Room::open().await;
-    room.greet().await;
-
-    room.deliver_json(Which::Daemon, &DaemonToControl::Heartbeat)
-        .await;
-
-    assert_eq!(
-        room.drain(),
-        vec![to_daemon(&ControlToDaemon::Heartbeat)],
-        "a heartbeat is answered on the daemon's own socket and nothing \
-         else: the answer is what lets a daemon tell a live socket from one \
-         a NAT dropped, and browsers have no use for either"
-    );
-}
-
-#[skyzen::test]
-async fn a_daemon_that_falls_off_the_room_is_announced_to_every_browser() {
-    let mut room = Room::open().await;
-    room.greet().await;
-
-    room.disconnect(Which::Daemon).await;
-
-    assert_eq!(
-        room.drain(),
-        vec![detached()],
-        "a browser cannot tell an agent that is thinking from a machine \
-         that went away, so the room is the one that has to say"
-    );
-}
-
-#[skyzen::test]
-async fn a_browser_leaving_says_nothing_about_the_machine() {
-    let mut room = Room::open().await;
-    room.greet().await;
-
-    room.disconnect(Which::Client).await;
-
-    assert_eq!(
-        room.drain(),
-        vec![],
-        "one browser closing a tab is not the machine going away"
-    );
-}
-
-#[skyzen::test]
-async fn a_pane_size_reported_before_the_daemon_arrives_is_handed_to_it_after_hello() {
-    let mut room = Room::open().await;
-
-    // The pane was fitted while the machine was still being built. Nothing
-    // is announced: a machine not being here yet is the ordinary case.
-    let size = ControlToDaemon::TerminalResize { cols: 40, rows: 48 };
-    room.deliver_json(Which::Client, &size).await;
-    assert_eq!(room.drain(), vec![]);
-
-    room.hello().await;
-    assert_eq!(
-        room.drain(),
-        vec![welcome(), to_daemon(&size), attached()],
-        "the daemon's PTY opens at a default size and the pane is the only \
-         thing that knows the real one"
-    );
-
-    // A daemon restarted later — a resize, a migration — has a fresh PTY
-    // and is told again.
-    room.hello().await;
-    assert_eq!(room.drain(), vec![welcome(), to_daemon(&size), attached()]);
-}
-
-#[skyzen::test]
-async fn a_pane_size_reaches_a_connected_daemon_at_once_and_the_latest_one_is_kept() {
-    let mut room = Room::open().await;
-    room.greet().await;
-
-    let first = ControlToDaemon::TerminalResize { cols: 40, rows: 48 };
-    let second = ControlToDaemon::TerminalResize {
-        cols: 132,
-        rows: 40,
-    };
-    room.deliver_json(Which::Client, &first).await;
-    room.deliver_json(Which::Client, &second).await;
-    assert_eq!(room.drain(), vec![to_daemon(&first), to_daemon(&second)]);
-
-    room.hello().await;
-    assert_eq!(
-        room.drain(),
-        vec![welcome(), to_daemon(&second), attached()],
-        "a session has one pane size: the last one fitted"
-    );
-}
-
-#[skyzen::test]
-async fn an_interrupt_with_no_daemon_to_take_it_is_not_silently_dropped() {
-    let mut room = Room::open().await;
-
-    // No handshake: whatever this interrupt was aimed at, nothing is going
-    // to stop.
-    room.deliver_json(Which::Client, &ControlToDaemon::Interrupt)
-        .await;
-
-    assert_eq!(
-        room.drain(),
-        vec![detached()],
-        "a browser that pressed Stop and was told nothing goes on showing a \
-         turn that nobody is running"
-    );
 }

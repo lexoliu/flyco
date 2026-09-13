@@ -57,37 +57,68 @@ export interface MarkdownProps {
 export default function Markdown(props: MarkdownProps) {
   let container: HTMLDivElement | undefined;
   const timers = new Set<ReturnType<typeof setTimeout>>();
+  let frame = 0;
+  let pending: string | null = null;
 
   onCleanup(() => {
     for (const timer of timers) {
       clearTimeout(timer);
     }
+    if (frame !== 0) {
+      cancelAnimationFrame(frame);
+    }
   });
 
+  /**
+   * Parses and paints once per animation frame at most.
+   *
+   * A streamed paragraph's text changes on every delta, and each change
+   * used to cost a full `marked.parse` + `innerHTML` — dozens of repaints
+   * of the same block inside one frame, which is what made output janky.
+   * The frame callback paints the newest text it was handed, so a burst of
+   * deltas still costs one parse and nothing is ever rendered stale.
+   */
   createEffect(() => {
-    const host = container;
-    if (host === undefined) {
-      return;
-    }
-    // `marked.parse` is synchronous with these options; the async overload
-    // only applies when an async extension is registered, and none is.
-    const html = marked.parse(props.text) as string;
-    host.innerHTML = DOMPurify.sanitize(html, SANITIZE);
-
-    // Links in a transcript point outside the app and are not the app's
-    // to navigate; opening them in a new tab keeps the session where it is.
-    for (const link of host.querySelectorAll("a")) {
-      link.setAttribute("target", "_blank");
-      link.setAttribute("rel", "noreferrer noopener");
-    }
-
-    for (const block of host.querySelectorAll("pre")) {
-      block.classList.add(styles.codeBlock ?? "");
-      block.append(copyButton(block.textContent ?? "", timers));
+    pending = props.text;
+    if (frame === 0) {
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const host = container;
+        const text = pending;
+        pending = null;
+        if (host === undefined || text === null) {
+          return;
+        }
+        paint(host, text, timers);
+      });
     }
   });
 
   return <div class={styles.markdown} ref={container} />;
+}
+
+/** One parse–sanitize–paint pass over `host`. */
+function paint(
+  host: HTMLDivElement,
+  text: string,
+  timers: Set<ReturnType<typeof setTimeout>>,
+): void {
+  // `marked.parse` is synchronous with these options; the async overload
+  // only applies when an async extension is registered, and none is.
+  const html = marked.parse(text) as string;
+  host.innerHTML = DOMPurify.sanitize(html, SANITIZE);
+
+  // Links in a transcript point outside the app and are not the app's
+  // to navigate; opening them in a new tab keeps the session where it is.
+  for (const link of host.querySelectorAll("a")) {
+    link.setAttribute("target", "_blank");
+    link.setAttribute("rel", "noreferrer noopener");
+  }
+
+  for (const block of host.querySelectorAll("pre")) {
+    block.classList.add(styles.codeBlock ?? "");
+    block.append(copyButton(block.textContent ?? "", timers));
+  }
 }
 
 /** The copy control one code block carries. */

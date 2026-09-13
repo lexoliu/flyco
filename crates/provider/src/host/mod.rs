@@ -19,8 +19,8 @@
 //! * [`Host`] compiles on wasm32 and does no I/O. It answers
 //!   [`catalog`](Host::catalog) from the facts the machine reported, and
 //!   turns a [`MachineOperation`] into a [`ContainerJob`].
-//! * [`ControlToHost`] carries that job down the host's own outbound
-//!   WebSocket, and [`HostToControl`] carries back what came of it.
+//! * [`ControlToHost`] carries that job down the host's own command
+//!   stream, and [`HostToControl`] carries back what came of it.
 //! * [`script::render`] turns a job into the shell the host runs. It lives
 //!   here, beside the job it renders, so the quoting that keeps a container
 //!   name from becoming another command is tested where it is written — and
@@ -49,7 +49,7 @@ pub mod script;
 mod wire;
 
 pub use script::render;
-pub use wire::{ControlToHost, HostToControl};
+pub use wire::{ControlToHost, HostAttach, HostAttached, HostCommand, HostFrames, HostToControl};
 
 use flyco_core::host::HostFacts;
 use flyco_core::machine::{
@@ -150,8 +150,9 @@ pub fn machine_named(name: &str) -> Option<MachineId> {
 
 /// One unit of container lifecycle work, as the control plane sends it.
 ///
-/// Serializable on purpose: this is what travels down a host's socket, and
-/// the process that executes it is not the process that planned it.
+/// Serializable on purpose: this is what travels down a host's command
+/// stream, and the process that executes it is not the process that
+/// planned it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "job", rename_all = "snake_case")]
 pub enum ContainerJob {
@@ -174,7 +175,7 @@ pub enum ContainerJob {
         /// enum carries — three credentials, a repository, a commit
         /// identity and the machine the session is on — and every other
         /// variant is a name or two. Without the indirection each `Stop`
-        /// on a socket would be padded out to the size of a `Create`. The
+        /// on the wire would be padded out to the size of a `Create`. The
         /// JSON is unchanged: a `Box` serializes as what it holds.
         bootstrap: Box<DaemonBootstrap>,
     },
@@ -294,7 +295,7 @@ impl Host {
     ///
     /// It carries no price, because the user already owns and already pays
     /// for the hardware, and its size and architecture are the ones the
-    /// machine reported at its last `Hello` rather than any flyco invented.
+    /// machine reported at its last attach rather than any flyco invented.
     ///
     /// Its runtime is [`Runtime::Container`], which it always was: a session
     /// here has always been a Podman container, and the axis is what finally
@@ -647,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn a_job_round_trips_down_the_socket_without_leaking_the_token() {
+    fn a_job_round_trips_over_the_wire_without_leaking_the_token() {
         let job = host().plan(&provision(HOSTNAME)).expect("plan");
         let encoded = serde_json::to_string(&job).expect("serialize");
         let back: ContainerJob = serde_json::from_str(&encoded).expect("deserialize");

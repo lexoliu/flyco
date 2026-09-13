@@ -267,6 +267,16 @@ describe("foldTranscript machine changes", () => {
   });
 });
 
+describe("foldTranscript mode changes", () => {
+  it("folds a permission_mode_changed into the line the transcript renders", () => {
+    const [change] = foldTranscript([
+      at(0, { type: "permission_mode_changed", mode: "plan" }),
+    ]);
+
+    expect(change).toMatchObject({ kind: "mode_change", mode: "plan", atUnix: T0 });
+  });
+});
+
 describe("foldTranscript turns", () => {
   it("dates a turn from its start and its end, which is what the footer reads", () => {
     const [turn] = foldTranscript([
@@ -381,10 +391,10 @@ describe("foldTranscript provisioning timeline", () => {
       attempt: 1,
       endedAtUnix: null,
       steps: [
-        { stage: "reserving", atUnix: T0 },
-        { stage: "booting", atUnix: T0 + 40 },
-        { stage: "cloning", atUnix: T0 + 95 },
-        { stage: "ready", atUnix: T0 + 210 },
+        { key: `reserving-${T0}`, stage: "reserving", atUnix: T0 },
+        { key: `booting-${T0 + 40}`, stage: "booting", atUnix: T0 + 40 },
+        { key: `cloning-${T0 + 95}`, stage: "cloning", atUnix: T0 + 95 },
+        { key: `ready-${T0 + 210}`, stage: "ready", atUnix: T0 + 210 },
       ],
     });
   });
@@ -592,6 +602,51 @@ describe("foldTranscript shell commands", () => {
       command: "",
       output: [{ stream: "stdout", data: "still here\n" }],
     });
+  });
+});
+
+describe("foldTranscript local command output and context", () => {
+  it("renders output the harness printed on its own as output, not a turn", () => {
+    // A local slash command's answer arrives outside any turn. Folding it
+    // into one would hang it on a `turn_id` it does not carry.
+    const items = foldTranscript([
+      at(0, {
+        type: "harness",
+        event: { type: "local_command_output", content: "| Context | 42k |" },
+      }),
+    ]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "command_output",
+      text: "| Context | 42k |",
+      atUnix: T0,
+    });
+  });
+
+  it("folds no transcript item for a context_usage answer — the panel reads the stream", () => {
+    // The breakdown is a control answer, not something that happened: the
+    // ring's panel pulls the newest frame out of the event list itself.
+    const items = foldTranscript([
+      at(0, {
+        type: "harness",
+        event: {
+          type: "context_usage",
+          usage: {
+            model: "claude-opus-4-8",
+            window: { used_tokens: 84_000, size_tokens: 200_000 },
+            auto_compact: 160_000,
+            categories: [{ name: "System prompt", tokens: 3_000, deferred: false }],
+            mcp_tools: [],
+            memory_files: [],
+            agents: [],
+            skills: [],
+          },
+        },
+      }),
+    ]);
+
+    expect(items).toHaveLength(0);
   });
 });
 

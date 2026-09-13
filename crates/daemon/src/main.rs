@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use flyco_core::{HarnessKind, ProvisioningStage};
 use flyco_daemon::config::{ControlPlaneConfig, DaemonConfig, EXAMPLE};
 use flyco_daemon::control::{
-    ControlApi, Endpoint, HttpControlApi, RemoteTranscriptStore, SessionRelay, wire,
+    ControlApi, HttpControlApi, RemoteTranscriptStore, SessionRelay, wire,
 };
 use flyco_daemon::git::GitWorkdir;
 use flyco_daemon::harness::claude::ClaudeCodeHarness;
@@ -58,8 +58,8 @@ enum Command {
     ExampleConfig,
     /// Act as a machine the user owns, rather than as a session VM.
     ///
-    /// The same binary in its other role: `flycod host run` holds one
-    /// outbound socket to this machine's room and runs the session
+    /// The same binary in its other role: `flycod host run` holds the
+    /// command stream this machine's room serves and runs the session
     /// containers the control plane sends it (docs/host-enrollment.md).
     Host {
         #[command(subcommand)]
@@ -271,22 +271,25 @@ async fn conversation_to_continue(config: &mut DaemonConfig, api: &HttpControlAp
         }
     };
 
-    // The model as well as the conversation, and for the same reason: the
-    // file on this disk was written when the machine was *created*, so a
-    // session whose model the user changed while it ran would come back on
-    // the old one after a reclamation.
+    // The model and the mode as well as the conversation, and for the same
+    // reason: the file on this disk was written when the machine was
+    // *created*, so a session whose model or mode the user changed while it
+    // ran would come back on the old ones after a reclamation.
     tracing::info!(
         model = %view.model.model,
         effort = ?view.model.effort,
-        "running this session on the model the control plane recorded"
+        mode = ?view.permission_mode,
+        "running this session on the model and mode the control plane recorded"
     );
     if let Some(claude) = config.claude.as_mut() {
         claude.model = Some(view.model.model.clone());
         claude.effort.clone_from(&view.model.effort);
+        claude.permission_mode = view.permission_mode;
     }
     if let Some(codex) = config.codex.as_mut() {
         codex.model = Some(view.model.model.clone());
         codex.effort.clone_from(&view.model.effort);
+        codex.permission_mode = view.permission_mode;
     }
 
     match view.harness_session_id {
@@ -443,16 +446,15 @@ async fn drive_claude_code(config: DaemonConfig, mount: Mount) -> Result<(), Fai
         "reporting to the control plane over the session relay"
     );
     let ControlPlaneConfig { url, daemon_token } = control_plane;
-    let api = HttpControlApi::new(url.clone(), config.session, daemon_token.clone());
-    let endpoint = Endpoint::from_base(&url, config.session, daemon_token)?;
+    let api = HttpControlApi::new(url, config.session, daemon_token);
 
     let started = start(&config, mount, RemoteTranscriptStore::new(api.clone())).await?;
     let (terminal, terminal_out) =
         flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
     let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
     Box::pin(wire::run(SessionRelay {
-        endpoint,
-        keepalive: wire::Keepalive::default(),
+        session_id: config.session,
+        deadlines: wire::Deadlines::default(),
         session: started.session,
         outputs: started.outputs,
         api,
@@ -512,14 +514,13 @@ async fn report<S: HarnessSession + 'static>(
         "reporting to the control plane over the session relay"
     );
     let ControlPlaneConfig { url, daemon_token } = control_plane;
-    let api = HttpControlApi::new(url.clone(), config.session, daemon_token.clone());
-    let endpoint = Endpoint::from_base(&url, config.session, daemon_token)?;
+    let api = HttpControlApi::new(url, config.session, daemon_token);
     let (terminal, terminal_out) =
         flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
     let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
     Box::pin(wire::run(SessionRelay {
-        endpoint,
-        keepalive: wire::Keepalive::default(),
+        session_id: config.session,
+        deadlines: wire::Deadlines::default(),
         session: started.session,
         outputs: started.outputs,
         api,

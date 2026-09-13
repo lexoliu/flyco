@@ -452,7 +452,7 @@ async fn apply(
     .execute()
     .await?;
 
-    announce_machine_change(rooms, session, &built).await;
+    announce_machine_change(db, rooms, session, &built).await;
     Ok(())
 }
 
@@ -493,14 +493,19 @@ pub(crate) async fn agent_view(
 /// A room that cannot be reached costs the notice, not the resize: the
 /// machine has already changed, and failing the request here would tell the
 /// caller a resize did not happen when it did.
-async fn announce_machine_change(rooms: &Rooms, session: SessionId, built: &SessionMachine) {
+async fn announce_machine_change(
+    db: &Db,
+    rooms: &Rooms,
+    session: SessionId,
+    built: &SessionMachine,
+) {
     let event = ClientEvent::MachineChanged {
         machine_type: built.machine_type.clone(),
         hourly: built.hourly,
         spot: built.spot,
         restarted: true,
     };
-    if let Err(error) = rooms.broadcast(session, &event).await {
+    if let Err(error) = rooms.broadcast(db, session, &event).await {
         tracing::warn!(%session, %error, "a machine change did not reach the session's watchers");
     }
 
@@ -510,7 +515,7 @@ async fn announce_machine_change(rooms: &Rooms, session: SessionId, built: &Sess
         spot: built.spot,
         restarted: true,
     };
-    if let Err(error) = rooms.command(session, &command).await {
+    if let Err(error) = rooms.command(db, session, &command).await {
         tracing::warn!(%session, %error, "a machine change was not held for the session's daemon");
     }
 }
@@ -1329,13 +1334,21 @@ pub async fn deallocate(db: &Db, machine: MachineId) -> Result<(), ApiError> {
 /// machine, the stall sweep still counts it, and the queue knows the build
 /// is owned by a continuation rather than open for another attempt.
 ///
+/// The write is skipped on a row already running: a redelivered leg hands
+/// back `Pending` while its sibling's `Ready` has already landed, and
+/// writing the pending row's shorter native id over the resolved one
+/// would leave a running machine naming only its job until the next leg
+/// rewrote it.
+///
 /// # Errors
 ///
 /// Returns [`ApiError`] if the database fails.
 pub async fn record_pending(db: &Db, machine: &flyco_provider::Machine) -> Result<(), ApiError> {
+    let running = MachineState::Running;
     sql!(
         db,
-        "UPDATE machines SET native_id = {machine.native_id.clone()} WHERE id = {machine.id}"
+        "UPDATE machines SET native_id = {machine.native_id.clone()} \
+         WHERE id = {machine.id} AND state != {running}"
     )
     .execute()
     .await?;

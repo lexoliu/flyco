@@ -1,9 +1,10 @@
 //! The daemon⇄control-plane wire protocol, and what browsers see of it.
 //!
-//! One outbound WebSocket per daemon, relayed through the session's
-//! Durable Object. Every frame is one JSON-encoded message from this
-//! module. [`crate::WIRE_PROTOCOL_VERSION`] guards compatibility: a
-//! mismatch closes the connection immediately.
+//! The transport is HTTP, not a socket: a daemon attaches over REST, holds
+//! one SSE stream for the room's [`ControlToDaemon`] commands, and posts
+//! its own [`DaemonToControl`] frames back in sequenced batches.
+//! [`crate::WIRE_PROTOCOL_VERSION`] guards compatibility: a daemon speaking
+//! another version is refused at `attach`, before any frame moves.
 //!
 //! Three enums, one for each direction of the relay:
 //!
@@ -301,8 +302,8 @@ pub enum ProvisioningStage {
     /// Announced by the daemon over `POST
     /// /v1/sessions/{id}/provisioning-stage` rather than over the relay,
     /// because it happens *before* the harness exists: the checkout is what
-    /// the harness is started in, and the relay socket is not opened until
-    /// there is a session behind it.
+    /// the harness is started in, and the command stream is not opened
+    /// until there is a session behind it.
     Cloning,
     /// The daemon is connected and the harness is accepting work.
     Ready,
@@ -453,28 +454,9 @@ pub enum ShellOutcome {
 }
 
 /// Messages from the daemon to the control plane.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonToControl {
-    /// First frame after connecting: identifies the daemon and its
-    /// protocol version. The control plane closes on any mismatch.
-    Hello {
-        /// Wire protocol version the daemon speaks.
-        protocol_version: u32,
-        /// Session this daemon serves.
-        session: SessionId,
-    },
-    /// Proof that this daemon and its socket are both still alive.
-    ///
-    /// A session relay is quiet for as long as the agent is thinking, and a
-    /// quiet TCP flow is exactly what a cloud NAT reclaims — Azure's
-    /// outbound idle timeout is four minutes by default. The frame is
-    /// therefore sent on a timer rather than when there is news, and the
-    /// room answers every one with [`ControlToDaemon::Heartbeat`]: an
-    /// answer is what makes inbound silence mean something, so a
-    /// half-open socket is abandoned and reconnected instead of read
-    /// forever.
-    Heartbeat,
     /// The harness is identified and warming.
     ///
     /// Arrives before any user message, so the room can record the
@@ -598,15 +580,6 @@ pub enum DaemonToControl {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlToDaemon {
-    /// Acknowledges [`DaemonToControl::Hello`]; the session is live.
-    Welcome,
-    /// Answers [`DaemonToControl::Heartbeat`].
-    ///
-    /// The room has nothing to say on its own schedule, so this is the only
-    /// frame a daemon can count on receiving while a turn runs. That is the
-    /// point: it is what lets the daemon tell a live socket from one a NAT
-    /// dropped without a FIN.
-    Heartbeat,
     /// A user message to feed the harness.
     UserMessage {
         /// Message text.
@@ -653,6 +626,19 @@ pub enum ControlToDaemon {
     Interrupt,
     /// Compact the session's context through the harness's native command.
     Compact,
+    /// Ask the harness what its context window is spent on.
+    ///
+    /// The usage panel's "detailed breakdown" sends this: a query, not a
+    /// prompt. The harness answers
+    /// it out of band — the Claude SDK's `get_context_usage` control
+    /// request; Codex from the token readings its stream already carries —
+    /// and the answer comes back as
+    /// [`HarnessEvent::ContextUsage`](crate::harness::HarnessEvent::ContextUsage).
+    /// It is a command of its own rather than a `user_message` carrying the
+    /// text `/context`, because the CLI would treat that text as a *local*
+    /// command whose answer never reaches the relay — and because a query
+    /// about the context should never enter the context it describes.
+    ContextUsage,
     /// The user decided a pending approval.
     ApprovalDecision {
         /// The approval being decided.
@@ -708,7 +694,7 @@ pub enum ControlToDaemon {
     /// is not.
     ///
     /// Held for a daemon that is not connected and delivered on its next
-    /// `Hello` — the whole restart is a window with no daemon in it, so a
+    /// attach — the whole restart is a window with no daemon in it, so a
     /// command dropped for want of a listener would be the only case that
     /// ever mattered.
     MachineChanged {
@@ -762,6 +748,22 @@ pub enum ControlToDaemon {
         /// What the session runs on now.
         model: crate::harness::ModelChoice,
     },
+    /// Put the session's agent on another permission mode.
+    ///
+    /// Applied to the conversation already in progress: Claude Code takes
+    /// `setPermissionMode` on a live query, and Codex's `turn/start`
+    /// documents `approvalPolicy` and `sandboxPolicy` as overriding "this
+    /// turn and subsequent turns" — so on Codex the change is what the next
+    /// turn runs under, and on Claude it is what the rest of this one does.
+    ///
+    /// Held for a daemon that is not connected on the same terms as
+    /// [`Self::SetModel`]: it describes a state, the control plane has
+    /// already recorded it, and a daemon that missed it would run the
+    /// session under a mode its own row disagrees with.
+    SetPermissionMode {
+        /// The mode the session runs under now.
+        mode: crate::harness::PermissionMode,
+    },
     /// Archive the session: flush state, optionally snapshot the repo, shut
     /// down.
     Archive {
@@ -790,8 +792,6 @@ impl ControlToDaemon {
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
-            Self::Welcome => "welcome",
-            Self::Heartbeat => "heartbeat",
             Self::UserMessage { .. } => "user_message",
             Self::ShellCommand { .. } => "shell_command",
             Self::RunShell { .. } => "run_shell",
@@ -799,24 +799,26 @@ impl ControlToDaemon {
             Self::TerminalResize { .. } => "terminal_resize",
             Self::Interrupt => "interrupt",
             Self::Compact => "compact",
+            Self::ContextUsage => "context_usage",
             Self::ApprovalDecision { .. } => "approval_decision",
             Self::Budget { .. } => "budget",
             Self::BudgetRaised { .. } => "budget_raised",
             Self::MachineChanged { .. } => "machine_changed",
             Self::SetModel { .. } => "set_model",
+            Self::SetPermissionMode { .. } => "set_permission_mode",
             Self::InspectWorkdir { .. } => "inspect_workdir",
             Self::Archive { .. } => "archive",
         }
     }
 
-    /// Whether a browser may send this command.
+    /// Whether a session's owner may send this command.
     ///
-    /// A session room accepts exactly six commands from a client socket;
+    /// A session room accepts exactly seven commands from a user client;
     /// everything else is control-plane authority (budget signals, approval
     /// decisions, archival, and the identified [`Self::RunShell`] the room
     /// reissues a [`Self::ShellCommand`] as) and reaches the daemon only
     /// through the room itself or an authenticated REST handler. A client
-    /// that sends anything else is closed rather than ignored.
+    /// that sends anything else is refused rather than ignored.
     #[must_use]
     pub const fn is_client_command(&self) -> bool {
         matches!(
@@ -825,6 +827,7 @@ impl ControlToDaemon {
                 | Self::ShellCommand { .. }
                 | Self::Interrupt
                 | Self::Compact
+                | Self::ContextUsage
                 | Self::TerminalInput { .. }
                 | Self::TerminalResize { .. }
         )
@@ -843,21 +846,105 @@ impl ControlToDaemon {
     /// exception by construction: the change it reports *is* a restart, so
     /// the daemon is guaranteed to be gone at the moment it is sent, and
     /// the machine is still the new one whenever it comes back.
-    /// [`SetModel`](Self::SetModel) is the exception by consequence: the
-    /// control plane has already recorded the model, and a daemon that
-    /// missed the command would run the session on a model its own row
-    /// disagrees with.
+    /// [`SetModel`](Self::SetModel) and
+    /// [`SetPermissionMode`](Self::SetPermissionMode) are the exceptions by
+    /// consequence: the control plane has already recorded what they carry,
+    /// and a daemon that missed either would run the session on a model or
+    /// under a mode its own row disagrees with.
     ///
-    /// A user message survives too, but through the room's mailbox, which
-    /// is an index into the replayable stream rather than a queue, because
-    /// a conversation must not be reordered.
+    /// A user message survives too, but because the room records it as
+    /// conversation rather than because delivery is owed: a message is part
+    /// of the transcript, so the room keeps it whether or not a daemon is
+    /// there to hear it.
     #[must_use]
     pub const fn survives_a_disconnect(&self) -> bool {
-        matches!(self, Self::MachineChanged { .. } | Self::SetModel { .. })
+        matches!(
+            self,
+            Self::MachineChanged { .. } | Self::SetModel { .. } | Self::SetPermissionMode { .. }
+        )
     }
 }
 
-/// What a browser attached to a session room receives.
+/// What a daemon offers the room when it attaches.
+///
+/// Attaching is a REST call, not a frame: the bearer token authenticates
+/// before any of this is read, and the version lives here so a daemon
+/// speaking another protocol is refused before either side moves a frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct DaemonAttach {
+    /// Wire protocol version the daemon speaks.
+    pub protocol_version: u32,
+}
+
+/// What the room answers an attach with.
+///
+/// The epoch names the attachment. Every later [`DaemonFrames`] POST and
+/// every command on the daemon's command stream carries it, so a daemon
+/// that attached twice — a retry raced the first attempt's response — and
+/// a room that watched the first stream die can agree about which
+/// attachment the traffic belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct DaemonAttached {
+    /// Generation of this attachment; increments per attach.
+    pub epoch: u64,
+}
+
+/// One POST of a daemon's outbound frames.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct DaemonFrames {
+    /// The attach this batch belongs to.
+    pub epoch: u64,
+    /// Sequence number of `frames[0]` within the epoch.
+    ///
+    /// The daemon numbers its frames from 1 on each attach and the room
+    /// tracks how far it has stored. A batch whose `from_seq` says its
+    /// head is already stored is a retransmission — answered without
+    /// touching anything — and a batch that skips a number is a lost
+    /// POST, refused so the daemon re-sends from the gap.
+    pub from_seq: u64,
+    /// The highest command sequence the daemon has applied.
+    ///
+    /// `daemon_commands` rows at or below it are delivered and done, and
+    /// the room deletes them. Zero acknowledges nothing.
+    pub ack_through: u64,
+    /// The frames, in order.
+    pub frames: Vec<DaemonToControl>,
+}
+
+/// One `command` event on the daemon's command stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct DaemonCommand {
+    /// Position in the room's command log, when the command came from it.
+    ///
+    /// `None` for the commands the stream composes itself — a replayed
+    /// terminal size is the one such case — which carry no ordering
+    /// obligation: a daemon applies them whenever they arrive and
+    /// acknowledges nothing for them.
+    pub seq: Option<u64>,
+    /// The command.
+    pub command: ControlToDaemon,
+}
+
+/// One event on a user's global stream.
+///
+/// `GET /v1/events` multiplexes every session the user owns onto one SSE
+/// connection; the envelope is what tells them apart, and what lets a
+/// client refill a single session's history with `events?after=` when the
+/// stream's resume cursor finds a gap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SessionEvent {
+    /// Session the event belongs to.
+    pub session: SessionId,
+    /// Position in that session's recorded history, when it has one.
+    ///
+    /// Events a session room emits are sequenced there; events the control
+    /// plane composes about a session have no position to carry.
+    pub seq: Option<u64>,
+    /// The event.
+    pub event: ClientEvent,
+}
+
+/// What a browser following a session receives.
 ///
 /// A superset of the harness stream: everything a
 /// [`DaemonToControl`] frame carries that a user may see, plus the
@@ -874,7 +961,7 @@ pub enum ClientEvent {
     /// A message the user sent to the agent.
     ///
     /// The user's own half of the conversation, which the daemon never
-    /// reports back: it arrives at the room from a browser socket or from
+    /// reports back: it arrives at the room through
     /// `POST /v1/sessions/{id}/messages`, and the room records and echoes it
     /// there. Without it a second browser would watch the agent answer
     /// questions it could not see, and a replayed session would be one side
@@ -956,8 +1043,8 @@ pub enum ClientEvent {
     /// Stop button, the terminal — is only meaningful while a daemon is
     /// there to act on it, and a session whose daemon has gone otherwise
     /// looks exactly like one whose agent is thinking. Sent on the daemon's
-    /// `Hello`, on its socket closing, and whenever a command finds nobody
-    /// to take it (docs/ux.md §9.6).
+    /// attach, when its command stream closes, and whenever a command finds
+    /// nobody to take it (docs/ux.md §9.6).
     MachineConnection {
         /// Whether a greeted daemon holds the room right now.
         connected: bool,
@@ -1009,6 +1096,17 @@ pub enum ClientEvent {
     ModelChanged {
         /// What the session runs on now.
         model: crate::harness::ModelChoice,
+    },
+    /// The session's agent was put under another permission mode.
+    ///
+    /// Rendered as one line in the transcript, like a model change and for
+    /// the same reason: what the agent may do without asking changes from
+    /// here on, and a conversation whose second half ran under a different
+    /// mode with no note of where the seam is would be a transcript that
+    /// misrepresents itself.
+    PermissionModeChanged {
+        /// The mode the session runs under now.
+        mode: crate::harness::PermissionMode,
     },
     /// The models this session's harness offers.
     ///
@@ -1064,19 +1162,16 @@ pub enum ClientEvent {
 impl ClientEvent {
     /// The client-facing form of a daemon frame, if browsers see it at all.
     ///
-    /// [`DaemonToControl::Hello`] is handshake traffic and never reaches a
-    /// browser; an [`DaemonToControl::ApprovalRequest`] becomes
+    /// An [`DaemonToControl::ApprovalRequest`] becomes
     /// [`Self::ApprovalPending`], because "pending" is the state the UI
     /// renders rather than the act of asking. A
     /// [`DaemonToControl::WorkdirReply`] is addressed to one waiting HTTP
     /// request and is collected by the Worker rather than broadcast, so it
-    /// has no client form either.
+    /// has no client form.
     #[must_use]
     pub fn from_daemon(frame: DaemonToControl) -> Option<Self> {
         match frame {
-            DaemonToControl::Hello { .. }
-            | DaemonToControl::Heartbeat
-            | DaemonToControl::WorkdirReply { .. } => None,
+            DaemonToControl::WorkdirReply { .. } => None,
             DaemonToControl::Started { harness_session_id } => {
                 Some(Self::Started { harness_session_id })
             }
@@ -1123,7 +1218,7 @@ mod tests {
     };
     use crate::budget::BudgetSignal;
     use crate::harness::{ContextWindow, HarnessEvent, UsageReport};
-    use crate::id::{ApprovalId, SessionId, ShellRunId, WorkdirRequestId};
+    use crate::id::{ApprovalId, ShellRunId, WorkdirRequestId};
     use crate::machine::BillingMinimum;
     use crate::money::Usd;
     use crate::session::SessionState;
@@ -1192,10 +1287,6 @@ mod tests {
 
     fn every_daemon_frame() -> Vec<DaemonToControl> {
         vec![
-            DaemonToControl::Hello {
-                protocol_version: crate::WIRE_PROTOCOL_VERSION,
-                session: SessionId::generate(),
-            },
             DaemonToControl::Started {
                 harness_session_id: "9d0f4b1a".to_owned(),
             },
@@ -1294,7 +1385,6 @@ mod tests {
 
     fn every_control_frame() -> Vec<ControlToDaemon> {
         vec![
-            ControlToDaemon::Welcome,
             ControlToDaemon::UserMessage {
                 text: "what does this crate do?".to_owned(),
                 origin: MessageOrigin::User,
@@ -1308,6 +1398,7 @@ mod tests {
             },
             ControlToDaemon::Interrupt,
             ControlToDaemon::Compact,
+            ControlToDaemon::ContextUsage,
             ControlToDaemon::ApprovalDecision {
                 id: ApprovalId::generate(),
                 decision: ApprovalDecision::Approved,
@@ -1621,7 +1712,7 @@ mod tests {
     #[test]
     fn the_daemons_two_reports_survive_the_wire() {
         // The pair the machine files over REST rather than over the relay,
-        // because both outlive the socket they would otherwise ride.
+        // because both outlive the attachment they would otherwise ride.
         round_trip(&ReportProvisioningStage {
             stage: ProvisioningStage::Cloning,
         });
@@ -1683,6 +1774,7 @@ mod tests {
                     | ControlToDaemon::ShellCommand { .. }
                     | ControlToDaemon::Interrupt
                     | ControlToDaemon::Compact
+                    | ControlToDaemon::ContextUsage
                     | ControlToDaemon::TerminalInput { .. }
                     | ControlToDaemon::TerminalResize { .. }
             );
@@ -1749,15 +1841,12 @@ mod tests {
     }
 
     #[test]
-    fn only_the_handshake_and_an_addressed_reply_are_hidden_from_browsers() {
+    fn only_an_addressed_reply_is_hidden_from_browsers() {
         for frame in every_daemon_frame() {
-            // The two frames nobody watching the session is meant to see:
-            // the handshake, and an answer addressed to the one HTTP
-            // request that asked for it.
-            let hidden = matches!(
-                frame,
-                DaemonToControl::Hello { .. } | DaemonToControl::WorkdirReply { .. }
-            );
+            // The one frame nobody watching the session is meant to see:
+            // an answer addressed to the one HTTP request that asked for
+            // it.
+            let hidden = matches!(frame, DaemonToControl::WorkdirReply { .. });
             assert_eq!(ClientEvent::from_daemon(frame.clone()).is_none(), hidden);
         }
     }

@@ -3,9 +3,9 @@
 //! The control plane runs on Cloudflare Workers and has no TCP sockets, so
 //! it can never open a connection to somebody's machine. A host is therefore
 //! **enrolled**: `flycod host` is installed with a single-use enrollment
-//! token, registers itself, and holds one outbound WebSocket to its
+//! token, registers itself, and holds one outbound command stream to its
 //! [`HostRoom`] for as long as it is up. Everything the control plane wants
-//! done on that machine travels down that socket as container work.
+//! done on that machine travels down that stream as container work.
 //!
 //! What lives here is the part both planes agree on: what a host says about
 //! itself ([`HostFacts`]), where it is in its life ([`HostState`]), and the
@@ -48,7 +48,7 @@ pub const HOST_FAMILY: &str = "host";
 /// What a host says about itself when it greets the control plane.
 ///
 /// Reported by the machine rather than configured by the user, and
-/// refreshed on every `Hello`: a host that gained memory, filled its disk,
+/// refreshed on every attach: a host that gained memory, filled its disk,
 /// or was upgraded to another Podman is a different machine to schedule
 /// onto, and flyco has no other way to learn it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -107,7 +107,7 @@ impl HostFacts {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum HostState {
-    /// Its daemon holds a socket to the control plane, and it can be
+    /// Its daemon is attached to the control plane, and it can be
     /// scheduled onto.
     Online,
     /// Nothing is connected. Containers already on it keep running; a
@@ -148,7 +148,7 @@ pub struct HostView {
     /// What it last said about itself.
     ///
     /// Absent only between the row being written and the host's first
-    /// `Hello`, which is a window the enrollment route does not leave open —
+    /// attach, which is a window the enrollment route does not leave open —
     /// enrolling carries the facts.
     pub facts: HostFacts,
     /// When its daemon was last heard from, seconds since the Unix epoch.

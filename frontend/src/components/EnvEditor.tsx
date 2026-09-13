@@ -1,8 +1,9 @@
 import { For, Show, createSignal } from "solid-js";
+import { Plus, X } from "lucide-solid";
 import { createQuery } from "../lib/query";
 import ProblemNotice from "./ProblemNotice";
 import { getSessionEnv, putSessionEnv, type EnvEntry } from "../api/client";
-import styles from "./Panel.module.css";
+import styles from "./EnvEditor.module.css";
 
 /**
  * The `.env` editor for one session. Lives on the session detail page
@@ -63,32 +64,48 @@ export default function EnvEditor(props: { sessionId: string }) {
               <div class={styles.form}>
                 <For each={entries()}>
                   {(entry, index) => (
-                    <div class={styles.field} style={{ "flex-direction": "row", gap: "var(--space-2)" }}>
+                    <div class={styles.row}>
                       <input
+                        class={styles.input}
                         aria-label="Variable name"
                         value={entry.key}
                         onInput={(event) => updateEntry(index(), "key", event.currentTarget.value)}
                         placeholder="KEY"
+                        autocomplete="off"
+                        autocapitalize="off"
+                        spellcheck={false}
                       />
                       <input
+                        class={styles.input}
                         aria-label="Variable value"
                         value={entry.value}
                         onInput={(event) => updateEntry(index(), "value", event.currentTarget.value)}
                         placeholder="value"
+                        autocomplete="off"
+                        autocapitalize="off"
+                        spellcheck={false}
                       />
-                      <button type="button" class={styles.dangerButton} onClick={() => removeEntry(index())}>
-                        Remove
+                      <button
+                        type="button"
+                        class={styles.remove}
+                        aria-label={entry.key ? `Remove ${entry.key}` : "Remove variable"}
+                        onClick={() => removeEntry(index())}
+                      >
+                        <X size={14} aria-hidden="true" />
                       </button>
                     </div>
                   )}
                 </For>
-                <button type="button" onClick={addEntry}>
-                  Add variable
-                </button>
                 <ProblemNotice error={error()} />
-                <button type="button" class={styles.primaryButton} disabled={saving()} onClick={() => void onSave()}>
-                  {saving() ? "Saving…" : "Save"}
-                </button>
+                <div class={styles.footer}>
+                  <button type="button" class={styles.add} onClick={addEntry}>
+                    <Plus size={14} aria-hidden="true" />
+                    Add variable
+                  </button>
+                  <button type="button" class={styles.save} disabled={saving()} onClick={() => void onSave()}>
+                    {saving() ? "Saving…" : "Save"}
+                  </button>
+                </div>
               </div>
             </>
           )}

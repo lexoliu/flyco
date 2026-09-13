@@ -3,7 +3,7 @@
 //! The control plane runs on Cloudflare Workers and has no TCP sockets, so
 //! it can never dial somebody's machine. A host is therefore **enrolled**:
 //! the user mints a single-use token, runs one command on the machine, and
-//! `flycod host` registers itself and holds an outbound socket to its
+//! `flycod host` registers itself and holds an outbound attachment to its
 //! [`HostRoom`](crate::host_room::HostRoom) from then on.
 //!
 //! # Where the truth about a host lives
@@ -13,7 +13,7 @@
 //! * **D1** holds identity — who owns it, what it is called, what it last
 //!   said about itself, and the hash of its token.
 //! * **Its room** holds liveness, because a Durable Object is the only thing
-//!   that can see the socket and cannot write to D1 (see
+//!   that can see the attachment and cannot write to D1 (see
 //!   [`crate::host_room`]).
 //!
 //! So every read of a host goes through [`refresh`], which asks the room and
@@ -219,7 +219,8 @@ pub async fn enroll(
         .map_err(|_| ApiError::CorruptRecord("host facts could not be encoded"))?;
     let label = request.facts.hostname.clone();
     // Offline until its daemon actually arrives: enrolling is the machine
-    // saying what it is, and the socket is a separate thing it opens next.
+    // saying what it is, and the attachment is a separate thing it opens
+    // next.
     let state = HostState::Offline;
 
     sql!(
@@ -344,8 +345,9 @@ pub async fn view(
 ///
 /// The room is the authority on whether the machine is connected and on what
 /// it last reported, and it cannot write any of that down. So a read is
-/// where the durable row learns it: online with fresh facts while the socket
-/// is up, offline once it is gone, and untouched while a removal is in
+/// where the durable row learns it: online with fresh facts while the
+/// attachment is up, offline once it is gone, and untouched while a removal
+/// is in
 /// flight — a host being drained is not one to put back online because a
 /// container is still talking.
 ///
@@ -403,14 +405,14 @@ pub async fn refresh(db: &Db, rooms: &HostRooms, row: HostRow) -> Result<HostVie
     })
 }
 
-/// Records that a machine's daemon has just opened its socket.
+/// Records that a machine's daemon has just attached.
 ///
-/// The durable half of a host coming back, and it happens on the *upgrade*
-/// rather than on the `Hello` frame for the reason everything else about a
-/// room does: the frame reaches a Durable Object, and a Durable Object
-/// cannot write D1. The Worker authenticates that upgrade, so this is the
-/// one moment the control plane can see a machine arrive and record it —
-/// without which a host that enrolled and connected while nobody was
+/// The durable half of a host coming back, and it happens on the *attach*
+/// rather than on a frame for the reason everything else about a room
+/// does: the attach reaches a Durable Object, and a Durable Object cannot
+/// write D1. The Worker authenticates that attach, so this is the one
+/// moment the control plane can see a machine arrive and record it —
+/// without which a host that enrolled and attached while nobody was
 /// looking would offer no catalog at all.
 ///
 /// A drained host is left alone: its token is gone, so nothing can reach

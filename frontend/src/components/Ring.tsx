@@ -14,6 +14,7 @@
  * colour means something is wrong, never that something exists.
  */
 import { Show } from "solid-js";
+import { cx } from "../lib/cx";
 import styles from "./Ring.module.css";
 
 /** How full a ring has to be before it says so in colour. */
@@ -38,6 +39,16 @@ export interface RingProps {
    * make the number unreachable to anyone reading by ear.
    */
   hint?: string | undefined;
+  /**
+   * Whether the readout may give way on a narrow row.
+   *
+   * The composer's trailing edge is a hard one line: when it cannot hold
+   * every control, the readout is the pixels that cost least to lose —
+   * the arc still says how full, and the number lives one tap inside the
+   * panel. The accessible name keeps it regardless. Header rings do not
+   * pass this: they have the room, and the readout is the point there.
+   */
+  compact?: boolean | undefined;
 }
 
 function tone(ratio: number): "ok" | "warn" | "danger" {
@@ -97,7 +108,9 @@ export default function Ring(props: RingProps) {
           />
         </Show>
       </svg>
-      <span class={styles.readout}>{props.readout}</span>
+      <span class={cx(styles.readout, props.compact === true && styles.readoutCompact)}>
+        {props.readout}
+      </span>
     </span>
   );
 }

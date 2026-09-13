@@ -6,7 +6,7 @@
 //! uploads every object to the channel's prefix, and reads back what the
 //! control plane actually serves. It refuses to publish a daemon speaking a
 //! wire protocol the deployed Worker does not, because that combination
-//! refuses every machine provisioned from it at `Hello`.
+//! refuses every machine provisioned from it at attach.
 
 use std::{
     path::{Path, PathBuf},

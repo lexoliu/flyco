@@ -1,0 +1,251 @@
+/* The context ring's trigger and the usage panel it opens (docs/ux.md §9.3). */
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.panel {
+  width: 300px;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.readout {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The window's fill: one track, and where a breakdown has been asked for,
+   one segment per category laid down in the harness's own order. */
+.track {
+  display: flex;
+  height: 5px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+  overflow: hidden;
+}
+
+.fill {
+  height: 100%;
+  background: var(--color-primary);
+}
+
+.fill[data-tier="warn"] {
+  background: var(--color-warning);
+}
+
+.fill[data-tier="final-warn"] {
+  background: var(--color-danger);
+}
+
+.segment {
+  height: 100%;
+  background: var(--color-primary);
+}
+
+/* A hairline between categories, so two neighbouring fills read as two. */
+.segment + .segment {
+  box-shadow: inset 1px 0 0 var(--color-surface);
+}
+
+/* Counted toward the window but not materialized in it yet. */
+.segment[data-deferred] {
+  opacity: 0.35;
+}
+
+.note {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+/*
+ * The breakdown, once asked for: one `name — 4k` row per category — the
+ * segmented bar's legend — and the detail lists behind disclosures.
+ */
+.costs {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+}
+
+.cost {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.costName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* `deferred` — a qualifier in smaller, quieter type. */
+.deferred {
+  margin-left: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+
+.costTokens {
+  margin-left: auto;
+  flex: none;
+  color: var(--color-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A detail section and its summary row. */
+.detail {
+  font-size: var(--text-sm);
+}
+
+.detailSummary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  list-style: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.detailSummary::-webkit-details-marker {
+  display: none;
+}
+
+.detail[open] > .detailSummary {
+  margin-bottom: var(--space-2);
+}
+
+.detailChevron {
+  transition: transform var(--transition-fast);
+}
+
+.detail[open] > .detailSummary .detailChevron {
+  transform: rotate(90deg);
+}
+
+.detailTotal {
+  margin-left: auto;
+  color: var(--color-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.windowRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+}
+
+.windowLabel {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.windowReadout {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.windowRow .track {
+  grid-column: 1 / -1;
+}
+
+/* A `label — value` line of the session's own accounting: no bar, because
+   a token total or a cost is a figure, not a fill. */
+.statRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.statLabel {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.statReadout {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* The way to the full list: the daemon's answer lands back in the panel
+   itself, so this asks and then says it is asking. */
+.breakdown {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 calc(-1 * var(--space-3));
+  margin-bottom: calc(-1 * var(--space-3));
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-top: var(--border-width) solid var(--color-border);
+  background: none;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.breakdown:hover:not(:disabled) {
+  color: var(--color-text);
+  background: var(--color-surface-sunken);
+}
+
+.breakdown:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

@@ -1,19 +1,22 @@
-//! The daemon's end of the session relay.
+//! The daemon's end of the session relay: REST out, SSE in.
 //!
-//! One outbound WebSocket to the session's room, carrying
-//! [`DaemonToControl`] out and [`ControlToDaemon`] in. This replaces the
-//! [REPL](crate::repl) as the way a shipped session is driven; the REPL
-//! stays as the dev tool for reproducing a harness bug without a control
-//! plane.
+//! There is no socket. A daemon holds three routes against its session's
+//! room: it *attaches* over REST for an epoch, holds a command *stream*
+//! open under that epoch, and *posts* its outbound frames in sequenced
+//! batches that carry how far it has applied the command log. This
+//! replaces the [REPL](crate::repl) as the way a shipped session is
+//! driven; the REPL stays as the dev tool for reproducing a harness bug
+//! without a control plane.
 //!
 //! # Two tasks, one bounded queue
 //!
 //! The [collector](collect) owns the harness's output stream, turns each
 //! [`SessionOutput`] into a wire frame, and pushes it into a bounded queue.
-//! The [connection](Connection) owns the socket and the harness's control
-//! handle: it drains the queue outward and dispatches commands inward.
+//! The [connection](Connection) owns the command stream and the harness's
+//! control handle: it drains the queue outward and dispatches commands
+//! inward.
 //!
-//! They are separate because the socket is not always there. A reconnect
+//! They are separate because the room is not always reachable. A reconnect
 //! takes seconds; the harness does not stop producing during them, and
 //! nothing about a coding session tolerates its transcript being dropped.
 //! The queue is what absorbs that gap — and it is *bounded*
@@ -22,40 +25,39 @@
 //! overflow is a fatal error, not a dropped frame: losing part of a session
 //! silently is worse than stopping.
 //!
-//! A frame that leaves the queue but fails to write is handed back and
-//! retried on the next connection, so delivery is **at least once**: a
-//! socket that dies after accepting a write but before delivering it can
-//! produce one duplicate. Exactly-once needs an acknowledgement the wire
-//! protocol does not carry yet; until it does, a duplicated frame is the
-//! better failure, because the room's stored tail is what a browser replays
-//! and a gap in it can never be recovered.
+//! A frame that leaves the queue but whose POST was not confirmed stays in
+//! `pending` and is re-sent — under the same epoch while the attach lives,
+//! and under a fresh epoch after a reconnect, where the room deduplicates
+//! by sequence number. Delivery is therefore **at least once**: a batch
+//! whose response was lost after the room stored it produces one
+//! duplicate. Exactly-once needs an acknowledgement the wire protocol
+//! does not carry yet; until it does, a duplicated frame is the better
+//! failure, because the room's stored tail is what a browser replays and
+//! a gap in it can never be recovered.
 //!
 //! # Ordering that the product depends on
 //!
 //! An approval is recorded over REST *before* its frame is announced. The
 //! control plane assigns the id, so the id a browser sees is one the API can
-//! settle — and a decision that arrives while the socket is down still finds
-//! a pending row waiting when the daemon comes back.
+//! settle — and a decision that arrives while the daemon is detached still
+//! finds a pending row waiting when it comes back.
 
 use core::time::Duration;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use askama::Template as _;
+use flyco_core::wire::{DaemonCommand, DaemonFrames};
 use flyco_core::workdir::WorkdirRequest;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
     HarnessObservation, ProvisioningStage, RateLimitObservation, SessionId, SessionMachine,
-    ShellOutcome, ShellRunId, StopReason, Usd, WIRE_PROTOCOL_VERSION, WorkdirRequestId,
+    ShellOutcome, ShellRunId, StopReason, Usd, WorkdirRequestId,
 };
-use futures_util::{SinkExt as _, StreamExt as _};
+use futures_util::StreamExt as _;
 use rand::Rng as _;
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
-use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::control::rest::{ControlApi, ControlApiError};
+use crate::control::rest::{CommandStream, ControlApi, ControlApiError, RelayTransport};
 use crate::git::{GitError, WorkingTree};
 use crate::harness::{HarnessSession, SessionOutput, ToolApproval};
 use crate::notice::{BudgetRaised, MachineChanged, MachineLine, OpeningMessage, SessionStart};
@@ -65,7 +67,7 @@ use crate::stop::Stops;
 use crate::terminal::{TerminalError, TerminalSession};
 use crate::workdir::Checkout;
 
-/// How many frames may wait for a socket that is not there.
+/// How many frames may wait for a stream that is not there.
 ///
 /// Sized for a reconnect, not for an outage: at the ~50 frames a second a
 /// busy turn produces, this is roughly twenty seconds of disconnection —
@@ -73,7 +75,7 @@ use crate::workdir::Checkout;
 /// heap that matters. Overflowing it is a fatal error.
 pub const QUEUE_DEPTH: usize = 1024;
 
-/// How many answered workdir questions may wait for a socket.
+/// How many answered workdir questions may wait for a stream.
 ///
 /// Small on purpose: a browser asking what is in a directory is waiting on
 /// an HTTP request the control plane is holding open, and an answer that
@@ -86,15 +88,17 @@ pub const BACKOFF_MIN: Duration = Duration::from_secs(1);
 /// Longest wait between reconnect attempts.
 pub const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
-/// How often a daemon with nothing to say says so anyway.
+/// How long the command stream may deliver no bytes at all — not even a
+/// ping — before the daemon calls the path dead.
 ///
-/// A session relay carries nothing at all while the agent is thinking, and
-/// a flow with no packets on it is what a cloud NAT reclaims: Azure's
-/// outbound idle timeout is four minutes by default, and it drops the flow
-/// without a FIN, so neither end learns the socket is gone. Thirty seconds
-/// is comfortably inside every such timeout flyco has met and costs one
-/// small frame a minute in each direction.
-pub const HEARTBEAT: Duration = Duration::from_secs(30);
+/// The room comments `ping` down the stream every fifteen seconds, so this
+/// is six missed heartbeats: a flow with no packets on it is what a cloud
+/// NAT reclaims, and it drops the flow without a FIN, so neither end
+/// learns the connection is gone. Abandoning is always safe — the frames
+/// waiting are held, the loop re-attaches, and the room replays the
+/// mailbox — but abandoning on a hiccup would re-attach a working session
+/// all day, so the budget is misses rather than one late ping.
+pub const STREAM_SILENCE_LIMIT: Duration = Duration::from_secs(90);
 
 /// How long one command may spend inside the harness before the session is
 /// treated as wedged.
@@ -105,52 +109,39 @@ pub const HEARTBEAT: Duration = Duration::from_secs(30);
 /// stopped reading, and nothing about waiting longer will change that.
 ///
 /// It exists because the pump awaits the harness *inside* its own loop, so
-/// a command that never returns takes the socket read and the heartbeat
-/// down with it: the daemon stops answering, stops reconnecting, and stops
-/// being able to say why — which is precisely the silence issue #201
-/// describes.
+/// a command that never returns takes the stream read down with it: the
+/// daemon stops answering, stops re-attaching, and stops being able to say
+/// why — which is precisely the silence issue #201 describes.
 pub const HARNESS_DEADLINE: Duration = Duration::from_secs(60);
 
-/// How many unanswered heartbeats mean the socket is gone.
+/// When nothing-happening becomes something-is-wrong.
 ///
-/// The room answers every [`DaemonToControl::Heartbeat`], so three in a row
-/// with nothing back is a path that no longer carries packets, whatever the
-/// socket still claims. Three rather than one because a single answer can
-/// be late; abandoning is always safe — the frames waiting are held, the
-/// loop reconnects, and the room replays the mailbox — but abandoning on
-/// every hiccup would reconnect a working session all day.
-pub const MISSES_BEFORE_DEAD: u32 = 3;
-
-/// How a relay proves its socket is still there, and when it gives up.
-///
-/// One value rather than two constants because the two are only meaningful
-/// together: a deadline shorter than a couple of intervals abandons a
-/// socket before the answer it is waiting for could possibly have arrived,
-/// so the deadline is *derived* from the interval and cannot be set to
-/// contradict it.
+/// How long the command stream may be silent before it is re-attached, and
+/// how long one command may spend inside the harness before the session is
+/// called wedged. One struct rather than two constants because the two
+/// answer the same question — how long may nothing happen before flyco
+/// calls it broken — and because a test that wants a brisk relay wants
+/// both brisk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Keepalive {
-    /// How often a daemon with nothing to say says so anyway.
-    interval: Duration,
-    /// How long the room may say nothing before its socket is abandoned.
+pub struct Deadlines {
+    /// How long the command stream may be byte-silent before it is
+    /// abandoned and re-attached.
     silence_limit: Duration,
     /// How long one command may spend inside the harness.
     harness_deadline: Duration,
 }
 
-impl Keepalive {
-    /// A keepalive that beats every `interval` and gives up after `misses`
-    /// unanswered beats.
+impl Deadlines {
+    /// Deadlines that abandon a stream silent for `silence_limit`.
     #[must_use]
-    pub const fn every(interval: Duration, misses: u32) -> Self {
+    pub const fn silent(silence_limit: Duration) -> Self {
         Self {
-            interval,
-            silence_limit: interval.saturating_mul(misses),
+            silence_limit,
             harness_deadline: HARNESS_DEADLINE,
         }
     }
 
-    /// The same keepalive with a different harness deadline.
+    /// The same deadlines with a different harness deadline.
     #[must_use]
     pub const fn waiting_on_the_harness(self, harness_deadline: Duration) -> Self {
         Self {
@@ -159,13 +150,7 @@ impl Keepalive {
         }
     }
 
-    /// How often to beat.
-    #[must_use]
-    pub const fn interval(self) -> Duration {
-        self.interval
-    }
-
-    /// How long silence may last before the socket is presumed dead.
+    /// How long silence may last before the stream is presumed dead.
     #[must_use]
     pub const fn silence_limit(self) -> Duration {
         self.silence_limit
@@ -173,18 +158,18 @@ impl Keepalive {
 
     /// How long one command may spend inside the harness.
     ///
-    /// Kept beside the other two because it answers the same question they
-    /// do — how long may nothing happen before flyco calls it broken — and
-    /// because a test that wants a brisk relay wants all three brisk.
+    /// Kept beside the silence limit because it answers the same question
+    /// and because a test that wants a brisk relay wants all of them
+    /// brisk.
     #[must_use]
     pub const fn harness_deadline(self) -> Duration {
         self.harness_deadline
     }
 }
 
-impl Default for Keepalive {
+impl Default for Deadlines {
     fn default() -> Self {
-        Self::every(HEARTBEAT, MISSES_BEFORE_DEAD)
+        Self::silent(STREAM_SILENCE_LIMIT)
     }
 }
 
@@ -203,20 +188,22 @@ const DIRTY_NOTICE: &str = "[flyco repo notice] the working tree has uncommitted
 /// The daemon could not keep its end of the relay.
 #[derive(Debug, thiserror::Error)]
 pub enum WireError {
-    /// The configured control-plane URL is not a WebSocket endpoint.
+    /// The configured control-plane URL is not an endpoint the daemon can
+    /// reach.
     #[error("the control-plane URL cannot address the session relay: {0}")]
     Unaddressable(String),
     /// The relay carried a frame this protocol version does not define.
     #[error("the control plane sent a frame this daemon cannot read: {0}")]
     Undecodable(String),
-    /// The control plane answered [`DaemonToControl::Hello`] with something
-    /// other than [`ControlToDaemon::Welcome`].
-    #[error("the control plane did not welcome this daemon: {0}")]
+    /// The control plane refused this daemon's attach, and retrying
+    /// cannot help: the token is wrong or the build speaks another
+    /// protocol version.
+    #[error("the control plane would not attach this daemon: {0}")]
     Unwelcome(String),
     /// The harness stopped accepting commands.
     #[error("the harness session stopped: {0}")]
     Harness(String),
-    /// The outbound queue overflowed while the socket was down.
+    /// The outbound queue overflowed while the stream was down.
     ///
     /// Fast fail: the alternative is an unbounded queue that turns a
     /// reconnect into an out-of-memory kill, or a silent drop that loses
@@ -250,135 +237,20 @@ fn notice_failed(error: &askama::Error) -> WireError {
     WireError::Notice(error.to_string())
 }
 
-/// The socket type a connected daemon holds.
-pub(crate) type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-/// The `ws`/`wss` URL of one route under a control plane's base URL.
+/// One attach to the session room: the epoch naming it, the command
+/// stream opened under it, and the sequence the next outbound frame takes.
 ///
-/// `http`/`https` become `ws`/`wss`: a configuration names one control
-/// plane, and nothing on a machine should have to be told its address twice
-/// in two schemes. Shared with the host relay, which reaches a different
-/// route on the same deployment.
-///
-/// # Errors
-///
-/// Returns [`WireError::Unaddressable`] if the base URL cannot address the
-/// route, or is not an HTTP or WebSocket URL at all.
-pub(crate) fn websocket_url(base: &url::Url, path: &str) -> Result<String, WireError> {
-    let mut url = base
-        .join(path)
-        .map_err(|error| WireError::Unaddressable(error.to_string()))?;
-
-    let scheme = match url.scheme() {
-        "http" | "ws" => "ws",
-        "https" | "wss" => "wss",
-        other => {
-            return Err(WireError::Unaddressable(format!(
-                "`{other}` is not an HTTP or WebSocket scheme"
-            )));
-        }
-    };
-    url.set_scheme(scheme)
-        .map_err(|()| WireError::Unaddressable("the URL scheme cannot be changed".to_owned()))?;
-    Ok(url.to_string())
-}
-
-/// Opens one authenticated WebSocket, presenting `token` as a bearer
-/// credential.
-///
-/// # Errors
-///
-/// Returns [`WireError`] if the URL is not one tungstenite can request, the
-/// token is not a legal header value, or the handshake failed.
-pub(crate) async fn connect_bearer(url: &str, token: &str) -> Result<Socket, WireError> {
-    let mut request = url
-        .into_client_request()
-        .map_err(|error| WireError::Unaddressable(error.to_string()))?;
-    request.headers_mut().insert(
-        "authorization",
-        format!("Bearer {token}")
-            .parse()
-            .map_err(|_| WireError::Unaddressable("the token is not a header value".to_owned()))?,
-    );
-
-    let (socket, _) = tokio_tungstenite::connect_async(request)
-        .await
-        .map_err(|error| WireError::Unwelcome(error.to_string()))?;
-    Ok(socket)
-}
-
-/// Everything needed to reach one session's room.
-#[derive(Clone)]
-pub struct Endpoint {
-    /// `wss://…/v1/sessions/{id}/relay/daemon`.
-    url: String,
-    /// The session's `fd_` daemon token.
-    token: String,
-    /// The session this daemon serves.
-    session: SessionId,
-}
-
-impl core::fmt::Debug for Endpoint {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Endpoint")
-            .field("url", &self.url)
-            .field("session", &self.session)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Endpoint {
-    /// Derives the relay endpoint from the control plane's base URL.
-    ///
-    /// `http`/`https` become `ws`/`wss`: the configuration names one control
-    /// plane, and the daemon should not have to be told its address twice in
-    /// two schemes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WireError::Unaddressable`] if the base URL cannot address
-    /// the relay route.
-    pub fn from_base(
-        base: &url::Url,
-        session: SessionId,
-        token: String,
-    ) -> Result<Self, WireError> {
-        Ok(Self {
-            url: websocket_url(base, &format!("v1/sessions/{session}/relay/daemon"))?,
-            token,
-            session,
-        })
-    }
-
-    /// Opens and handshakes one connection.
-    async fn connect(&self) -> Result<Socket, WireError> {
-        let mut socket = connect_bearer(&self.url, &self.token).await?;
-
-        send(
-            &mut socket,
-            &DaemonToControl::Hello {
-                protocol_version: WIRE_PROTOCOL_VERSION,
-                session: self.session,
-            },
-        )
-        .await?;
-
-        // Nothing is pumped until the room has welcomed this daemon: a
-        // version or session mismatch closes the socket, and frames sent
-        // into a socket that is about to close are frames the session lost.
-        match next_frame(&mut socket).await? {
-            Some(ControlToDaemon::Welcome) => {
-                tracing::info!(session = %self.session, "the session room welcomed this daemon");
-                Ok(socket)
-            }
-            Some(other) => Err(WireError::Unwelcome(format!(
-                "the first frame was {other:?}"
-            ))),
-            None => Err(WireError::Unwelcome(
-                "the room closed the socket during the handshake".to_owned(),
-            )),
-        }
-    }
+/// Sequence numbers are per-epoch: a daemon numbers from 1 on every
+/// attach and the room deduplicates within the epoch, so an
+/// acknowledgement lost on the wire resolves to a resend rather than a
+/// hole.
+struct Attachment {
+    /// The attach this stream belongs to.
+    epoch: u64,
+    /// Commands from the room, in the order it sequenced them.
+    commands: CommandStream<DaemonCommand>,
+    /// The sequence `pending`'s head will carry.
+    next_seq: u64,
 }
 
 /// The host clock, in seconds since the Unix epoch.
@@ -390,52 +262,6 @@ fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("the host clock is set before the Unix epoch")
         .as_secs()
-}
-
-/// Sends one frame.
-///
-/// Generic over the frame type because flyco holds two of these sockets: a
-/// session's daemon speaks [`DaemonToControl`] and an enrolled host speaks
-/// `HostToControl`, and nothing else about writing one differs.
-pub(crate) async fn send<T: serde::Serialize>(
-    socket: &mut Socket,
-    frame: &T,
-) -> Result<(), WireError> {
-    let json = serde_json::to_string(frame).expect("every wire frame serializes to JSON");
-    socket
-        .send(Message::Text(Utf8Bytes::from(json)))
-        .await
-        .map_err(|error| WireError::Unwelcome(error.to_string()))
-}
-
-/// Reads the next command, skipping anything that is not a text frame.
-///
-/// `None` means the socket ended; the caller reconnects.
-pub(crate) async fn next_frame<T: serde::de::DeserializeOwned>(
-    socket: &mut Socket,
-) -> Result<Option<T>, WireError> {
-    while let Some(message) = socket.next().await {
-        let message = match message {
-            Ok(message) => message,
-            Err(error) => {
-                tracing::warn!(%error, "the relay socket failed");
-                return Ok(None);
-            }
-        };
-        match message {
-            Message::Text(text) => {
-                return serde_json::from_str(&text)
-                    .map(Some)
-                    .map_err(|error| WireError::Undecodable(error.to_string()));
-            }
-            Message::Close(_) => return Ok(None),
-            // Pings are answered by tungstenite; binary frames are not part
-            // of this protocol and are ignored rather than fatal, so a
-            // future control plane can add one without stopping old daemons.
-            other => tracing::debug!(kind = ?other, "ignoring a non-text relay frame"),
-        }
-    }
-    Ok(None)
 }
 
 /// Waits before the `attempt`-th reconnect.
@@ -618,7 +444,7 @@ async fn collect<A: ControlApi>(
     Ok(())
 }
 
-/// The socket half of the relay.
+/// The room-facing half of the relay.
 /// Whether the checkout currently has uncommitted work, and whether the
 /// agent has been told this episode.
 enum Tree {
@@ -735,11 +561,13 @@ struct Connection<S, T, A, W, D, H> {
     ///
     /// Kept so a reclamation can re-file it and *know* it landed: the
     /// collector already records it when it arrives, but that write happened
-    /// minutes ago and on a socket that may since have dropped, and a
+    /// minutes ago and on an attachment that may since have dropped, and a
     /// replacement machine with no id to resume opens a new conversation
     /// instead of continuing this one.
     harness_session_id: Option<String>,
-    endpoint: Endpoint,
+    /// The session this daemon serves — for logging; the transport itself
+    /// is bound to it inside `api`.
+    session_id: SessionId,
     /// Whether a budget pause has stopped this session accepting work.
     ///
     /// Cleared by exactly one thing, and never by the daemon's own
@@ -757,13 +585,13 @@ struct Connection<S, T, A, W, D, H> {
     /// noise it has to read every turn — `machine_status` is there for when
     /// it wants to know.
     opening: Option<String>,
-    /// How this connection proves its socket is still there.
-    keepalive: Keepalive,
+    /// How this connection decides the stream is dead.
+    deadlines: Deadlines,
 }
 
 /// Why one connection ended.
 enum Ended {
-    /// The socket dropped; reconnect.
+    /// The stream dropped; re-attach.
     Disconnected,
     /// The control plane archived the session; stop.
     Archived,
@@ -778,125 +606,169 @@ enum Ended {
     Stopped,
 }
 
-impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Disk, H: Shell>
-    Connection<S, T, A, W, D, H>
+impl<
+    S: HarnessSession,
+    T: TerminalSession,
+    A: ControlApi + RelayTransport,
+    W: WorkingTree,
+    D: Disk,
+    H: Shell,
+> Connection<S, T, A, W, D, H>
 {
-    /// Writes one frame, parking it for the next connection if the socket
-    /// dies mid-write.
+    /// Posts every unconfirmed frame as one sequenced batch.
     ///
-    /// `false` means the socket is gone. The frame is never dropped on the
-    /// way out: a send that failed hands it to `in_flight`, and the next
-    /// connection starts by writing it — without that, a socket dying
-    /// mid-write silently truncates the tail a browser replays from.
-    async fn relay(
-        frame: DaemonToControl,
-        socket: &mut Socket,
-        in_flight: &mut Option<DaemonToControl>,
+    /// `pending` holds the frames this attach — or a superseded one —
+    /// has not yet had confirmed stored. A batch that fails leaves it
+    /// untouched and answers `false`, which is the caller's instruction
+    /// to drop the attachment and dial again: an unconfirmed frame is
+    /// never dropped on the way out, because the room's stored tail is
+    /// what a browser replays and a hole in it can never be recovered.
+    ///
+    /// `applied` is the highest command sequence the daemon has acted on;
+    /// it rides every batch, which is how the room learns which of its
+    /// queued commands are done.
+    async fn flush(
+        &self,
+        attach: &mut Attachment,
+        pending: &mut VecDeque<DaemonToControl>,
+        applied: u64,
     ) -> bool {
-        if let Err(error) = send(socket, &frame).await {
+        if pending.is_empty() {
+            return true;
+        }
+        let batch = DaemonFrames {
+            epoch: attach.epoch,
+            from_seq: attach.next_seq,
+            ack_through: applied,
+            frames: pending.iter().cloned().collect(),
+        };
+        if let Err(error) = self.api.frames(&batch).await {
             tracing::warn!(
                 %error,
-                "a frame did not reach the room; retrying it on the next connection"
+                frames = batch.frames.len(),
+                "a frame batch did not reach the room; retrying it on the next attach"
             );
-            *in_flight = Some(frame);
+            return false;
+        }
+        attach.next_seq = attach
+            .next_seq
+            .saturating_add(u64::try_from(pending.len()).unwrap_or(0));
+        pending.clear();
+        true
+    }
+
+    /// Acknowledges commands without waiting for a frame to carry it.
+    ///
+    /// An empty batch is still a contact — it renews presence — and its
+    /// `ack_through` is how the room learns a command it delivered is
+    /// done. Without it, a command applied on a quiet session would sit
+    /// unacknowledged until the harness next produced output, and an
+    /// attach in between would redeliver it.
+    async fn ack(&self, epoch: u64, from_seq: u64, applied: u64) -> bool {
+        let batch = DaemonFrames {
+            epoch,
+            from_seq,
+            ack_through: applied,
+            frames: Vec::new(),
+        };
+        if let Err(error) = self.api.frames(&batch).await {
+            tracing::warn!(%error, "a command acknowledgement did not reach the room");
             return false;
         }
         true
     }
 
-    /// Writes one heartbeat, and says whether the socket is worth keeping.
+    /// Pumps one attachment until it ends.
     ///
-    /// `false` means abandon it: either the room has been silent for longer
-    /// than [`Keepalive::silence_limit`] — a path that no longer carries
-    /// packets, whatever the socket still claims — or the write itself
-    /// failed. Both are the same instruction to the caller, because both
-    /// are answered the same way: drop it and dial again.
-    async fn beat(&self, socket: &mut Socket, last_heard: tokio::time::Instant) -> bool {
-        let silent_for = last_heard.elapsed();
-        if silent_for > self.keepalive.silence_limit() {
-            tracing::warn!(
-                ?silent_for,
-                "the session room stopped answering; abandoning the socket"
-            );
-            return false;
-        }
-        if let Err(error) = send(socket, &DaemonToControl::Heartbeat).await {
-            tracing::warn!(%error, "a heartbeat did not reach the room");
-            return false;
-        }
-        true
-    }
-
-    /// Pumps one connection until it ends.
+    /// `pending` holds frames produced but not yet confirmed stored —
+    /// across attachments: a batch refused or unanswered keeps them, and
+    /// the next epoch re-sends them from sequence one.
     ///
-    /// `in_flight` holds the one frame that has left the queue but has not
-    /// been written yet. A frame is only dropped once the socket accepted
-    /// it: a send that fails hands the frame back, and the next connection
-    /// starts by writing it. Without that slot, a socket dying mid-write
-    /// silently truncates the room's stored tail — which is exactly what a
-    /// browser replays from.
+    /// `applied` is the room's command-log cursor and likewise outlives
+    /// the attach: command sequences are global rather than per-epoch, so
+    /// a command whose acknowledgement was lost is redelivered on the next
+    /// stream and must be recognized rather than applied a second time.
     async fn pump(
         &mut self,
-        socket: &mut Socket,
+        attach: &mut Attachment,
         queue: &mut mpsc::Receiver<Outbound>,
-        in_flight: &mut Option<DaemonToControl>,
+        pending: &mut VecDeque<DaemonToControl>,
+        applied: &mut u64,
     ) -> Result<Ended, WireError> {
-        if let Some(frame) = in_flight.take()
-            && let Err(error) = send(socket, &frame).await
-        {
-            tracing::warn!(%error, "a retried frame did not reach the room");
-            *in_flight = Some(frame);
-            return Ok(Ended::Disconnected);
-        }
-
-        // The socket has just been greeted, so it counts as heard from now:
-        // a connection is never abandoned for silence it predates.
-        let mut last_heard = tokio::time::Instant::now();
-        let mut heartbeat = tokio::time::interval(self.keepalive.interval());
-        // The first tick is immediate and a `Hello` has just been written.
-        heartbeat.tick().await;
+        // How far the room has been told the log is applied. It lags
+        // `applied` by at most one loop turn: an ack goes out before the
+        // next command is waited on. Starting at zero on each attach makes
+        // the first turn re-acknowledge everything — which is exactly the
+        // batch a room holding unacknowledged rows needs to see.
+        let mut acked = 0_u64;
 
         loop {
+            // Frames first, then the bare ack: a pending batch carries
+            // `ack_through` itself, so sending both would ack twice.
+            if !pending.is_empty() {
+                if !self.flush(attach, pending, *applied).await {
+                    return Ok(Ended::Disconnected);
+                }
+                acked = *applied;
+            } else if *applied > acked {
+                if !self.ack(attach.epoch, attach.next_seq, *applied).await {
+                    return Ok(Ended::Disconnected);
+                }
+                acked = *applied;
+            }
+
             tokio::select! {
                 outbound = queue.recv(), if self.alive.harness.armed() => {
-                    if let Some(ending) = self.on_outbound(socket, outbound, in_flight).await? {
+                    if let Some(ending) = self.on_outbound(outbound, pending).await? {
                         return Ok(ending);
                     }
-                }
-                inbound = next_frame(socket) => {
-                    let Some(command) = inbound? else {
-                        return Ok(Ended::Disconnected);
-                    };
-                    // Any frame at all proves the path is live, so the
-                    // deadline is reset here rather than only on a
-                    // heartbeat answer: a busy turn is its own keepalive.
-                    last_heard = tokio::time::Instant::now();
-                    if matches!(self.dispatch_before(command).await?, Ended::Archived) {
-                        return Ok(Ended::Archived);
+                    // A busy harness fills the queue faster than one
+                    // frame per turn; draining what is already there is
+                    // what makes a burst one POST rather than one each.
+                    while let Ok(outbound) = queue.try_recv() {
+                        if let Some(ending) = self.on_outbound(Some(outbound), pending).await? {
+                            return Ok(ending);
+                        }
                     }
                 }
-                _ = heartbeat.tick() => {
-                    if !self.beat(socket, last_heard).await {
+                event = attach.commands.next() => {
+                    let Some(command) = event else {
                         return Ok(Ended::Disconnected);
+                    };
+                    let command = match command {
+                        Ok(command) => command,
+                        Err(error) => {
+                            tracing::warn!(%error, "the command stream failed");
+                            return Ok(Ended::Disconnected);
+                        }
+                    };
+                    if let Some(seq) = command.seq {
+                        if seq <= *applied {
+                            // An acknowledgement that never reached the
+                            // room redelivers the command on the next
+                            // stream. Applied is applied: running it again
+                            // would put a second copy of a user message in
+                            // the conversation.
+                            continue;
+                        }
+                        *applied = seq;
+                    }
+                    if matches!(self.dispatch_before(command.command).await?, Ended::Archived) {
+                        return Ok(Ended::Archived);
                     }
                 }
                 output = self.terminal_out.recv() => {
                     let Some(data) = output else {
                         return Ok(Ended::Disconnected);
                     };
-                    let frame = DaemonToControl::TerminalOutput { data };
-                    if !Self::relay(frame, socket, in_flight).await {
-                        return Ok(Ended::Disconnected);
-                    }
+                    pending.push_back(DaemonToControl::TerminalOutput { data });
                 }
                 update = self.shell_updates.recv() => {
                     // This connection holds a sender of its own, so the
                     // channel outlives every run and never closes.
                     let update = update.expect("the relay holds the shell's own sender");
                     let frame = self.shell_frame(update);
-                    if !Self::relay(frame, socket, in_flight).await {
-                        return Ok(Ended::Disconnected);
-                    }
+                    pending.push_back(frame);
                 }
                 notice = self.spot.recv(), if self.alive.spot_watch.armed() => {
                     self.alive.spot_watch = Producing::No;
@@ -905,9 +777,9 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                         // can reclaim.
                         continue;
                     };
-                    if let Err(error) = self.reclaim(socket, queue, in_flight, notice).await {
+                    if let Err(error) = self.reclaim(attach, queue, pending, *applied, notice).await {
                         // Whatever failed, the machine is still going. The
-                        // relay keeps its socket rather than tearing down
+                        // relay keeps its attach rather than tearing down
                         // over an error it cannot act on.
                         tracing::error!(%error, "the reclamation sequence did not complete");
                     }
@@ -919,7 +791,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                         // outlives a stop, so a signal needs no sequence.
                         continue;
                     };
-                    self.on_stop(socket, queue, in_flight, reason).await;
+                    self.on_stop(attach, queue, pending, *applied, reason).await;
                     return Ok(Ended::Stopped);
                 }
                 reply = self.replies.recv() => {
@@ -930,9 +802,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                         // cannot spin this loop.
                         return Ok(Ended::Disconnected);
                     };
-                    if !Self::relay(frame, socket, in_flight).await {
-                        return Ok(Ended::Disconnected);
-                    }
+                    pending.push_back(frame);
                 }
                 summary = self.repo_status.recv(), if self.alive.repo_watch.armed() => {
                     let Some(summary) = summary else {
@@ -940,12 +810,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                         continue;
                     };
                     self.note_tree(&summary);
-                    let frame = DaemonToControl::RepoDirty { summary };
-                    if let Err(error) = send(socket, &frame).await {
-                        tracing::warn!(%error, "a repo-status frame did not reach the room; retrying it on the next connection");
-                        *in_flight = Some(frame);
-                        return Ok(Ended::Disconnected);
-                    }
+                    pending.push_back(DaemonToControl::RepoDirty { summary });
                 }
             }
         }
@@ -976,14 +841,15 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
     /// differs — whatever came of it, the machine is going.
     async fn on_stop(
         &mut self,
-        socket: &mut Socket,
+        attach: &mut Attachment,
         queue: &mut mpsc::Receiver<Outbound>,
-        in_flight: &mut Option<DaemonToControl>,
+        pending: &mut VecDeque<DaemonToControl>,
+        applied: u64,
         reason: StopReason,
     ) {
         match tokio::time::timeout(
             crate::stop::GRACE,
-            self.stopping(socket, queue, in_flight, reason),
+            self.stopping(attach, queue, pending, applied, reason),
         )
         .await
         {
@@ -996,15 +862,16 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
         }
     }
 
-    /// Relays one frame the harness produced, or reacts to it stopping.
+    /// Takes one outbound frame's bookkeeping and queues it for the room.
     ///
-    /// `Ok(None)` is the ordinary case: the frame went out and the pump
-    /// keeps going. `Ok(Some(_))` ends the connection.
+    /// The frame is *queued*, not sent — the pump's next turn posts every
+    /// pending frame as one batch, which is what makes a burst one POST
+    /// rather than one per frame. `Ok(None)` is the ordinary case;
+    /// `Ok(Some(_))` ends the attachment.
     async fn on_outbound(
         &mut self,
-        socket: &mut Socket,
         outbound: Option<Outbound>,
-        in_flight: &mut Option<DaemonToControl>,
+        pending: &mut VecDeque<DaemonToControl>,
     ) -> Result<Option<Ended>, WireError> {
         let Some(outbound) = outbound else {
             self.alive.harness = Producing::No;
@@ -1030,14 +897,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                 event: HarnessEvent::TurnCompleted { .. },
             }
         );
-        if let Err(error) = send(socket, &outbound.frame).await {
-            tracing::warn!(
-                %error,
-                "a frame did not reach the room; retrying it on the next connection"
-            );
-            *in_flight = Some(outbound.frame);
-            return Ok(Some(Ended::Disconnected));
-        }
+        pending.push_back(outbound.frame);
         if completed_dirty {
             self.nudge_if_dirty().await?;
         }
@@ -1060,21 +920,22 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
     ///    interrupted and queues its replacement — and then the relay frame
     ///    that puts the countdown in front of the user.
     ///
-    /// The socket is then held open until the machine dies. There is
-    /// nothing left to send on it and no reason to close it: a daemon that
-    /// disconnected cleanly would look like one that is coming back.
+    /// The attach is then kept until the machine dies. There is
+    /// nothing left to post on it and no reason to drop it: a daemon that
+    /// detached cleanly would look like one that is coming back.
     async fn reclaim(
         &mut self,
-        socket: &mut Socket,
+        attach: &mut Attachment,
         queue: &mut mpsc::Receiver<Outbound>,
-        in_flight: &mut Option<DaemonToControl>,
+        pending: &mut VecDeque<DaemonToControl>,
+        applied: u64,
         notice: SpotNotice,
     ) -> Result<(), WireError> {
         tracing::warn!(
             seconds_remaining = notice.seconds_remaining,
             "this machine's capacity is being reclaimed; saving the session"
         );
-        self.quiesce(socket, queue, in_flight).await?;
+        self.quiesce(attach, queue, pending, applied).await?;
 
         if let Err(error) = self.disk.sync().await {
             // Not fatal, and not a reason to skip the notice: the seconds
@@ -1086,13 +947,16 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
         self.api
             .report_spot_notice(notice.seconds_remaining)
             .await?;
-        send(
-            socket,
-            &DaemonToControl::SpotNotice {
-                seconds_remaining: notice.seconds_remaining,
-            },
-        )
-        .await
+        pending.push_back(DaemonToControl::SpotNotice {
+            seconds_remaining: notice.seconds_remaining,
+        });
+        if self.flush(attach, pending, applied).await {
+            Ok(())
+        } else {
+            Err(WireError::Unwelcome(
+                "the reclamation notice did not reach the room".to_owned(),
+            ))
+        }
     }
 
     /// Brings the session to a stop that nothing is still writing to.
@@ -1114,9 +978,10 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
     ///    it is about to stop existing.
     async fn quiesce(
         &mut self,
-        socket: &mut Socket,
+        attach: &mut Attachment,
         queue: &mut mpsc::Receiver<Outbound>,
-        in_flight: &mut Option<DaemonToControl>,
+        pending: &mut VecDeque<DaemonToControl>,
+        applied: u64,
     ) -> Result<(), WireError> {
         // Before anything else, so a user message that arrives during the
         // flush is refused rather than opening a turn nothing will record.
@@ -1124,7 +989,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
 
         self.session.interrupt().await.map_err(harness)?;
         self.session.flush().await.map_err(harness)?;
-        self.drain(socket, queue, in_flight).await;
+        self.drain(attach, queue, pending, applied).await;
         if let Some(id) = self.harness_session_id.clone() {
             self.api.record_harness_session(&id).await?;
         } else {
@@ -1161,12 +1026,13 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
     /// patch would leave the next machine replaying nothing.
     async fn stopping(
         &mut self,
-        socket: &mut Socket,
+        attach: &mut Attachment,
         queue: &mut mpsc::Receiver<Outbound>,
-        in_flight: &mut Option<DaemonToControl>,
+        pending: &mut VecDeque<DaemonToControl>,
+        applied: u64,
         reason: StopReason,
     ) -> Result<(), WireError> {
-        self.quiesce(socket, queue, in_flight).await?;
+        self.quiesce(attach, queue, pending, applied).await?;
 
         if let Some(patch) = self.workdir.snapshot().await? {
             let bytes = patch.len();
@@ -1185,7 +1051,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
         Ok(())
     }
 
-    /// Writes everything already queued into the socket.
+    /// Posts everything already queued as one batch.
     ///
     /// What makes the flush a *whole* one: the harness's output reaches the
     /// room through a queue the pump drains one frame per loop, so a
@@ -1193,29 +1059,22 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
     /// room's stored tail — which is what a browser replays — short by
     /// whatever was still queued.
     ///
-    /// A frame that will not send is kept for a connection that is not
+    /// A batch that will not send is kept for an attach that is not
     /// coming, which is the honest thing to do with it: the room's tail is
     /// the loss, and the transcript itself is already in object storage.
     async fn drain(
         &mut self,
-        socket: &mut Socket,
+        attach: &mut Attachment,
         queue: &mut mpsc::Receiver<Outbound>,
-        in_flight: &mut Option<DaemonToControl>,
+        pending: &mut VecDeque<DaemonToControl>,
+        applied: u64,
     ) {
-        if let Some(frame) = in_flight.take()
-            && let Err(error) = send(socket, &frame).await
-        {
-            tracing::warn!(%error, "a retried frame did not reach the room before reclamation");
-            *in_flight = Some(frame);
-            return;
-        }
         while let Ok(outbound) = queue.try_recv() {
             self.remember(&outbound.frame);
-            if let Err(error) = send(socket, &outbound.frame).await {
-                tracing::warn!(%error, "a frame did not reach the room before reclamation");
-                *in_flight = Some(outbound.frame);
-                return;
-            }
+            pending.push_back(outbound.frame);
+        }
+        if !self.flush(attach, pending, applied).await {
+            tracing::warn!("the last frame batch did not reach the room before reclamation");
         }
     }
 
@@ -1311,25 +1170,18 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
     /// one that spins for ever (issue #201).
     async fn dispatch_before(&mut self, command: ControlToDaemon) -> Result<Ended, WireError> {
         let named = command.name();
-        match tokio::time::timeout(self.keepalive.harness_deadline(), self.dispatch(command)).await
+        match tokio::time::timeout(self.deadlines.harness_deadline(), self.dispatch(command)).await
         {
             Ok(dispatched) => dispatched,
             Err(_elapsed) => Err(WireError::Harness(format!(
                 "the agent did not take `{named}` within {:?}; it has stopped accepting commands",
-                self.keepalive.harness_deadline()
+                self.deadlines.harness_deadline()
             ))),
         }
     }
 
     async fn dispatch(&mut self, command: ControlToDaemon) -> Result<Ended, WireError> {
         match command {
-            ControlToDaemon::Welcome => {
-                tracing::debug!("the room welcomed an already-welcomed daemon");
-            }
-            ControlToDaemon::Heartbeat => {
-                // Nothing to do: arriving at all is the whole of what this
-                // frame carries, and the pump has already taken that.
-            }
             ControlToDaemon::UserMessage { text, .. } => {
                 if self.refuse_while_paused("a user message")
                     || self.refuse_while_reclaiming("a user message")
@@ -1378,12 +1230,19 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                 }
                 self.session.compact().await.map_err(harness)?;
             }
+            ControlToDaemon::ContextUsage => {
+                // A read, not work: asking what the window holds starts
+                // nothing, spends nothing, and is answerable even while a
+                // turn is running — so unlike a compaction it is refused
+                // for nothing short of the harness being gone.
+                self.session.context_usage().await.map_err(harness)?;
+            }
             ControlToDaemon::SetModel { model } => {
                 // Refused on the same terms as a compaction: both reach the
                 // harness, and a session that has stopped accepting work or
                 // is about to lose its machine has no harness to reach.
                 // The control plane has already recorded the model, so the
-                // change is redelivered on the next `Hello` rather than
+                // change is redelivered on the next attach rather than
                 // lost — `survives_a_disconnect` is what makes that true.
                 if self.refuse_while_paused("a model change")
                     || self.refuse_while_reclaiming("a model change")
@@ -1391,6 +1250,23 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                     return Ok(Ended::Disconnected);
                 }
                 self.session.set_model(model).await.map_err(harness)?;
+            }
+            ControlToDaemon::SetPermissionMode { mode } => {
+                // Refused on the same terms as a model change: the harness
+                // applies it, and a session that has stopped accepting work
+                // has no harness to reach. The control plane has already
+                // recorded the mode, so the change is redelivered on the
+                // next attach rather than lost — `survives_a_disconnect`
+                // is what makes that true.
+                if self.refuse_while_paused("a permission mode change")
+                    || self.refuse_while_reclaiming("a permission mode change")
+                {
+                    return Ok(Ended::Disconnected);
+                }
+                self.session
+                    .set_permission_mode(mode)
+                    .await
+                    .map_err(harness)?;
             }
             ControlToDaemon::TerminalInput { data } => {
                 if self.refuse_while_paused("terminal input") {
@@ -1440,7 +1316,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
                 if preserve_workdir && let Some(patch) = self.workdir.snapshot().await? {
                     self.api.put_workdir_patch(patch).await?;
                 }
-                tracing::info!(session = %self.endpoint.session, "the control plane archived this session");
+                tracing::info!(session = %self.session_id, "the control plane archived this session");
                 self.terminal.shutdown()?;
                 return Ok(Ended::Archived);
             }
@@ -1451,7 +1327,7 @@ impl<S: HarnessSession, T: TerminalSession, A: ControlApi, W: WorkingTree, D: Di
     /// Reads the checkout for a browser, on a task of its own.
     ///
     /// Off the pump because a diff runs git over the whole tree, and the
-    /// socket has a harness stream to carry while it does. Read-only, so
+    /// stream has harness output to carry while it does. Read-only, so
     /// nothing about it depends on what else the session is doing — a
     /// paused or reclaiming session still shows the user its files.
     fn answer_workdir(&self, id: WorkdirRequestId, request: WorkdirRequest) {
@@ -1621,10 +1497,55 @@ fn harness(error: impl core::fmt::Display) -> WireError {
     WireError::Harness(error.to_string())
 }
 
+/// Attaches to the session room and opens its command stream.
+///
+/// One step rather than two at every call site because neither half is
+/// useful alone: an attach without its stream is a daemon that can speak
+/// but not hear, and a stream without the attach's epoch is refused.
+async fn attach<A: ControlApi + RelayTransport>(
+    api: &A,
+    deadlines: Deadlines,
+) -> Result<Attachment, WireError> {
+    let attached = api.attach().await?;
+    let commands = api
+        .commands(attached.epoch, deadlines.silence_limit())
+        .await?;
+    tracing::info!(epoch = attached.epoch, "attached to the session room");
+    Ok(Attachment {
+        epoch: attached.epoch,
+        commands,
+        next_seq: 1,
+    })
+}
+
+/// Problem types an attach can never retry away.
+///
+/// A wrong token, a session that is gone, and a protocol the control
+/// plane does not speak are all permanent: another attempt in a second
+/// meets the same refusal. Everything else — a room under load, a
+/// dropped flow — is worth the backoff.
+const FATAL_REFUSALS: &[&str] = &[
+    "invalid-daemon-credential",
+    "missing-credential",
+    "protocol-mismatch",
+    "session-not-found",
+];
+
+/// Whether an attach failure ends the run rather than backing off.
+fn fatal_attach(error: &WireError) -> bool {
+    match error {
+        WireError::Unaddressable(_) | WireError::Unwelcome(_) => true,
+        WireError::ControlApi(api) => api
+            .kind()
+            .is_some_and(|kind| FATAL_REFUSALS.contains(&kind)),
+        _ => false,
+    }
+}
+
 /// Everything [`run`] needs to drive one session.
 pub struct SessionRelay<S, A, T, W, D, H> {
-    /// Where the daemon connects.
-    pub endpoint: Endpoint,
+    /// The session this daemon serves.
+    pub session_id: SessionId,
     /// The live harness handle.
     pub session: S,
     /// Harness output, consumed exactly once.
@@ -1655,14 +1576,14 @@ pub struct SessionRelay<S, A, T, W, D, H> {
     pub machine: flyco_core::SessionMachine,
     /// Whether flyco or the user chose that machine.
     pub machine_origin: flyco_core::MachineOrigin,
-    /// How this relay keeps its socket alive and notices when it is not.
-    pub keepalive: Keepalive,
+    /// How this relay notices the stream is dead.
+    pub deadlines: Deadlines,
 }
 
 impl<S, A, T, W, D, H> core::fmt::Debug for SessionRelay<S, A, T, W, D, H> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SessionRelay")
-            .field("endpoint", &self.endpoint)
+            .field("session", &self.session_id)
             .finish_non_exhaustive()
     }
 }
@@ -1674,11 +1595,11 @@ impl<S, A, T, W, D, H> core::fmt::Debug for SessionRelay<S, A, T, W, D, H> {
 ///
 /// Returns [`WireError`] if the relay queue overflows, the control plane
 /// speaks a protocol this daemon cannot read, or the harness stops
-/// accepting commands. A dropped socket is not an error: it is reconnected.
+/// accepting commands. A dropped stream is not an error: it is re-attached.
 pub async fn run<S, A, T, W, D, H>(relay: SessionRelay<S, A, T, W, D, H>) -> Result<(), WireError>
 where
     S: HarnessSession + 'static,
-    A: ControlApi + Clone,
+    A: ControlApi + RelayTransport + Clone,
     T: TerminalSession + 'static,
     W: WorkingTree + 'static,
     D: Disk,
@@ -1720,7 +1641,7 @@ where
         stops: relay.stops,
         reclaiming: false,
         harness_session_id: None,
-        endpoint: relay.endpoint,
+        session_id: relay.session_id,
         paused: false,
         tree: Tree::Clean,
         alive: Alive {
@@ -1731,15 +1652,22 @@ where
         },
         approvals: BTreeMap::new(),
         opening: Some(opening),
-        keepalive: relay.keepalive,
+        deadlines: relay.deadlines,
     };
     let mut attempt = 0_u32;
-    let mut in_flight = None;
+    // Frames produced but never confirmed stored. They outlive the attach
+    // they were produced under: a dropped stream ends the epoch, and the
+    // next attach re-sends the whole tail from sequence one.
+    let mut pending = VecDeque::new();
+    // How far down the room's command log this daemon has applied. Global
+    // across attaches: the log's sequences are too, so a redelivery of a
+    // command whose acknowledgement was lost is recognized and skipped.
+    let mut applied = 0_u64;
     // The last stage of the provisioning timeline (docs/ux.md §9.2). The
     // control plane can watch a machine be reserved and boot but has no way
     // onto it, so "the agent is up" is a fact only this process holds: the
     // harness has already started by the time `run` is called, and the room
-    // has just welcomed the socket. Announced once, not on every reconnect
+    // has just seen the attach. Announced once, not on every reconnect
     // — a reconnect is not a second provision.
     let mut ready_announced = false;
 
@@ -1753,45 +1681,41 @@ where
             };
         }
 
-        match connection.endpoint.connect().await {
-            Ok(mut socket) => {
-                attempt = 0;
-                if !ready_announced {
-                    // A failure here is a dropped socket, which the loop is
-                    // already built to survive: the announcement is a line
-                    // in a timeline, and retrying it on the next connection
-                    // would date it to the reconnect rather than to when
-                    // the agent actually came up.
-                    if let Err(error) = send(
-                        &mut socket,
-                        &DaemonToControl::ProvisioningStage {
-                            stage: ProvisioningStage::Ready,
-                            at_unix: now_unix(),
-                        },
-                    )
-                    .await
-                    {
-                        tracing::warn!(%error, "the agent-ready stage did not reach the room");
-                    }
-                    ready_announced = true;
-                }
-                match connection
-                    .pump(&mut socket, &mut queue, &mut in_flight)
-                    .await
-                {
-                    Ok(Ended::Disconnected) => {
-                        tracing::warn!("the session room disconnected; reconnecting");
-                    }
-                    Ok(ending) => break Ok(ending),
-                    Err(error) => break Err(error),
-                }
-            }
+        let mut attachment = match attach(&connection.api, connection.deadlines).await {
+            Ok(attachment) => attachment,
             Err(error) => {
+                if fatal_attach(&error) {
+                    break Err(error);
+                }
                 let wait = backoff(attempt);
-                tracing::warn!(%error, ?wait, attempt, "could not reach the session room");
+                tracing::warn!(%error, ?wait, attempt, "could not attach to the session room");
                 attempt = attempt.saturating_add(1);
                 tokio::time::sleep(wait).await;
+                continue;
             }
+        };
+
+        attempt = 0;
+        if !ready_announced {
+            // A failed flush here is a dropped attachment, which the loop
+            // is already built to survive: the announcement keeps the
+            // instant the agent actually came up because it is re-sent
+            // from `pending` rather than re-dated.
+            pending.push_back(DaemonToControl::ProvisioningStage {
+                stage: ProvisioningStage::Ready,
+                at_unix: now_unix(),
+            });
+            ready_announced = true;
+        }
+        match connection
+            .pump(&mut attachment, &mut queue, &mut pending, &mut applied)
+            .await
+        {
+            Ok(Ended::Disconnected) => {
+                tracing::warn!("the session room's stream ended; re-attaching");
+            }
+            Ok(ending) => break Ok(ending),
+            Err(error) => break Err(error),
         }
     };
 
@@ -1810,7 +1734,7 @@ where
 /// # Panics
 ///
 /// Panics on [`Ended::Disconnected`], which never reaches here: a dropped
-/// socket is reconnected by the loop rather than ending the run.
+/// stream is re-attached by the loop rather than ending the run.
 fn say_goodbye(ending: &Ended) {
     match ending {
         Ended::Archived => tracing::info!("session archived; flycod is done"),

@@ -24,12 +24,12 @@ const CODEX: ModelOption[] = [
 ];
 
 describe("ModelChip", () => {
-  it("reads the model's name and the chosen effort, never the id", () => {
+  it("reads the model's name, never the id — effort is the next chip's business", () => {
     const { getByRole, queryByText } = render(() => (
       <ModelChip models={CODEX} choice={{ model: "gpt-5.5", effort: "high" }} onChoose={vi.fn()} />
     ));
 
-    expect(getByRole("button", { name: "GPT-5.5 · High" })).toBeInTheDocument();
+    expect(getByRole("button", { name: "GPT-5.5" })).toBeInTheDocument();
     expect(queryByText("gpt-5.5")).not.toBeInTheDocument();
   });
 
@@ -56,25 +56,9 @@ describe("ModelChip", () => {
       />
     ));
 
-    getByRole("button", { name: "GPT-5.6-Terra · Ultra" }).click();
+    getByRole("button", { name: "GPT-5.6-Terra" }).click();
     (await findByRole("option", { name: /GPT-5.5/ })).click();
 
     expect(onChoose).toHaveBeenCalledWith({ model: "gpt-5.5" });
-  });
-
-  it("offers the chosen model's effort levels as words, with the harness default named", async () => {
-    const onChoose = vi.fn();
-    const { getByRole, findByRole } = render(() => (
-      <ModelChip models={CODEX} choice={{ model: "gpt-5.5" }} onChoose={onChoose} />
-    ));
-
-    getByRole("button", { name: "GPT-5.5" }).click();
-
-    expect(await findByRole("button", { name: "Default Medium" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    getByRole("button", { name: "Extra high" }).click();
-    expect(onChoose).toHaveBeenCalledWith({ model: "gpt-5.5", effort: "xhigh" });
   });
 });

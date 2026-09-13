@@ -680,8 +680,8 @@ pub async fn operate(
 /// Performs one lifecycle operation on a machine the user owns.
 ///
 /// The machine is a container, so the operation is a container job posted
-/// down the host's own socket — flyco never reaches the machine any other
-/// way. What comes back is what the row must say *now*: the host answers
+/// down the host's own command stream — flyco never reaches the machine
+/// any other way. What comes back is what the row must say *now*: the host answers
 /// asynchronously with a `JobResult`, and a job that fails there fails the
 /// session with what Podman said (see [`crate::hosts::record_job_result`]).
 ///
@@ -720,7 +720,7 @@ async fn post(hosts: &HostRooms, host: HostId, job: &ContainerJob) -> Result<(),
 /// Refuses an operation on a machine whose host is not connected.
 ///
 /// The check the *user-facing* routes make before they ask for anything: a
-/// host holds its own socket, so flyco cannot wake it, and answering
+/// host holds its own attachment, so flyco cannot wake it, and answering
 /// [`ApiError::HostOffline`] tells the user the one thing that fixes it. A
 /// non-host account passes straight through.
 ///
@@ -955,9 +955,9 @@ pub trait Provisioner {
 /// room.
 ///
 /// It holds the host-room namespace because provisioning onto a host is not
-/// a call to anybody's API: it is a container job posted down a socket the
-/// machine itself opened, and the Durable Object holding that socket is the
-/// only thing that can reach it.
+/// a call to anybody's API: it is a container job posted down a stream the
+/// machine itself opened, and the Durable Object holding that attachment is
+/// the only thing that can reach it.
 #[derive(Debug, Clone)]
 pub struct CloudProvisioner {
     hosts: HostRooms,
@@ -1060,7 +1060,7 @@ impl Provisioner for CloudProvisioner {
 ///
 /// Unlike the lifecycle operations, this does *not* refuse a machine that is
 /// not connected. A host offline at session creation offers no catalog and
-/// is never chosen; reaching here means the socket dropped in the seconds
+/// is never chosen; reaching here means the stream dropped in the seconds
 /// since, and the honest answer to that is the one the room already gives —
 /// hold the job and hand it over when the machine is back — rather than
 /// failing a session over a reconnect.

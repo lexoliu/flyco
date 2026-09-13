@@ -24,6 +24,30 @@ Element.prototype.scrollIntoView = () => {
   /* no-op in tests */
 };
 
+// Nor ResizeObserver, which the session page uses to keep a bottom-pinned
+// transcript pinned as it grows.
+class StubResizeObserver implements ResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
+vi.stubGlobal("ResizeObserver", StubResizeObserver);
+
+// Nor window.matchMedia, which ComposerShell reads to decide whether the
+// chips float as an island over the box — never narrow in a test.
+window.matchMedia = (query: string): MediaQueryList =>
+  ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }) as MediaQueryList;
+
 // vite-plugin-pwa's virtual module only exists inside a real Vite build;
 // components that call registerSW() need a stand-in for it under Vitest.
 vi.mock("virtual:pwa-register", () => ({
@@ -31,37 +55,6 @@ vi.mock("virtual:pwa-register", () => ({
     /* no-op in tests */
   }),
 }));
-
-/**
- * jsdom has no `WebSocket` global. Every component that opens the session
- * relay (see src/api/relay.ts) needs *something* to construct without
- * throwing; this stub never fires `open`, so a mounted component sees a
- * socket stuck at "connecting" rather than a crash — good enough for
- * rendering assertions that don't depend on the socket going live.
- */
-class StubWebSocket extends EventTarget {
-  static readonly CONNECTING = 0;
-  static readonly OPEN = 1;
-  static readonly CLOSING = 2;
-  static readonly CLOSED = 3;
-  readonly url: string;
-  readyState = StubWebSocket.CONNECTING;
-
-  constructor(url: string) {
-    super();
-    this.url = url;
-  }
-
-  send(): void {
-    throw new Error("StubWebSocket never reaches OPEN; nothing should call send() on it in tests");
-  }
-
-  close(): void {
-    this.readyState = StubWebSocket.CLOSED;
-  }
-}
-
-vi.stubGlobal("WebSocket", StubWebSocket);
 
 /**
  * A minimal, in-memory stand-in for the control plane, so every route's
@@ -111,6 +104,7 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
         repo: "octocat/hello-world",
         harness: "claude_code",
         model: { model: "default" },
+        permission_mode: "auto",
         // Freshly opened, machine still being built: what a new user sees
         // first, and the state whose empty transcript is easiest to get wrong.
         state: "provisioning",
@@ -124,8 +118,11 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
   if (method === "GET" && /^\/v1\/sessions\/[^/]+\/events$/.test(path)) {
     return Promise.resolve(jsonResponse({ events: [], more: false }));
   }
-  if (method === "POST" && /^\/v1\/sessions\/[^/]+\/relay-ticket$/.test(path)) {
-    return Promise.resolve(jsonResponse({ ticket: "frt_test", expires_at_unix: 0 }));
+  // The shared event stream never resolves: a mounted component's relay
+  // stays at "connecting" — a live stream would let composers accept
+  // input a render assertion cannot see.
+  if (method === "GET" && path === "/v1/events") {
+    return new Promise<Response>(() => {});
   }
   if (method === "GET" && path === "/v1/mcp-servers") {
     return Promise.resolve(jsonResponse([]));

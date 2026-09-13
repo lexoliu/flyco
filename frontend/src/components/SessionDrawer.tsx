@@ -9,32 +9,33 @@
  *
  * `Files` and `Diff` are two tabs rather than one because they answer two
  * questions: what is on the disk, and what did the agent change. Both are
- * read live from the machine, so both say plainly when there is no machine
- * to read.
+ * read live from the machine, and so is the terminal — with no machine
+ * there is nothing behind those tabs, so the tabs grey out and selection
+ * moves to one that still answers. `Env` stays lit: the `.env` lives in
+ * the control plane. The machine itself is not a tab — its panel hangs
+ * off the composer's machine chip, where the readout naming it is.
  *
  * `⌘.` (`Ctrl+.` off macOS) toggles it, which is the one keyboard shortcut
  * on the page. On a phone there is no room beside the transcript, so the
  * drawer covers it instead and carries its own close button; the header's
  * toggle is behind it.
  */
-import { For, Match, Show, Switch, createEffect, createSignal, onCleanup } from "solid-js";
-import { Cpu, FileCode2, GitCompare, SlidersHorizontal, TerminalSquare, X } from "lucide-solid";
+import { For, Match, Show, Switch, createEffect, createSignal, on, onCleanup } from "solid-js";
+import { FileCode2, GitCompare, SlidersHorizontal, TerminalSquare, X } from "lucide-solid";
 import DiffPanel from "./DiffPanel";
 import EnvEditor from "./EnvEditor";
 import FilesPanel from "./FilesPanel";
-import MachinePanel from "./MachinePanel";
 import TerminalPanel from "./terminal/TerminalPanel";
 import type { SessionRelay } from "../api/relay";
 import { cx } from "../lib/cx";
 import styles from "./SessionDrawer.module.css";
 
-type Tab = "terminal" | "files" | "diff" | "machine" | "env";
+type Tab = "terminal" | "files" | "diff" | "env";
 
-const TABS: readonly { id: Tab; label: string }[] = [
-  { id: "terminal", label: "Terminal" },
-  { id: "files", label: "Files" },
-  { id: "diff", label: "Diff" },
-  { id: "machine", label: "Machine" },
+const TABS: readonly { id: Tab; label: string; needsMachine?: boolean }[] = [
+  { id: "terminal", label: "Terminal", needsMachine: true },
+  { id: "files", label: "Files", needsMachine: true },
+  { id: "diff", label: "Diff", needsMachine: true },
   { id: "env", label: "Env" },
 ];
 
@@ -51,39 +52,56 @@ export interface SessionDrawerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   relay: SessionRelay;
+  /**
+   * Whether the session's daemon is there to take what the panes send.
+   *
+   * The terminal needs it: a keystroke and a resize are delivered or they
+   * are nothing, and a pane that took them while the machine was off
+   * would be a shell that looked alive and was not.
+   */
+  machineUp: boolean;
   /** Latest `repo_dirty` summary from the relay, when one has arrived. */
   liveRepoSummary: string | null;
   /**
-   * A request to open the drawer on one tab, from the header's `⋯` menu or
-   * a `/resize` command.
+   * A request to open the drawer on the `.env` tab, from the header's `⋯`
+   * menu.
    *
-   * Carries the instant it was made so that asking for the same tab twice
-   * is two requests: without it, a user who closed the drawer and picked
-   * `Edit .env` again would set an unchanged signal and see nothing happen.
+   * Carries the instant it was made so that asking twice is two requests:
+   * without it, a user who closed the drawer and picked `Edit .env` again
+   * would set an unchanged signal and see nothing happen.
    */
-  openPanel?: { panel: "machine" | "env"; at: number; resize?: boolean } | undefined;
+  openEnv?: number | undefined;
+  /** Where a pane reports what it could not deliver; the page owns the banner. */
+  onError: (failure: unknown) => void;
 }
 
 export default function SessionDrawer(props: SessionDrawerProps) {
   const open = () => props.open;
   const [tab, setTab] = createSignal<Tab>("terminal");
   /**
-   * When the machine tab was last asked for a resize, rather than merely
-   * asked for: `/resize` wants the control, and the `⋯` menu's `Resize`
-   * wants the same thing, while `Edit .env` wants neither.
+   * A disabled tab cannot be the selected one: when the machine leaves,
+   * the tab that was open on it yields to the one that still answers.
    */
-  const [resizeAt, setResizeAt] = createSignal<number | undefined>(undefined);
-
   createEffect(() => {
-    const request = props.openPanel;
-    if (request !== undefined) {
-      setTab(request.panel);
-      props.onOpenChange(true);
-      if (request.resize === true) {
-        setResizeAt(request.at);
-      }
+    if (
+      props.machineUp === false &&
+      TABS.find((entry) => entry.id === tab())?.needsMachine === true
+    ) {
+      setTab("env");
     }
   });
+
+  createEffect(
+    on(
+      () => props.openEnv,
+      (at) => {
+        if (at !== undefined) {
+          setTab("env");
+          props.onOpenChange(true);
+        }
+      },
+    ),
+  );
 
   createEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
@@ -107,7 +125,18 @@ export default function SessionDrawer(props: SessionDrawerProps) {
                   type="button"
                   role="tab"
                   aria-selected={tab() === entry.id}
-                  class={cx(styles.tab, tab() === entry.id && styles.tabActive)}
+                  aria-disabled={(entry.needsMachine === true && !props.machineUp) || undefined}
+                  disabled={entry.needsMachine === true && !props.machineUp}
+                  title={
+                    entry.needsMachine === true && !props.machineUp
+                      ? "The machine is not connected"
+                      : undefined
+                  }
+                  class={cx(
+                    styles.tab,
+                    tab() === entry.id && styles.tabActive,
+                    entry.needsMachine === true && !props.machineUp && styles.tabDisabled,
+                  )}
                   onClick={() => setTab(entry.id)}
                 >
                   <Switch>
@@ -119,9 +148,6 @@ export default function SessionDrawer(props: SessionDrawerProps) {
                     </Match>
                     <Match when={entry.id === "diff"}>
                       <GitCompare size={13} aria-hidden="true" />
-                    </Match>
-                    <Match when={entry.id === "machine"}>
-                      <Cpu size={13} aria-hidden="true" />
                     </Match>
                     <Match when={entry.id === "env"}>
                       <SlidersHorizontal size={13} aria-hidden="true" />
@@ -144,7 +170,11 @@ export default function SessionDrawer(props: SessionDrawerProps) {
           <div class={styles.body} role="tabpanel">
             <Switch>
               <Match when={tab() === "terminal"}>
-                <TerminalPanel sessionId={props.sessionId} relay={props.relay} />
+                <TerminalPanel
+                  sessionId={props.sessionId}
+                  relay={props.relay}
+                  onError={props.onError}
+                />
               </Match>
               <Match when={tab() === "files"}>
                 <FilesPanel sessionId={props.sessionId} />
@@ -154,9 +184,6 @@ export default function SessionDrawer(props: SessionDrawerProps) {
                   sessionId={props.sessionId}
                   liveRepoSummary={props.liveRepoSummary}
                 />
-              </Match>
-              <Match when={tab() === "machine"}>
-                <MachinePanel sessionId={props.sessionId} openResize={resizeAt()} />
               </Match>
               <Match when={tab() === "env"}>
                 <EnvEditor sessionId={props.sessionId} />

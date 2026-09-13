@@ -324,7 +324,8 @@ Every chip is both a status readout and the entry point to change it.
 | Chip | Ready | Not ready |
 |---|---|---|
 | Harness | logomark + `Claude Code` (or `Codex`); popover lists the linked agents with the chosen one marked, ending in `Connect another agent` → `/connect/harness` | `+ Connect an agent` → `/connect/harness` |
-| Model | `Fable 5.1 · High`: the model's name and, once one is chosen, the effort after it. The name is the head of the harness's description where it has one (`Fable 5.1 · Most capable…` → `Fable 5.1`; Claude's rows are menu labels like `Default (recommended)`) and the row's label otherwise (`GPT-5.5`). The chip sits at the right of the row beside send, where both official apps keep theirs. The popover lists the agent's own models (`GET /v1/harness-accounts` carries each account's list, as its last session's agent reported it, or flyco's built-in one until then), each with the harness's one-line description, and under the chosen one its effort levels as pills with `Default` first. Choosing a model resets the effort to the model's own default. Switching agents drops the choice, because a Claude id means nothing to Codex | absent until an agent is linked, since there is no list to show |
+| Model | `Fable 5.1`: the model's name. The name is the head of the harness's description where it has one (`Fable 5.1 · Most capable…` → `Fable 5.1`; Claude's rows are menu labels like `Default (recommended)`) and the row's label otherwise (`GPT-5.5`). The chip sits at the right of the row beside send, where both official apps keep theirs. The popover lists the agent's own models (`GET /v1/harness-accounts` carries each account's list, as its last session's agent reported it, or flyco's built-in one until then), each with the harness's one-line description. Choosing a model resets the effort to the model's own default. Switching agents drops the choice, because a Claude id means nothing to Codex | absent until an agent is linked, since there is no list to show |
+| Effort | `High` once chosen, `Effort` while the model's own default stands. The chip sits beside the model's, because the levels are the model's — not every one accepts effort, and the levels differ. The popover is the detented slider the machine picker already teaches (§7.7): the chosen level's name over the rail, the model's name under it, and `Default` as the leftmost stop — the model keeps the choice, the same shape `Auto` has on the machine slider, since not every harness says which level it starts on. Where the harness does say (`default_effort`), the subline names it: `GPT-5.6-Terra · Medium` | absent for a model that names no effort levels |
 | Compute | provider logomark + `B2s · $0.04/hr`; the logomark names the provider, and region, spot, the account and whether flyco or the user chose the type live in the popover — the chip does not say `Auto` or `Chosen`, which is a word about how the choice was made on a row that is for what was chosen. A **managed container** reads `Container · 4 vCPU · 8 GiB · $0.21/hr` instead: `aca-4x8` is flyco's key for a size billed by the second, not a name anybody picked, so the size is what identifies the row — and where the provider covers it out of a monthly allowance the chip ends ` · Free this month`. A machine the user enrolled is a container too and keeps its own hostname, which is the name they gave it. While an account is still being read the chip says `Reading Azure…` and the popover carries the whole sentence | `+ Add compute` → `/connect/compute` |
 | Repository | `owner/name`; popover with a search box, recent repositories first | `Select repository` opens the same popover |
 | Budget | `$10`; popover with a slider (1–200) and the sentence "Covers the machine and its disk. Model tokens are billed by your Claude or Codex plan." | always shown, default `$10` |
@@ -334,12 +335,18 @@ The compute chip shows the machine flyco will actually choose
 popover lets the user switch account, region, spot, or pick another
 curated type (§7.5).
 
-The chips sit on one line at desktop widths. The compute chip is the one
-that gives way (its label shrinks to an ellipsis), so choosing a machine —
-which rewrites that label on every slider detent — never reflows the row
-under the open popover. Below 900px the row wraps and the compute chip takes
-a whole line for the same reason. A popover never hangs below the viewport:
-it takes the room between its top edge and the bottom of the window and
+The chips sit on one line at desktop widths, and one line is a hard rule:
+a pill never takes a second line inside the card. The compute chip is the
+one that gives way first (its label shrinks to an ellipsis), so choosing
+a machine — which rewrites that label on every slider detent — never
+reflows the row under the open popover. When even that is not enough —
+a viewport under ~900px, a composer under ~600px (the drawer's width at
+any window size), or simply more chips than the row has room for at any
+width — the chips leave the box entirely and float above it as an island,
+wrapping layer on layer there instead of squeezing the send row into a
+second line inside the card; the compute chip takes a whole line of the
+island for the same reason. A popover never hangs below the viewport: it
+takes the room between its top edge and the bottom of the window and
 scrolls inside it.
 
 GitHub refusing the token flyco holds (`424 github-token-revoked`) is not a
@@ -626,8 +633,9 @@ is one quiet row, the way the official apps' is; the status is read off
 the transcript (§6), and the machine, the budget and the context window
 are the composer's row (§9.3), where they are acted on.
 
-The budget is a control and the context reading is not: one of the
-budget's two numbers is something the user set. The composer's budget chip
+The budget and the context ring are both controls: one of the budget's two
+numbers is something the user set, and the ring opens the usage panel the
+readings are explained in. The composer's budget chip
 (`$1.20 / $10`) opens the same slider the home composer's does, floored at
 the first whole dollar above what the session has already spent, and an
 explicit `Set budget to $25` commits it. That is the only way out of
@@ -721,27 +729,76 @@ Same component as the home composer. Its row carries what a running
 session still has a say over, as the official composers do, left to right:
 
 - the **machine**, `D4ps_v6 · $0.17/hr · spot` (or `D4ps_v6 · Stopped`),
-  which opens the drawer's Machine tab;
+  which opens the machine's own popover — the one card for the one
+  machine a session has, §9.4;
 - the **budget**, `$1.20 / $10`, which opens the budget slider of §9.1;
-- then, at the right beside send, the **model chip** of §5, `Fable 5.1 ·
-  High`, whose choice is sent as `PATCH /v1/sessions/{id}` with `model`
-  and reaches the running agent through its room; the chip dims until the
-  answer lands, and the transcript records the change as one line,
-  `Switched to Sonnet 5 · High`;
+- the **goal** chip, only where the running harness said it takes one —
+  `Target` opens a small panel that states the condition and sets it,
+  because a goal is a setting of the session rather than a line in it and
+  so gets a control instead of a `/goal` command row;
+- then, at the right beside send, the **mode chip** — `ShieldCheck` and
+  the mode's name (`Auto`, `Plan`, `Accept edits`, `Yolo`) — whose popover
+  lists the modes the session's harness offers, each with a line about
+  what it lets the agent do. One union across both harnesses: Claude takes
+  the six natively (`auto`, `default`, `plan`, `acceptEdits`,
+  `bypassPermissions`, `dontAsk`), Codex takes the same modes as the
+  approval/sandbox pair each maps to, and its list stops at five because
+  `dontAsk` maps to the pair `plan` already does — two rows for one
+  behavior is a lie about a choice. A choice is sent as
+  `PATCH /v1/sessions/{id}` with `permission_mode`, persisted on the
+  session like the model is, and reaches the running agent through its
+  room (held for an absent daemon, replayed on reconnect, reapplied at
+  boot from the control plane's record rather than the machine's stale
+  config). The chip dims until the answer lands, and the transcript
+  records the change as one line, `Switched to Plan mode`;
+- the **model and effort chips** of §5, `Fable
+  5.1` and `High`, two controls where the official apps keep them beside
+  send: the model's a list, the effort's the detented slider, and a list
+  and a scale are different questions asked in different panels. Either
+  choice is sent as `PATCH /v1/sessions/{id}` with `model` — the choice
+  carries the effort — and reaches the running agent through its room;
+  the chips dim until the answer lands, and the transcript records the
+  change as one line, `Switched to Sonnet 5 · High`;
 - the **context ring**, `41k / 200k`, once the harness has reported a
-  turn — before that there is nothing to draw;
-- one **plan ring per rolling limit window**, shortest window first —
-  `5-hour` at `26%`, then `Weekly`, then any window the vendor scopes to
-  one model (`Weekly (Fable)`) — each naming its turnover in its tooltip,
-  `5-hour: 26% · Resets in 2h 10m`. Read from the harness itself (the
-  Claude Agent SDK's usage call, Codex's `account/rateLimits/read` and the
-  `updated` notification it pushes) at session start and again after every
-  turn, so "how much of my plan is left" has an answer before the limit is
-  hit rather than a `Usage limit` notice after it. Nothing is drawn until a
-  harness has answered: a ring at zero over a plan flyco has never asked
-  about is an invention, and a session running on an API key has no plan at
-  all and shows no rings ever;
+  turn — before that there is nothing to draw. The ring is a control, not
+  an ornament: opening it shows the usage panel — the context window's
+  fill, the fill at which the harness compacts on its own
+  (`Compacts automatically at 80%`), and the plan's rolling windows beside
+  it, shortest first, each with its turnover (`5-hour · Resets in 2h 10m ·
+  26%`). The plan is read from the harness itself (the Claude Agent SDK's
+  usage call, Codex's `account/rateLimits/read` and the `updated`
+  notification it pushes) at session start and again after every turn, so
+  "how much of my plan is left" has an answer before the limit is hit
+  rather than a `Usage limit` notice after it. The panel ends with `See
+  the detailed breakdown`, which is what a `/context` command would have
+  been: a control request the daemon answers out of band — and the answer
+  unfolds in the panel itself, one category per row beneath the segmented
+  bar, then the MCP tools, memory files, agents and skills behind
+  disclosures, each with its deferred weight, and the model that reported
+  it. Asked once, the breakdown stays rendered and the action becomes
+  `Refresh the breakdown`. Nothing is added to the transcript: the answer
+  is a reading, not something that happened.
+  The session's own accounting lives here too, as `This session` between
+  the window and the plan — tokens in and out, the harness's reported
+  cost, and how long its turns have run: what a `/usage` command used to
+  spell out as text, stated as figures because that is what they are.
+  Nothing is drawn until a harness has answered: a ring at zero over a
+  plan flyco has never asked about is an invention, and a session running
+  on an API key has no plan at all and shows no ring ever. Until a context
+  window has been reported at all, the fullest plan window stands in for
+  the ring's reading, labelled for what it is. On a row too narrow for
+  every control the readout is what gives way first — the arc still says
+  how full, and the number lives one tap inside the panel;
 - then send, which becomes `Stop` while a turn is in flight.
+
+The island of §5 applies here under the same rule, split along what each
+control is for: when the row cannot hold it, the chips that say where the
+session runs — the machine, the budget, the goal — float above the box
+and stack, while the ones that say what the next turn runs under — the
+mode, the model, the effort, the ring — stay beside send inside it. The move is a
+move: the chips' live subtree changes parents rather than re-rendering,
+so a popover open mid-crossing rides along and re-anchors to where its
+chip landed.
 
 The composer sits at the foot of the window even when the transcript is
 three lines long: the page is at least a window tall, and the composer is
@@ -751,19 +808,24 @@ pushed to its bottom, where the hands already expect it.
 to do. Flyco's own three come first, marked `flyco` — `/compact`, which is
 the control plane's compaction request rather than a message, so every
 browser watching sees the same one; `/archive`; `/resize` — and after them
-everything the running harness reported: `/goal`, `/effort`, `/context`,
-`/usage`, `/advisor`, and every skill of the checkout, ninety of them on a
-well-equipped machine. The list is the harness's own, sent over the relay
-when the agent starts and again whenever it discovers more, so a repository
-that adds a skill has it in the palette without a reload. Until the machine
-has reported one, the three are all there is.
+everything the running harness reported: `/advisor`, and every skill of
+the checkout, ninety of them on a well-equipped machine. A command a
+control already answers is not listed a second time — the ring's panel is
+the door to `/context` and `/usage`, the model and effort chips' to
+`/model` and `/effort`, the goal chip's to `/goal` — so the harness's
+copies of all five are dropped
+rather than shown, as is the harness's copy of any name flyco owns. The
+list is the harness's own, sent over the relay
+when the agent starts and again whenever it discovers more, so a
+repository that adds a skill has it in the palette without a reload. Until
+the machine has reported one, the three are all there is.
 
 Typing after the slash filters by prefix on the name; each row shows the
 name, the argument it expects, and the harness's one-line description,
 clipped to the row. Arrow keys move, Enter chooses, Escape closes the list
 and leaves what was typed. Choosing a command that takes no argument sends
 it there and then; one that expects an argument is written into the field —
-`/goal ` — for the user to finish. A chosen command reaches the agent as the
+a skill like `/review ` — for the user to finish. A chosen command reaches the agent as the
 ordinary message `/name args`, because that is how both harnesses take a
 slash command; flyco adds no plumbing per command and none of them is a
 feature flyco has to know about.
@@ -772,25 +834,38 @@ A message beginning with `!` runs in the machine's bash, and the composer
 says so under the field while typing one. The placeholder is one line:
 `Reply, / for a command, ! for the shell`.
 
+Everything a message carries decides whether it can be held for a machine
+that is not there. A prompt waits in the room's mailbox, so the composer
+takes it in every connected state. A `!` run, a `/compact`, a context
+breakdown and a terminal keystroke are delivered to the daemon or they are
+nothing, so while no machine is connected the composer refuses them rather
+than sending them to die: the `!` line's hint becomes the refusal and the
+palette keeps `/compact` listed but greyed, next to `/archive` and
+`/resize`, which the control plane runs itself and which still work.
+
 ### 9.4 Drawer
 
 A right-side drawer, closed by default, with tabs `Terminal`, `Files`,
-`Diff`, `Machine`, `Env`. `Terminal` is the xterm panel, **connected the
+`Diff`, `Env`. `Terminal` is the xterm panel, **connected the
 moment the tab shows**: a user who opened a terminal asked for a terminal,
 not for a button that opens one. It fills the drawer, and the machine's
 PTY is kept at the size the pane shows (`terminal_resize`, on open and
 on every resize), so a line wraps where the pane wraps it; the shell
-runs under `TERM=xterm-256color`. `Machine` is **one card for the one
-machine** a session has — its name and state on the first line
-(`Standard_D4s_v6 · Running`, or `Container · 4 vCPU · 8 GiB · Running`),
-where and at what price on the second (`Azure · westeurope · Spot ·
-$0.19/hr`), then Stop or Start and Resize. A session never has more than
-one machine, so a table of provider / type / region / capacity rows was a
-form for a fleet that does not exist. `Env` is the existing editor. Its
+runs under `TERM=xterm-256color`. `Env` is the existing editor. Its
 toggle is a panel icon in the header beside `⋯`, where the official apps
 keep theirs; a handle at the top of the transcript column sat exactly
 where the first user message lands and read as an avatar on it. Keyboard:
 `⌘.` toggles the drawer. Closed, it takes no room at all.
+
+`Machine` is not a tab at all: the machine is **one card for the one
+machine** a session has, and a card that is a control belongs on the
+readout that names it — the composer's machine chip opens it as a
+popover. Its name and state on the first line (`Standard_D4s_v6 ·
+Running`, or `Container · 4 vCPU · 8 GiB · Stopped`), where and at what
+price on the second (`Azure · westeurope · Spot · $0.19/hr`), then Stop
+or Start and Resize. A session never has more than one machine, so a
+table of provider / type / region / capacity rows was a form for a fleet
+that does not exist.
 
 On a phone (under 900px) the drawer **covers the transcript** at the full
 height of the screen and carries its own close button at the end of the
@@ -804,7 +879,7 @@ outcomes — and without the account, region and capacity filters, because
 the resize carries a machine type and nothing else. The commit reads
 `Resize to <type>` over the line `Restarts the machine; the disk is kept.`
 `/resize` in the composer and `Resize` in the header's `⋯` menu both open
-that control, not merely the tab it lives on.
+the chip's panel on that control, not merely beside it.
 
 `Files` is the session's checkout, read-only: a lazy tree that fetches one
 directory at a time, files git ignores shown and marked rather than hidden,
@@ -829,13 +904,13 @@ What the agent sees of all this is `flycod`'s local MCP server (§11): `machine_
 
 ### 9.6 When the machine stops answering
 
-The relay is quiet for as long as the agent is thinking, and a quiet TCP flow is what a cloud NAT reclaims — Azure's outbound idle timeout is four minutes and it drops the flow without a FIN. So `flycod` beats every thirty seconds whether or not it has news, the room answers every beat, and a daemon that has heard nothing for three beats abandons the socket and dials again. Neither end may ever wait on a socket it cannot prove is alive.
+The command stream is quiet for as long as the agent is thinking, and a quiet TCP flow is what a cloud NAT reclaims — Azure's outbound idle timeout is four minutes and it drops the flow without a FIN. So the room pings the stream on an interval whether or not it has commands, and a daemon that has heard nothing — no command, no ping — for long enough abandons the flow and attaches again. Neither end may ever wait on a stream it cannot prove is alive.
 
-The user is told. The room is the only party that knows whether a daemon is holding it — a browser sees frames arrive and stop, and cannot tell an agent that is thinking from a machine that fell off the network — so it announces the machine attaching and detaching, and the header reads `Disconnected · machine not reachable` instead of a `Working` pill that breathes forever over a turn nobody is running. Attention, not failure: the daemon comes back on its own, and the pill goes back to what the session was doing when it does.
+The user is told. The room is the only party that knows whether a daemon is holding it — a browser sees events arrive and stop, and cannot tell an agent that is thinking from a machine that fell off the network — so it announces the machine attaching and detaching, and the header reads `Disconnected · machine not reachable` instead of a `Working` pill that breathes forever over a turn nobody is running. Attention, not failure: the daemon comes back on its own, and the pill goes back to what the session was doing when it does.
 
-Nothing a browser sends is discarded in silence. A user message waits in the mailbox and is delivered on the daemon's next `Hello`. An interrupt, a compaction and a terminal keystroke are worth nothing to a daemon that is not there and are not held — but the browser that sent one is told the machine is off the room, rather than being left watching a Stop button that did nothing. A `!` command answers immediately with `Offline`.
+Nothing a browser sends is discarded in silence — and the composer does not let the undeliverable be sent at all. A user message waits in the mailbox and is delivered on the daemon's next attach. What is delivered-or-nothing — a `!` run, `/compact`, a context breakdown, a terminal keystroke — the composer refuses while no machine is connected, saying so where the `!` hint sits. Should one still reach the room — a race against the daemon's departure — the sender is told the machine is off the room rather than left watching a Stop button that did nothing.
 
-The same rule governs the drawer: `Files` and `Diff` are answered live by the machine, so with no daemon connected they say the machine is not connected. They never report it as a control-plane failure, which sends the user looking in the wrong place for a problem that is not there.
+The same rule governs the drawer: `Terminal`, `Files`, and `Diff` are answered live by the machine, so with no daemon connected the tabs themselves grey out — a dead end shows as one before it is opened, and one that was open when the machine left yields to the tab that still answers. `Env` stays lit: the `.env` is control-plane data, and starting a stopped machine is the machine chip's popover.
 
 ### 9.7 When the agent process dies
 
@@ -864,7 +939,7 @@ Both the countdown and the clock time, because they answer different questions �
 
 Ten minutes before the reset flyco starts the machine again, so that the agent is up and ready when the window turns over rather than provisioning through it. At the reset the session is continued: `usage limit reset, please continue`, sent on the user's behalf and marked in the transcript as flyco's, because a reader coming back to a session that carried on overnight has to be able to tell that sentence from one they typed. The session reads `Active` again.
 
-The composer stays open the whole time and says where a message goes: `Sent when the window resets, at 7:35 PM`. What is typed there is held against the pause and sent **instead of** flyco's canned continuation, because a user who has said what to do next has said something better than "please continue". A `!` command is not held — it runs on the machine there and then, whatever the plan's limits are doing — and while the machine is stopped it answers `Offline` as it does in §9.6.
+The composer stays open the whole time and says where a message goes: `Sent when the window resets, at 7:35 PM`. What is typed there is held against the pause and sent **instead of** flyco's canned continuation, because a user who has said what to do next has said something better than "please continue". A `!` command is not held — it runs on the machine there and then, whatever the plan's limits are doing — and while the machine is stopped the composer refuses it, as in §9.6.
 
 Both ends of the wait are a web push, because the whole point is that the user does not have to sit there: one when the session pauses, saying which window and when it resets, and one when it starts working again.
 
@@ -925,6 +1000,19 @@ Pre-1.0, the API changes to fit the product; no compatibility shims.
   account and broadcasts `ClientEvent::Models`. `GET
   /v1/sessions/{id}/harness-session` carries the model, so a machine that
   comes back reads it beside the conversation it continues.
+- The permission mode is a session property on the model's terms.
+  `PermissionMode` (`default`, `acceptEdits`, `bypassPermissions`,
+  `plan`, `dontAsk`, `auto` — spelled the way the Claude Agent SDK spells
+  them, because Claude takes the union natively and Codex maps each to an
+  approval/sandbox pair) is what a session runs under.
+  `SessionSummary` carries `permission_mode`, a `NULL` row resolving to
+  `PermissionMode::PRODUCT_DEFAULT` (`auto`) the way a `NULL` model does;
+  `PATCH /v1/sessions/{id}` changes it — the room delivers
+  `ControlToDaemon::SetPermissionMode`, held across a disconnect like a
+  model change, and echoes `ClientEvent::PermissionModeChanged` — and
+  `GET /v1/sessions/{id}/harness-session` carries it, so a machine that
+  comes back runs under the mode the control plane recorded rather than
+  the one its disk was provisioned with.
 - `GET /v1/machines/default?spot=` returns the curated default choice and
   its catalog entry. `GET /v1/machines/catalog` returns the curated
   catalog (§7.6).

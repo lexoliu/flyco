@@ -213,54 +213,6 @@ impl CodexAuth {
     }
 }
 
-/// Approval policy the app-server applies, spelled as the protocol's kebab-case.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CodexApprovalPolicy {
-    /// Prompt on everything.
-    Untrusted,
-    /// Prompt on request — flyco's default, so every tool reaches the UI.
-    OnRequest,
-    /// Never prompt.
-    Never,
-}
-
-impl CodexApprovalPolicy {
-    /// The protocol token.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Untrusted => "untrusted",
-            Self::OnRequest => "on-request",
-            Self::Never => "never",
-        }
-    }
-}
-
-/// Sandbox mode the app-server applies, spelled as the protocol's kebab-case.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CodexSandbox {
-    /// Read-only sandbox.
-    ReadOnly,
-    /// Workspace-write sandbox.
-    WorkspaceWrite,
-    /// No sandbox.
-    DangerFullAccess,
-}
-
-impl CodexSandbox {
-    /// The protocol token.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ReadOnly => "read-only",
-            Self::WorkspaceWrite => "workspace-write",
-            Self::DangerFullAccess => "danger-full-access",
-        }
-    }
-}
-
 fn default_codex_bin() -> PathBuf {
     PathBuf::from("codex")
 }
@@ -283,10 +235,14 @@ pub struct CodexConfig {
     /// `defaultReasoningEffort` for the model stands.
     #[serde(default)]
     pub effort: Option<String>,
-    /// Approval policy for `thread/start`.
-    pub approval_policy: CodexApprovalPolicy,
-    /// Sandbox mode for `thread/start`.
-    pub sandbox: CodexSandbox,
+    /// Permission mode the thread runs under.
+    ///
+    /// Spelled flyco's way rather than the app-server's: Codex has no
+    /// permission modes, it has an approval policy and a sandbox that say
+    /// the same thing together, so the driver holds the one mode and
+    /// translates it into the pair — [`PermissionMode::codex_approval_policy`]
+    /// and [`PermissionMode::codex_sandbox`] — wherever the protocol asks.
+    pub permission_mode: PermissionMode,
     /// Credentials and `CODEX_HOME` isolation.
     pub auth: CodexAuth,
 }

@@ -41,7 +41,7 @@ describe("Transcript provisioning timeline", () => {
   const reserving: TranscriptItem = {
     kind: "provisioning",
     key: "provisioning-0",
-    steps: [{ stage: "reserving", atUnix: T0 - 600 }],
+    steps: [{ key: `reserving-${T0 - 600}`, stage: "reserving", atUnix: T0 - 600 }],
     recovery: false,
     attempt: 1,
     endedAtUnix: null,
@@ -72,8 +72,8 @@ describe("Transcript provisioning timeline", () => {
     const ready: TranscriptItem = {
       ...reserving,
       steps: [
-        { stage: "reserving", atUnix: T0 - 600 },
-        { stage: "ready", atUnix: T0 - 540 },
+        { key: `reserving-${T0 - 600}`, stage: "reserving", atUnix: T0 - 600 },
+        { key: `ready-${T0 - 540}`, stage: "ready", atUnix: T0 - 540 },
       ],
     };
     const { container, getByLabelText } = show(ready, T0 - 480);
@@ -88,8 +88,8 @@ describe("Transcript shell block", () => {
     const { getByRole } = show(
       shell({
         output: [
-          { stream: "stdout", data: "running 1 test\n" },
-          { stream: "stderr", data: "warning: unused\n" },
+          { key: 0, stream: "stdout", data: "running 1 test\n" },
+          { key: 1, stream: "stderr", data: "warning: unused\n" },
         ],
         outcome: { kind: "exited", code: 0 },
         endedAtUnix: T0 + 12,
@@ -109,8 +109,8 @@ describe("Transcript shell block", () => {
     const { getByRole } = show(
       shell({
         output: [
-          { stream: "stdout", data: "out\n" },
-          { stream: "stderr", data: "err\n" },
+          { key: 0, stream: "stdout", data: "out\n" },
+          { key: 1, stream: "stderr", data: "err\n" },
         ],
         outcome: { kind: "exited", code: 0 },
         endedAtUnix: T0 + 1,
@@ -148,7 +148,7 @@ describe("Transcript shell block", () => {
   it("says when output was dropped rather than eliding it silently", () => {
     const { getByRole } = show(
       shell({
-        output: [{ stream: "stdout", data: "a lot of output\n" }],
+        output: [{ key: 0, stream: "stdout", data: "a lot of output\n" }],
         truncated: true,
         outcome: { kind: "exited", code: 0 },
         endedAtUnix: T0 + 3,
@@ -171,7 +171,7 @@ function turn(overrides: Partial<Extract<TranscriptItem, { kind: "turn" }>> = {}
     kind: "turn",
     key: "turn-t1",
     turnId: "t1",
-    parts: [{ kind: "text", text: "I'll rebase the branch and push it." }],
+    parts: [{ kind: "text", key: 0, text: "I'll rebase the branch and push it." }],
     status: "completed",
     error: null,
     usage: null,
@@ -202,8 +202,10 @@ describe("Transcript turn", () => {
         parts: [
           {
             kind: "tools",
+            key: 0,
             calls: [
               {
+                key: "c1",
                 callId: "c1",
                 tool: "Edit",
                 input: { file_path: "crates/daemon/src/compaction.rs" },
@@ -218,6 +220,21 @@ describe("Transcript turn", () => {
     );
 
     expect(getByText("Could not edit crates/daemon/src/compaction.rs")).toBeInTheDocument();
+  });
+});
+
+describe("Transcript command output", () => {
+  it("renders output the harness printed on its own as a block, not a bubble", async () => {
+    // Markdown paints on the animation frame, so the text arrives a tick
+    // after the block does.
+    const { getByRole, findByText } = show({
+      kind: "command_output",
+      key: "output-0",
+      text: "Context window: 42k of 200k",
+      atUnix: T0,
+    });
+    expect(getByRole("region", { name: "Command output" })).toBeInTheDocument();
+    expect(await findByText("Context window: 42k of 200k")).toBeInTheDocument();
   });
 });
 

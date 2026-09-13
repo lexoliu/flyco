@@ -599,6 +599,14 @@ pub struct SessionSummary {
     /// creation, so the header can state the model on every row rather than
     /// leaving one blank for the sessions nobody chose one for.
     pub model: ModelChoice,
+    /// The permission mode the session's agent runs under.
+    ///
+    /// Always concrete for the same reason `model` is: a session opened
+    /// before flyco recorded a mode resolves to
+    /// [`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT)
+    /// at read, so every row states the mode it is on rather than leaving
+    /// the composer's chip to guess.
+    pub permission_mode: crate::harness::PermissionMode,
 }
 
 /// A single session, with its budget.
@@ -658,6 +666,13 @@ pub struct HarnessSessionView {
     /// with, so a session whose model was changed while it ran would come
     /// back on the old one after a reclamation.
     pub model: ModelChoice,
+    /// The permission mode this session runs under, as the control plane
+    /// last recorded it.
+    ///
+    /// Same reason as `model`: the configuration on disk is the one the
+    /// machine was provisioned with, so a session put on `plan` while it
+    /// ran would otherwise come back on whatever it was provisioned under.
+    pub permission_mode: crate::harness::PermissionMode,
 }
 
 /// Request body of `PATCH /v1/sessions/{id}`.
@@ -693,6 +708,17 @@ pub struct UpdateSession {
     /// session on a model its harness has dropped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelChoice>,
+    /// The permission mode the session's agent should run under.
+    ///
+    /// Applied on the same terms as `model`: the control plane records it
+    /// and sends the session's daemon a
+    /// [`SetPermissionMode`](crate::wire::ControlToDaemon::SetPermissionMode),
+    /// which Claude applies to the live query and Codex applies from the
+    /// next `turn/start`. Every declared mode is one both harnesses honor —
+    /// Codex translates it into its approval/sandbox pair — so the body
+    /// needs no per-harness validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<crate::harness::PermissionMode>,
 }
 
 /// Request body of `POST /v1/sessions/{id}/messages`.
@@ -702,6 +728,32 @@ pub struct SendMessage {
     /// UI documents; the control plane forwards the text either way and the
     /// daemon decides.
     pub text: String,
+}
+
+/// Request body of `POST /v1/sessions/{id}/shell`.
+///
+/// The composer's `!` escape: a command for the session's machine, not for
+/// the agent. The room assigns the run id it will be tracked under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RunShell {
+    /// The command, without the `!`, to be run through `bash -c`.
+    pub command: String,
+}
+
+/// Request body of `POST /v1/sessions/{id}/terminal/input`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct TerminalInput {
+    /// Bytes to write to the terminal, UTF-8.
+    pub data: String,
+}
+
+/// Request body of `POST /v1/sessions/{id}/terminal/resize`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct TerminalSize {
+    /// Columns the pane shows.
+    pub cols: u16,
+    /// Rows the pane shows.
+    pub rows: u16,
 }
 
 /// One turn of a session, as the history list renders it.
@@ -853,6 +905,7 @@ mod tests {
                 model: "default".to_owned(),
                 effort: None,
             },
+            permission_mode: crate::PermissionMode::Auto,
         };
         let json = serde_json::to_string(&summary).expect("serialize");
         assert!(!json.contains("interrupted_reason"), "{json}");

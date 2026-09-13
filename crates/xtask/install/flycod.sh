@@ -115,7 +115,8 @@ next_subid() {
 install_session_runtime() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install --yes --no-install-recommends ca-certificates curl fish git npm unzip
+  apt-get install --yes --no-install-recommends ca-certificates curl fish git unzip
+  rm -rf /var/lib/apt/lists/*
 
   create_runtime_user /usr/bin/fish
 
@@ -142,7 +143,38 @@ install_session_runtime() {
   install -m 0755 "$scratch/bun"/*/bun /home/flyco/.bun/bin/bun
   chown -R "$runtime_user:$runtime_group" /home/flyco/.bun
 
-  npm install --global @openai/codex@latest
+  # Codex, straight from the release `npm install @openai/codex` resolves
+  # to: the npm package's own bin is a Node launcher that execs this same
+  # vendored binary, so installing the binary directly skips Node and npm
+  # entirely — several hundred megabytes of runtime nothing else used.
+  # `digest` in the release API is GitHub's own sha256 of the asset, the
+  # same verification `codex-package_SHA256SUMS` gives the bundle tarballs.
+  case "$artifact" in
+    flycod-linux-x86_64) codex_target=x86_64-unknown-linux-musl ;;
+    flycod-linux-aarch64) codex_target=aarch64-unknown-linux-musl ;;
+  esac
+  download https://api.github.com/repos/openai/codex/releases/latest "$scratch/codex-release.json"
+  codex_meta=$(CODEX_RELEASE_JSON="$scratch/codex-release.json" CODEX_ASSET="codex-$codex_target.tar.gz" "$runtime_home/.bun/bin/bun" -e '
+const release = JSON.parse(require("fs").readFileSync(process.env.CODEX_RELEASE_JSON, "utf8"));
+const asset = (release.assets ?? []).find((a) => a.name === process.env.CODEX_ASSET);
+if (!asset || !asset.digest?.startsWith("sha256:")) process.exit(1);
+console.log(asset.browser_download_url, asset.digest.slice(7));
+')
+  read codex_url codex_sha256 <<EOF
+$codex_meta
+EOF
+  download "$codex_url" "$scratch/codex.tar.gz"
+  printf '%s  %s\n' "$codex_sha256" "$scratch/codex.tar.gz" | sha256sum --check -
+  tar xzf "$scratch/codex.tar.gz" -C "$scratch"
+  install -m 0755 "$scratch/codex-$codex_target" "$install_root/codex"
+
+  # `node` and `npx` are the commands MCP server registrations name, and
+  # there is no Node on this runtime: bunx runs the same packages, so the
+  # aliases keep those servers working.
+  ln -sf "$runtime_home/.bun/bin/bun" "$install_root/bunx"
+  printf '#!/bin/sh\ncase "${1-}" in -y|--yes) shift ;; esac\nexec %s "$@"\n' "$install_root/bunx" >"$install_root/npx"
+  printf '#!/bin/sh\nexec %s "$@"\n' "$runtime_home/.bun/bin/bun" >"$install_root/node"
+  chmod 0755 "$install_root/npx" "$install_root/node"
 
   download https://raw.githubusercontent.com/oh-my-fish/oh-my-fish/master/bin/install "$scratch/omf-install"
   chown "$runtime_user:$runtime_group" "$scratch/omf-install"
@@ -178,7 +210,6 @@ install_image() {
   install -d -o "$runtime_user" -g "$runtime_group" -m 0750 /etc/flycod
   install_flycod_from "$1"
   verify_session_runtime
-  rm -rf /var/lib/apt/lists/*
 }
 
 # ── A machine the user owns ──

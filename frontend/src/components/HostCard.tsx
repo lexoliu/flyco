@@ -7,7 +7,7 @@
  * has no price, because the user already bought it; no spot mode, because
  * nobody is going to evict them from their own hardware; and no invoice.
  * What it has instead is what it told flyco about itself, and whether its
- * socket is up right now.
+ * daemon is attached right now.
  *
  * `Rename` and `Remove` are here rather than in a menu because they are the
  * only two things anyone does to a machine after enrolling it. `Remove`

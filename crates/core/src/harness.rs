@@ -18,19 +18,24 @@ pub enum HarnessKind {
     Codex,
 }
 
-/// The permission mode the Claude Agent SDK runs a session under.
+/// The permission mode a session runs under.
 ///
-/// Mirrors the SDK's own `PermissionMode` union, spelled in its `camelCase`
-/// so the sidecar passes the value straight into `query`'s `permissionMode`
-/// option. Every mode other than [`Self::Default`] narrows what reaches
-/// flyco's approval UI, because an auto-approved tool never calls back.
+/// Spelled the way the Claude Agent SDK spells its `PermissionMode` union,
+/// in `camelCase`, so the sidecar passes the value straight into `query`'s
+/// `permissionMode` option. Every mode other than [`Self::Default`] narrows
+/// what reaches flyco's approval UI, because an auto-approved tool never
+/// calls back.
 ///
 /// It lives in the domain model rather than in the daemon because it
-/// crosses a boundary in both directions: the control plane writes it into
-/// the `flycod` configuration it provisions onto a machine, and the daemon
-/// reads that configuration back.
+/// crosses every boundary flyco has: the control plane stores it on the
+/// session row and writes it into the `flycod` configuration it provisions
+/// onto a machine, the daemon reads that configuration back and applies a
+/// change to the running harness — `setPermissionMode` on Claude's live
+/// query, `approvalPolicy`/`sandboxPolicy` overrides on Codex's next
+/// `turn/start`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum PermissionMode {
     /// Every non-auto-approved tool call reaches `canUseTool`.
     Default,
@@ -45,6 +50,57 @@ pub enum PermissionMode {
     DontAsk,
     /// A model classifier decides prompts — the proposal's "Auto mode".
     Auto,
+}
+
+impl PermissionMode {
+    /// The mode a session that never chose one runs under.
+    ///
+    /// Flyco's managed deny rules still bind even in this mode, and
+    /// anything the classifier does not auto-allow still reaches the
+    /// approval UI.
+    pub const PRODUCT_DEFAULT: Self = Self::Auto;
+
+    /// The approval policy a Codex thread runs under in this mode, as
+    /// `thread/start` and `turn/start` spell it.
+    ///
+    /// Codex has no permission modes; it has two knobs that say the same
+    /// thing together — when the agent may ask (`approval_policy`) and what
+    /// runs without asking (`sandbox`). The pair each mode maps to:
+    ///
+    /// * `default` — `untrusted` + `read-only`: every mutation asks, which
+    ///   is what `canUseTool` deciding everything means on Claude.
+    /// * `acceptEdits` — `untrusted` + `workspace-write`: edits inside the
+    ///   checkout go through the sandbox without asking; untrusted commands
+    ///   still do.
+    /// * `plan` — `never` + `read-only`: no mutation is possible and
+    ///   nothing escalates the question.
+    /// * `auto` — `on-request` + `workspace-write`: the agent asks when it
+    ///   judges it needs to, the same delegation the classifier makes on
+    ///   Claude.
+    /// * `bypassPermissions` — `never` + `danger-full-access`: nothing asks
+    ///   and nothing sandboxes, the `dangerously-bypass` pair in codex's
+    ///   own vocabulary.
+    /// * `dontAsk` — `never` + `read-only`: deny anything not pre-approved
+    ///   reads the same as plan on this harness.
+    #[must_use]
+    pub const fn codex_approval_policy(self) -> &'static str {
+        match self {
+            Self::Default | Self::AcceptEdits => "untrusted",
+            Self::Auto => "on-request",
+            Self::BypassPermissions | Self::Plan | Self::DontAsk => "never",
+        }
+    }
+
+    /// The sandbox a Codex thread runs under in this mode, on the same
+    /// terms as [`Self::codex_approval_policy`].
+    #[must_use]
+    pub const fn codex_sandbox(self) -> &'static str {
+        match self {
+            Self::Default | Self::Plan | Self::DontAsk => "read-only",
+            Self::AcceptEdits | Self::Auto => "workspace-write",
+            Self::BypassPermissions => "danger-full-access",
+        }
+    }
 }
 
 /// A harness capability tracked in the per-harness feature matrix.
@@ -209,6 +265,65 @@ impl ContextWindow {
         assert!(self.size_tokens > 0, "context window size must be positive");
         self.used_tokens * 10_000 / self.size_tokens
     }
+}
+
+/// One thing occupying the context window, as a [`ContextUsage`] lists it.
+///
+/// One shape for every section the harness reports — a usage category, an
+/// MCP tool's schema, a memory file, an agent definition, a skill's
+/// frontmatter — because each answers the same question (what is this, and
+/// what does it cost) and the panel rows differ only in which list they
+/// came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ContextCost {
+    /// What it is called: a category name, a tool, a file path, an agent
+    /// type, a skill name — whatever the harness named it.
+    pub name: String,
+    /// Tokens it occupies.
+    pub tokens: u64,
+    /// Counted toward the window but not materialized in it yet — a
+    /// deferred MCP tool's schema, for instance, which is summarized until
+    /// it is first called.
+    #[serde(default)]
+    pub deferred: bool,
+}
+
+/// What the context window is spent on — the answer to `/context`.
+///
+/// A query answer rather than a meter: the breakdown exists only because a
+/// user asked for it, so it is emitted in reply to
+/// [`crate::wire::ControlToDaemon::ContextUsage`] rather than after every
+/// turn. The *fill* alone is a different matter — that is
+/// [`UsageReport::context`], refreshed on every completed turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ContextUsage {
+    /// The model the window belongs to, when the harness names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The window's fill — `None` when the harness has not measured it yet
+    /// (a Codex session that has not run a turn reports no token count).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<ContextWindow>,
+    /// The fill at which the harness compacts the window on its own, where
+    /// it reports one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compact: Option<u64>,
+    /// The harness's own grouping of what fills the window — system prompt,
+    /// tools, messages, and so on, in the order it reported them.
+    #[serde(default)]
+    pub categories: Vec<ContextCost>,
+    /// MCP tool schemas held in context.
+    #[serde(default)]
+    pub mcp_tools: Vec<ContextCost>,
+    /// Memory files held in context (Claude Code's `CLAUDE.md` tree).
+    #[serde(default)]
+    pub memory_files: Vec<ContextCost>,
+    /// Custom agent definitions held in context.
+    #[serde(default)]
+    pub agents: Vec<ContextCost>,
+    /// Skill frontmatter held in context.
+    #[serde(default)]
+    pub skills: Vec<ContextCost>,
 }
 
 /// Token and context-window accounting reported by the harness.
@@ -703,6 +818,24 @@ pub enum HarnessEvent {
     ContextCompactionFailed {
         /// Harness-reported reason.
         error: String,
+    },
+    /// Output the harness produced outside the model's conversation.
+    ///
+    /// A local slash command's answer (`/usage` and friends are answered
+    /// by the CLI itself, never reaching the API), or the text of a
+    /// synthetic message that never streamed deltas. Rendered as a
+    /// transcript block of its own rather than merged into a turn's prose,
+    /// because it is not the model answering — the harness printed it.
+    LocalCommandOutput {
+        /// What the harness printed, as Markdown.
+        content: String,
+    },
+    /// The harness's answer to
+    /// [`crate::wire::ControlToDaemon::ContextUsage`]: what the context
+    /// window is spent on.
+    ContextUsage {
+        /// The breakdown.
+        usage: ContextUsage,
     },
 }
 

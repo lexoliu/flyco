@@ -1,18 +1,18 @@
 //! The daemon's REST client for its own session.
 //!
-//! Five things a daemon does over ordinary HTTP rather than over the relay
-//! socket, each for its own reason:
+//! Some things a daemon does over ordinary HTTP rather than over the relay
+//! frame POST, each for its own reason:
 //!
 //! * **The `Cloning` stage** happens *before* the harness exists, and the
-//!   relay socket is not opened until there is a session behind it. A
+//!   daemon does not attach until there is a session behind it. A
 //!   checkout is what the harness is started in, so the one milestone that
 //!   cannot ride the relay is the one announcing it.
 //! * **Approvals** must be *durable* before they are announced. The control
 //!   plane assigns the id, so a decision routed back through the relay names
 //!   an approval the API can actually settle. A relay frame is live state;
-//!   a pending approval outlives every socket involved.
-//! * **Transcript batches** are unbounded and a Cloudflare WebSocket frame
-//!   caps at 1 MiB, so bulk data never rides the relay.
+//!   a pending approval outlives every attachment involved.
+//! * **Transcript batches** are unbounded and the relay's frame batches
+//!   are sequenced envelopes, so bulk data never rides the relay.
 //! * **Reading a transcript back** happens at resume, which is *before*
 //!   there is a session to relay through.
 //! * **Usage observations** are what the LLM usage panel is made of, and no
@@ -29,8 +29,11 @@
 //! exactly this session's daemon-scoped routes.
 
 use core::future::Future;
+use core::time::Duration;
 
-use flyco_core::wire::ApprovalPayload;
+use flyco_core::wire::{
+    ApprovalPayload, DaemonAttach, DaemonAttached, DaemonCommand, DaemonFrames,
+};
 use flyco_core::{
     AgentMachineView, ApprovalId, ApprovalView, BudgetView, HarnessObservation, HarnessSessionView,
     MachineCatalogEntry, ModelOption, Problem, ProvisioningStage, ReportProvisioningStage,
@@ -62,6 +65,13 @@ pub enum ControlApiError {
         title: String,
         /// What the control plane said about this occurrence.
         detail: String,
+        /// The problem type's slug — the last segment of its `type` URI.
+        ///
+        /// Kept because some refusals are instructions the caller acts on:
+        /// `relay-epoch-stale` means re-attach, `protocol-mismatch` means
+        /// stop trying. Parsing the detail prose would couple a client to
+        /// English sentences.
+        kind: String,
     },
     /// The control plane answered with a status but no problem document.
     #[error("the control plane answered {method} {path} with HTTP {status}")]
@@ -105,8 +115,25 @@ pub(crate) fn refused(method: &'static str, path: &str, error: &zenwave::Error) 
             status: status.as_u16(),
             title: problem.title,
             detail: problem.detail,
+            kind: problem.kind,
         },
     )
+}
+
+impl ControlApiError {
+    /// The problem type's slug, when this failure is a typed refusal.
+    ///
+    /// A refusal's slug is the machine-readable half of the document: the
+    /// relay distinguishes `protocol-mismatch` (fatal — this build cannot
+    /// serve) from `relay-epoch-stale` (retry — attach again) by it rather
+    /// than by the status both carry.
+    #[must_use]
+    pub fn kind(&self) -> Option<&str> {
+        let Self::Refused { kind, .. } = self else {
+            return None;
+        };
+        Some(kind.rsplit('/').next().unwrap_or(kind))
+    }
 }
 
 /// Putting a decision in front of the user.
@@ -769,6 +796,196 @@ impl ControlApi for HttpControlApi {
             body: body.to_vec(),
             batches,
         })
+    }
+}
+
+/// The relay half of a daemon's control-plane client.
+///
+/// Separate from [`ControlApi`]'s durable reports because the failure
+/// semantics differ: a refused report is a fact lost, while a dropped
+/// command stream is only a reconnect — and because the commands route
+/// answers with a *stream*, which nothing else on the API does.
+///
+/// The room's commands are sequenced rows the stream cursors over; a
+/// daemon acknowledges what it applied on its next frames POST. A dead
+/// stream therefore loses nothing: re-attaching replays every
+/// unacknowledged command.
+pub trait RelayTransport: Send + Sync + 'static {
+    /// Attaches this daemon to its session's room.
+    ///
+    /// The returned epoch names the attachment: every later frames POST
+    /// and the command stream it opens carry it, so a daemon that attached
+    /// twice and a room that watched the first stream die agree about
+    /// which attachment the traffic belongs to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached, refused the attach (a wrong token, a protocol version it
+    /// does not speak), or the room failed.
+    fn attach(&self) -> impl Future<Output = Result<DaemonAttached, ControlApiError>> + Send;
+
+    /// Opens the command stream belonging to one attach epoch.
+    ///
+    /// `idle` is how long the stream may deliver no bytes at all before
+    /// it is treated as a dead path: the room heartbeats well inside any
+    /// sane bound, so a gap that long is a flow a NAT reclaimed rather
+    /// than a room with nothing to say.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the stream could not be opened —
+    /// including `relay-epoch-stale`, when the epoch names a superseded
+    /// attach.
+    fn commands(
+        &self,
+        epoch: u64,
+        idle: Duration,
+    ) -> impl Future<Output = Result<CommandStream<DaemonCommand>, ControlApiError>> + Send;
+
+    /// Posts one sequenced batch of outbound frames.
+    ///
+    /// `ack_through` rides every batch, so a batch of no frames at all is
+    /// how a daemon acknowledges commands while it has nothing to say.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the batch was not stored —
+    /// `relay-epoch-stale` or `relay-frames-gap` among the refusals, both
+    /// of which the daemon answers by re-attaching and re-sending what is
+    /// still unconfirmed.
+    fn frames(
+        &self,
+        batch: &DaemonFrames,
+    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
+}
+
+/// A room's command stream, decoded.
+///
+/// Concrete rather than `impl Stream` at the trait boundary so test
+/// doubles can fabricate one from a channel — the transport is the same
+/// shape whoever produced it. Generic over the command envelope because
+/// a session daemon and an enrolled host read different rooms with the
+/// same machinery.
+pub struct CommandStream<T> {
+    inner:
+        core::pin::Pin<Box<dyn futures_core::Stream<Item = Result<T, ControlApiError>> + Send>>,
+}
+
+impl<T> core::fmt::Debug for CommandStream<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CommandStream").finish_non_exhaustive()
+    }
+}
+
+impl<T> CommandStream<T> {
+    /// Wraps any stream of decoded commands.
+    pub fn new<S>(stream: S) -> Self
+    where
+        S: futures_core::Stream<Item = Result<T, ControlApiError>> + Send + 'static,
+    {
+        Self {
+            inner: Box::pin(stream),
+        }
+    }
+}
+
+impl<T> futures_core::Stream for CommandStream<T> {
+    type Item = Result<T, ControlApiError>;
+
+    fn poll_next(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
+}
+
+impl<T> Unpin for CommandStream<T> {}
+
+/// Parses a streaming response body into decoded commands.
+///
+/// The idle timeout applies to *bytes*, not events: the room's heartbeat
+/// is a comment line the SSE parser drops, and only a byte-level watch
+/// sees that a quiet stream is still alive. One helper for both relay
+/// clients — a session daemon's and an enrolled host's differ only in
+/// the envelope they decode.
+pub(crate) fn command_stream<T>(
+    body: zenwave::Body,
+    idle: Duration,
+) -> CommandStream<T>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    use eventsource_stream::Eventsource as _;
+    use futures_util::StreamExt as _;
+
+    let chunks = futures_util::stream::try_unfold(Box::pin(body), move |mut body| async move {
+        match tokio::time::timeout(idle, body.next()).await {
+            Ok(Some(Ok(bytes))) => Ok(Some((bytes, body))),
+            Ok(Some(Err(error))) => Err(ControlApiError::Transport(error.to_string())),
+            Ok(None) => Ok(None),
+            Err(_elapsed) => Err(ControlApiError::Transport(format!(
+                "the command stream went silent for {idle:?}"
+            ))),
+        }
+    });
+    let stream = chunks.eventsource().map(|event| match event {
+        Ok(event) => serde_json::from_str::<T>(&event.data).map_err(|error| {
+            ControlApiError::Transport(format!("a command could not be decoded: {error}"))
+        }),
+        Err(error) => Err(ControlApiError::Transport(error.to_string())),
+    });
+    CommandStream::new(stream)
+}
+
+impl RelayTransport for HttpControlApi {
+    async fn attach(&self) -> Result<DaemonAttached, ControlApiError> {
+        let url = self.url("relay/attach")?;
+        let mut client = zenwave::client();
+        let response = client
+            .post(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(&DaemonAttach {
+                protocol_version: flyco_core::WIRE_PROTOCOL_VERSION,
+            })
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("POST", &url, &error))?;
+
+        response.into_json::<DaemonAttached>().await.map_err(transport)
+    }
+
+    async fn commands(
+        &self,
+        epoch: u64,
+        idle: Duration,
+    ) -> Result<CommandStream<DaemonCommand>, ControlApiError> {
+        let url = self.url(&format!("relay/commands?epoch={epoch}"))?;
+        let mut client = zenwave::client();
+        let response = client
+            .get(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .await
+            .map_err(|error| refused("GET", &url, &error))?;
+
+        Ok(command_stream(response.into_body(), idle))
+    }
+
+    async fn frames(&self, batch: &DaemonFrames) -> Result<(), ControlApiError> {
+        let url = self.url("relay/frames")?;
+        let mut client = zenwave::client();
+        client
+            .post(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .json_body(batch)
+            .map_err(transport)?
+            .await
+            .map_err(|error| refused("POST", &url, &error))?;
+        Ok(())
     }
 }
 

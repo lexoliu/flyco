@@ -181,6 +181,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The one stream every session event rides.
+         * @description The one stream every session event rides.
+         *
+         *     `GET /v1/events` multiplexes every session the caller owns onto one
+         *     SSE connection; each event is a [`SessionEvent`](flyco_core::wire::SessionEvent)
+         *     envelope carrying the session it belongs to. Replays are `Last-Event-ID`
+         *     deep: past the buffer, the client refills from a session's own
+         *     `events?after=` history.
+         */
+        get: operations["flyco_api::app::open_event_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/github/repos": {
         parameters: {
             query?: never;
@@ -533,17 +559,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/hosts/{id}/relay": {
+    "/v1/hosts/{id}/relay/attach": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** app::open_host_relay */
-        get: operations["app::open_host_relay"];
+        get?: never;
+        put?: never;
+        /**
+         * Attaches an enrolled machine to its host room.
+         * @description Attaches an enrolled machine to its host room.
+         *
+         *     Authenticated by the host's own `fh_` token rather than by a user
+         *     credential, exactly as a session daemon's relay is, so it sits outside
+         *     [`RequireAuth`].
+         */
+        post: operations["flyco_api::app::attach_host"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/hosts/{id}/relay/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Opens an enrolled machine's command stream.
+         * @description Opens an enrolled machine's command stream.
+         */
+        get: operations["flyco_api::app::open_host_commands"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/hosts/{id}/relay/frames": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accepts one batch of an enrolled machine's outbound frames.
+         * @description Accepts one batch of an enrolled machine's outbound frames.
+         */
+        post: operations["flyco_api::app::post_host_frames"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1136,7 +1209,9 @@ export interface paths {
          *     stopped accepting work when the pause reached it and nothing in the
          *     database can lift that. The model is recorded and then sent to the
          *     session's room, which echoes it into the transcript and hands it to the
-         *     harness mid-conversation.
+         *     harness mid-conversation. The permission mode is recorded and announced
+         *     on the same path: Claude applies it to the live query and Codex applies
+         *     it from the next turn.
          */
         patch: operations["flyco_api::app::update_session"];
         trace?: never;
@@ -1321,6 +1396,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reports what a session's context window is spent on.
+         * @description Reports what a session's context window is spent on.
+         *
+         *     What the usage panel's "detailed breakdown" asks for: a control request
+         *     the daemon answers out of band —
+         *     the Claude sidecar's `get_context_usage`, or the window gauge a Codex
+         *     session already holds — never a message to the model. The answer
+         *     arrives on the session relay as a `context_usage` harness event.
+         */
+        post: operations["flyco_api::app::context_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/daemon-token": {
         parameters: {
             query?: never;
@@ -1409,7 +1510,7 @@ export interface paths {
          * @description Reads a session's recorded event tail.
          *
          *     The catch-up path a browser takes before — and alongside — its live
-         *     socket: replay from the last position it saw, then follow the relay.
+         *     stream: replay from the last position it saw, then follow the relay.
          */
         get: operations["flyco_api::app::get_session_events"];
         put?: never;
@@ -1703,7 +1804,7 @@ export interface paths {
          *     The queue announces everything up to the machine existing; everything
          *     after it is a fact only the daemon holds. Most of those ride the relay,
          *     but the checkout happens *before* the harness exists and therefore before
-         *     there is a relay socket — so the one stage that cannot be a relay frame
+         *     there is a command stream — so the one stage that cannot be a relay frame
          *     gets a route (docs/ux.md §9.2).
          *
          *     The control plane stamps the time rather than taking the daemon's: a
@@ -1717,7 +1818,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{id}/relay-ticket": {
+    "/v1/sessions/{id}/relay/attach": {
         parameters: {
             query?: never;
             header?: never;
@@ -1727,25 +1828,32 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Mints a single-use ticket a browser exchanges for a relay socket.
-         * @description Mints a single-use ticket a browser exchanges for a relay socket.
+         * Attaches a session's daemon to its room.
+         * @description Attaches a session's daemon to its room.
+         *
+         *     Authenticated by the session's `fd_` token rather than by a user
+         *     credential, so it sits outside [`RequireAuth`].
          */
-        post: operations["flyco_api::app::create_relay_ticket"];
+        post: operations["flyco_api::app::attach_daemon"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{id}/relay/client": {
+    "/v1/sessions/{id}/relay/commands": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** app::open_client_relay */
-        get: operations["app::open_client_relay"];
+        /**
+         * Opens a session daemon's command stream: the room's SSE stream, handed through still running.
+         * @description Opens a session daemon's command stream: the room's SSE stream, handed
+         *     through still running.
+         */
+        get: operations["flyco_api::app::open_daemon_commands"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1754,17 +1862,20 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{id}/relay/daemon": {
+    "/v1/sessions/{id}/relay/frames": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** app::open_daemon_relay */
-        get: operations["app::open_daemon_relay"];
+        get?: never;
         put?: never;
-        post?: never;
+        /**
+         * Accepts one batch of a session daemon's outbound frames.
+         * @description Accepts one batch of a session daemon's outbound frames.
+         */
+        post: operations["flyco_api::app::post_daemon_frames"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1818,6 +1929,30 @@ export interface paths {
          *     session's own machine, not another one beside it.
          */
         post: operations["flyco_api::app::resume_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/shell": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Runs a shell command on a session's machine.
+         * @description Runs a shell command on a session's machine.
+         *
+         *     The composer's `!` escape, over REST: the room mints the run id and
+         *     reissues the request as [`ControlToDaemon::RunShell`], so every frame
+         *     about the run is keyed by an identity the browser never chose.
+         */
+        post: operations["flyco_api::app::run_shell"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1920,6 +2055,53 @@ export interface paths {
          *     and this is the record of it.
          */
         post: operations["flyco_api::app::report_stopping"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/terminal/input": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Writes raw input to a session's web terminal.
+         * @description Writes raw input to a session's web terminal.
+         *
+         *     One keystroke batch per call: the terminal panel sends these as the
+         *     user types, and a dropped one is retried by the user, not the client.
+         */
+        post: operations["flyco_api::app::terminal_input"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/terminal/resize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reports the web terminal's fitted size.
+         * @description Reports the web terminal's fitted size.
+         *
+         *     The room remembers it and re-sends it at the head of every daemon
+         *     attach, so a machine that reboots comes back with a PTY the same size
+         *     as the pane (issue #253).
+         */
+        post: operations["flyco_api::app::terminal_resize"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2627,6 +2809,14 @@ export interface components {
              */
             verification_url: string;
         };
+        /** @description Query of the daemon command stream. */
+        CommandEpoch: {
+            /**
+             * Format: int64
+             * @description The attach this stream serves.
+             */
+            epoch: number;
+        };
         /** @description Request body of `POST /v1/harness-accounts/claude/oauth/complete`. */
         CompleteClaudeOauth: {
             /** @description The attempt this code belongs to, from [`ClaudeOauthStart`]. */
@@ -2637,6 +2827,66 @@ export interface components {
              *     first half of it has still supplied everything the exchange needs.
              */
             code: string;
+        };
+        /**
+         * @description One thing occupying the context window, as a [`ContextUsage`] lists it.
+         *
+         *     One shape for every section the harness reports — a usage category, an
+         *     MCP tool's schema, a memory file, an agent definition, a skill's
+         *     frontmatter — because each answers the same question (what is this, and
+         *     what does it cost) and the panel rows differ only in which list they
+         *     came from.
+         */
+        ContextCost: {
+            /**
+             * @description Counted toward the window but not materialized in it yet — a
+             *     deferred MCP tool's schema, for instance, which is summarized until
+             *     it is first called.
+             */
+            deferred?: boolean;
+            /**
+             * @description What it is called: a category name, a tool, a file path, an agent
+             *     type, a skill name — whatever the harness named it.
+             */
+            name: string;
+            /**
+             * Format: int64
+             * @description Tokens it occupies.
+             */
+            tokens: number;
+        };
+        /**
+         * @description What the context window is spent on — the answer to `/context`.
+         *
+         *     A query answer rather than a meter: the breakdown exists only because a
+         *     user asked for it, so it is emitted in reply to
+         *     [`crate::wire::ControlToDaemon::ContextUsage`] rather than after every
+         *     turn. The *fill* alone is a different matter — that is
+         *     [`UsageReport::context`], refreshed on every completed turn.
+         */
+        ContextUsage: {
+            /** @description Custom agent definitions held in context. */
+            agents?: components["schemas"]["ContextCost"][];
+            /**
+             * Format: int64
+             * @description The fill at which the harness compacts the window on its own, where
+             *     it reports one.
+             */
+            auto_compact?: number | null;
+            /**
+             * @description The harness's own grouping of what fills the window — system prompt,
+             *     tools, messages, and so on, in the order it reported them.
+             */
+            categories?: components["schemas"]["ContextCost"][];
+            /** @description MCP tool schemas held in context. */
+            mcp_tools?: components["schemas"]["ContextCost"][];
+            /** @description Memory files held in context (Claude Code's `CLAUDE.md` tree). */
+            memory_files?: components["schemas"]["ContextCost"][];
+            /** @description The model the window belongs to, when the harness names one. */
+            model?: string | null;
+            /** @description Skill frontmatter held in context. */
+            skills?: components["schemas"]["ContextCost"][];
+            window?: null | components["schemas"]["ContextWindow"];
         };
         /**
          * @description How full the model's context window is.
@@ -2762,6 +3012,161 @@ export interface components {
              *     that is not archived.
              */
             session_cap: number;
+        };
+        /**
+         * @description What a daemon offers the room when it attaches.
+         *
+         *     Attaching is a REST call, not a frame: the bearer token authenticates
+         *     before any of this is read, and the version lives here so a daemon
+         *     speaking another protocol is refused before either side moves a frame.
+         */
+        DaemonAttach: {
+            /**
+             * Format: int32
+             * @description Wire protocol version the daemon speaks.
+             */
+            protocol_version: number;
+        };
+        /**
+         * @description What the room answers an attach with.
+         *
+         *     The epoch names the attachment. Every later [`DaemonFrames`] POST and
+         *     every command on the daemon's command stream carries it, so a daemon
+         *     that attached twice — a retry raced the first attempt's response — and
+         *     a room that watched the first stream die can agree about which
+         *     attachment the traffic belongs to.
+         */
+        DaemonAttached: {
+            /**
+             * Format: int64
+             * @description Generation of this attachment; increments per attach.
+             */
+            epoch: number;
+        };
+        /** @description One POST of a daemon's outbound frames. */
+        DaemonFrames: {
+            /**
+             * Format: int64
+             * @description The highest command sequence the daemon has applied.
+             *
+             *     `daemon_commands` rows at or below it are delivered and done, and
+             *     the room deletes them. Zero acknowledges nothing.
+             */
+            ack_through: number;
+            /**
+             * Format: int64
+             * @description The attach this batch belongs to.
+             */
+            epoch: number;
+            /** @description The frames, in order. */
+            frames: components["schemas"]["DaemonToControl"][];
+            /**
+             * Format: int64
+             * @description Sequence number of `frames[0]` within the epoch.
+             *
+             *     The daemon numbers its frames from 1 on each attach and the room
+             *     tracks how far it has stored. A batch whose `from_seq` says its
+             *     head is already stored is a retransmission — answered without
+             *     touching anything — and a batch that skips a number is a lost
+             *     POST, refused so the daemon re-sends from the gap.
+             */
+            from_seq: number;
+        };
+        /** @description Messages from the daemon to the control plane. */
+        DaemonToControl: {
+            /** @description Harness-native session id; resume uses this. */
+            harness_session_id: string;
+            /** @enum {string} */
+            type: "started";
+        } | {
+            /** @description The capability tokens, as the harness names them. */
+            capabilities: string[];
+            /** @enum {string} */
+            type: "capabilities";
+        } | {
+            /** @description The commands, in the order the harness listed them. */
+            commands: components["schemas"]["HarnessCommand"][];
+            /** @enum {string} */
+            type: "commands";
+        } | {
+            /** @description The event. */
+            event: components["schemas"]["HarnessEvent"];
+            /** @enum {string} */
+            type: "harness";
+        } | {
+            /** @enum {string} */
+            type: "usage";
+            /** @description The snapshot. */
+            usage: components["schemas"]["UsageReport"];
+        } | {
+            /** @description Identifier the decision must echo. */
+            id: components["schemas"]["Uuid"];
+            /** @description What is being approved. */
+            payload: components["schemas"]["ApprovalPayload"];
+            /** @enum {string} */
+            type: "approval_request";
+        } | {
+            /** @description UTF-8 lossy terminal bytes. */
+            data: string;
+            /** @enum {string} */
+            type: "terminal_output";
+        } | {
+            /** @description The bytes, decoded UTF-8 lossy. */
+            data: string;
+            /**
+             * @description The run this belongs to, as [`ControlToDaemon::RunShell`] named
+             *     it.
+             */
+            run: components["schemas"]["Uuid"];
+            /** @description Which stream the chunk came from. */
+            stream: components["schemas"]["ShellStream"];
+            /** @enum {string} */
+            type: "shell_output";
+        } | {
+            /** @description How it ended. */
+            outcome: components["schemas"]["ShellOutcome"];
+            /** @description The run that finished. */
+            run: components["schemas"]["Uuid"];
+            /**
+             * @description Whether output was dropped after the run's byte cap.
+             *
+             *     Said rather than silently elided: a transcript that showed the
+             *     first megabyte of a command and no sign that there was more
+             *     would be a lie about what the machine printed.
+             */
+            truncated: boolean;
+            /** @enum {string} */
+            type: "shell_exited";
+        } | {
+            /** @description `git status --porcelain` summary shown to the user. */
+            summary: string;
+            /** @enum {string} */
+            type: "repo_dirty";
+        } | {
+            /**
+             * Format: int32
+             * @description Seconds until reclamation, as announced.
+             */
+            seconds_remaining: number;
+            /** @enum {string} */
+            type: "spot_notice";
+        } | {
+            /** @description The request this answers. */
+            id: components["schemas"]["Uuid"];
+            /** @description The listing, the file, the diff, or the refusal. */
+            reply: components["schemas"]["WorkdirReply"];
+            /** @enum {string} */
+            type: "workdir_reply";
+        } | {
+            /**
+             * Format: int64
+             * @description When it was reached, seconds since the Unix epoch.
+             */
+            at_unix: number;
+            /** @description The milestone reached. */
+            stage: components["schemas"]["ProvisioningStage"];
+            /** @enum {string} */
+            type: "provisioning_stage";
         };
         /**
          * @description A freshly minted daemon token.
@@ -3074,6 +3479,34 @@ export interface components {
             usage: components["schemas"]["UsageWindow"][];
         };
         /**
+         * @description One slash command the running harness offers its user.
+         *
+         *     Flyco's own vocabulary rather than either harness's: Claude Code answers
+         *     `supportedCommands()` with `{name, description, argumentHint}` and Codex
+         *     answers `skills/list` with skill metadata, and the composer must not
+         *     have to know which one it is looking at. `name` never carries the
+         *     leading slash — that belongs to the syntax the palette renders, not to
+         *     the command's identity — and it may contain a colon, because a plugin's
+         *     skill is named `plugin:skill`.
+         */
+        HarnessCommand: {
+            /**
+             * @description What the command's argument is, when it takes one.
+             *
+             *     `None` is what makes a command runnable in one keystroke: the
+             *     palette sends a command with no argument the moment it is chosen,
+             *     and only inserts `/name ` into the field when there is something
+             *     left for the user to type. Both harnesses state the absence as an
+             *     empty string; it is normalized to `None` where it enters flyco, so
+             *     nothing downstream has to treat `""` as a special case.
+             */
+            argument_hint?: string | null;
+            /** @description One line saying what it does, as the harness words it. */
+            description: string;
+            /** @description The command's name, without the leading slash. */
+            name: string;
+        };
+        /**
          * @description A credential accepted when linking a Claude Code or Codex account.
          *
          *     Each variant determines its harness, so the wire format cannot pair a
@@ -3125,6 +3558,83 @@ export interface components {
             kind: "codex_oauth";
             /** @description Redeemed for a new set once the access token is near its end. */
             refresh_token: string;
+        };
+        /**
+         * @description A normalized event extracted from either harness's native stream.
+         *
+         *     The daemon translates Claude Code stream-json / Codex `item/*`
+         *     notifications into this shape; everything upstream (relay, transcript
+         *     store, frontend) consumes only this.
+         */
+        HarnessEvent: {
+            /** @description Harness-native turn identifier. */
+            turn_id: string;
+            /** @enum {string} */
+            type: "turn_started";
+        } | {
+            /** @description The appended text fragment. */
+            text: string;
+            /** @description Harness-native turn identifier. */
+            turn_id: string;
+            /** @enum {string} */
+            type: "assistant_delta";
+        } | {
+            /** @description Harness-native identifier of this tool invocation. */
+            call_id: string;
+            /** @description Tool input as the harness reports it. */
+            input: unknown;
+            /** @description Tool name as the harness reports it. */
+            tool: string;
+            /** @description Harness-native turn identifier. */
+            turn_id: string;
+            /** @enum {string} */
+            type: "tool_started";
+        } | {
+            /** @description Harness-native identifier of this tool invocation. */
+            call_id: string;
+            /** @description Whether the tool reported success. */
+            ok: boolean;
+            /** @description Harness-native turn identifier. */
+            turn_id: string;
+            /** @enum {string} */
+            type: "tool_completed";
+        } | {
+            /** @description Harness-native turn identifier. */
+            turn_id: string;
+            /** @enum {string} */
+            type: "turn_completed";
+            /** @description Usage after this turn. */
+            usage: components["schemas"]["UsageReport"];
+        } | {
+            /** @description Human-readable error from the harness. */
+            error: string;
+            /** @description Harness-native turn identifier. */
+            turn_id: string;
+            /** @enum {string} */
+            type: "turn_failed";
+        } | {
+            /** @enum {string} */
+            type: "usage_limited";
+            /** @description The window that struck, as the harness reported it. */
+            window: components["schemas"]["UsageWindow"];
+        } | {
+            /** @enum {string} */
+            type: "context_compacted";
+        } | {
+            /** @description Harness-reported reason. */
+            error: string;
+            /** @enum {string} */
+            type: "context_compaction_failed";
+        } | {
+            /** @description What the harness printed, as Markdown. */
+            content: string;
+            /** @enum {string} */
+            type: "local_command_output";
+        } | {
+            /** @enum {string} */
+            type: "context_usage";
+            /** @description The breakdown. */
+            usage: components["schemas"]["ContextUsage"];
         };
         /** @description One row of the per-harness feature matrix. */
         HarnessFeature: {
@@ -3190,6 +3700,15 @@ export interface components {
              *     back on the old one after a reclamation.
              */
             model: components["schemas"]["ModelChoice"];
+            /**
+             * @description The permission mode this session runs under, as the control plane
+             *     last recorded it.
+             *
+             *     Same reason as `model`: the configuration on disk is the one the
+             *     machine was provisioned with, so a session put on `plan` while it
+             *     ran would otherwise come back on whatever it was provisioned under.
+             */
+            permission_mode: components["schemas"]["PermissionMode"];
         };
         /** @description One HTTP header sent with every request to a remote MCP server. */
         HeaderEntry: {
@@ -3205,6 +3724,25 @@ export interface components {
              * @description Wire protocol version this control plane speaks to daemons.
              */
             wire_protocol_version: number;
+        };
+        /**
+         * @description What an enrolled machine offers its room when it attaches.
+         *
+         *     The facts are re-reported on every attachment rather than only at
+         *     enrollment, because they change: memory is added, a disk fills, Podman
+         *     is upgraded. The room records them and marks the host online.
+         */
+        HostAttach: {
+            /** @description What the machine measured about itself. */
+            facts: components["schemas"]["HostFacts"];
+        };
+        /** @description What an attach answers with. */
+        HostAttachResponse: {
+            /**
+             * Format: int64
+             * @description Generation of this attachment; increments per attach.
+             */
+            epoch: number;
         };
         /**
          * @description What a host says about itself when it greets the control plane.
@@ -3248,11 +3786,45 @@ export interface components {
              */
             vcpus: number;
         };
+        /** @description One POST of a machine's outbound frames. */
+        HostFrames: {
+            /**
+             * Format: int64
+             * @description The highest command sequence the machine has applied; the room's
+             *     command rows at or below it are delivered and done.
+             */
+            ack_through: number;
+            /**
+             * Format: int64
+             * @description The attach this batch belongs to.
+             */
+            epoch: number;
+            /** @description The frames, in order. */
+            frames: components["schemas"]["HostToControl"][];
+            /**
+             * Format: int64
+             * @description Sequence number of `frames[0]` within the epoch.
+             *
+             *     Same contract as [`DaemonFrames::from_seq`](flyco_core::wire::DaemonFrames):
+             *     a retransmitted head is answered without touching anything, a gap is
+             *     refused so the machine re-sends from it.
+             */
+            from_seq: number;
+        };
         /**
          * @description Where a host is in its life.
          * @enum {string}
          */
         HostState: "online" | "offline" | "draining" | "removed";
+        /** @description Messages from an enrolled machine to the control plane. */
+        HostToControl: {
+            /** @description The machine the job acted on, which is the job's identity. */
+            job_id: components["schemas"]["Uuid"];
+            /** @description What came of it. */
+            outcome: components["schemas"]["JobOutcome"];
+            /** @enum {string} */
+            type: "job_result";
+        };
         /**
          * @description One row of `GET /v1/hosts`, and the body of `GET /v1/hosts/{id}`.
          *
@@ -3807,6 +4379,25 @@ export interface components {
          */
         PausedReason: "budget" | "usage_limit";
         /**
+         * @description The permission mode a session runs under.
+         *
+         *     Spelled the way the Claude Agent SDK spells its `PermissionMode` union,
+         *     in `camelCase`, so the sidecar passes the value straight into `query`'s
+         *     `permissionMode` option. Every mode other than [`Self::Default`] narrows
+         *     what reaches flyco's approval UI, because an auto-approved tool never
+         *     calls back.
+         *
+         *     It lives in the domain model rather than in the daemon because it
+         *     crosses every boundary flyco has: the control plane stores it on the
+         *     session row and writes it into the `flycod` configuration it provisions
+         *     onto a machine, the daemon reads that configuration back and applies a
+         *     change to the running harness — `setPermissionMode` on Claude's live
+         *     query, `approvalPolicy`/`sandboxPolicy` overrides on Codex's next
+         *     `turn/start`.
+         * @enum {string}
+         */
+        PermissionMode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" | "auto";
+        /**
          * @description An RFC 9457 problem detail document.
          *
          *     `instance` is deliberately absent: flyco has no per-occurrence URI to
@@ -4109,19 +4700,6 @@ export interface components {
              */
             resets_at_unix?: number | null;
         };
-        /** @description A minted relay ticket. */
-        RelayTicket: {
-            /**
-             * Format: int64
-             * @description When it stops being accepted, seconds since the Unix epoch.
-             */
-            expires_at_unix: number;
-            /**
-             * @description The single-use ticket, to be passed as the `ticket` query parameter
-             *     of the client relay route.
-             */
-            ticket: string;
-        };
         /** @description Narrows a host removal. */
         RemoveQuery: {
             /**
@@ -4291,6 +4869,16 @@ export interface components {
             machine_type: string;
         };
         /**
+         * @description Request body of `POST /v1/sessions/{id}/shell`.
+         *
+         *     The composer's `!` escape: a command for the session's machine, not for
+         *     the agent. The room assigns the run id it will be tracked under.
+         */
+        RunShell: {
+            /** @description The command, without the `!`, to be run through `bash -c`. */
+            command: string;
+        };
+        /**
          * @description What kind of thing a machine actually is: a virtual machine, or a
          *     container the provider runs for the length of one execution.
          *
@@ -4435,6 +5023,16 @@ export interface components {
              */
             model: components["schemas"]["ModelChoice"];
             paused_reason?: null | components["schemas"]["PausedReason"];
+            /**
+             * @description The permission mode the session's agent runs under.
+             *
+             *     Always concrete for the same reason `model` is: a session opened
+             *     before flyco recorded a mode resolves to
+             *     [`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT)
+             *     at read, so every row states the mode it is on rather than leaving
+             *     the composer's chip to guess.
+             */
+            permission_mode: components["schemas"]["PermissionMode"];
             /** @description Repository it works in. */
             repo: components["schemas"]["RepoSlug"];
             /** @description Where it is in its lifecycle. */
@@ -4448,6 +5046,60 @@ export interface components {
              */
             title: string;
         };
+        /**
+         * @description How a `!` shell command ended.
+         *
+         *     Every way a run can finish, including the three where it never started:
+         *     a composer that swallowed a command because no machine was listening
+         *     would leave the user waiting for output that is never coming.
+         */
+        ShellOutcome: {
+            /**
+             * Format: int32
+             * @description The status code, `0` for success.
+             */
+            code: number;
+            /** @enum {string} */
+            kind: "exited";
+        } | {
+            /** @enum {string} */
+            kind: "signalled";
+        } | {
+            /**
+             * Format: int64
+             * @description The timeout that elapsed, in seconds.
+             */
+            after_seconds: number;
+            /** @enum {string} */
+            kind: "timed_out";
+        } | {
+            /** @enum {string} */
+            kind: "cancelled";
+        } | {
+            /** @enum {string} */
+            kind: "offline";
+        } | {
+            /** @enum {string} */
+            kind: "busy";
+        } | {
+            /** @enum {string} */
+            kind: "refused";
+        } | {
+            /** @description What the operating system said. */
+            error: string;
+            /** @enum {string} */
+            kind: "failed";
+        };
+        /**
+         * @description Which of a shell command's two output streams a chunk came from.
+         *
+         *     Kept apart rather than interleaved into one pipe: the two are separate
+         *     file descriptors and nothing orders them against each other, so merging
+         *     them would invent an order the machine never had. The transcript renders
+         *     both in one block and marks which is which.
+         * @enum {string}
+         */
+        ShellStream: "stdout" | "stderr";
         /**
          * @description Which harness's global skills directory a bundle belongs in.
          * @enum {string}
@@ -4524,6 +5176,24 @@ export interface components {
              *     `after` to continue.
              */
             seq: number;
+        };
+        /** @description Request body of `POST /v1/sessions/{id}/terminal/input`. */
+        TerminalInput: {
+            /** @description Bytes to write to the terminal, UTF-8. */
+            data: string;
+        };
+        /** @description Request body of `POST /v1/sessions/{id}/terminal/resize`. */
+        TerminalSize: {
+            /**
+             * Format: int32
+             * @description Columns the pane shows.
+             */
+            cols: number;
+            /**
+             * Format: int32
+             * @description Rows the pane shows.
+             */
+            rows: number;
         };
         /** @description Where in a session's turn history to read from. */
         TurnCursor: {
@@ -4640,6 +5310,7 @@ export interface components {
         UpdateSession: {
             budget_limit?: null | components["schemas"]["Usd"];
             model?: null | components["schemas"]["ModelChoice"];
+            permission_mode?: null | components["schemas"]["PermissionMode"];
             /**
              * @description What to call the session, 1 to
              *     [`MAX_SESSION_TITLE_CHARS`] characters once trimmed.
@@ -4802,6 +5473,16 @@ export interface components {
          * @description Amount in integer microdollars (1 USD = 1e6)
          */
         Usd: number;
+        /** @description Query of the user event stream. */
+        UserStreamCursor: {
+            /**
+             * Format: int64
+             * @description Resume strictly after this position in the stream's buffer. A
+             *     reconnecting client passes the `Last-Event-ID` it last saw.
+             */
+            after?: number | null;
+            session?: null | components["schemas"]["Uuid"];
+        };
         /** Format: uuid */
         Uuid: string;
         /**
@@ -4834,6 +5515,87 @@ export interface components {
             removed_lines: number;
             /** @description Whether some patches were left out for size. */
             truncated: boolean;
+        };
+        /**
+         * @description Why the daemon would not answer a [`WorkdirRequest`].
+         *
+         *     Typed rather than a message, because the control plane turns each of
+         *     these into its own RFC 9457 problem and the UI says something different
+         *     for every one: a binary file offers the terminal, a file that is too
+         *     large says how large, and a path outside the checkout is a bug in the
+         *     caller rather than a state of the disk.
+         */
+        WorkdirRefusal: {
+            /** @description The path asked for. */
+            path: string;
+            /** @enum {string} */
+            refusal: "not_found";
+        } | {
+            /** @description The path asked for. */
+            path: string;
+            /** @enum {string} */
+            refusal: "outside_checkout";
+        } | {
+            /** @description The path asked for. */
+            path: string;
+            /** @enum {string} */
+            refusal: "not_a_directory";
+        } | {
+            /** @description The path asked for. */
+            path: string;
+            /** @enum {string} */
+            refusal: "not_a_file";
+        } | {
+            /** @description The path asked for. */
+            path: string;
+            /** @enum {string} */
+            refusal: "not_text";
+        } | {
+            /**
+             * Format: int64
+             * @description What it actually measures, in bytes.
+             */
+            bytes: number;
+            /** @description The path asked for. */
+            path: string;
+            /** @enum {string} */
+            refusal: "too_large";
+        } | {
+            /** @enum {string} */
+            refusal: "no_base_branch";
+        } | {
+            /** @description What git said, for the log and for the problem detail. */
+            detail: string;
+            /** @enum {string} */
+            refusal: "unreadable";
+        };
+        /**
+         * @description What the daemon answers a [`WorkdirRequest`] with.
+         *
+         *     One flat enum rather than a `Result`-shaped pair of them: the reply is a
+         *     wire frame, and a single `outcome` tag is what keeps a refusal from
+         *     having to be nested inside a success.
+         */
+        WorkdirReply: {
+            /** @description The listing. */
+            listing: components["schemas"]["DirectoryListing"];
+            /** @enum {string} */
+            outcome: "entries";
+        } | {
+            /** @description The content. */
+            content: components["schemas"]["FileContent"];
+            /** @enum {string} */
+            outcome: "file";
+        } | {
+            /** @description The diff. */
+            diff: components["schemas"]["WorkdirDiff"];
+            /** @enum {string} */
+            outcome: "diff";
+        } | {
+            /** @enum {string} */
+            outcome: "refused";
+            /** @description The refusal. */
+            refusal: components["schemas"]["WorkdirRefusal"];
         };
     };
     responses: never;
@@ -5151,6 +5913,27 @@ export interface operations {
                         authorize_url: string;
                     };
                 };
+            };
+        };
+    };
+    "flyco_api::app::open_event_stream": {
+        parameters: {
+            query?: {
+                after?: number | null;
+                session?: null | components["schemas"]["Uuid"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -5942,7 +6725,7 @@ export interface operations {
             };
         };
     };
-    "app::open_host_relay": {
+    "flyco_api::app::attach_host": {
         parameters: {
             query?: never;
             header?: never;
@@ -5951,10 +6734,96 @@ export interface operations {
             };
             cookie?: never;
         };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description What the machine measured about itself. */
+                    facts: components["schemas"]["HostFacts"];
+                };
+            };
+        };
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description Generation of this attachment; increments per attach.
+                         */
+                        epoch: number;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::app::open_host_commands": {
+        parameters: {
+            query: {
+                epoch: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
         requestBody?: never;
         responses: {
-            /** @description Successful response */
+            /** @description Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::post_host_frames": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: int64
+                     * @description The highest command sequence the machine has applied; the room's
+                     *     command rows at or below it are delivered and done.
+                     */
+                    ack_through: number;
+                    /**
+                     * Format: int64
+                     * @description The attach this batch belongs to.
+                     */
+                    epoch: number;
+                    /** @description The frames, in order. */
+                    frames: components["schemas"]["HostToControl"][];
+                    /**
+                     * Format: int64
+                     * @description Sequence number of `frames[0]` within the epoch.
+                     *
+                     *     Same contract as [`DaemonFrames::from_seq`](flyco_core::wire::DaemonFrames):
+                     *     a retransmitted head is answered without touching anything, a gap is
+                     *     refused so the machine re-sends from it.
+                     */
+                    from_seq: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7112,6 +7981,16 @@ export interface operations {
                          */
                         model: components["schemas"]["ModelChoice"];
                         paused_reason?: null | components["schemas"]["PausedReason"];
+                        /**
+                         * @description The permission mode the session's agent runs under.
+                         *
+                         *     Always concrete for the same reason `model` is: a session opened
+                         *     before flyco recorded a mode resolves to
+                         *     [`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT)
+                         *     at read, so every row states the mode it is on rather than leaving
+                         *     the composer's chip to guess.
+                         */
+                        permission_mode: components["schemas"]["PermissionMode"];
                         /** @description Repository it works in. */
                         repo: components["schemas"]["RepoSlug"];
                         /** @description Where it is in its lifecycle. */
@@ -7256,6 +8135,7 @@ export interface operations {
                 "application/json": {
                     budget_limit?: null | components["schemas"]["Usd"];
                     model?: null | components["schemas"]["ModelChoice"];
+                    permission_mode?: null | components["schemas"]["PermissionMode"];
                     /**
                      * @description What to call the session, 1 to
                      *     [`MAX_SESSION_TITLE_CHARS`] characters once trimmed.
@@ -7601,6 +8481,26 @@ export interface operations {
             };
         };
     };
+    "flyco_api::app::context_session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     "flyco_api::app::create_daemon_token": {
         parameters: {
             query?: never;
@@ -7894,6 +8794,15 @@ export interface operations {
                          *     back on the old one after a reclamation.
                          */
                         model: components["schemas"]["ModelChoice"];
+                        /**
+                         * @description The permission mode this session runs under, as the control plane
+                         *     last recorded it.
+                         *
+                         *     Same reason as `model`: the configuration on disk is the one the
+                         *     machine was provisioned with, so a session put on `plan` while it
+                         *     ran would otherwise come back on whatever it was provisioned under.
+                         */
+                        permission_mode: components["schemas"]["PermissionMode"];
                     };
                 };
             };
@@ -8153,9 +9062,50 @@ export interface operations {
             };
         };
     };
-    "flyco_api::app::create_relay_ticket": {
+    "flyco_api::app::attach_daemon": {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: int32
+                     * @description Wire protocol version the daemon speaks.
+                     */
+                    protocol_version: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description Generation of this attachment; increments per attach.
+                         */
+                        epoch: number;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::app::open_daemon_commands": {
+        parameters: {
+            query: {
+                epoch: number;
+            };
             header?: never;
             path: {
                 id: string;
@@ -8169,44 +9119,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": {
-                        /**
-                         * Format: int64
-                         * @description When it stops being accepted, seconds since the Unix epoch.
-                         */
-                        expires_at_unix: number;
-                        /**
-                         * @description The single-use ticket, to be passed as the `ticket` query parameter
-                         *     of the client relay route.
-                         */
-                        ticket: string;
-                    };
-                };
-            };
-        };
-    };
-    "app::open_client_relay": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
                 content?: never;
             };
         };
     };
-    "app::open_daemon_relay": {
+    "flyco_api::app::post_daemon_frames": {
         parameters: {
             query?: never;
             header?: never;
@@ -8215,10 +9132,42 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: int64
+                     * @description The highest command sequence the daemon has applied.
+                     *
+                     *     `daemon_commands` rows at or below it are delivered and done, and
+                     *     the room deletes them. Zero acknowledges nothing.
+                     */
+                    ack_through: number;
+                    /**
+                     * Format: int64
+                     * @description The attach this batch belongs to.
+                     */
+                    epoch: number;
+                    /** @description The frames, in order. */
+                    frames: components["schemas"]["DaemonToControl"][];
+                    /**
+                     * Format: int64
+                     * @description Sequence number of `frames[0]` within the epoch.
+                     *
+                     *     The daemon numbers its frames from 1 on each attach and the room
+                     *     tracks how far it has stored. A batch whose `from_seq` says its
+                     *     head is already stored is a retransmission — answered without
+                     *     touching anything — and a batch that skips a number is a lost
+                     *     POST, refused so the daemon re-sends from the gap.
+                     */
+                    from_seq: number;
+                };
+            };
+        };
         responses: {
-            /** @description Successful response */
-            200: {
+            /** @description Done. There is nothing to return. */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8285,6 +9234,34 @@ export interface operations {
                         usage_limit?: null | components["schemas"]["UsageLimitPause"];
                     };
                 };
+            };
+        };
+    };
+    "flyco_api::app::run_shell": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The command, without the `!`, to be run through `bash -c`. */
+                    command: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -8366,6 +9343,70 @@ export interface operations {
                 "application/json": {
                     /** @description What made the machine stop. */
                     reason: components["schemas"]["StopReason"];
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::terminal_input": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Bytes to write to the terminal, UTF-8. */
+                    data: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::terminal_resize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: int32
+                     * @description Columns the pane shows.
+                     */
+                    cols: number;
+                    /**
+                     * Format: int32
+                     * @description Rows the pane shows.
+                     */
+                    rows: number;
                 };
             };
         };

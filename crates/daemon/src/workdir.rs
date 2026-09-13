@@ -3,8 +3,8 @@
 //! The daemon is the only process that can see the disk a session works on,
 //! so the `Files` and `Diff` tabs of docs/ux.md §9.4 are answered from here:
 //! the control plane relays a
-//! [`WorkdirRequest`](flyco_core::workdir::WorkdirRequest) down the session
-//! socket and this module answers it.
+//! [`WorkdirRequest`](flyco_core::workdir::WorkdirRequest) down the daemon's
+//! command stream and this module answers it.
 //!
 //! # Read-only, and only inside the checkout
 //!

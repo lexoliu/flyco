@@ -16,8 +16,8 @@
  * facts out of the live event stream with {@link liveSignalsFrom}.
  *
  * The live stream wins where it says anything, because it is the newer of
- * the two — a turn that started a moment ago is on the socket before the
- * row it will be written to is read again. Where it says nothing, the
+ * the two — a turn that started a moment ago is on the stream before
+ * the row it will be written to is read again. Where it says nothing, the
  * summary's `activity` answers, which is what makes a home list row say
  * `Working` at all.
  */
@@ -75,7 +75,7 @@ export interface LiveSignals {
    * Whether the session's machine has fallen off the room.
    *
    * Undefined until the room has said either way, which is most of the
-   * time: only a page with a live socket ever hears it, and a list of
+   * time: only a page with a live stream ever hears it, and a list of
    * sessions never does.
    */
   machineOffline?: boolean;
@@ -237,7 +237,7 @@ export function deriveStatus(
     return DISCONNECTED;
   }
   // A relay that has said something is the freshest answer there is, so it
-  // is read first. One that has said nothing — a list with no socket, a
+  // is read first. One that has said nothing — a list with no stream, a
   // page whose catch-up has not landed — falls through to the fact the
   // control plane maintains, which is why a home row can say `Working`.
   if (live.turnInFlight === true) {
@@ -258,7 +258,7 @@ export function deriveStatus(
  * - **A turn is in flight** when a turn started and neither completed nor
  *   failed. Turns do not nest, so the last one seen is the answer.
  * - **The machine is off the room** when the room last said so. Only a
- *   page with a live socket ever hears this, so it is absent rather than
+ *   page with a live stream ever hears this, so it is absent rather than
  *   false on a stream that has not been told.
  * - **The agent is waiting on the user** when an approval is pending, or
  *   when the last turn completed and no user message followed it. The

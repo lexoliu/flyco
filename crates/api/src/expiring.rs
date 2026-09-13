@@ -22,8 +22,8 @@ use crate::clock::now_unix;
 
 /// The shortest expiry a store is asked for.
 ///
-/// Cloudflare KV rejects anything below a minute, and a relay ticket lives
-/// for exactly that. Clamping here rather than trusting each backend's own
+/// Cloudflare KV rejects anything below a minute, and the shortest-lived
+/// entries flyco keeps there are seconds long. Clamping here rather than trusting each backend's own
 /// rounding keeps one rule for every store flyco can run on: the entry is
 /// readable for its logical life and physically present for at least a
 /// minute.
@@ -228,7 +228,7 @@ mod tests {
     #[skyzen::test]
     async fn a_life_shorter_than_the_stores_floor_is_stored_at_the_floor() {
         let (kv, recorded) = RecordingKv::recording_store();
-        put(&kv, "relay:ticket", &(), 5).await.expect("put");
+        put(&kv, "oauth:state", &(), 5).await.expect("put");
 
         assert_eq!(
             recorded.try_recv().expect("one write"),

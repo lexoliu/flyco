@@ -127,6 +127,15 @@ pub enum SidecarCommand {
     Interrupt,
     /// Run Claude Code's native `/compact` command.
     Compact,
+    /// Ask the CLI what its context window is spent on.
+    ///
+    /// The SDK's `get_context_usage` control request, answered out of band
+    /// rather than through the conversation — the text `/context` pushed as
+    /// a user message would run the CLI's *local* command, whose answer is
+    /// a synthetic stream message, while this asks the question directly
+    /// and gets the structured breakdown back. The answer arrives as
+    /// [`SidecarEvent::ContextUsage`].
+    ContextUsage,
     /// Put the running query on another model, at another effort.
     ///
     /// Two SDK calls behind one command, because they are one decision:
@@ -139,6 +148,15 @@ pub enum SidecarCommand {
         /// The effort level, or `None` to clear whatever was set and leave
         /// the CLI's default for the new model in place.
         effort: Option<String>,
+    },
+    /// Put the running query under another permission mode.
+    ///
+    /// One SDK call — `setPermissionMode` on the live query — which the
+    /// SDK applies to the conversation in progress rather than the next
+    /// turn.
+    SetPermissionMode {
+        /// The mode, spelled the SDK's own camelCase.
+        mode: PermissionMode,
     },
     /// Resolve a pending [`SidecarEvent::ApprovalRequest`].
     ApprovalDecision {
@@ -176,7 +194,9 @@ impl SidecarCommand {
             Self::UserMessage { .. } => "user_message",
             Self::Interrupt => "interrupt",
             Self::Compact => "compact",
+            Self::ContextUsage => "context_usage",
             Self::SetModel { .. } => "set_model",
+            Self::SetPermissionMode { .. } => "set_permission_mode",
             Self::ApprovalDecision { .. } => "approval_decision",
             Self::StoreResponse { .. } => "store_response",
             Self::Shutdown => "shutdown",
@@ -347,6 +367,16 @@ pub enum SidecarEvent {
         /// The raw SDK message.
         message: Value,
     },
+    /// What the context window is spent on, as the SDK's
+    /// `get_context_usage` control request answered it.
+    ///
+    /// A reply to [`SidecarCommand::ContextUsage`], not stream traffic:
+    /// the breakdown is a diagnostic the user asked for, so it is emitted
+    /// on demand rather than after every turn.
+    ContextUsage {
+        /// The breakdown, already in flyco's vocabulary.
+        usage: flyco_core::harness::ContextUsage,
+    },
     /// A `canUseTool` callback is blocked waiting for a decision.
     ApprovalRequest {
         /// Echo this in [`SidecarCommand::ApprovalDecision`].
@@ -385,6 +415,7 @@ impl SidecarEvent {
             Self::Commands { .. } => "commands",
             Self::McpServers { .. } => "mcp_servers",
             Self::SdkMessage { .. } => "sdk_message",
+            Self::ContextUsage { .. } => "context_usage",
             Self::ApprovalRequest { .. } => "approval_request",
             Self::StoreRequest { .. } => "store_request",
             Self::Fatal { .. } => "fatal",

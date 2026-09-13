@@ -26,7 +26,7 @@ use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use flyco_core::{ApprovalId, HarnessCommand};
+use flyco_core::{ApprovalId, ContextUsage, HarnessCommand, HarnessEvent};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -36,9 +36,9 @@ use self::normalize::{ApprovalParams, Normalizer, usage_windows};
 use self::protocol::{
     ApprovalDecision, ApprovalDecisionBody, ClientCapabilities, ClientInfo, Envelope,
     InitializeParams, McpServerStatusPage, McpServerStatusParams, ModelListParams,
-    ModelListResponse, RateLimitSnapshot, RateLimitsBody, RequestId, SkillsListEntry,
-    SkillsListParams, SkillsListResponse, ThreadCompactStartParams, ThreadConfig, ThreadParams,
-    TurnInterruptParams, TurnStartParams, UserInput, method,
+    ModelListResponse, RateLimitSnapshot, RateLimitsBody, RequestId, SandboxPolicy,
+    SkillsListEntry, SkillsListParams, SkillsListResponse, ThreadCompactStartParams, ThreadConfig,
+    ThreadParams, TurnInterruptParams, TurnStartParams, UserInput, method,
 };
 use super::{Harness, HarnessSession, SessionOutput, StartRequest, Started, ToolApproval};
 use crate::config::{CodexAuth, CodexConfig};
@@ -228,6 +228,7 @@ impl Harness for CodexHarness {
                 stopped: false,
                 model: self.config.model.clone(),
                 effort: self.config.effort.clone(),
+                mode: self.config.permission_mode,
                 models,
                 skills,
                 pending_skills: None,
@@ -282,8 +283,20 @@ impl HarnessSession for CodexSession {
         self.ask(|ack| DriverCommand::Compact { ack }).await
     }
 
+    async fn context_usage(&self) -> Result<(), CodexError> {
+        self.ask(|ack| DriverCommand::ContextUsage { ack }).await
+    }
+
     async fn set_model(&self, model: flyco_core::ModelChoice) -> Result<(), CodexError> {
         self.ask(|ack| DriverCommand::SetModel { model, ack }).await
+    }
+
+    async fn set_permission_mode(
+        &self,
+        mode: flyco_core::PermissionMode,
+    ) -> Result<(), CodexError> {
+        self.ask(|ack| DriverCommand::SetPermissionMode { mode, ack })
+            .await
     }
 
     async fn decide_approval(&self, approval: ToolApproval) -> Result<(), CodexError> {
@@ -323,6 +336,15 @@ enum DriverCommand {
     Compact {
         ack: oneshot::Sender<Result<(), CodexError>>,
     },
+    /// From the handle: report what the context window is spent on.
+    ///
+    /// Unlike the Claude sidecar there is nothing to *ask*: the app-server
+    /// has no breakdown request, so the driver answers from the last
+    /// `thread/tokenUsage/updated` it recorded rather than making a round
+    /// trip for a number it already holds.
+    ContextUsage {
+        ack: oneshot::Sender<Result<(), CodexError>>,
+    },
     /// From the handle: run the rest of the thread on another model.
     ///
     /// Nothing is written to the app-server here. It has no method for
@@ -332,6 +354,17 @@ enum DriverCommand {
     /// documents that field as meaning.
     SetModel {
         model: flyco_core::ModelChoice,
+        ack: oneshot::Sender<Result<(), CodexError>>,
+    },
+    /// From the handle: run the rest of the thread under another
+    /// permission mode.
+    ///
+    /// Nothing is written to the app-server here, on the same terms as
+    /// [`Self::SetModel`]: the mode travels on `turn/start` as the
+    /// `approvalPolicy`/`sandboxPolicy` overrides, so the driver records
+    /// it and every turn from the next one carries it.
+    SetPermissionMode {
+        mode: flyco_core::PermissionMode,
         ack: oneshot::Sender<Result<(), CodexError>>,
     },
     /// From the handle: answer a pending approval.
@@ -579,8 +612,8 @@ where
     let thread_id = take_id(next_id);
     let params = ThreadParams {
         cwd: path_string(&request.workdir),
-        approval_policy: config.approval_policy.as_str().to_owned(),
-        sandbox: config.sandbox.as_str().to_owned(),
+        approval_policy: config.permission_mode.codex_approval_policy().to_owned(),
+        sandbox: config.permission_mode.codex_sandbox().to_owned(),
         model: config.model.clone(),
         thread_id: request.resume_session_id.clone(),
         config: ThreadConfig {
@@ -1024,6 +1057,13 @@ struct Driver {
     model: Option<String>,
     /// The effort it runs at, on the same terms.
     effort: Option<String>,
+    /// The mode the thread runs under, on the same terms.
+    ///
+    /// Replaced by a [`DriverCommand::SetPermissionMode`] and restated on
+    /// every `turn/start` as the `approvalPolicy`/`sandboxPolicy`
+    /// overrides, which is the granularity the app-server offers a mode
+    /// change at: the next turn, not mid-flight.
+    mode: flyco_core::PermissionMode,
     /// What the app-server said it offers, reported once at start.
     models: Vec<flyco_core::ModelOption>,
     /// The checkout's skills, which are the session's `/` commands.
@@ -1117,6 +1157,30 @@ impl Driver {
                     }
                 }
             }
+            DriverCommand::ContextUsage { ack } => {
+                // The app-server's window gauge is the whole answer it can
+                // give: no categories, no tool accounting. The panel shows
+                // what Codex measures — the fill — and lists nothing.
+                let _ = ack.send(Ok(()));
+                emit(
+                    &self.outputs,
+                    SessionOutput::Event {
+                        event: HarnessEvent::ContextUsage {
+                            usage: ContextUsage {
+                                model: self.model.clone(),
+                                window: self.normalizer.usage().context,
+                                auto_compact: None,
+                                categories: Vec::new(),
+                                mcp_tools: Vec::new(),
+                                memory_files: Vec::new(),
+                                agents: Vec::new(),
+                                skills: Vec::new(),
+                            },
+                        },
+                    },
+                )
+                .await
+            }
             DriverCommand::SetModel { model, ack } => {
                 tracing::info!(
                     model = %model.model,
@@ -1125,6 +1189,15 @@ impl Driver {
                 );
                 self.model = Some(model.model);
                 self.effort = model.effort;
+                let _ = ack.send(Ok(()));
+                true
+            }
+            DriverCommand::SetPermissionMode { mode, ack } => {
+                tracing::info!(
+                    ?mode,
+                    "the thread will run under another permission mode from its next turn"
+                );
+                self.mode = mode;
                 let _ = ack.send(Ok(()));
                 true
             }
@@ -1211,6 +1284,8 @@ impl Driver {
             input: turn_input(&self.skills, text),
             model: self.model.clone(),
             effort: self.effort.clone(),
+            approval_policy: self.mode.codex_approval_policy(),
+            sandbox_policy: SandboxPolicy::from_token(self.mode.codex_sandbox()),
         };
         write_envelope(
             self.stdin.as_mut().ok_or(CodexError::Stopped)?,

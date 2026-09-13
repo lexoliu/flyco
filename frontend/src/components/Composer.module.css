@@ -4,6 +4,10 @@
  * nothing else on the screen is allowed to look like this.
  */
 .composer {
+  /* A size container: the controls split below is decided by how wide the
+     composer is, which a drawer or a narrow pane shrinks without touching
+     the viewport width a media query sees. */
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -16,6 +20,25 @@
 
 .composer:focus-within {
   border-color: var(--color-border-strong);
+}
+
+/* The composer and whatever floats over it — the chips' island when the
+   row under the field runs out of room. A plain block: `.composer`
+   carries the size container the queries measure. */
+.stack {
+  display: block;
+}
+
+/* The chips escaped from the box: the row they would have been under the
+   field, floated above it instead — Codex's island. It wraps among
+   itself, and each extra row is one more layer over the composer. */
+.island {
+  margin-bottom: var(--space-2);
+}
+
+/* The chips' carrier between its two homes: a box that draws no box. */
+.islandCarry {
+  display: contents;
 }
 
 /* The anchor a floating panel — the session's command palette — sits over. */
@@ -54,18 +77,21 @@
   gap: var(--space-2);
 }
 
-/* The chips wrap among themselves; send never wraps with them, because a
-   send button in the middle of a row is not a send button. */
+/* The chips wrap among themselves in the island, where wrapping is the
+   point; in the send row a pill never takes a second line — the row is
+   one line or it is an island (the overflow check in ComposerShell). */
 .chips {
   display: flex;
-  /* A chip is never cut short: when the row runs out of room it wraps,
-     and a name with the price after it is worth a second line. */
   flex-wrap: wrap;
   align-items: center;
   margin-right: auto;
   gap: var(--space-2);
   min-width: 0;
   flex: 1;
+}
+
+.controls .chips {
+  flex-wrap: nowrap;
 }
 
 .anchorShrink {
@@ -77,23 +103,20 @@
   min-width: 0;
 }
 
-/* Narrower, the compute chip takes a whole line, so that its label
-   changing length (every slider detent rewrites it) never
-   reflows the chips under an open popover. After the base rule, because
-   `flex` above resets the basis this overrides. */
+/* In the island the compute chip takes a whole line, so that its label
+   changing length (every slider detent rewrites it) never reflows the
+   chips under an open popover — a chip that reflows its neighbours under
+   an open popover is a popover that wanders. After the base rule,
+   because `flex` above resets the basis this overrides. */
 @media (max-width: 900px) {
-  /* The chips take the row and what follows them — the model, the
-     context ring, send — takes the next, right-aligned. Sharing one row
-     squeezed the machine chip to `D4…` on a phone, which names nothing. */
-  .controls {
-    flex-wrap: wrap;
+  .anchorShrink {
+    flex-basis: 100%;
   }
+}
 
-  .chips {
-    flex: 1 0 100%;
-    flex-wrap: wrap;
-  }
-
+/* The same conditions measured on the composer rather than the viewport —
+   the session drawer takes ~480px at any viewport width. */
+@container (max-width: 600px) {
   .anchorShrink {
     flex-basis: 100%;
   }
@@ -215,6 +238,9 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  /* A shrinkable middle: inside a fitted panel the lists below give the
+     height back, the titles keep theirs. */
+  min-height: 0;
 }
 
 .popoverWide {
@@ -253,7 +279,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 240px;
+  /* No cap of its own: a scroll container is the flex child that yields,
+     so it scrolls exactly when the panel around it has run out of room. */
   overflow-y: auto;
 }
 

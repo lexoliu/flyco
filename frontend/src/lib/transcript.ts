@@ -19,6 +19,7 @@ import type {
   ApprovalPayload,
   MessageOrigin,
   ModelChoice,
+  PermissionMode,
   ProvisioningStage,
   ShellOutcome,
   ShellStream,
@@ -31,6 +32,11 @@ import { formatDuration } from "./duration";
 import { formatUsd } from "./money";
 
 export interface ToolCall {
+  /**
+   * The identity `reconcile` diffs this row by, and `<For>` keys it with.
+   * Same value as `callId`: the id is already unique inside its turn.
+   */
+  key: string;
   callId: string;
   tool: string;
   input: unknown;
@@ -54,6 +60,11 @@ export type NoticeTone = "info" | "warning" | "danger";
 
 /** One run of output, as it came off one of the two pipes. */
 export interface ShellChunk {
+  /**
+   * The identity `reconcile` diffs this chunk by: its position, which is
+   * stable because chunks only ever append or merge into the last one.
+   */
+  key: number;
   stream: ShellStream;
   data: string;
 }
@@ -69,8 +80,15 @@ export interface ShellChunk {
  *
  * Contiguous calls are one part rather than one part each, because a run of
  * tool rows reads as a list and a list is what it should be in the markup.
+ *
+ * Every part carries a `key` — its position in the turn, stable because
+ * parts only ever append or grow — because the page reconciles this list
+ * rather than replacing it (see SessionDetail), and keyed reconciliation
+ * is what keeps a streamed paragraph's DOM node alive between deltas.
  */
-export type TurnPart = { kind: "text"; text: string } | { kind: "tools"; calls: ToolCall[] };
+export type TurnPart =
+  | { kind: "text"; key: number; text: string }
+  | { kind: "tools"; key: number; calls: ToolCall[] };
 
 export type TranscriptItem =
   | {
@@ -197,10 +215,40 @@ export type TranscriptItem =
       model: ModelChoice;
       atUnix: number;
     }
-  | { kind: "notice"; key: string; text: string; tone: NoticeTone; atUnix: number };
+  | {
+      /**
+       * The user moved the session onto another permission mode
+       * (docs/ux.md §9.3).
+       *
+       * Carries the mode's id rather than a sentence, like the model
+       * change it sits beside: what a mode is called is the catalog's
+       * business, which lives with the page and not with the stream.
+       */
+      kind: "mode_change";
+      key: string;
+      mode: PermissionMode;
+      atUnix: number;
+    }
+  | { kind: "notice"; key: string; text: string; tone: NoticeTone; atUnix: number }
+  | {
+      /**
+       * Something the harness printed on its own — a local slash command's
+       * answer, like Claude Code's `/usage` table — rather than a reply to
+       * a prompt. Rendered as output, not as assistant prose in a turn.
+       */
+      kind: "command_output";
+      key: string;
+      text: string;
+      atUnix: number;
+    };
 
 /** One milestone on the provisioning timeline. */
 export interface ProvisioningStep {
+  /**
+   * The identity `reconcile` diffs this step by: the milestone and the
+   * instant it was reached, which together name one step exactly.
+   */
+  key: string;
   stage: ProvisioningStage;
   atUnix: number;
 }
@@ -298,7 +346,7 @@ function appendChunk(block: Shell, stream: ShellStream, data: string): void {
     last.data += data;
     return;
   }
-  block.output.push({ stream, data });
+  block.output.push({ key: block.output.length, stream, data });
 }
 
 /**
@@ -456,7 +504,7 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
             if (last?.kind === "text") {
               last.text += harness.text;
             } else {
-              turn.parts.push({ kind: "text", text: harness.text });
+              turn.parts.push({ kind: "text", key: turn.parts.length, text: harness.text });
             }
             break;
           }
@@ -470,6 +518,7 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
               break;
             }
             const call: ToolCall = {
+              key: harness.call_id,
               callId: harness.call_id,
               tool: harness.tool,
               input: harness.input,
@@ -481,7 +530,7 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
             if (last?.kind === "tools") {
               last.calls.push(call);
             } else {
-              turn.parts.push({ kind: "tools", calls: [call] });
+              turn.parts.push({ kind: "tools", key: turn.parts.length, calls: [call] });
             }
             break;
           }
@@ -521,6 +570,21 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
           case "context_compaction_failed":
             notice(`Context compaction failed: ${harness.error}`, "danger", atUnix);
             break;
+          case "local_command_output":
+            items.push({
+              kind: "command_output",
+              key: `output-${items.length}`,
+              text: harness.content,
+              atUnix,
+            });
+            break;
+          case "context_usage":
+            // The answer to the usage panel's "detailed breakdown" — the
+            // panel reads the newest frame out of the stream itself; a
+            // `context_usage` is a control answer, not something that
+            // happened, so the transcript keeps no card of it
+            // (docs/ux.md §9.3).
+            break;
         }
         break;
       }
@@ -547,7 +611,11 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
         // queue and the daemon are both minutes away from the room.
         const timeline = provisioningTimeline(items, event.stage, event.at_unix);
         if (timeline !== null && !timeline.steps.some((step) => step.stage === event.stage)) {
-          timeline.steps.push({ stage: event.stage, atUnix: event.at_unix });
+          timeline.steps.push({
+            key: `${event.stage}-${event.at_unix}`,
+            stage: event.stage,
+            atUnix: event.at_unix,
+          });
         }
         break;
       }
@@ -573,6 +641,14 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
           kind: "model_change",
           key: `model-${items.length}`,
           model: event.model,
+          atUnix,
+        });
+        break;
+      case "permission_mode_changed":
+        items.push({
+          kind: "mode_change",
+          key: `mode-${items.length}`,
+          mode: event.mode,
           atUnix,
         });
         break;

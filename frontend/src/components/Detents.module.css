@@ -1,0 +1,105 @@
+/*
+ * The drawn slider of Detents.tsx: a rail of countable stops, a thumb
+ * carried `--travelled` along it, and a transparent range input laid over
+ * the rail as the actual control.
+ *
+ * The thumb is the one large mark on the track; half of it is the room
+ * left at either end so a detent at 0% or 100% is still a circle on the
+ * rail rather than a circle off it. The component pads vertically for the
+ * thumb's overhang and focus ring; the caller pads horizontally, because
+ * what sits beside the rail — a reading riding above the thumb, the names
+ * of the end stops — is the caller's to align. `--thumb` is theirs to
+ * override where the mark should be a different size.
+ */
+
+.detents {
+  padding-block: calc(var(--thumb, 20px) / 2);
+}
+
+.rail {
+  position: relative;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-border);
+}
+
+/* One dot per stop. They are the whole reason the control is drawn rather
+   than left to the user agent: a range input with a step hides the fact
+   that the positions are countable. */
+.dot {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  translate: -50% -50%;
+  border-radius: var(--radius-full);
+  background: var(--color-text-faint);
+}
+
+/* The dot under the thumb is covered by it; dropping it keeps the ink
+   circle clean rather than showing a rim of dot around the edge. */
+.dotTaken {
+  opacity: 0;
+}
+
+.thumbTravel {
+  position: absolute;
+  inset: 0;
+  transform: translateX(var(--travelled));
+  transition: transform var(--transition-fast);
+  pointer-events: none;
+}
+
+.thumb {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: var(--thumb, 20px);
+  height: var(--thumb, 20px);
+  translate: -50% -50%;
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  box-shadow: var(--shadow-sm);
+  transition: scale var(--transition-fast);
+}
+
+/* The input is the control; the rail above is what it looks like. It is
+   transparent and laid over the rail, stretched half a thumb past each end
+   so that its own thumb — sized to match, and never painted — travels
+   exactly the distance the drawn one does. */
+.range {
+  position: absolute;
+  top: 50%;
+  left: calc(-1 * var(--thumb, 20px) / 2);
+  right: calc(-1 * var(--thumb, 20px) / 2);
+  height: var(--thumb, 20px);
+  margin: 0;
+  padding: 0;
+  transform: translateY(-50%);
+  appearance: none;
+  background: none;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.range::-webkit-slider-thumb {
+  appearance: none;
+  width: var(--thumb, 20px);
+  height: var(--thumb, 20px);
+}
+
+.range::-moz-range-thumb {
+  width: var(--thumb, 20px);
+  height: var(--thumb, 20px);
+  border: 0;
+}
+
+/* The ring belongs on the mark the user sees, not on the transparent input. */
+.rail:has(.range:focus-visible) .thumb {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 3px;
+}
+
+.rail:has(.range:active) .thumb {
+  scale: 0.92;
+}

@@ -441,8 +441,8 @@ pub enum ApiError {
 
     /// The machine is not connected, so nothing can be run on it.
     ///
-    /// Flyco never dials a host — the machine holds the socket — so a host
-    /// that is not connected is not one to retry against from here: the
+    /// Flyco never dials a host — the machine holds the attachment — so a
+    /// host that is not connected is not one to retry against from here: the
     /// answer is to start `flycod host` on it.
     #[error(
         "this host is not connected; start flycod on the machine and try again",
@@ -883,6 +883,51 @@ pub enum ApiError {
     #[error("the presented credential is not this session's daemon token", status = StatusCode::UNAUTHORIZED)]
     InvalidDaemonCredential,
 
+    /// A daemon speaks a wire protocol version this control plane does not.
+    ///
+    /// `409` rather than `426`: nothing here can be upgraded in place — the
+    /// daemon has to be replaced by a build that speaks this version.
+    #[error(
+        "the daemon speaks wire protocol {daemon}, this control plane speaks {control}",
+        status = StatusCode::CONFLICT
+    )]
+    ProtocolMismatch {
+        /// The version the daemon declared.
+        daemon: u32,
+        /// The version this control plane speaks.
+        control: u32,
+    },
+
+    /// A daemon's stream or frames named an attach that a newer one replaced.
+    ///
+    /// `409`: the caller's attach is stale state, and the conflict resolves
+    /// by attaching again rather than by retrying.
+    #[error(
+        "attach epoch {opened} is stale; the room's current epoch is {current}",
+        status = StatusCode::CONFLICT
+    )]
+    RelayEpochStale {
+        /// The epoch the room is serving now.
+        current: u64,
+        /// The epoch the request named.
+        opened: u64,
+    },
+
+    /// A frames batch skips sequence numbers the room never stored.
+    ///
+    /// `409`: the room's record of the stream cannot advance past a hole,
+    /// so the batch is refused and the daemon re-sends from the gap.
+    #[error(
+        "frames resume at {got} but the room has stored only through {next}",
+        status = StatusCode::CONFLICT
+    )]
+    RelayFramesGap {
+        /// The sequence the next batch must resume at.
+        next: u64,
+        /// The sequence the refused batch began at.
+        got: u64,
+    },
+
     /// The live relay is not available on this build of the control plane.
     #[error(
         "this control plane does not host session relays: {0}",
@@ -893,6 +938,16 @@ pub enum ApiError {
     /// The session's Durable Object could not be reached, or refused.
     #[error("the session room failed: {0}", status = StatusCode::BAD_GATEWAY)]
     Room(String),
+
+    /// A room's own refusal, forwarded to the caller untouched.
+    ///
+    /// The Durable Object answered with the RFC 9457 document the caller
+    /// should see — a stale epoch, a frames gap, an offline daemon — and
+    /// re-wrapping it as `502` would tell a daemon that can recover
+    /// ("attach again") only that something failed. The document carries
+    /// its own status; the variant's declared one is never rendered.
+    #[error("the room refused: {0:?}", status = StatusCode::BAD_GATEWAY)]
+    RoomRefused(Box<Problem>),
 
     /// Object storage failed.
     #[error("object storage failed: {0}")]
@@ -1209,8 +1264,11 @@ impl ApiError {
             Self::BatchSeqOutOfRange { .. } => "batch-seq-out-of-range",
             Self::BatchAlreadyStored { .. } => "batch-already-stored",
             Self::InvalidDaemonCredential => "invalid-daemon-credential",
+            Self::ProtocolMismatch { .. } => "protocol-mismatch",
+            Self::RelayEpochStale { .. } => "relay-epoch-stale",
+            Self::RelayFramesGap { .. } => "relay-frames-gap",
             Self::RelayUnavailable(_) => "relay-unavailable",
-            Self::Room(_) => "session-room-unavailable",
+            Self::Room(_) | Self::RoomRefused(_) => "session-room-unavailable",
             Self::GithubCodeRejected(_) => "github-code-rejected",
             Self::GithubTokenRevoked => "github-token-revoked",
             Self::GithubStatus(_) => "github-status",
@@ -1269,6 +1327,13 @@ impl ApiError {
     /// Server-side failures are logged in full and reported as a bare status.
     #[must_use]
     pub fn problem(&self) -> Problem {
+        // A refusal the room already typed is handed back untouched: its
+        // document says the same thing this Worker would have said, and it
+        // was already logged where it was raised.
+        if let Self::RoomRefused(problem) = self {
+            return (**problem).clone();
+        }
+
         let status = skyzen::HttpError::status(self);
         let title = status.canonical_reason().unwrap_or("Error");
 

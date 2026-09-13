@@ -49,6 +49,16 @@
   background: var(--color-surface-sunken);
 }
 
+/*
+ * A command that needs the machine while none is connected: listed, so it
+ * is discoverable, and greyed past inviting, so it is not mistaken for a
+ * working one.
+ */
+.commandDisabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .commandName {
   /*
    * Never truncated before the description is: the name is the half of the

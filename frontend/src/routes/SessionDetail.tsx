@@ -14,7 +14,6 @@
  */
 import { useNavigate, useParams } from "@solidjs/router";
 import {
-  For,
   Match,
   Show,
   Switch,
@@ -24,14 +23,20 @@ import {
   on,
   onCleanup,
 } from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 import { createQuery } from "../lib/query";
 import { AlertTriangle, Server, Wallet } from "lucide-solid";
 import { BudgetRaise } from "../components/BudgetPicker";
+import GoalChip from "../components/GoalChip";
 import ConfirmDialog from "../components/ConfirmDialog";
+import EffortChip from "../components/EffortChip";
 import ModelChip from "../components/ModelChip";
+import ModeChip from "../components/ModeChip";
+import MachinePanel from "../components/MachinePanel";
+import Popover from "../components/Popover";
 import ProblemNotice from "../components/ProblemNotice";
 import { useReadiness } from "../components/Readiness";
-import Ring from "../components/Ring";
+import ContextRing, { type SessionTotals } from "../components/ContextRing";
 import SessionComposer, { type SessionCommand } from "../components/SessionComposer";
 import SessionDrawer from "../components/SessionDrawer";
 import SessionHeader from "../components/SessionHeader";
@@ -39,27 +44,26 @@ import Transcript, { ProvisioningTimeline } from "../components/Transcript";
 import composerStyles from "../components/Composer.module.css";
 import {
   archiveSession,
-  compactSession,
   decideApproval,
   getSession,
   getSessionMachine,
-  interruptSession,
   resumeSession,
-  sendMessage,
   startSessionMachine,
   stopSessionMachine,
   updateSession,
   type ModelChoice,
   type ModelOption,
+  type PermissionMode,
 } from "../api/client";
 import { ApiProblem } from "../api/problem";
-import type { UsageWindow } from "../api/wire";
+import type { ContextUsage, ContextWindow, UsageWindow } from "../api/wire";
 import { createSessionRelay } from "../api/relay";
 import type { HarnessCommand } from "../api/wire";
 import { formatTimeOfDay } from "../lib/dates";
 import { PROVIDER_LABEL } from "../lib/providers";
 import { machineChip } from "../lib/machines";
-import { orderedWindows, resetHint } from "../lib/planUsage";
+import { modesFor } from "../lib/modes";
+import { orderedWindows } from "../lib/planUsage";
 import { dollarsToUsdMicros, usdMicrosToDollars } from "../lib/money";
 import { shellCommandIn } from "../lib/shell";
 import {
@@ -69,7 +73,11 @@ import {
   sessionNotice,
   type StatusView,
 } from "../lib/status";
-import { foldTranscript, pendingApprovals } from "../lib/transcript";
+import {
+  foldTranscript,
+  pendingApprovals,
+  type TranscriptItem,
+} from "../lib/transcript";
 import styles from "./SessionDetail.module.css";
 
 /**
@@ -80,11 +88,6 @@ import styles from "./SessionDetail.module.css";
  * the smallest unit either of them prints.
  */
 const TICK_MS = 1000;
-
-/** `41k / 200k`, because a context window is read in thousands or not at all. */
-function tokens(count: number): string {
-  return count >= 1000 ? `${Math.round(count / 1000)}k` : `${count}`;
-}
 
 export default function SessionDetail() {
   const params = useParams<{ id: string }>();
@@ -167,20 +170,71 @@ export default function SessionDetail() {
   const awaitingFirstStage = createMemo(
     () =>
       session()?.state === "provisioning" &&
-      !transcript().some((item) => item.kind === "provisioning"),
+      !transcript.some((item) => item.kind === "provisioning"),
   );
 
-  const transcript = createMemo(() => foldTranscript(relay.events()));
+  /**
+   * The transcript as a store, reconciled into place once per frame.
+   *
+   * Two things about why it is built this way rather than as a memo of
+   * `foldTranscript(relay.events())`:
+   *
+   * - A fresh array every delta means `<For>` keys nothing: every row is a
+   *   new object, so the whole column unmounts and remounts on every token.
+   *   That is what made streaming expensive, and — because remounting
+   *   resets the scroll position — what threw a reading user back to the
+   *   top. `reconcile` keys rows by `TranscriptItem.key` and patches them
+   *   in place, so a streamed paragraph is the same DOM node before and
+   *   after its next delta.
+   * - Folding is work, and the relay can deliver a burst of deltas inside
+   *   one frame. Batching the fold onto `requestAnimationFrame` keeps it
+   *   to once a frame without dropping a single event: the callback reads
+   *   the event list as it stands when the frame fires.
+   */
+  const [transcript, setTranscript] = createStore<TranscriptItem[]>([]);
+  // The empty-state copy below reads `transcript`, which lags the event
+  // list by the frame the fold waits on. A fold in flight means items are
+  // coming, so it counts as non-empty — otherwise the "queued" line would
+  // flash for one frame over a prompt that already arrived.
+  const [foldQueued, setFoldQueued] = createSignal(false);
+  let foldFrame = 0;
+  createEffect(() => {
+    // The effect subscribes to the event list; the fold itself runs in the
+    // animation frame so a burst costs one fold, not one per event. The
+    // first run, on an empty list, folds nothing into nothing — skip it so
+    // the empty state does not blink out for a frame on mount.
+    const events = relay.events();
+    if (foldFrame !== 0 || (events.length === 0 && transcript.length === 0)) {
+      return;
+    }
+    setFoldQueued(true);
+    foldFrame = requestAnimationFrame(() => {
+      foldFrame = 0;
+      setTranscript(reconcile(foldTranscript(relay.events()), { key: "key" }));
+      setFoldQueued(false);
+    });
+  });
+  onCleanup(() => {
+    if (foldFrame !== 0) {
+      cancelAnimationFrame(foldFrame);
+    }
+  });
 
   /*
    * The transcript scrolls inside the page, not with it, so the composer
    * stays at the foot of the window. That makes following the agent the
    * page's job: a reader at the bottom is kept there as lines arrive, and
    * one who has scrolled up to reread something is left where they are.
-   * How close counts as "at the bottom" is a few lines, so the last line's
-   * own height never counts as having scrolled away from it.
+   *
+   * Growth is watched, not counted: a streamed delta changes a row's
+   * height without changing the item count, so a `ResizeObserver` on the
+   * column's contents is what notices. "At the bottom" is a few lines of
+   * slack, so the last line's own height never counts as having scrolled
+   * away from it — and a reader who *did* scroll away keeps their place,
+   * because nothing here runs when `pinned` is false.
    */
   let scroller: HTMLDivElement | undefined;
+  let transcriptBody: HTMLDivElement | undefined;
   let pinned = true;
   const PIN_SLACK_PX = 96;
   function noteScroll(): void {
@@ -189,17 +243,20 @@ export default function SessionDetail() {
     }
     pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= PIN_SLACK_PX;
   }
-  createEffect(
-    on(
-      () => transcript().length,
-      () => {
-        if (scroller !== undefined && pinned) {
-          scroller.scrollTop = scroller.scrollHeight;
-        }
-      },
-    ),
-  );
-  const waiting = createMemo(() => pendingApprovals(transcript()));
+  createEffect(() => {
+    const watched = transcriptBody;
+    if (watched === undefined) {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      if (scroller !== undefined && pinned) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
+    });
+    observer.observe(watched);
+    onCleanup(() => observer.disconnect());
+  });
+  const waiting = createMemo(() => pendingApprovals(transcript));
   const signals = createMemo(() => liveSignalsFrom(relay.events()));
 
   const status = createMemo((): StatusView | undefined => {
@@ -226,12 +283,88 @@ export default function SessionDetail() {
    */
   const fatal = createMemo(() => session.error ?? relay.failure());
 
+  /**
+   * The newest token accounting the room has reported.
+   *
+   * A standalone `usage` frame and a turn's closing `turn_completed.usage`
+   * are the same reading on different schedules, so the newest of either
+   * wins. (The context ring below reads `latestContext`, which adds the
+   * `context_usage` answer as a third source.)
+   */
   const latestUsage = createMemo(() => {
     const events = relay.events();
     for (let i = events.length - 1; i >= 0; i -= 1) {
       const entry = events[i];
-      if (entry !== undefined && entry.event.type === "usage") {
-        return entry.event.usage;
+      if (entry === undefined) {
+        continue;
+      }
+      const event = entry.event;
+      if (event.type === "usage") {
+        return event.usage;
+      }
+      if (event.type === "harness" && event.event.type === "turn_completed") {
+        return event.event.usage;
+      }
+    }
+    return null;
+  });
+
+  /**
+   * How full the context window is, from wherever said so last.
+   *
+   * Three frames carry a window reading, newest wins: a `usage` report, a
+   * completed turn's usage, and a `context_usage` answer — the last of
+   * which is what makes the ring move when a breakdown is asked for
+   * mid-turn.
+   */
+  const latestContext = createMemo((): ContextWindow | null => {
+    const events = relay.events();
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const entry = events[i];
+      if (entry === undefined) {
+        continue;
+      }
+      const event = entry.event;
+      if (event.type === "usage" && event.usage.context !== null && event.usage.context !== undefined) {
+        return event.usage.context;
+      }
+      if (event.type !== "harness") {
+        continue;
+      }
+      const harness = event.event;
+      if (harness.type === "context_usage" && harness.usage.window !== undefined) {
+        return harness.usage.window;
+      }
+      if (
+        harness.type === "turn_completed" &&
+        harness.usage.context !== null &&
+        harness.usage.context !== undefined
+      ) {
+        return harness.usage.context;
+      }
+    }
+    return null;
+  });
+
+  /**
+   * The newest `context_usage` answer itself, where one has been asked for.
+   *
+   * `latestContext` above keeps only the window out of it; the usage
+   * panel's compaction threshold, category bar and breakdown need the
+   * whole frame, which is what this hands them. `null` until a breakdown has been
+   * requested once this page — and that is the honest state, not a
+   * loading skeleton: the panel draws what it has.
+   */
+  const latestContextUsage = createMemo((): ContextUsage | null => {
+    const events = relay.events();
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const entry = events[i];
+      if (
+        entry !== undefined &&
+        entry.event.type === "harness" &&
+        entry.event.event.type === "context_usage"
+      ) {
+        return entry.event.event.usage;
       }
     }
     return null;
@@ -362,43 +495,53 @@ export default function SessionDetail() {
     return view !== undefined && REFUSING.has(view.status);
   });
 
+  /**
+   * Whether a daemon is holding the room — what a `!` command, a
+   * `/compact`, a terminal keystroke or a context breakdown needs.
+   *
+   * Two facts answer it, because each sees a failure the other cannot: the
+   * machine's own state, which knows a stopped or still-building machine
+   * cannot be holding a daemon; and the room's `machine_connection`
+   * frames, which know a running machine whose daemon fell off the
+   * network. Prompts are deliberately not gated on this — the mailbox
+   * holds them — only what is delivered-or-nothing is.
+   */
+  const machineUp = createMemo(
+    () => machine()?.state === "running" && signals().machineOffline !== true,
+  );
+
   const [error, setError] = createSignal<unknown>(null);
   const [deciding, setDeciding] = createSignal(false);
   const [resuming, setResuming] = createSignal(false);
   const [archiving, setArchiving] = createSignal(false);
   const [settingBudget, setSettingBudget] = createSignal(false);
   const [settingModel, setSettingModel] = createSignal(false);
+  const [settingMode, setSettingMode] = createSignal(false);
   const [pendingDirtySummary, setPendingDirtySummary] = createSignal<string | null>(null);
   const [drawerOpen, setDrawerOpen] = createSignal(false);
-  const [panelRequest, setPanelRequest] = createSignal<{
-    panel: "machine" | "env";
-    at: number;
-    resize?: boolean;
-  }>();
-
   /**
-   * Prefers the relay socket whenever it is live — lower latency, and the
-   * echo comes back as an event on the same connection — and falls back to
-   * the REST handler while it is not (a paused session, a stopped machine,
-   * a reconnect in progress), so a message is recorded rather than
-   * silently dropped. See `sendMessage`/`interruptSession` in
-   * src/api/client.ts.
+   * Requests to open the machine's popover — `⋯` Resize, `/resize`, the
+   * drawer's offline notice — or the drawer's `.env` tab (`Edit .env`).
+   * Each carries its instant so that asking twice is two requests.
    */
-  async function overRelay(live: () => void, rest: () => Promise<void>): Promise<void> {
-    await attempt(async () => {
-      if (relay.state() === "live") {
-        live();
-      } else {
-        await rest();
+  const [machinePanelAt, setMachinePanelAt] = createSignal<number>();
+  const [machineResizeAt, setMachineResizeAt] = createSignal<number>();
+  const [envPanelAt, setEnvPanelAt] = createSignal<number>();
+
+  function requestPanel(request: { panel: "machine" | "env"; resize?: boolean }): void {
+    const at = Date.now();
+    if (request.panel === "machine") {
+      setMachinePanelAt(at);
+      if (request.resize === true) {
+        setMachineResizeAt(at);
       }
-    });
+      return;
+    }
+    setEnvPanelAt(at);
   }
 
   /**
    * Runs one control, showing whatever it throws instead of losing it.
-   *
-   * Split out of {@link overRelay} for the one control that must not take
-   * the socket even when the socket is there: see {@link onSend}.
    */
   async function attempt(action: () => Promise<void>): Promise<void> {
     setError(null);
@@ -413,31 +556,19 @@ export default function SessionDetail() {
    * Sends what was typed to whichever of the two it was addressed to.
    *
    * A message beginning with `!` is for the machine's bash, not for the
-   * agent (docs/ux.md §9.3), and it has no REST door: a user message that
-   * misses the socket is conversation and waits in the room's mailbox, but
-   * a shell command recorded now and run whenever the daemon comes back
-   * would run against a working tree the user is no longer looking at. So
-   * the relay has to be live, and the composer says so when it is not
-   * rather than swallowing the command.
+   * agent (docs/ux.md §9.3). A user message always goes — the room's
+   * command log holds it for a daemon that is away or a machine still
+   * being built, and the `/messages` handler holds it against a plan
+   * window's wait (docs/ux.md §9.8) — but a shell command recorded now and
+   * run whenever the daemon comes back would run against a working tree
+   * the user is no longer looking at. So `!` asks that the stream be
+   * live, and the composer says so when it is not rather than swallowing
+   * the command.
    */
   function onSend(text: string): void {
     const command = shellCommandIn(text);
     if (command === null) {
-      // A session waiting out a plan window goes the REST way even with a
-      // live socket. The room hands a message straight to the daemon, whose
-      // harness would refuse it and burn the turn; the handler holds it
-      // against the pause instead and sends it when the window turns over
-      // (docs/ux.md §9.8). The socket is still open the whole time — a
-      // pause that kept its machine keeps its relay — so "is it live" is
-      // the wrong question here and this is asked first.
-      if (status()?.status === "usage_limit") {
-        void attempt(() => sendMessage(params.id, text));
-        return;
-      }
-      void overRelay(
-        () => relay.send({ type: "user_message", text }),
-        () => sendMessage(params.id, text),
-      );
+      void attempt(() => relay.send({ type: "user_message", text }));
       return;
     }
     setError(null);
@@ -445,36 +576,40 @@ export default function SessionDetail() {
       setError(new Error("Reconnecting to the session — a shell command needs a live connection."));
       return;
     }
-    try {
-      relay.send({ type: "shell_command", command });
-    } catch (failure) {
-      setError(failure);
-    }
+    void attempt(() => relay.send({ type: "shell_command", command }));
   }
 
   function onStop(): void {
-    void overRelay(
-      () => relay.send({ type: "interrupt" }),
-      () => interruptSession(params.id),
-    );
+    void attempt(() => relay.send({ type: "interrupt" }));
+  }
+
+  /**
+   * Asks the daemon what the context window holds.
+   *
+   * The usage panel's "detailed breakdown" is the only caller — there is
+   * no `/context` in the palette; the ring is the door (docs/ux.md §9.3).
+   * The question goes to the daemon, never to the model, and its answer
+   * comes back on the stream as a `context_usage` event, which
+   * `latestContextUsage` picks up for the panel.
+   */
+  function requestContextBreakdown(): void {
+    void attempt(() => relay.send({ type: "context_usage" }));
   }
 
   function onCommand(command: SessionCommand): void {
     switch (command) {
       case "compact":
-        void overRelay(
-          () => relay.send({ type: "compact" }),
-          () => compactSession(params.id),
-        );
+        void attempt(() => relay.send({ type: "compact" }));
         break;
       case "archive":
         void onArchive(false);
         break;
       case "resize":
-        // Resizing is a choice among machine types, and the machine tab is
-        // where that choice is made; the request carries the intent so the
-        // tab opens on the control rather than beside it (issue #138).
-        setPanelRequest({ panel: "machine", at: Date.now(), resize: true });
+        // Resizing is a choice among machine types, and the machine chip's
+        // panel is where that choice is made; the request carries the
+        // intent so the panel opens on the control rather than beside it
+        // (issue #138).
+        requestPanel({ panel: "machine", resize: true });
         break;
     }
   }
@@ -543,6 +678,28 @@ export default function SessionDetail() {
       setError(failure);
     } finally {
       setSettingModel(false);
+    }
+  }
+
+  /**
+   * Moves the session onto another permission mode.
+   *
+   * On the model's terms exactly: the change has to reach the running
+   * agent through its room, so the chip shows the answer the control
+   * plane returned rather than the click that asked for it.
+   */
+  async function onSetMode(mode: PermissionMode): Promise<void> {
+    if (settingMode()) {
+      return;
+    }
+    setError(null);
+    setSettingMode(true);
+    try {
+      mutateSession(await updateSession(params.id, { permissionMode: mode }));
+    } catch (failure) {
+      setError(failure);
+    } finally {
+      setSettingMode(false);
     }
   }
 
@@ -630,6 +787,33 @@ export default function SessionDetail() {
     return budget === undefined ? undefined : usdMicrosToDollars(budget.limit);
   };
 
+  /**
+   * The session's cumulative accounting, for the ring panel's `This
+   * session` — the answer a `/usage` command used to spell out: what the
+   * last usage report counted, plus how long the turns have run. `null`
+   * while nothing has been metered and no turn has finished.
+   */
+  const sessionTotals = createMemo((): SessionTotals | null => {
+    const usage = latestUsage();
+    const clock = now() / 1000;
+    let worked = 0;
+    for (const item of transcript) {
+      if (item.kind !== "turn") {
+        continue;
+      }
+      worked += Math.max(0, (item.endedAtUnix ?? clock) - item.startedAtUnix);
+    }
+    if (usage === null && worked === 0) {
+      return null;
+    }
+    return {
+      inputTokens: usage?.input_tokens ?? 0,
+      outputTokens: usage?.output_tokens ?? 0,
+      costMicros: usage?.estimated_cost ?? null,
+      workedSeconds: worked,
+    };
+  });
+
   return (
     <section class={styles.page}>
       <SessionHeader
@@ -644,7 +828,7 @@ export default function SessionDetail() {
         onStopMachine={() => void onMachine("stop")}
         drawerOpen={drawerOpen()}
         onToggleDrawer={() => setDrawerOpen((was) => !was)}
-        onOpenPanel={(request) => setPanelRequest({ ...request, at: Date.now() })}
+        onOpenPanel={requestPanel}
       />
 
       {/*
@@ -681,6 +865,7 @@ export default function SessionDetail() {
       <div class={styles.body}>
         <div class={styles.column}>
           <div class={styles.scroller} ref={scroller} onScroll={noteScroll}>
+            <div ref={transcriptBody}>
             {/*
             The banner is sticky so an approval raised a hundred rows ago is
             still one click away, and amber because it is the one thing on
@@ -705,7 +890,7 @@ export default function SessionDetail() {
             hold — when the session was opened — and moves with the clock.
           */}
             <Show
-              when={transcript().length > 0}
+              when={transcript.length > 0 || foldQueued()}
               fallback={
                 <Switch>
                   <Match when={session()?.state === "provisioning"}>
@@ -729,7 +914,7 @@ export default function SessionDetail() {
               }
             >
               <Transcript
-                items={transcript()}
+                items={transcript}
                 repo={session()?.repo ?? "the repository"}
                 provider={providerLabel()}
                 models={models()}
@@ -753,7 +938,13 @@ export default function SessionDetail() {
             <Show when={awaitingFirstStage() && session()}>
               {(current) => (
                 <ProvisioningTimeline
-                  steps={[{ stage: "reserving", atUnix: current().created_at_unix }]}
+                  steps={[
+                    {
+                      key: "awaiting",
+                      stage: "reserving",
+                      atUnix: current().created_at_unix,
+                    },
+                  ]}
                   recovery={status()?.status === "migrating"}
                   attempt={1}
                   endedAtUnix={null}
@@ -777,6 +968,7 @@ export default function SessionDetail() {
                 Working…
               </p>
             </Show>
+            </div>
           </div>
 
           {/*
@@ -851,112 +1043,156 @@ export default function SessionDetail() {
                 onSend={onSend}
                 onStop={onStop}
                 onCommand={onCommand}
+                machineUp={machineUp()}
                 deferred={deferredNote()}
                 controls={
-                  <>
+                  /*
+                    The session's own row (docs/ux.md §9.3): what it runs
+                    on, what that costs, and what it may spend — each a
+                    readout that opens the control that changes it, where
+                    the official composers keep the same things.
+                  */
+                  <div class={composerStyles.chips}>
+                    <Show when={machine()}>
+                      {(view) => (
+                        <Popover
+                          label="Machine"
+                          panelClass={composerStyles.popoverWide}
+                          openAt={machinePanelAt()}
+                          trigger={(attrs) => (
+                            <button
+                              id={attrs.id}
+                              onClick={attrs.onClick}
+                              aria-expanded={attrs.expanded()}
+                              aria-haspopup="dialog"
+                              type="button"
+                              class={composerStyles.chip}
+                              title="Machine"
+                            >
+                              <Server size={13} aria-hidden="true" />
+                              <span class={composerStyles.chipLabel}>{machineChip(view())}</span>
+                            </button>
+                          )}
+                        >
+                          {() => (
+                            <MachinePanel
+                              sessionId={params.id}
+                              machine={view()}
+                              openResize={machineResizeAt()}
+                              onChanged={() => void refetchMachine()}
+                              embedded
+                            />
+                          )}
+                        </Popover>
+                      )}
+                    </Show>
+                    <Show when={session()}>
+                      {(current) => (
+                        <BudgetRaise
+                          limitUsd={usdMicrosToDollars(current().budget.limit)}
+                          spentUsd={usdMicrosToDollars(current().budget.spent)}
+                          saving={settingBudget()}
+                          onSet={(dollars) => void onSetBudget(dollars)}
+                          trigger={(attrs) => (
+                            <button
+                              id={attrs.id}
+                              onClick={attrs.onClick}
+                              aria-expanded={attrs.expanded()}
+                              aria-haspopup="dialog"
+                              type="button"
+                              class={composerStyles.chip}
+                              title="Set the compute budget"
+                            >
+                              <Wallet size={13} aria-hidden="true" />
+                              <span class={composerStyles.chipLabel}>
+                                ${(budgetSpentUsd() ?? 0).toFixed(2)} / $
+                                {(budgetLimitUsd() ?? 0).toFixed(0)}
+                              </span>
+                            </button>
+                          )}
+                        />
+                      )}
+                    </Show>
                     {/*
-                      The session's own row (docs/ux.md §9.3): what it runs
-                      on, what that costs, and what it may spend — each a
-                      readout that opens the control that changes it, where
-                      the official composers keep the same things.
+                      The goal is a setting of the session, not a line in
+                      it — a chip like the model's, offered only where the
+                      running harness says it takes one.
                     */}
-                    <div class={composerStyles.chips}>
-                      <Show when={machine()}>
-                        {(view) => (
-                          <button
-                            type="button"
-                            class={composerStyles.chip}
-                            title="Machine"
-                            onClick={() =>
-                              setPanelRequest({
-                                panel: "machine",
-                                at: Date.now(),
-                              })
-                            }
-                          >
-                            <Server size={13} aria-hidden="true" />
-                            <span class={composerStyles.chipLabel}>{machineChip(view())}</span>
-                          </button>
-                        )}
-                      </Show>
-                      <Show when={session()}>
-                        {(current) => (
-                          <BudgetRaise
-                            limitUsd={usdMicrosToDollars(current().budget.limit)}
-                            spentUsd={usdMicrosToDollars(current().budget.spent)}
-                            saving={settingBudget()}
-                            onSet={(dollars) => void onSetBudget(dollars)}
-                            trigger={(attrs) => (
-                              <button
-                                id={attrs.id}
-                                onClick={attrs.onClick}
-                                aria-expanded={attrs.expanded()}
-                                aria-haspopup="dialog"
-                                type="button"
-                                class={composerStyles.chip}
-                                title="Set the compute budget"
-                              >
-                                <Wallet size={13} aria-hidden="true" />
-                                <span class={composerStyles.chipLabel}>
-                                  ${(budgetSpentUsd() ?? 0).toFixed(2)} / $
-                                  {(budgetLimitUsd() ?? 0).toFixed(0)}
-                                </span>
-                              </button>
-                            )}
-                          />
-                        )}
-                      </Show>
-                    </div>
+                    <Show when={commands().find((command) => command.name === "goal")}>
+                      {(command) => (
+                        <GoalChip
+                          description={command().description}
+                          onSet={(condition) => onSend(`/goal ${condition}`)}
+                        />
+                      )}
+                    </Show>
+                  </div>
+                }
+                trailing={
+                  <>
                     {/*
                       At the right, beside send, where both official apps
                       keep their model: the last thing checked before a
-                      message goes out.
+                      message goes out. These stay in the box when the
+                      chips island — the chips say where the session runs,
+                      these say what the next turn runs under.
                     */}
+                    {/*
+                      The mode, beside the model: both say what the next
+                      turn runs under, and both reach the agent the same
+                      way. The list is the harness's own — Codex has no
+                      `dontAsk` worth a second row (src/lib/modes.ts).
+                    */}
+                    <Show when={session()}>
+                      {(current) => (
+                        <ModeChip
+                          modes={modesFor(current().harness)}
+                          mode={current().permission_mode}
+                          saving={settingMode()}
+                          align="end"
+                          onChoose={(mode) => void onSetMode(mode)}
+                        />
+                      )}
+                    </Show>
                     <Show when={session() !== undefined && models().length > 0 && session()}>
                       {(current) => (
-                        <ModelChip
-                          models={models()}
-                          choice={current().model}
-                          saving={settingModel()}
-                          align="end"
-                          onChoose={(choice) => void onSetModel(choice)}
-                        />
+                        <>
+                          <ModelChip
+                            models={models()}
+                            choice={current().model}
+                            saving={settingModel()}
+                            align="end"
+                            onChoose={(choice) => void onSetModel(choice)}
+                          />
+                          <EffortChip
+                            models={models()}
+                            choice={current().model}
+                            saving={settingModel()}
+                            align="end"
+                            onChoose={(choice) => void onSetModel(choice)}
+                          />
+                        </>
                       )}
                     </Show>
                     {/*
-                      Only once the harness has reported a turn. Before that
-                      there is no context to show, and a ring drawn empty
-                      beside an em dash is a shape the eye stops on to learn
-                      nothing.
+                      The usage ring, beside send, where the official
+                      composers keep it: how full the context window is,
+                      and one tap opens the panel with the plan windows
+                      beside it (docs/ux.md §9.3). Nothing is drawn until a
+                      harness has reported something — a ring at zero over
+                      a context flyco has never been told is an invention.
                     */}
-                    <Show when={latestUsage()?.context}>
-                      {(context) => (
-                        <Ring
-                          label="Context"
-                          value={context().used_tokens}
-                          total={context().size_tokens}
-                          readout={`${tokens(context().used_tokens)} / ${tokens(context().size_tokens)}`}
-                        />
-                      )}
+                    <Show when={latestContext() !== null || planUsage().length > 0}>
+                      <ContextRing
+                        context={latestContext()}
+                        usage={latestContextUsage()}
+                        windows={planUsage()}
+                        session={sessionTotals()}
+                        now={now()}
+                        machineUp={machineUp()}
+                        onBreakdown={requestContextBreakdown}
+                      />
                     </Show>
-                    {/*
-                      What is left of the plan, beside the context ring and
-                      on the same terms: nothing is drawn until a harness
-                      has reported, because a ring at zero over a plan flyco
-                      has never asked about is an invention (docs/ux.md
-                      §9.3).
-                    */}
-                    <For each={planUsage()}>
-                      {(window) => (
-                        <Ring
-                          label={window.label}
-                          value={window.used_percent}
-                          total={100}
-                          readout={`${window.used_percent}%`}
-                          hint={resetHint(window, now())}
-                        />
-                      )}
-                    </For>
                   </>
                 }
               />
@@ -967,10 +1203,12 @@ export default function SessionDetail() {
         <SessionDrawer
           sessionId={params.id}
           relay={relay}
+          machineUp={machineUp()}
           liveRepoSummary={liveRepoSummary()}
           open={drawerOpen()}
           onOpenChange={setDrawerOpen}
-          openPanel={panelRequest()}
+          openEnv={envPanelAt()}
+          onError={setError}
         />
       </div>
     </section>

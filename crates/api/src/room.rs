@@ -1,62 +1,75 @@
 //! The session room: one Durable Object per live session.
 //!
-//! A session's daemon holds one outbound hibernating WebSocket tagged
-//! [`ROLE_DAEMON`]; every browser watching the session holds one tagged
-//! [`ROLE_CLIENT`]. The room forwards between the two tags, appends the
-//! harness stream to its own SQLite so a reconnecting browser can catch up,
-//! and is the single writer for everything about a live session.
+//! A session's daemon attaches over REST, holds one SSE stream for the
+//! room's [`ControlToDaemon`] commands, and posts its own
+//! [`DaemonToControl`] frames back in sequenced batches. Everything a
+//! person sees lands in the room's `events` table; the Worker forwards
+//! each emitted event to the owner's global stream, so a browser never
+//! talks to the room at all.
 //!
 //! # What the room is, and is not, allowed to touch
 //!
 //! A Durable Object cannot reach D1 or the Worker's KV. Every check that
-//! needs them — does this credential exist, does this user own this session,
-//! is this approval already decided — therefore happens in the *Worker*
-//! before it forwards anything here. What arrives at the room is already
-//! authenticated, and says so in internal headers ([`HEADER_ROLE`],
-//! [`HEADER_SESSION`]) that only a same-Worker call can set. The room
-//! refuses a request without them rather than guessing.
+//! needs them — does this credential exist, does this user own this
+//! session, is this approval already decided — therefore happens in the
+//! *Worker* before it forwards anything here. What arrives at the room is
+//! already authenticated, and says so in internal headers
+//! ([`HEADER_SESSION`], [`HEADER_INTERNAL`]) that only a same-Worker call
+//! can set. The room refuses a request without them rather than guessing.
 //!
-//! # The daemon's mailbox
+//! # How a command reaches the daemon
 //!
-//! A daemon is not always connected — it is being provisioned, it is
-//! reconnecting, its machine was evicted — and a user message that arrives
-//! in that window is *conversation*, not control: it is the whole point of
-//! the session, and the user has no way to know it was thrown away. So
-//! every user message is appended to the room's stream (as it already was,
-//! for replay) and a **delivery cursor** records how far down that stream
-//! the daemon has been told about. A daemon that says `Hello` is sent
-//! everything past the cursor, in order, before anything else; a message
-//! that arrives while it is connected is forwarded and the cursor moves
-//! with it. The prompt `POST /v1/sessions` carries reaches the agent by
-//! exactly this path: it is written minutes before the machine exists.
+//! There is no socket to write to: a deliverable command is a row in
+//! `daemon_commands`, and the daemon's SSE stream is a cursor over that
+//! table — the stream polls it, hands over every row newer than its
+//! cursor, and a daemon acknowledges what it applied with `ack_through`
+//! on its next frames POST, which deletes the rows. Delivery is therefore
+//! at-least-once by construction: a stream that dies mid-poll leaves the
+//! unacknowledged rows for the next attach, and the daemon skips what it
+//! already applied.
 //!
-//! Every other command is still dropped when nobody is listening, and that
-//! is not an oversight — an interrupt, a compaction or a terminal keystroke
-//! held for a daemon that reconnects an hour later would arrive as an
-//! instruction about a turn that no longer exists. A `!` shell command is
-//! dropped for the same reason and *answered* anyway: the room records it,
-//! and if no daemon took it, records its exit as
-//! [`ShellOutcome::Offline`](flyco_core::ShellOutcome::Offline) rather than
-//! leaving the user watching for output that is never coming.
+//! Whether a command becomes a row at all depends on whether a daemon is
+//! attached — the presence marker — and on what it is. A user message is
+//! *conversation*: it is queued whether or not a daemon is there, exactly
+//! as the old mailbox did, and the prompt `POST /v1/sessions` carries
+//! reaches the agent minutes before the machine exists by this path. A
+//! `!` shell command queued for nobody is answered at once with
+//! [`ShellOutcome::Offline`](flyco_core::ShellOutcome::Offline) rather
+//! than left waiting. An interrupt, a keystroke, a compaction held for a
+//! daemon that reconnects an hour later would arrive as an instruction
+//! about a turn that no longer exists, so those are dropped when the
+//! marker says nobody is listening.
+//!
+//! # Presence is a deadline, not a socket
+//!
+//! `daemon_presence` holds the current attach's epoch and the moment its
+//! claim expires. Attach and every frames POST renew it; so does the
+//! command stream itself on every poll. A daemon that falls silent stops
+//! being renewed, and the next room call that finds the marker stale
+//! announces `MachineConnection{connected:false}` once. That is lazier
+//! than a close event — a daemon that dies while nobody asks the
+//! room anything is announced on the next call rather than at once — and
+//! it is the trade a long-lived connection never really offered either:
+//! silence is only ever noticed when something tries to use it.
 //!
 //! # Why the state lives outside the struct
 //!
-//! [`SessionRoom`] is empty. That is not an oversight: the room's state is
-//! its `events` table, its KV, and its sockets' attachments, all of which
-//! survive hibernation on their own. A field would be a fourth copy of the
-//! same facts, re-serialized on every frame, and the first one to drift.
+//! [`SessionRoom`] is empty. The room's state is its tables, all of which
+//! survive the object being rebuilt around every event. A field would be
+//! a second copy of the same facts, re-serialized on every call, and the
+//! first one to drift.
 
 use flyco_core::workdir::WorkdirReply;
+use flyco_core::wire::{DaemonAttach, DaemonFrames};
 use flyco_core::{
-    ClientEvent, ControlToDaemon, DaemonToControl, MessageOrigin, RepoStatus, SessionId,
-    ShellRunId, WorkdirRequestId,
+    ClientEvent, ControlToDaemon, DaemonToControl, MessageOrigin, RepoStatus, ShellRunId,
+    WorkdirRequestId,
 };
 use serde::{Deserialize, Serialize};
-use skyzen::durable::{
-    DurableConnections, DurableContext, DurableObject, DurableObjectError, WebSocketConnection,
-    WebSocketEvent,
-};
+use skyzen::durable::{DurableObject, DurableObjectError};
 use skyzen::extract::Query;
+use skyzen::responder::Sse;
+use skyzen::responder::sse::Event;
 use skyzen::routing::{CreateRouteNode, Route, Router};
 use skyzen::sql;
 use skyzen::utils::Json;
@@ -67,22 +80,6 @@ use crate::clock::now_unix;
 use crate::extract::Headers;
 use crate::problem::Outcome;
 use crate::respond::NoContent;
-
-/// Tag on the daemon's socket. Exactly one is expected at a time.
-pub const ROLE_DAEMON: &str = "daemon";
-
-/// Tag on every browser's socket.
-pub const ROLE_CLIENT: &str = "client";
-
-/// Prefix of the tag carrying the room's session id.
-///
-/// The id has to survive hibernation to validate a daemon's `Hello`, and a
-/// tag is the one place it can live without an I/O round trip on every
-/// frame.
-const SESSION_TAG_PREFIX: &str = "session:";
-
-/// Names the role of a Worker→room call.
-pub const HEADER_ROLE: &str = "x-flyco-role";
 
 /// Names the session a Worker→room call belongs to.
 pub const HEADER_SESSION: &str = "x-flyco-session";
@@ -96,21 +93,46 @@ pub const INTERNAL: &str = "1";
 /// Most events one catch-up page returns.
 pub const EVENT_PAGE_LIMIT: u32 = 500;
 
-/// Close code for a peer that broke the protocol.
+/// How long a daemon's presence marker survives its last contact.
 ///
-/// RFC 6455 §7.4.1 1008 "policy violation": the frame was well-formed
-/// WebSocket, the room simply refuses to speak to whoever sent it.
-const CLOSE_POLICY: u16 = 1008;
+/// Attach, every frames POST, and every poll of its command stream renew
+/// it, so expiry means a daemon that has said *nothing* for this long —
+/// the only shape a dead or partitioned daemon can take. The command
+/// stream refreshes well inside it, so a live daemon never expires.
+const PRESENCE_TTL_SECONDS: u64 = 30;
 
-/// What a daemon socket carries once it has been greeted.
+/// How often the command stream renews the presence marker.
 ///
-/// Presence is the handshake: a socket with no attachment has not said
-/// `Hello` yet, and the room refuses everything else until it does. The
-/// attachment survives hibernation, so a woken room does not re-handshake.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-struct Greeted {
-    /// Protocol version the daemon declared and the room accepted.
-    protocol_version: u32,
+/// Every poll would write the same row a hundred times inside one TTL;
+/// the marker only needs to stay ahead of expiry.
+const PRESENCE_REFRESH_SECONDS: u64 = 10;
+
+/// One event a room made, as an internal route reports it for fan-out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct EmittedEvent {
+    /// Position the event took in the room's replayable stream, when it
+    /// was recorded there. Live-only facts — the daemon's presence, an
+    /// approval's decision — have no position and never will.
+    pub seq: Option<u64>,
+    /// The event.
+    pub event: ClientEvent,
+}
+
+/// What an internal route answers with: the events the call produced, in
+/// order, for the Worker to publish onto the session owner's stream.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct Emitted {
+    /// The events, in the order the room made them.
+    pub events: Vec<EmittedEvent>,
+}
+
+/// What an attach answers with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct AttachResponse {
+    /// Generation of this attachment; increments per attach.
+    pub epoch: u64,
+    /// The events the attach produced.
+    pub events: Vec<EmittedEvent>,
 }
 
 /// One stored event, as the catch-up API serves it.
@@ -142,6 +164,15 @@ pub struct EventCursor {
     pub after: Option<u64>,
 }
 
+/// Query of the room's command stream.
+#[derive(Debug, Deserialize, skyzen::ToSchema)]
+pub struct CommandCursor {
+    /// The attach this stream serves. A stream opened under an epoch that
+    /// a later attach superseded is refused rather than fed commands it
+    /// would acknowledge against the wrong generation.
+    pub epoch: u64,
+}
+
 /// The columns the `events` table stores.
 #[derive(Debug, skyzen::FromRow)]
 struct EventRow {
@@ -164,6 +195,25 @@ impl From<EventRow> for StoredEvent {
     }
 }
 
+/// The columns the `daemon_commands` table stores.
+#[derive(Debug, skyzen::FromRow)]
+struct CommandRow {
+    seq: u64,
+    /// The command, as a JSON document. Untyped on the way out for the
+    /// same reason an event is: the room hands the daemon what it was
+    /// given, including a variant this build of the room does not know.
+    #[row(json)]
+    json: serde_json::Value,
+}
+
+/// The `daemon_presence` row.
+#[derive(Debug, skyzen::FromRow)]
+struct PresenceRow {
+    epoch: u64,
+    live_until: u64,
+    gone_reported: u8,
+}
+
 /// The relay room for one session.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[skyzen::durable_object]
@@ -172,8 +222,9 @@ pub struct SessionRoom;
 impl DurableObject for SessionRoom {
     fn fetch(&mut self) -> Router {
         Route::new((
-            "/relay/daemon".at(accept_daemon),
-            "/relay/client".at(accept_client),
+            "/internal/daemon-attach".post(attach_daemon),
+            "/internal/commands".at(stream_commands),
+            "/internal/frames".post(accept_frames),
             "/internal/command".post(run_command),
             "/internal/broadcast".post(run_broadcast),
             "/internal/events".at(read_events),
@@ -184,386 +235,712 @@ impl DurableObject for SessionRoom {
         ))
         .build()
     }
-
-    async fn websocket(
-        &mut self,
-        ws: &WebSocketConnection,
-        event: WebSocketEvent,
-        ctx: &DurableContext,
-    ) -> Result<(), DurableObjectError> {
-        let WebSocketEvent::Message(message) = event else {
-            // Cloudflare has already removed the socket from the connection
-            // set, so a departing *browser* needs no bookkeeping: the next
-            // broadcast simply reaches one fewer peer. A departing daemon is
-            // the opposite — every browser left is watching a session that
-            // will never say anything again unless it is told — so that one
-            // is announced (docs/ux.md §9.6).
-            log_disconnect(&event);
-            if role_of(ws)? == Role::Daemon {
-                return announce_machine(ctx.connections(), false);
-            }
-            return Ok(());
-        };
-
-        let Some(text) = message.into_text() else {
-            return refuse(ws, "the relay carries JSON text frames only");
-        };
-
-        match role_of(ws)? {
-            Role::Daemon => on_daemon_frame(ws, &text, ctx).await,
-            Role::Client => on_client_frame(ws, &text, ctx).await,
-        }
-    }
 }
 
-/// Which side of the relay a socket is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    /// The session's `flycod`.
-    Daemon,
-    /// A browser watching the session.
-    Client,
-}
+// ── The daemon's three routes ──
 
-impl Role {
-    /// The role named by an internal header value or a socket tag.
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            ROLE_DAEMON => Some(Self::Daemon),
-            ROLE_CLIENT => Some(Self::Client),
-            _ => None,
-        }
-    }
-
-    /// The tag sockets of this role carry.
-    ///
-    /// Doubles as the [`HEADER_ROLE`] value and as the last segment of the
-    /// room's relay path, so the three can never name different things.
-    #[must_use]
-    pub const fn tag(self) -> &'static str {
-        match self {
-            Self::Daemon => ROLE_DAEMON,
-            Self::Client => ROLE_CLIENT,
-        }
-    }
-}
-
-/// Tells every browser whether a daemon is holding this room.
+/// Attaches a daemon to the room.
 ///
-/// The room is the only place that knows: a browser sees frames arrive and
-/// stop, and cannot tell an agent that is thinking from a machine that fell
-/// off the network. Broadcast rather than appended — it is the *current*
-/// state of a connection, so a replay of it would be a page announcing an
-/// outage that ended an hour ago.
-fn announce_machine(
-    connections: &DurableConnections,
-    connected: bool,
-) -> Result<(), DurableObjectError> {
-    broadcast(connections, &ClientEvent::MachineConnection { connected })
+/// The attach is the handshake: the version check happens here, the epoch
+/// minted here names every later frame batch and command stream, and the
+/// presence marker the rest of the room reads is written here. A daemon
+/// that attached twice — a retry that raced the first attempt's response
+/// — supersedes itself: the older epoch's stream ends and its frames are
+/// refused.
+async fn attach_daemon(
+    headers: Headers,
+    Json(attach): Json<DaemonAttach>,
+    db: DurableDb,
+) -> Outcome<Json<AttachResponse>> {
+    attach_inner(&headers, &attach, &db).await.into()
 }
 
-fn log_disconnect(event: &WebSocketEvent) {
-    match event {
-        WebSocketEvent::Close { code, reason, .. } => {
-            tracing::info!(code, reason, "a relay peer disconnected");
-        }
-        WebSocketEvent::Error(error) => tracing::warn!(error, "a relay socket failed"),
-        WebSocketEvent::Message(_) => unreachable!("messages are handled before this point"),
-    }
-}
-
-/// Closes a misbehaving peer and reports why.
-///
-/// Fast fail: a peer that sent something the protocol does not allow is
-/// disconnected rather than ignored, so a broken daemon or a hostile client
-/// cannot sit on the room quietly doing nothing useful.
-fn refuse(ws: &WebSocketConnection, reason: &str) -> Result<(), DurableObjectError> {
-    tracing::warn!(reason, "closing a relay peer");
-    ws.close(CLOSE_POLICY, reason)
-}
-
-/// The role a socket was accepted with.
-fn role_of(ws: &WebSocketConnection) -> Result<Role, DurableObjectError> {
-    ws.tags()?
-        .iter()
-        .find_map(|tag| Role::parse(tag))
-        .ok_or_else(|| {
-            DurableObjectError::Runtime("a relay socket was accepted without a role tag".to_owned())
-        })
-}
-
-/// The session id a socket was accepted for.
-fn session_of(ws: &WebSocketConnection) -> Result<SessionId, DurableObjectError> {
-    ws.tags()?
-        .iter()
-        .find_map(|tag| tag.strip_prefix(SESSION_TAG_PREFIX)?.parse().ok())
-        .ok_or_else(|| {
-            DurableObjectError::Runtime(
-                "a relay socket was accepted without a session tag".to_owned(),
-            )
-        })
-}
-
-/// Handles one frame from the daemon.
-async fn on_daemon_frame(
-    ws: &WebSocketConnection,
-    text: &str,
-    ctx: &DurableContext,
-) -> Result<(), DurableObjectError> {
-    let Ok(frame) = serde_json::from_str::<DaemonToControl>(text) else {
-        return refuse(
-            ws,
-            "the daemon sent a frame this protocol version does not define",
-        );
-    };
-
-    let greeted = ws.attachment::<Greeted>()?;
-    if let DaemonToControl::Hello {
-        protocol_version,
-        session,
-    } = frame
-    {
-        if protocol_version != flyco_core::WIRE_PROTOCOL_VERSION {
-            tracing::warn!(
-                daemon = protocol_version,
-                control = flyco_core::WIRE_PROTOCOL_VERSION,
-                "refusing a daemon that speaks another wire protocol version"
-            );
-            return refuse(ws, "wire protocol version mismatch");
-        }
-        if session != session_of(ws)? {
-            tracing::warn!(%session, "refusing a daemon that greeted the wrong room");
-            return refuse(ws, "this daemon belongs to another session");
-        }
-        ws.set_attachment(&Greeted { protocol_version })?;
-        ws.send_json(&ControlToDaemon::Welcome)?;
-        // After the welcome and before anything else: the daemon has to
-        // know what it missed before it is told what is happening now. The
-        // machine it is running on comes first of all — a daemon told its
-        // machine changed *after* a user message would answer that message
-        // believing it is somewhere else.
-        replay_held_commands(ws, ctx.db()).await?;
-        replay_terminal_size(ws, ctx.db()).await?;
-        replay_mailbox(ws, ctx.db()).await?;
-        // Last, because it is the room telling browsers the machine is
-        // back: a page that heard it before the replay would show a live
-        // session that then filled in behind it.
-        return announce_machine(ctx.connections(), true);
-    }
-
-    if greeted.is_none() {
-        return refuse(ws, "the first frame must be `hello`");
-    }
-
-    // Answered, not recorded: a heartbeat is not something that happened
-    // to the session, and the answer is the whole point of it — silence is
-    // how the daemon learns its socket died (`flycod`'s `SILENCE_LIMIT`).
-    if matches!(frame, DaemonToControl::Heartbeat) {
-        return ws.send_json(&ControlToDaemon::Heartbeat);
-    }
-
-    // Addressed rather than broadcast: one browser is waiting on the HTTP
-    // request this answers, and nobody else in the room has any use for it.
-    if let DaemonToControl::WorkdirReply { id, reply } = frame {
-        return store_workdir_reply(ctx.db(), id, &reply).await;
-    }
-
-    record(&frame, ctx.db(), ctx.kv()).await?;
-    // `Hello` is the only frame browsers never see, and it was handled
-    // above; reaching the `None` arm would mean the mapping grew a hole.
-    ClientEvent::from_daemon(frame).map_or_else(
-        || {
-            Err(DurableObjectError::Runtime(
-                "a daemon frame past the handshake had no client form".to_owned(),
-            ))
-        },
-        |event| broadcast(ctx.connections(), &event),
-    )
-}
-
-/// Handles one frame from a browser.
-async fn on_client_frame(
-    ws: &WebSocketConnection,
-    text: &str,
-    ctx: &DurableContext,
-) -> Result<(), DurableObjectError> {
-    let Ok(command) = serde_json::from_str::<ControlToDaemon>(text) else {
-        return refuse(
-            ws,
-            "the client sent a frame this protocol version does not define",
-        );
-    };
-    if !command.is_client_command() {
-        return refuse(
-            ws,
-            "a client may only send `user_message`, `shell_command`, `interrupt`, `compact`, \
-             `terminal_input` or `terminal_resize`",
-        );
-    }
-
-    match &command {
-        ControlToDaemon::UserMessage { text, origin } => {
-            deliver_user_message(ctx.db(), ctx.connections(), text, *origin).await
-        }
-        ControlToDaemon::ShellCommand { command } => {
-            deliver_shell_command(ctx.db(), ctx.connections(), command).await
-        }
-        // A pane size is a state, not an instant: it is kept for whichever
-        // daemon greets the room next, and one that is here now is told at
-        // once. A daemon not being here is not news worth announcing for
-        // it — the pane was fitted while the machine was still being
-        // built, which is the ordinary case.
-        ControlToDaemon::TerminalResize { cols, rows } => {
-            remember_terminal_size(ctx.db(), *cols, *rows).await?;
-            forward_to_daemon(ctx.connections(), &command).map(drop)
-        }
-        // An interrupt, a compaction or a keystroke is worthless to a
-        // daemon that is not there, so none of them is held — but a browser
-        // that pressed Stop and was told nothing waits on a turn no longer
-        // being run. Whoever sent it, and everyone else watching, is told
-        // the machine is off the room instead.
-        _ => {
-            if forward_to_daemon(ctx.connections(), &command)? {
-                return Ok(());
-            }
-            tracing::warn!(
-                ?command,
-                "dropped a client command: this session has no daemon connected"
-            );
-            announce_machine(ctx.connections(), false)
-        }
-    }
-}
-
-/// Records a user message, echoes it to browsers, and gets it to the daemon.
-///
-/// The one path a user message takes, whichever door it came in by — a
-/// browser's socket or the Worker forwarding a REST call — because the route
-/// a message arrived on is not something a replay, or the agent, should be
-/// able to tell.
-///
-/// Recording comes first: the message is conversation. The browser that
-/// typed it already has it, every other browser watching the session does
-/// not, and a catch-up that replayed only the agent's side would show
-/// answers to questions nobody asked. It is also what gives a turn in the
-/// history list the prompt it is named by.
-///
-/// The cursor moves only when the daemon actually took the frame. A message
-/// left behind it is redelivered by [`replay_mailbox`] on the next `Hello`.
-async fn deliver_user_message(
+async fn attach_inner(
+    headers: &Headers,
+    attach: &DaemonAttach,
     db: &DurableDb,
-    connections: &DurableConnections,
-    text: &str,
-    origin: MessageOrigin,
-) -> Result<(), DurableObjectError> {
-    let event = ClientEvent::UserMessage {
-        text: text.to_owned(),
-        origin,
-    };
-    let seq = append(db, &event).await?;
-    // The mailbox is an index into the stream, written under the position
-    // the event just took, so a redelivery can never reorder the
-    // conversation or invent a message the replay does not also carry.
-    let owned = text.to_owned();
+) -> Result<Json<AttachResponse>, ApiError> {
+    internal(headers)?;
+    if attach.protocol_version != flyco_core::WIRE_PROTOCOL_VERSION {
+        return Err(ApiError::ProtocolMismatch {
+            daemon: attach.protocol_version,
+            control: flyco_core::WIRE_PROTOCOL_VERSION,
+        });
+    }
+    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+
+    let live_until = now_unix().saturating_add(PRESENCE_TTL_SECONDS);
     sql!(
         db,
-        "INSERT INTO user_messages (seq, text) VALUES ({seq}, {owned})"
+        "INSERT INTO daemon_presence (id, epoch, live_until, gone_reported) \
+         VALUES (0, 1, {live_until}, 0) \
+         ON CONFLICT (id) DO UPDATE SET \
+             epoch = daemon_presence.epoch + 1, \
+             live_until = excluded.live_until, \
+             gone_reported = 0"
+    )
+    .execute()
+    .await
+    .map_err(|error| room_failed(&error))?;
+    let epoch: u64 = sql!(db, "SELECT epoch FROM daemon_presence WHERE id = 0")
+        .fetch_scalar()
+        .await
+        .map_err(|error| room_failed(&error))?;
+    // Frame bookkeeping from a superseded attach can never become valid
+    // again — the epoch check refuses it — so it is swept rather than
+    // kept.
+    sql!(db, "DELETE FROM daemon_frames WHERE epoch != {epoch}")
+        .execute()
+        .await
+        .map_err(|error| room_failed(&error))?;
+
+    tracing::info!(epoch, "a daemon attached to its session room");
+    let events = vec![EmittedEvent {
+        seq: None,
+        event: ClientEvent::MachineConnection { connected: true },
+    }];
+    Ok(Json(AttachResponse { epoch, events }))
+}
+
+/// Holds a daemon's command stream open.
+///
+/// The stream is a cursor over `daemon_commands`: it emits every row past
+/// its cursor, then polls the table for more until the attach it serves
+/// is superseded. Storage is the rendezvous because the object serving
+/// this request shares no memory with the objects serving any other —
+/// the rows are the only thing every activation sees identically.
+async fn stream_commands(
+    headers: Headers,
+    Query(cursor): Query<CommandCursor>,
+    db: DurableDb,
+) -> Outcome<Sse> {
+    open_command_stream(&headers, cursor.epoch, db)
+        .await
+        .into()
+}
+
+async fn open_command_stream(
+    headers: &Headers,
+    epoch: u64,
+    db: DurableDb,
+) -> Result<Sse, ApiError> {
+    internal(headers)?;
+    ensure_schema(&db).await.map_err(|error| room_failed(&error))?;
+    let presence = read_presence(&db)
+        .await
+        .map_err(|error| room_failed(&error))?;
+    let Some(presence) = presence else {
+        return Err(ApiError::Room(
+            "a command stream was opened before any daemon attached".to_owned(),
+        ));
+    };
+    if presence.epoch != epoch {
+        return Err(ApiError::RelayEpochStale {
+            current: presence.epoch,
+            opened: epoch,
+        });
+    }
+
+    let feed = CommandFeed {
+        db,
+        epoch,
+        cursor: 0,
+        sent_resize: false,
+        last_touch: 0,
+    };
+    Ok(crate::sse::serve(feed, poll_command_feed, crate::sse::HEARTBEAT))
+}
+
+/// One poll of the command stream.
+///
+/// The remembered pane size goes first — before anything queued — because
+/// the daemon's PTY should be born fitted rather than refitted a message
+/// in. Then every `daemon_commands` row past the cursor, oldest first.
+/// The stream ends when the attach it serves has been superseded.
+fn poll_command_feed(feed: &mut CommandFeed) -> crate::sse::PollFn<'_> {
+    Box::pin(async move {
+        command_feed_step(feed)
+            .await
+            .unwrap_or(crate::sse::Poll::Idle)
+    })
+}
+
+/// One poll step, fallible so a failed read surfaces once as a warning
+/// rather than killing the stream — storage retries answer next tick.
+async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, ()> {
+    let now = now_unix();
+    let db = &feed.db;
+
+    if !feed.sent_resize {
+        feed.sent_resize = true;
+        let size: Option<TerminalSizeRow> = sql!(
+            db,
+            "SELECT cols, rows FROM terminal_size WHERE id = 0"
+        )
+        .fetch_optional()
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "a command stream could not read the terminal size");
+        })?;
+        if let Some(TerminalSizeRow { cols, rows }) = size {
+            return Ok(crate::sse::Poll::Emit(vec![command_event(
+                None,
+                &serde_json::json!({
+                    "type": "terminal_resize",
+                    "cols": cols,
+                    "rows": rows,
+                }),
+            )]));
+        }
+    }
+
+    let presence = read_presence(&feed.db).await.map_err(|error| {
+        tracing::warn!(%error, "a command stream could not read daemon presence");
+    })?;
+    if let Some(row) = presence {
+        // The attach this stream serves was superseded; the newer
+        // epoch's stream is the one the room answers now.
+        if row.epoch != feed.epoch {
+            return Ok(crate::sse::Poll::End);
+        }
+    }
+    if now.saturating_sub(feed.last_touch) >= PRESENCE_REFRESH_SECONDS {
+        let live_until = now.saturating_add(PRESENCE_TTL_SECONDS);
+        let epoch = feed.epoch;
+        sql!(
+            db,
+            "UPDATE daemon_presence SET live_until = {live_until} \
+             WHERE id = 0 AND epoch = {epoch}"
+        )
+        .execute()
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "a command stream could not renew daemon presence");
+        })?;
+        feed.last_touch = now;
+    }
+
+    let cursor = feed.cursor;
+    let rows: Vec<CommandRow> = sql!(
+        db,
+        "SELECT seq, json FROM daemon_commands WHERE seq > {cursor} ORDER BY seq"
+    )
+    .fetch_all()
+    .await
+    .map_err(|error| {
+        tracing::warn!(%error, "a command stream could not poll its commands");
+    })?;
+    if rows.is_empty() {
+        return Ok(crate::sse::Poll::Idle);
+    }
+    feed.cursor = rows.last().map_or(feed.cursor, |row| row.seq);
+    Ok(crate::sse::Poll::Emit(
+        rows.iter()
+            .map(|row| command_event(Some(row.seq), &row.json))
+            .collect(),
+    ))
+}
+
+/// Encodes one command for the wire.
+///
+/// The envelope's `command` field carries the row's JSON verbatim rather
+/// than a re-serialized [`ControlToDaemon`], so a command written by a
+/// newer control plane reaches the daemon exactly as stored. A `seq` of
+/// `None` marks a state replay — the remembered pane size — which carries
+/// no ordering obligation and is acknowledged for nothing.
+fn command_event(seq: Option<u64>, command: &serde_json::Value) -> Event {
+    let envelope = serde_json::json!({
+        "seq": seq,
+        "command": command,
+    });
+    let event = Event::data(envelope.to_string()).event("command");
+    match seq {
+        Some(seq) => event.id(seq.to_string()),
+        None => event,
+    }
+}
+
+/// The command stream's working state.
+struct CommandFeed {
+    db: DurableDb,
+    /// The attach this stream serves; a newer one ends it.
+    epoch: u64,
+    /// How far down `daemon_commands` this stream has handed over.
+    cursor: u64,
+    /// Whether the remembered pane size has been replayed yet.
+    sent_resize: bool,
+    /// When presence was last renewed, seconds.
+    last_touch: u64,
+}
+
+/// Accepts one batch of a daemon's outbound frames.
+///
+/// Ordering is the caller's job and the room enforces it: a batch resumes
+/// where the last stored one ended, so a retransmission is answered
+/// without reapplying anything and a gap is refused — the daemon's
+/// in-flight queue already holds the missing frames, so refusing costs a
+/// resend rather than a loss.
+async fn accept_frames(
+    headers: Headers,
+    Json(batch): Json<DaemonFrames>,
+    db: DurableDb,
+    kv: DurableKv,
+) -> Outcome<Json<Emitted>> {
+    accept_batch(&headers, batch, &db, &kv).await.into()
+}
+
+async fn accept_batch(
+    headers: &Headers,
+    batch: DaemonFrames,
+    db: &DurableDb,
+    kv: &DurableKv,
+) -> Result<Json<Emitted>, ApiError> {
+    internal(headers)?;
+    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+    let Some(presence) = read_presence(db)
+        .await
+        .map_err(|error| room_failed(&error))?
+    else {
+        return Err(ApiError::Room(
+            "a daemon posted frames before it attached".to_owned(),
+        ));
+    };
+    if presence.epoch != batch.epoch {
+        return Err(ApiError::RelayEpochStale {
+            current: presence.epoch,
+            opened: batch.epoch,
+        });
+    }
+
+    let epoch = batch.epoch;
+    let through: u64 = sql!(db, "SELECT through FROM daemon_frames WHERE epoch = {epoch}")
+        .fetch_scalar_optional()
+        .await
+        .map_err(|error| room_failed(&error))?
+        .unwrap_or(0);
+    let next = through.saturating_add(1);
+    if batch.from_seq > next {
+        return Err(ApiError::RelayFramesGap {
+            next,
+            got: batch.from_seq,
+        });
+    }
+    // A batch may overlap the stored tail — the POST that carried its head
+    // may have been answered and lost on the wire. Frames at or below
+    // `through` are already applied; only the rest is new.
+    let skip = usize::try_from(next.saturating_sub(batch.from_seq)).unwrap_or(usize::MAX);
+    let fresh = batch.frames.get(skip..).unwrap_or(&[]);
+    let mut emitted = Vec::with_capacity(fresh.len());
+    for frame in fresh {
+        emitted.extend(apply_daemon_frame(frame, db, kv).await?);
+    }
+    if !batch.frames.is_empty() {
+        let new_through = batch
+            .from_seq
+            .saturating_add(u64::try_from(batch.frames.len()).unwrap_or(0))
+            .saturating_sub(1);
+        sql!(
+            db,
+            "INSERT INTO daemon_frames (epoch, through) VALUES ({epoch}, {new_through}) \
+             ON CONFLICT (epoch) DO UPDATE SET \
+                 through = max(excluded.through, daemon_frames.through)"
+        )
+        .execute()
+        .await
+        .map_err(|error| room_failed(&error))?;
+    }
+
+    let ack_through = batch.ack_through;
+    if ack_through > 0 {
+        sql!(db, "DELETE FROM daemon_commands WHERE seq <= {ack_through}")
+            .execute()
+            .await
+            .map_err(|error| room_failed(&error))?;
+    }
+
+    // A POST is contact: a daemon whose command stream died but which is
+    // still talking is alive, and the marker should say so until the
+    // stream catches up again.
+    let live_until = now_unix().saturating_add(PRESENCE_TTL_SECONDS);
+    sql!(
+        db,
+        "UPDATE daemon_presence SET live_until = {live_until} \
+         WHERE id = 0 AND epoch = {epoch}"
+    )
+    .execute()
+    .await
+    .map_err(|error| room_failed(&error))?;
+
+    Ok(Json(Emitted { events: emitted }))
+}
+
+/// Applies one daemon frame the way the relay did: recorded when it is
+/// something that happened, folded into the emitted list in its client
+/// form.
+async fn apply_daemon_frame(
+    frame: &DaemonToControl,
+    db: &DurableDb,
+    kv: &DurableKv,
+) -> Result<Vec<EmittedEvent>, ApiError> {
+    // Addressed rather than fanned out: one browser is waiting on the
+    // HTTP request this answers, and nobody else has any use for it.
+    if let DaemonToControl::WorkdirReply { id, reply } = frame {
+        store_workdir_reply(db, *id, reply)
+            .await
+            .map_err(|error| room_failed(&error))?;
+        return Ok(Vec::new());
+    }
+
+    let seq = record(frame, db, kv)
+        .await
+        .map_err(|error| room_failed(&error))?;
+    let Some(event) = ClientEvent::from_daemon(frame.clone()) else {
+        // Every post-attach frame has a client form; reaching this means
+        // the mapping grew a hole.
+        return Err(ApiError::Room(
+            "a daemon frame had no client form".to_owned(),
+        ));
+    };
+    Ok(vec![EmittedEvent { seq, event }])
+}
+
+// ── The room's command surface ──
+
+/// Runs a control-plane command against the room.
+///
+/// The Worker calls this after it has done the durable half of the work —
+/// recording an approval decision in D1, applying a budget signal — so the
+/// live half can never disagree with what was persisted. The answer names
+/// every event the command produced, for the Worker to fan out.
+async fn run_command(
+    headers: Headers,
+    Json(command): Json<ControlToDaemon>,
+    db: DurableDb,
+) -> Outcome<Json<Emitted>> {
+    dispatch_command(&headers, &command, &db).await.into()
+}
+
+async fn dispatch_command(
+    headers: &Headers,
+    command: &ControlToDaemon,
+    db: &DurableDb,
+) -> Result<Json<Emitted>, ApiError> {
+    internal(headers)?;
+    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+
+    // A stale presence marker gets announced once, before anything else
+    // the command produces, so a watcher learns the daemon is gone ahead
+    // of whatever the command itself has to say. The flag keeps the
+    // offline paths below from saying it a second time in the same call.
+    let mut events = Vec::new();
+    let gone_announced = announce_stale_presence(db, &mut events)
+        .await
+        .map_err(|error| room_failed(&error))?;
+    let live = daemon_live(db).await.map_err(|error| room_failed(&error))?;
+
+    match command {
+        ControlToDaemon::UserMessage { text, origin } => {
+            deliver_user_message(db, live, text, *origin, &mut events).await?;
+        }
+        ControlToDaemon::ShellCommand { command } => {
+            deliver_shell_command(db, live, gone_announced, command, &mut events).await?;
+        }
+        // A pane size is a state, not an instant: it is kept for whichever
+        // daemon attaches next, and one that is here now is told at once.
+        // A daemon not being here is not news worth announcing for it —
+        // the pane was fitted while the machine was still being built,
+        // which is the ordinary case.
+        ControlToDaemon::TerminalResize { cols, rows } => {
+            remember_terminal_size(db, *cols, *rows)
+                .await
+                .map_err(|error| room_failed(&error))?;
+            if live {
+                queue_command(db, command)
+                    .await
+                    .map_err(|error| room_failed(&error))?;
+            }
+        }
+        _ => {
+            // Everything else queues only while a daemon is attached. The
+            // commands that must not be lost are exactly the ones
+            // `survives_a_disconnect` names, plus user messages and shell
+            // commands handled above; an interrupt or keystroke held for a
+            // daemon that reconnects an hour later would arrive as an
+            // instruction about a turn that no longer exists. Whoever sent
+            // one, and everyone else watching, is told the machine is off
+            // the room instead — a client that pressed Stop and was told
+            // nothing waits on a turn no longer being run.
+            if live || command.survives_a_disconnect() {
+                queue_command(db, command)
+                    .await
+                    .map_err(|error| room_failed(&error))?;
+            } else {
+                tracing::warn!(
+                    ?command,
+                    "dropped a command: this session has no daemon attached"
+                );
+                if !gone_announced {
+                    events.push(EmittedEvent {
+                        seq: None,
+                        event: ClientEvent::MachineConnection { connected: false },
+                    });
+                }
+            }
+            events.extend(echo_of(db, command).await?);
+        }
+    }
+    Ok(Json(Emitted { events }))
+}
+
+/// Whether the daemon's presence marker is still inside its deadline.
+async fn daemon_live(db: &DurableDb) -> Result<bool, DurableObjectError> {
+    let Some(presence) = read_presence(db).await? else {
+        return Ok(false);
+    };
+    Ok(presence.live_until >= now_unix())
+}
+
+/// Reads the presence row, if an attach has ever written one.
+async fn read_presence(db: &DurableDb) -> Result<Option<PresenceRow>, DurableObjectError> {
+    sql!(
+        db,
+        "SELECT epoch, live_until, gone_reported FROM daemon_presence WHERE id = 0"
+    )
+    .fetch_optional()
+    .await
+    .map_err(|error| stored(&error))
+}
+
+/// Emits `MachineConnection{false}` once for an attach that has expired.
+///
+/// The flag on the presence row is what makes this once *ever*: every
+/// room call checks the marker, and only the first to find it stale says
+/// so. The returned bool is what makes it once *per call*: the offline
+/// paths announce it themselves for a daemon that was already known gone.
+async fn announce_stale_presence(
+    db: &DurableDb,
+    events: &mut Vec<EmittedEvent>,
+) -> Result<bool, DurableObjectError> {
+    let Some(presence) = read_presence(db).await? else {
+        return Ok(false);
+    };
+    if presence.live_until >= now_unix() || presence.gone_reported != 0 {
+        return Ok(false);
+    }
+    sql!(
+        db,
+        "UPDATE daemon_presence SET gone_reported = 1 WHERE id = 0"
     )
     .execute()
     .await
     .map_err(|error| stored(&error))?;
-    broadcast(connections, &event)?;
+    events.push(EmittedEvent {
+        seq: None,
+        event: ClientEvent::MachineConnection { connected: false },
+    });
+    Ok(true)
+}
 
-    // The origin travels no further. What reaches the harness is the text:
-    // a model told that its next instruction was written by a program would
-    // reason about the framing instead of the work.
+/// Records a command for the daemon's stream to hand over.
+///
+/// Every deliverable command is a row — the stream is a cursor over the
+/// table and an acknowledgement deletes from it, so queued-but-live and
+/// queued-while-away are the same mechanism at different lengths of wait.
+async fn queue_command(db: &DurableDb, command: &ControlToDaemon) -> Result<u64, DurableObjectError> {
+    let json = serde_json::to_string(command)
+        .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
+    sql!(
+        db,
+        "INSERT INTO daemon_commands (json, at_unix) VALUES ({json}, {now_unix()})"
+    )
+    .execute()
+    .await
+    .map_err(|error| stored(&error))?;
+    sql!(db, "SELECT seq FROM daemon_commands ORDER BY seq DESC LIMIT 1")
+        .fetch_scalar()
+        .await
+        .map_err(|error| stored(&error))
+}
+
+/// Records a user message, echoes it, and queues it for the daemon.
+///
+/// The one path a user message takes, whichever door it came in by. The
+/// recorded event comes first — the message is conversation, and a replay
+/// without it would show answers to questions nobody asked — and the
+/// command row follows, because a daemon that is away is still owed the
+/// message: it is the whole point of the session, and the user has no way
+/// to know it was thrown away.
+async fn deliver_user_message(
+    db: &DurableDb,
+    live: bool,
+    text: &str,
+    origin: MessageOrigin,
+    events: &mut Vec<EmittedEvent>,
+) -> Result<(), ApiError> {
+    let seq = append(db, &ClientEvent::UserMessage {
+        text: text.to_owned(),
+        origin,
+    })
+    .await
+    .map_err(|error| room_failed(&error))?;
+    events.push(EmittedEvent {
+        seq: Some(seq),
+        event: ClientEvent::UserMessage {
+            text: text.to_owned(),
+            origin,
+        },
+    });
+
+    // The origin travels no further. What reaches the harness is the
+    // text: a model told that its next instruction was written by a
+    // program would reason about the framing instead of the work.
     let command = ControlToDaemon::UserMessage {
         text: text.to_owned(),
         origin: MessageOrigin::User,
     };
-    if forward_to_daemon(connections, &command)? {
-        set_delivered(db, seq).await?;
-    } else {
-        tracing::info!(
-            seq,
-            "held a user message for a daemon that is not connected yet"
-        );
+    queue_command(db, &command)
+        .await
+        .map_err(|error| room_failed(&error))?;
+    if !live {
+        tracing::info!("queued a user message for a daemon that is not attached yet");
     }
     Ok(())
 }
 
-/// Records a `!` shell command, echoes it, and gets it to the daemon
+/// Records a `!` shell command, echoes it, and queues it for the daemon
 /// (docs/ux.md §9.3).
 ///
-/// The room is where a run gets its identity. The browser sends a bare
-/// [`ControlToDaemon::ShellCommand`]; this mints the [`ShellRunId`] that the
-/// recorded row, every output chunk and the exit status are keyed by, and
-/// reissues the command to the daemon as [`ControlToDaemon::RunShell`]. One
-/// writer assigning one identity is what keeps two browsers running `!`
-/// commands at the same moment from having their output attached to each
-/// other's row.
+/// The room is where a run gets its identity. The client sends a bare
+/// [`ControlToDaemon::ShellCommand`]; this mints the [`ShellRunId`] that
+/// the recorded row, every output chunk and the exit status are keyed by,
+/// and reissues the command to the daemon as [`ControlToDaemon::RunShell`].
+/// One writer assigning one identity is what keeps two clients running
+/// `!` commands at the same moment from having their output attached to
+/// each other's row.
 ///
-/// Recorded before it is forwarded, like a user message, because a `!`
+/// Recorded before it is queued, like a user message, because a `!`
 /// command is something a person did to this session: a replay without it
 /// would show a build's output with nothing saying what was built.
 ///
-/// Nothing about it reaches the harness, and nothing waits in the mailbox.
-/// A command held for a daemon that turns up an hour later would run
-/// against a working tree the user is no longer looking at — so a session
-/// with no daemon connected gets an immediate
-/// [`ShellOutcome::Offline`](flyco_core::ShellOutcome::Offline) instead of
-/// silence.
+/// Nothing waits for a daemon that is away. A command held for one that
+/// turns up an hour later would run against a working tree the user is no
+/// longer looking at — so a session with no daemon attached gets an
+/// immediate [`ShellOutcome::Offline`](flyco_core::ShellOutcome::Offline)
+/// instead of silence.
 async fn deliver_shell_command(
     db: &DurableDb,
-    connections: &DurableConnections,
+    live: bool,
+    gone_announced: bool,
     command: &str,
-) -> Result<(), DurableObjectError> {
+    events: &mut Vec<EmittedEvent>,
+) -> Result<(), ApiError> {
     let run = ShellRunId::generate();
     let asked = ClientEvent::ShellCommand {
         run,
         command: command.to_owned(),
     };
-    append(db, &asked).await?;
-    broadcast(connections, &asked)?;
+    let seq = append(db, &asked).await.map_err(|error| room_failed(&error))?;
+    events.push(EmittedEvent {
+        seq: Some(seq),
+        event: asked,
+    });
 
-    let instruction = ControlToDaemon::RunShell {
-        run,
-        command: command.to_owned(),
-    };
-    if forward_to_daemon(connections, &instruction)? {
+    if live {
+        let instruction = ControlToDaemon::RunShell {
+            run,
+            command: command.to_owned(),
+        };
+        queue_command(db, &instruction)
+            .await
+            .map_err(|error| room_failed(&error))?;
         return Ok(());
     }
 
-    tracing::warn!(
-        %run,
-        "a shell command arrived while this session had no daemon connected"
-    );
-    // Both halves of the truth: this run is over before it started, and the
-    // reason is that the machine is not on the room.
-    announce_machine(connections, false)?;
+    tracing::warn!(%run, "a shell command arrived while this session had no daemon attached");
+    // Both halves of the truth: this run is over before it started, and
+    // the reason is that the machine is not on the room.
+    if !gone_announced {
+        events.push(EmittedEvent {
+            seq: None,
+            event: ClientEvent::MachineConnection { connected: false },
+        });
+    }
     let offline = ClientEvent::ShellExited {
         run,
         outcome: flyco_core::ShellOutcome::Offline,
         truncated: false,
     };
-    append(db, &offline).await?;
-    broadcast(connections, &offline)
+    let seq = append(db, &offline).await.map_err(|error| room_failed(&error))?;
+    events.push(EmittedEvent {
+        seq: Some(seq),
+        event: offline,
+    });
+    Ok(())
+}
+
+/// The event a command echoes to watchers, when it has one.
+///
+/// A model or permission-mode change is echoed whether the daemon took
+/// the command or the room queued it: the change is already recorded, so
+/// a browser watching a session between machines still sees the line —
+/// the model is what the next machine comes up on.
+async fn echo_of(
+    db: &DurableDb,
+    command: &ControlToDaemon,
+) -> Result<Vec<EmittedEvent>, ApiError> {
+    let (event, recorded) = match command {
+        ControlToDaemon::ApprovalDecision { id, decision } => (
+            ClientEvent::ApprovalDecided {
+                id: *id,
+                decision: *decision,
+            },
+            false,
+        ),
+        ControlToDaemon::Archive { .. } => (
+            ClientEvent::SessionStateChanged {
+                state: flyco_core::SessionState::Archived,
+            },
+            false,
+        ),
+        ControlToDaemon::SetModel { model } => (
+            ClientEvent::ModelChanged {
+                model: model.clone(),
+            },
+            true,
+        ),
+        ControlToDaemon::SetPermissionMode { mode } => {
+            (ClientEvent::PermissionModeChanged { mode: *mode }, true)
+        }
+        _ => return Ok(Vec::new()),
+    };
+
+    // Recorded for an event that is *transcript* — a model change is a
+    // line in the conversation, because what answers from here on is a
+    // different model and a replay with no seam in it would misrepresent
+    // itself. Live-only for the ones a browser re-reads from the control
+    // plane anyway: an approval's decision and a lifecycle move would be
+    // a second answer free to disagree with the first.
+    let seq = if recorded {
+        Some(append(db, &event).await.map_err(|error| room_failed(&error))?)
+    } else {
+        None
+    };
+    Ok(vec![EmittedEvent { seq, event }])
 }
 
 /// Appends a frame to the room's durable stream and caches what the UI
 /// reads on connect.
 ///
 /// Only what *happened* is appended — the harness stream and the
-/// provisioning timeline: a catch-up must replay events, and a usage meter
-/// or a capability set is a *current value*, so storing every one of them
-/// would grow the table without making the replay any more complete. Those
-/// go to KV, newest wins.
+/// provisioning timeline: a catch-up must replay events, and a usage
+/// meter or a capability set is a *current value*, so storing every one
+/// of them would grow the table without making the replay any more
+/// complete. Those go to KV, newest wins.
 async fn record(
     frame: &DaemonToControl,
     db: &DurableDb,
     kv: &DurableKv,
-) -> Result<(), DurableObjectError> {
+) -> Result<Option<u64>, DurableObjectError> {
     match frame {
         DaemonToControl::Harness { event } => append(
             db,
@@ -572,13 +949,21 @@ async fn record(
             },
         )
         .await
-        .map(drop),
-        DaemonToControl::Started { harness_session_id } => {
-            put_latest(kv, KEY_HARNESS_SESSION, harness_session_id).await
-        }
-        DaemonToControl::Capabilities { capabilities } => {
-            put_latest(kv, KEY_CAPABILITIES, capabilities).await
-        }
+        .map(Some),
+        DaemonToControl::Started { harness_session_id } => put_latest(
+            kv,
+            KEY_HARNESS_SESSION,
+            harness_session_id,
+        )
+        .await
+        .map(|()| None),
+        DaemonToControl::Capabilities { capabilities } => put_latest(
+            kv,
+            KEY_CAPABILITIES,
+            capabilities,
+        )
+        .await
+        .map(|()| None),
         // Appended rather than kept in KV beside the capability set, and
         // for the reason the model list is appended too: the `/` palette is
         // built from the room's replayed stream, so a browser that opens
@@ -591,7 +976,7 @@ async fn record(
             },
         )
         .await
-        .map(drop),
+        .map(Some),
         // Both halves of a `!` command's answer are appended: the command
         // was recorded when it arrived, and a transcript row that replayed
         // as a command with no output and no exit status would be worse
@@ -606,7 +991,7 @@ async fn record(
             },
         )
         .await
-        .map(drop),
+        .map(Some),
         DaemonToControl::ShellExited {
             run,
             outcome,
@@ -620,7 +1005,7 @@ async fn record(
             },
         )
         .await
-        .map(drop),
+        .map(Some),
         DaemonToControl::ProvisioningStage { stage, at_unix } => append(
             db,
             &ClientEvent::ProvisioningStage {
@@ -629,7 +1014,7 @@ async fn record(
             },
         )
         .await
-        .map(drop),
+        .map(Some),
         // Appended rather than only forwarded: a reclamation is something
         // that *happened* to the session, and the browser most likely to
         // want it is one opened after the machine was already gone.
@@ -640,12 +1025,12 @@ async fn record(
             },
         )
         .await
-        .map(drop),
+        .map(Some),
         DaemonToControl::RepoDirty { summary } => {
-            // The daemon is the only thing that can see the working tree, and
-            // it reports the whole `git status --short` output rather than a
-            // flag, so an empty summary is the clean tree and the absence of
-            // any report is "nobody has looked" — which is what
+            // The daemon is the only thing that can see the working tree,
+            // and it reports the whole `git status --short` output rather
+            // than a flag, so an empty summary is the clean tree and the
+            // absence of any report is "nobody has looked" — which is what
             // `GET /v1/sessions/{id}/repo-status` refuses to answer.
             put_latest(
                 kv,
@@ -656,18 +1041,19 @@ async fn record(
                 },
             )
             .await
+            .map(|()| None)
         }
-        _ => Ok(()),
+        _ => Ok(None),
     }
 }
 
-/// Appends one event to the room's replayable stream, and answers with the
-/// position it took.
+/// Appends one event to the room's replayable stream, and answers with
+/// the position it took.
 ///
 /// The position is read back rather than counted in the struct: the room
-/// hibernates, and `AUTOINCREMENT` is the only thing here that stays
-/// monotonic across that and across two writes racing in one wake-up. A
-/// user message's position is what the delivery cursor is compared against.
+/// is rebuilt around every event, and `AUTOINCREMENT` is the only thing
+/// here that stays monotonic across that and across two writes racing in
+/// one wake-up.
 async fn append(db: &DurableDb, event: &ClientEvent) -> Result<u64, DurableObjectError> {
     let json = serde_json::to_string(event)
         .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
@@ -681,123 +1067,13 @@ async fn append(db: &DurableDb, event: &ClientEvent) -> Result<u64, DurableObjec
     .await
     .map_err(|error| stored(&error))?;
 
-    // Single-threaded per room: nothing else can have appended between the
-    // insert above and this read.
+    // Single-threaded per room: nothing else can have appended between
+    // the insert above and this read.
     sql!(db, "SELECT seq FROM events ORDER BY seq DESC LIMIT 1")
         .fetch_scalar_optional()
         .await
         .map_err(|error| stored(&error))?
         .ok_or_else(|| DurableObjectError::Runtime("an appended event had no position".to_owned()))
-}
-
-/// One user message waiting for a daemon to come and take it.
-#[derive(Debug, skyzen::FromRow)]
-struct PendingRow {
-    seq: u64,
-    text: String,
-}
-
-/// Sends the daemon every user message recorded since it was last told
-/// anything, oldest first, and moves the cursor past them.
-///
-/// Sent on the greeting rather than on the socket's accept, because the
-/// accept is a `101` the room answers before any frame may be written and
-/// before the daemon has proved it speaks this protocol version. `Hello` is
-/// the first moment a daemon exists as far as the room is concerned.
-async fn replay_mailbox(
-    ws: &WebSocketConnection,
-    db: &DurableDb,
-) -> Result<(), DurableObjectError> {
-    ensure_schema(db).await?;
-    let cursor = delivered_through(db).await?;
-    let pending: Vec<PendingRow> = sql!(
-        db,
-        "SELECT seq, text FROM user_messages WHERE seq > {cursor} ORDER BY seq"
-    )
-    .fetch_all()
-    .await
-    .map_err(|error| stored(&error))?;
-
-    let Some(last) = pending.last().map(|row| row.seq) else {
-        return Ok(());
-    };
-    let held = pending.len();
-    for row in pending {
-        ws.send_json(&ControlToDaemon::UserMessage {
-            text: row.text,
-            origin: MessageOrigin::User,
-        })?;
-    }
-    set_delivered(db, last).await?;
-    tracing::info!(held, through = last, "replayed a daemon's mailbox");
-    Ok(())
-}
-
-/// One command kept for a daemon that was not there to take it.
-#[derive(Debug, skyzen::FromRow)]
-struct HeldRow {
-    seq: u64,
-    /// The command, as JSON. Untyped for the same reason a stored event is:
-    /// the room hands back what it was given, including a variant this build
-    /// of the Worker does not know how to read.
-    json: String,
-}
-
-/// Keeps a command for the daemon to take when it comes back.
-///
-/// Only the commands [`ControlToDaemon::survives_a_disconnect`] admits reach
-/// here, and there is exactly one: the machine changing, which is a state
-/// rather than an instant and which happens precisely while no daemon is
-/// connected because the change restarted the machine.
-async fn hold_for_daemon(
-    db: &DurableDb,
-    command: &ControlToDaemon,
-) -> Result<(), DurableObjectError> {
-    let json = serde_json::to_string(command)
-        .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
-    ensure_schema(db).await?;
-    sql!(db, "INSERT INTO held_commands (json) VALUES ({json})")
-        .execute()
-        .await
-        .map_err(|error| stored(&error))?;
-    Ok(())
-}
-
-/// Hands a freshly greeted daemon everything that was kept for it, oldest
-/// first, and forgets it.
-///
-/// Deleted rather than kept behind a cursor, unlike the user-message
-/// mailbox: these commands are not part of the conversation and nothing
-/// replays them, so a row that has been delivered has no further use. A
-/// delete that runs after a successful write is what makes delivery
-/// at-most-once here — and a machine change delivered twice would tell the
-/// agent its processes died twice.
-async fn replay_held_commands(
-    ws: &WebSocketConnection,
-    db: &DurableDb,
-) -> Result<(), DurableObjectError> {
-    ensure_schema(db).await?;
-    let held: Vec<HeldRow> = sql!(db, "SELECT seq, json FROM held_commands ORDER BY seq")
-        .fetch_all()
-        .await
-        .map_err(|error| stored(&error))?;
-
-    let Some(last) = held.last().map(|row| row.seq) else {
-        return Ok(());
-    };
-    let count = held.len();
-    for row in held {
-        ws.send_text(&row.json)?;
-    }
-    sql!(db, "DELETE FROM held_commands WHERE seq <= {last}")
-        .execute()
-        .await
-        .map_err(|error| stored(&error))?;
-    tracing::info!(
-        count,
-        "handed a reconnected daemon the commands kept for it"
-    );
-    Ok(())
 }
 
 /// The browser's terminal pane, as it was last fitted.
@@ -807,7 +1083,7 @@ struct TerminalSizeRow {
     rows: u16,
 }
 
-/// Records the size of the browser's terminal pane.
+/// Records the size of the client's terminal pane.
 async fn remember_terminal_size(
     db: &DurableDb,
     cols: u16,
@@ -818,55 +1094,6 @@ async fn remember_terminal_size(
         db,
         "INSERT INTO terminal_size (id, cols, rows) VALUES (0, {cols}, {rows}) \
          ON CONFLICT (id) DO UPDATE SET cols = excluded.cols, rows = excluded.rows"
-    )
-    .execute()
-    .await
-    .map_err(|error| stored(&error))?;
-    Ok(())
-}
-
-/// Tells a freshly greeted daemon how big the terminal pane is, when a
-/// browser has fitted one.
-///
-/// Kept rather than deleted after delivery, unlike a held command: the
-/// next daemon needs it just as much, and nothing about it goes stale.
-async fn replay_terminal_size(
-    ws: &WebSocketConnection,
-    db: &DurableDb,
-) -> Result<(), DurableObjectError> {
-    ensure_schema(db).await?;
-    let size: Option<TerminalSizeRow> =
-        sql!(db, "SELECT cols, rows FROM terminal_size WHERE id = 0")
-            .fetch_optional()
-            .await
-            .map_err(|error| stored(&error))?;
-    if let Some(TerminalSizeRow { cols, rows }) = size {
-        ws.send_json(&ControlToDaemon::TerminalResize { cols, rows })?;
-    }
-    Ok(())
-}
-
-/// The stream position through which the daemon has been told everything.
-async fn delivered_through(db: &DurableDb) -> Result<u64, DurableObjectError> {
-    Ok(sql!(db, "SELECT seq FROM delivery WHERE id = 0")
-        .fetch_scalar_optional()
-        .await
-        .map_err(|error| stored(&error))?
-        .unwrap_or(0))
-}
-
-/// Records that the daemon has now been told everything through `seq`.
-///
-/// Monotonic: the daemon is greeted before its mailbox is replayed, so a
-/// message arriving during the replay's own awaits is forwarded at once and
-/// moves the cursor past it. The replay finishing afterwards with an older
-/// position must not pull the cursor back, or that message would be
-/// delivered twice on the next `Hello`.
-async fn set_delivered(db: &DurableDb, seq: u64) -> Result<(), DurableObjectError> {
-    sql!(
-        db,
-        "INSERT INTO delivery (id, seq) VALUES (0, {seq}) \
-         ON CONFLICT (id) DO UPDATE SET seq = max(excluded.seq, delivery.seq)"
     )
     .execute()
     .await
@@ -893,42 +1120,48 @@ async fn put_latest<T: Serialize + Sync>(
         .map_err(|error| DurableObjectError::Runtime(error.to_string()))
 }
 
-/// Creates the event table if this is the room's first write.
+/// Creates the room's tables if this is its first write.
 ///
-/// `AUTOINCREMENT` rather than a counter in the struct: the sequence has to
-/// be monotonic across hibernation and across two writes racing in one
-/// wake-up, and the database is the only thing here that guarantees both.
+/// `AUTOINCREMENT` rather than a counter in the struct: the sequences
+/// have to be monotonic across the object being rebuilt around every
+/// event, and the database is the only thing here that guarantees it.
 async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
     for statement in [
         "CREATE TABLE IF NOT EXISTS events (\
              seq     INTEGER PRIMARY KEY AUTOINCREMENT, \
              json    TEXT    NOT NULL, \
              at_unix INTEGER NOT NULL)",
-        // The daemon's mailbox: one row per user message, keyed by the
-        // position that message holds in `events`. An index rather than a
-        // queue — nothing is deleted from it — so the cursor and the stream
-        // are talking about the same positions and a redelivery can never
-        // reorder the conversation.
-        "CREATE TABLE IF NOT EXISTS user_messages (\
-             seq  INTEGER PRIMARY KEY REFERENCES events(seq), \
-             text TEXT    NOT NULL)",
+        // Every command owed to the daemon, whether it is attached or
+        // not. The command stream is a cursor over this table; a row is
+        // deleted the moment the daemon acknowledges past it, so the
+        // table is a delivery log rather than a transcript — what a
+        // command *was* is in `events` where it matters.
+        "CREATE TABLE IF NOT EXISTS daemon_commands (\
+             seq     INTEGER PRIMARY KEY AUTOINCREMENT, \
+             json    TEXT    NOT NULL, \
+             at_unix INTEGER NOT NULL)",
         // Exactly one row, because a room has exactly one daemon. The
-        // CHECK is what makes that structural rather than a convention.
-        "CREATE TABLE IF NOT EXISTS delivery (\
-             id  INTEGER PRIMARY KEY CHECK (id = 0), \
-             seq INTEGER NOT NULL)",
-        // Commands written while no daemon was listening. A queue rather
-        // than an index, because these are not conversation: a row is
-        // deleted the moment a daemon has taken it.
-        "CREATE TABLE IF NOT EXISTS held_commands (\
-             seq  INTEGER PRIMARY KEY AUTOINCREMENT, \
-             json TEXT    NOT NULL)",
-        // The size the browser's terminal pane last reported, handed to
-        // every daemon after its `Hello`: a daemon that was still booting
-        // when the pane opened, or one restarted by a resize, has a PTY
-        // at its default size and no other way to learn the real one
-        // (issue #258). One row, like `delivery`, because a session has
-        // one pane size — the last browser to fit its pane wins.
+        // epoch names the current attach; `live_until` is the deadline its
+        // contact renews; `gone_reported` is what makes the first caller
+        // past that deadline the only one to announce it. The CHECK is
+        // what makes one row structural rather than a convention.
+        "CREATE TABLE IF NOT EXISTS daemon_presence (\
+             id            INTEGER PRIMARY KEY CHECK (id = 0), \
+             epoch         INTEGER NOT NULL, \
+             live_until    INTEGER NOT NULL, \
+             gone_reported INTEGER NOT NULL)",
+        // One row per attach, recording how far into that epoch's frame
+        // numbering the room has stored. A retransmitted batch is answered
+        // from this without reapplying a frame of it; a gap is refused.
+        "CREATE TABLE IF NOT EXISTS daemon_frames (\
+             epoch   INTEGER PRIMARY KEY, \
+             through INTEGER NOT NULL)",
+        // The size the client's terminal pane last reported, handed to
+        // every daemon's fresh command stream: a daemon that was still
+        // booting when the pane opened, or one restarted by a resize, has
+        // a PTY at its default size and no other way to learn the real
+        // one (issue #258). One row, because a session has one pane
+        // size — the last client to fit its pane wins.
         "CREATE TABLE IF NOT EXISTS terminal_size (\
              id   INTEGER PRIMARY KEY CHECK (id = 0), \
              cols INTEGER NOT NULL, \
@@ -957,50 +1190,6 @@ fn stored(error: &skyzen_services::DurableDbError) -> DurableObjectError {
     DurableObjectError::Runtime(error.to_string())
 }
 
-/// Sends an event to every browser watching this room.
-fn broadcast(
-    connections: &DurableConnections,
-    event: &ClientEvent,
-) -> Result<(), DurableObjectError> {
-    let json = serde_json::to_string(event)
-        .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
-    for client in connections.by_tag(ROLE_CLIENT)? {
-        client.send_text(&json)?;
-    }
-    Ok(())
-}
-
-/// Sends a command to the session's daemon, and says whether one took it.
-///
-/// A daemon is a *greeted* socket, not an open one: a connection that has
-/// not said `Hello` has not agreed a protocol version, and writing a command
-/// into it would be speaking before either side knows the other's language.
-/// The handshake is a moment away, and [`replay_mailbox`] hands over
-/// everything written during it.
-///
-/// A disconnected daemon is not an error — it is a daemon mid-reconnect, or
-/// a machine that does not exist yet. What happens next depends on the
-/// command: a user message is held in the mailbox and redelivered on the
-/// next `Hello`, and everything else is dropped with a warning, because an
-/// interrupt or a keystroke replayed into a later turn would be an
-/// instruction about something that is no longer happening.
-fn forward_to_daemon(
-    connections: &DurableConnections,
-    command: &ControlToDaemon,
-) -> Result<bool, DurableObjectError> {
-    let json = serde_json::to_string(command)
-        .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
-    let mut delivered = false;
-    for daemon in connections.by_tag(ROLE_DAEMON)? {
-        if daemon.attachment::<Greeted>()?.is_none() {
-            continue;
-        }
-        daemon.send_text(&json)?;
-        delivered = true;
-    }
-    Ok(delivered)
-}
-
 // ── The room's own HTTP surface ──
 
 /// Reads the internal headers a Worker→room call must carry.
@@ -1014,189 +1203,39 @@ fn internal(headers: &Headers) -> Result<(), ApiError> {
     }
 }
 
-/// What an accepted relay socket answers with.
-///
-/// On the Worker this is the hibernation upgrade itself — skyzen's runtime
-/// calls its `Responder` with the real request, which is where the Durable
-/// Object state it needs lives. Natively there is nothing to accept, so the
-/// alias is a plain response and [`accept`] only ever returns an error into
-/// it.
-#[cfg(target_arch = "wasm32")]
-type Accepted = skyzen::durable::HibernationWebSocketUpgrade;
-
-/// See the `wasm32` alias above.
-#[cfg(not(target_arch = "wasm32"))]
-type Accepted = skyzen::Response;
-
-/// Accepts the daemon's hibernating socket.
-async fn accept_daemon(headers: Headers) -> Outcome<Accepted> {
-    accept(&headers, Role::Daemon).into()
-}
-
-/// Accepts a browser's hibernating socket.
-async fn accept_client(headers: Headers) -> Outcome<Accepted> {
-    accept(&headers, Role::Client).into()
-}
-
-/// Runs a control-plane command against the room.
-///
-/// The Worker calls this after it has done the durable half of the work —
-/// recording an approval decision in D1, applying a budget signal — so the
-/// live half can never disagree with what was persisted.
-async fn run_command(
-    headers: Headers,
-    Json(command): Json<ControlToDaemon>,
-    connections: DurableConnections,
-    db: DurableDb,
-) -> Outcome<NoContent> {
-    dispatch_command(&headers, &command, &connections, &db)
-        .await
-        .into()
-}
-
-async fn dispatch_command(
-    headers: &Headers,
-    command: &ControlToDaemon,
-    connections: &DurableConnections,
-    db: &DurableDb,
-) -> Result<NoContent, ApiError> {
-    internal(headers)?;
-
-    // A user message forwarded from the Worker takes exactly the path one
-    // that arrived on a browser socket takes — recorded, echoed, and either
-    // delivered or held for the daemon. A shell command likewise: the door
-    // it came in by is not something a replay, or the agent, should be able
-    // to tell.
-    match command {
-        ControlToDaemon::UserMessage { text, origin } => {
-            deliver_user_message(db, connections, text, *origin)
-                .await
-                .map_err(|error| room_failed(&error))?;
-            return Ok(NoContent);
-        }
-        ControlToDaemon::ShellCommand { command } => {
-            deliver_shell_command(db, connections, command)
-                .await
-                .map_err(|error| room_failed(&error))?;
-            return Ok(NoContent);
-        }
-        _ => {}
-    }
-
-    let echo = match &command {
-        ControlToDaemon::ApprovalDecision { id, decision } => {
-            Some(Echo::live(ClientEvent::ApprovalDecided {
-                id: *id,
-                decision: *decision,
-            }))
-        }
-        ControlToDaemon::Archive { .. } => Some(Echo::live(ClientEvent::SessionStateChanged {
-            state: flyco_core::SessionState::Archived,
-        })),
-        // Echoed whether the daemon took the command or the room held it:
-        // the change is already recorded, so a browser watching a session
-        // whose machine is between lives must still see the line — the
-        // model is what the next machine comes up on.
-        ControlToDaemon::SetModel { model } => Some(Echo::recorded(ClientEvent::ModelChanged {
-            model: model.clone(),
-        })),
-        _ => None,
-    };
-
-    if !forward_to_daemon(connections, command).map_err(|error| room_failed(&error))? {
-        if command.survives_a_disconnect() {
-            hold_for_daemon(db, command)
-                .await
-                .map_err(|error| room_failed(&error))?;
-            tracing::info!(
-                ?command,
-                "held a command for a daemon that is not connected"
-            );
-        } else {
-            tracing::warn!(
-                ?command,
-                "dropped a command: this session has no daemon connected"
-            );
-            announce_machine(connections, false).map_err(|error| room_failed(&error))?;
-        }
-    }
-    if let Some(echo) = echo {
-        if echo.recorded {
-            append(db, &echo.event)
-                .await
-                .map_err(|error| room_failed(&error))?;
-        }
-        broadcast(connections, &echo.event).map_err(|error| room_failed(&error))?;
-    }
-    Ok(NoContent)
-}
-
-/// What the room tells its browsers about a command it just handled.
-struct Echo {
-    event: ClientEvent,
-    /// Whether it is appended to the replayable stream as well as sent.
-    ///
-    /// True for an event that is *transcript*: a model change is a line in
-    /// the conversation, because what answers from here on is a different
-    /// model and a replay with no seam in it would misrepresent itself.
-    /// False for the ones that are only the UI's present state — an
-    /// approval's decision and a lifecycle move are both re-read from the
-    /// control plane by a browser that reconnects, so a copy in the stream
-    /// would be a second answer free to disagree with it.
-    recorded: bool,
-}
-
-impl Echo {
-    /// An echo browsers watching right now see, and nobody replays.
-    const fn live(event: ClientEvent) -> Self {
-        Self {
-            event,
-            recorded: false,
-        }
-    }
-
-    /// An echo that also belongs in the transcript.
-    const fn recorded(event: ClientEvent) -> Self {
-        Self {
-            event,
-            recorded: true,
-        }
-    }
-}
-
-/// Appends a control-plane event to the room's stream and shows it to every
-/// browser watching.
+/// Appends a control-plane event to the room's stream and reports it for
+/// fan-out.
 ///
 /// The other half of [`run_command`]: a command is something the *daemon*
 /// must act on, and this is something only the user needs to see. The
 /// provisioning timeline is the case that needs it — the queue knows the
-/// machine was reserved minutes before any daemon exists to say so — and it
-/// is appended rather than only broadcast, because a browser opened after
-/// provisioning finished must still be able to replay how long each stage
-/// took.
+/// machine was reserved minutes before any daemon exists to say so — and
+/// it is appended rather than only emitted, because a browser opened
+/// after provisioning finished must still be able to replay how long each
+/// stage took.
 async fn run_broadcast(
     headers: Headers,
     Json(event): Json<ClientEvent>,
-    connections: DurableConnections,
     db: DurableDb,
-) -> Outcome<NoContent> {
-    dispatch_broadcast(&headers, &event, &connections, &db)
-        .await
-        .into()
+) -> Outcome<Json<Emitted>> {
+    dispatch_broadcast(&headers, &event, &db).await.into()
 }
 
 async fn dispatch_broadcast(
     headers: &Headers,
     event: &ClientEvent,
-    connections: &DurableConnections,
     db: &DurableDb,
-) -> Result<NoContent, ApiError> {
+) -> Result<Json<Emitted>, ApiError> {
     internal(headers)?;
-    append(db, event)
+    let seq = append(db, event)
         .await
         .map_err(|error| room_failed(&error))?;
-    broadcast(connections, event).map_err(|error| room_failed(&error))?;
-    Ok(NoContent)
+    Ok(Json(Emitted {
+        events: vec![EmittedEvent {
+            seq: Some(seq),
+            event: event.clone(),
+        }],
+    }))
 }
 
 /// Serves a page of the room's event tail.
@@ -1214,8 +1253,8 @@ async fn page(headers: &Headers, after: u64, db: &DurableDb) -> Result<Json<Even
         .await
         .map_err(|error| room_failed(&error))?;
 
-    // One row past the page tells the caller whether to come back, without
-    // a second `COUNT(*)` over a table that only grows.
+    // One row past the page tells the caller whether to come back,
+    // without a second `COUNT(*)` over a table that only grows.
     let limit = EVENT_PAGE_LIMIT + 1;
     let rows: Vec<EventRow> = sql!(
         db,
@@ -1252,10 +1291,10 @@ async fn repo_status(headers: &Headers, kv: &DurableKv) -> Result<Json<RepoStatu
 /// How long an answered workdir question is kept for its asker.
 ///
 /// The Worker that asked polls for a few seconds and then gives up, so
-/// anything older than this is an answer nobody came back for — a browser
-/// that closed the tab, or a request that timed out. Swept on the next
-/// write rather than on a timer: a room that is answering questions is
-/// exactly the room that has rows to sweep.
+/// anything older than this is an answer nobody came back for — a
+/// browser that closed the tab, or a request that timed out. Swept on the
+/// next write rather than on a timer: a room that is answering questions
+/// is exactly the room that has rows to sweep.
 const WORKDIR_REPLY_TTL_SECONDS: u64 = 120;
 
 /// Query of the route that collects an answered workdir question.
@@ -1295,22 +1334,22 @@ async fn store_workdir_reply(
 
 /// Puts one question about the checkout to the session's daemon.
 ///
-/// Answers `503` when no daemon is connected, which is the whole reason
+/// Answers `503` when no daemon is attached, which is the whole reason
 /// this is not [`run_command`]: a browser waiting for a listing has to be
 /// told at once that there is nothing to read it, rather than waiting out
 /// the poll for an answer that is never coming.
 async fn ask_workdir(
     headers: Headers,
     Json(command): Json<ControlToDaemon>,
-    connections: DurableConnections,
+    db: DurableDb,
 ) -> Outcome<NoContent> {
-    ask(&headers, &command, &connections).into()
+    ask(&headers, &command, &db).await.into()
 }
 
-fn ask(
+async fn ask(
     headers: &Headers,
     command: &ControlToDaemon,
-    connections: &DurableConnections,
+    db: &DurableDb,
 ) -> Result<NoContent, ApiError> {
     internal(headers)?;
     if !matches!(command, ControlToDaemon::InspectWorkdir { .. }) {
@@ -1319,17 +1358,21 @@ fn ask(
                 .to_owned(),
         ));
     }
-    if forward_to_daemon(connections, command).map_err(|error| room_failed(&error))? {
-        Ok(NoContent)
-    } else {
-        Err(ApiError::SessionDaemonOffline)
+    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+    if !daemon_live(db).await.map_err(|error| room_failed(&error))? {
+        return Err(ApiError::SessionDaemonOffline);
     }
+    queue_command(db, command)
+        .await
+        .map_err(|error| room_failed(&error))?;
+    Ok(NoContent)
 }
 
 /// Collects an answer the daemon has already sent, if it has.
 ///
-/// Single use: the row is deleted as it is read, because the Worker holding
-/// the browser's request is the only caller that will ever want it.
+/// Single use: the row is deleted as it is read, because the Worker
+/// holding the browser's request is the only caller that will ever want
+/// it.
 async fn collect_workdir_reply(
     headers: Headers,
     Query(cursor): Query<WorkdirCursor>,
@@ -1367,65 +1410,6 @@ async fn collect(
         .map_err(|error| ApiError::Room(format!("a stored workdir reply did not parse: {error}")))
 }
 
-fn room_failed(error: &DurableObjectError) -> ApiError {
+fn room_failed(error: &impl core::fmt::Display) -> ApiError {
     ApiError::Room(error.to_string())
-}
-
-/// Turns a validated upgrade request into an accepted hibernating socket.
-///
-/// The tags are the socket's whole identity for the rest of its life: the
-/// role decides which way frames flow, and the session id is what a `Hello`
-/// is checked against after the room has hibernated and forgotten
-/// everything else.
-///
-/// # Errors
-///
-/// Returns [`ApiError::Room`] if the internal headers are absent or name
-/// another role.
-#[cfg(target_arch = "wasm32")]
-fn accept(headers: &Headers, expected: Role) -> Result<Accepted, ApiError> {
-    let session = admit(headers, expected)?;
-    Ok(Accepted::new()
-        .tag(expected.tag())
-        .tag(format!("{SESSION_TAG_PREFIX}{session}")))
-}
-
-/// Native builds do not reach this route with a socket to accept.
-///
-/// The simulator delivers WebSocket events now, and
-/// `HibernationWebSocketUpgrade` responds on both targets — but an upgrade
-/// only becomes a socket if the *browser's own* handshake request reaches
-/// the object, and `Rooms::upgrade` on the Worker forwards exactly that.
-/// Natively the control plane has no path that carries a client's upgrade
-/// into a room, so the route refuses rather than accepting a socket nothing
-/// would write to. The room's HTTP routes work natively and are what the
-/// tests drive, alongside `websocket` called directly.
-///
-/// # Errors
-///
-/// Always: with [`ApiError::Room`] if the internal headers are wrong, and
-/// with [`ApiError::RelayUnavailable`] if they are right.
-#[cfg(not(target_arch = "wasm32"))]
-fn accept(headers: &Headers, expected: Role) -> Result<Accepted, ApiError> {
-    admit(headers, expected)?;
-    Err(ApiError::RelayUnavailable(
-        "a native control plane does not forward relay upgrades into a session room",
-    ))
-}
-
-/// Checks the internal headers of an upgrade forwarded from the Worker.
-fn admit(headers: &Headers, expected: Role) -> Result<SessionId, ApiError> {
-    let role = headers
-        .get(HEADER_ROLE)
-        .and_then(Role::parse)
-        .ok_or_else(|| ApiError::Room("a relay upgrade named no role".to_owned()))?;
-    if role != expected {
-        return Err(ApiError::Room(
-            "a relay upgrade reached the route of another role".to_owned(),
-        ));
-    }
-    headers
-        .get(HEADER_SESSION)
-        .and_then(|value| value.parse().ok())
-        .ok_or_else(|| ApiError::Room("a relay upgrade named no session".to_owned()))
 }

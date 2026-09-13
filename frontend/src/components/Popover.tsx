@@ -13,7 +13,7 @@
  * it. Opening moves focus into the panel, which is what makes the keyboard
  * path work and what makes "focus left" a usable close condition.
  */
-import { type JSX, Show, createEffect, createSignal, createUniqueId, onCleanup } from "solid-js";
+import { type JSX, Show, createEffect, createSignal, createUniqueId, on, onCleanup } from "solid-js";
 import { cx } from "../lib/cx";
 import styles from "./Popover.module.css";
 
@@ -45,11 +45,23 @@ export interface PopoverProps {
   /** Which edge of the trigger the panel lines up with. Defaults to `start`. */
   align?: "start" | "end" | undefined;
   /**
-   * Which side of the trigger the panel opens on. `bottom` by default; a
-   * trigger sitting at the foot of the window — the account row at the
-   * bottom of the rail — needs `top` or the panel opens off screen.
+   * Which side of the trigger the panel opens on.
+   *
+   * Unset, the panel picks for itself: it opens downward when it fits, and
+   * upward when the trigger sits so near the foot of the window — every
+   * composer chip — that the room below cannot hold it. Set it only where
+   * the caller knows better than the viewport.
    */
   side?: "bottom" | "top" | undefined;
+  /**
+   * A request to open the panel from outside its trigger — a `⋯` item or a
+   * `/` command that names the panel it wants.
+   *
+   * Carries the instant it was made rather than a plain flag so that asking
+   * twice is two requests: a user who closes the panel and picks `Resize`
+   * again would otherwise set an unchanged signal and see nothing happen.
+   */
+  openAt?: number | undefined;
   /** Extra class on the panel, for callers that need a width. */
   panelClass?: string | undefined;
   /**
@@ -67,6 +79,13 @@ const MIN_PANEL_PX = 160;
 
 export default function Popover(props: PopoverProps) {
   const [open, setOpen] = createSignal(false);
+  /**
+   * Whether the panel opened upward on its own judgement.
+   *
+   * Only consulted when `side` is unset — an explicit `side` is the
+   * caller's decision and stays where it was put.
+   */
+  const [flipped, setFlipped] = createSignal(false);
   const triggerId = createUniqueId();
   let anchor: HTMLDivElement | undefined;
   let panel: HTMLDivElement | undefined;
@@ -74,6 +93,17 @@ export default function Popover(props: PopoverProps) {
   function close(): void {
     setOpen(false);
   }
+
+  createEffect(
+    on(
+      () => props.openAt,
+      (at) => {
+        if (at !== undefined) {
+          setOpen(true);
+        }
+      },
+    ),
+  );
 
   createEffect(() => {
     if (!open()) {
@@ -83,13 +113,13 @@ export default function Popover(props: PopoverProps) {
     // and so blurring out of it is a meaningful "done here".
     panel?.focus();
 
-    // The panel hangs below its anchor, so what it may not do is hang
-    // below the viewport: a picker whose bottom half is off screen, on a
-    // page that does not scroll, is a control nobody can reach. The panel
-    // gets the room between its top edge and the viewport's bottom, and
-    // scrolls inside that; re-measured when the window changes size.
+    // What the panel may not do is hang off the viewport: a picker whose
+    // bottom half is off screen, on a page that does not scroll, is a
+    // control nobody can reach. So the panel gets a side and a height from
+    // the room that is actually there — re-measured when the window
+    // changes size.
     function fit(): void {
-      if (panel === undefined) {
+      if (panel === undefined || anchor === undefined) {
         return;
       }
       // On a phone the stylesheet makes the panel a bottom sheet, fixed to
@@ -100,16 +130,72 @@ export default function Popover(props: PopoverProps) {
         panel.style.maxHeight = "";
         return;
       }
-      const box = panel.getBoundingClientRect();
-      const room =
-        props.side === "top"
-          ? box.bottom - VIEWPORT_MARGIN_PX
-          : window.innerHeight - box.top - VIEWPORT_MARGIN_PX;
+
+      // `scrollHeight` answers "how tall would the panel be unclamped"
+      // without touching it. Measuring the cleared `maxHeight` instead
+      // would briefly grow the panel — and a focused panel that grows is
+      // scrolled into view by the browser, moving the anchor under the
+      // measurement it interrupted.
+      const wanted = panel.scrollHeight;
+
+      if (props.side !== undefined) {
+        const box = panel.getBoundingClientRect();
+        const room =
+          props.side === "top"
+            ? box.bottom - VIEWPORT_MARGIN_PX
+            : window.innerHeight - box.top - VIEWPORT_MARGIN_PX;
+        panel.style.maxHeight = `${Math.max(room, MIN_PANEL_PX)}px`;
+        return;
+      }
+
+      // The room either side of the trigger, and the panel goes where the
+      // room is: down when it fits, up when the room below cannot hold it
+      // and the room above can hold more.
+      const anchorBox = anchor.getBoundingClientRect();
+      const below = window.innerHeight - anchorBox.bottom - VIEWPORT_MARGIN_PX;
+      const above = anchorBox.top - VIEWPORT_MARGIN_PX;
+      const flip = wanted > below && above > below;
+      setFlipped(flip);
+      const room = flip ? above : below;
       panel.style.maxHeight = `${Math.max(room, MIN_PANEL_PX)}px`;
     }
     fit();
-    window.addEventListener("resize", fit);
-    onCleanup(() => window.removeEventListener("resize", fit));
+    // The panel's own contents settle after it opens — a breakdown answer
+    // arriving, a disclosure opening — and the anchor can move under it
+    // while the page reflows around it, because the panel hangs off the
+    // anchor's place, not its own: a controls row wrapping, a text field
+    // growing, a smooth scroll still landing, a transition on a parent.
+    // No observer hears all of those, so the check is the input itself —
+    // the anchor's rect and the panel's wanted height, each frame while
+    // the panel is open, and a re-fit when either has moved. The reads
+    // are cheap against a settled layout, and silent while nothing moves.
+    let lastTop = NaN;
+    let lastBottom = NaN;
+    let lastWanted = NaN;
+    let lastViewport = NaN;
+    let frame = 0;
+    const watch = (): void => {
+      if (panel !== undefined && anchor !== undefined) {
+        const box = anchor.getBoundingClientRect();
+        const wanted = panel.scrollHeight;
+        const viewport = window.innerHeight;
+        if (
+          box.top !== lastTop ||
+          box.bottom !== lastBottom ||
+          wanted !== lastWanted ||
+          viewport !== lastViewport
+        ) {
+          lastTop = box.top;
+          lastBottom = box.bottom;
+          lastWanted = wanted;
+          lastViewport = viewport;
+          fit();
+        }
+      }
+      frame = requestAnimationFrame(watch);
+    };
+    frame = requestAnimationFrame(watch);
+    onCleanup(() => cancelAnimationFrame(frame));
 
     function onPointerDown(event: PointerEvent): void {
       if (anchor !== undefined && !anchor.contains(event.target as Node)) {
@@ -155,7 +241,8 @@ export default function Popover(props: PopoverProps) {
           class={cx(
             styles.panel,
             props.align === "end" && styles.alignEnd,
-            props.side === "top" && styles.sideTop,
+            (props.side === "top" || (props.side === undefined && flipped())) &&
+              styles.sideTop,
             props.panelClass,
           )}
           role="dialog"

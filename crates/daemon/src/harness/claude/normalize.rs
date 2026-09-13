@@ -13,16 +13,22 @@
 //!
 //! Two consequences worth stating explicitly:
 //!
-//! - **Assistant text comes only from partial-message deltas.** The driver
-//!   always sets `includePartialMessages`, so text arrives as
-//!   `stream_event` / `content_block_delta` / `text_delta`. The text blocks
-//!   of the corresponding complete `assistant` message are dropped, because
-//!   emitting both would duplicate every character.
+//! - **Assistant text comes from partial-message deltas — usually.** The
+//!   driver always sets `includePartialMessages`, so streamed text arrives
+//!   as `stream_event` / `content_block_delta` / `text_delta` and the text
+//!   blocks of the corresponding complete `assistant` message are dropped,
+//!   because emitting both would duplicate every character. The exceptions
+//!   are the messages that never stream — a synthetic message arrives as a
+//!   complete `assistant` message out of nowhere — whose text *is* emitted,
+//!   or the output would render as nothing.
 //! - **Turn identity is flyco's, not the SDK's.** The Agent SDK has no turn
 //!   id: it has a session, messages, and a terminal `result`. The driver
 //!   mints a turn id when it pushes a user message and the normalizer
 //!   stamps it onto everything until the `result` arrives. Events that
-//!   arrive outside a turn (`system/init`, for instance) are dropped.
+//!   arrive outside a turn (`system/init`, for instance) are dropped —
+//!   except output the CLI produced on its own (a `local_command_output`),
+//!   which has no turn to belong to and becomes
+//!   [`HarnessEvent::LocalCommandOutput`].
 
 use flyco_core::harness::{ContextWindow, HarnessEvent, UsageReport};
 use flyco_core::money::Usd;
@@ -65,8 +71,14 @@ fn cost_in_micros(dollars: f64) -> Option<Usd> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ContentBlock {
-    /// Assistant prose. Dropped — the partial-message deltas carry it.
-    Text,
+    /// Assistant prose.
+    ///
+    /// Emitted only when the partial-message stream never carried it —
+    /// [`Normalizer::streamed_text`] is what tells the two cases apart.
+    Text {
+        /// The text.
+        text: String,
+    },
     /// The model asked to run a tool.
     ToolUse {
         /// Harness-native call id.
@@ -182,6 +194,16 @@ enum SystemBody {
         compact_result: Option<CompactResult>,
         #[serde(default)]
         compact_error: Option<String>,
+    },
+    /// The CLI answered a slash command itself.
+    ///
+    /// `/usage`, `/voice` and friends are local commands: they never reach
+    /// the API, and what they print arrives on this message rather than as
+    /// assistant text. (`/context` is not among them — flyco answers that
+    /// one out of band; see [`crate::harness::claude::protocol`].)
+    LocalCommandOutput {
+        /// What the command printed, as Markdown.
+        content: String,
     },
     /// `init`, `compact_boundary`, and everything else.
     #[serde(other)]
@@ -347,9 +369,11 @@ enum SdkMessage {
 
 /// Translates one Claude Code session's SDK stream into [`HarnessEvent`]s.
 ///
-/// Stateful in exactly two ways: it holds the id of the turn in flight, and
+/// Stateful in exactly three ways: it holds the id of the turn in flight,
 /// it remembers the most recent assistant message's model and token tally
-/// so the terminal `result` can report a context-window gauge.
+/// so the terminal `result` can report a context-window gauge, and it notes
+/// whether a message's text already arrived as deltas so complete
+/// `assistant` messages are not echoed a second time.
 #[derive(Debug, Default)]
 pub struct Normalizer {
     turn: Option<String>,
@@ -362,6 +386,17 @@ pub struct Normalizer {
     /// the *next* limit a new announcement rather than a duplicate of this
     /// one.
     limited: Option<UsageWindow>,
+    /// Whether the partial-message stream has carried text since the last
+    /// complete `assistant` message.
+    ///
+    /// A complete message's text blocks are redundant exactly when its
+    /// deltas already streamed — the common case under
+    /// `includePartialMessages`. A message whose text never streamed (the
+    /// SDK's synthetic messages, which is what a local command's answer
+    /// arrives as) is the exception the flag exists for: its text is
+    /// emitted from the complete message instead of being dropped as a
+    /// duplicate it never was.
+    streamed_text: bool,
 }
 
 impl Normalizer {
@@ -372,6 +407,7 @@ impl Normalizer {
             turn: None,
             last_assistant: None,
             limited: None,
+            streamed_text: false,
         }
     }
 
@@ -387,6 +423,7 @@ impl Normalizer {
             );
         }
         self.last_assistant = None;
+        self.streamed_text = false;
         HarnessEvent::TurnStarted { turn_id }
     }
 
@@ -437,23 +474,43 @@ impl Normalizer {
 
     fn on_assistant(&mut self, body: AssistantBody) -> Vec<HarnessEvent> {
         self.last_assistant = Some((body.model, body.usage.context_tokens()));
-        let Some(turn_id) = self.turn_id("assistant") else {
-            return Vec::new();
-        };
-        body.content
-            .into_iter()
-            .filter_map(|block| match block {
-                ContentBlock::ToolUse { id, name, input } => Some(HarnessEvent::ToolStarted {
-                    turn_id: turn_id.clone(),
-                    call_id: id,
-                    tool: name,
-                    input,
-                }),
-                // Text is carried by the partial-message deltas; tool
-                // results never appear on an assistant message.
-                _ => None,
-            })
-            .collect()
+        // Whether this message's text already arrived as deltas. Taking it
+        // re-arms the flag for the next message: a message whose text never
+        // streamed — a local command's answer, or any other synthetic one —
+        // gets its text emitted here, or it would be shown as nothing.
+        let streamed = core::mem::take(&mut self.streamed_text);
+        let turn_id = self.turn.clone();
+        let mut events = Vec::new();
+        for block in body.content {
+            match block {
+                ContentBlock::Text { text } if !streamed => match &turn_id {
+                    Some(turn_id) => events.push(HarnessEvent::AssistantDelta {
+                        turn_id: turn_id.clone(),
+                        text,
+                    }),
+                    // Outside a turn the text has nothing to attach to —
+                    // it is output the CLI produced on its own.
+                    None => events.push(HarnessEvent::LocalCommandOutput { content: text }),
+                },
+                ContentBlock::ToolUse { id, name, input } => {
+                    if let Some(turn_id) = &turn_id {
+                        events.push(HarnessEvent::ToolStarted {
+                            turn_id: turn_id.clone(),
+                            call_id: id,
+                            tool: name,
+                            input,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        if turn_id.is_none() && events.is_empty() {
+            tracing::debug!(
+                "dropping an assistant message that arrived outside a turn with nothing to show"
+            );
+        }
+        events
     }
 
     fn on_user(&self, body: &UserBody) -> Vec<HarnessEvent> {
@@ -486,7 +543,7 @@ impl Normalizer {
             .collect()
     }
 
-    fn on_stream_event(&self, body: &StreamEventBody) -> Vec<HarnessEvent> {
+    fn on_stream_event(&mut self, body: &StreamEventBody) -> Vec<HarnessEvent> {
         let StreamEventBody::ContentBlockDelta {
             delta: StreamDelta::TextDelta { text },
         } = body
@@ -496,6 +553,8 @@ impl Normalizer {
         let Some(turn_id) = self.turn_id("stream_event") else {
             return Vec::new();
         };
+        // The complete message this delta belongs to must not repeat it.
+        self.streamed_text = true;
         vec![HarnessEvent::AssistantDelta {
             turn_id,
             text: text.clone(),
@@ -585,6 +644,11 @@ impl Normalizer {
                     .clone()
                     .unwrap_or_else(|| "Claude Code reported that compaction failed".to_owned()),
             }],
+            SystemBody::LocalCommandOutput { content } => {
+                vec![HarnessEvent::LocalCommandOutput {
+                    content: content.clone(),
+                }]
+            }
             SystemBody::Status {
                 compact_result: None,
                 ..
@@ -679,15 +743,74 @@ mod tests {
     }
 
     #[test]
-    fn assistant_tool_use_blocks_start_tools_and_text_blocks_do_not() {
+    fn assistant_tool_use_blocks_start_tools() {
         let mut normalizer = in_turn();
+        let events = normalizer.normalize(&sdk("assistant_tool_use.json"));
+        assert!(
+            events.contains(&HarnessEvent::ToolStarted {
+                turn_id: "turn-1".to_owned(),
+                call_id: "toolu_01Ab".to_owned(),
+                tool: "Read".to_owned(),
+                input: serde_json::json!({ "file_path": "/srv/work/src/main.rs" }),
+            }),
+            "expected a tool_started among {events:?}"
+        );
+    }
+
+    #[test]
+    fn a_complete_message_repeats_text_its_deltas_already_carried() {
+        let mut normalizer = in_turn();
+        let _ = normalizer.normalize(&sdk("stream_event_text_delta.json"));
+        // The text block of the complete message is the same prose the
+        // delta already streamed: emitting it again would write every
+        // character twice.
+        let events = normalizer.normalize(&sdk("assistant_tool_use.json"));
         assert_eq!(
-            normalizer.normalize(&sdk("assistant_tool_use.json")),
+            events,
             vec![HarnessEvent::ToolStarted {
                 turn_id: "turn-1".to_owned(),
                 call_id: "toolu_01Ab".to_owned(),
                 tool: "Read".to_owned(),
                 input: serde_json::json!({ "file_path": "/srv/work/src/main.rs" }),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_message_whose_text_never_streamed_emits_it_here() {
+        // A synthetic message — a local command's answer is the common
+        // one — arrives complete with no deltas in front of it. Emitting
+        // nothing would show the command's output as a blank.
+        let mut normalizer = in_turn();
+        let events = normalizer.normalize(&sdk("assistant_tool_use.json"));
+        assert_eq!(
+            events[0],
+            HarnessEvent::AssistantDelta {
+                turn_id: "turn-1".to_owned(),
+                text: "I'll read the entry point first.".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn an_out_of_turn_message_emits_its_text_as_command_output() {
+        let mut normalizer = Normalizer::new();
+        let events = normalizer.normalize(&sdk("assistant_tool_use.json"));
+        assert_eq!(
+            events[0],
+            HarnessEvent::LocalCommandOutput {
+                content: "I'll read the entry point first.".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_local_commands_answer_is_output_not_a_turn() {
+        let mut normalizer = in_turn();
+        assert_eq!(
+            normalizer.normalize(&sdk("system_local_command_output.json")),
+            vec![HarnessEvent::LocalCommandOutput {
+                content: "| Window | Used |\n|---|---|\n| 5-hour | 26% |".to_owned(),
             }]
         );
     }

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@solidjs/testing-library";
-import MachineSlider, { detentForKey } from "./MachineSlider";
+import MachineSlider from "./MachineSlider";
 import type { MachineCatalogEntry, MachineDefault, ProviderAccountView } from "../api/client";
 
 const ACCOUNT = "0b4a1f2c-3d5e-4a6b-8c9d-0e1f2a3b4c5d";
@@ -366,31 +366,6 @@ describe("MachineSlider without an Auto detent", () => {
     expect(
       getByText("Starts a 24-hour minimum charge of $15.60 the moment it boots."),
     ).toBeInTheDocument();
-  });
-});
-
-describe("detentForKey", () => {
-  it("moves one detent per arrow, on either axis", () => {
-    expect(detentForKey("ArrowRight", 1, 4)).toBe(2);
-    expect(detentForKey("ArrowUp", 1, 4)).toBe(2);
-    expect(detentForKey("ArrowLeft", 1, 4)).toBe(0);
-    expect(detentForKey("ArrowDown", 1, 4)).toBe(0);
-  });
-
-  it("puts the ends of the track on Home and End", () => {
-    expect(detentForKey("Home", 3, 4)).toBe(0);
-    expect(detentForKey("End", 0, 4)).toBe(4);
-  });
-
-  it("stops at Auto and at the largest machine rather than running off", () => {
-    expect(detentForKey("ArrowLeft", 0, 4)).toBe(0);
-    expect(detentForKey("ArrowRight", 4, 4)).toBe(4);
-  });
-
-  it("claims nothing else, so the browser keeps its own keys", () => {
-    for (const key of ["Tab", "Enter", " ", "PageUp", "a"]) {
-      expect(detentForKey(key, 2, 4)).toBeNull();
-    }
   });
 });
 

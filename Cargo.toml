@@ -30,7 +30,10 @@ skyzen-cloudflare = "0.3.0"
 # Select the native TLS backend in native crates below. Keeping the shared
 # dependency backend-free lets the Worker use Zenwave's built-in Fetch backend
 # without compiling an inapplicable native TLS stack.
-zenwave = { version = "0.5.3", default-features = false, features = ["ws"] }
+zenwave = { version = "0.5.3", default-features = false }
+# The daemon's side of the SSE command streams: parses the byte stream a
+# zenwave response body is into events.
+eventsource-stream = "0.2.3"
 
 # Provider drivers render structured documents — cloud-init YAML, podman
 # scripts — from compiled templates rather than string concatenation, so a
@@ -101,14 +104,6 @@ tokio = { version = "1", features = [
     "signal",
     "sync",
     "time",
-] }
-# `rustls-tls-native-roots` so the daemon trusts the host's CA bundle: a
-# session VM's image is the only place the control plane's certificate
-# chain can come from.
-tokio-tungstenite = { version = "0.30", default-features = false, features = [
-    "connect",
-    "handshake",
-    "rustls-tls-native-roots",
 ] }
 toml = "0.9"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

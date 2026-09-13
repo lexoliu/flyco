@@ -522,6 +522,48 @@ pub enum UserInput {
     },
 }
 
+/// The sandbox a `turn/start` override names.
+///
+/// Tagged the way the app-server's `SandboxPolicy` union is tagged — the
+/// `type` discriminant in `camelCase` — rather than the kebab-case string
+/// `thread/start` takes for the same fact. Only the three shapes a flyco
+/// permission mode maps to exist here: a workspace the agent writes, a
+/// workspace it only reads, and no sandbox at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum SandboxPolicy {
+    /// The agent reads but cannot write — `plan`, `default`, `dontAsk`.
+    ReadOnly,
+    /// Writes inside the workspace run without asking — `acceptEdits`,
+    /// `auto`.
+    WorkspaceWrite,
+    /// Nothing is sandboxed — `bypassPermissions`.
+    DangerFullAccess,
+}
+
+impl SandboxPolicy {
+    /// The policy a `thread/start` kebab-case sandbox token names.
+    ///
+    /// The one translation point between the two spellings the protocol
+    /// uses for the same fact: `thread/start` configures by string,
+    /// `turn/start` overrides by tagged object.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a token the app-server does not have — which is the
+    /// caller's bug, not a runtime condition: the tokens come from
+    /// `PermissionMode::codex_sandbox`, a closed set.
+    #[must_use]
+    pub fn from_token(token: &str) -> Self {
+        match token {
+            "read-only" => Self::ReadOnly,
+            "workspace-write" => Self::WorkspaceWrite,
+            "danger-full-access" => Self::DangerFullAccess,
+            other => panic!("no Codex sandbox named {other:?}"),
+        }
+    }
+}
+
 /// Params for `turn/start`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -542,6 +584,16 @@ pub struct TurnStartParams {
     /// Reasoning effort, on the same terms.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Approval policy for this turn and every turn after it, on the same
+    /// terms as `model`.
+    ///
+    /// The permission mode the session runs under, as the app-server
+    /// spells the half of it that decides when the agent may ask.
+    pub approval_policy: &'static str,
+    /// Sandbox for this turn and every turn after it, on the same terms.
+    ///
+    /// The other half of the mode: what runs without asking at all.
+    pub sandbox_policy: SandboxPolicy,
 }
 
 /// Params for `model/list`.

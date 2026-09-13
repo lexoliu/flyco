@@ -28,6 +28,7 @@
  */
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { AlertTriangle } from "lucide-solid";
+import Detents from "./Detents";
 import Disclosure from "./Disclosure";
 import Toggle from "./Toggle";
 import type { MachineCatalogEntry, MachineDefault, ProviderAccountView } from "../api/client";
@@ -78,38 +79,6 @@ const ALL_FILTERS: readonly MachineFilter[] = [
 
 /** The value of "no filter" in a `<select>`, which cannot hold null. */
 const ANY = "";
-
-/**
- * The detent a key moves the thumb to, or `null` for a key the slider does
- * not claim.
- *
- * The browser would step this input on its own, and every step would land on
- * an integer — but the integers *are* the detents here, and which key means
- * which detent is a decision about the control rather than about numbers:
- * `Home` is `Auto`, `End` is the largest machine on offer, and both arrow
- * axes move by one machine so that a thumb reached by keyboard behaves like
- * the thumb reached by pointer. Owning it keeps that in one tested place;
- * the component prevents the default so nothing steps twice.
- */
-export function detentForKey(key: string, position: number, count: number): number | null {
-  const target = ((): number | null => {
-    switch (key) {
-      case "ArrowLeft":
-      case "ArrowDown":
-        return position - 1;
-      case "ArrowRight":
-      case "ArrowUp":
-        return position + 1;
-      case "Home":
-        return 0;
-      case "End":
-        return count;
-      default:
-        return null;
-    }
-  })();
-  return target === null ? null : Math.min(Math.max(target, 0), count);
-}
 
 export interface MachineSliderProps {
   /** The whole curated catalog, every account and region. */
@@ -398,46 +367,19 @@ export default function MachineSlider(props: MachineSliderProps) {
             </div>
           </div>
 
-          <div class={styles.track}>
-            <div class={styles.rail}>
-              <For each={autoOffered() ? [undefined, ...detents()] : detents()}>
-                {(entry, index) => (
-                  <span
-                    aria-hidden="true"
-                    class={cx(
-                      styles.dot,
-                      entry !== undefined && billingMinimum(entry) !== null && styles.dotBound,
-                      index() === position() && styles.dotTaken,
-                    )}
-                    style={{
-                      left: lastPosition() === 0 ? "0%" : `${(index() / lastPosition()) * 100}%`,
-                    }}
-                  />
-                )}
-              </For>
-              <div class={styles.thumbTravel} aria-hidden="true">
-                <span class={styles.thumb} />
-              </div>
-              <input
-                class={styles.range}
-                type="range"
-                min={0}
-                max={lastPosition()}
-                step={1}
-                value={position()}
-                aria-label="Machine"
-                aria-valuetext={spoken()}
-                onInput={(event) => move(Number(event.currentTarget.value))}
-                onKeyDown={(event) => {
-                  const next = detentForKey(event.key, position(), lastPosition());
-                  if (next !== null) {
-                    event.preventDefault();
-                    move(next);
-                  }
-                }}
-              />
-            </div>
-          </div>
+          <Detents
+            count={lastPosition() + 1}
+            position={position()}
+            ariaLabel="Machine"
+            ariaValueText={spoken()}
+            dotClass={(index) => {
+              const entry = (autoOffered() ? [undefined, ...detents()] : detents())[index];
+              return entry !== undefined && billingMinimum(entry) !== null
+                ? styles.dotBound
+                : undefined;
+            }}
+            onMove={move}
+          />
 
           <div class={styles.ends}>
             <span>{autoOffered() ? AUTO_NAME : CHEAPEST_NAME}</span>

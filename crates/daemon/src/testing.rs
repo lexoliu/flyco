@@ -1,25 +1,26 @@
 //! In-process stand-ins for the two things the daemon talks to.
 //!
-//! A [`Room`] is a real WebSocket server and a [`ControlPlane`] is a real
+//! A [`Room`] is a real HTTP+SSE server and a [`ControlPlane`] is a real
 //! HTTP server, both on loopback: the daemon's relay client and REST client
-//! are exercised through the sockets they will use in production, headers
-//! and status codes and all, rather than through a substitute for the
-//! transport. What is faked is the *other* end of the harness — [`FakeSession`]
-//! stands in for a running Claude Code process, because no test should need
-//! Bun installed to prove that an interrupt reached the session.
+//! are exercised through the same requests they will use in production,
+//! headers and status codes and all, rather than through a substitute for
+//! the transport. What is faked is the *other* end of the harness —
+//! [`FakeSession`] stands in for a running Claude Code process, because no
+//! test should need Bun installed to prove that an interrupt reached the
+//! session.
 //!
 //! Everything records through channels rather than shared mutable state, so
 //! a test reads what happened by draining a receiver.
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use flyco_core::wire::ApprovalPayload;
 use flyco_core::{ApprovalId, ApprovalState, ApprovalView, ControlToDaemon, DaemonToControl};
-use futures_util::{SinkExt as _, StreamExt as _};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::harness::{HarnessSession, ToolApproval};
 
@@ -71,8 +72,12 @@ pub enum Call {
     Flush,
     /// The session context was compacted.
     Compact,
+    /// The session was asked what its context window is spent on.
+    ContextUsage,
     /// The session was put on another model.
     ModelSet(flyco_core::ModelChoice),
+    /// The session was put under another permission mode.
+    PermissionModeSet(flyco_core::PermissionMode),
     /// A pending approval was answered.
     Approval {
         /// The approval that was answered.
@@ -215,11 +220,22 @@ impl HarnessSession for FakeSession {
         core::future::ready(self.record(Call::Compact))
     }
 
+    fn context_usage(&self) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
+        core::future::ready(self.record(Call::ContextUsage))
+    }
+
     fn set_model(
         &self,
         model: flyco_core::ModelChoice,
     ) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
         core::future::ready(self.record(Call::ModelSet(model)))
+    }
+
+    fn set_permission_mode(
+        &self,
+        mode: flyco_core::PermissionMode,
+    ) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
+        core::future::ready(self.record(Call::PermissionModeSet(mode)))
     }
 
     fn decide_approval(
@@ -242,56 +258,116 @@ impl HarnessSession for FakeSession {
 /// What a room saw the machine at the other end do.
 ///
 /// Generic over the frames that end speaks, because flyco has two of these
-/// sockets and they differ in nothing but their vocabulary: a session's
+/// relays and they differ in nothing but their vocabulary: a session's
 /// daemon holds one to its [`Room`], and an enrolled host holds one to its
 /// [`HostRelay`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Seen<Up = DaemonToControl> {
-    /// A peer opened a socket, presenting this `Authorization` header.
-    Connected(Option<String>),
-    /// A peer sent a frame.
-    Frame(Up),
-    /// A peer's socket ended.
-    Disconnected,
+    /// A peer attached, presenting this `Authorization` header and this
+    /// attach body.
+    Attached {
+        /// The `Authorization` header the attach carried.
+        authorization: Option<String>,
+        /// The attach request's JSON body — a session's protocol version,
+        /// a host's facts.
+        body: serde_json::Value,
+    },
+    /// A peer opened its command stream under this epoch.
+    StreamOpened(u64),
+    /// A command stream ended — closed on a directive, superseded by a
+    /// newer attach, or the peer went away.
+    StreamClosed,
+    /// A frames batch landed: one POST's worth, in order.
+    Batch {
+        /// The attach the batch belongs to.
+        epoch: u64,
+        /// The sequence `frames[0]` carries.
+        from_seq: u64,
+        /// How far the peer says it has applied the command log.
+        ack_through: u64,
+        /// The frames, in order.
+        frames: Vec<Up>,
+    },
 }
 
 /// What a test tells a room to do next.
 #[derive(Debug)]
 pub enum Directive<Down = ControlToDaemon> {
-    /// Send a command to the connected peer.
+    /// Queue a command for the peer — emitted on the open stream now, or
+    /// replayed on the next one, as the real room's mailbox does.
     Send(Down),
-    /// Close the current socket, so the peer has to reconnect.
+    /// End the open command stream, so the peer has to re-attach.
     ///
-    /// A proper WebSocket close, and [`Seen::Disconnected`] is reported only
-    /// once the peer has acknowledged it — which is what makes "produced
-    /// while disconnected" a state a test can be in rather than a race. It
-    /// is also what a hibernating or redeployed room actually does.
+    /// The real room does this when an attach is superseded, and it is
+    /// what a redeployed or restarted room looks like from the peer's end.
     Close,
+    /// Stop heartbeating the open stream, so the peer's byte-level idle
+    /// watch fires — the dead path a dropped NAT flow looks like.
+    Silence,
+    /// Park every attach until [`Directive::ReleaseAttaches`] — the window
+    /// a test needs to make the peer produce frames while it is provably
+    /// detached, rather than racing the peer's notice of a dead stream.
+    GateAttaches,
+    /// Let a parked attach through again.
+    ReleaseAttaches,
 }
 
-/// What a room does with the first frame a peer sends.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Handshake<Down> {
-    /// Answer it, as a session room answers a daemon's `Hello` with
-    /// `Welcome`.
-    Answer(Down),
-    /// Record it and say nothing, as a host room does: a machine that has
-    /// greeted is simply one the room now writes to.
-    Silent,
-    /// Close the socket, as a version or session mismatch does.
-    Refuse,
-}
-
-/// How the session room answers a daemon's `Hello`.
+/// How the session room answers a daemon's attach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Greeting {
-    /// Answer with `Welcome`, as a matching daemon deserves.
-    Welcome,
-    /// Close the socket, as a version or session mismatch does.
+pub enum AttachAnswer {
+    /// Accept attaches, as a live room does.
+    Accept,
+    /// Refuse every attach with a retryable problem, as a room mid-deploy
+    /// does.
     Refuse,
 }
 
-/// A WebSocket server standing in for one of flyco's Durable Objects.
+/// One frames POST's decoded body — the same envelope both relay clients
+/// speak (`DaemonFrames` and `HostFrames` are the same four fields).
+#[derive(Debug, serde::Deserialize)]
+struct Batch<Up> {
+    epoch: u64,
+    from_seq: u64,
+    ack_through: u64,
+    frames: Vec<Up>,
+}
+
+/// What the fake room remembers across requests.
+///
+/// The log is the rendezvous, exactly as the real room's `daemon_commands`
+/// table is: a command is a row before it is a stream event, and it stays
+/// a row until a frames batch acknowledges it.
+struct RoomState {
+    /// The current attach; a stream opened under another is refused.
+    epoch: u64,
+    /// The next command's sequence.
+    next_seq: u64,
+    /// Commands not yet acknowledged, in order.
+    log: VecDeque<(u64, serde_json::Value)>,
+    /// Whether `run` rows survive `ack_through` — a host room's jobs are
+    /// retired by the `job_result` frame that answers them, not by
+    /// delivery, which is what makes a re-attach re-offer an unanswered
+    /// job.
+    jobs_held_until_answered: bool,
+    /// Whether the open stream's heartbeat is suppressed — the dead path.
+    silenced: bool,
+    /// What attaches are answered with, when they are refused at all — a
+    /// room mid-deploy, or a revoked credential.
+    refusal: Option<(u16, &'static str, &'static str)>,
+    /// Ends the open command stream, when one is open.
+    close_stream: Option<oneshot::Sender<()>>,
+    /// Whether attach POSTs park until released.
+    attach_gated: bool,
+    /// Wakes parked attaches when the gate lifts.
+    attach_released: Arc<tokio::sync::Notify>,
+}
+
+/// A real HTTP+SSE server standing in for one of flyco's Durable Objects.
+///
+/// The peer's three routes are answered with the real room's semantics:
+/// attach mints an epoch, the command stream cursors over a durable log
+/// and heartbeats, and a frames batch is stored — and its `ack_through`
+/// applied — before it is answered.
 #[derive(Debug)]
 pub struct Relay<Up, Down> {
     /// Base URL the peer should be pointed at, e.g. `http://127.0.0.1:PORT/`.
@@ -300,14 +376,26 @@ pub struct Relay<Up, Down> {
     pub seen: mpsc::UnboundedReceiver<Seen<Up>>,
     /// What the room should do next.
     pub directives: mpsc::UnboundedSender<Directive<Down>>,
+    /// Batch frames past the one `next_frame` last handed out.
+    pending: VecDeque<Up>,
+    /// Borrow marker: the command vocabulary is the directive channel's.
+    _down: core::marker::PhantomData<fn() -> Down>,
 }
 
-/// A WebSocket server standing in for a session's Durable Object.
+/// An HTTP+SSE server standing in for a session's Durable Object.
 pub type Room = Relay<DaemonToControl, ControlToDaemon>;
 
-/// A WebSocket server standing in for an enrolled host's Durable Object.
+/// An HTTP+SSE server standing in for an enrolled host's Durable Object.
 pub type HostRelay =
     Relay<flyco_provider::host::HostToControl, flyco_provider::host::ControlToHost>;
+
+/// How often the open stream heartbeats.
+///
+/// Well inside the tightest idle bound any test gives its peer: a
+/// [`wire::Deadlines`](crate::control::wire::Deadlines) built for
+/// watching gives the stream 150ms of silence, and this beats five times
+/// in that.
+const STREAM_PING: std::time::Duration = std::time::Duration::from_millis(30);
 
 impl<Up, Down> Relay<Up, Down>
 where
@@ -316,28 +404,94 @@ where
 {
     /// Starts a room on a loopback port.
     ///
+    /// `refusal` is what every attach is answered with, when attaches are
+    /// refused at all. `jobs_held_until_answered` gives the room a host's
+    /// job semantics: `run` rows survive `ack_through` and are retired by
+    /// the `job_result` frame that answers them.
+    ///
     /// # Panics
     ///
     /// Panics if the loopback socket cannot be bound, which would mean the
     /// test host has no usable networking.
-    pub async fn listen(handshake: Handshake<Down>) -> Self
-    where
-        Down: Clone,
-    {
+    async fn serve(
+        refusal: Option<(u16, &'static str, &'static str)>,
+        jobs_held_until_answered: bool,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind a loopback port");
         let address: SocketAddr = listener.local_addr().expect("read the bound port");
 
-        let (seen_out, seen) = mpsc::unbounded_channel();
-        let (directives, mut directive_in) = mpsc::unbounded_channel();
+        let (seen_out, seen) = mpsc::unbounded_channel::<Seen<Up>>();
+        let (directives, mut directive_in) = mpsc::unbounded_channel::<Directive<Down>>();
+        let (log_changed, _) = watch::channel(0_u64);
+
+        let state = Arc::new(Mutex::new(RoomState {
+            epoch: 0,
+            next_seq: 1,
+            log: VecDeque::new(),
+            jobs_held_until_answered,
+            silenced: false,
+            refusal,
+            close_stream: None,
+            attach_gated: false,
+            attach_released: Arc::new(tokio::sync::Notify::new()),
+        }));
+
+        // The mailbox: directives land as log rows whether or not a
+        // stream is open, exactly as the real room's command table does —
+        // a command queued while the peer is detached is replayed on the
+        // next stream.
+        {
+            let state = Arc::clone(&state);
+            let log_changed = log_changed.clone();
+            tokio::spawn(async move {
+                while let Some(directive) = directive_in.recv().await {
+                    match directive {
+                        Directive::Send(command) => {
+                            let json = serde_json::to_value(&command).expect("serialize");
+                            let version = {
+                                let mut state = state.lock().expect("the room state");
+                                let seq = state.next_seq;
+                                state.next_seq += 1;
+                                state.log.push_back((seq, json));
+                                seq
+                            };
+                            let _ = log_changed.send(version);
+                        }
+                        Directive::Close => {
+                            let close = state.lock().expect("the room state").close_stream.take();
+                            if let Some(close) = close {
+                                let _ = close.send(());
+                            }
+                        }
+                        Directive::Silence => {
+                            state.lock().expect("the room state").silenced = true;
+                        }
+                        Directive::GateAttaches => {
+                            state.lock().expect("the room state").attach_gated = true;
+                        }
+                        Directive::ReleaseAttaches => {
+                            let released = {
+                                let mut state = state.lock().expect("the room state");
+                                state.attach_gated = false;
+                                Arc::clone(&state.attach_released)
+                            };
+                            released.notify_one();
+                        }
+                    }
+                }
+            });
+        }
 
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
+                let state = Arc::clone(&state);
                 let seen_out = seen_out.clone();
-                if !serve(stream, handshake.clone(), &seen_out, &mut directive_in).await {
-                    break;
-                }
+                let log_changed = log_changed.clone();
+                tokio::spawn(async move {
+                    handle::<Up>(stream, state, log_changed, seen_out).await;
+                });
             }
         });
 
@@ -347,6 +501,8 @@ where
                 .expect("a loopback URL"),
             seen,
             directives,
+            pending: VecDeque::new(),
+            _down: core::marker::PhantomData,
         }
     }
 
@@ -360,141 +516,306 @@ where
 
     /// Waits for the next frame, skipping connection bookkeeping.
     ///
+    /// A batch's frames are handed out one at a time, so a test reads the
+    /// room's inbound the same way it always has.
+    ///
     /// # Panics
     ///
     /// Panics if no frame arrives before the timeout, which in these tests
     /// means the peer stopped pumping.
     pub async fn next_frame(&mut self) -> Up {
         loop {
-            match self.next().await.expect("the peer sent nothing") {
-                Seen::Frame(frame) => return frame,
-                Seen::Connected(_) | Seen::Disconnected => {}
+            if let Some(frame) = self.pending.pop_front() {
+                return frame;
+            }
+            if let Seen::Batch { frames, .. } =
+                self.next().await.expect("the peer sent nothing")
+            {
+                self.pending.extend(frames);
             }
         }
     }
 }
 
 impl Room {
-    /// Starts a session room that greets a daemon the way `greeting` says.
-    pub async fn start(greeting: Greeting) -> Self {
-        Self::listen(match greeting {
-            Greeting::Welcome => Handshake::Answer(ControlToDaemon::Welcome),
-            Greeting::Refuse => Handshake::Refuse,
-        })
+    /// Starts a session room that answers attaches the way `answer` says.
+    pub async fn start(answer: AttachAnswer) -> Self {
+        Self::serve(
+            match answer {
+                AttachAnswer::Accept => None,
+                AttachAnswer::Refuse => {
+                    Some((503, "relay-unavailable", "the room is mid-deploy"))
+                }
+            },
+            false,
+        )
         .await
     }
 }
 
-/// Serves one peer connection; returns whether to keep accepting.
-#[expect(
-    clippy::result_large_err,
-    reason = "tungstenite dictates the handshake callback's `ErrorResponse`; \
-              this room never refuses one"
-)]
-async fn serve<Up, Down>(
-    stream: TcpStream,
-    handshake: Handshake<Down>,
-    seen: &mpsc::UnboundedSender<Seen<Up>>,
-    directives: &mut mpsc::UnboundedReceiver<Directive<Down>>,
-) -> bool
-where
+impl HostRelay {
+    /// Starts a host room that accepts attaches.
+    pub async fn listen() -> Self {
+        Self::serve(None, true).await
+    }
+
+    /// Starts a host room that refuses every attach the way a revoked
+    /// credential is refused.
+    pub async fn revoked() -> Self {
+        Self::serve(
+            Some((
+                401,
+                "invalid-host-credential",
+                "the token this machine holds is revoked",
+            )),
+            true,
+        )
+        .await
+    }
+}
+
+/// Serves one request on one connection: attach, command stream, or a
+/// frames batch.
+async fn handle<Up>(
+    mut stream: TcpStream,
+    state: Arc<Mutex<RoomState>>,
+    log_changed: watch::Sender<u64>,
+    seen: mpsc::UnboundedSender<Seen<Up>>,
+) where
     Up: serde::de::DeserializeOwned,
-    Down: serde::Serialize,
 {
-    let mut authorization = None;
-    let accepted = tokio_tungstenite::accept_hdr_async(
-        stream,
-        |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
-            authorization = request
-                .headers()
-                .get("authorization")
-                .and_then(|value| value.to_str().ok())
-                .map(ToOwned::to_owned);
-            // This callback may refuse a handshake; nothing here ever does,
-            // and the refusal type is the one tungstenite dictates.
-            Ok::<_, tokio_tungstenite::tungstenite::handshake::server::ErrorResponse>(response)
-        },
-    )
-    .await;
-
-    let Ok(mut socket) = accepted else {
-        return true;
+    let Some(request) = read_request(&mut stream).await else {
+        return;
     };
-    if seen.send(Seen::Connected(authorization)).is_err() {
-        return false;
-    }
+    let target = request.target.clone();
+    let (path, query) = target.split_once('?').unwrap_or((&target, ""));
 
-    // The handshake, the way a room performs it: read the first frame, then
-    // answer it, say nothing, or close.
-    let Some(Ok(Message::Text(hello))) = socket.next().await else {
-        return true;
-    };
-    let Ok(hello) = serde_json::from_str::<Up>(&hello) else {
-        return true;
-    };
-    if seen.send(Seen::Frame(hello)).is_err() {
-        return false;
-    }
-
-    match &handshake {
-        Handshake::Refuse => {
-            let _ = socket.close(None).await;
-            let _ = seen.send(Seen::Disconnected);
-            return true;
+    if request.method == "POST" && path.ends_with("/relay/attach") {
+        let _ = seen.send(Seen::Attached {
+            authorization: request.authorization,
+            body: serde_json::from_slice(&request.body).unwrap_or_default(),
+        });
+        let refusal = state.lock().expect("the room state").refusal;
+        if let Some((status, slug, detail)) = refusal {
+            let _ = write_reply(&mut stream, &Reply::problem(status, slug, detail)).await;
+            return;
         }
-        Handshake::Answer(answer) => {
-            let answer = serde_json::to_string(answer).expect("serialize");
-            if socket
-                .send(Message::Text(Utf8Bytes::from(answer)))
-                .await
-                .is_err()
-            {
-                return true;
+        // A gated attach parks here until released — the attempt is
+        // already on `seen`, so the test knows the peer is detached while
+        // it makes the peer produce frames.
+        loop {
+            let released = {
+                let state = state.lock().expect("the room state");
+                if !state.attach_gated {
+                    break;
+                }
+                Arc::clone(&state.attach_released)
+            };
+            released.notified().await;
+        }
+        let epoch = {
+            let mut state = state.lock().expect("the room state");
+            state.epoch += 1;
+            // A newer attach supersedes the stream before it, as the real
+            // room's presence epoch does.
+            if let Some(close) = state.close_stream.take() {
+                let _ = close.send(());
+            }
+            state.epoch
+        };
+        let _ = write_reply(
+            &mut stream,
+            &Reply::json(&serde_json::json!({ "epoch": epoch })),
+        )
+        .await;
+    } else if request.method == "GET" && path.ends_with("/relay/commands") {
+        let epoch = query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("epoch="))
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let current = state.lock().expect("the room state").epoch;
+        if epoch != current {
+            let _ = write_reply(
+                &mut stream,
+                &Reply::problem(409, "relay-epoch-stale", "the epoch names a superseded attach"),
+            )
+            .await;
+            return;
+        }
+        let _ = seen.send(Seen::StreamOpened(epoch));
+        serve_commands(stream, state, log_changed, seen, epoch).await;
+    } else if request.method == "POST" && path.ends_with("/relay/frames") {
+        handle_frames(&mut stream, &request, &state, &seen).await;
+    } else {
+        let _ = write_reply(
+            &mut stream,
+            &Reply::problem(404, "not-found", "the fake room knows only the relay routes"),
+        )
+        .await;
+    }
+}
+
+/// Answers `POST …/relay/frames`: epoch check, `ack_through`, then `Seen`.
+async fn handle_frames<Up>(
+    stream: &mut TcpStream,
+    request: &Received,
+    state: &Arc<Mutex<RoomState>>,
+    seen: &mpsc::UnboundedSender<Seen<Up>>,
+) where
+    Up: serde::de::DeserializeOwned,
+{
+    let Ok(batch) = serde_json::from_slice::<Batch<Up>>(&request.body) else {
+        return;
+    };
+    let current = state.lock().expect("the room state").epoch;
+    if batch.epoch != current {
+        let _ = write_reply(
+            stream,
+            &Reply::problem(409, "relay-epoch-stale", "the epoch names a superseded attach"),
+        )
+        .await;
+        return;
+    }
+    {
+        let mut state = state.lock().expect("the room state");
+        // `ack_through` retires everything at or below it — except a
+        // host room's `run` rows, which only a `job_result` retires.
+        let hold_jobs = state.jobs_held_until_answered;
+        state.log.retain(|(seq, command)| {
+            *seq > batch.ack_through || (hold_jobs && command["type"] == "run")
+        });
+        if hold_jobs {
+            // The raw frames, for matching `job_result` to its row —
+            // the decoded `Up` is for `Seen`, this pass is for the log.
+            let raw: serde_json::Value =
+                serde_json::from_slice(&request.body).unwrap_or_default();
+            for frame in raw["frames"].as_array().into_iter().flatten() {
+                if frame["type"] != "job_result" {
+                    continue;
+                }
+                let Some(job_id) = frame["job_id"].as_str() else {
+                    continue;
+                };
+                // The row the result answers is the `run` for the same
+                // machine: a `create` names it outright, the others in
+                // the container name it was derived into.
+                if let Some(position) = state.log.iter().position(|(_, command)| {
+                    command["type"] == "run"
+                        && (command["job"]["machine"] == job_id
+                            || command["job"]["container"]
+                                .as_str()
+                                .is_some_and(|name| name.ends_with(job_id)))
+                }) {
+                    state.log.remove(position);
+                }
             }
         }
-        Handshake::Silent => {}
     }
+    let _ = seen.send(Seen::Batch {
+        epoch: batch.epoch,
+        from_seq: batch.from_seq,
+        ack_through: batch.ack_through,
+        frames: batch.frames,
+    });
+    let _ = write_reply(stream, &Reply::json(&serde_json::json!({ "events": [] }))).await;
+}
+
+/// The epoch a command stream was superseded by is checked this often.
+const SUPERSEDE_CHECK: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Holds one command stream open: a cursor over the room's log, plus the
+/// heartbeat comments that keep an idle stream's flow known-alive.
+async fn serve_commands<Up>(
+    mut stream: TcpStream,
+    state: Arc<Mutex<RoomState>>,
+    log_changed: watch::Sender<u64>,
+    seen: mpsc::UnboundedSender<Seen<Up>>,
+    epoch: u64,
+) where
+    Up: serde::de::DeserializeOwned,
+{
+    let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+    if stream.write_all(head.as_bytes()).await.is_err() {
+        let _ = seen.send(Seen::StreamClosed);
+        return;
+    }
+    let (mut reader, mut writer) = stream.into_split();
+    let (close, mut closed) = oneshot::channel();
+    state.lock().expect("the room state").close_stream = Some(close);
+
+    let mut cursor = 0_u64;
+    let mut incoming = log_changed.subscribe();
+    let mut superseded = tokio::time::interval(SUPERSEDE_CHECK);
+    let mut ping = tokio::time::interval(STREAM_PING);
+    // The first ticks are immediate and a stream that just opened has
+    // said nothing yet; neither fires now.
+    superseded.tick().await;
+    ping.tick().await;
+    let mut read_buffer = [0_u8; 256];
 
     loop {
+        // A silenced stream is a dead path: no bytes move in either
+        // direction, commands included — a NAT that reclaimed the flow
+        // drops the command events with the heartbeat.
+        let rows: Vec<(u64, serde_json::Value)> = {
+            let state = state.lock().expect("the room state");
+            if state.epoch != epoch {
+                break;
+            }
+            if state.silenced {
+                Vec::new()
+            } else {
+                state
+                    .log
+                    .iter()
+                    .filter(|(seq, _)| *seq > cursor)
+                    .cloned()
+                    .collect()
+            }
+        };
+        let mut gone = false;
+        for (seq, command) in rows {
+            let event = format!(
+                "event: command\nid: {seq}\ndata: {{\"seq\":{seq},\"command\":{command}}}\n\n"
+            );
+            if writer.write_all(event.as_bytes()).await.is_err() {
+                gone = true;
+                break;
+            }
+            cursor = seq;
+        }
+        if gone {
+            break;
+        }
+
         tokio::select! {
-            incoming = socket.next() => match incoming {
-                Some(Ok(Message::Text(text))) => {
-                    match serde_json::from_str::<Up>(&text) {
-                        Ok(frame) => {
-                            if seen.send(Seen::Frame(frame)).is_err() {
-                                return false;
-                            }
-                        }
-                        Err(error) => panic!("the peer sent an unreadable frame: {error}: {text}"),
-                    }
+            _ = incoming.changed() => {}
+            _ = superseded.tick() => {}
+            _ = ping.tick() => {
+                let silenced = state.lock().expect("the room state").silenced;
+                if !silenced && writer.write_all(b": ping\n\n").await.is_err() {
+                    break;
                 }
-                Some(Ok(_)) => {}
-                Some(Err(_)) | None => {
-                    let _ = seen.send(Seen::Disconnected);
-                    return true;
+            }
+            _ = &mut closed => break,
+            read = reader.read(&mut read_buffer) => {
+                // The peer closed its side of the flow: a zero read, or an
+                // error, both end the stream the same way.
+                if matches!(read, Ok(0) | Err(_)) {
+                    break;
                 }
-            },
-            directive = directives.recv() => match directive {
-                Some(Directive::Send(command)) => {
-                    let json = serde_json::to_string(&command).expect("serialize");
-                    if socket.send(Message::Text(Utf8Bytes::from(json))).await.is_err() {
-                        let _ = seen.send(Seen::Disconnected);
-                        return true;
-                    }
-                }
-                Some(Directive::Close) => {
-                    let _ = socket.close(None).await;
-                    // Drain until the peer's own close arrives: only then is
-                    // it certainly reconnecting rather than still holding a
-                    // socket it believes is live.
-                    while let Some(Ok(_)) = socket.next().await {}
-                    let _ = seen.send(Seen::Disconnected);
-                    return true;
-                }
-                None => return false,
-            },
+            }
         }
     }
+    {
+        let mut state = state.lock().expect("the room state");
+        state.close_stream = None;
+        // A dead flow ends with the stream that carried it: the next one
+        // is a healthy path until a test silences it too.
+        state.silenced = false;
+    }
+    let _ = seen.send(Seen::StreamClosed);
 }
 
 // ── The REST API, for real, on loopback ──

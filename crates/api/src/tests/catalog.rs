@@ -9,7 +9,7 @@
 
 use flyco_core::{
     CloudProviderKind, MachineCapacity, MachineCatalog, MachineCatalogEntry, MachineDefault,
-    MachinePricing, OsFamily, Problem, ProviderAccountId, ProviderCredentials, Runtime,
+    MachinePricing, OsFamily, Problem, ProviderAccountId, Runtime,
     StoragePricing, Usd, UserId,
 };
 use skyzen::routing::Router;
@@ -22,10 +22,10 @@ use crate::catalog::{self, RegionCatalog, RegionOutcome};
 use crate::provisioning::CloudProvisioner;
 use crate::provisioning_queue::{self, ProvisioningJob};
 use crate::testing::{
-    AZURE_SUBSCRIPTION_ID, TestGithub, migrated_router_on, seed_provider_account, seed_user,
+    TestGithub, migrated_router_on, seed_azure_account, seed_provider_account, seed_user,
     test_config, test_host_rooms, test_rooms, test_vendors,
 };
-use crate::{provider_accounts, session};
+use crate::session;
 
 const CATALOG: &str = "/v1/machines/catalog";
 const DEFAULT: &str = "/v1/machines/default";
@@ -48,32 +48,6 @@ async fn signed_in(ctx: &TestContext, kv: &Kv, db: &Db, queue: Queue) -> Caller 
         token,
         user: user.id,
     }
-}
-
-/// Links an Azure account the way the store path does, without a cloud.
-///
-/// Deliberately without a resource group: nothing here provisions, and an
-/// account with no group is the one shape whose catalog read refuses
-/// *before* it reaches the network — see
-/// `LinkedAccount::azure_workspace` — which is what lets the consumer be
-/// driven for real in a unit test.
-async fn seed_azure_account(db: &Db, user: UserId) -> ProviderAccountId {
-    provider_accounts::create(
-        db,
-        &test_config(),
-        user,
-        "flyco test subscription".to_owned(),
-        &ProviderCredentials::Azure {
-            tenant_id: "11111111-2222-4333-8444-555555555555".to_owned(),
-            client_id: "66666666-7777-4888-8999-aaaaaaaaaaaa".to_owned(),
-            client_secret: "not-a-real-secret".to_owned(),
-            subscription_id: AZURE_SUBSCRIPTION_ID.to_owned(),
-        },
-        None,
-    )
-    .await
-    .expect("link an Azure account")
-    .id
 }
 
 /// One machine big enough for flyco to pick on its own.

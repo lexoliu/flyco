@@ -527,7 +527,7 @@ async fn perform(
     let outcome = match job {
         ProvisioningJob::Provision { .. } => match claim(db, rooms, job.clone()).await {
             Ok(None) => return Settled::Done,
-            Ok(Some(claimed)) => build(db, config, rooms, queue, clients, &claimed).await,
+            Ok(Some(claimed)) => build(db, config, kv, rooms, queue, clients, &claimed).await,
             Err(error) => return Settled::Redeliver(error),
         },
         ProvisioningJob::Continue {
@@ -535,7 +535,7 @@ async fn perform(
         } => match claim(db, rooms, job.clone()).await {
             Ok(None) => return Settled::Done,
             Ok(Some(claimed)) => {
-                carry_on(db, config, rooms, queue, clients, &claimed, continuation).await
+                carry_on(db, config, kv, rooms, queue, clients, &claimed, continuation).await
             }
             Err(error) => return Settled::Redeliver(error),
         },
@@ -735,6 +735,8 @@ struct Claim {
     /// model written into the machine's configuration is the one this job
     /// read the session at.
     model: ModelChoice,
+    /// The mode the session runs under, on the same terms.
+    permission_mode: PermissionMode,
 }
 
 /// Decides whether this delivery still has work to do.
@@ -818,6 +820,7 @@ async fn claim(db: &Db, rooms: &Rooms, job: ProvisioningJob) -> Result<Option<Cl
     }
 
     let model = target.model_choice();
+    let permission_mode = target.permission_mode();
     Ok(Some(Claim {
         session,
         user: target.user_id,
@@ -827,6 +830,7 @@ async fn claim(db: &Db, rooms: &Rooms, job: ProvisioningJob) -> Result<Option<Cl
         machine_origin: target.machine_origin,
         machine,
         model,
+        permission_mode,
     }))
 }
 
@@ -848,10 +852,143 @@ impl From<ApiError> for Provisioned {
     }
 }
 
+/// The catalog entry a machine is being provisioned under, resolved the way
+/// the picker's document answers it rather than by asking the provider
+/// again.
+///
+/// The cached document is the authority here for the same reason
+/// [`machines::deployable`] reads it at creation: it is the catalog the user
+/// chose from, so it is also where the price of the capacity actually
+/// obtained comes from. Asking the provider instead cost every provision —
+/// and every continuation leg — the SKU list, the quota read and the
+/// page-walk of retail prices, most of which a container never uses; on the
+/// measured path that was the whole delay between a session's creation and
+/// its `reserving` stage.
+///
+/// A remote account whose document cannot price this machine is read *on
+/// demand*: just the region the machine is in for a provider read a region
+/// at a time, the whole catalog for one that answers in a single pass — and
+/// what the read learns is recorded back so the next leg and the picker
+/// both see it. A host's catalog is row-sourced and never cached, so it
+/// keeps the direct read.
+async fn deployable_entry(
+    kv: &Kv,
+    queue: &Queue,
+    claim: &Claim,
+    account: &provisioning::LinkedAccount,
+    spec: &flyco_core::MachineSpec,
+) -> Result<flyco_core::MachineCatalogEntry, Provisioned> {
+    if !account.catalog_is_remote() {
+        return provisioning::deployable(account, spec)
+            .await
+            .map_err(|error| classify(&error));
+    }
+
+    let wanted = |entry: &&flyco_core::MachineCatalogEntry| {
+        entry.machine_type == spec.machine_type
+            && entry.region.eq_ignore_ascii_case(&spec.region)
+            && entry.runtime == spec.runtime
+    };
+
+    match catalog::read(kv, account.id).await {
+        Ok(Some(document)) => {
+            if let Some(entry) = document.entries().find(wanted).cloned() {
+                // Served stale, refreshed anyway — the same answer the
+                // picker gives while a refresh is under way.
+                if document.is_stale(now_unix())
+                    && let Err(error) =
+                        catalog::ask_for_refresh(kv, queue, claim.user, account.id).await
+                {
+                    tracing::warn!(account = %account.id, %error, "could not ask for a catalog refresh");
+                }
+                return Ok(entry);
+            }
+        }
+        Ok(None) => {}
+        // A store that cannot be read is not a reason to keep the provider
+        // from being asked: the cache is an optimisation, not a dependency.
+        Err(error) => {
+            tracing::warn!(account = %account.id, %error, "the catalog cache could not be read");
+        }
+    }
+
+    let entries = match provisioning::catalog_reads(account)
+        .await
+        .map_err(|error| classify(&error))?
+    {
+        provisioning::CatalogReads::PerRegion(_) => {
+            match provisioning::region_catalog(account, &spec.region).await {
+                Ok(entries) => {
+                    if let Err(error) = catalog::record_region(
+                        kv,
+                        account.id,
+                        catalog::RegionCatalog {
+                            region: spec.region.clone(),
+                            read_at_unix: now_unix(),
+                            outcome: catalog::RegionOutcome::Offered {
+                                entries: entries.clone(),
+                            },
+                        },
+                    )
+                    .await
+                    {
+                        tracing::warn!(account = %account.id, %error, "a region read could not be recorded");
+                    }
+                    entries
+                }
+                Err(error) => {
+                    if let Err(recorded) = catalog::record_region(
+                        kv,
+                        account.id,
+                        catalog::RegionCatalog {
+                            region: spec.region.clone(),
+                            read_at_unix: now_unix(),
+                            outcome: catalog::RegionOutcome::Failed {
+                                error: error.to_string(),
+                            },
+                        },
+                    )
+                    .await
+                    {
+                        tracing::warn!(account = %account.id, %recorded, "a region's failure could not be recorded");
+                    }
+                    return Err(classify(&error));
+                }
+            }
+        }
+        provisioning::CatalogReads::Whole => match provisioning::catalog(account).await {
+            Ok(entries) => {
+                if let Err(error) =
+                    catalog::record_account(kv, account.id, entries.clone(), now_unix()).await
+                {
+                    tracing::warn!(account = %account.id, %error, "an account read could not be recorded");
+                }
+                entries
+            }
+            Err(error) => {
+                if let Err(recorded) =
+                    catalog::record_failure(kv, account.id, error.to_string(), now_unix()).await
+                {
+                    tracing::warn!(account = %account.id, %recorded, "an account's failure could not be recorded");
+                }
+                return Err(classify(&error));
+            }
+        },
+    };
+
+    entries.iter().find(wanted).cloned().ok_or_else(|| {
+        Provisioned::Failed(format!(
+            "{} in {} is not something this account can deploy",
+            spec.machine_type, spec.region
+        ))
+    })
+}
+
 /// Mints the credentials, asks the provider for the machine, and records it.
 async fn build(
     db: &Db,
     config: &ApiConfig,
+    kv: &Kv,
     rooms: &Rooms,
     queue: &Queue,
     clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
@@ -862,13 +999,7 @@ async fn build(
         .map_err(Provisioned::from)?;
     let spec = claim.machine.spec();
 
-    // Re-read the catalog rather than trusting the check made at creation:
-    // minutes have passed, quota is shared with everything else in the
-    // subscription, and this is also where the price of the capacity
-    // actually obtained comes from.
-    let entry = provisioning::deployable(&account, &spec)
-        .await
-        .map_err(|error| classify(&error))?;
+    let entry = deployable_entry(kv, queue, claim, &account, &spec).await?;
 
     let bootstrap = bootstrap(db, config, clients, claim, &entry, spec.spot).await?;
     announce(db, rooms, claim.session, ProvisioningStage::Reserving).await;
@@ -892,9 +1023,15 @@ async fn build(
 /// The same ending as [`build`], reached without a new bootstrap or a new
 /// `reserving` stage: the machine is the one already being built, and the
 /// user has been watching it since the first leg.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a continuation names the claim, the continuation token, and \
+              every service the settle touches"
+)]
 async fn carry_on(
     db: &Db,
     config: &ApiConfig,
+    kv: &Kv,
     rooms: &Rooms,
     queue: &Queue,
     clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
@@ -904,9 +1041,7 @@ async fn carry_on(
     let account = provisioning::account(db, config, claim.user, claim.machine.provider_account_id)
         .await
         .map_err(Provisioned::from)?;
-    let entry = provisioning::deployable(&account, &claim.machine.spec())
-        .await
-        .map_err(|error| classify(&error))?;
+    let entry = deployable_entry(kv, queue, claim, &account, &claim.machine.spec()).await?;
     let pending = claim
         .machine
         .as_provider_machine()
@@ -1140,6 +1275,7 @@ async fn recover(
     .map_err(|error| Provisioned::Failed(format!("the reclaim notice did not render: {error}")))?;
     if let Err(error) = rooms
         .command(
+            db,
             session,
             &ControlToDaemon::UserMessage {
                 text: notice.trim_end().to_owned(),
@@ -1201,10 +1337,11 @@ async fn bootstrap(
         runtime: claim.machine.spec().runtime,
         control_plane_url: config.control_plane_url(),
         daemon_token: token.token,
-        // Auto is the product default. Flyco's managed deny rules still bind
-        // even in this mode, and anything the classifier does not auto-allow
-        // still reaches the approval UI.
-        permission_mode: PermissionMode::Auto,
+        // What the session is recorded as running under, which for a
+        // machine being rebuilt is whatever the user last changed it to
+        // rather than the product default the previous machine booted on —
+        // the same claim-carried fact `model` is.
+        permission_mode: claim.permission_mode,
         auth,
         repo,
         machine_origin: claim.machine_origin,
@@ -1318,6 +1455,7 @@ async fn announce(db: &Db, rooms: &Rooms, session: SessionId, stage: Provisionin
     }
     if let Err(error) = rooms
         .broadcast(
+            db,
             session,
             &ClientEvent::ProvisioningStage {
                 stage,

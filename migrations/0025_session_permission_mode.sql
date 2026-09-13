@@ -1,0 +1,22 @@
+-- Flyco control plane: the permission mode a session's agent runs under
+-- becomes a session property instead of whatever the machine was
+-- provisioned with.
+--
+-- Until now the mode lived only inside the provisioned `flycod`
+-- configuration, fixed at `auto` the moment the machine was built. A user
+-- who put a session on `plan` and lost the machine would get it back on
+-- `auto`, because nothing outside that file remembered the choice. The
+-- session row is where such choices live — it already carries `model` for
+-- the same reason — and the daemon asks the control plane for the mode at
+-- start through `harness-session`, exactly the path the model takes after
+-- a reclamation.
+--
+-- NULL rather than a backfill: a session opened before this column existed
+-- was running `auto`, which is also the product default
+-- (`PermissionMode::PRODUCT_DEFAULT`) — resolved at read, the way `model`
+-- resolves a legacy row to the harness's own default rather than freezing
+-- one afternoon's answer into rows nobody chose it for. The value stored
+-- is the SDK's camelCase spelling (`default`, `acceptEdits`,
+-- `bypassPermissions`, `plan`, `dontAsk`, `auto`), which is what the
+-- daemon's configuration takes verbatim.
+ALTER TABLE sessions ADD COLUMN permission_mode TEXT;
