@@ -39,8 +39,9 @@ use skyzen_services::Db;
 
 use crate::error::ApiError;
 use crate::host_room::{HEADER_HOST, HostAttachResponse, HostStatus};
-use crate::room::{AttachResponse, Emitted, EventPage, HEADER_INTERNAL, HEADER_SESSION, INTERNAL};
+use crate::room::{AttachResponse, Emitted, HEADER_INTERNAL, HEADER_SESSION, INTERNAL};
 use crate::user_events::{HEADER_USER, PublishEvents};
+use flyco_core::wire::EventPage;
 
 /// Cloudflare binding the session-room namespace is exposed under.
 pub const BINDING: &str = "SESSION_ROOMS";
@@ -597,12 +598,7 @@ impl Rooms {
     }
 
     /// Publishes the events a room call produced onto the owner's stream.
-    async fn fan_out(
-        &self,
-        db: &Db,
-        session: SessionId,
-        emitted: Emitted,
-    ) -> Result<(), ApiError> {
+    async fn fan_out(&self, db: &Db, session: SessionId, emitted: Emitted) -> Result<(), ApiError> {
         if emitted.events.is_empty() {
             return Ok(());
         }
@@ -805,11 +801,7 @@ impl HostRooms {
     ///
     /// Returns [`ApiError::Room`] if the room could not be reached or
     /// refused the stream — including a stale epoch.
-    pub async fn commands(
-        &self,
-        host: HostId,
-        epoch: u64,
-    ) -> Result<skyzen::Response, ApiError> {
+    pub async fn commands(&self, host: HostId, epoch: u64) -> Result<skyzen::Response, ApiError> {
         self.call_streaming(
             host,
             &format!("/internal/commands?epoch={epoch}"),

@@ -39,8 +39,9 @@ pub mod workdir;
 pub use agents::{AgentsDocument, UpdateAgentsDocument};
 pub use approval::{ApprovalState, ApprovalView, DecideApproval};
 pub use auth::{
-    ApiKeySummary, AuthorizeUrl, CreateApiKey, CreatedApiKey, CurrentUser, DAEMON_TOKEN_PREFIX,
-    DaemonToken, SESSION_CAP_DEFAULT, SESSION_CAP_MAX, SESSION_CAP_MIN, UpdateMe,
+    ApiKeySummary, AuthorizeUrl, CliSession, CliSessionKey, CreateApiKey, CreateCliSession,
+    CreatedApiKey, CurrentUser, DAEMON_TOKEN_PREFIX, DaemonToken, SESSION_CAP_DEFAULT,
+    SESSION_CAP_MAX, SESSION_CAP_MIN, UpdateMe,
 };
 pub use budget::{
     BudgetConfig, BudgetSignal, BudgetStage, BudgetState, BudgetView, SpendEvent, SpendKind,
@@ -53,8 +54,7 @@ pub use harness::{
     ContextCost, ContextUsage, ContextWindow, Feature, HarnessAccountView, HarnessCredentialInput,
     HarnessEvent, HarnessFeature, HarnessKind, LinkHarnessAccount, ModelChoice, ModelChoiceError,
     ModelOption, PermissionMode, ReportModels, ReportUsage, UsageLimitHit, UsageReport,
-    availability,
-    builtin_models, matrix,
+    availability, builtin_models, matrix,
 };
 pub use host::{
     ENROLLMENT_TOKEN_TTL_SECONDS, EnrollHost, EnrolledHost, Enrollment, EnrollmentToken,
@@ -62,10 +62,10 @@ pub use host::{
     ReportJobResult, UpdateHost,
 };
 pub use id::{
-    ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, ClaudeOauthAttemptId, CodexOauthAttemptId,
-    EnrollmentTokenId, HarnessAccountId, HarnessObservationId, HostId, Id, MachineId, McpServerId,
-    MemoryNodeId, ProviderAccountId, ProviderOauthAttemptId, PushSubscriptionId, SessionId,
-    ShellRunId, SkillId, SpendEventId, UserId, WorkdirRequestId,
+    ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, ClaudeOauthAttemptId, CliSessionId,
+    CodexOauthAttemptId, EnrollmentTokenId, HarnessAccountId, HarnessObservationId, HostId, Id,
+    MachineId, McpServerId, MemoryNodeId, ProviderAccountId, ProviderOauthAttemptId,
+    PushSubscriptionId, SessionId, ShellRunId, SkillId, SpendEventId, UserId, WorkdirRequestId,
 };
 pub use machine::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, CloudProviderKind,
@@ -87,11 +87,11 @@ pub use push::{PushKeys, PushSubscription, PushSubscriptionView, VapidPublicKey}
 pub use release::{PublishedBinary, PublishedObject};
 pub use repo::{BranchName, BranchNameError, RepoSlug, RepoStatus};
 pub use session::{
-    ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, HarnessSessionView,
+    ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, HarnessSessionView, HarnessTui,
     InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS,
-    PROVISION_DEADLINE_SECS, PausedReason, SendMessage, SessionActivity, SessionDetail,
-    RunShell, SessionState, SessionSummary, SessionTransitionError, TerminalInput, TerminalSize,
-    TurnPage, TurnSummary, USAGE_LIMIT_CONTINUE_MESSAGE, USAGE_LIMIT_STOP_AFTER_SECS,
+    PROVISION_DEADLINE_SECS, PausedReason, RunShell, SendMessage, SessionActivity, SessionDetail,
+    SessionState, SessionSummary, SessionTransitionError, TerminalInput, TerminalSize, TurnPage,
+    TurnSummary, USAGE_LIMIT_CONTINUE_MESSAGE, USAGE_LIMIT_STOP_AFTER_SECS,
     USAGE_LIMIT_WAKE_LEAD_SECS, UpdateSession, UsageLimitPause, excerpt,
 };
 pub use skills::{SkillScope, SkillView};

@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::id::{ApiKeyId, SessionId, UserId};
+use crate::id::{ApiKeyId, CliSessionId, SessionId, UserId};
 
 /// Marks a session daemon's credential.
 ///
@@ -113,4 +113,48 @@ pub struct ApiKeySummary {
     pub created_at_unix: u64,
     /// Last time the key authenticated a request, if it ever has.
     pub last_used_unix: Option<u64>,
+}
+
+/// Request body of `POST /v1/cli-sessions`.
+///
+/// Opens a `flyco login` attempt: the CLI prints the returned
+/// `authorize_url`, the user approves it in a browser already signed in to
+/// flyco, and the CLI polls until the key is minted.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+pub struct CreateCliSession {
+    /// The machine the CLI runs on — becomes part of the issued key's
+    /// label, so the key list reads `flyco-cli on <hostname>`. Omitted on
+    /// machines that cannot name themselves.
+    #[serde(default)]
+    pub hostname: Option<String>,
+}
+
+/// Response of `POST /v1/cli-sessions`: a pending sign-in attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CliSession {
+    /// Identifier the poll and the approval page both name.
+    pub id: CliSessionId,
+    /// Shared secret the poll presents as `?s=`. Proves the poller is the
+    /// same CLI that opened the attempt — it is not the key, only the
+    /// right to collect the key once one exists.
+    pub poll_token: String,
+    /// Where the user approves: the PWA's `/cli/authorize` page with this
+    /// attempt's id. Opened locally when the CLI can open a browser,
+    /// printed otherwise.
+    pub authorize_url: String,
+    /// Seconds since the Unix epoch when the attempt stops answering.
+    pub expires_at_unix: u64,
+}
+
+/// Response of `GET /v1/cli-sessions/{id}?s=…` once the user approved.
+///
+/// Returned exactly once: the read that answers `200` consumes the record,
+/// so a replayed poll finds `410` rather than a second copy of the key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CliSessionKey {
+    /// Identifier used to revoke the key later — `flyco logout` passes it
+    /// to `DELETE /v1/api-keys/{id}`.
+    pub key_id: ApiKeyId,
+    /// The plaintext `fk_` API key.
+    pub key: String,
 }

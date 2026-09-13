@@ -17,11 +17,11 @@ use skyzen_test::{TestClient, TestContext};
 
 use crate::app::router;
 use crate::github::GithubClient;
-use crate::room::EventPage;
 use crate::testing::{
     GITHUB_WEBHOOK_SECRET, TestGithub, migrate, seed_user, test_clouds, test_config, test_vendors,
 };
 use crate::webhooks::{EVENT_HEADER, SIGNATURE_HEADER};
+use flyco_core::wire::EventPage;
 
 /// The secret a configured deployment shares with GitHub.
 const SECRET: &str = GITHUB_WEBHOOK_SECRET;
@@ -99,6 +99,7 @@ async fn active_session(db: &Db, user: &CurrentUser, repo: &str) -> SessionId {
             model: &flyco_core::ModelChoice::default_of(&flyco_core::builtin_models(
                 flyco_core::HarnessKind::ClaudeCode,
             )),
+            permission_mode: None,
         },
     )
     .await

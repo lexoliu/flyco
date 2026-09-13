@@ -724,11 +724,9 @@ impl<S: TranscriptStore> Driver<S> {
                 ok
             }
             DriverCommand::SetPermissionMode { mode, ack } => {
-                let result = write_command(
-                    &mut self.stdin,
-                    &SidecarCommand::SetPermissionMode { mode },
-                )
-                .await;
+                let result =
+                    write_command(&mut self.stdin, &SidecarCommand::SetPermissionMode { mode })
+                        .await;
                 let ok = result.is_ok();
                 let _ = ack.send(result);
                 ok

@@ -59,8 +59,8 @@
 //! a second copy of the same facts, re-serialized on every call, and the
 //! first one to drift.
 
+use flyco_core::wire::{DaemonAttach, DaemonFrames, EventPage, StoredEvent};
 use flyco_core::workdir::WorkdirReply;
-use flyco_core::wire::{DaemonAttach, DaemonFrames};
 use flyco_core::{
     ClientEvent, ControlToDaemon, DaemonToControl, MessageOrigin, RepoStatus, ShellRunId,
     WorkdirRequestId,
@@ -133,27 +133,6 @@ pub struct AttachResponse {
     pub epoch: u64,
     /// The events the attach produced.
     pub events: Vec<EmittedEvent>,
-}
-
-/// One stored event, as the catch-up API serves it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct StoredEvent {
-    /// Monotonic position in the room's stream. Pass the last one back as
-    /// `after` to continue.
-    pub seq: u64,
-    /// The [`ClientEvent`] this position holds.
-    pub event: serde_json::Value,
-    /// When the room recorded it, seconds since the Unix epoch.
-    pub at_unix: u64,
-}
-
-/// A page of the room's event tail.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct EventPage {
-    /// The events, oldest first.
-    pub events: Vec<StoredEvent>,
-    /// Whether more events exist past the last one returned.
-    pub more: bool,
 }
 
 /// Query of the room's catch-up route.
@@ -267,7 +246,9 @@ async fn attach_inner(
             control: flyco_core::WIRE_PROTOCOL_VERSION,
         });
     }
-    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+    ensure_schema(db)
+        .await
+        .map_err(|error| room_failed(&error))?;
 
     let live_until = now_unix().saturating_add(PRESENCE_TTL_SECONDS);
     sql!(
@@ -314,9 +295,7 @@ async fn stream_commands(
     Query(cursor): Query<CommandCursor>,
     db: DurableDb,
 ) -> Outcome<Sse> {
-    open_command_stream(&headers, cursor.epoch, db)
-        .await
-        .into()
+    open_command_stream(&headers, cursor.epoch, db).await.into()
 }
 
 async fn open_command_stream(
@@ -325,7 +304,9 @@ async fn open_command_stream(
     db: DurableDb,
 ) -> Result<Sse, ApiError> {
     internal(headers)?;
-    ensure_schema(&db).await.map_err(|error| room_failed(&error))?;
+    ensure_schema(&db)
+        .await
+        .map_err(|error| room_failed(&error))?;
     let presence = read_presence(&db)
         .await
         .map_err(|error| room_failed(&error))?;
@@ -348,7 +329,11 @@ async fn open_command_stream(
         sent_resize: false,
         last_touch: 0,
     };
-    Ok(crate::sse::serve(feed, poll_command_feed, crate::sse::HEARTBEAT))
+    Ok(crate::sse::serve(
+        feed,
+        poll_command_feed,
+        crate::sse::HEARTBEAT,
+    ))
 }
 
 /// One poll of the command stream.
@@ -373,15 +358,13 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
 
     if !feed.sent_resize {
         feed.sent_resize = true;
-        let size: Option<TerminalSizeRow> = sql!(
-            db,
-            "SELECT cols, rows FROM terminal_size WHERE id = 0"
-        )
-        .fetch_optional()
-        .await
-        .map_err(|error| {
-            tracing::warn!(%error, "a command stream could not read the terminal size");
-        })?;
+        let size: Option<TerminalSizeRow> =
+            sql!(db, "SELECT cols, rows FROM terminal_size WHERE id = 0")
+                .fetch_optional()
+                .await
+                .map_err(|error| {
+                    tracing::warn!(%error, "a command stream could not read the terminal size");
+                })?;
         if let Some(TerminalSizeRow { cols, rows }) = size {
             return Ok(crate::sse::Poll::Emit(vec![command_event(
                 None,
@@ -496,7 +479,9 @@ async fn accept_batch(
     kv: &DurableKv,
 ) -> Result<Json<Emitted>, ApiError> {
     internal(headers)?;
-    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+    ensure_schema(db)
+        .await
+        .map_err(|error| room_failed(&error))?;
     let Some(presence) = read_presence(db)
         .await
         .map_err(|error| room_failed(&error))?
@@ -513,11 +498,14 @@ async fn accept_batch(
     }
 
     let epoch = batch.epoch;
-    let through: u64 = sql!(db, "SELECT through FROM daemon_frames WHERE epoch = {epoch}")
-        .fetch_scalar_optional()
-        .await
-        .map_err(|error| room_failed(&error))?
-        .unwrap_or(0);
+    let through: u64 = sql!(
+        db,
+        "SELECT through FROM daemon_frames WHERE epoch = {epoch}"
+    )
+    .fetch_scalar_optional()
+    .await
+    .map_err(|error| room_failed(&error))?
+    .unwrap_or(0);
     let next = through.saturating_add(1);
     if batch.from_seq > next {
         return Err(ApiError::RelayFramesGap {
@@ -626,7 +614,9 @@ async fn dispatch_command(
     db: &DurableDb,
 ) -> Result<Json<Emitted>, ApiError> {
     internal(headers)?;
-    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+    ensure_schema(db)
+        .await
+        .map_err(|error| room_failed(&error))?;
 
     // A stale presence marker gets announced once, before anything else
     // the command produces, so a watcher learns the daemon is gone ahead
@@ -746,7 +736,10 @@ async fn announce_stale_presence(
 /// Every deliverable command is a row — the stream is a cursor over the
 /// table and an acknowledgement deletes from it, so queued-but-live and
 /// queued-while-away are the same mechanism at different lengths of wait.
-async fn queue_command(db: &DurableDb, command: &ControlToDaemon) -> Result<u64, DurableObjectError> {
+async fn queue_command(
+    db: &DurableDb,
+    command: &ControlToDaemon,
+) -> Result<u64, DurableObjectError> {
     let json = serde_json::to_string(command)
         .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
     sql!(
@@ -756,10 +749,13 @@ async fn queue_command(db: &DurableDb, command: &ControlToDaemon) -> Result<u64,
     .execute()
     .await
     .map_err(|error| stored(&error))?;
-    sql!(db, "SELECT seq FROM daemon_commands ORDER BY seq DESC LIMIT 1")
-        .fetch_scalar()
-        .await
-        .map_err(|error| stored(&error))
+    sql!(
+        db,
+        "SELECT seq FROM daemon_commands ORDER BY seq DESC LIMIT 1"
+    )
+    .fetch_scalar()
+    .await
+    .map_err(|error| stored(&error))
 }
 
 /// Records a user message, echoes it, and queues it for the daemon.
@@ -777,10 +773,13 @@ async fn deliver_user_message(
     origin: MessageOrigin,
     events: &mut Vec<EmittedEvent>,
 ) -> Result<(), ApiError> {
-    let seq = append(db, &ClientEvent::UserMessage {
-        text: text.to_owned(),
-        origin,
-    })
+    let seq = append(
+        db,
+        &ClientEvent::UserMessage {
+            text: text.to_owned(),
+            origin,
+        },
+    )
     .await
     .map_err(|error| room_failed(&error))?;
     events.push(EmittedEvent {
@@ -839,7 +838,9 @@ async fn deliver_shell_command(
         run,
         command: command.to_owned(),
     };
-    let seq = append(db, &asked).await.map_err(|error| room_failed(&error))?;
+    let seq = append(db, &asked)
+        .await
+        .map_err(|error| room_failed(&error))?;
     events.push(EmittedEvent {
         seq: Some(seq),
         event: asked,
@@ -870,7 +871,9 @@ async fn deliver_shell_command(
         outcome: flyco_core::ShellOutcome::Offline,
         truncated: false,
     };
-    let seq = append(db, &offline).await.map_err(|error| room_failed(&error))?;
+    let seq = append(db, &offline)
+        .await
+        .map_err(|error| room_failed(&error))?;
     events.push(EmittedEvent {
         seq: Some(seq),
         event: offline,
@@ -884,10 +887,7 @@ async fn deliver_shell_command(
 /// the command or the room queued it: the change is already recorded, so
 /// a browser watching a session between machines still sees the line —
 /// the model is what the next machine comes up on.
-async fn echo_of(
-    db: &DurableDb,
-    command: &ControlToDaemon,
-) -> Result<Vec<EmittedEvent>, ApiError> {
+async fn echo_of(db: &DurableDb, command: &ControlToDaemon) -> Result<Vec<EmittedEvent>, ApiError> {
     let (event, recorded) = match command {
         ControlToDaemon::ApprovalDecision { id, decision } => (
             ClientEvent::ApprovalDecided {
@@ -921,7 +921,11 @@ async fn echo_of(
     // plane anyway: an approval's decision and a lifecycle move would be
     // a second answer free to disagree with the first.
     let seq = if recorded {
-        Some(append(db, &event).await.map_err(|error| room_failed(&error))?)
+        Some(
+            append(db, &event)
+                .await
+                .map_err(|error| room_failed(&error))?,
+        )
     } else {
         None
     };
@@ -950,20 +954,16 @@ async fn record(
         )
         .await
         .map(Some),
-        DaemonToControl::Started { harness_session_id } => put_latest(
-            kv,
-            KEY_HARNESS_SESSION,
-            harness_session_id,
-        )
-        .await
-        .map(|()| None),
-        DaemonToControl::Capabilities { capabilities } => put_latest(
-            kv,
-            KEY_CAPABILITIES,
-            capabilities,
-        )
-        .await
-        .map(|()| None),
+        DaemonToControl::Started { harness_session_id } => {
+            put_latest(kv, KEY_HARNESS_SESSION, harness_session_id)
+                .await
+                .map(|()| None)
+        }
+        DaemonToControl::Capabilities { capabilities } => {
+            put_latest(kv, KEY_CAPABILITIES, capabilities)
+                .await
+                .map(|()| None)
+        }
         // Appended rather than kept in KV beside the capability set, and
         // for the reason the model list is appended too: the `/` palette is
         // built from the room's replayed stream, so a browser that opens
@@ -1358,7 +1358,9 @@ async fn ask(
                 .to_owned(),
         ));
     }
-    ensure_schema(db).await.map_err(|error| room_failed(&error))?;
+    ensure_schema(db)
+        .await
+        .map_err(|error| room_failed(&error))?;
     if !daemon_live(db).await.map_err(|error| room_failed(&error))? {
         return Err(ApiError::SessionDaemonOffline);
     }

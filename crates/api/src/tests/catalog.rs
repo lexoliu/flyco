@@ -9,8 +9,7 @@
 
 use flyco_core::{
     CloudProviderKind, MachineCapacity, MachineCatalog, MachineCatalogEntry, MachineDefault,
-    MachinePricing, OsFamily, Problem, ProviderAccountId, Runtime,
-    StoragePricing, Usd, UserId,
+    MachinePricing, OsFamily, Problem, ProviderAccountId, Runtime, StoragePricing, Usd, UserId,
 };
 use skyzen::routing::Router;
 use skyzen_services::queue::{QueueBatch, QueueMessage, ReceiveOptions};
@@ -21,11 +20,11 @@ use skyzen_test::{TestClient, TestContext};
 use crate::catalog::{self, RegionCatalog, RegionOutcome};
 use crate::provisioning::CloudProvisioner;
 use crate::provisioning_queue::{self, ProvisioningJob};
+use crate::session;
 use crate::testing::{
     TestGithub, migrated_router_on, seed_azure_account, seed_provider_account, seed_user,
     test_config, test_host_rooms, test_rooms, test_vendors,
 };
-use crate::session;
 
 const CATALOG: &str = "/v1/machines/catalog";
 const DEFAULT: &str = "/v1/machines/default";

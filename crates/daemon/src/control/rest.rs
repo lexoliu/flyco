@@ -868,8 +868,7 @@ pub trait RelayTransport: Send + Sync + 'static {
 /// a session daemon and an enrolled host read different rooms with the
 /// same machinery.
 pub struct CommandStream<T> {
-    inner:
-        core::pin::Pin<Box<dyn futures_core::Stream<Item = Result<T, ControlApiError>> + Send>>,
+    inner: core::pin::Pin<Box<dyn futures_core::Stream<Item = Result<T, ControlApiError>> + Send>>,
 }
 
 impl<T> core::fmt::Debug for CommandStream<T> {
@@ -910,10 +909,7 @@ impl<T> Unpin for CommandStream<T> {}
 /// sees that a quiet stream is still alive. One helper for both relay
 /// clients — a session daemon's and an enrolled host's differ only in
 /// the envelope they decode.
-pub(crate) fn command_stream<T>(
-    body: zenwave::Body,
-    idle: Duration,
-) -> CommandStream<T>
+pub(crate) fn command_stream<T>(body: zenwave::Body, idle: Duration) -> CommandStream<T>
 where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
@@ -954,7 +950,10 @@ impl RelayTransport for HttpControlApi {
             .await
             .map_err(|error| refused("POST", &url, &error))?;
 
-        response.into_json::<DaemonAttached>().await.map_err(transport)
+        response
+            .into_json::<DaemonAttached>()
+            .await
+            .map_err(transport)
     }
 
     async fn commands(

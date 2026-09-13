@@ -713,8 +713,7 @@ mod tests {
             "the attach carries this machine's own token"
         );
         assert_eq!(
-            body["facts"]["hostname"],
-            "build-box",
+            body["facts"]["hostname"], "build-box",
             "and what the machine measured about itself"
         );
 

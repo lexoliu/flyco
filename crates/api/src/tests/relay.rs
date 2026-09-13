@@ -52,6 +52,7 @@ async fn open_session(client: &TestClient<Router>, caller: &Caller, repo: &str) 
             machine: Some(machine_choice(caller.account)),
             spot: true,
             model: None,
+            permission_mode: None,
         })
         .send()
         .await;
@@ -568,11 +569,7 @@ async fn a_daemon_command_stream_is_scoped_to_its_session_and_its_epoch(
 
     let other = open_session(&client, &caller, "lexoliu/skyzen").await;
     let other_token = pair(&client, &caller, other).await;
-    let wrong_session = client
-        .get(&path)
-        .bearer(&other_token)
-        .send()
-        .await;
+    let wrong_session = client.get(&path).bearer(&other_token).send().await;
     wrong_session.assert_status(401);
     assert_eq!(
         wrong_session.json::<Problem>().kind,
@@ -634,7 +631,12 @@ async fn a_daemon_frames_batch_is_authenticated_then_forwarded(ctx: TestContext,
 
     // A gap in the daemon's numbering is a conflict, and the body says
     // where the stream must resume.
-    let skipped = client.post(&path).bearer(&token).json(&batch(7)).send().await;
+    let skipped = client
+        .post(&path)
+        .bearer(&token)
+        .json(&batch(7))
+        .send()
+        .await;
     skipped.assert_status(409);
     assert_eq!(
         skipped.json::<Problem>().kind,
@@ -657,7 +659,7 @@ async fn a_daemon_frames_batch_is_authenticated_then_forwarded(ctx: TestContext,
         .send()
         .await;
     page.assert_status(200);
-    let page: crate::room::EventPage = page.json();
+    let page: flyco_core::wire::EventPage = page.json();
     assert!(
         page.events.iter().any(|stored| {
             serde_json::from_value::<flyco_core::ClientEvent>(stored.event.clone())
@@ -686,7 +688,7 @@ async fn the_event_tail_is_readable_and_scoped_to_its_owner(ctx: TestContext, kv
         .send()
         .await;
     page.assert_status(200);
-    let page: crate::room::EventPage = page.json();
+    let page: flyco_core::wire::EventPage = page.json();
     assert_eq!(
         page.events
             .iter()
@@ -777,6 +779,65 @@ async fn an_active_session_accepts_message_interrupt_and_compaction(
 }
 
 #[skyzen::test]
+async fn an_active_session_accepts_terminal_commands(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let user = seed_user(&db).await;
+    let caller = sign_in(&kv, &db, user.clone()).await;
+    let session = open_session(&client, &caller, REPO).await;
+    activate(&db, user.id, session).await;
+
+    client
+        .post(&format!("/v1/sessions/{session}/terminal/input"))
+        .bearer(&caller.token)
+        .json(&flyco_core::TerminalInput {
+            data: "ls\n".to_owned(),
+        })
+        .send()
+        .await
+        .assert_status(202);
+
+    client
+        .post(&format!("/v1/sessions/{session}/terminal/resize"))
+        .bearer(&caller.token)
+        .json(&flyco_core::TerminalSize {
+            cols: 120,
+            rows: 32,
+        })
+        .send()
+        .await
+        .assert_status(202);
+
+    for resume in [false, true] {
+        client
+            .post(&format!("/v1/sessions/{session}/terminal/harness"))
+            .bearer(&caller.token)
+            .json(&flyco_core::HarnessTui { resume })
+            .send()
+            .await
+            .assert_status(202);
+    }
+}
+
+#[skyzen::test]
+async fn a_harness_launch_refuses_a_session_that_is_not_running(ctx: TestContext, kv: Kv, db: Db) {
+    let client = ctx.client(migrated_router(&db).await);
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let session = open_session(&client, &caller, REPO).await;
+
+    let refused = client
+        .post(&format!("/v1/sessions/{session}/terminal/harness"))
+        .bearer(&caller.token)
+        .json(&flyco_core::HarnessTui { resume: false })
+        .send()
+        .await;
+    refused.assert_status(409);
+    assert_eq!(
+        refused.json::<Problem>().kind,
+        problem_kind("session-not-active")
+    );
+}
+
+#[skyzen::test]
 async fn a_session_that_is_not_running_refuses_to_be_driven(ctx: TestContext, kv: Kv, db: Db) {
     let client = ctx.client(migrated_router(&db).await);
     let caller = sign_in(&kv, &db, seed_user(&db).await).await;
@@ -852,6 +913,34 @@ async fn another_users_session_cannot_be_driven_or_read(ctx: TestContext, kv: Kv
             .await
             .assert_status(404);
     }
+    // The terminal routes take their own bodies, so they cannot share the
+    // loop above.
+    client
+        .post(&format!("/v1/sessions/{session}/terminal/input"))
+        .bearer(&stranger.token)
+        .json(&flyco_core::TerminalInput {
+            data: "ls\n".to_owned(),
+        })
+        .send()
+        .await
+        .assert_status(404);
+    client
+        .post(&format!("/v1/sessions/{session}/terminal/resize"))
+        .bearer(&stranger.token)
+        .json(&flyco_core::TerminalSize {
+            cols: 120,
+            rows: 32,
+        })
+        .send()
+        .await
+        .assert_status(404);
+    client
+        .post(&format!("/v1/sessions/{session}/terminal/harness"))
+        .bearer(&stranger.token)
+        .json(&flyco_core::HarnessTui { resume: false })
+        .send()
+        .await
+        .assert_status(404);
     for path in [
         format!("/v1/sessions/{session}/turns"),
         format!("/v1/sessions/{session}/repo-status"),

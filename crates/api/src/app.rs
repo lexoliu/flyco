@@ -7,7 +7,7 @@ use flyco_core::{
     AgentMachineView, ApiKeyId, ApiKeySummary, ApprovalDecision, ApprovalId, ApprovalState,
     ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, EnvDocument,
-    HarnessFeature, HarnessObservation, HarnessSessionView, MAX_SESSION_TITLE_CHARS,
+    HarnessFeature, HarnessObservation, HarnessSessionView, HarnessTui, MAX_SESSION_TITLE_CHARS,
     MachineCatalogEntry, MachineOrigin, MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage,
     RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
     ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, RunShell, SendMessage,
@@ -31,20 +31,20 @@ use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::{Headers, path_id, path_segment};
 use crate::github::GithubClient;
+use crate::host_room::HostAttachResponse;
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
 use crate::provisioning_queue::{self, ProvisioningJob};
 use crate::respond::{Accepted, Created, NoContent};
-use crate::room::EventPage;
 use crate::rooms::{HostRooms, Rooms, UserStreams};
-use crate::host_room::HostAttachResponse;
 use crate::vendors::Vendors;
 use crate::{
-    agents_md, api_keys, approvals, claude_oauth, codex_oauth, daemon_tokens, env,
-    harness_accounts, hosts, machines, mcp, memory, oauth, observations, problem,
+    agents_md, api_keys, approvals, claude_oauth, cli, codex_oauth, daemon_tokens, env,
+    harness_accounts, hosts, idempotency, machines, mcp, memory, oauth, observations, problem,
     provider_accounts, provider_oauth, provisioning, push, relay, releases, repos, responses,
     sessions, skills, transcripts, turns, usage_limits, users, webhooks, workdirs,
 };
+use flyco_core::wire::EventPage;
 
 /// Health probe response.
 #[derive(Debug, Serialize, skyzen::ToSchema)]
@@ -171,15 +171,26 @@ async fn create_session(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
     State(github): State<GithubClient>,
+    headers: Headers,
     Json(request): Json<CreateSession>,
     rooms: Rooms,
     queue: Queue,
     db: Db,
     kv: Kv,
 ) -> Outcome<Created<Json<SessionDetail>>> {
-    start_session(&user, request, &config, &github, &rooms, &queue, &db, &kv)
-        .await
-        .into()
+    start_session(
+        &user,
+        request,
+        headers.get("idempotency-key"),
+        &config,
+        &github,
+        &rooms,
+        &queue,
+        &db,
+        &kv,
+    )
+    .await
+    .into()
 }
 
 #[expect(
@@ -189,6 +200,7 @@ async fn create_session(
 async fn start_session(
     user: &CurrentUser,
     request: CreateSession,
+    idempotency_key: Option<&str>,
     config: &ApiConfig,
     github: &GithubClient,
     rooms: &Rooms,
@@ -253,7 +265,23 @@ async fn start_session(
         disk_gib: choice.disk_gib,
     };
 
-    let session = sessions::create(
+    // Claimed only once everything that could refuse the request has
+    // refused it: a key bound to a request that was never going to be
+    // accepted would poison a corrected retry under the same key.
+    let claim = match idempotency_key {
+        Some(key) => match idempotency::claim(db, user.id, key).await? {
+            idempotency::Claim::Committed(session) => {
+                return sessions::find(db, user.id, session)
+                    .await
+                    .map(|detail| Created(Json(detail)));
+            }
+            idempotency::Claim::InFlight => return Err(ApiError::IdempotencyInFlight),
+            idempotency::Claim::Fresh(claim) => Some(claim),
+        },
+        None => None,
+    };
+
+    let session = match sessions::create(
         db,
         user.session_cap,
         sessions::Opening {
@@ -265,9 +293,22 @@ async fn start_session(
             machine_origin,
             budget,
             model: &model,
+            permission_mode: request.permission_mode,
         },
     )
-    .await?;
+    .await
+    {
+        Ok(session) => session,
+        Err(error) => {
+            if let Some(claim) = claim {
+                claim.release(db).await?;
+            }
+            return Err(error);
+        }
+    };
+    if let Some(claim) = claim {
+        claim.record(db, session.summary.id).await?;
+    }
     let id = session.summary.id;
     let machine = machines::reserve(db, id, account.id, &spec).await?;
 
@@ -890,7 +931,9 @@ async fn attach_daemon(
     db: Db,
     Json(attach): Json<DaemonAttach>,
 ) -> Outcome<Json<DaemonAttached>> {
-    daemon_attach(&params, &headers, &rooms, &db, attach).await.into()
+    daemon_attach(&params, &headers, &rooms, &db, attach)
+        .await
+        .into()
 }
 
 async fn daemon_attach(
@@ -977,7 +1020,9 @@ async fn attach_host(
     db: Db,
     Json(attach): Json<HostAttach>,
 ) -> Outcome<Json<HostAttachResponse>> {
-    host_attach(&params, &headers, &rooms, &db, attach).await.into()
+    host_attach(&params, &headers, &rooms, &db, attach)
+        .await
+        .into()
 }
 
 async fn host_attach(
@@ -1346,6 +1391,35 @@ async fn terminal_resize(
         ControlToDaemon::TerminalResize {
             cols: body.cols,
             rows: body.rows,
+        },
+    )
+    .await
+    .map(|_| Accepted)
+    .into()
+}
+
+/// Puts a session's harness TUI in the terminal's foreground.
+///
+/// The `flyco claude`/`flyco codex`/`flyco resume` path: the CLI bridges
+/// the user's local terminal to the machine's PTY and asks for the
+/// harness's own interface rather than the shell. `resume` re-enters the
+/// last conversation and makes the request an ensure — a TUI already in
+/// the foreground is left alone.
+#[skyzen::openapi]
+async fn terminal_harness(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(body): Json<HarnessTui>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Accepted> {
+    drive(
+        &user,
+        &params,
+        &rooms,
+        &db,
+        ControlToDaemon::TerminalHarness {
+            resume: body.resume,
         },
     )
     .await
@@ -2539,6 +2613,7 @@ fn public_routes() -> Vec<RouteNode> {
     nodes.extend(webhooks::routes());
     nodes.extend(hosts::public_routes());
     nodes.extend(provider_oauth::public_routes());
+    nodes.extend(cli::public_routes());
     nodes
 }
 
@@ -2672,6 +2747,7 @@ fn driving_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/messages".post(send_message),
         "/v1/sessions/{id}/shell".post(run_shell),
         "/v1/sessions/{id}/terminal/input".post(terminal_input),
+        "/v1/sessions/{id}/terminal/harness".post(terminal_harness),
         "/v1/sessions/{id}/terminal/resize".post(terminal_resize),
         "/v1/sessions/{id}/interrupt".post(interrupt_session),
         "/v1/sessions/{id}/compact".post(compact_session),
@@ -2700,6 +2776,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
     nodes.extend(session_routes());
     nodes.extend(agents_md::routes());
     nodes.extend(claude_oauth::routes());
+    nodes.extend(cli::routes());
     nodes.extend(codex_oauth::routes());
     nodes.extend(harness_accounts::routes());
     nodes.extend(hosts::routes());

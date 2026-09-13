@@ -62,11 +62,7 @@ async fn authenticate_daemon(
 /// Returns [`ApiError::MissingCredential`] with no `Authorization` header
 /// and [`ApiError::InvalidHostCredential`] for a token that is not this
 /// host's.
-async fn authenticate_host(
-    db: &Db,
-    host: HostId,
-    presented: Option<&str>,
-) -> Result<(), ApiError> {
+async fn authenticate_host(db: &Db, host: HostId, presented: Option<&str>) -> Result<(), ApiError> {
     let presented = presented.ok_or(ApiError::MissingCredential)?;
     if hosts::authenticates(db, host, presented).await? {
         Ok(())

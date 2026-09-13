@@ -1937,12 +1937,10 @@ async fn a_joined_build_whose_sibling_died_starts_the_execution_itself() {
         Method::Post,
         "past the grace polls the leg starts the execution itself"
     );
-    assert!(
-        transport.request(6).url.ends_with(&format!(
-            "/jobs/{}/start?api-version=2025-07-01",
-            containers::names::job(id)
-        ))
-    );
+    assert!(transport.request(6).url.ends_with(&format!(
+        "/jobs/{}/start?api-version=2025-07-01",
+        containers::names::job(id)
+    )));
 }
 
 #[tokio::test]

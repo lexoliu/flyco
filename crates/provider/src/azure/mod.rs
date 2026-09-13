@@ -1602,10 +1602,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     /// execution still converges the build.
     async fn converge_executions(&mut self, job: &str) -> Result<String, ProviderError> {
         let live = self.live_executions(job).await?;
-        let Some(earliest) = live
-            .iter()
-            .min_by(|a, b| a.started_before(b))
-        else {
+        let Some(earliest) = live.iter().min_by(|a, b| a.started_before(b)) else {
             return Err(ProviderError::Rejected(format!(
                 "the Azure Container Apps job {job} shows no live execution where \
                  a start named one"

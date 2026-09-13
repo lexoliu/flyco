@@ -83,7 +83,7 @@ portable-pty = "0.9"
 # The handful of syscalls the execution plane makes directly. Today that is
 # `statvfs`, which is how an enrolled host measures the space left where
 # Podman keeps its containers.
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1", features = ["fs", "event", "termios"] }
 # The official Rust MCP SDK, for flycod's local stdio server. Only the
 # server half and the stdio transport: the daemon is spoken *to* by the
 # harness it supervises and never speaks MCP itself, and `macros` is off

@@ -16,9 +16,9 @@ use core::future::Future;
 
 use flyco_core::{
     CloudProviderKind, CreateSession, HarnessKind, MachineCapacity, MachineCatalogEntry,
-    MachineChoice, MachineId, MachinePricing, MachineState, OsFamily, Problem,
-    ProviderAccountId, ProviderCredentials, Runtime, SessionDetail, SessionId, SessionState,
-    StoragePricing, Usd, UserId,
+    MachineChoice, MachineId, MachinePricing, MachineState, OsFamily, Problem, ProviderAccountId,
+    ProviderCredentials, Runtime, SessionDetail, SessionId, SessionState, StoragePricing, Usd,
+    UserId,
 };
 use flyco_provider::host::container_name;
 use flyco_provider::{
@@ -277,6 +277,7 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
             machine: Some(machine_choice(caller.account)),
             spot: true,
             model: None,
+            permission_mode: None,
         })
         .send()
         .await;
@@ -465,6 +466,7 @@ async fn a_machine_the_account_cannot_deploy_is_refused_where_it_was_chosen(
             machine: Some(choice),
             spot: true,
             model: None,
+            permission_mode: None,
         })
         .send()
         .await;
@@ -1303,6 +1305,7 @@ async fn a_session_carries_the_branch_it_was_opened_on(
             machine: Some(machine_choice(caller.account)),
             spot: true,
             model: None,
+            permission_mode: None,
         })
         .send()
         .await;
@@ -1355,6 +1358,7 @@ async fn a_branch_git_would_refuse_is_refused_where_it_was_typed(
             machine: Some(machine_choice(caller.account)),
             spot: true,
             model: None,
+            permission_mode: None,
         })
         .send()
         .await;
@@ -1401,6 +1405,7 @@ async fn a_token_without_the_repo_scope_cannot_open_a_session(
             machine: Some(machine_choice(caller.account)),
             spot: true,
             model: None,
+            permission_mode: None,
         })
         .send()
         .await;
@@ -1652,6 +1657,7 @@ async fn open_azure(
             }),
             spot: true,
             model: None,
+            permission_mode: None,
         })
         .send()
         .await;

@@ -23,9 +23,7 @@ use flyco_provider::host::{HostAttach, HostAttached, HostCommand, HostFrames};
 use url::Url;
 use zenwave::{Client as _, ResponseExt as _};
 
-use crate::control::rest::{
-    CommandStream, ControlApiError, command_stream, refused, transport,
-};
+use crate::control::rest::{CommandStream, ControlApiError, command_stream, refused, transport};
 
 /// Registers this machine with the control plane, spending an enrollment
 /// token.

@@ -68,6 +68,7 @@ pub mod shell;
 pub mod spot;
 pub mod stop;
 pub mod terminal;
+pub mod tui;
 pub mod workdir;
 
 #[cfg(test)]

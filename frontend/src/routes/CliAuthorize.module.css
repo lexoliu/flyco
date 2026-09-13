@@ -1,0 +1,14 @@
+.lede {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.lede code {
+  font-size: var(--text-sm);
+}
+
+.error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+}

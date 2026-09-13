@@ -528,9 +528,7 @@ where
             if let Some(frame) = self.pending.pop_front() {
                 return frame;
             }
-            if let Seen::Batch { frames, .. } =
-                self.next().await.expect("the peer sent nothing")
-            {
+            if let Seen::Batch { frames, .. } = self.next().await.expect("the peer sent nothing") {
                 self.pending.extend(frames);
             }
         }
@@ -543,9 +541,7 @@ impl Room {
         Self::serve(
             match answer {
                 AttachAnswer::Accept => None,
-                AttachAnswer::Refuse => {
-                    Some((503, "relay-unavailable", "the room is mid-deploy"))
-                }
+                AttachAnswer::Refuse => Some((503, "relay-unavailable", "the room is mid-deploy")),
             },
             false,
         )
@@ -638,7 +634,11 @@ async fn handle<Up>(
         if epoch != current {
             let _ = write_reply(
                 &mut stream,
-                &Reply::problem(409, "relay-epoch-stale", "the epoch names a superseded attach"),
+                &Reply::problem(
+                    409,
+                    "relay-epoch-stale",
+                    "the epoch names a superseded attach",
+                ),
             )
             .await;
             return;
@@ -650,7 +650,11 @@ async fn handle<Up>(
     } else {
         let _ = write_reply(
             &mut stream,
-            &Reply::problem(404, "not-found", "the fake room knows only the relay routes"),
+            &Reply::problem(
+                404,
+                "not-found",
+                "the fake room knows only the relay routes",
+            ),
         )
         .await;
     }
@@ -672,7 +676,11 @@ async fn handle_frames<Up>(
     if batch.epoch != current {
         let _ = write_reply(
             stream,
-            &Reply::problem(409, "relay-epoch-stale", "the epoch names a superseded attach"),
+            &Reply::problem(
+                409,
+                "relay-epoch-stale",
+                "the epoch names a superseded attach",
+            ),
         )
         .await;
         return;
@@ -688,8 +696,7 @@ async fn handle_frames<Up>(
         if hold_jobs {
             // The raw frames, for matching `job_result` to its row —
             // the decoded `Up` is for `Seen`, this pass is for the log.
-            let raw: serde_json::Value =
-                serde_json::from_slice(&request.body).unwrap_or_default();
+            let raw: serde_json::Value = serde_json::from_slice(&request.body).unwrap_or_default();
             for frame in raw["frames"].as_array().into_iter().flatten() {
                 if frame["type"] != "job_result" {
                     continue;

@@ -488,6 +488,176 @@
         }
       }
     },
+    "/v1/cli-sessions": {
+      "post": {
+        "summary": "`POST /v1/cli-sessions` — opens a sign-in attempt.",
+        "description": "`POST /v1/cli-sessions` — opens a sign-in attempt.\n\nPublic by necessity: the CLI calling it holds no credential yet — that\nis what the attempt is for. What it returns is a capability anyone may\nmint, which is safe because it authorizes nothing: the poll token only\ncollects a key the user chose to approve, and the attempt id only names\na page that asks the signed-in user to decide.",
+        "operationId": "flyco_api::cli::create_cli_session",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/cli-sessions`.\n\nOpens a `flyco login` attempt: the CLI prints the returned\n`authorize_url`, the user approves it in a browser already signed in to\nflyco, and the CLI polls until the key is minted.",
+                "properties": {
+                  "hostname": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "The machine the CLI runs on — becomes part of the issued key's\nlabel, so the key list reads `flyco-cli on <hostname>`. Omitted on\nmachines that cannot name themselves."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Response of `POST /v1/cli-sessions`: a pending sign-in attempt.",
+                  "required": [
+                    "id",
+                    "poll_token",
+                    "authorize_url",
+                    "expires_at_unix"
+                  ],
+                  "properties": {
+                    "authorize_url": {
+                      "type": "string",
+                      "description": "Where the user approves: the PWA's `/cli/authorize` page with this\nattempt's id. Opened locally when the CLI can open a browser,\nprinted otherwise."
+                    },
+                    "expires_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Seconds since the Unix epoch when the attempt stops answering.",
+                      "minimum": 0
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier the poll and the approval page both name."
+                    },
+                    "poll_token": {
+                      "type": "string",
+                      "description": "Shared secret the poll presents as `?s=`. Proves the poller is the\nsame CLI that opened the attempt — it is not the key, only the\nright to collect the key once one exists."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli-sessions/{id}": {
+      "get": {
+        "summary": "`GET /v1/cli-sessions/{id}?s=<poll_token>` — the CLI's poll.",
+        "description": "`GET /v1/cli-sessions/{id}?s=<poll_token>` — the CLI's poll.\n\n`202` while the user has not decided; `200` with the key once they\napprove — the read that delivers it consumes the record, so a repeated\npoll is `410` rather than a second copy. Public because the poller is by\ndefinition unauthenticated; the poll token is the credential.",
+        "operationId": "flyco_api::cli::poll_cli_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "s",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The `poll_token` `POST /v1/cli-sessions` issued."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Response of `GET /v1/cli-sessions/{id}?s=…` once the user approved.\n\nReturned exactly once: the read that answers `200` consumes the record,\nso a replayed poll finds `410` rather than a second copy of the key.",
+                  "required": [
+                    "key_id",
+                    "key"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "description": "The plaintext `fk_` API key."
+                    },
+                    "key_id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier used to revoke the key later — `flyco logout` passes it\nto `DELETE /v1/api-keys/{id}`."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
+          }
+        }
+      }
+    },
+    "/v1/cli-sessions/{id}/approve": {
+      "post": {
+        "summary": "`POST /v1/cli-sessions/{id}/approve` — the PWA's \"approve\" button.",
+        "description": "`POST /v1/cli-sessions/{id}/approve` — the PWA's \"approve\" button.\n\nAuthenticated like every other user route; the minted key belongs to\nwhoever is signed in — a key for somebody else's account would hand the\nCLI the wrong identity, so there is nothing to name but the attempt id.",
+        "operationId": "flyco_api::cli::approve_cli_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
+    "/v1/cli-sessions/{id}/deny": {
+      "post": {
+        "summary": "`POST /v1/cli-sessions/{id}/deny` — the PWA's \"deny\" button.",
+        "description": "`POST /v1/cli-sessions/{id}/deny` — the PWA's \"deny\" button.\n\nRecorded rather than just closed: the CLI's poll is answered `403`\ninstead of running the attempt's ten minutes out.",
+        "operationId": "flyco_api::cli::deny_cli_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
     "/v1/events": {
       "get": {
         "summary": "The one stream every session event rides.",
@@ -1252,7 +1422,7 @@
                       },
                       "facts": {
                         "$ref": "#/components/schemas/HostFacts",
-                        "description": "What it last said about itself.\n\nAbsent only between the row being written and the host's first\n`Hello`, which is a window the enrollment route does not leave open —\nenrolling carries the facts."
+                        "description": "What it last said about itself.\n\nAbsent only between the row being written and the host's first\nattach, which is a window the enrollment route does not leave open —\nenrolling carries the facts."
                       },
                       "id": {
                         "$ref": "#/components/schemas/Uuid",
@@ -1495,7 +1665,7 @@
                     },
                     "facts": {
                       "$ref": "#/components/schemas/HostFacts",
-                      "description": "What it last said about itself.\n\nAbsent only between the row being written and the host's first\n`Hello`, which is a window the enrollment route does not leave open —\nenrolling carries the facts."
+                      "description": "What it last said about itself.\n\nAbsent only between the row being written and the host's first\nattach, which is a window the enrollment route does not leave open —\nenrolling carries the facts."
                     },
                     "id": {
                       "$ref": "#/components/schemas/Uuid",
@@ -1613,7 +1783,7 @@
                     },
                     "facts": {
                       "$ref": "#/components/schemas/HostFacts",
-                      "description": "What it last said about itself.\n\nAbsent only between the row being written and the host's first\n`Hello`, which is a window the enrollment route does not leave open —\nenrolling carries the facts."
+                      "description": "What it last said about itself.\n\nAbsent only between the row being written and the host's first\nattach, which is a window the enrollment route does not leave open —\nenrolling carries the facts."
                     },
                     "id": {
                       "$ref": "#/components/schemas/Uuid",
@@ -4057,6 +4227,17 @@
                       }
                     ]
                   },
+                  "permission_mode": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/PermissionMode",
+                        "description": "The approval policy the session's agent runs under.\n\nOmitted, the session opens on\n[`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT).\nNamed at creation because an autonomous caller cannot answer a\npermission prompt: a mode has to be on the row before the machine\nboots, not patched in after the first turn is already waiting on\none."
+                      }
+                    ]
+                  },
                   "prompt": {
                     "type": "string",
                     "description": "What the agent should do first.\n\nRequired, because a session with nothing to do is a machine nobody\nasked for: the prompt is recorded as the session's first user\nmessage and delivered to the daemon as soon as one connects. Its\nexcerpt is also the session's opening [`title`](SessionSummary::title)."
@@ -5215,7 +5396,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "description": "A page of the room's event tail.",
+                  "description": "A page of a session's event tail.",
                   "required": [
                     "events",
                     "more"
@@ -6283,6 +6464,46 @@
                   "reason": {
                     "$ref": "#/components/schemas/StopReason",
                     "description": "What made the machine stop."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/terminal/harness": {
+      "post": {
+        "summary": "Puts a session's harness TUI in the terminal's foreground.",
+        "description": "Puts a session's harness TUI in the terminal's foreground.\n\nThe `flyco claude`/`flyco codex`/`flyco resume` path: the CLI bridges\nthe user's local terminal to the machine's PTY and asks for the\nharness's own interface rather than the shell. `resume` re-enters the\nlast conversation and makes the request an ensure — a TUI already in\nthe foreground is left alone.",
+        "operationId": "flyco_api::app::terminal_harness",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions/{id}/terminal/harness`.\n\nThe `flyco claude`/`flyco codex`/`flyco resume` path: put the session's\nharness TUI in the terminal's foreground. The daemon supplies the\ncredentials from its own configuration, so the body carries none.",
+                "properties": {
+                  "resume": {
+                    "type": "boolean",
+                    "description": "Re-enter the last conversation (`claude --continue`,\n`codex resume --last`) rather than start a new one. Also makes the\nrequest an *ensure*: a TUI already in the foreground is left alone,\nbecause re-attaching to a session must not kill the turn on its\nscreen."
                   }
                 }
               }
@@ -7735,6 +7956,54 @@
           }
         }
       },
+      "CliSession": {
+        "type": "object",
+        "description": "Response of `POST /v1/cli-sessions`: a pending sign-in attempt.",
+        "required": [
+          "id",
+          "poll_token",
+          "authorize_url",
+          "expires_at_unix"
+        ],
+        "properties": {
+          "authorize_url": {
+            "type": "string",
+            "description": "Where the user approves: the PWA's `/cli/authorize` page with this\nattempt's id. Opened locally when the CLI can open a browser,\nprinted otherwise."
+          },
+          "expires_at_unix": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds since the Unix epoch when the attempt stops answering.",
+            "minimum": 0
+          },
+          "id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "Identifier the poll and the approval page both name."
+          },
+          "poll_token": {
+            "type": "string",
+            "description": "Shared secret the poll presents as `?s=`. Proves the poller is the\nsame CLI that opened the attempt — it is not the key, only the\nright to collect the key once one exists."
+          }
+        }
+      },
+      "CliSessionKey": {
+        "type": "object",
+        "description": "Response of `GET /v1/cli-sessions/{id}?s=…` once the user approved.\n\nReturned exactly once: the read that answers `200` consumes the record,\nso a replayed poll finds `410` rather than a second copy of the key.",
+        "required": [
+          "key_id",
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The plaintext `fk_` API key."
+          },
+          "key_id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "Identifier used to revoke the key later — `flyco logout` passes it\nto `DELETE /v1/api-keys/{id}`."
+          }
+        }
+      },
       "CloudProviderKind": {
         "type": "string",
         "description": "A supported compute provider.",
@@ -8027,6 +8296,19 @@
           }
         }
       },
+      "CreateCliSession": {
+        "type": "object",
+        "description": "Request body of `POST /v1/cli-sessions`.\n\nOpens a `flyco login` attempt: the CLI prints the returned\n`authorize_url`, the user approves it in a browser already signed in to\nflyco, and the CLI polls until the key is minted.",
+        "properties": {
+          "hostname": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The machine the CLI runs on — becomes part of the issued key's\nlabel, so the key list reads `flyco-cli on <hostname>`. Omitted on\nmachines that cannot name themselves."
+          }
+        }
+      },
       "CreateMemoryNode": {
         "type": "object",
         "description": "Request body of `POST /v1/memory`.",
@@ -8111,6 +8393,17 @@
               {
                 "$ref": "#/components/schemas/ModelChoice",
                 "description": "The model the session runs on, and the effort it runs at.\n\nOmitted, the control plane records the default of the harness\naccount's own model list — resolved *here*, once, so the session row\nalways names what it is running rather than deferring to whatever\nthe CLI happens to default to on the day its machine boots."
+              }
+            ]
+          },
+          "permission_mode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PermissionMode",
+                "description": "The approval policy the session's agent runs under.\n\nOmitted, the session opens on\n[`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT).\nNamed at creation because an autonomous caller cannot answer a\npermission prompt: a mode has to be on the row before the machine\nboots, not patched in after the first turn is already waiting on\none."
               }
             ]
           },
@@ -8399,6 +8692,29 @@
                 "type": "string",
                 "enum": [
                   "terminal_output"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The harness TUI exited on its own.\n\nThe answer to a\n[`TerminalHarness`](ControlToDaemon::TerminalHarness) request: it is\nhow a client learns the TUI ended. Only a harness's natural exit is\nreported — the shell is ambient, so its exits just put a fresh one\nback, and a child killed to make room for another says nothing.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "code": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "description": "The process's exit code. `None` when a signal ended it."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "terminal_exited"
                 ]
               }
             }
@@ -8848,7 +9164,7 @@
       },
       "EventPage": {
         "type": "object",
-        "description": "A page of the room's event tail.",
+        "description": "A page of a session's event tail.",
         "required": [
           "events",
           "more"
@@ -9601,6 +9917,16 @@
           }
         }
       },
+      "HarnessTui": {
+        "type": "object",
+        "description": "Request body of `POST /v1/sessions/{id}/terminal/harness`.\n\nThe `flyco claude`/`flyco codex`/`flyco resume` path: put the session's\nharness TUI in the terminal's foreground. The daemon supplies the\ncredentials from its own configuration, so the body carries none.",
+        "properties": {
+          "resume": {
+            "type": "boolean",
+            "description": "Re-enter the last conversation (`claude --continue`,\n`codex resume --last`) rather than start a new one. Also makes the\nrequest an *ensure*: a TUI already in the foreground is left alone,\nbecause re-attaching to a session must not kill the turn on its\nscreen."
+          }
+        }
+      },
       "HeaderEntry": {
         "type": "object",
         "description": "One HTTP header sent with every request to a remote MCP server.",
@@ -9664,7 +9990,7 @@
       },
       "HostFacts": {
         "type": "object",
-        "description": "What a host says about itself when it greets the control plane.\n\nReported by the machine rather than configured by the user, and\nrefreshed on every `Hello`: a host that gained memory, filled its disk,\nor was upgraded to another Podman is a different machine to schedule\nonto, and flyco has no other way to learn it.",
+        "description": "What a host says about itself when it greets the control plane.\n\nReported by the machine rather than configured by the user, and\nrefreshed on every attach: a host that gained memory, filled its disk,\nor was upgraded to another Podman is a different machine to schedule\nonto, and flyco has no other way to learn it.",
         "required": [
           "architecture",
           "vcpus",
@@ -9807,7 +10133,7 @@
           },
           "facts": {
             "$ref": "#/components/schemas/HostFacts",
-            "description": "What it last said about itself.\n\nAbsent only between the row being written and the host's first\n`Hello`, which is a window the enrollment route does not leave open —\nenrolling carries the facts."
+            "description": "What it last said about itself.\n\nAbsent only between the row being written and the host's first\nattach, which is a window the enrollment route does not leave open —\nenrolling carries the facts."
           },
           "id": {
             "$ref": "#/components/schemas/Uuid",
@@ -10678,6 +11004,19 @@
           "dontAsk",
           "auto"
         ]
+      },
+      "Poll": {
+        "type": "object",
+        "description": "Query the poll presents: `?s=<poll_token>`.",
+        "properties": {
+          "s": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `poll_token` `POST /v1/cli-sessions` issued."
+          }
+        }
       },
       "Problem": {
         "allOf": [
@@ -11920,7 +12259,7 @@
             "minimum": 0
           },
           "event": {
-            "description": "The [`ClientEvent`] this position holds."
+            "description": "The [`ClientEvent`] this position holds. Untyped: the room replays\nwhat the daemon sent, including a variant this build does not know."
           },
           "seq": {
             "type": "integer",

@@ -186,6 +186,9 @@ pub struct EnrollmentTokenEntity(());
 /// Marker for one in-flight question about a session's checkout.
 #[derive(Debug)]
 pub struct WorkdirRequestEntity(());
+/// Marker for a pending CLI sign-in attempt.
+#[derive(Debug)]
+pub struct CliSessionEntity(());
 
 /// Identifies a flyco user.
 pub type UserId = Id<UserEntity>;
@@ -233,6 +236,9 @@ pub type EnrollmentTokenId = Id<EnrollmentTokenEntity>;
 /// Identifies one question the control plane relayed to a session's daemon
 /// about its checkout, and the reply that comes back for it.
 pub type WorkdirRequestId = Id<WorkdirRequestEntity>;
+/// Identifies one `flyco login` attempt, from `POST /v1/cli-sessions`
+/// until its key is collected or it expires.
+pub type CliSessionId = Id<CliSessionEntity>;
 
 #[cfg(test)]
 mod tests {

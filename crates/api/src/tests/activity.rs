@@ -50,6 +50,7 @@ async fn running(client: &TestClient<Router>, kv: &Kv, db: &Db) -> Running {
             machine: Some(machine_choice(account)),
             spot: true,
             model: None,
+            permission_mode: None,
         })
         .send()
         .await;

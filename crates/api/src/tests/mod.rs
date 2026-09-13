@@ -6,6 +6,7 @@
 mod activity;
 mod catalog;
 mod claude_oauth;
+mod cli;
 mod codex_oauth;
 mod contract;
 mod harness_accounts;

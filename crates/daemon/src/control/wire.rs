@@ -64,7 +64,7 @@ use crate::notice::{BudgetRaised, MachineChanged, MachineLine, OpeningMessage, S
 use crate::shell::{Shell, ShellEvent, ShellRun, ShellUpdate};
 use crate::spot::{Disk, Notices, SpotNotice};
 use crate::stop::Stops;
-use crate::terminal::{TerminalError, TerminalSession};
+use crate::terminal::{TerminalError, TerminalEvent, TerminalSession};
 use crate::workdir::Checkout;
 
 /// How many frames may wait for a stream that is not there.
@@ -507,7 +507,10 @@ struct Alive {
 struct Connection<S, T, A, W, D, H> {
     session: S,
     terminal: T,
-    terminal_out: mpsc::Receiver<String>,
+    terminal_out: mpsc::Receiver<TerminalEvent>,
+    /// The session's harness as a terminal application — how a
+    /// [`ControlToDaemon::TerminalHarness`] is launched.
+    tui: crate::tui::HarnessTui,
     /// Runs the composer's `!` commands (docs/ux.md §9.3).
     shell: H,
     /// Where a running command's output and its exit arrive.
@@ -758,10 +761,15 @@ impl<
                     }
                 }
                 output = self.terminal_out.recv() => {
-                    let Some(data) = output else {
-                        return Ok(Ended::Disconnected);
-                    };
-                    pending.push_back(DaemonToControl::TerminalOutput { data });
+                    match output {
+                        Some(TerminalEvent::Output(data)) => {
+                            pending.push_back(DaemonToControl::TerminalOutput { data });
+                        }
+                        Some(TerminalEvent::Exited { code }) => {
+                            pending.push_back(DaemonToControl::TerminalExited { code });
+                        }
+                        None => return Ok(Ended::Disconnected),
+                    }
                 }
                 update = self.shell_updates.recv() => {
                     // This connection holds a sender of its own, so the
@@ -1274,6 +1282,18 @@ impl<
                 }
                 self.terminal.write(&data)?;
             }
+            ControlToDaemon::TerminalHarness { resume } => {
+                if self.refuse_while_paused("the harness TUI") {
+                    return Ok(Ended::Disconnected);
+                }
+                match self.tui.command(resume) {
+                    Ok(command) => self.terminal.launch_harness(command)?,
+                    // A launch that cannot be built — the claude binary
+                    // missing from the sidecar tree — is a line in the
+                    // terminal, where a failed `claude` would have printed.
+                    Err(error) => self.terminal.print(&format!("\r\nflycod: {error}\r\n"))?,
+                }
+            }
             // A size is a fact about the pane, not work; a paused session's
             // shell may still be looked at.
             ControlToDaemon::TerminalResize { cols, rows } => {
@@ -1554,8 +1574,11 @@ pub struct SessionRelay<S, A, T, W, D, H> {
     pub api: A,
     /// The web terminal.
     pub terminal: T,
-    /// Bytes the terminal produces.
-    pub terminal_out: mpsc::Receiver<String>,
+    /// What the terminal's foreground produces.
+    pub terminal_out: mpsc::Receiver<TerminalEvent>,
+    /// The session's harness as a terminal application, resolved from the
+    /// daemon's configuration.
+    pub tui: crate::tui::HarnessTui,
     /// Runs the composer's `!` commands on this machine.
     pub shell: H,
     /// Snapshot handle for the checkout.
@@ -1626,6 +1649,7 @@ where
         session: relay.session,
         terminal: relay.terminal,
         terminal_out: relay.terminal_out,
+        tui: relay.tui,
         shell: relay.shell,
         shell_updates,
         shell_reports,

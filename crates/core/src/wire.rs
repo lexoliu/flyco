@@ -513,6 +513,17 @@ pub enum DaemonToControl {
         /// UTF-8 lossy terminal bytes.
         data: String,
     },
+    /// The harness TUI exited on its own.
+    ///
+    /// The answer to a
+    /// [`TerminalHarness`](ControlToDaemon::TerminalHarness) request: it is
+    /// how a client learns the TUI ended. Only a harness's natural exit is
+    /// reported — the shell is ambient, so its exits just put a fresh one
+    /// back, and a child killed to make room for another says nothing.
+    TerminalExited {
+        /// The process's exit code. `None` when a signal ended it.
+        code: Option<i32>,
+    },
     /// One chunk of a running `!` command's output.
     ///
     /// Streamed rather than held until the command ends, so a slow build
@@ -669,6 +680,25 @@ pub enum ControlToDaemon {
         /// Bytes to write to the terminal, UTF-8.
         data: String,
     },
+    /// Put the session's harness TUI in the terminal's foreground.
+    ///
+    /// The `flyco claude`/`flyco codex`/`flyco resume` path: the CLI
+    /// bridges the user's local terminal to the machine's PTY and asks for
+    /// the harness's own interface rather than the shell. The daemon
+    /// supplies the credentials from its own configuration, so nothing a
+    /// client sends ever carries them.
+    ///
+    /// `resume` makes the request an *ensure* and picks the re-entry
+    /// command (`claude --continue`, `codex resume --last`): a TUI already
+    /// in the foreground is left alone, because re-attaching to a session
+    /// must not kill the turn on its screen. Dropped rather than held when
+    /// no daemon is connected, on the same reasoning as
+    /// [`Self::TerminalInput`] — a launch held for a daemon that returns
+    /// an hour later would open a TUI nobody is watching.
+    TerminalHarness {
+        /// Re-enter the last conversation rather than start a new one.
+        resume: bool,
+    },
     /// The web terminal's size, as the browser has fitted it.
     ///
     /// Sent when the pane opens and whenever it is resized, so the PTY
@@ -779,7 +809,7 @@ pub enum ControlToDaemon {
     clippy::trivially_copy_pass_by_ref,
     reason = "serde skip_serializing_if requires fn(&T) -> bool"
 )]
-const fn is_false(value: &bool) -> bool {
+pub(crate) const fn is_false(value: &bool) -> bool {
     !*value
 }
 
@@ -796,6 +826,7 @@ impl ControlToDaemon {
             Self::ShellCommand { .. } => "shell_command",
             Self::RunShell { .. } => "run_shell",
             Self::TerminalInput { .. } => "terminal_input",
+            Self::TerminalHarness { .. } => "terminal_harness",
             Self::TerminalResize { .. } => "terminal_resize",
             Self::Interrupt => "interrupt",
             Self::Compact => "compact",
@@ -830,6 +861,7 @@ impl ControlToDaemon {
                 | Self::ContextUsage
                 | Self::TerminalInput { .. }
                 | Self::TerminalResize { .. }
+                | Self::TerminalHarness { .. }
         )
     }
 
@@ -942,6 +974,28 @@ pub struct SessionEvent {
     pub seq: Option<u64>,
     /// The event.
     pub event: ClientEvent,
+}
+
+/// One stored event, as the catch-up API serves it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct StoredEvent {
+    /// Monotonic position in the room's stream. Pass the last one back as
+    /// `after` to continue.
+    pub seq: u64,
+    /// The [`ClientEvent`] this position holds. Untyped: the room replays
+    /// what the daemon sent, including a variant this build does not know.
+    pub event: serde_json::Value,
+    /// When the room recorded it, seconds since the Unix epoch.
+    pub at_unix: u64,
+}
+
+/// A page of a session's event tail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct EventPage {
+    /// The events, oldest first.
+    pub events: Vec<StoredEvent>,
+    /// Whether more events exist past the last one returned.
+    pub more: bool,
 }
 
 /// What a browser following a session receives.
@@ -1058,6 +1112,16 @@ pub enum ClientEvent {
     TerminalOutput {
         /// UTF-8 lossy terminal bytes.
         data: String,
+    },
+    /// The session's harness TUI exited on its own.
+    ///
+    /// The `flyco claude`/`flyco codex`/`flyco resume` detach signal: after
+    /// a client asks for the harness TUI, this is how it learns the TUI
+    /// ended. The shell's own exits are not reported — the daemon just
+    /// puts a fresh one back in the foreground.
+    TerminalExited {
+        /// The process's exit code. `None` when a signal ended it.
+        code: Option<i32>,
     },
     /// The repo has uncommitted changes and the agent is kept awake.
     RepoDirty {
@@ -1185,6 +1249,7 @@ impl ClientEvent {
                 Some(Self::ApprovalPending { id, payload })
             }
             DaemonToControl::TerminalOutput { data } => Some(Self::TerminalOutput { data }),
+            DaemonToControl::TerminalExited { code } => Some(Self::TerminalExited { code }),
             DaemonToControl::ShellOutput { run, stream, data } => {
                 Some(Self::ShellOutput { run, stream, data })
             }
@@ -1307,6 +1372,8 @@ mod tests {
             DaemonToControl::TerminalOutput {
                 data: "$ ls\n".to_owned(),
             },
+            DaemonToControl::TerminalExited { code: Some(0) },
+            DaemonToControl::TerminalExited { code: None },
             DaemonToControl::ShellOutput {
                 run: ShellRunId::generate(),
                 stream: ShellStream::Stderr,
@@ -1412,6 +1479,7 @@ mod tests {
             ControlToDaemon::TerminalInput {
                 data: "ls\n".to_owned(),
             },
+            ControlToDaemon::TerminalHarness { resume: true },
             ControlToDaemon::TerminalResize {
                 cols: 132,
                 rows: 40,
@@ -1534,6 +1602,7 @@ mod tests {
             ClientEvent::TerminalOutput {
                 data: "$ ls\n".to_owned(),
             },
+            ClientEvent::TerminalExited { code: Some(1) },
             ClientEvent::ShellCommand {
                 run: ShellRunId::generate(),
                 command: "git status --short".to_owned(),
@@ -1777,6 +1846,7 @@ mod tests {
                     | ControlToDaemon::ContextUsage
                     | ControlToDaemon::TerminalInput { .. }
                     | ControlToDaemon::TerminalResize { .. }
+                    | ControlToDaemon::TerminalHarness { .. }
             );
             assert_eq!(frame.is_client_command(), allowed, "{frame:?}");
         }
