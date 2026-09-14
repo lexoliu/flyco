@@ -24,7 +24,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
-      - run: cargo test --workspace
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace
+      - run: cargo test --workspace --doc
       # The checked-in spec is the TypeScript client's input; regenerate it
       # and fail if the working tree disagrees. Debug build on purpose:
       # skyzen only collects handler metadata when `debug_assertions` is on.
