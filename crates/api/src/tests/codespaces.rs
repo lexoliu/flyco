@@ -132,7 +132,9 @@ fn finish_path(started: &ProviderOauthStart) -> String {
 }
 
 fn callback_path(code: &str, state: &str) -> String {
-    format!("/v1/providers/codespaces/oauth/callback?code={code}&state={state}")
+    // The shared GitHub callback — the OAuth app registers one URI per
+    // hostname and the `state` decides which flow is coming back.
+    format!("/v1/auth/github/callback?code={code}&state={state}")
 }
 
 // ── The sign-in ──
@@ -156,8 +158,8 @@ async fn a_codespaces_sign_in_starts_at_github_asking_for_the_codespace_scope(
     );
     assert_eq!(
         query(&url, "redirect_uri").as_deref(),
-        Some("https://flyco.test/v1/providers/codespaces/oauth/callback"),
-        "its own registered callback, not the sign-in's"
+        Some("https://flyco.test/v1/auth/github/callback"),
+        "the sign-in's own callback — the OAuth app registers one URI per hostname"
     );
 
     let scope = query(&url, "scope").expect("the URL names its scopes");

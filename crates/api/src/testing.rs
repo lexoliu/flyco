@@ -379,10 +379,9 @@ impl GithubOauth for TestGithub {
     ) -> impl Future<Output = Result<crate::github::GithubGrant, GithubError>> + Send {
         assert_eq!(client_id, CLIENT_ID);
         assert_eq!(client_secret, CLIENT_SECRET);
-        assert!(
-            redirect_uri == REDIRECT_URI
-                || redirect_uri == test_config().codespaces_oauth_redirect_uri().as_str(),
-            "an exchange happens on a redirect URI this deployment registered: {redirect_uri}"
+        assert_eq!(
+            redirect_uri, REDIRECT_URI,
+            "an exchange happens on the one registered GitHub callback"
         );
         ready(Ok(self.issued()))
     }
