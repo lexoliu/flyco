@@ -10,6 +10,7 @@ mod cli;
 mod codespaces;
 mod codex_oauth;
 mod contract;
+mod handoffs;
 mod harness_accounts;
 mod host_room;
 mod hosts;

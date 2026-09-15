@@ -35,10 +35,10 @@ use flyco_core::wire::{
     ApprovalPayload, DaemonAttach, DaemonAttached, DaemonCommand, DaemonFrames,
 };
 use flyco_core::{
-    AgentMachineView, ApprovalId, ApprovalView, BudgetView, HarnessObservation, HarnessSessionView,
-    MachineCatalogEntry, ModelOption, Problem, ProvisioningStage, ReportProvisioningStage,
-    ReportSpotNotice, ReportStartupFailure, ReportStopping, ResizeMachine, SessionId, StopReason,
-    UsageWindow,
+    AgentMachineView, ApprovalId, ApprovalView, BudgetView, HandoffView, HarnessObservation,
+    HarnessSessionView, MachineCatalogEntry, ModelOption, Problem, ProvisioningStage,
+    ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure, ReportStopping, ResizeMachine,
+    SessionId, StopReason, UsageWindow,
 };
 use url::Url;
 use zenwave::{Client as _, ResponseExt as _};
@@ -238,6 +238,23 @@ pub trait ControlApi: ApprovalRaiser {
     /// Reads a previously stored workdir patch, if an automatic archive
     /// left one.
     fn get_workdir_patch(
+        &self,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send;
+
+    /// Reads the handoff manifest behind this session — the base commit to
+    /// rewind to before the patch applies — or `None` when the session is
+    /// not a handoff.
+    ///
+    /// A 404 is the `None` case rather than an error: the route answers it
+    /// for every ordinary session, and asking is how the daemon learns
+    /// which it is.
+    fn get_handoff(
+        &self,
+    ) -> impl Future<Output = Result<Option<HandoffView>, ControlApiError>> + Send;
+
+    /// Reads the handoff's uploaded transcript, if the manifest says one
+    /// exists.
+    fn get_handoff_transcript(
         &self,
     ) -> impl Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send;
 
@@ -749,6 +766,55 @@ impl ControlApi for HttpControlApi {
 
     async fn get_workdir_patch(&self) -> Result<Option<Vec<u8>>, ControlApiError> {
         let url = self.url("workdir-patch")?;
+        let mut client = zenwave::client();
+        let response = match client
+            .get(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                if let zenwave::Error::Http { status, .. } = &error
+                    && status.as_u16() == 404
+                {
+                    return Ok(None);
+                }
+                return Err(refused("GET", &url, &error));
+            }
+        };
+        let body = response.into_bytes().await.map_err(transport)?;
+        Ok(Some(body.to_vec()))
+    }
+
+    async fn get_handoff(&self) -> Result<Option<HandoffView>, ControlApiError> {
+        let url = self.url("handoff")?;
+        let mut client = zenwave::client();
+        let response = match client
+            .get(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                if let zenwave::Error::Http { status, .. } = &error
+                    && status.as_u16() == 404
+                {
+                    return Ok(None);
+                }
+                return Err(refused("GET", &url, &error));
+            }
+        };
+        response
+            .into_json::<HandoffView>()
+            .await
+            .map(Some)
+            .map_err(transport)
+    }
+
+    async fn get_handoff_transcript(&self) -> Result<Option<Vec<u8>>, ControlApiError> {
+        let url = self.url("handoff/transcript")?;
         let mut client = zenwave::client();
         let response = match client
             .get(&url)

@@ -39,6 +39,10 @@ portable-pty.workspace = true
 rmcp.workspace = true
 rand.workspace = true
 rust-embed.workspace = true
+# A handoff patch is verified against its manifest's SHA-256 before `git
+# apply` sees it.
+sha2.workspace = true
+hex.workspace = true
 # `statvfs(3)`, for the one number an enrolled host cannot state without a
 # syscall: how much room is left where Podman keeps its containers and
 # volumes. Parsing `df` output would be the same fact, read out of a table

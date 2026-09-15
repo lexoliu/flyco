@@ -281,6 +281,19 @@ impl ControlApi for RecordingApi {
         core::future::ready(Ok(None))
     }
 
+    fn get_handoff(
+        &self,
+    ) -> impl core::future::Future<Output = Result<Option<flyco_core::HandoffView>, ControlApiError>>
+    + Send {
+        core::future::ready(Ok(None))
+    }
+
+    fn get_handoff_transcript(
+        &self,
+    ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send {
+        core::future::ready(Ok(None))
+    }
+
     fn report_stopping(
         &self,
         reason: StopReason,
@@ -2474,6 +2487,21 @@ mod remote_store {
         }
 
         fn get_workdir_patch(
+            &self,
+        ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send
+        {
+            core::future::ready(Ok(None))
+        }
+
+        fn get_handoff(
+            &self,
+        ) -> impl core::future::Future<
+            Output = Result<Option<flyco_core::HandoffView>, ControlApiError>,
+        > + Send {
+            core::future::ready(Ok(None))
+        }
+
+        fn get_handoff_transcript(
             &self,
         ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send
         {

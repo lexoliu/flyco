@@ -222,6 +222,10 @@ pub enum WireError {
     /// The session checkout could not be read or snapshotted.
     #[error(transparent)]
     Git(#[from] GitError),
+    /// A handoff's transcript could not be written where its prompt says
+    /// it is.
+    #[error("the handoff's transcript could not be materialized: {0}")]
+    Handoff(String),
     /// A notice the agent has to read could not be rendered.
     ///
     /// This daemon's own bug rather than anything the control plane did:

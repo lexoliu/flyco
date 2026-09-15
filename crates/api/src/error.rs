@@ -672,6 +672,51 @@ pub enum ApiError {
         cap: u32,
     },
 
+    /// A `handoff` upload route or `handoff/complete` named a session that
+    /// is not a pending handoff — either it never was one, or `complete`
+    /// already ran under a different manifest.
+    #[error(
+        "this session has no pending handoff",
+        status = StatusCode::CONFLICT
+    )]
+    HandoffNotPending,
+
+    /// `handoff/complete` declared an object that is not stored, or is
+    /// stored at another size.
+    #[error(
+        "the handoff {object} was not uploaded, or landed at another size",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    HandoffObjectMissing {
+        /// Which payload — `patch` or `transcript`.
+        object: &'static str,
+    },
+
+    /// `handoff/complete` declared checksums or sizes that disagree with
+    /// what the upload routes actually received.
+    #[error(
+        "the handoff {object} the manifest declares is not what was uploaded",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    HandoffChecksumMismatch {
+        /// Which payload — `patch` or `transcript`.
+        object: &'static str,
+    },
+
+    /// A `handoff` upload body is larger than the route accepts.
+    #[error(
+        "the handoff {object} is {bytes} bytes, past the {limit} this route accepts",
+        status = StatusCode::PAYLOAD_TOO_LARGE
+    )]
+    HandoffTooLarge {
+        /// Which payload — `patch` or `transcript`.
+        object: &'static str,
+        /// What the body measures, in bytes.
+        bytes: u64,
+        /// What the route accepts, in bytes.
+        limit: u64,
+    },
+
     /// A create under this `Idempotency-Key` is already in flight.
     ///
     /// The claim row has no session bound yet, so the honest answer is a
@@ -1344,6 +1389,10 @@ impl ApiError {
             Self::SessionCapReached { .. } => "session-cap-reached",
             Self::IdempotencyInFlight => "idempotency-in-flight",
             Self::InvalidIdempotencyKey { .. } => "invalid-idempotency-key",
+            Self::HandoffNotPending => "handoff-not-pending",
+            Self::HandoffObjectMissing { .. } => "handoff-object-missing",
+            Self::HandoffChecksumMismatch { .. } => "handoff-checksum-mismatch",
+            Self::HandoffTooLarge { .. } => "handoff-too-large",
             Self::CliSessionGone => "cli-session-gone",
             Self::CliSessionDenied => "cli-session-denied",
             Self::CliSessionPollDenied => "cli-session-poll-denied",

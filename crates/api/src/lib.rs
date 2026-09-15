@@ -31,6 +31,7 @@ pub mod expiring;
 pub mod extract;
 pub mod github;
 pub mod google;
+pub mod handoffs;
 pub mod harness_accounts;
 pub mod host_room;
 pub mod hosts;

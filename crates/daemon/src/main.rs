@@ -377,7 +377,22 @@ async fn check_out(config: &DaemonConfig, api: Option<&HttpControlApi>) -> Resul
     flyco_daemon::git::clone_into(repo, &config.workdir).await?;
 
     if let Some(api) = api {
-        apply_stored_patch(api, &config.workdir).await?;
+        // A handoff's patch was diffed against the sender's merge-base,
+        // not the tip this clone landed on: the branch is wound back
+        // first, so `git apply` reproduces the local tree byte-for-byte.
+        let handoff = api
+            .get_handoff()
+            .await
+            .map_err(flyco_daemon::control::WireError::from)?;
+        if let Some(view) = &handoff {
+            flyco_daemon::git::reset_to(&config.workdir, &view.base_commit).await?;
+        }
+        apply_stored_patch(api, &config.workdir, handoff.as_ref()).await?;
+        if let Some(view) = &handoff
+            && view.has_transcript
+        {
+            materialize_transcript(api).await?;
+        }
     }
     Ok(())
 }
@@ -605,6 +620,7 @@ fn checkout_of(config: &DaemonConfig) -> flyco_daemon::workdir::Checkout {
 async fn apply_stored_patch(
     api: &HttpControlApi,
     workdir: &std::path::Path,
+    handoff: Option<&flyco_core::HandoffView>,
 ) -> Result<(), flyco_daemon::control::WireError> {
     use flyco_daemon::git::WorkingTree as _;
 
@@ -612,6 +628,20 @@ async fn apply_stored_patch(
         tracing::info!("no stored patch: this session's work is all in the clone");
         return Ok(());
     };
+    // A handoff patch is verified before it is applied: the manifest's
+    // checksum is what `complete` proved against the uploaded object, so a
+    // corrupted or swapped one is a clear startup failure rather than a
+    // `git apply` syntax error.
+    if let Some(view) = handoff {
+        use sha2::Digest as _;
+        let actual = hex::encode(sha2::Sha256::digest(&patch));
+        if actual != view.patch_sha256 {
+            return Err(flyco_daemon::control::WireError::Handoff(format!(
+                "the stored patch hashes to {actual}, not the {} its manifest recorded",
+                view.patch_sha256
+            )));
+        }
+    }
     let bytes = patch.len();
     flyco_daemon::git::GitWorkdir::new(workdir.to_path_buf())
         .apply(&patch)
@@ -620,6 +650,36 @@ async fn apply_stored_patch(
         bytes,
         workdir = %workdir.display(),
         "replayed the uncommitted work the previous machine stored"
+    );
+    Ok(())
+}
+
+/// Writes a handoff's uploaded transcript where the handoff prompt tells
+/// the agent it is: outside the workdir, at the fixed path the prompt and
+/// [`flyco_core::HANDOFF_TRANSCRIPT_PATH`] agree on.
+async fn materialize_transcript(
+    api: &HttpControlApi,
+) -> Result<(), flyco_daemon::control::WireError> {
+    use flyco_daemon::control::WireError;
+
+    let Some(transcript) = api.get_handoff_transcript().await? else {
+        return Err(WireError::Handoff(
+            "the manifest announces a transcript that is not stored".to_owned(),
+        ));
+    };
+    let path = std::path::Path::new(flyco_core::HANDOFF_TRANSCRIPT_PATH);
+    if let Some(directory) = path.parent() {
+        tokio::fs::create_dir_all(directory)
+            .await
+            .map_err(|error| WireError::Handoff(error.to_string()))?;
+    }
+    tokio::fs::write(path, &transcript)
+        .await
+        .map_err(|error| WireError::Handoff(error.to_string()))?;
+    tracing::info!(
+        bytes = transcript.len(),
+        path = %path.display(),
+        "landed the handed-off transcript"
     );
     Ok(())
 }

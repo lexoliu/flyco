@@ -570,6 +570,13 @@ pub struct CreateSession {
     /// one.
     #[serde(default)]
     pub permission_mode: Option<crate::harness::PermissionMode>,
+    /// Where the session's context comes from — absent for a fresh
+    /// session, [`SessionSource::LocalHandoff`](crate::handoff::SessionSource)
+    /// when `flyco handoff` is importing a local session's state. A
+    /// handoff session holds its provisioning until `handoff/complete`
+    /// says the patch and transcript objects landed.
+    #[serde(default)]
+    pub source: Option<crate::handoff::SessionSource>,
 }
 
 /// A session in a list.

@@ -4572,6 +4572,17 @@
                     "type": "string",
                     "description": "Repository to work in, `owner/name`. Untyped here because it is\nuntrusted input; the control plane parses it into a\n[`RepoSlug`](crate::repo::RepoSlug) and rejects anything else."
                   },
+                  "source": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/SessionSource",
+                        "description": "Where the session's context comes from — absent for a fresh\nsession, [`SessionSource::LocalHandoff`](crate::handoff::SessionSource)\nwhen `flyco handoff` is importing a local session's state. A\nhandoff session holds its provisioning until `handoff/complete`\nsays the patch and transcript objects landed."
+                      }
+                    ]
+                  },
                   "spot": {
                     "type": "boolean",
                     "description": "Whether to ask for interruptible spot capacity when flyco picks the\nmachine. Ignored when [`Self::machine`] names a type, because that\nchoice already carries its own `spot`."
@@ -5870,6 +5881,203 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/handoff": {
+      "get": {
+        "summary": "Reads the handoff manifest behind the daemon's session, or 404s when the session is none — the boot path's way to learn there is a patch to apply and a transcript to land.",
+        "description": "Reads the handoff manifest behind the daemon's session, or 404s when\nthe session is none — the boot path's way to learn there is a patch to\napply and a transcript to land.",
+        "operationId": "flyco_api::app::get_handoff",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "`GET /v1/sessions/{id}/handoff`, daemon-scoped — what the daemon\nmaterializes after cloning, or `404` for a session that was never a\nhandoff.",
+                  "required": [
+                    "base_commit",
+                    "patch_sha256",
+                    "has_transcript"
+                  ],
+                  "properties": {
+                    "base_commit": {
+                      "type": "string",
+                      "description": "The commit to check out before applying the stored patch."
+                    },
+                    "has_transcript": {
+                      "type": "boolean",
+                      "description": "Whether a transcript object exists for\n`GET /v1/sessions/{id}/handoff/transcript` to fetch."
+                    },
+                    "patch_sha256": {
+                      "type": "string",
+                      "description": "SHA-256 the applied patch must hash to, verified before `git\napply` so a corrupt object fails loudly."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/handoff/complete": {
+      "post": {
+        "summary": "Verifies a handoff's payloads against its manifest and frees the session to provision. Idempotent: a replayed manifest answers as a second call rather than a second machine.",
+        "description": "Verifies a handoff's payloads against its manifest and frees the\nsession to provision. Idempotent: a replayed manifest answers as a\nsecond call rather than a second machine.",
+        "operationId": "flyco_api::app::complete_handoff",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "`POST /v1/sessions/{id}/handoff/complete` body — the integrity record\nof the two uploaded objects.\n\nChecksums, not just sizes: the daemon verifies `patch_sha256` before\n`git apply`, so a corrupted object is a clear startup failure rather\nthan a mysteriously malformed diff.",
+                "required": [
+                  "patch_sha256",
+                  "patch_bytes",
+                  "transcript_sha256",
+                  "transcript_bytes"
+                ],
+                "properties": {
+                  "patch_bytes": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Byte length of the patch object.",
+                    "minimum": 0
+                  },
+                  "patch_sha256": {
+                    "type": "string",
+                    "description": "Lowercase hex SHA-256 of the patch object."
+                  },
+                  "transcript_bytes": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Byte length of the transcript object.",
+                    "minimum": 0
+                  },
+                  "transcript_sha256": {
+                    "type": "string",
+                    "description": "Lowercase hex SHA-256 of the transcript object."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/handoff/patch": {
+      "put": {
+        "summary": "Stores a handoff's working-tree patch.",
+        "description": "Stores a handoff's working-tree patch.",
+        "operationId": "flyco_api::app::put_handoff_patch",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "default": null
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/handoff/transcript": {
+      "get": {
+        "summary": "Streams the handoff's uploaded transcript.",
+        "description": "Streams the handoff's uploaded transcript.",
+        "operationId": "flyco_api::app::get_handoff_transcript",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response"
+          }
+        }
+      },
+      "put": {
+        "summary": "Stores a handoff's full transcript, which the daemon later writes to disk for the cloud harness to consult.",
+        "description": "Stores a handoff's full transcript, which the daemon later writes to\ndisk for the cloud harness to consult.",
+        "operationId": "flyco_api::app::put_handoff_transcript",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "default": null
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
           }
         }
       }
@@ -8768,6 +8976,17 @@
             "type": "string",
             "description": "Repository to work in, `owner/name`. Untyped here because it is\nuntrusted input; the control plane parses it into a\n[`RepoSlug`](crate::repo::RepoSlug) and rejects anything else."
           },
+          "source": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SessionSource",
+                "description": "Where the session's context comes from — absent for a fresh\nsession, [`SessionSource::LocalHandoff`](crate::handoff::SessionSource)\nwhen `flyco handoff` is importing a local session's state. A\nhandoff session holds its provisioning until `handoff/complete`\nsays the patch and transcript objects landed."
+              }
+            ]
+          },
           "spot": {
             "type": "boolean",
             "description": "Whether to ask for interruptible spot capacity when flyco picks the\nmachine. Ignored when [`Self::machine`] names a type, because that\nchoice already carries its own `spot`."
@@ -9696,6 +9915,61 @@
             "format": "int64",
             "description": "vCPU-seconds the provider does not bill for, per month.",
             "minimum": 0
+          }
+        }
+      },
+      "HandoffManifest": {
+        "type": "object",
+        "description": "`POST /v1/sessions/{id}/handoff/complete` body — the integrity record\nof the two uploaded objects.\n\nChecksums, not just sizes: the daemon verifies `patch_sha256` before\n`git apply`, so a corrupted object is a clear startup failure rather\nthan a mysteriously malformed diff.",
+        "required": [
+          "patch_sha256",
+          "patch_bytes",
+          "transcript_sha256",
+          "transcript_bytes"
+        ],
+        "properties": {
+          "patch_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Byte length of the patch object.",
+            "minimum": 0
+          },
+          "patch_sha256": {
+            "type": "string",
+            "description": "Lowercase hex SHA-256 of the patch object."
+          },
+          "transcript_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Byte length of the transcript object.",
+            "minimum": 0
+          },
+          "transcript_sha256": {
+            "type": "string",
+            "description": "Lowercase hex SHA-256 of the transcript object."
+          }
+        }
+      },
+      "HandoffView": {
+        "type": "object",
+        "description": "`GET /v1/sessions/{id}/handoff`, daemon-scoped — what the daemon\nmaterializes after cloning, or `404` for a session that was never a\nhandoff.",
+        "required": [
+          "base_commit",
+          "patch_sha256",
+          "has_transcript"
+        ],
+        "properties": {
+          "base_commit": {
+            "type": "string",
+            "description": "The commit to check out before applying the stored patch."
+          },
+          "has_transcript": {
+            "type": "boolean",
+            "description": "Whether a transcript object exists for\n`GET /v1/sessions/{id}/handoff/transcript` to fetch."
+          },
+          "patch_sha256": {
+            "type": "string",
+            "description": "SHA-256 the applied patch must hash to, verified before `git\napply` so a corrupt object fails loudly."
           }
         }
       },
@@ -10707,6 +10981,34 @@
             "format": "int64",
             "description": "When that limit resets, when the harness named a time.",
             "minimum": 0
+          }
+        }
+      },
+      "LocalHandoff": {
+        "type": "object",
+        "description": "The provenance a `flyco handoff` create declares.",
+        "required": [
+          "harness",
+          "session_id",
+          "base_commit",
+          "local_workdir"
+        ],
+        "properties": {
+          "base_commit": {
+            "type": "string",
+            "description": "The commit the local work was based on — `git merge-base HEAD\norigin/<branch>` — which the cloud checkout rewinds the branch to\nbefore the patch applies, so the patch reproduces the local tree\nbyte-for-byte rather than failing against a moved branch tip."
+          },
+          "harness": {
+            "$ref": "#/components/schemas/HarnessKind",
+            "description": "Which harness the local session ran under. The cloud session's own\n`harness` may differ — a Claude session handed to Codex is a\nlegitimate move — so the source is recorded rather than assumed."
+          },
+          "local_workdir": {
+            "type": "string",
+            "description": "The sender's local workdir as an absolute path. Recorded for the\nhandoff prompt's path map and for forensics; the daemon never\nmaterializes it."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The harness-native session id being handed off — Claude's session\nUUID, Codex's rollout/thread id, Devin's session name."
           }
         }
       },
@@ -12289,6 +12591,34 @@
             "description": "Whether the machine holds interruptible capacity."
           }
         }
+      },
+      "SessionSource": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LocalHandoff",
+                "description": "`flyco handoff`: import a local harness session's state."
+              },
+              {
+                "type": "object",
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "local_handoff"
+                    ]
+                  }
+                }
+              }
+            ],
+            "description": "`flyco handoff`: import a local harness session's state."
+          }
+        ],
+        "description": "Where a new session's context comes from, as `CreateSession::source`.\n\nAbsent means a fresh session — the overwhelmingly common case, so the\nfield is an `Option` rather than a required tag."
       },
       "SessionState": {
         "type": "string",
