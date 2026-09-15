@@ -186,6 +186,18 @@ describe("route smoke tests", () => {
     ).toBe(true);
   });
 
+  it("renders /cli/authorize without the session rail", async () => {
+    const { findByRole, queryByRole } = renderAt("/cli/authorize?id=attempt-1");
+    await findByRole("heading", { level: 1, name: "Sign in the flyco CLI?" });
+
+    // A signed-in visitor approving a terminal is not yet inside the
+    // product the rail navigates — it must not be there.
+    expect(
+      queryByRole("button", { name: "Open navigation" }),
+    ).not.toBeInTheDocument();
+    expect(queryByRole("navigation")).not.toBeInTheDocument();
+  });
+
   it("says so on /cli/authorize when the URL names no attempt", async () => {
     const { findByRole, queryByRole } = renderAt("/cli/authorize");
     expect(await findByRole("alert")).toBeInTheDocument();
