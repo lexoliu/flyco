@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@solidjs/testing-library";
+import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import MachinePicker, { MachineResize } from "./MachinePicker";
 import type { MachineCatalogEntry, MachineView, ProviderAccountView } from "../api/client";
 
@@ -155,5 +156,58 @@ describe("MachinePicker, before the catalog has been read", () => {
   it("states the refusal once the account has been read and offers nothing", () => {
     const { getByText } = mountPicker(undefined, []);
     expect(getByText(/offers no machine/)).toBeInTheDocument();
+  });
+});
+
+describe("MachinePicker's codespaces hint", () => {
+  const LINKED: ProviderAccountView[] = [
+    ...ACCOUNTS,
+    {
+      id: "9c8b7a6f-5e4d-3c2b-1a09-8f7e6d5c4b3a",
+      kind: "codespaces",
+      label: "lexoliu",
+      linked_at_unix: 1_785_974_400,
+    },
+  ];
+
+  function mountHinted(accounts: ProviderAccountView[], codespaceHint = true) {
+    const history = createMemoryHistory();
+    history.set({ value: "/", replace: true, scroll: false });
+    return render(() => (
+      <MemoryRouter history={history}>
+        <Route
+          path="/"
+          component={() => (
+            <MachinePicker
+              catalog={[SMALL, LARGE]}
+              accounts={accounts}
+              spot={true}
+              chosenKey={null}
+              onChoose={vi.fn()}
+              codespaceHint={codespaceHint}
+            />
+          )}
+        />
+      </MemoryRouter>
+    ));
+  }
+
+  it("offers the link when no codespaces account is linked", () => {
+    const { getByRole, getByText } = mountHinted(ACCOUNTS);
+    expect(getByText(/free hours every month/)).toBeInTheDocument();
+    expect(getByRole("link", { name: "Link GitHub" })).toHaveAttribute(
+      "href",
+      "/connect/compute",
+    );
+  });
+
+  it("stays silent once one is", () => {
+    const { queryByText } = mountHinted(LINKED);
+    expect(queryByText(/free hours every month/)).not.toBeInTheDocument();
+  });
+
+  it("stays out of a resize, where linking is not the question", () => {
+    const { queryByText } = mount();
+    expect(queryByText(/free hours every month/)).not.toBeInTheDocument();
   });
 });

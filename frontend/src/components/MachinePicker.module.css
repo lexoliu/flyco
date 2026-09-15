@@ -16,6 +16,25 @@
 }
 
 /*
+ * The codespaces suggestion, where a form the catalog cannot offer is
+ * looked for. Quieter than the note: a link, not a reading.
+ */
+.hint {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.hint a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.hint a:hover {
+  text-decoration: underline;
+}
+
+/*
  * What a resize costs before it does any work: the machine restarts, and
  * the disk does not go with it. Stated where the button is, because that is
  * the moment the user is deciding.

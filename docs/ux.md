@@ -9,9 +9,11 @@ user sees and does. Frontend work is measured against it.
 
 A session cannot exist until three things are true:
 
-1. the user is signed in with GitHub (identity and repositories),
+1. the user is signed in with GitHub (identity and repositories — the
+   grant also carries the Codespaces scopes, dormant until linked),
 2. a **harness account** is linked (Claude Code or Codex),
-3. **compute** is linked (Azure, AWS, GCP, or a machine the user owns).
+3. **compute** is linked (GitHub Codespaces, Azure, AWS, GCP, or a machine
+   the user owns).
 
 Every screen is designed around that readiness state. The app never shows a
 form whose submission is guaranteed to fail; it shows the missing
@@ -324,7 +326,7 @@ Every chip is both a status readout and the entry point to change it.
 | Chip | Ready | Not ready |
 |---|---|---|
 | Harness | logomark + `Claude Code` (or `Codex`); popover lists the linked agents with the chosen one marked, ending in `Connect another agent` → `/connect/harness` | `+ Connect an agent` → `/connect/harness` |
-| Model | `Fable 5.1`, and `Fable 5.1 · High` once an effort is chosen. The name is the head of the harness's description where it has one (`Fable 5.1 · Most capable…` → `Fable 5.1`; Claude's rows are menu labels like `Default (recommended)`) and the row's label otherwise (`GPT-5.5`). The chip sits at the right of the row beside send, where both official apps keep theirs. The popover asks the question in two views the way ChatGPT's picker nests them: the agent's own models first (`GET /v1/harness-accounts` carries each account's list, as its last session's agent reported it, or flyco's built-in one until then), each with the harness's one-line description — and picking one that takes effort lands on the detented slider the machine picker already teaches (§7.7) rather than closing on the pick: the level's name over the rail as the way back to the list, the model's name under it, `Default` as the leftmost stop — the model keeps the choice, the same position `Auto` holds on the machine picker's form row, since not every harness says which level it starts on — a reset beside the level, and the harness's `default_effort` named in the subline where it says one (`GPT-5.6-Terra · Medium`). Picking a different model resets the effort to the model's own default; a model that names no effort levels still closes on the pick. Switching agents drops the choice, because a Claude id means nothing to Codex | absent until an agent is linked, since there is no list to show |
+| Model | `Fable 5.1`, and `Fable 5.1 · High` once an effort is chosen. The name is the head of the harness's description where it has one (`Fable 5.1 · Most capable…` → `Fable 5.1`; Claude's rows are menu labels like `Default (recommended)`) and the row's label otherwise (`GPT-5.5`). The chip sits at the right of the row beside send, where both official apps keep theirs. The popover asks the question in two views the way ChatGPT's picker nests them: the agent's own models first (`GET /v1/harness-accounts` carries each account's list, as its last session's agent reported it, or flyco's built-in one until then), each with the harness's one-line description — and picking one that takes effort lands on the detented slider the machine picker already teaches (§7.8) rather than closing on the pick: the level's name over the rail as the way back to the list, the model's name under it, `Default` as the leftmost stop — the model keeps the choice, the same position `Auto` holds on the machine picker's form row, since not every harness says which level it starts on — a reset beside the level, and the harness's `default_effort` named in the subline where it says one (`GPT-5.6-Terra · Medium`). Picking a different model resets the effort to the model's own default; a model that names no effort levels still closes on the pick. Switching agents drops the choice, because a Claude id means nothing to Codex | absent until an agent is linked, since there is no list to show |
 | Compute | provider logomark + `B2s · $0.04/hr`; the logomark names the provider, and region, spot, the account and whether flyco or the user chose the type live in the popover — the chip does not say `Auto` or `Chosen`, which is a word about how the choice was made on a row that is for what was chosen. A **managed container** reads `Container · 4 vCPU · 8 GiB · $0.21/hr` instead: `aca-4x8` is flyco's key for a size billed by the second, not a name anybody picked, so the size is what identifies the row — and where the provider covers it out of a monthly allowance the chip ends ` · Free this month`. A machine the user enrolled is a container too and keeps its own hostname, which is the name they gave it. While an account is still being read the chip says `Reading Azure…` and the popover carries the whole sentence | `+ Add compute` → `/connect/compute` |
 | Repositories | `owner/name`, or `owner/name +N` past the first; popover with a search box, recent repositories first, and the picked set pinned on top — first picked is the session's primary repository, each picked row carries its own branch picker (defaulting to the repository's default branch) and `↑`/× controls to promote or drop it. A session can work across up to sixteen repositories | `Select repositories` opens the same popover |
 | Budget | `$10`; popover with a slider (1–200) and the sentence "Covers the machine and its disk. Model tokens are billed by your Claude or Codex plan." | always shown, default `$10` |
@@ -332,7 +334,7 @@ Every chip is both a status readout and the entry point to change it.
 The compute chip shows the machine flyco will actually choose
 (`GET /v1/machines/default?spot=`), not a dropdown of the catalog. A
 popover lets the user switch account, region, spot, or pick another
-curated type (§7.5).
+curated type (§7.7).
 
 The chips sit on one line at desktop widths, and one line is a hard rule:
 a pill never takes a second line inside the card. The compute chip is the
@@ -430,10 +432,12 @@ findable there.
 
 ## 7. Connect compute
 
-`/connect/compute` is a chooser of four cards (Azure, AWS, Google Cloud,
-Your own machine), each with a logomark and one line. Choosing one opens a
-wizard in place. Every wizard ends by linking the account
-(`POST /v1/providers`), which validates the credential live, then shows the
+`/connect/compute` is a chooser of five cards (GitHub Codespaces first —
+the free-hours answer — then Azure, AWS, Google Cloud, Your own machine),
+each with a logomark and one line. Choosing one opens a
+wizard in place. Every wizard ends by linking the account — the credential
+validates live on the way in (`POST /v1/providers`, or the provider's own
+link route where the credential is a grant flyco already holds) — then shows the
 resulting **compute card**: logomark, label, region, the default machine
 and its hourly price, a spot toggle, and month-to-date spend from
 `GET /v1/usage/cloud`.
@@ -526,7 +530,30 @@ service account, bind the role, mint the key and `cloudshell download` it,
 then a drop zone for the file (`project_id`, `client_email` as
 confirmation), then `Link Google Cloud`.
 
-### 7.5 Your own machine
+### 7.5 GitHub Codespaces
+
+The road is one click, not another sign-in: sign-in already asks GitHub
+for `repo codespace read:packages` in a single grant, so the account the
+user signed in with usually *is* the credential the link stores.
+
+1. `POST /v1/providers/codespaces/link` proves the stored grant carries
+   the scopes (`GET /user` reports them), creates the private
+   `flyco-sessions` repository with its devcontainer — the image a
+   codespace boots into — and links the account. No tab opens, nothing is
+   chosen; there is one GitHub account and one environment.
+2. A grant written before flyco asked for `codespace` answers
+   `403 github-scope-missing` — a routing answer, not a failure: the page
+   says the sign-in predates the grant and falls back to the OAuth road
+   (`…/codespaces/oauth/start`, the same poll-and-finish shape as the
+   other clouds), which widens it. The finish runs the same link the
+   direct route does.
+
+Sessions then run inside the user's own codespaces — GitHub bills the
+account's monthly free hours first, and a codespace's own idle clock stops
+it (§9.5's suspension rule). A user who never picks the card is never
+asked for anything: the extra scopes sit dormant on the sign-in grant.
+
+### 7.6 Your own machine
 
 The control plane runs on Cloudflare Workers and has no TCP sockets, so it
 cannot open an SSH connection to a user's host. A machine the user owns is
@@ -552,7 +579,7 @@ still running there — read off the refusal's `active_sessions` extension
 member (RFC 9457 §3.2), never parsed out of its `detail` — and offers
 `Remove anyway`, which passes `force`.
 
-### 7.6 Catalog curation
+### 7.7 Catalog curation
 
 Cloud catalogs are large and mostly redundant. Flyco shows the user and
 the agent a **curated** catalog, computed in `flyco-core` from the raw
@@ -579,9 +606,9 @@ a 4×16 VM through while turning down the free 4×8 container spent money
 to avoid the one machine the user is not paying for. The agent's
 `machine_resize` tool sees the same curated list.
 
-### 7.7 Choosing a machine by hand
+### 7.8 Choosing a machine by hand
 
-The compute chip's popover is two choices, in order: the **product form** as a row of segments — `Container`, `VM`, `Codespace`, whichever the linked accounts offer — and then a **tiered slider** of that form's machines, not a table. The three are different products rather than different prices of one: a container's filesystem ends when the run does, a VM's disk survives a stop, and a codespace is bought from GitHub in core-hours — so the choice between them is never a detent among machine types. `Auto` leads the segment row: the cheapest curated Linux type with at least 4 vCPU and 16 GiB, unless the account's catalog offers a container covered by a monthly grant, in which case that is what it picks (§7.6). Under `Auto` there is no track — flyco is keeping the size as well as the form — only the machine it would pick and the rule it picked by.
+The compute chip's popover is two choices, in order: the **product form** as a row of segments — `Container`, `VM`, `Codespace`, whichever the linked accounts offer — and then a **tiered slider** of that form's machines, not a table. The three are different products rather than different prices of one: a container's filesystem ends when the run does, a VM's disk survives a stop, and a codespace is bought from GitHub in core-hours — so the choice between them is never a detent among machine types. `Auto` leads the segment row: the cheapest curated Linux type with at least 4 vCPU and 16 GiB, unless the account's catalog offers a container covered by a monthly grant, in which case that is what it picks (§7.7). Under `Auto` there is no track — flyco is keeping the size as well as the form — only the machine it would pick and the rule it picked by. A `Codespace` segment exists only once a Codespaces account is linked, so where a session is being chosen and none is, a quiet line under the slider says "GitHub Codespaces give free hours every month" and links to `/connect/compute` — a suggestion where the catalog would otherwise be silent, never a segment that opens an empty track.
 
 Choosing a segment lands the thumb on the cheapest entry of that form the current scope reaches, moving the scope onto it when the account and region on screen hold none — a segment that opened an empty track would be a control that lies. The slider's detents are the chosen account, region and form, ordered by price; the thumb snaps to a detent and the label above it reads `Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr`, or for a managed container `Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month`. Its left end reads `Cheapest`. An `Advanced ›` disclosure above the slider reveals account, region, architecture (x86-64 / arm64), OS family, and spot — each scoped to what the chosen form offers, and spot only where some detent can quote a spot price. Choosing any segment other than `Auto` sets `machine_origin: user`; the popover's label then reads `Chosen by you`.
 
@@ -879,7 +906,7 @@ height of the screen and carries its own close button at the end of the
 tab row: stacked under the transcript it was a block the user had to
 scroll to, with a terminal too short to type in.
 
-`Resize` is the tiered slider of §7.7, on the machine the session is
+`Resize` is the tiered slider of §7.8, on the machine the session is
 already on: the same detents, prices and license-bound badge, opened on the
 current type, with no `Auto` — flyco choosing again is not one of the
 outcomes — and the form row naming the one form the machine can move
@@ -914,7 +941,7 @@ connected says exactly that rather than showing an empty tree.
 
 When the agent resizes, the transcript shows a notice: `Switched to Standard_D8s_v6 · restarted the machine · disk kept`. When the agent asks to move to a license-bound type, the request is an approval card, not a silent resize, and the card quotes the minimum charge. The agent is told whether the machine was chosen by the user and to be conservative about switching it.
 
-What the agent sees of all this is `flycod`'s local MCP server (§11): `machine_status` reports the machine and who chose it, `budget_status` reports what is left, and `machine_resize` moves the session. The resize tool's description states that resizing restarts the machine, lists only the curated catalog of §7.6 with each entry's hourly price and — for a license-bound type — the minimum charge in dollars, and refuses while the working tree is dirty unless it is called again with `force` and a reason. A resize to a license-bound type is never performed on the agent's own authority: the daemon raises the approval, the tool answers that the request is pending the user's decision, and the control plane performs the resize if the user approves. When the machine was the user's choice, every one of those places says so in the same words: "The user chose this machine themselves; do not switch it unless the task cannot proceed on it, and say why when you do."
+What the agent sees of all this is `flycod`'s local MCP server (§11): `machine_status` reports the machine and who chose it, `budget_status` reports what is left, and `machine_resize` moves the session. The resize tool's description states that resizing restarts the machine, lists only the curated catalog of §7.7 with each entry's hourly price and — for a license-bound type — the minimum charge in dollars, and refuses while the working tree is dirty unless it is called again with `force` and a reason. A resize to a license-bound type is never performed on the agent's own authority: the daemon raises the approval, the tool answers that the request is pending the user's decision, and the control plane performs the resize if the user approves. When the machine was the user's choice, every one of those places says so in the same words: "The user chose this machine themselves; do not switch it unless the task cannot proceed on it, and say why when you do."
 
 The same machinery covers a repository the agent wants but the user never picked: `repo_add` raises an approval card that names the repository, the branch and the directory it would clone into, with the agent's reason underneath — cloning a repository is fetching code the user did not choose, so it is never performed on the agent's authority. Approving sends the daemon an `AddRepo`, and the clone's arrival is a transcript notice (`Added owner/name to the workspace as dir/`); denying lands as an ordinary message telling the agent so. A repository the *user* adds mid-session — the header's `Add a repository` — skips the card entirely, because the asker is the approver.
 
@@ -1041,7 +1068,7 @@ Pre-1.0, the API changes to fit the product; no compatibility shims.
   the one its disk was provisioned with.
 - `GET /v1/machines/default?spot=` returns the curated default choice and
   its catalog entry. `GET /v1/machines/catalog` returns the curated
-  catalog (§7.6).
+  catalog (§7.7).
 - A machine is a virtual machine or a managed container.
   `MachineCatalogEntry`, `MachineSpec` and `MachineChoice` carry
   `runtime: "vm" | "container"`, defaulting to `vm` so a document written
@@ -1071,7 +1098,7 @@ Pre-1.0, the API changes to fit the product; no compatibility shims.
   of, authenticated by the session's `fd_` token and by nothing else:
   `GET /v1/sessions/{id}/agent/machine` (the machine and who chose it,
   as `AgentMachineView`), `GET /v1/sessions/{id}/agent/machine/catalog`
-  (the curated catalog of §7.6, narrowed to the account and region the
+  (the curated catalog of §7.7, narrowed to the account and region the
   session's disk lives in — the two a resize cannot cross),
   `POST /v1/sessions/{id}/agent/machine/resize`, and
   `GET /v1/sessions/{id}/agent/budget`. The resize route refuses a

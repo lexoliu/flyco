@@ -14,6 +14,7 @@
  * and a draft hidden in here would leave the two disagreeing.
  */
 import { type JSX, Show, createMemo, createSignal } from "solid-js";
+import { A } from "@solidjs/router";
 import { AlertTriangle } from "lucide-solid";
 import MachineSlider, { type MachineFilter } from "./MachineSlider";
 import ProblemNotice from "./ProblemNotice";
@@ -53,6 +54,12 @@ export interface MachinePickerProps {
   pending?: string | undefined;
   /** The line under the slider: what choosing here means. */
   note?: JSX.Element | undefined;
+  /**
+   * Whether an unlinked Codespaces is offered as a path rather than left
+   * unsaid. Set where a session is being chosen — a resize already knows
+   * its form, and the hint would only ever be noise there.
+   */
+  codespaceHint?: boolean | undefined;
   /** What commits the choice, for a caller whose choice is a request. */
   children?: JSX.Element | undefined;
 }
@@ -78,6 +85,20 @@ export default function MachinePicker(props: MachinePickerProps) {
         pending={props.pending}
       />
       <Show when={props.note}>{(note) => <p class={styles.note}>{note()}</p>}</Show>
+      {/* The one form the catalog cannot offer until GitHub is linked is a
+          suggestion rather than a silence: the account filter's empty read
+          says "no codespace" only after the user went looking. */}
+      <Show
+        when={
+          props.codespaceHint &&
+          !props.accounts.some((account) => account.kind === "codespaces")
+        }
+      >
+        <p class={styles.hint}>
+          GitHub Codespaces give free hours every month.{" "}
+          <A href="/connect/compute">Link GitHub</A>
+        </p>
+      </Show>
       {props.children}
     </div>
   );

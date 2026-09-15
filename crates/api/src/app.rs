@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
 use skyzen::middleware::ErrorHandlingMiddleware;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Router, Routes as _};
+#[cfg(not(target_arch = "wasm32"))]
 use skyzen::static_files::EmbeddedStaticDir;
 use skyzen::utils::{Bytes, Json, State};
 use skyzen::{HttpError as _, Response};
@@ -3724,9 +3725,13 @@ fn routes() -> Route {
     Route::new(nodes)
 }
 
-/// The PWA, compiled into the Worker so the control plane and the UI share
-/// an origin. Cloudflare Assets is not a skyzen capability; the files ride
-/// the wasm binary instead.
+/// The PWA, compiled in so `skyzen dev` serves the whole product from one
+/// process.
+///
+/// Production does not use this: the `flyco` Pages project serves the PWA on
+/// the shared hostname and proxies `/v1/*` and `/install/*` to this Worker,
+/// so the wasm build keeps no copy of the UI.
+#[cfg(not(target_arch = "wasm32"))]
 fn frontend() -> EmbeddedStaticDir {
     static ASSETS: skyzen::include_dir::Dir<'static> =
         skyzen::embed_dir!("$CARGO_MANIFEST_DIR/../../frontend/dist");
@@ -3793,6 +3798,10 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
 /// namespace and the R2 bucket do — they are declared in `Skyzen.toml`, and
 /// `#[skyzen::main]` wraps the router with them — which is what
 /// [`router_from_environment`] builds instead.
+///
+/// Native only: it mounts [`frontend`], which production serves from the
+/// `flyco` Pages project rather than from inside the wasm.
+#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn router(
     config: ApiConfig,
@@ -3817,6 +3826,7 @@ pub fn router(
 /// [`ClaudeClient`], the Codex routes ask for [`CodexClient`], and the one
 /// place that may renew either — the provisioning consumer — asks for
 /// [`Vendors`].
+#[cfg(not(target_arch = "wasm32"))]
 fn configured(
     config: ApiConfig,
     github: GithubClient,
@@ -3848,7 +3858,7 @@ fn configured_from_request(
     codespaces: Codespaces,
 ) -> Route {
     with_error_handling(
-        with_rooms(Route::new((routes(), frontend())))
+        with_rooms(Route::new(routes()))
             .with(crate::middleware::LoadApiConfig)
             .with(State(github))
             .with(State(clouds))

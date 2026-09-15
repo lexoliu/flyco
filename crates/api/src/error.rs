@@ -982,6 +982,20 @@ pub enum ApiError {
         repo: RepoSlug,
     },
 
+    /// The stored GitHub grant predates a scope flyco now asks for.
+    ///
+    /// A grant is only widened by authorizing GitHub again, so this is the
+    /// answer that sends the Codespaces link through its OAuth path rather
+    /// than a failure to report.
+    #[error(
+        "this GitHub sign-in predates the `{scope}` scope; authorize GitHub again to grant it",
+        status = StatusCode::FORBIDDEN
+    )]
+    GithubScopeMissing {
+        /// The scope the stored grant is missing.
+        scope: &'static str,
+    },
+
     /// An environment variable name is not one a shell can export.
     #[error(
         "`{0}` is not an environment variable name: use letters, digits and `_`, not starting with a digit",
@@ -1168,6 +1182,21 @@ pub enum ApiError {
     /// its own status; the variant's declared one is never rendered.
     #[error("the room refused: {0:?}", status = StatusCode::BAD_GATEWAY)]
     RoomRefused(Box<Problem>),
+
+    /// The object's ledger for the UTC day is spent, so it is refusing
+    /// reads until midnight.
+    ///
+    /// Raised inside a durable object by
+    /// [`crate::row_budget::charge_reads`]: the circuit breaker that keeps
+    /// one runaway caller from spending the account's whole Durable Object
+    /// row-read quota, which is what once took every room down for the
+    /// rest of a day. `429`, because the object is refusing the caller's
+    /// rate rather than failing at its own work.
+    #[error(
+        "this object exhausted its durable-object read budget for today; it resets at UTC midnight",
+        status = StatusCode::TOO_MANY_REQUESTS
+    )]
+    RowBudgetExceeded,
 
     /// Object storage failed.
     #[error("object storage failed: {0}")]
@@ -1489,6 +1518,7 @@ impl ApiError {
             Self::SessionRepoCapReached { .. } => "session-repo-cap-reached",
             Self::InvalidBranch { .. } => "invalid-branch",
             Self::GithubTokenInsufficient { .. } => "github-token-insufficient",
+            Self::GithubScopeMissing { .. } => "github-scope-missing",
             Self::InvalidEnvKey(_) => "invalid-env-key",
             Self::InvalidTitle { .. } => "invalid-title",
             Self::InvalidBudget => "invalid-budget",
@@ -1508,6 +1538,7 @@ impl ApiError {
             Self::RelayFramesGap { .. } => "relay-frames-gap",
             Self::RelayUnavailable(_) => "relay-unavailable",
             Self::Room(_) | Self::RoomRefused(_) => "session-room-unavailable",
+            Self::RowBudgetExceeded => "row-budget-exhausted",
             Self::GithubCodeRejected(_) => "github-code-rejected",
             Self::GithubTokenRevoked => "github-token-revoked",
             Self::GithubStatus(_) => "github-status",

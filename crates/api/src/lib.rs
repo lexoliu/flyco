@@ -59,6 +59,7 @@ pub mod respond;
 pub mod responses;
 pub mod room;
 pub mod rooms;
+pub mod row_budget;
 pub mod session;
 pub mod session_repos;
 pub mod sessions;
@@ -79,7 +80,9 @@ mod testing;
 #[cfg(test)]
 mod tests;
 
-pub use app::{openapi_document, router, router_from_environment};
+#[cfg(not(target_arch = "wasm32"))]
+pub use app::router;
+pub use app::{openapi_document, router_from_environment};
 pub use config::ApiConfig;
 pub use error::ApiError;
 

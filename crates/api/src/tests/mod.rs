@@ -25,6 +25,7 @@ mod push;
 mod relay;
 mod responses;
 mod room;
+mod row_budget;
 mod schema;
 mod sessions;
 mod skills;

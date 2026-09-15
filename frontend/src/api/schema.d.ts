@@ -1077,6 +1077,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/providers/codespaces/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/providers/codespaces/link` — links the account straight from the sign-in grant.
+         * @description `POST /v1/providers/codespaces/link` — links the account straight from
+         *     the sign-in grant.
+         *
+         *     Sign-in has asked for the Codespaces scope set since grants began
+         *     carrying it, so the grant a user signed in with usually *is* the
+         *     credential the link stores — this route proves it with the scopes
+         *     `GET /user` reports, then does the finish's own work without the
+         *     OAuth attempt. A grant that predates the ask answers
+         *     [`ApiError::GithubScopeMissing`], which is what sends the page through
+         *     the OAuth flow instead.
+         */
+        post: operations["flyco_api::provider_oauth::codespaces_link"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/providers/codespaces/oauth/callback": {
         parameters: {
             query?: never;
@@ -8797,6 +8826,46 @@ export interface operations {
                     "application/json": {
                         /** @description The daemon's `config.toml`, ready to write. */
                         config_toml: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::codespaces_link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        host_id?: null | components["schemas"]["Uuid"];
+                        /** @description Identifier used to unlink the account. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Which provider it is. */
+                        kind: components["schemas"]["CloudProviderKind"];
+                        /**
+                         * @description Label supplied when it was linked.
+                         *
+                         *     For a machine the user owns this is the host's own label, kept in
+                         *     step by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so
+                         *     a rename that moved only one of them would leave the compute chip
+                         *     calling a machine something its card no longer does.
+                         */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When it was linked, seconds since the Unix epoch.
+                         */
+                        linked_at_unix: number;
                     };
                 };
             };

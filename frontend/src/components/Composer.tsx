@@ -612,6 +612,7 @@ function ComputeChip(props: {
             onSpot={props.onSpot}
             error={props.error}
             pending={props.pending ?? undefined}
+            codespaceHint
             // What `Auto` picks is the slider's own line, under its track.
             // What is left for here is what choosing changes: who the
             // session records as having decided, and that the agent is told.
