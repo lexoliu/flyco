@@ -180,10 +180,12 @@ async fn complete_frees_provisioning_and_the_daemon_reads_the_result(
 
     upload_and_complete(&client, &caller, session).await;
 
-    // The patch rode the workdir object; the transcript has its own key.
+    // The patch rode the primary checkout's workdir object — `flyco` is
+    // `lexoliu/flyco`'s checkout directory — and the transcript has its own
+    // key.
     assert!(
         storage
-            .get(&format!("workdirs/{session}/uncommitted.patch"))
+            .get(&format!("workdirs/{session}/flyco/uncommitted.patch"))
             .await
             .expect("read the patch object")
             .is_some(),

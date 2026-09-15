@@ -1370,10 +1370,7 @@ impl<
                 }
             }
         }
-        match failure {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        failure.map_or(Ok(()), Err)
     }
 
     /// Clones and registers a repository the control plane approved mid-session.
