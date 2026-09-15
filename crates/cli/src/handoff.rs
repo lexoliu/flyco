@@ -517,11 +517,7 @@ async fn discover_claude(root: &Path) -> Outcome<Vec<LocalSession>> {
     let encoded = claude_project_dir(root);
     let mut found = Vec::new();
     while let Some(project) = entries_next(&mut projects).await {
-        if !project
-            .file_name()
-            .to_string_lossy()
-            .starts_with(&encoded)
-        {
+        if !project.file_name().to_string_lossy().starts_with(&encoded) {
             continue;
         }
         let Some(mut files) = read_dir(&project.path()).await else {

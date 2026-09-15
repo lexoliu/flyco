@@ -1777,6 +1777,95 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/handoff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reads the handoff manifest behind the daemon's session, or 404s when the session is none — the boot path's way to learn there is a patch to apply and a transcript to land.
+         * @description Reads the handoff manifest behind the daemon's session, or 404s when
+         *     the session is none — the boot path's way to learn there is a patch to
+         *     apply and a transcript to land.
+         */
+        get: operations["flyco_api::app::get_handoff"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/handoff/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verifies a handoff's payloads against its manifest and frees the session to provision. Idempotent: a replayed manifest answers as a second call rather than a second machine.
+         * @description Verifies a handoff's payloads against its manifest and frees the
+         *     session to provision. Idempotent: a replayed manifest answers as a
+         *     second call rather than a second machine.
+         */
+        post: operations["flyco_api::app::complete_handoff"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/handoff/patch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Stores a handoff's working-tree patch.
+         * @description Stores a handoff's working-tree patch.
+         */
+        put: operations["flyco_api::app::put_handoff_patch"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/handoff/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Streams the handoff's uploaded transcript.
+         * @description Streams the handoff's uploaded transcript.
+         */
+        get: operations["flyco_api::app::get_handoff_transcript"];
+        /**
+         * Stores a handoff's full transcript, which the daemon later writes to disk for the cloud harness to consult.
+         * @description Stores a handoff's full transcript, which the daemon later writes to
+         *     disk for the cloud harness to consult.
+         */
+        put: operations["flyco_api::app::put_handoff_transcript"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/harness-observations": {
         parameters: {
             query?: never;
@@ -3287,6 +3376,7 @@ export interface components {
              *     [`RepoSlug`](crate::repo::RepoSlug) and rejects anything else.
              */
             repo: string;
+            source?: null | components["schemas"]["SessionSource"];
             /**
              * @description Whether to ask for interruptible spot capacity when flyco picks the
              *     machine. Ignored when [`Self::machine`] names a type, because that
@@ -3765,6 +3855,49 @@ export interface components {
              * @description vCPU-seconds the provider does not bill for, per month.
              */
             vcpu_seconds_per_month: number;
+        };
+        /**
+         * @description `POST /v1/sessions/{id}/handoff/complete` body — the integrity record
+         *     of the two uploaded objects.
+         *
+         *     Checksums, not just sizes: the daemon verifies `patch_sha256` before
+         *     `git apply`, so a corrupted object is a clear startup failure rather
+         *     than a mysteriously malformed diff.
+         */
+        HandoffManifest: {
+            /**
+             * Format: int64
+             * @description Byte length of the patch object.
+             */
+            patch_bytes: number;
+            /** @description Lowercase hex SHA-256 of the patch object. */
+            patch_sha256: string;
+            /**
+             * Format: int64
+             * @description Byte length of the transcript object.
+             */
+            transcript_bytes: number;
+            /** @description Lowercase hex SHA-256 of the transcript object. */
+            transcript_sha256: string;
+        };
+        /**
+         * @description `GET /v1/sessions/{id}/handoff`, daemon-scoped — what the daemon
+         *     materializes after cloning, or `404` for a session that was never a
+         *     handoff.
+         */
+        HandoffView: {
+            /** @description The commit to check out before applying the stored patch. */
+            base_commit: string;
+            /**
+             * @description Whether a transcript object exists for
+             *     `GET /v1/sessions/{id}/handoff/transcript` to fetch.
+             */
+            has_transcript: boolean;
+            /**
+             * @description SHA-256 the applied patch must hash to, verified before `git
+             *     apply` so a corrupt object fails loudly.
+             */
+            patch_sha256: string;
         };
         /**
          * @description A Claude or Codex account the user has linked, as `GET
@@ -4312,6 +4445,33 @@ export interface components {
              * @description When that limit resets, when the harness named a time.
              */
             resets_at_unix?: number | null;
+        };
+        /** @description The provenance a `flyco handoff` create declares. */
+        LocalHandoff: {
+            /**
+             * @description The commit the local work was based on — `git merge-base HEAD
+             *     origin/<branch>` — which the cloud checkout rewinds the branch to
+             *     before the patch applies, so the patch reproduces the local tree
+             *     byte-for-byte rather than failing against a moved branch tip.
+             */
+            base_commit: string;
+            /**
+             * @description Which harness the local session ran under. The cloud session's own
+             *     `harness` may differ — a Claude session handed to Codex is a
+             *     legitimate move — so the source is recorded rather than assumed.
+             */
+            harness: components["schemas"]["HarnessKind"];
+            /**
+             * @description The sender's local workdir as an absolute path. Recorded for the
+             *     handoff prompt's path map and for forensics; the daemon never
+             *     materializes it.
+             */
+            local_workdir: string;
+            /**
+             * @description The harness-native session id being handed off — Claude's session
+             *     UUID, Codex's rollout/thread id, Devin's session name.
+             */
+            session_id: string;
         };
         /**
          * @description How much compute a catalog entry offers.
@@ -5382,6 +5542,16 @@ export interface components {
             minimum?: null | components["schemas"]["BillingMinimum"];
             /** @description Whether the machine holds interruptible capacity. */
             spot: boolean;
+        };
+        /**
+         * @description Where a new session's context comes from, as `CreateSession::source`.
+         *
+         *     Absent means a fresh session — the overwhelmingly common case, so the
+         *     field is an `Option` rather than a required tag.
+         */
+        SessionSource: components["schemas"]["LocalHandoff"] & {
+            /** @enum {string} */
+            kind: "local_handoff";
         };
         /**
          * @description Lifecycle state of a session.
@@ -8765,6 +8935,7 @@ export interface operations {
                      *     [`RepoSlug`](crate::repo::RepoSlug) and rejects anything else.
                      */
                     repo: string;
+                    source?: null | components["schemas"]["SessionSource"];
                     /**
                      * @description Whether to ask for interruptible spot capacity when flyco picks the
                      *     machine. Ignored when [`Self::machine`] names a type, because that
@@ -9447,6 +9618,151 @@ export interface operations {
                         text: string;
                     };
                 };
+            };
+        };
+    };
+    "flyco_api::app::get_handoff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The commit to check out before applying the stored patch. */
+                        base_commit: string;
+                        /**
+                         * @description Whether a transcript object exists for
+                         *     `GET /v1/sessions/{id}/handoff/transcript` to fetch.
+                         */
+                        has_transcript: boolean;
+                        /**
+                         * @description SHA-256 the applied patch must hash to, verified before `git
+                         *     apply` so a corrupt object fails loudly.
+                         */
+                        patch_sha256: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::app::complete_handoff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: int64
+                     * @description Byte length of the patch object.
+                     */
+                    patch_bytes: number;
+                    /** @description Lowercase hex SHA-256 of the patch object. */
+                    patch_sha256: string;
+                    /**
+                     * Format: int64
+                     * @description Byte length of the transcript object.
+                     */
+                    transcript_bytes: number;
+                    /** @description Lowercase hex SHA-256 of the transcript object. */
+                    transcript_sha256: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::put_handoff_patch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/octet-stream": unknown;
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::get_handoff_transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::put_handoff_transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/octet-stream": unknown;
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
