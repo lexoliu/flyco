@@ -151,7 +151,9 @@ export const CloudSignIn: PageComponent<{
     return {
       label:
         failure() === null && refusal() === null ? vendor.signIn : "Try again",
-      busy: "Opening…",
+      // A tab opens for the OAuth road; the Codespaces direct link is the
+      // call itself, so its in-flight label names that.
+      busy: props.page.provider === "codespaces" ? "Linking…" : "Opening…",
       disabled: null,
       onClick: async () => {
         setFailure(null);
