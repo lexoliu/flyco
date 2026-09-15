@@ -35,10 +35,12 @@
 //! [`ApiError::LicenseBoundResizeNeedsApproval`]: https://github.com/lexoliu/flyco/blob/main/crates/api/src/error.rs
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use askama::Template as _;
-use flyco_core::wire::ApprovalPayload;
+use flyco_core::wire::{ApprovalPayload, DesktopButton, DesktopInputEvent};
 use flyco_core::{MachineOrigin, SessionMachine};
 use rmcp::handler::server::common::{schema_for_empty_input, schema_for_input};
 use rmcp::model::{
@@ -51,6 +53,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde::Deserialize;
 
 use crate::control::rest::{AgentApi, ControlApiError};
+use crate::desktop::ipc::{self, AgentReply, AgentRequest, IpcError};
 use crate::git::{GitError, GitWorkdir};
 use crate::notice::{
     BudgetStatus, MachineLine, MachineStatus, ResizeAccepted, ResizeDescription, ResizePending,
@@ -65,6 +68,59 @@ pub const BUDGET_STATUS: &str = "budget_status";
 
 /// Name of the tool that moves the session onto another machine.
 pub const MACHINE_RESIZE: &str = "machine_resize";
+
+/// Name of the tool that reports the desktop's `DISPLAY`, geometry, and
+/// whose hands are on it.
+pub const COMPUTER_STATE: &str = "computer_state";
+
+/// Name of the tool that reads the screen.
+pub const COMPUTER_SCREENSHOT: &str = "computer_screenshot";
+
+/// Name of the tool that moves the pointer.
+pub const COMPUTER_MOVE: &str = "computer_move";
+
+/// Name of the tool that clicks a spot.
+pub const COMPUTER_CLICK: &str = "computer_click";
+
+/// Name of the tool that drags between two spots.
+pub const COMPUTER_DRAG: &str = "computer_drag";
+
+/// Name of the tool that types text.
+pub const COMPUTER_TYPE: &str = "computer_type";
+
+/// Name of the tool that presses one key, optionally under modifiers.
+pub const COMPUTER_KEY: &str = "computer_key";
+
+/// Name of the tool that scrolls at a spot.
+pub const COMPUTER_SCROLL: &str = "computer_scroll";
+
+/// Name of the tool that waits — the desktop's answer to animations and
+/// loads that only time can settle.
+pub const COMPUTER_WAIT: &str = "computer_wait";
+
+/// The desktop tools, in the order they are listed.
+///
+/// A session's flyco server exposes them only while its `computer_use`
+/// flag is on, so [`crate::mount`]'s required set learns them
+/// conditionally rather than advertising tools that would refuse.
+pub const COMPUTER_TOOLS: [&str; 9] = [
+    COMPUTER_STATE,
+    COMPUTER_SCREENSHOT,
+    COMPUTER_MOVE,
+    COMPUTER_CLICK,
+    COMPUTER_DRAG,
+    COMPUTER_TYPE,
+    COMPUTER_KEY,
+    COMPUTER_SCROLL,
+    COMPUTER_WAIT,
+];
+
+/// The longest `computer_wait` may hold a tool call.
+///
+/// A wait is how the agent lets a screen settle — minutes of it is a
+/// stalled turn wearing a tool call's clothes, so past this the tool
+/// says so rather than sleeping.
+const WAIT_CAP_SECONDS: u16 = 120;
 
 /// The working tree, as the resize tool needs to see it.
 ///
@@ -103,6 +159,117 @@ pub struct ResizeInput {
     pub force: bool,
 }
 
+/// The default button a click or a drag uses.
+const fn left() -> DesktopButton {
+    DesktopButton::Left
+}
+
+/// What `computer_move` takes: a spot on the display, in its own
+/// pixels.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+pub struct MoveInput {
+    /// Display x.
+    pub x: u16,
+    /// Display y.
+    pub y: u16,
+}
+
+/// What `computer_click` takes.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+pub struct ClickInput {
+    /// Display x.
+    pub x: u16,
+    /// Display y.
+    pub y: u16,
+    /// The button to click.
+    #[serde(default = "left")]
+    pub button: DesktopButton,
+}
+
+/// What `computer_drag` takes.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+pub struct DragInput {
+    /// Where the drag starts, display x.
+    pub from_x: u16,
+    /// Display y of the start.
+    pub from_y: u16,
+    /// Where the drag ends, display x.
+    pub to_x: u16,
+    /// Display y of the end.
+    pub to_y: u16,
+    /// The button held through it.
+    #[serde(default = "left")]
+    pub button: DesktopButton,
+}
+
+/// What `computer_type` takes.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct TypeInput {
+    /// The text to type — one keystroke pair per character.
+    pub text: String,
+}
+
+/// A modifier `computer_key` holds through a keystroke.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyModifier {
+    /// Shift.
+    Shift,
+    /// Control.
+    Control,
+    /// Alt.
+    Alt,
+    /// The command or windows key.
+    Meta,
+}
+
+impl KeyModifier {
+    /// The DOM `key` name the display resolves it by — the same name a
+    /// browser's `KeyboardEvent.key` reports for the modifier.
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Shift => "Shift",
+            Self::Control => "Control",
+            Self::Alt => "Alt",
+            Self::Meta => "Meta",
+        }
+    }
+}
+
+/// What `computer_key` takes.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct KeyInput {
+    /// The DOM `key` name of the key to press: a character or a named
+    /// key — `Enter`, `Tab`, `Escape`, `Backspace`, `F5`, `ArrowDown`.
+    pub key: String,
+    /// Modifiers held through the keystroke — `["control", "c"]` style
+    /// chords are spelled `key: "c", modifiers: ["control"]`.
+    #[serde(default)]
+    pub modifiers: Vec<KeyModifier>,
+}
+
+/// What `computer_scroll` takes.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+pub struct ScrollInput {
+    /// Display x where the wheel lands.
+    pub x: u16,
+    /// Display y where the wheel lands.
+    pub y: u16,
+    /// Horizontal delta, DOM convention — positive scrolls right.
+    #[serde(default)]
+    pub delta_x: i32,
+    /// Vertical delta, DOM convention — positive scrolls down.
+    pub delta_y: i32,
+}
+
+/// What `computer_wait` takes.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+pub struct WaitInput {
+    /// How long to wait, in seconds — at most
+    /// [`WAIT_CAP_SECONDS`].
+    pub seconds: u16,
+}
+
 /// Why a tool call could not be answered at all.
 ///
 /// Distinct from a *refusal*, which is an answer: a refusal is a
@@ -116,6 +283,13 @@ enum ToolFailure {
     /// The working tree could not be read.
     #[error(transparent)]
     Git(#[from] GitError),
+    /// The desktop socket answered late, wrongly, or not at all.
+    ///
+    /// `NoDesktop` never reaches here — a session without a screen is an
+    /// expected condition the model reads as a refusal, not this
+    /// process's failure to reach one.
+    #[error(transparent)]
+    Desktop(#[from] IpcError),
     /// The arguments did not match the tool's schema.
     #[error("`{tool}` was called with arguments it does not accept: {detail}")]
     Arguments {
@@ -155,12 +329,17 @@ pub struct FlycoTools<A, T> {
     api: A,
     tree: T,
     origin: MachineOrigin,
+    /// The desktop's agent socket — `Some` when the session's
+    /// `computer_use` flag was on at provision, which is also what makes
+    /// the `computer_*` tools listed at all.
+    desktop: Option<PathBuf>,
 }
 
 impl<A, T> core::fmt::Debug for FlycoTools<A, T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FlycoTools")
             .field("origin", &self.origin)
+            .field("desktop", &self.desktop.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -171,8 +350,18 @@ impl<A: AgentApi, T: TreeStatus + 'static> FlycoTools<A, T> {
     /// `origin` comes from the daemon's configuration because nothing else
     /// on the machine knows it and it never changes: it says who decided
     /// this session would run on a machine of its own choosing.
-    pub const fn new(api: A, tree: T, origin: MachineOrigin) -> Self {
-        Self { api, tree, origin }
+    ///
+    /// `desktop` is the agent socket's path when the session was
+    /// provisioned with a screen; `None` leaves the `computer_*` tools
+    /// out of the listing entirely, so a session with no desktop offers
+    /// no tools that could only refuse.
+    pub const fn new(api: A, tree: T, origin: MachineOrigin, desktop: Option<PathBuf>) -> Self {
+        Self {
+            api,
+            tree,
+            origin,
+            desktop,
+        }
     }
 
     /// The three tools, described against this session's own catalog.
@@ -192,7 +381,7 @@ impl<A: AgentApi, T: TreeStatus + 'static> FlycoTools<A, T> {
             .map(|entry| SessionMachine::of(entry, machine.machine.spot))
             .collect();
 
-        Ok(vec![
+        let mut tools = vec![
             tool(
                 MACHINE_STATUS,
                 include_str!("../templates/tool_machine_status.md"),
@@ -206,12 +395,59 @@ impl<A: AgentApi, T: TreeStatus + 'static> FlycoTools<A, T> {
             tool(
                 MACHINE_RESIZE,
                 &ResizeDescription::new(&catalog, self.origin).render()?,
-                schema_for_input::<ResizeInput>().map_err(|detail| ToolFailure::Arguments {
-                    tool: MACHINE_RESIZE,
-                    detail,
-                })?,
+                input_schema::<ResizeInput>(MACHINE_RESIZE)?,
             ),
-        ])
+        ];
+        if self.desktop.is_some() {
+            tools.extend([
+                tool(
+                    COMPUTER_STATE,
+                    include_str!("../templates/tool_computer_state.md"),
+                    schema_for_empty_input(),
+                ),
+                tool(
+                    COMPUTER_SCREENSHOT,
+                    include_str!("../templates/tool_computer_screenshot.md"),
+                    schema_for_empty_input(),
+                ),
+                tool(
+                    COMPUTER_MOVE,
+                    include_str!("../templates/tool_computer_move.md"),
+                    input_schema::<MoveInput>(COMPUTER_MOVE)?,
+                ),
+                tool(
+                    COMPUTER_CLICK,
+                    include_str!("../templates/tool_computer_click.md"),
+                    input_schema::<ClickInput>(COMPUTER_CLICK)?,
+                ),
+                tool(
+                    COMPUTER_DRAG,
+                    include_str!("../templates/tool_computer_drag.md"),
+                    input_schema::<DragInput>(COMPUTER_DRAG)?,
+                ),
+                tool(
+                    COMPUTER_TYPE,
+                    include_str!("../templates/tool_computer_type.md"),
+                    input_schema::<TypeInput>(COMPUTER_TYPE)?,
+                ),
+                tool(
+                    COMPUTER_KEY,
+                    include_str!("../templates/tool_computer_key.md"),
+                    input_schema::<KeyInput>(COMPUTER_KEY)?,
+                ),
+                tool(
+                    COMPUTER_SCROLL,
+                    include_str!("../templates/tool_computer_scroll.md"),
+                    input_schema::<ScrollInput>(COMPUTER_SCROLL)?,
+                ),
+                tool(
+                    COMPUTER_WAIT,
+                    include_str!("../templates/tool_computer_wait.md"),
+                    input_schema::<WaitInput>(COMPUTER_WAIT)?,
+                ),
+            ]);
+        }
+        Ok(tools)
     }
 
     /// Answers one tool call.
@@ -222,6 +458,9 @@ impl<A: AgentApi, T: TreeStatus + 'static> FlycoTools<A, T> {
             MACHINE_RESIZE => {
                 self.machine_resize(arguments(MACHINE_RESIZE, request.arguments)?)
                     .await
+            }
+            name if COMPUTER_TOOLS.contains(&name) && self.desktop.is_some() => {
+                self.computer(name, request.arguments).await
             }
             other => Err(ToolFailure::UnknownTool(other.to_owned())),
         }
@@ -305,6 +544,143 @@ impl<A: AgentApi, T: TreeStatus + 'static> FlycoTools<A, T> {
             .render()?,
         ))
     }
+
+    /// Answers one `computer_*` call.
+    ///
+    /// Every tool but `computer_wait` is a round-trip to the session's
+    /// desktop over its agent socket; `wait` is time, not a display
+    /// request, so it answers from here.
+    async fn computer(
+        &self,
+        name: &str,
+        args: Option<JsonObject>,
+    ) -> Result<CallToolResult, ToolFailure> {
+        match name {
+            COMPUTER_STATE => self.computer_state().await,
+            COMPUTER_SCREENSHOT => self.computer_screenshot().await,
+            COMPUTER_MOVE => {
+                let input: MoveInput = arguments(COMPUTER_MOVE, args)?;
+                self.inject(vec![DesktopInputEvent::Move {
+                    x: input.x,
+                    y: input.y,
+                }])
+                .await
+            }
+            COMPUTER_CLICK => {
+                let input: ClickInput = arguments(COMPUTER_CLICK, args)?;
+                self.inject(click_events(input)).await
+            }
+            COMPUTER_DRAG => {
+                let input: DragInput = arguments(COMPUTER_DRAG, args)?;
+                self.inject(drag_events(input)).await
+            }
+            COMPUTER_TYPE => {
+                let input: TypeInput = arguments(COMPUTER_TYPE, args)?;
+                self.inject(type_events(&input.text)).await
+            }
+            COMPUTER_KEY => {
+                let input: KeyInput = arguments(COMPUTER_KEY, args)?;
+                self.inject(key_events(&input)).await
+            }
+            COMPUTER_SCROLL => {
+                let input: ScrollInput = arguments(COMPUTER_SCROLL, args)?;
+                self.inject(vec![DesktopInputEvent::Scroll {
+                    x: input.x,
+                    y: input.y,
+                    delta_x: input.delta_x,
+                    delta_y: input.delta_y,
+                }])
+                .await
+            }
+            COMPUTER_WAIT => {
+                let input: WaitInput = arguments(COMPUTER_WAIT, args)?;
+                if input.seconds > WAIT_CAP_SECONDS {
+                    return Ok(refusal(&format!(
+                        "a wait may be at most {WAIT_CAP_SECONDS} seconds; \
+                         longer is a stalled turn, not a settled screen"
+                    )));
+                }
+                tokio::time::sleep(Duration::from_secs(u64::from(input.seconds))).await;
+                Ok(answer("the wait is over — the screen has had its time"))
+            }
+            other => Err(ToolFailure::UnknownTool(other.to_owned())),
+        }
+    }
+
+    /// What the desktop is — `DISPLAY`, geometry, and whose hands are
+    /// on it — in the sentence the model reads before driving.
+    async fn computer_state(&self) -> Result<CallToolResult, ToolFailure> {
+        match self.ask(AgentRequest::State).await? {
+            AgentReply::State {
+                takeover,
+                display,
+                width,
+                height,
+            } => Ok(answer(&format!(
+                "the desktop is {width}x{height} pixels on DISPLAY={display}; {}",
+                if takeover {
+                    "the user is driving it — input you send now is refused until control is handed back"
+                } else {
+                    "you may drive it; launch GUI apps with DISPLAY set to that value"
+                }
+            ))),
+            AgentReply::Refused { reason } => Ok(refusal(&reason)),
+            _ => Err(ToolFailure::Desktop(IpcError::Reply(
+                "state was answered with the wrong kind of reply".to_owned(),
+            ))),
+        }
+    }
+
+    /// The screen, as the model sees it: a PNG image block at display
+    /// resolution.
+    async fn computer_screenshot(&self) -> Result<CallToolResult, ToolFailure> {
+        match self.ask(AgentRequest::Screenshot).await? {
+            AgentReply::Screenshot { png_base64 } => {
+                Ok(CallToolResult::success(vec![ContentBlock::image(
+                    png_base64,
+                    "image/png",
+                )]))
+            }
+            AgentReply::Refused { reason } => Ok(refusal(&reason)),
+            _ => Err(ToolFailure::Desktop(IpcError::Reply(
+                "a screenshot was answered with the wrong kind of reply".to_owned(),
+            ))),
+        }
+    }
+
+    /// One input batch to the session's desktop.
+    ///
+    /// The wire shape is the same [`DesktopInputEvent`] the user's
+    /// takeover input takes — one event language for both drivers.
+    async fn inject(&self, events: Vec<DesktopInputEvent>) -> Result<CallToolResult, ToolFailure> {
+        match self.ask(AgentRequest::Input { events }).await? {
+            AgentReply::Done => Ok(answer("the input landed on the desktop")),
+            AgentReply::Refused { reason } => Ok(refusal(&reason)),
+            _ => Err(ToolFailure::Desktop(IpcError::Reply(
+                "input was answered with the wrong kind of reply".to_owned(),
+            ))),
+        }
+    }
+
+    /// One round-trip to the session's desktop.
+    ///
+    /// An absent socket is a session whose flag is off — an expected
+    /// condition phrased as the refusal the model reads, not a
+    /// transport failure this process reports as its own.
+    async fn ask(&self, request: AgentRequest) -> Result<AgentReply, ToolFailure> {
+        let Some(socket) = &self.desktop else {
+            return Ok(AgentReply::Refused {
+                reason: "this session has no desktop".to_owned(),
+            });
+        };
+        match ipc::ask(socket, &request).await {
+            Ok(reply) => Ok(reply),
+            Err(IpcError::NoDesktop) => Ok(AgentReply::Refused {
+                reason: "this session's desktop is not running".to_owned(),
+            }),
+            Err(error) => Err(ToolFailure::Desktop(error)),
+        }
+    }
 }
 
 /// One tool definition.
@@ -316,17 +692,131 @@ fn tool(name: &'static str, description: &str, input_schema: Arc<JsonObject>) ->
     Tool::new(name, description.trim_end().to_owned(), input_schema)
 }
 
+/// A tool's input schema, built from its argument type.
+fn input_schema<I: JsonSchema + 'static>(
+    name: &'static str,
+) -> Result<Arc<JsonObject>, ToolFailure> {
+    schema_for_input::<I>().map_err(|detail| ToolFailure::Arguments { tool: name, detail })
+}
+
 /// Reads a call's arguments, or says what was wrong with them.
-fn arguments(
+fn arguments<I: for<'de> Deserialize<'de>>(
     tool: &'static str,
     arguments: Option<JsonObject>,
-) -> Result<ResizeInput, ToolFailure> {
+) -> Result<I, ToolFailure> {
     serde_json::from_value(serde_json::Value::Object(arguments.unwrap_or_default())).map_err(
         |error| ToolFailure::Arguments {
             tool,
             detail: error.to_string(),
         },
     )
+}
+
+/// A click as the display hears it: a motion to the spot, then the
+/// button down and up where it lands.
+fn click_events(input: ClickInput) -> Vec<DesktopInputEvent> {
+    vec![
+        DesktopInputEvent::Move {
+            x: input.x,
+            y: input.y,
+        },
+        DesktopInputEvent::Button {
+            x: input.x,
+            y: input.y,
+            button: input.button,
+            pressed: true,
+        },
+        DesktopInputEvent::Button {
+            x: input.x,
+            y: input.y,
+            button: input.button,
+            pressed: false,
+        },
+    ]
+}
+
+/// A drag: the button goes down at the start and up at the end, with
+/// the motion between.
+fn drag_events(input: DragInput) -> Vec<DesktopInputEvent> {
+    vec![
+        DesktopInputEvent::Move {
+            x: input.from_x,
+            y: input.from_y,
+        },
+        DesktopInputEvent::Button {
+            x: input.from_x,
+            y: input.from_y,
+            button: input.button,
+            pressed: true,
+        },
+        DesktopInputEvent::Move {
+            x: input.to_x,
+            y: input.to_y,
+        },
+        DesktopInputEvent::Button {
+            x: input.to_x,
+            y: input.to_y,
+            button: input.button,
+            pressed: false,
+        },
+    ]
+}
+
+/// Text as keystrokes — a press and release per character, addressed by
+/// the produced `key` so the display picks the keymap level that yields
+/// it, shift and all.
+fn type_events(text: &str) -> Vec<DesktopInputEvent> {
+    text.chars()
+        .flat_map(|ch| {
+            let key = ch.to_string();
+            [
+                DesktopInputEvent::Key {
+                    code: String::new(),
+                    key: key.clone(),
+                    pressed: true,
+                },
+                DesktopInputEvent::Key {
+                    code: String::new(),
+                    key,
+                    pressed: false,
+                },
+            ]
+        })
+        .collect()
+}
+
+/// One key under its modifiers: modifiers down first and up last, the
+/// key's press and release between them — the same order a human's
+/// hands produce a chord in.
+fn key_events(input: &KeyInput) -> Vec<DesktopInputEvent> {
+    let modifiers = input
+        .modifiers
+        .iter()
+        .map(|modifier| modifier.key())
+        .collect::<Vec<_>>();
+    let mut events = Vec::with_capacity(modifiers.len() * 2 + 2);
+    for key in &modifiers {
+        events.push(DesktopInputEvent::Key {
+            code: String::new(),
+            key: (*key).to_owned(),
+            pressed: true,
+        });
+    }
+    for pressed in [true, false] {
+        events.push(DesktopInputEvent::Key {
+            code: String::new(),
+            key: input.key.clone(),
+            pressed,
+        });
+    }
+    for key in modifiers.iter().rev() {
+        events.push(DesktopInputEvent::Key {
+            code: String::new(),
+            key: (*key).to_owned(),
+            pressed: false,
+        });
+    }
+    events
 }
 
 /// A tool call that answered.
@@ -365,20 +855,28 @@ impl<A: AgentApi, T: TreeStatus + 'static> ServerHandler for FlycoTools<A, T> {
 #[cfg(test)]
 mod tests {
     use core::future::{Future, ready};
-    use std::sync::Mutex;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
 
-    use flyco_core::wire::ApprovalPayload;
+    use flyco_core::wire::{ApprovalPayload, DesktopButton, DesktopInputEvent};
     use flyco_core::{
         AgentMachineView, ApprovalId, BillingMinimum, BudgetStage, BudgetView, CloudProviderKind,
         MachineCapacity, MachineCatalogEntry, MachineOrigin, MachinePricing, MachineState,
         OsFamily, Runtime, SessionMachine, StoragePricing, Usd,
     };
+    use rmcp::model::CallToolRequestParams;
+    use serde_json::json;
 
     use super::{
-        BUDGET_STATUS, CallToolResult, ContentBlock, FlycoTools, MACHINE_RESIZE, MACHINE_STATUS,
-        ResizeInput, TreeStatus,
+        BUDGET_STATUS, COMPUTER_CLICK, COMPUTER_KEY, COMPUTER_MOVE, COMPUTER_SCREENSHOT,
+        COMPUTER_STATE, COMPUTER_TOOLS, COMPUTER_TYPE, COMPUTER_WAIT, CallToolResult, ContentBlock,
+        FlycoTools, MACHINE_RESIZE, MACHINE_STATUS, ResizeInput, TreeStatus,
     };
     use crate::control::rest::{AgentApi, ApprovalRaiser, ControlApiError};
+    use crate::desktop::ipc::{AgentReply, AgentRequest};
     use crate::git::GitError;
 
     /// A control plane that answers from memory and remembers what it was
@@ -450,6 +948,76 @@ mod tests {
         }
     }
 
+    /// A desktop socket that answers every request with one canned reply
+    /// and keeps what it heard.
+    ///
+    /// A real unix listener on a scratch path, because the IPC's contract
+    /// is the wire: a test that never serialized a request would prove the
+    /// tools agree with themselves rather than with the desktop.
+    #[derive(Debug)]
+    struct FakeDesktop {
+        path: PathBuf,
+        heard: Arc<Mutex<Vec<AgentRequest>>>,
+    }
+
+    /// Distinct socket names per test process.
+    static SOCKETS: AtomicUsize = AtomicUsize::new(0);
+
+    impl FakeDesktop {
+        /// Binds a scratch socket and answers `reply` to every request,
+        /// on a thread so `ask`'s own runtime is the one under test.
+        fn answering(reply: AgentReply) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "flycod-test-{}-{}.desktop.sock",
+                std::process::id(),
+                SOCKETS.fetch_add(1, Ordering::Relaxed),
+            ));
+            let listener = UnixListener::bind(&path).expect("a scratch socket binds");
+            let heard = Arc::new(Mutex::new(Vec::new()));
+            let keeping = heard.clone();
+            std::thread::spawn(move || {
+                for conn in listener.incoming() {
+                    let Ok(stream) = conn else {
+                        continue;
+                    };
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() {
+                        continue;
+                    }
+                    if let Ok(request) = serde_json::from_str::<AgentRequest>(&line) {
+                        keeping.lock().expect("not poisoned").push(request);
+                    }
+                    let mut body = serde_json::to_vec(&reply).expect("the reply serializes");
+                    body.push(b'\n');
+                    let _ = reader.get_mut().write_all(&body);
+                }
+            });
+            Self { path, heard }
+        }
+
+        /// The requests the socket heard.
+        fn heard(&self) -> Vec<AgentRequest> {
+            self.heard.lock().expect("not poisoned").clone()
+        }
+    }
+
+    impl Drop for FakeDesktop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    /// A tool call as the harness spells it.
+    fn calling(name: &'static str, arguments: serde_json::Value) -> CallToolRequestParams {
+        let mut params = CallToolRequestParams::new(name);
+        params.arguments = match arguments {
+            serde_json::Value::Object(args) => Some(args),
+            _ => None,
+        };
+        params
+    }
+
     fn entry(machine_type: &str, cents: u64, minimum_hours: Option<u32>) -> MachineCatalogEntry {
         MachineCatalogEntry {
             provider: CloudProviderKind::Aws,
@@ -477,6 +1045,14 @@ mod tests {
     }
 
     fn tools(tree: &'static str, origin: MachineOrigin) -> FlycoTools<FakePlane, FakeTree> {
+        tools_with_desktop(tree, origin, None)
+    }
+
+    fn tools_with_desktop(
+        tree: &'static str,
+        origin: MachineOrigin,
+        desktop: Option<std::path::PathBuf>,
+    ) -> FlycoTools<FakePlane, FakeTree> {
         FlycoTools::new(
             FakePlane {
                 catalog: vec![
@@ -503,6 +1079,7 @@ mod tests {
             },
             FakeTree(tree),
             origin,
+            desktop,
         )
     }
 
@@ -693,5 +1270,205 @@ mod tests {
                 .expect("budget"),
         );
         assert!(said.contains("spent $2.00 of its $10.00 compute budget, leaving $8.00"));
+    }
+
+    #[tokio::test]
+    async fn a_session_with_a_desktop_lists_the_computer_tools() {
+        let listed = tools_with_desktop(
+            "",
+            MachineOrigin::Auto,
+            Some(PathBuf::from("/tmp/flycod-unbound.sock")),
+        )
+        .tools()
+        .await
+        .expect("list");
+        let names: Vec<&str> = listed.iter().map(|tool| tool.name.as_ref()).collect();
+        assert_eq!(names.len(), 3 + COMPUTER_TOOLS.len());
+        for name in COMPUTER_TOOLS {
+            assert!(names.contains(&name), "{name} is listed");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_click_moves_presses_and_releases_over_the_socket() {
+        let desktop = FakeDesktop::answering(AgentReply::Done);
+        let server = tools_with_desktop("", MachineOrigin::Auto, Some(desktop.path.clone()));
+        let result = server
+            .call(calling(COMPUTER_CLICK, json!({"x": 100, "y": 50})))
+            .await
+            .expect("the call answers");
+
+        assert_eq!(result.is_error, Some(false));
+        let heard = desktop.heard();
+        assert_eq!(heard.len(), 1);
+        let AgentRequest::Input { events } = &heard[0] else {
+            panic!("a click is an input request");
+        };
+        assert_eq!(
+            events.as_slice(),
+            [
+                DesktopInputEvent::Move { x: 100, y: 50 },
+                DesktopInputEvent::Button {
+                    x: 100,
+                    y: 50,
+                    button: DesktopButton::Left,
+                    pressed: true,
+                },
+                DesktopInputEvent::Button {
+                    x: 100,
+                    y: 50,
+                    button: DesktopButton::Left,
+                    pressed: false,
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn typing_sends_one_press_release_pair_per_character() {
+        let desktop = FakeDesktop::answering(AgentReply::Done);
+        let server = tools_with_desktop("", MachineOrigin::Auto, Some(desktop.path.clone()));
+        server
+            .call(calling(COMPUTER_TYPE, json!({"text": "Hi"})))
+            .await
+            .expect("the call answers");
+
+        let AgentRequest::Input { events } = &desktop.heard()[0] else {
+            panic!("typing is an input request");
+        };
+        assert_eq!(
+            events.as_slice(),
+            ["H", "i"]
+                .iter()
+                .flat_map(|key| [
+                    DesktopInputEvent::Key {
+                        code: String::new(),
+                        key: (*key).to_owned(),
+                        pressed: true,
+                    },
+                    DesktopInputEvent::Key {
+                        code: String::new(),
+                        key: (*key).to_owned(),
+                        pressed: false,
+                    },
+                ])
+                .collect::<Vec<_>>()
+                .as_slice()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_chord_holds_its_modifiers_around_the_key() {
+        let desktop = FakeDesktop::answering(AgentReply::Done);
+        let server = tools_with_desktop("", MachineOrigin::Auto, Some(desktop.path.clone()));
+        server
+            .call(calling(
+                COMPUTER_KEY,
+                json!({"key": "c", "modifiers": ["control"]}),
+            ))
+            .await
+            .expect("the call answers");
+
+        let AgentRequest::Input { events } = &desktop.heard()[0] else {
+            panic!("a chord is an input request");
+        };
+        let keys: Vec<(&str, bool)> = events
+            .iter()
+            .map(|event| match event {
+                DesktopInputEvent::Key { key, pressed, .. } => (key.as_str(), *pressed),
+                other => panic!("a chord is all key events, not {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                ("Control", true),
+                ("c", true),
+                ("c", false),
+                ("Control", false),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_screenshot_comes_back_as_an_image_block() {
+        let desktop = FakeDesktop::answering(AgentReply::Screenshot {
+            png_base64: "aGk=".to_owned(),
+        });
+        let server = tools_with_desktop("", MachineOrigin::Auto, Some(desktop.path.clone()));
+        let result = server
+            .call(calling(COMPUTER_SCREENSHOT, json!({})))
+            .await
+            .expect("the call answers");
+
+        let Some(ContentBlock::Image(image)) = result.content.first() else {
+            panic!("a screenshot is an image, not {:?}", result.content);
+        };
+        assert_eq!(image.data, "aGk=");
+        assert_eq!(image.mime_type, "image/png");
+    }
+
+    #[tokio::test]
+    async fn computer_state_names_the_display_and_whose_hands_are_on_it() {
+        let desktop = FakeDesktop::answering(AgentReply::State {
+            takeover: true,
+            display: ":99".to_owned(),
+            width: 1280,
+            height: 800,
+        });
+        let server = tools_with_desktop("", MachineOrigin::Auto, Some(desktop.path.clone()));
+        let said = text(
+            &server
+                .call(calling(COMPUTER_STATE, json!({})))
+                .await
+                .expect("the call answers"),
+        );
+        assert!(said.contains("1280x800"));
+        assert!(said.contains("DISPLAY=:99"));
+        assert!(said.contains("the user is driving"));
+    }
+
+    #[tokio::test]
+    async fn a_desktop_under_takeover_refuses_the_agent_in_its_own_words() {
+        let desktop = FakeDesktop::answering(AgentReply::Refused {
+            reason: "the user is driving the desktop".to_owned(),
+        });
+        let server = tools_with_desktop("", MachineOrigin::Auto, Some(desktop.path.clone()));
+        let refused = server
+            .call(calling(COMPUTER_MOVE, json!({"x": 1, "y": 1})))
+            .await
+            .expect("a refusal is an answer");
+        assert_eq!(refused.is_error, Some(true));
+        assert!(text(&refused).contains("the user is driving the desktop"));
+    }
+
+    #[tokio::test]
+    async fn an_unbound_desktop_socket_is_a_refusal_not_an_error() {
+        let path = std::env::temp_dir().join(format!(
+            "flycod-test-{}-never.desktop.sock",
+            std::process::id()
+        ));
+        let server = tools_with_desktop("", MachineOrigin::Auto, Some(path));
+        let refused = server
+            .call(calling(COMPUTER_MOVE, json!({"x": 1, "y": 1})))
+            .await
+            .expect("a refusal is an answer");
+        assert_eq!(refused.is_error, Some(true));
+        assert!(text(&refused).contains("desktop is not running"));
+    }
+
+    #[tokio::test]
+    async fn computer_wait_refuses_to_hold_past_its_cap() {
+        let server = tools_with_desktop(
+            "",
+            MachineOrigin::Auto,
+            Some(PathBuf::from("/tmp/flycod-unbound.sock")),
+        );
+        let refused = server
+            .call(calling(COMPUTER_WAIT, json!({"seconds": 121})))
+            .await
+            .expect("a refusal is an answer");
+        assert_eq!(refused.is_error, Some(true));
+        assert!(text(&refused).contains("at most 120 seconds"));
     }
 }

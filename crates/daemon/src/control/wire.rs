@@ -82,6 +82,18 @@ pub const QUEUE_DEPTH: usize = 1024;
 /// queued behind ten others is one nobody is still listening for.
 pub const REPLY_DEPTH: usize = 8;
 
+/// How many desktop stream chunks may sit in `pending` during a partition
+/// before the next one is dropped.
+///
+/// The one place "a frame is never dropped" bends: video at even a few
+/// frames a second makes an outage buffer a session's worth of footage no
+/// watcher will ever replay — a late joiner starts from the newest
+/// keyframe regardless. A minute of stream at the configured cadence is
+/// the budget; past it the chunk is dropped and the encoder is re-armed
+/// to a keyframe, because a hole in a reference chain is garbage until
+/// one.
+const PENDING_CHUNKS: usize = 300;
+
 /// Shortest wait before a reconnect attempt.
 pub const BACKOFF_MIN: Duration = Duration::from_secs(1);
 
@@ -490,6 +502,8 @@ struct Alive {
     harness: Producing,
     /// Whether the working-tree watcher is still producing summaries.
     repo_watch: Producing,
+    /// Whether the desktop supervisor is still reporting.
+    desktop: Producing,
     /// Whether an eviction watcher is still there to announce anything.
     ///
     /// [`Producing::No`] from the start on a machine nobody can reclaim,
@@ -504,10 +518,19 @@ struct Alive {
     stop_watch: Producing,
 }
 
-struct Connection<S, T, A, W, D, H> {
+struct Connection<S, T, A, W, D, H, X> {
     session: S,
     terminal: T,
     terminal_out: mpsc::Receiver<TerminalEvent>,
+    /// The session's desktop, when the machine provides one.
+    ///
+    /// Present on every connection — the handle costs an idle thread for
+    /// a session without a screen — and every desktop command lands on it
+    /// whether or not the stack it supervises is up.
+    desktop: X,
+    /// What the desktop reports: lifecycle, stream chunks, the agent
+    /// announcing itself on the screen.
+    desktop_out: mpsc::Receiver<crate::desktop::DesktopEvent>,
     /// The session's harness as a terminal application — how a
     /// [`ControlToDaemon::TerminalHarness`] is launched.
     tui: crate::tui::HarnessTui,
@@ -616,7 +639,8 @@ impl<
     W: WorkingTree,
     D: Disk,
     H: Shell,
-> Connection<S, T, A, W, D, H>
+    X: crate::desktop::DesktopSession,
+> Connection<S, T, A, W, D, H, X>
 {
     /// Posts every unconfirmed frame as one sequenced batch.
     ///
@@ -778,6 +802,9 @@ impl<
                     let frame = self.shell_frame(update);
                     pending.push_back(frame);
                 }
+                report = self.desktop_out.recv(), if self.alive.desktop.armed() => {
+                    self.on_desktop_report(report, pending);
+                }
                 notice = self.spot.recv(), if self.alive.spot_watch.armed() => {
                     self.alive.spot_watch = Producing::No;
                     let Some(notice) = notice else {
@@ -820,6 +847,55 @@ impl<
                     self.note_tree(&summary);
                     pending.push_back(DaemonToControl::RepoDirty { summary });
                 }
+            }
+        }
+    }
+
+    /// Queues whatever the desktop reported as the frame it is.
+    ///
+    /// A closed channel means the supervisor thread is gone — the desktop
+    /// it owned is gone with it, and the room hears `Failed` rather than
+    /// silence about a screen the user may be watching.
+    fn on_desktop_report(
+        &mut self,
+        report: Option<crate::desktop::DesktopEvent>,
+        pending: &mut VecDeque<DaemonToControl>,
+    ) {
+        match report {
+            Some(crate::desktop::DesktopEvent::State { status, detail }) => {
+                pending.push_back(DaemonToControl::DesktopState { status, detail });
+            }
+            Some(crate::desktop::DesktopEvent::AgentActive) => {
+                pending.push_back(DaemonToControl::DesktopActive);
+            }
+            Some(crate::desktop::DesktopEvent::Chunk { keyframe, bytes }) => {
+                // Chunks are the one frame allowed to fall out of
+                // `pending`: a partition that outlasts the cap would
+                // otherwise buffer minutes of video nobody joined late
+                // enough to see, and the tail a re-attach sends is
+                // bounded by design, not by accident.
+                let buffered = pending
+                    .iter()
+                    .filter(|frame| matches!(frame, DaemonToControl::DesktopChunk { .. }))
+                    .count();
+                if buffered < PENDING_CHUNKS {
+                    pending.push_back(DaemonToControl::DesktopChunk {
+                        keyframe,
+                        data: bytes,
+                    });
+                } else {
+                    // A dropped inter-frame breaks the reference chain,
+                    // so the next encode is made one a decoder can start
+                    // from.
+                    let _ = self.desktop.keyframe_now();
+                }
+            }
+            None => {
+                self.alive.desktop = Producing::No;
+                pending.push_back(DaemonToControl::DesktopState {
+                    status: flyco_core::wire::DesktopStatus::Failed,
+                    detail: Some("the desktop supervisor stopped".to_owned()),
+                });
             }
         }
     }
@@ -1196,20 +1272,7 @@ impl<
                 {
                     return Ok(Ended::Disconnected);
                 }
-                // The opening notice rides on the first message rather than
-                // arriving as one of its own: the agent must know what
-                // machine it is on before it starts working, and a message
-                // carrying only that would open a turn about nothing.
-                let text = match self.opening.take() {
-                    Some(notice) => OpeningMessage { notice, text }
-                        .render()
-                        .map_err(|error| notice_failed(&error))?,
-                    None => text,
-                };
-                self.session
-                    .send_user_message(text)
-                    .await
-                    .map_err(harness)?;
+                self.user_message(text).await?;
             }
             ControlToDaemon::ShellCommand { .. } => {
                 // The room reissues a browser's request as `RunShell` with
@@ -1310,27 +1373,13 @@ impl<
                 spot,
                 restarted,
             } => {
-                // Told rather than discovered: a resize restarts the machine
-                // and kills this process, so the daemon reading this is a
-                // new one whose configuration still describes the machine
-                // the session booted on. The size and any licence minimum
-                // are deliberately not on the wire — the notice says what
-                // the machine is now and what the restart cost, and
-                // `machine_status` is where the full description is read
-                // from, live.
-                let notice = MachineChanged {
-                    line: MachineLine::of(&SessionMachine {
-                        machine_type,
-                        hourly,
-                        spot,
-                        capacity: None,
-                        minimum: None,
-                    }),
-                    restarted,
-                };
-                self.tell_the_agent(&notice.render().map_err(|error| notice_failed(&error))?)
+                self.machine_changed(machine_type, hourly, spot, restarted)
                     .await?;
             }
+            ControlToDaemon::SetComputerUse { .. }
+            | ControlToDaemon::DesktopAudience { .. }
+            | ControlToDaemon::DesktopTakeover { .. }
+            | ControlToDaemon::DesktopInput { .. } => self.desktop_command(command).await?,
             ControlToDaemon::InspectWorkdir { id, request } => self.answer_workdir(id, request),
             ControlToDaemon::Archive { preserve_workdir } => {
                 if preserve_workdir && let Some(patch) = self.workdir.snapshot().await? {
@@ -1342,6 +1391,99 @@ impl<
             }
         }
         Ok(Ended::Disconnected)
+    }
+
+    /// Feeds one user message to the harness.
+    ///
+    /// The opening notice rides on the first message rather than arriving
+    /// as one of its own: the agent must know what machine it is on before
+    /// it starts working, and a message carrying only that would open a
+    /// turn about nothing.
+    async fn user_message(&mut self, text: String) -> Result<(), WireError> {
+        let text = match self.opening.take() {
+            Some(notice) => OpeningMessage { notice, text }
+                .render()
+                .map_err(|error| notice_failed(&error))?,
+            None => text,
+        };
+        self.session.send_user_message(text).await.map_err(harness)
+    }
+
+    /// Tells the agent the machine it is on changed under it.
+    ///
+    /// Told rather than discovered: a resize restarts the machine and
+    /// kills this process, so the daemon reading this is a new one whose
+    /// configuration still describes the machine the session booted on.
+    /// The size and any licence minimum are deliberately not on the wire —
+    /// the notice says what the machine is now and what the restart cost,
+    /// and `machine_status` is where the full description is read from,
+    /// live.
+    async fn machine_changed(
+        &self,
+        machine_type: String,
+        hourly: Option<flyco_core::Usd>,
+        spot: bool,
+        restarted: bool,
+    ) -> Result<(), WireError> {
+        let notice = MachineChanged {
+            line: MachineLine::of(&SessionMachine {
+                machine_type,
+                hourly,
+                spot,
+                capacity: None,
+                minimum: None,
+            }),
+            restarted,
+        };
+        self.tell_the_agent(&notice.render().map_err(|error| notice_failed(&error))?)
+            .await
+    }
+
+    /// The desktop's four commands, which are levels on the supervisor
+    /// rather than work for the harness.
+    ///
+    /// None of them is refused while a session is paused: none spends
+    /// anything the pause exists to protect. A dead supervisor is a warn
+    /// rather than an error, because the relay's own liveness is not the
+    /// desktop's to end.
+    async fn desktop_command(&mut self, command: ControlToDaemon) -> Result<(), WireError> {
+        match command {
+            ControlToDaemon::SetComputerUse { enabled } => {
+                if let Err(error) = self.desktop.set_enabled(enabled) {
+                    tracing::warn!(%error, "`computer_use` could not reach the desktop");
+                }
+            }
+            ControlToDaemon::DesktopAudience { watching } => {
+                if let Err(error) = self.desktop.set_watching(watching) {
+                    tracing::warn!(%error, "the audience flag could not reach the desktop");
+                }
+            }
+            ControlToDaemon::DesktopTakeover { active } => {
+                // The user's hands and the model's cannot both be on the
+                // screen: taking over ends whatever the turn is doing,
+                // the same path Stop takes, because a click is the
+                // strongest interrupt there is.
+                if active {
+                    if let Some((_, running)) = self.running_shell.take() {
+                        running.cancel();
+                    }
+                    self.session.interrupt().await.map_err(harness)?;
+                }
+                if let Err(error) = self.desktop.set_takeover(active) {
+                    tracing::warn!(%error, "the takeover flag could not reach the desktop");
+                }
+            }
+            ControlToDaemon::DesktopInput { events } => {
+                // The supervisor drops input that arrives without a held
+                // takeover — a browser's late batch is a race, not an
+                // error.
+                if let Err(error) = self.desktop.inject(events) {
+                    tracing::warn!(%error, "desktop input could not reach the desktop");
+                }
+            }
+            _ => unreachable!("only the desktop's commands reach `desktop_command`"),
+        }
+        Ok(())
     }
 
     /// Reads the checkout for a browser, on a task of its own.
@@ -1563,7 +1705,7 @@ fn fatal_attach(error: &WireError) -> bool {
 }
 
 /// Everything [`run`] needs to drive one session.
-pub struct SessionRelay<S, A, T, W, D, H> {
+pub struct SessionRelay<S, A, T, W, D, H, X> {
     /// The session this daemon serves.
     pub session_id: SessionId,
     /// The live harness handle.
@@ -1576,6 +1718,11 @@ pub struct SessionRelay<S, A, T, W, D, H> {
     pub terminal: T,
     /// What the terminal's foreground produces.
     pub terminal_out: mpsc::Receiver<TerminalEvent>,
+    /// The session's desktop: present on every session, idle on one
+    /// without a screen.
+    pub desktop: X,
+    /// What the desktop reports back.
+    pub desktop_out: mpsc::Receiver<crate::desktop::DesktopEvent>,
     /// The session's harness as a terminal application, resolved from the
     /// daemon's configuration.
     pub tui: crate::tui::HarnessTui,
@@ -1603,7 +1750,7 @@ pub struct SessionRelay<S, A, T, W, D, H> {
     pub deadlines: Deadlines,
 }
 
-impl<S, A, T, W, D, H> core::fmt::Debug for SessionRelay<S, A, T, W, D, H> {
+impl<S, A, T, W, D, H, X> core::fmt::Debug for SessionRelay<S, A, T, W, D, H, X> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SessionRelay")
             .field("session", &self.session_id)
@@ -1619,7 +1766,9 @@ impl<S, A, T, W, D, H> core::fmt::Debug for SessionRelay<S, A, T, W, D, H> {
 /// Returns [`WireError`] if the relay queue overflows, the control plane
 /// speaks a protocol this daemon cannot read, or the harness stops
 /// accepting commands. A dropped stream is not an error: it is re-attached.
-pub async fn run<S, A, T, W, D, H>(relay: SessionRelay<S, A, T, W, D, H>) -> Result<(), WireError>
+pub async fn run<S, A, T, W, D, H, X>(
+    relay: SessionRelay<S, A, T, W, D, H, X>,
+) -> Result<(), WireError>
 where
     S: HarnessSession + 'static,
     A: ControlApi + RelayTransport + Clone,
@@ -1627,6 +1776,7 @@ where
     W: WorkingTree + 'static,
     D: Disk,
     H: Shell,
+    X: crate::desktop::DesktopSession + 'static,
 {
     let (sender, mut queue) = mpsc::channel(QUEUE_DEPTH);
     let collector = tokio::spawn(collect(relay.outputs, sender, relay.api.clone()));
@@ -1649,6 +1799,8 @@ where
         session: relay.session,
         terminal: relay.terminal,
         terminal_out: relay.terminal_out,
+        desktop: relay.desktop,
+        desktop_out: relay.desktop_out,
         tui: relay.tui,
         shell: relay.shell,
         shell_updates,
@@ -1671,6 +1823,7 @@ where
         alive: Alive {
             harness: Producing::Yes,
             repo_watch: Producing::Yes,
+            desktop: Producing::Yes,
             spot_watch: Producing::Yes,
             stop_watch: Producing::Yes,
         },

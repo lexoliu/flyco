@@ -57,6 +57,7 @@
 
 pub mod config;
 pub mod control;
+pub mod desktop;
 pub mod git;
 pub mod harness;
 pub mod host;

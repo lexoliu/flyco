@@ -199,6 +199,15 @@
   border-style: dashed;
 }
 
+/*
+ * A chip that is itself a switch, shown on: the sunken fill the drawer's
+ * active tab uses, so an enabled chip reads pressed rather than decorated.
+ */
+.chipOn {
+  background: var(--color-surface-sunken);
+  border-color: var(--color-border-strong);
+}
+
 .chipLabel {
   overflow: hidden;
   text-overflow: ellipsis;

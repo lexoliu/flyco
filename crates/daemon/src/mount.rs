@@ -48,7 +48,7 @@ use std::path::{Path, PathBuf};
 use flyco_core::{McpServerConfig, McpServerMount};
 use serde::{Deserialize, Serialize};
 
-use crate::mcp::{BUDGET_STATUS, MACHINE_RESIZE, MACHINE_STATUS};
+use crate::mcp::{BUDGET_STATUS, COMPUTER_TOOLS, MACHINE_RESIZE, MACHINE_STATUS};
 
 /// The name every harness announces flyco's own server under.
 ///
@@ -205,13 +205,37 @@ impl FlycoServer {
 pub struct Mount {
     flyco: FlycoServer,
     registered: Vec<McpServerMount>,
+    /// Whether this session's flyco server must also expose the
+    /// `computer_*` tools — the session's computer-use flag, which the
+    /// server honours by listing them conditionally.
+    computer: bool,
 }
 
 impl Mount {
     /// The mount for one session.
+    ///
+    /// `computer` is the session's computer-use flag: it decides whether
+    /// [`Self::required_tools`] expects the `computer_*` set, matching
+    /// what `flycod mcp` lists for the same flag.
     #[must_use]
-    pub const fn new(flyco: FlycoServer, registered: Vec<McpServerMount>) -> Self {
-        Self { flyco, registered }
+    pub const fn new(flyco: FlycoServer, registered: Vec<McpServerMount>, computer: bool) -> Self {
+        Self {
+            flyco,
+            registered,
+            computer,
+        }
+    }
+
+    /// The tools this session's flyco server must expose before the
+    /// session may run: the universal three, plus the `computer_*` set
+    /// when the session has a screen.
+    #[must_use]
+    pub fn required_tools(&self) -> Vec<&'static str> {
+        let mut tools = REQUIRED_TOOLS.to_vec();
+        if self.computer {
+            tools.extend(COMPUTER_TOOLS);
+        }
+        tools
     }
 
     /// Every server, flyco's first, as the harness-neutral pairs the
@@ -624,12 +648,17 @@ fn is_tool(reported: &str, wanted: &str) -> bool {
 
 /// Refuses a session whose harness did not mount flyco's tools.
 ///
+/// `required` is the mount's own expectation —
+/// [`Mount::required_tools`] — because the set depends on the session's
+/// flags: a session with a desktop requires the `computer_*` tools and
+/// one without does not.
+///
 /// # Errors
 ///
 /// Returns [`NotMounted`] naming which of the three states the harness is
 /// in: no flyco server, one it could not connect to, or one missing tools
 /// this daemon requires.
-pub fn verify(servers: &[MountedServer]) -> Result<(), NotMounted> {
+pub fn verify(servers: &[MountedServer], required: &[&'static str]) -> Result<(), NotMounted> {
     let Some(flyco) = servers.iter().find(|server| server.name == FLYCO) else {
         let reported = if servers.is_empty() {
             "no MCP servers at all".to_owned()
@@ -650,8 +679,9 @@ pub fn verify(servers: &[MountedServer]) -> Result<(), NotMounted> {
             status: flyco.status.clone(),
         });
     }
-    let missing: Vec<&str> = REQUIRED_TOOLS
-        .into_iter()
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
         .filter(|wanted| !flyco.tools.iter().any(|reported| is_tool(reported, wanted)))
         .collect();
     if missing.is_empty() {
@@ -718,11 +748,11 @@ mod tests {
     }
 
     fn alone() -> Mount {
-        Mount::new(FlycoServer::at(FLYCOD, CONFIG), Vec::new())
+        Mount::new(FlycoServer::at(FLYCOD, CONFIG), Vec::new(), false)
     }
 
     fn with_servers() -> Mount {
-        Mount::new(FlycoServer::at(FLYCOD, CONFIG), registered())
+        Mount::new(FlycoServer::at(FLYCOD, CONFIG), registered(), false)
     }
 
     fn codex_toml(mount: &Mount) -> String {
@@ -819,7 +849,8 @@ mod tests {
         // Judged anyway — because a driver's wait ran out — it is refused
         // in the harness's own words rather than in flycod's.
         assert_eq!(
-            verify(&[dialling]).expect_err("a server still dialling is not a mount"),
+            verify(&[dialling], &super::REQUIRED_TOOLS)
+                .expect_err("a server still dialling is not a mount"),
             NotMounted::NotConnected {
                 status: "pending".to_owned()
             }
@@ -828,38 +859,48 @@ mod tests {
 
     #[test]
     fn a_harness_that_mounted_flycos_tools_may_run_a_session() {
-        verify(&[mounted("flyco", true, &super::REQUIRED_TOOLS)])
-            .expect("a complete mount is accepted");
+        verify(
+            &[mounted("flyco", true, &super::REQUIRED_TOOLS)],
+            &super::REQUIRED_TOOLS,
+        )
+        .expect("a complete mount is accepted");
     }
 
     #[test]
     fn the_namespaced_spelling_of_a_tool_is_the_same_tool() {
-        verify(&[mounted(
-            "flyco",
-            true,
-            &[
-                "mcp__flyco__machine_status",
-                "mcp__flyco__budget_status",
-                "mcp__flyco__machine_resize",
-            ],
-        )])
+        verify(
+            &[mounted(
+                "flyco",
+                true,
+                &[
+                    "mcp__flyco__machine_status",
+                    "mcp__flyco__budget_status",
+                    "mcp__flyco__machine_resize",
+                ],
+            )],
+            &super::REQUIRED_TOOLS,
+        )
         .expect("a harness that reports the namespaced identifier mounted the same tools");
     }
 
     #[test]
     fn a_harness_with_no_flyco_server_refuses_the_session() {
-        let error = verify(&[mounted("git", true, &["git_status"])])
-            .expect_err("a session without flyco's tools must not run");
+        let error = verify(
+            &[mounted("git", true, &["git_status"])],
+            &super::REQUIRED_TOOLS,
+        )
+        .expect_err("a session without flyco's tools must not run");
         assert!(matches!(error, NotMounted::Absent { .. }));
         assert!(error.to_string().contains("only git"));
 
-        let empty = verify(&[]).expect_err("nothing mounted is nothing mounted");
+        let empty =
+            verify(&[], &super::REQUIRED_TOOLS).expect_err("nothing mounted is nothing mounted");
         assert!(empty.to_string().contains("no MCP servers at all"));
     }
 
     #[test]
     fn a_flyco_server_that_did_not_connect_refuses_the_session() {
-        let error = verify(&[mounted("flyco", false, &[])])
+        let error = verify(&[mounted("flyco", false, &[])], &super::REQUIRED_TOOLS)
             .expect_err("a server that never started is not a mount");
         assert_eq!(
             error,
@@ -871,8 +912,11 @@ mod tests {
 
     #[test]
     fn a_tool_list_without_machine_status_refuses_the_session() {
-        let error = verify(&[mounted("flyco", true, &["budget_status", "machine_resize"])])
-            .expect_err("a partial mount is a broken one");
+        let error = verify(
+            &[mounted("flyco", true, &["budget_status", "machine_resize"])],
+            &super::REQUIRED_TOOLS,
+        )
+        .expect_err("a partial mount is a broken one");
         assert_eq!(
             error,
             NotMounted::MissingTools {

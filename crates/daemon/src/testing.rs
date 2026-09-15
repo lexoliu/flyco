@@ -45,6 +45,7 @@ pub fn bootstrap() -> flyco_provider::DaemonBootstrap {
         repo: flyco_provider::testing::checkout(),
         machine_origin: flyco_core::MachineOrigin::Auto,
         machine: flyco_provider::testing::session_machine(),
+        computer_use: false,
         resume_session_id: None,
         model: flyco_provider::testing::session_model(),
         mcp_servers: flyco_provider::testing::mcp_servers(),

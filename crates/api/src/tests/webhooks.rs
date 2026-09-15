@@ -100,6 +100,7 @@ async fn active_session(db: &Db, user: &CurrentUser, repo: &str) -> SessionId {
                 flyco_core::HarnessKind::ClaudeCode,
             )),
             permission_mode: None,
+            computer_use: false,
         },
     )
     .await

@@ -32,7 +32,7 @@ use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 25] = [
+pub const MIGRATIONS: [&str; 26] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -58,6 +58,7 @@ pub const MIGRATIONS: [&str; 25] = [
     include_str!("../../../migrations/0024_usage_limit_pause.sql"),
     include_str!("../../../migrations/0025_session_permission_mode.sql"),
     include_str!("../../../migrations/0026_session_idempotency.sql"),
+    include_str!("../../../migrations/0027_session_computer_use.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -987,6 +988,7 @@ pub async fn seed_session(db: &Db, user: &CurrentUser) -> flyco_core::SessionId 
                 flyco_core::HarnessKind::ClaudeCode,
             )),
             permission_mode: None,
+            computer_use: false,
         },
     )
     .await

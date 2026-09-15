@@ -156,6 +156,7 @@ fn request_in(machine: MachineId, zone: &str, machine_type: &str, spot: bool) ->
             machine: crate::testing::session_machine(),
             resume_session_id: None,
             model: crate::testing::session_model(),
+            computer_use: true,
             mcp_servers: crate::testing::mcp_servers(),
         },
     }

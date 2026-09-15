@@ -747,6 +747,9 @@ struct Claim {
     model: ModelChoice,
     /// The mode the session runs under, on the same terms.
     permission_mode: PermissionMode,
+    /// Whether the session may have a screen, on the same terms — what the
+    /// `[computer]` table in the machine's configuration states.
+    computer_use: bool,
 }
 
 /// Decides whether this delivery still has work to do.
@@ -841,6 +844,7 @@ async fn claim(db: &Db, rooms: &Rooms, job: ProvisioningJob) -> Result<Option<Cl
         machine,
         model,
         permission_mode,
+        computer_use: target.computer_use,
     }))
 }
 
@@ -1369,6 +1373,10 @@ async fn bootstrap(
         // being rebuilt is whatever the user last changed it to rather than
         // what the previous machine booted on.
         model: claim.model.clone(),
+        // Whether the session may have a screen, on the same terms: the
+        // `[computer]` table states what the row records now, not what a
+        // previous machine's configuration did.
+        computer_use: claim.computer_use,
         // The user's whole MCP registry, resolved once here: the machine
         // writes it into the harness's root-owned configuration, and that
         // file is the allowlist. A server missing from this list is one the

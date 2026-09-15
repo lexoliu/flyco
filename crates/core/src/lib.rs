@@ -87,8 +87,9 @@ pub use push::{PushKeys, PushSubscription, PushSubscriptionView, VapidPublicKey}
 pub use release::{PublishedBinary, PublishedObject};
 pub use repo::{BranchName, BranchNameError, RepoSlug, RepoStatus};
 pub use session::{
-    ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, HarnessSessionView, HarnessTui,
-    InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS,
+    ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, DesktopInputRequest,
+    DesktopTakeoverRequest, HarnessSessionView, HarnessTui, InterruptedReason,
+    MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS,
     PROVISION_DEADLINE_SECS, PausedReason, RunShell, SendMessage, SessionActivity, SessionDetail,
     SessionState, SessionSummary, SessionTransitionError, TerminalInput, TerminalSize, TurnPage,
     TurnSummary, USAGE_LIMIT_CONTINUE_MESSAGE, USAGE_LIMIT_STOP_AFTER_SECS,
@@ -101,9 +102,9 @@ pub use usage::{
 };
 pub use wire::{
     ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-    HarnessCommand, MessageOrigin, ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
-    ReportStartupFailure, ReportStopping, ShellOutcome, ShellStream, StopReason, UsageWindow,
-    blocking_window,
+    DesktopButton, DesktopInputEvent, DesktopStatus, HarnessCommand, MessageOrigin,
+    ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure,
+    ReportStopping, ShellOutcome, ShellStream, StopReason, UsageWindow, blocking_window,
 };
 pub use workdir::{
     DIFF_PATCH_BYTES_MAX, DIRECTORY_ENTRIES_MAX, DirectoryEntry, DirectoryListing, EntryKind,
@@ -116,4 +117,4 @@ pub use workdir::{
 /// Bumped on every incompatible change to [`wire`]; the control plane
 /// refuses daemons speaking a different version (fast fail, no
 /// best-effort compatibility).
-pub const WIRE_PROTOCOL_VERSION: u32 = 16;
+pub const WIRE_PROTOCOL_VERSION: u32 = 17;

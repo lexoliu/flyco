@@ -1,0 +1,1 @@
+Read the screen as a PNG image at display resolution. Take a screenshot before acting to see where things are, and after acting to see what changed. The image is the screen's own pixels — coordinates you read from it are the coordinates `computer_click` and the other tools take.

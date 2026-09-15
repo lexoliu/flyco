@@ -1,0 +1,1 @@
+Press one key by its DOM name — a character or a named key like `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`, `ArrowUp`, `F5` — with `modifiers` held through the keystroke. A Ctrl+C-style chord is spelled `key: "c", modifiers: ["control"]`.

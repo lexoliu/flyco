@@ -1250,6 +1250,339 @@ async fn a_workdir_question_for_an_offline_daemon_is_refused_rather_than_held() 
     );
 }
 
+// ── The desktop ──
+
+/// Opens the watcher stream and reads its hello, returning both.
+async fn watch(room: &mut Room) -> (SseStream, serde_json::Value) {
+    let response = room.call_streaming("/internal/desktop/watch").await;
+    assert_eq!(response.status().as_u16(), 200, "the watch stream opened");
+    let mut stream = response.into_body().into_sse();
+    let item = tokio_select_quiet(&mut stream, PATIENCE)
+        .await
+        .expect("a hello in time")
+        .expect("the stream is still open")
+        .expect("a decodable SSE frame");
+    assert_eq!(item.event(), Some("hello"), "a watch stream greets first");
+    (stream, item.data().expect("a hello"))
+}
+
+/// The next event off the watcher stream, or `None` when quiet.
+async fn next_watch_event(stream: &mut SseStream) -> Option<skyzen::http_kit::sse::Event> {
+    tokio_select_quiet(stream, PATIENCE)
+        .await
+        .and_then(|item| item.and_then(Result::ok))
+}
+
+/// Expires every watcher row, the state a closed browser tab leaves.
+async fn expire_watchers(room: &Room) {
+    let db = DurableDb::new(room.db.clone());
+    skyzen::sql!(db, "UPDATE desktop_watchers SET live_until = 0")
+        .execute()
+        .await
+        .expect("watchers were expired");
+}
+
+#[skyzen::test]
+async fn a_watcher_joining_turns_the_encoder_on() {
+    let mut room = Room::open().await;
+    room.greet().await;
+    // An idle room owes a fresh attach nothing: a daemon already assumes
+    // nobody watches.
+    room.expect_quiet().await;
+
+    let (_stream, hello) = watch(&mut room).await;
+    assert_eq!(hello["takeover"], false, "a watcher joins not driving");
+    let watcher = hello["watcher"].as_u64().expect("a watcher id");
+    assert!(watcher > 0, "a watcher id is a real row id");
+
+    let command = room.next_command().await;
+    assert_eq!(
+        command.command,
+        ControlToDaemon::DesktopAudience { watching: true },
+        "the daemon is told it has an audience"
+    );
+}
+
+#[skyzen::test]
+async fn a_chunk_never_becomes_a_transcript_event() {
+    let mut room = Room::open().await;
+    room.greet().await;
+    let (_stream, _hello) = watch(&mut room).await;
+    room.next_command().await; // the audience command
+
+    let emitted = room
+        .deliver(&DaemonToControl::DesktopChunk {
+            keyframe: true,
+            data: vec![0x82, 0x0b, 0x47],
+        })
+        .await;
+    assert!(
+        emitted.events.is_empty(),
+        "a chunk is storage, not a transcript entry"
+    );
+}
+
+#[skyzen::test]
+async fn a_watch_stream_replays_the_latest_gop() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    // A dead keyframe and its inter-frames, then a fresh keyframe: only the
+    // tail from the newest keyframe down is owed a joining watcher.
+    room.deliver(&DaemonToControl::DesktopChunk {
+        keyframe: true,
+        data: b"old-key".to_vec(),
+    })
+    .await;
+    room.deliver(&DaemonToControl::DesktopChunk {
+        keyframe: false,
+        data: b"old-inter".to_vec(),
+    })
+    .await;
+    room.deliver(&DaemonToControl::DesktopChunk {
+        keyframe: true,
+        data: b"new-key".to_vec(),
+    })
+    .await;
+    room.deliver(&DaemonToControl::DesktopChunk {
+        keyframe: false,
+        data: b"new-inter".to_vec(),
+    })
+    .await;
+
+    let (mut stream, _hello) = watch(&mut room).await;
+    let mut seen = Vec::new();
+    while let Some(item) = next_watch_event(&mut stream).await {
+        if item.event() != Some("chunk") {
+            continue;
+        }
+        let body: serde_json::Value = item.data().expect("a chunk body");
+        seen.push((
+            body["keyframe"].as_bool().expect("a flag"),
+            base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                body["data"].as_str().expect("a payload"),
+            )
+            .expect("base64"),
+        ));
+        if seen.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(
+        seen,
+        vec![(true, b"new-key".to_vec()), (false, b"new-inter".to_vec())],
+        "a joining watcher starts at the newest keyframe"
+    );
+}
+
+#[skyzen::test]
+async fn a_takeover_is_recorded_and_handed_down() {
+    let mut room = Room::open().await;
+    room.greet().await;
+    let (_stream, hello) = watch(&mut room).await;
+    room.next_command().await; // DesktopAudience
+
+    let watcher = hello["watcher"].as_u64().expect("a watcher id");
+    let (status, body) = room
+        .call(
+            Method::POST,
+            "/internal/desktop/takeover",
+            Some(
+                serde_json::to_vec(&flyco_core::DesktopTakeoverRequest {
+                    watcher,
+                    active: true,
+                })
+                .expect("serialize"),
+            ),
+        )
+        .await;
+    assert_eq!(
+        status,
+        200,
+        "a takeover: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let emitted: Emitted = serde_json::from_slice(&body).expect("an emitted list");
+    assert_eq!(
+        events_of(emitted),
+        vec![ClientEvent::DesktopTakeover { active: true }],
+        "a takeover is recorded for late joiners"
+    );
+
+    let command = room.next_command().await;
+    assert_eq!(
+        command.command,
+        ControlToDaemon::DesktopTakeover { active: true },
+        "the daemon is told at once, not after a poll"
+    );
+}
+
+#[skyzen::test]
+async fn input_needs_the_takeover_the_watcher_owns() {
+    let mut room = Room::open().await;
+    room.greet().await;
+    let (_stream, hello) = watch(&mut room).await;
+    let watcher = hello["watcher"].as_u64().expect("a watcher id");
+
+    let input = || {
+        serde_json::to_vec(&flyco_core::DesktopInputRequest {
+            watcher,
+            events: vec![flyco_core::DesktopInputEvent::Move { x: 10, y: 20 }],
+        })
+        .expect("serialize")
+    };
+
+    let (status, body) = room
+        .call(Method::POST, "/internal/desktop/input", Some(input()))
+        .await;
+    assert_eq!(status, 409, "input without the screen is refused");
+    let problem: flyco_core::Problem = serde_json::from_slice(&body).expect("a problem");
+    assert_eq!(
+        problem.kind,
+        "https://flyco.dev/problems/desktop-takeover-required"
+    );
+
+    room.call(
+        Method::POST,
+        "/internal/desktop/takeover",
+        Some(
+            serde_json::to_vec(&flyco_core::DesktopTakeoverRequest {
+                watcher,
+                active: true,
+            })
+            .expect("serialize"),
+        ),
+    )
+    .await;
+    room.next_command().await; // DesktopAudience
+    room.next_command().await; // DesktopTakeover
+
+    let (status, body) = room
+        .call(Method::POST, "/internal/desktop/input", Some(input()))
+        .await;
+    assert_eq!(
+        status,
+        204,
+        "the owner drives: {}",
+        String::from_utf8_lossy(&body)
+    );
+
+    let command = room.next_command().await;
+    assert_eq!(
+        command.command,
+        ControlToDaemon::DesktopInput {
+            events: vec![flyco_core::DesktopInputEvent::Move { x: 10, y: 20 }],
+        },
+        "the daemon receives the input batch"
+    );
+}
+
+#[skyzen::test]
+async fn a_lapsed_watcher_releases_the_screen() {
+    let mut room = Room::open().await;
+    room.greet().await;
+    let (_stream, hello) = watch(&mut room).await;
+    let watcher = hello["watcher"].as_u64().expect("a watcher id");
+    room.call(
+        Method::POST,
+        "/internal/desktop/takeover",
+        Some(
+            serde_json::to_vec(&flyco_core::DesktopTakeoverRequest {
+                watcher,
+                active: true,
+            })
+            .expect("serialize"),
+        ),
+    )
+    .await;
+    room.next_command().await; // DesktopAudience
+    room.next_command().await; // DesktopTakeover
+
+    expire_watchers(&room).await;
+
+    assert_eq!(
+        room.next_command().await.command,
+        ControlToDaemon::DesktopAudience { watching: false },
+        "the reconciler tells the daemon the room is empty"
+    );
+    assert_eq!(
+        room.next_command().await.command,
+        ControlToDaemon::DesktopTakeover { active: false },
+        "the reconciler releases the takeover too"
+    );
+    let page = room.events(0).await;
+    let released = serde_json::to_value(ClientEvent::DesktopTakeover { active: false })
+        .expect("an event serializes");
+    assert!(
+        page.events.iter().any(|entry| entry.event == released),
+        "the release is recorded for late joiners"
+    );
+}
+
+#[skyzen::test]
+async fn a_dead_watcher_is_a_gone() {
+    let mut room = Room::open().await;
+    room.greet().await;
+    let (_stream, hello) = watch(&mut room).await;
+    let watcher = hello["watcher"].as_u64().expect("a watcher id");
+    expire_watchers(&room).await;
+
+    let (status, body) = room
+        .call(
+            Method::POST,
+            "/internal/desktop/takeover",
+            Some(
+                serde_json::to_vec(&flyco_core::DesktopTakeoverRequest {
+                    watcher,
+                    active: true,
+                })
+                .expect("serialize"),
+            ),
+        )
+        .await;
+    assert_eq!(status, 410, "an expired watcher is gone");
+    let problem: flyco_core::Problem = serde_json::from_slice(&body).expect("a problem");
+    assert_eq!(
+        problem.kind,
+        "https://flyco.dev/problems/desktop-watcher-gone"
+    );
+}
+
+#[skyzen::test]
+async fn a_fresh_attach_hears_the_room_is_driven() {
+    let mut room = Room::open().await;
+    room.greet().await;
+    let (_stream, hello) = watch(&mut room).await;
+    let watcher = hello["watcher"].as_u64().expect("a watcher id");
+    room.call(
+        Method::POST,
+        "/internal/desktop/takeover",
+        Some(
+            serde_json::to_vec(&flyco_core::DesktopTakeoverRequest {
+                watcher,
+                active: true,
+            })
+            .expect("serialize"),
+        ),
+    )
+    .await;
+
+    // The daemon restarts: the still-live watcher must be replayed onto the
+    // new attach's stream, or its takeover would hang on a daemon that
+    // believes nobody is watching.
+    room.attach().await;
+    room.open_commands().await;
+    assert_eq!(
+        room.next_command().await.command,
+        ControlToDaemon::DesktopAudience { watching: true }
+    );
+    assert_eq!(
+        room.next_command().await.command,
+        ControlToDaemon::DesktopTakeover { active: true }
+    );
+}
+
 // ── The shared SSE machinery ──
 
 #[skyzen::test]

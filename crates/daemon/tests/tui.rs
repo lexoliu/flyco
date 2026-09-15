@@ -49,6 +49,7 @@ fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
         machine: flyco_provider::testing::session_machine(),
         resume_session_id: None,
         model: flyco_provider::testing::session_model(),
+        computer_use: true,
         mcp_servers: flyco_provider::testing::mcp_servers(),
     }
 }

@@ -211,6 +211,7 @@ async fn run(cli: Cli) -> Result<(), Failure> {
             let mount = Mount::new(
                 FlycoServer::of(&path)?,
                 core::mem::take(&mut config.mcp_servers),
+                config.computer.enabled,
             );
             let driven = match config.harness {
                 HarnessKind::ClaudeCode => Box::pin(drive_claude_code(config, mount)).await,
@@ -411,6 +412,13 @@ async fn serve_mcp(config: DaemonConfig) -> Result<(), Failure> {
         api,
         GitWorkdir::new(config.workdir.clone()),
         config.machine_origin,
+        // The desktop's agent socket exists only while the session's
+        // flag is on, which is also the condition the `computer_*` tools
+        // are listed under.
+        config
+            .computer
+            .enabled
+            .then(|| flyco_daemon::desktop::ipc::socket_path(config.session)),
     );
 
     tracing::info!(session = %config.session, "serving flyco's MCP tools over stdio");
@@ -452,6 +460,7 @@ async fn drive_claude_code(config: DaemonConfig, mount: Mount) -> Result<(), Fai
     let (terminal, terminal_out) =
         flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
     let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
+    let (desktop, desktop_out) = flyco_daemon::desktop::spawn(&config.computer, config.session);
     Box::pin(wire::run(SessionRelay {
         session_id: config.session,
         deadlines: wire::Deadlines::default(),
@@ -460,6 +469,8 @@ async fn drive_claude_code(config: DaemonConfig, mount: Mount) -> Result<(), Fai
         api,
         terminal,
         terminal_out,
+        desktop,
+        desktop_out,
         tui: flyco_daemon::tui::HarnessTui::resolve(&config).await,
         // The composer's `!` commands run in the same checkout the agent
         // works in, as the same user this daemon runs as.
@@ -519,6 +530,7 @@ async fn report<S: HarnessSession + 'static>(
     let (terminal, terminal_out) =
         flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
     let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
+    let (desktop, desktop_out) = flyco_daemon::desktop::spawn(&config.computer, config.session);
     Box::pin(wire::run(SessionRelay {
         session_id: config.session,
         deadlines: wire::Deadlines::default(),
@@ -527,6 +539,8 @@ async fn report<S: HarnessSession + 'static>(
         api,
         terminal,
         terminal_out,
+        desktop,
+        desktop_out,
         tui: flyco_daemon::tui::HarnessTui::resolve(&config).await,
         // The composer's `!` commands run in the same checkout the agent
         // works in, as the same user this daemon runs as.

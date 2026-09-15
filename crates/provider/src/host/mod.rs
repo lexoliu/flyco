@@ -425,6 +425,7 @@ mod tests {
             machine: crate::testing::session_machine(),
             resume_session_id: None,
             model: crate::testing::session_model(),
+            computer_use: true,
             mcp_servers: crate::testing::mcp_servers(),
         }
     }

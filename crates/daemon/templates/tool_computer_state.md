@@ -1,0 +1,1 @@
+Report the session's desktop: its `DISPLAY` value — set it when launching GUI apps so they draw on this screen — its pixel geometry, which is the coordinate space every `computer_*` tool takes, and whether the user is currently driving it. While the user is driving, input you send is refused until control is handed back.

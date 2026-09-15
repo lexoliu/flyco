@@ -1,0 +1,1 @@
+Click a spot on the display: the pointer moves to (x, y), then the button goes down and up where it lands. `button` defaults to `left`; `right` opens context menus and `middle` pastes the primary selection on X11.

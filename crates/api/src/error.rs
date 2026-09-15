@@ -530,6 +530,30 @@ pub enum ApiError {
     )]
     SessionDaemonOffline,
 
+    /// The watcher a desktop call named is gone or never was.
+    ///
+    /// A watcher is the lease a desktop stream mints and keeps alive; an
+    /// id the room does not hold means the stream that made it has ended
+    /// — the tab closed, the lease lapsed — and the answer is to reopen
+    /// the stream rather than retry the call.
+    #[error(
+        "the desktop watcher is gone — reopen the desktop stream",
+        status = StatusCode::GONE
+    )]
+    DesktopWatcherGone,
+
+    /// Input arrived from a watcher that is not driving the screen.
+    ///
+    /// One watcher drives at a time — the one that took over — so input
+    /// from anywhere else is refused rather than dropped, because a click
+    /// silently ignored looks to the user exactly like a screen that did
+    /// not respond.
+    #[error(
+        "this watcher does not hold the desktop — take it over before sending input",
+        status = StatusCode::CONFLICT
+    )]
+    DesktopTakeoverRequired,
+
     /// The room has no answer to this question yet.
     ///
     /// Internal to the Worker⇄room hop and never rendered for a browser:
@@ -1289,6 +1313,8 @@ impl ApiError {
             Self::InvalidHostCredential => "invalid-host-credential",
             Self::RepoStatusUnknown => "repo-status-unknown",
             Self::SessionDaemonOffline => "session-daemon-offline",
+            Self::DesktopWatcherGone => "desktop-watcher-gone",
+            Self::DesktopTakeoverRequired => "desktop-takeover-required",
             Self::WorkdirNotAnsweredYet => "workdir-not-answered-yet",
             Self::WorkdirTimeout => "workdir-timeout",
             Self::PathNotFound { .. } => "path-not-found",

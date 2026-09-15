@@ -646,8 +646,11 @@ where
     // Last, and before a single turn: a thread whose agent cannot call
     // `budget_status` is one that will spend the user's money with the
     // meter out of reach, so the session fails here rather than opening.
-    crate::mount::verify(&settled_mount(stdin, lines, next_id, &thread).await?)
-        .map_err(|error| CodexError::Mount(error.into()))?;
+    crate::mount::verify(
+        &settled_mount(stdin, lines, next_id, &thread).await?,
+        &mount.required_tools(),
+    )
+    .map_err(|error| CodexError::Mount(error.into()))?;
     Ok(Handshaken {
         thread_id: thread,
         models,

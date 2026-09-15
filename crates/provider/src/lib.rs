@@ -245,6 +245,16 @@ pub struct DaemonBootstrap {
     /// machine states the model rather than leaving it to whichever version
     /// of the CLI the image happens to carry.
     pub model: flyco_core::ModelChoice,
+    /// Whether the session gets a screen.
+    ///
+    /// Provisioned rather than fetched by the daemon for the same reason
+    /// [`mcp_servers`](Self::mcp_servers) is: the display stack is part of
+    /// what the machine boots, and the configuration is the one document
+    /// every runtime hands the daemon. A session that gains the flag while
+    /// live is told through
+    /// [`SetComputerUse`](flyco_core::ControlToDaemon::SetComputerUse)
+    /// instead.
+    pub computer_use: bool,
     /// The user's enabled MCP servers, as the machine's harness is given
     /// them.
     ///
@@ -270,6 +280,7 @@ impl fmt::Debug for DaemonBootstrap {
             .field("machine", &self.machine)
             .field("resume_session_id", &self.resume_session_id)
             .field("model", &self.model)
+            .field("computer_use", &self.computer_use)
             // Names only: a remote MCP server's headers routinely carry a
             // bearer token, which is a fourth credential this structure
             // holds and the fourth this rendering keeps out of a log line.
@@ -754,6 +765,7 @@ mod tests {
             machine: crate::testing::session_machine(),
             resume_session_id: None,
             model: crate::testing::session_model(),
+            computer_use: true,
             mcp_servers: vec![flyco_core::McpServerMount {
                 name: "deepwiki".to_owned(),
                 config: flyco_core::McpServerConfig::Http {

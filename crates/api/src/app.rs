@@ -6,13 +6,14 @@ use flyco_core::workdir::{
 use flyco_core::{
     AgentMachineView, ApiKeyId, ApiKeySummary, ApprovalDecision, ApprovalId, ApprovalState,
     ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
-    CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, EnvDocument,
-    HarnessFeature, HarnessObservation, HarnessSessionView, HarnessTui, MAX_SESSION_TITLE_CHARS,
-    MachineCatalogEntry, MachineOrigin, MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage,
-    RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
-    ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, RunShell, SendMessage,
-    SessionActivity, SessionDetail, SessionId, SessionState, SessionSummary, TerminalInput,
-    TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UsageLimitHit, UserId,
+    CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, DesktopInputRequest,
+    DesktopTakeoverRequest, EnvDocument, HarnessFeature, HarnessObservation, HarnessSessionView,
+    HarnessTui, MAX_SESSION_TITLE_CHARS, MachineCatalogEntry, MachineOrigin, MachineSpec,
+    MessageOrigin, ModelChoice, ProvisioningStage, RepoSlug, RepoStatus, ReportModels,
+    ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure, ReportStopping, ReportUsage,
+    ResizeMachine, RunShell, SendMessage, SessionActivity, SessionDetail, SessionId, SessionState,
+    SessionSummary, TerminalInput, TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession,
+    UsageLimitHit, UserId,
     wire::{ApprovalPayload, DaemonAttach, DaemonAttached, DaemonFrames},
 };
 use flyco_provider::host::{HostAttach, HostFrames};
@@ -239,6 +240,7 @@ async fn start_session(
             budget: resolved.budget,
             model: &resolved.model,
             permission_mode: resolved.permission_mode,
+            computer_use: resolved.computer_use,
         },
     )
     .await
@@ -327,6 +329,8 @@ struct ResolvedSession {
     budget: BudgetConfig,
     /// The model the session opens on, off the account's own list.
     model: ModelChoice,
+    /// Whether the session gets a screen.
+    computer_use: bool,
     /// The provider account the machine bills to.
     account: provisioning::LinkedAccount,
     /// What the machine is.
@@ -411,6 +415,7 @@ async fn resolve_request(
         machine_origin,
         budget: BudgetConfig::new(request.budget_limit).map_err(|_| ApiError::InvalidBudget)?,
         model,
+        computer_use: request.computer_use,
         account,
         spec,
     })
@@ -601,6 +606,21 @@ async fn apply_session_update(
         None => None,
     };
 
+    let screened = match update.computer_use {
+        Some(enabled) => {
+            let session = sessions::set_computer_use(db, user.id, id, enabled).await?;
+            // Recorded first, announced second — the same terms as the
+            // mode, and the same reason a daemon that is away is held the
+            // command: it is what the next machine comes up with.
+            rooms
+                .command(db, id, &ControlToDaemon::SetComputerUse { enabled })
+                .await?;
+            tracing::info!(session = %id, enabled, "a session's screen was turned {}", if enabled { "on" } else { "off" });
+            Some(session)
+        }
+        None => None,
+    };
+
     let rebudgeted = match update.budget_limit {
         Some(limit) => {
             let raise = sessions::set_budget_limit(db, user.id, id, limit).await?;
@@ -621,6 +641,7 @@ async fn apply_session_update(
     // do, which is the caller's bug rather than a session that happens to
     // be unchanged.
     rebudgeted
+        .or(screened)
         .or(remoded)
         .or(remodelled)
         .or(renamed)
@@ -1480,6 +1501,107 @@ async fn terminal_harness(
     .await
     .map(|_| Accepted)
     .into()
+}
+
+/// Opens the session's desktop stream.
+///
+/// The screen panel's video feed: an SSE stream of encoded AV1 chunks,
+/// replayed from the newest keyframe and then live. The room mints the
+/// caller's watcher lease in answering — the stream staying open is the
+/// audience the daemon encodes for, and a backgrounded tab closing it is
+/// what turns the encoder off.
+#[skyzen::openapi]
+async fn desktop_stream(
+    State(user): State<CurrentUser>,
+    params: Params,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Response> {
+    watch_desktop(&user, &params, &rooms, &db).await.into()
+}
+
+async fn watch_desktop(
+    user: &CurrentUser,
+    params: &Params,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<Response, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    // Ownership, not liveness: a paused or provisioning session's stream
+    // simply idles until a daemon attaches — the watcher is already in
+    // place to be the audience it comes up to.
+    if !sessions::is_owned_by(db, user.id, id).await? {
+        return Err(ApiError::SessionNotFound);
+    }
+    rooms.desktop_stream(id).await
+}
+
+/// Takes the session's screen, or hands it back.
+///
+/// The `Take over`/`Release` button on the screen panel. The watcher id
+/// the desktop stream announced names the lease taking over — a takeover
+/// held by a dead browser lapses with it instead of locking the agent
+/// out — and the room interrupts the running turn on a take, exactly as
+/// `Stop` does.
+#[skyzen::openapi]
+async fn desktop_takeover(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(body): Json<DesktopTakeoverRequest>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Accepted> {
+    drive_desktop_takeover(&user, &params, &rooms, &db, body)
+        .await
+        .map(|_| Accepted)
+        .into()
+}
+
+async fn drive_desktop_takeover(
+    user: &CurrentUser,
+    params: &Params,
+    rooms: &Rooms,
+    db: &Db,
+    body: DesktopTakeoverRequest,
+) -> Result<SessionId, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    sessions::require_active(db, user.id, id).await?;
+    rooms.desktop_takeover(db, id, &body).await?;
+    tracing::info!(session = %id, watcher = body.watcher, active = body.active, "drove a desktop takeover");
+    Ok(id)
+}
+
+/// Sends one batch of the user's desktop input.
+///
+/// Keystrokes, pointer moves, clicks and scrolls collected by the screen
+/// panel since its last send — refused with `409` unless the named
+/// watcher holds takeover, so a second tab cannot reach into the screen
+/// the first is driving.
+#[skyzen::openapi]
+async fn desktop_input(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(body): Json<DesktopInputRequest>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Accepted> {
+    drive_desktop_input(&user, &params, &rooms, &db, body)
+        .await
+        .map(|_| Accepted)
+        .into()
+}
+
+async fn drive_desktop_input(
+    user: &CurrentUser,
+    params: &Params,
+    rooms: &Rooms,
+    db: &Db,
+    body: DesktopInputRequest,
+) -> Result<SessionId, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    sessions::require_active(db, user.id, id).await?;
+    rooms.desktop_input(id, &body).await?;
+    Ok(id)
 }
 
 /// Hands one command to a session's room.
@@ -2807,6 +2929,9 @@ fn driving_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/interrupt".post(interrupt_session),
         "/v1/sessions/{id}/compact".post(compact_session),
         "/v1/sessions/{id}/context".post(context_session),
+        "/v1/sessions/{id}/desktop/stream".at(desktop_stream),
+        "/v1/sessions/{id}/desktop/takeover".post(desktop_takeover),
+        "/v1/sessions/{id}/desktop/input".post(desktop_input),
     ))
     .into_route_nodes()
 }

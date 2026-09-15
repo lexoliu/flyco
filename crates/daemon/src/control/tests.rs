@@ -17,6 +17,7 @@ use crate::control::rest::{
 };
 use crate::control::store::{RemoteTranscriptStore, stream_key};
 use crate::control::wire::{self, QUEUE_DEPTH, SessionRelay, WireError};
+use crate::desktop::FakeDesktop;
 use crate::git::FakeWorkdir;
 use crate::harness::SessionOutput;
 use crate::harness::claude::protocol::SessionKey;
@@ -311,6 +312,11 @@ struct Harness {
     approval_id: ApprovalId,
     terminal_writes: mpsc::UnboundedReceiver<TerminalCall>,
     terminal_inject: mpsc::Sender<crate::terminal::TerminalEvent>,
+    /// What the daemon asked its desktop to do.
+    desktop_calls: mpsc::UnboundedReceiver<crate::desktop::DesktopCall>,
+    /// Reports what the test's desktop did, through the channel the real
+    /// supervisor fills.
+    desktop_reports: mpsc::Sender<crate::desktop::DesktopEvent>,
     /// The `!` commands the daemon asked its shell to run.
     shell_runs: mpsc::UnboundedReceiver<StartedRun>,
     repo_inject: mpsc::UnboundedSender<String>,
@@ -424,6 +430,7 @@ impl Harness {
         let (stopper, stops) = mpsc::channel(1);
 
         let (terminal, terminal_writes, terminal_inject, terminal_out) = FakeTerminal::pair();
+        let (desktop, desktop_calls, desktop_reports, desktop_out) = FakeDesktop::pair();
         let (shell, shell_runs) = FakeShell::pair();
         let (workdir, repo_inject, repo_status) =
             FakeWorkdir::with_snapshot(Some(WORKDIR_PATCH.to_vec()));
@@ -436,6 +443,8 @@ impl Harness {
             api,
             terminal,
             terminal_out,
+            desktop,
+            desktop_out,
             tui: crate::tui::HarnessTui::fixture(),
             shell,
             workdir,
@@ -458,6 +467,8 @@ impl Harness {
             approval_id,
             terminal_writes,
             terminal_inject,
+            desktop_calls,
+            desktop_reports,
             shell_runs,
             repo_inject,
             evict: Some(evict),
@@ -1294,6 +1305,95 @@ async fn the_agent_ready_stage_is_announced_once_and_not_on_every_reconnect() {
     harness.archive().await.expect("the run ended cleanly");
 }
 
+// ── The desktop ──
+
+#[tokio::test]
+async fn desktop_levels_reach_the_supervisor() {
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::SetComputerUse { enabled: true });
+    assert_eq!(
+        harness.desktop_calls.recv().await,
+        Some(crate::desktop::DesktopCall::Enabled(true))
+    );
+
+    harness.command(ControlToDaemon::DesktopAudience { watching: true });
+    assert_eq!(
+        harness.desktop_calls.recv().await,
+        Some(crate::desktop::DesktopCall::Watching(true))
+    );
+
+    harness.command(ControlToDaemon::DesktopInput {
+        events: vec![flyco_core::wire::DesktopInputEvent::Move { x: 12, y: 34 }],
+    });
+    assert_eq!(
+        harness.desktop_calls.recv().await,
+        Some(crate::desktop::DesktopCall::Input(vec![
+            flyco_core::wire::DesktopInputEvent::Move { x: 12, y: 34 }
+        ]))
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_takeover_interrupts_the_turn() {
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
+    harness.handshake().await;
+
+    // The user's hands and the model's cannot both be on the screen:
+    // claiming it is Stop by another name.
+    harness.command(ControlToDaemon::DesktopTakeover { active: true });
+    assert_eq!(harness.next_call().await, Call::Interrupt);
+    assert_eq!(
+        harness.desktop_calls.recv().await,
+        Some(crate::desktop::DesktopCall::Takeover(true))
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn desktop_reports_reach_the_room_as_frames() {
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
+    harness.handshake().await;
+
+    harness
+        .desktop_reports
+        .send(crate::desktop::DesktopEvent::State {
+            status: flyco_core::wire::DesktopStatus::Ready,
+            detail: None,
+        })
+        .await
+        .expect("the desktop channel is open");
+    harness
+        .desktop_reports
+        .send(crate::desktop::DesktopEvent::Chunk {
+            keyframe: true,
+            bytes: vec![0xDE, 0xAD],
+        })
+        .await
+        .expect("the desktop channel is open");
+
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::DesktopState {
+            status: flyco_core::wire::DesktopStatus::Ready,
+            detail: None,
+        }
+    );
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::DesktopChunk {
+            keyframe: true,
+            data: vec![0xDE, 0xAD],
+        }
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
 // ── Reconnection ──
 
 /// A silence limit short enough to watch in a test: the fake room pings
@@ -1503,6 +1603,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         id: ApprovalId::generate(),
     };
     let (terminal, _, _, terminal_out) = FakeTerminal::pair();
+    let (desktop, _, _, desktop_out) = FakeDesktop::pair();
     let (shell, _shell_runs) = FakeShell::pair();
     let (workdir, _, repo_status) = FakeWorkdir::pair();
     let stops = crate::stop::nothing_to_watch();
@@ -1514,6 +1615,8 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         api,
         terminal,
         terminal_out,
+        desktop,
+        desktop_out,
         tui: crate::tui::HarnessTui::fixture(),
         shell,
         workdir,
