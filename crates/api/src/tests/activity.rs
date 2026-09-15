@@ -42,6 +42,7 @@ async fn running(client: &TestClient<Router>, kv: &Kv, db: &Db) -> Running {
         .post("/v1/sessions")
         .bearer(&token)
         .json(&CreateSession {
+            source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),

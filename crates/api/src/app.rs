@@ -42,9 +42,9 @@ use crate::rooms::{HostRooms, Rooms, UserStreams};
 use crate::vendors::Vendors;
 use crate::{
     agents_md, api_keys, approvals, claude_oauth, cli, codespaces, codex_oauth, daemon_tokens, env,
-    harness_accounts, hosts, idempotency, machines, mcp, memory, oauth, observations, problem,
-    provider_accounts, provider_oauth, provisioning, push, relay, releases, repos, responses,
-    sessions, skills, transcripts, turns, usage_limits, users, webhooks, workdirs,
+    handoffs, harness_accounts, hosts, idempotency, machines, mcp, memory, oauth, observations,
+    problem, provider_accounts, provider_oauth, provisioning, push, relay, releases, repos,
+    responses, sessions, skills, transcripts, turns, usage_limits, users, webhooks, workdirs,
 };
 use flyco_core::wire::EventPage;
 
@@ -210,6 +210,10 @@ async fn start_session(
     db: &Db,
     kv: &Kv,
 ) -> Result<Created<Json<SessionDetail>>, ApiError> {
+    // Pulled off before the request is consumed: a handoff source changes
+    // what creation commits the session to, so it travels alongside the
+    // resolution rather than through it.
+    let source = request.source.clone();
     let resolved = resolve_request(user, request, config, github, db, kv, queue).await?;
 
     // Claimed only once everything that could refuse the request has
@@ -257,6 +261,19 @@ async fn start_session(
         claim.record(db, session.summary.id).await?;
     }
     let id = session.summary.id;
+    // The pending-handoff row lands before anything else that could fail:
+    // a session created with a source but no row would sit in `provisioning`
+    // with no route able to complete it.
+    if let Some(flyco_core::SessionSource::LocalHandoff(handoff)) = &source {
+        fail_session_on(
+            db,
+            rooms,
+            id,
+            "the session's handoff could not be recorded",
+            handoffs::create_pending(db, id, handoff).await,
+        )
+        .await?;
+    }
     let machine = machines::reserve(db, id, resolved.account.id, &resolved.spec).await?;
 
     // The prompt is posted to the session's room *before* the machine is
@@ -285,14 +302,19 @@ async fn start_session(
             .await,
     )
     .await?;
-    fail_session_on(
-        db,
-        rooms,
-        id,
-        "the provisioning queue would not accept this session's job",
-        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await,
-    )
-    .await?;
+    // A handoff stays out of the queue until `handoff/complete` has
+    // verified its patch and transcript in storage; enqueueing here would
+    // let the daemon boot a machine against objects still in flight.
+    if source.is_none() {
+        fail_session_on(
+            db,
+            rooms,
+            id,
+            "the provisioning queue would not accept this session's job",
+            provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await,
+        )
+        .await?;
+    }
 
     tracing::info!(
         repo = %resolved.repo,
@@ -2457,6 +2479,27 @@ pub async fn fail_stalled_provisions(
         }
         sessions::fail(db, rooms, stalled.id, &reason).await?;
     }
+
+    // Handoffs whose uploads never finished run on their own, longer
+    // clock: `stalled_provisions` skips them while a pending row exists,
+    // and this sweep is what fails the ones the sender walked away from.
+    for abandoned in handoffs::abandoned(db, at_unix).await? {
+        let reason = format!(
+            "the handoff's payloads were not uploaded within {} minutes, so flyco \
+             stopped waiting for them and released the reservation",
+            handoffs::HANDOFF_DEADLINE_SECS / 60
+        );
+        if let Err(error) =
+            machines::destroy_for_archive(db, config, hosts, abandoned.user_id, abandoned.id).await
+        {
+            tracing::warn!(
+                session = %abandoned.id,
+                %error,
+                "an abandoned handoff's machine could not be released"
+            );
+        }
+        sessions::fail(db, rooms, abandoned.id, &reason).await?;
+    }
     Ok(())
 }
 
@@ -2712,6 +2755,182 @@ async fn read_workdir_patch(session: SessionId, storage: &Storage) -> Result<Res
     Ok(response)
 }
 
+// ── Handoffs ──
+//
+// A session created with `source.local_handoff` lands in `provisioning`
+// with no queue job: these user-scoped routes are what the CLI uploads
+// through, and `complete` is what finally frees the machine to build. The
+// patch shares the archive's `workdirs/` object, so the daemon's replay
+// path reads it unchanged; the transcript lives under `handoffs/`, where
+// only these routes and the daemon's two reads can reach it.
+
+/// Stores a handoff's working-tree patch.
+#[skyzen::openapi]
+async fn put_handoff_patch(
+    State(user): State<CurrentUser>,
+    params: Params,
+    body: Bytes,
+    db: Db,
+    storage: Storage,
+) -> Outcome<NoContent> {
+    store_handoff_patch(&user, &params, body, &db, &storage)
+        .await
+        .into()
+}
+
+async fn store_handoff_patch(
+    user: &CurrentUser,
+    params: &Params,
+    body: Bytes,
+    db: &Db,
+    storage: &Storage,
+) -> Result<NoContent, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    handoffs::require_pending(db, user.id, id).await?;
+    let bytes = body.len() as u64;
+    if bytes > flyco_core::HANDOFF_PATCH_BYTES_MAX {
+        return Err(ApiError::HandoffTooLarge {
+            object: "patch",
+            bytes,
+            limit: flyco_core::HANDOFF_PATCH_BYTES_MAX,
+        });
+    }
+    workdirs::put(storage, id, body.to_vec()).await?;
+    // Recorded after the put, never before: a row claiming an upload that
+    // never landed would let `complete` pass against a missing object.
+    handoffs::record_patch(db, id, &body).await?;
+    Ok(NoContent)
+}
+
+/// Stores a handoff's full transcript, which the daemon later writes to
+/// disk for the cloud harness to consult.
+#[skyzen::openapi]
+async fn put_handoff_transcript(
+    State(user): State<CurrentUser>,
+    params: Params,
+    body: Bytes,
+    db: Db,
+    storage: Storage,
+) -> Outcome<NoContent> {
+    store_handoff_transcript(&user, &params, body, &db, &storage)
+        .await
+        .into()
+}
+
+async fn store_handoff_transcript(
+    user: &CurrentUser,
+    params: &Params,
+    body: Bytes,
+    db: &Db,
+    storage: &Storage,
+) -> Result<NoContent, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    handoffs::require_pending(db, user.id, id).await?;
+    let bytes = body.len() as u64;
+    if bytes > flyco_core::HANDOFF_TRANSCRIPT_BYTES_MAX {
+        return Err(ApiError::HandoffTooLarge {
+            object: "transcript",
+            bytes,
+            limit: flyco_core::HANDOFF_TRANSCRIPT_BYTES_MAX,
+        });
+    }
+    handoffs::put_transcript(storage, id, body.to_vec()).await?;
+    handoffs::record_transcript(db, id, &body).await?;
+    Ok(NoContent)
+}
+
+/// Verifies a handoff's payloads against its manifest and frees the
+/// session to provision. Idempotent: a replayed manifest answers as a
+/// second call rather than a second machine.
+#[skyzen::openapi]
+async fn complete_handoff(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(manifest): Json<flyco_core::HandoffManifest>,
+    db: Db,
+    queue: Queue,
+) -> Outcome<NoContent> {
+    finish_handoff(&user, &params, &manifest, &db, &queue)
+        .await
+        .into()
+}
+
+async fn finish_handoff(
+    user: &CurrentUser,
+    params: &Params,
+    manifest: &flyco_core::HandoffManifest,
+    db: &Db,
+    queue: &Queue,
+) -> Result<NoContent, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    let detail = sessions::find(db, user.id, id).await?;
+    // A session that left `provisioning` — archived mid-upload, failed by
+    // the stall sweep — can never take a machine, so completing its
+    // handoff would mark it finished with nothing to run.
+    if detail.summary.state != SessionState::Provisioning {
+        return Err(ApiError::InvalidTransition {
+            from: detail.summary.state,
+            to: SessionState::Provisioning,
+        });
+    }
+    // `false` is a replayed manifest on a finished row: the machine's job
+    // was queued by the call that completed it, and a second enqueue would
+    // start a second build.
+    if handoffs::complete(db, id, manifest).await? {
+        let machine = machines::for_session(db, id)
+            .await?
+            .ok_or(ApiError::CorruptRecord(
+                "a session with no machine row reached handoff completion",
+            ))?;
+        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine.id)).await?;
+    }
+    Ok(NoContent)
+}
+
+/// Reads the handoff manifest behind the daemon's session, or 404s when
+/// the session is none — the boot path's way to learn there is a patch to
+/// apply and a transcript to land.
+#[skyzen::openapi]
+async fn get_handoff(
+    State(session): State<DaemonSession>,
+    db: Db,
+) -> Outcome<Json<flyco_core::HandoffView>> {
+    read_handoff(session.0, &db).await.map(Json).into()
+}
+
+async fn read_handoff(session: SessionId, db: &Db) -> Result<flyco_core::HandoffView, ApiError> {
+    handoffs::view_for_daemon(db, session)
+        .await?
+        .ok_or(ApiError::SessionNotFound)
+}
+
+/// Streams the handoff's uploaded transcript.
+#[skyzen::openapi]
+async fn get_handoff_transcript(
+    State(session): State<DaemonSession>,
+    storage: Storage,
+) -> Outcome<Response> {
+    read_handoff_transcript(session.0, &storage).await.into()
+}
+
+async fn read_handoff_transcript(
+    session: SessionId,
+    storage: &Storage,
+) -> Result<Response, ApiError> {
+    let Some(body) = handoffs::get_transcript(storage, session).await? else {
+        return Err(ApiError::SessionNotFound);
+    };
+    let mut response = Response::new(skyzen::Body::from(body));
+    // `application/octet-stream` and not anything narrower: the bytes are a
+    // Claude JSONL, a Codex rollout, or a Devin ATIF document depending on
+    // which harness the session came from.
+    response.headers_mut().insert(
+        skyzen::header::CONTENT_TYPE,
+        skyzen::header::HeaderValue::from_static("application/octet-stream"),
+    );
+    Ok(response)
+}
+
 // ── What the agent is allowed to know and to change ──
 //
 // The daemon's local MCP server is the only sanctioned way an agent touches
@@ -2907,6 +3126,8 @@ fn daemon_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/workdir-patch"
             .at(get_workdir_patch)
             .put(put_workdir_patch),
+        "/v1/sessions/{id}/handoff".at(get_handoff),
+        "/v1/sessions/{id}/handoff/transcript".at(get_handoff_transcript),
     ))
     .middleware(RequireDaemon::new())
     .into_route_nodes();
@@ -2957,6 +3178,9 @@ fn session_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/env"
             .at(get_session_env)
             .put(put_session_env),
+        "/v1/sessions/{id}/handoff/patch".put(put_handoff_patch),
+        "/v1/sessions/{id}/handoff/transcript".put(put_handoff_transcript),
+        "/v1/sessions/{id}/handoff/complete".post(complete_handoff),
         "/v1/sessions/{id}/repo-status".at(get_repo_status),
     ))
     .into_route_nodes();

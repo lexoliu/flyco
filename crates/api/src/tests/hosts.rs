@@ -431,6 +431,7 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            source: None,
             prompt: "audit the relay for dropped frames".to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),

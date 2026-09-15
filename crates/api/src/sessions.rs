@@ -1360,11 +1360,17 @@ struct StartupFailure {
 pub async fn stalled_provisions(db: &Db, at_unix: u64) -> Result<Vec<IdleSession>, ApiError> {
     let cutoff = at_unix.saturating_sub(PROVISION_DEADLINE_SECS);
     let provisioning = SessionState::Provisioning;
+    // Pending handoffs are excluded rather than merely given a longer
+    // clock: they sit in `provisioning` by design while the sender uploads,
+    // so "no machine progress" is the expected state and not a stall.
+    // `handoffs::abandoned` reaps them on their own deadline.
     Ok(sql!(
         db,
         "SELECT id, user_id FROM sessions \
          WHERE state = {provisioning} AND created_at_unix <= {cutoff} \
-         AND last_active_unix <= {cutoff}"
+         AND last_active_unix <= {cutoff} \
+         AND NOT EXISTS (SELECT 1 FROM handoffs h WHERE h.session_id = sessions.id \
+                         AND h.completed_at_unix IS NULL)"
     )
     .fetch_all()
     .await?)

@@ -72,6 +72,7 @@ async fn sign_in(kv: &Kv, db: &Db, user: CurrentUser) -> Caller {
 
 fn open(caller: &Caller, repo: &str, dollars: u64) -> CreateSession {
     CreateSession {
+        source: None,
         prompt: PROMPT.to_owned(),
         harness: HarnessKind::ClaudeCode,
         repo: repo.to_owned(),
@@ -201,6 +202,7 @@ async fn omitting_the_machine_lets_flyco_pick_one(ctx: TestContext, kv: Kv, db: 
         &client,
         &caller,
         &CreateSession {
+            source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
@@ -280,6 +282,7 @@ async fn a_session_cannot_be_opened_with_a_blank_prompt(ctx: TestContext, kv: Kv
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            source: None,
             prompt: "   \n ".to_owned(),
             ..open(&caller, REPO, 10)
         })
@@ -302,6 +305,7 @@ async fn a_long_prompt_is_shortened_into_the_title(ctx: TestContext, kv: Kv, db:
         &ctx.client(router),
         &caller,
         &CreateSession {
+            source: None,
             prompt: "x".repeat(flyco_core::MAX_SESSION_TITLE_CHARS * 3),
             ..open(&caller, REPO, 10)
         },
@@ -461,6 +465,7 @@ async fn flyco_cannot_choose_a_machine_without_a_deployable_linux_type(
         .post("/v1/sessions")
         .bearer(&token)
         .json(&CreateSession {
+            source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
@@ -1962,6 +1967,7 @@ async fn a_session_opened_with_a_model_carries_exactly_that_one(ctx: TestContext
         &client,
         &caller,
         &CreateSession {
+            source: None,
             model: Some(chosen.clone()),
             ..open(&caller, REPO, 10)
         },
@@ -1995,6 +2001,7 @@ async fn a_model_the_harness_does_not_offer_is_refused_before_anything_is_writte
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            source: None,
             model: Some(ModelChoice {
                 model: "nope".to_owned(),
                 effort: None,
@@ -2031,6 +2038,7 @@ async fn an_effort_the_model_does_not_accept_is_refused_too(ctx: TestContext, kv
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            source: None,
             model: Some(ModelChoice {
                 model: "haiku".to_owned(),
                 effort: Some("max".to_owned()),

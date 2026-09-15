@@ -108,6 +108,40 @@ pub enum Command {
         #[command(flatten)]
         spec: SessionSpec,
     },
+    /// Hand a local harness session off to a fresh cloud session: the
+    /// tracked working tree goes as a patch, the session's own summary as
+    /// the brief, and the full transcript as a file the cloud agent can
+    /// consult. Not a resume — the cloud session is a new conversation
+    /// that knows it moved machines.
+    Handoff {
+        /// Only look at this harness's local sessions; the default
+        /// considers all three.
+        #[arg(long, value_parser = parse_harness)]
+        from: Option<flyco_core::HarnessKind>,
+        /// The local session to send — Claude's session UUID, a Codex
+        /// thread id, a Devin session name. One candidate is taken
+        /// without asking; several on a TTY are picked, on a pipe this is
+        /// required.
+        #[arg(long)]
+        session: Option<String>,
+        /// Which harness drives the cloud session (default: the
+        /// source's own).
+        #[arg(long, value_parser = parse_harness)]
+        harness: Option<flyco_core::HarnessKind>,
+        /// An extra instruction appended to the handoff brief.
+        #[arg(long, short = 'm')]
+        message: Option<String>,
+        /// Skip asking the session to summarize itself; the transcript
+        /// alone carries the context.
+        #[arg(long)]
+        no_summary: bool,
+        /// Include untracked (but not ignored) files in the patch.
+        #[arg(long)]
+        include_untracked: bool,
+        /// The session's settings.
+        #[command(flatten)]
+        spec: SessionSpec,
+    },
     /// Re-attach to an existing session's TUI — re-entering its
     /// conversation — re-provisioning the machine when it was away.
     Resume {
@@ -406,6 +440,7 @@ impl SessionSpec {
                 effort: self.effort.clone(),
             }),
             permission_mode: self.permission_mode,
+            source: None,
         })
     }
 }

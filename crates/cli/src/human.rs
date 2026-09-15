@@ -206,6 +206,7 @@ async fn resolve(
                 effort: spec.effort.clone(),
             }),
             permission_mode: spec.permission_mode,
+            source: None,
         },
         env,
     ))
@@ -277,7 +278,7 @@ async fn pick_branch(api: &Api, repo: &str) -> Outcome<Option<String>> {
 /// Also answers the spot and disk questions, since they belong to the
 /// machine choice: spot only exists where the entry offers it, and the
 /// disk default is the platform's.
-async fn pick_machine(api: &Api, spec: &SessionSpec) -> Outcome<MachineChoice> {
+pub(crate) async fn pick_machine(api: &Api, spec: &SessionSpec) -> Outcome<MachineChoice> {
     let catalog: MachineCatalog = api.get("/v1/machines/catalog").await?;
     let default: Option<MachineDefault> = api.get("/v1/machines/default").await.ok();
     let entries: Vec<&flyco_core::MachineCatalogEntry> = catalog

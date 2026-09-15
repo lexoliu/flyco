@@ -180,6 +180,22 @@ async fn authenticated(
     finished(command, output)
 }
 
+/// Rewinds `workdir`'s checked-out branch to `commit`.
+///
+/// A handoff's patch was diffed against the local merge-base, not against
+/// the tip the clone landed on, so the branch is wound back before the
+/// patch applies. On a fresh clone the tree is clean, and `reset --hard`
+/// only moves the ref.
+///
+/// # Errors
+///
+/// Returns [`GitError`] if `commit` is not in the clone — a base a
+/// force-push removed between send and provision is a session failure,
+/// not something to patch around.
+pub async fn reset_to(workdir: &Path, commit: &str) -> Result<(), GitError> {
+    git(workdir, &["reset", "--hard", commit]).await.map(|_| ())
+}
+
 /// The working tree of a session checkout.
 pub trait WorkingTree: Send {
     /// Next `git status --short` summary, when it changes.

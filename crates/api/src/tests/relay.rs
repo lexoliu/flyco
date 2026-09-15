@@ -44,6 +44,7 @@ async fn open_session(client: &TestClient<Router>, caller: &Caller, repo: &str) 
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: repo.to_owned(),

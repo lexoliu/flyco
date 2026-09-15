@@ -162,6 +162,54 @@ impl Api {
         self.request(Verb::Put, path, Some(body), &[]).await
     }
 
+    /// `PUT path` with an opaque byte body, answering no document.
+    ///
+    /// The handoff uploads are the callers: a patch is not JSON and the
+    /// route answers `204`, so the JSON path does not fit.
+    ///
+    /// # Errors
+    /// Returns [`Failure`](crate::Failure) when the request cannot be sent
+    /// or the answer is a problem document.
+    pub async fn put_bytes(&self, path: &str, body: Vec<u8>) -> crate::Outcome<()> {
+        let url = self.url(path)?;
+        let mut client = zenwave::client();
+        let mut builder = client
+            .put(url.as_str())
+            .map_err(|error| transport("PUT", path, error))?;
+        if let Some(token) = &self.token {
+            builder = builder.bearer_auth(token.clone());
+        }
+        let response = with_timeout(async move { builder.bytes_body(body).await })
+            .await
+            .map_err(|error| refused_or_transport("PUT", path, error))?;
+        refused(path, response.status().as_u16(), response).await
+    }
+
+    /// `PUT path` streaming a file as the body — the transcript upload's
+    /// shape, so a large one is not read into memory twice.
+    ///
+    /// # Errors
+    /// Returns [`Failure`](crate::Failure) when the file cannot be opened,
+    /// the request cannot be sent, or the answer is a problem document.
+    pub async fn put_file(&self, path: &str, file: &std::path::Path) -> crate::Outcome<()> {
+        let url = self.url(path)?;
+        let mut client = zenwave::client();
+        let mut builder = client
+            .put(url.as_str())
+            .map_err(|error| transport("PUT", path, error))?;
+        if let Some(token) = &self.token {
+            builder = builder.bearer_auth(token.clone());
+        }
+        let builder = builder
+            .file_body(file)
+            .await
+            .map_err(|error| transport("PUT", path, error))?;
+        let response = with_timeout(async move { builder.await })
+            .await
+            .map_err(|error| refused_or_transport("PUT", path, error))?;
+        refused(path, response.status().as_u16(), response).await
+    }
+
     /// `DELETE path`.
     ///
     /// # Errors
@@ -338,6 +386,16 @@ fn retry_after(error: &zenwave::Error) -> Retry {
         }
         _ => Retry::Never,
     }
+}
+
+/// The status check the raw-body paths share: a success is `()`, anything
+/// else is a problem document to repeat.
+async fn refused(path: &str, status: u16, response: zenwave::Response) -> crate::Outcome<()> {
+    if (200..300).contains(&status) {
+        return Ok(());
+    }
+    let body = response.into_string().await.unwrap_or_default();
+    Err(problem("PUT", path, status, &body))
 }
 
 /// A transport-level failure: nothing was answered, so there is no problem

@@ -285,6 +285,7 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
@@ -474,6 +475,7 @@ async fn a_machine_the_account_cannot_deploy_is_refused_where_it_was_chosen(
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
@@ -1313,6 +1315,7 @@ async fn a_session_carries_the_branch_it_was_opened_on(
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
@@ -1366,6 +1369,7 @@ async fn a_branch_git_would_refuse_is_refused_where_it_was_typed(
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
@@ -1413,6 +1417,7 @@ async fn a_token_without_the_repo_scope_cannot_open_a_session(
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
@@ -1658,6 +1663,7 @@ async fn open_azure(
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
             repo: REPO.to_owned(),
