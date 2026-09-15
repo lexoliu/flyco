@@ -625,6 +625,9 @@ mod tests {
         )
         .await;
         let _ = daemon.kill();
+        // `kill` only sends the signal; `wait` is what reaps the child —
+        // without it the daemon stays a zombie until the test exits.
+        let _ = daemon.wait();
         outcome.expect("the recursive clone succeeds");
 
         assert!(

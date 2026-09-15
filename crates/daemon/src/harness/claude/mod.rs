@@ -61,7 +61,7 @@ use self::sidecar::{SidecarConfig, SidecarError};
 use self::store::{StoreError, TranscriptStore};
 use super::{Harness, HarnessSession, SessionOutput, StartRequest, Started, ToolApproval};
 use crate::config::ClaudeConfig;
-use crate::mount::{Mount, MountError};
+use crate::mount::{Mount, MountError, MountedServer};
 
 /// How long a clean shutdown may take before the child is killed.
 ///
@@ -844,23 +844,7 @@ impl<S: TranscriptStore> Driver<S> {
                 );
                 emit(&self.outputs, SessionOutput::Commands { commands }).await
             }
-            SidecarEvent::McpServers { servers } => {
-                // The session's whole point is an agent that can see what
-                // it is spending; one that cannot is stopped here rather
-                // than left to find out by trying.
-                if let Err(error) = crate::mount::verify(&servers) {
-                    // With the CLI's own words attached: a mount that came
-                    // up short is nearly always the CLI refusing a server
-                    // for a reason it states on stderr and nowhere else,
-                    // and the machine's journal goes with the machine.
-                    let note = managed_policy_note(self.managed.clone()).await;
-                    let refusal = self
-                        .with_recent_stderr(format!("{} {note}", ClaudeError::Mount(error.into())));
-                    self.fatal(refusal).await;
-                    return false;
-                }
-                true
-            }
+            SidecarEvent::McpServers { servers } => self.on_mcp_servers(servers).await,
             SidecarEvent::SdkMessage { message } => {
                 for event in self.normalizer.normalize(&message) {
                     if !emit(&self.outputs, SessionOutput::Event { event }).await {
@@ -902,6 +886,26 @@ impl<S: TranscriptStore> Driver<S> {
                 false
             }
         }
+    }
+
+    /// Checks the mounted servers before any turn runs.
+    ///
+    /// The session's whole point is an agent that can see what it is
+    /// spending; one that cannot is stopped here rather than left to find
+    /// out by trying.
+    async fn on_mcp_servers(&mut self, servers: Vec<MountedServer>) -> bool {
+        if let Err(error) = crate::mount::verify(&servers) {
+            // With the CLI's own words attached: a mount that came up
+            // short is nearly always the CLI refusing a server for a
+            // reason it states on stderr and nowhere else, and the
+            // machine's journal goes with the machine.
+            let note = managed_policy_note(self.managed.clone()).await;
+            let refusal =
+                self.with_recent_stderr(format!("{} {note}", ClaudeError::Mount(error.into())));
+            self.fatal(refusal).await;
+            return false;
+        }
+        true
     }
 
     async fn on_store_request(&mut self, id: StoreRequestId, op: StoreOp) -> bool {
