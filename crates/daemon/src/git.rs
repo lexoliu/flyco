@@ -595,6 +595,18 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("spawn git daemon");
+        // `spawn` returns before the daemon has bound its port — a client
+        // that lands first is refused, so the fixture waits for the
+        // listener it asked for.
+        let mut listening = false;
+        for _ in 0..50 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                listening = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(listening, "git daemon never listened on 127.0.0.1:{port}");
         let sub_url = format!("git://127.0.0.1:{port}/sub.git");
 
         let source = scratch.child("source");
