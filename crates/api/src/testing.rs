@@ -238,7 +238,9 @@ pub enum GithubGrantShape {
 }
 
 impl Default for TestGithub {
-    /// A token authorized the way flyco's own sign-in asks for.
+    /// A token from a sign-in that predates the Codespaces ask: `repo`
+    /// alone, which is what the direct link's scope check sends through the
+    /// OAuth flow.
     fn default() -> Self {
         Self {
             scopes: Some(&["repo"]),

@@ -679,13 +679,50 @@ describe("the consent road", () => {
     });
   });
 
-  it("signs in with GitHub and links codespaces with no choice to make", async () => {
+  it("links codespaces from the sign-in grant, never opening GitHub", async () => {
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    noProgrammes();
+    route(
+      (path, method) =>
+        method === "POST" && path === "/v1/providers/codespaces/link",
+      () => json(linkedAccount("codespaces", "lexoliu"), 201),
+    );
+    const flow = await choosePlace(/GitHub Codespaces/);
+    const { container, findByRole, onDone } = flow;
+    await answerBonus(flow, "GitHub Codespaces", {
+      newcomer: false,
+      student: false,
+    });
+
+    await findByRole("heading", { level: 1, name: "Link GitHub Codespaces" });
+    fireEvent.click(primary(container));
+
+    // The stored sign-in grant already carries the codespace scope: the
+    // link call is the whole flow, no tab opens and there is no choice.
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce(), {
+      timeout: 6000,
+    });
+    expect(opened).not.toHaveBeenCalled();
+    expect(postedTo("/v1/providers/codespaces/link")).toEqual({});
+  });
+
+  it("widens an old GitHub grant in a new tab, then links codespaces", async () => {
     const opened = vi.spyOn(window, "open").mockReturnValue(null);
     consentComesBack("codespaces", {
       state: "authorized",
       account: "lexoliu",
       choices: [],
     });
+    route(
+      (path, method) =>
+        method === "POST" && path === "/v1/providers/codespaces/link",
+      () =>
+        problem(
+          403,
+          "github-scope-missing",
+          "This sign-in predates flyco asking for codespace access.",
+        ),
+    );
     route(
       (path, method) =>
         method === "POST" &&
@@ -699,11 +736,15 @@ describe("the consent road", () => {
       student: false,
     });
 
-    await findByRole("heading", { level: 1, name: "Sign in with GitHub" });
-    expect(primary(container)).toHaveTextContent("Sign in with GitHub");
+    await findByRole("heading", { level: 1, name: "Link GitHub Codespaces" });
     fireEvent.click(primary(container));
     expect(
       await findByText(/Waiting for you to finish in the other tab/),
+    ).toBeInTheDocument();
+    // The fallback explains itself: this is the old grant being widened,
+    // not a second sign-in.
+    expect(
+      await findByText(/predates the Codespaces grant/),
     ).toBeInTheDocument();
     expect(opened).toHaveBeenCalledWith(
       "https://consent.codespaces.invalid/authorize",

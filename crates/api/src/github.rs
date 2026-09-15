@@ -40,29 +40,27 @@ const BRANCHES_PER_PAGE: u32 = 100;
 /// Header GitHub reports an OAuth token's granted scopes in.
 const SCOPES_HEADER: &str = "x-oauth-scopes";
 
-/// OAuth scopes flyco needs: session VMs clone and push the user's repos.
-pub const SCOPE: &str = "repo";
-
-/// OAuth scopes a Codespaces link needs.
+/// OAuth scopes flyco's sign-in asks for, in one grant.
 ///
-/// `repo` creates the private environment repository and writes its
-/// devcontainer, `codespace` creates and drives the codespaces on it, and
-/// `read:packages` is what lets GitHub pull the private session image into
-/// them — a codespace is created by the account's token before its own
-/// `GITHUB_TOKEN` exists, so the image grant has to ride on this one.
-pub const CODESPACES_SCOPE: &str = "repo codespace read:packages";
+/// `repo` clones and pushes the user's repos onto session machines;
+/// `codespace` creates and drives the codespaces a linked account
+/// provisions on; `read:packages` is what lets GitHub pull the private
+/// session image into them — a codespace is created by the account's token
+/// before its own `GITHUB_TOKEN` exists, so the image grant has to ride on
+/// this one. Asking once is what lets a Codespaces link run on the sign-in
+/// grant rather than a second OAuth hop: the extra two scopes sit dormant
+/// for a user who never links, and `repo` was already the wider ask.
+pub const SCOPE: &str = "repo codespace read:packages";
 
-/// The one scope of [`CODESPACES_SCOPE`] nothing else in flyco ever asks
-/// for — its presence is what distinguishes a link token from the sign-in
-/// token, so it is checked by name.
+/// The scope whose presence distinguishes a grant that can link Codespaces
+/// from one a pre-link sign-in wrote — it is checked by name.
 pub const CODESPACE_SCOPE: &str = "codespace";
 
 /// The single scope a session's machine cannot work without.
 ///
 /// `repo` is what lets a clone reach a *private* repository and what lets a
-/// push land, and it is the whole of what [`SCOPE`] asks for — so a stored
-/// token that does not carry it is one flyco cannot open a session with, no
-/// matter how recently it was minted.
+/// push land — so a stored token that does not carry it is one flyco cannot
+/// open a session with, no matter how recently it was minted.
 pub const REPO_SCOPE: &str = "repo";
 
 /// A GitHub account, as flyco stores it.
