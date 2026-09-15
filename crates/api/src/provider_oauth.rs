@@ -54,12 +54,15 @@ use crate::crypto::random_token;
 use crate::error::ApiError;
 use crate::expiring;
 use crate::extract::path_id;
-use crate::github::{CODESPACE_SCOPE, CODESPACES_SCOPE, GithubClient, GithubOauth as _};
+use crate::github::{
+    CODESPACE_SCOPE, GithubClient, GithubGrant, GithubOauth as _, GithubToken, REPO_SCOPE, SCOPE,
+};
 use crate::google::{self, GoogleClient, GoogleOauth as _};
 use crate::microsoft::{self, AzureTokens, MicrosoftClient, MicrosoftOauth as _};
 use crate::problem::Outcome;
 use crate::provider_accounts;
 use crate::respond::{Created, SeeOther};
+use crate::users;
 
 /// Where Microsoft returns the browser.
 ///
@@ -353,7 +356,7 @@ async fn begin(
         Provider::Codespaces => crate::oauth::authorize_url(
             config.github_client_id(),
             config.codespaces_oauth_redirect_uri(),
-            CODESPACES_SCOPE,
+            SCOPE,
             &state,
         ),
     };
@@ -1031,26 +1034,134 @@ async fn finish_codespaces(
         ));
     };
 
-    // The environment repository is built before the account is linked:
-    // `link`'s own verify re-reads it, so creating it here is what makes
-    // the credential the finish records one that already provisions.
+    let view = link_codespaces_account(
+        config,
+        codespaces,
+        clouds,
+        kv,
+        db,
+        queue,
+        user,
+        &attempt.account,
+        GithubGrant {
+            token: GithubToken {
+                access_token: token,
+            },
+            refresh_token,
+            expires_at_unix: token_expires_at_unix,
+        },
+        owner_id,
+        included_core_hours,
+    )
+    .await?;
+
+    kv.delete(&attempt.key).await?;
+    Ok(view)
+}
+
+/// `POST /v1/providers/codespaces/link` — links the account straight from
+/// the sign-in grant.
+///
+/// Sign-in has asked for the Codespaces scope set since grants began
+/// carrying it, so the grant a user signed in with usually *is* the
+/// credential the link stores — this route proves it with the scopes
+/// `GET /user` reports, then does the finish's own work without the
+/// OAuth attempt. A grant that predates the ask answers
+/// [`ApiError::GithubScopeMissing`], which is what sends the page through
+/// the OAuth flow instead.
+#[skyzen::openapi]
+pub async fn codespaces_link(
+    State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
+    State(codespaces): State<Codespaces>,
+    State(clouds): State<Clouds>,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) -> Outcome<Created<Json<ProviderAccountView>>> {
+    link_codespaces(
+        &config,
+        &github,
+        &codespaces,
+        &clouds,
+        &kv,
+        &db,
+        &queue,
+        user.id,
+    )
+    .await
+    .map(|view| Created(Json(view)))
+    .into()
+}
+
+async fn link_codespaces(
+    config: &ApiConfig,
+    github: &GithubClient,
+    codespaces: &Codespaces,
+    clouds: &Clouds,
+    kv: &Kv,
+    db: &Db,
+    queue: &Queue,
+    user: UserId,
+) -> Result<ProviderAccountView, ApiError> {
+    let grant = users::github_grant(db, config, github, user).await?;
+    let identity = github.current_user(&grant.token).await?;
+    for scope in [REPO_SCOPE, CODESPACE_SCOPE] {
+        if !identity.grants_scope(scope) {
+            return Err(ApiError::GithubScopeMissing { scope });
+        }
+    }
+    link_codespaces_account(
+        config,
+        codespaces,
+        clouds,
+        kv,
+        db,
+        queue,
+        user,
+        &identity.user.login,
+        grant,
+        identity.user.id,
+        flyco_provider::codespaces::included_core_hours(
+            identity.user.plan.as_ref().map(|plan| plan.name.as_str()),
+        ),
+    )
+    .await
+}
+
+/// The work both doors into a Codespaces link share once each has proven
+/// the grant carries what provisioning needs: the environment repository is
+/// created first — `link`'s own verify re-reads it, so building it here is
+/// what makes the recorded credential one that already provisions.
+async fn link_codespaces_account(
+    config: &ApiConfig,
+    codespaces: &Codespaces,
+    clouds: &Clouds,
+    kv: &Kv,
+    db: &Db,
+    queue: &Queue,
+    user: UserId,
+    login: &str,
+    grant: GithubGrant,
+    owner_id: i64,
+    included_core_hours: u32,
+) -> Result<ProviderAccountView, ApiError> {
     let environment = codespaces
         .ensure_environment(
-            &crate::github::GithubToken {
-                access_token: token.clone(),
-            },
-            &attempt.account,
+            &grant.token,
+            login,
             &flyco_provider::codespaces::devcontainer_json(&config.control_plane_url()),
         )
         .await
         .map_err(crate::clouds::rejected)?;
     tracing::info!(
-        account = %attempt.account,
+        account = %login,
         repository = %environment.full_name,
         "prepared a Codespaces environment repository"
     );
 
-    let view = provider_accounts::link(
+    provider_accounts::link(
         db,
         config,
         clouds,
@@ -1060,11 +1171,11 @@ async fn finish_codespaces(
         LinkProvider {
             // The GitHub login is the name the user recognises: it is the
             // one account this credential can ever act as.
-            label: attempt.account.clone(),
+            label: login.to_owned(),
             credentials: ProviderCredentials::Codespaces {
-                token,
-                refresh_token,
-                token_expires_at_unix,
+                token: grant.token.access_token,
+                refresh_token: grant.refresh_token,
+                token_expires_at_unix: grant.expires_at_unix,
                 env_repo: environment.full_name,
                 env_repo_id: environment.id,
                 owner_id,
@@ -1072,10 +1183,7 @@ async fn finish_codespaces(
             },
         },
     )
-    .await?;
-
-    kv.delete(&attempt.key).await?;
-    Ok(view)
+    .await
 }
 
 /// The three public callbacks.
@@ -1092,7 +1200,7 @@ pub fn public_routes() -> Vec<RouteNode> {
     .into_route_nodes()
 }
 
-/// The nine authenticated routes of the three cloud sign-ins.
+/// The ten authenticated routes of the three cloud sign-ins.
 pub fn routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/providers/azure/oauth/start".post(azure_start),
@@ -1101,6 +1209,7 @@ pub fn routes() -> Vec<RouteNode> {
         "/v1/providers/gcp/oauth/start".post(gcp_start),
         "/v1/providers/gcp/oauth/{attempt_id}".at(gcp_poll),
         "/v1/providers/gcp/oauth/{attempt_id}/finish".post(gcp_finish),
+        "/v1/providers/codespaces/link".post(codespaces_link),
         "/v1/providers/codespaces/oauth/start".post(codespaces_start),
         "/v1/providers/codespaces/oauth/{attempt_id}".at(codespaces_poll),
         "/v1/providers/codespaces/oauth/{attempt_id}/finish".post(codespaces_finish),

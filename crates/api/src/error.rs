@@ -958,6 +958,20 @@ pub enum ApiError {
         repo: RepoSlug,
     },
 
+    /// The stored GitHub grant predates a scope flyco now asks for.
+    ///
+    /// A grant is only widened by authorizing GitHub again, so this is the
+    /// answer that sends the Codespaces link through its OAuth path rather
+    /// than a failure to report.
+    #[error(
+        "this GitHub sign-in predates the `{scope}` scope; authorize GitHub again to grant it",
+        status = StatusCode::FORBIDDEN
+    )]
+    GithubScopeMissing {
+        /// The scope the stored grant is missing.
+        scope: &'static str,
+    },
+
     /// An environment variable name is not one a shell can export.
     #[error(
         "`{0}` is not an environment variable name: use letters, digits and `_`, not starting with a digit",
@@ -1463,6 +1477,7 @@ impl ApiError {
             Self::SessionRepoCapReached { .. } => "session-repo-cap-reached",
             Self::InvalidBranch { .. } => "invalid-branch",
             Self::GithubTokenInsufficient { .. } => "github-token-insufficient",
+            Self::GithubScopeMissing { .. } => "github-scope-missing",
             Self::InvalidEnvKey(_) => "invalid-env-key",
             Self::InvalidTitle { .. } => "invalid-title",
             Self::InvalidBudget => "invalid-budget",

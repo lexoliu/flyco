@@ -3596,6 +3596,63 @@
         }
       }
     },
+    "/v1/providers/codespaces/link": {
+      "post": {
+        "summary": "`POST /v1/providers/codespaces/link` — links the account straight from the sign-in grant.",
+        "description": "`POST /v1/providers/codespaces/link` — links the account straight from\nthe sign-in grant.\n\nSign-in has asked for the Codespaces scope set since grants began\ncarrying it, so the grant a user signed in with usually *is* the\ncredential the link stores — this route proves it with the scopes\n`GET /user` reports, then does the finish's own work without the\nOAuth attempt. A grant that predates the ask answers\n[`ApiError::GithubScopeMissing`], which is what sends the page through\nthe OAuth flow instead.",
+        "operationId": "flyco_api::provider_oauth::codespaces_link",
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One row of `GET /v1/providers`.",
+                  "required": [
+                    "id",
+                    "kind",
+                    "label",
+                    "linked_at_unix"
+                  ],
+                  "properties": {
+                    "host_id": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/Uuid",
+                          "description": "The enrolled machine this account *is*, when it is one.\n\n`None` for every cloud account. A host is a provider account\n(docs/host-enrollment.md), which is what keeps the catalog, session\ncreation and the usage panel free of a special case for it — but a\nclient holding both `GET /v1/hosts` and `GET /v1/providers` still has\nto know which account is which machine, and an id is the only honest\nway to say so. Inferring it from [`CloudProviderKind::Host`] would\nname the kind and not the machine."
+                        }
+                      ]
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier used to unlink the account."
+                    },
+                    "kind": {
+                      "$ref": "#/components/schemas/CloudProviderKind",
+                      "description": "Which provider it is."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "Label supplied when it was linked.\n\nFor a machine the user owns this is the host's own label, kept in\nstep by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so\na rename that moved only one of them would leave the compute chip\ncalling a machine something its card no longer does."
+                    },
+                    "linked_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was linked, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/providers/codespaces/oauth/callback": {
       "get": {
         "summary": "`GET /v1/providers/codespaces/oauth/callback` — records what GitHub said.",

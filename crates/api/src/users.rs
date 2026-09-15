@@ -160,6 +160,23 @@ fn access_token(config: &ApiConfig, row: &GrantRow) -> Result<GithubToken, ApiEr
     })
 }
 
+/// Opens a stored grant row into all three halves.
+///
+/// The Codespaces link copies the grant whole — the account's own renewal
+/// runs on its stored refresh half, so the copy needs more than the bearer
+/// token [`access_token`] hands out for a single call.
+fn grant(config: &ApiConfig, row: &GrantRow) -> Result<GithubGrant, ApiError> {
+    Ok(GithubGrant {
+        token: access_token(config, row)?,
+        refresh_token: row
+            .refresh_token_enc
+            .as_deref()
+            .map(|sealed| config.token_cipher().open(sealed))
+            .transpose()?,
+        expires_at_unix: row.token_expires_at_unix,
+    })
+}
+
 /// Whether the stored grant is close enough to its end to renew first.
 ///
 /// A grant GitHub never expires — and every row written before flyco kept
@@ -170,12 +187,13 @@ fn due_for_renewal(row: &GrantRow) -> bool {
         .is_some_and(|at| at <= now_unix().saturating_add(REFRESH_WINDOW_SECONDS))
 }
 
-/// Opens a user's stored GitHub grant for a call flyco makes on their
-/// behalf.
+/// Opens a user's stored GitHub grant whole for a call flyco makes on
+/// their behalf.
 ///
-/// The one place the seal is broken, because everything that acts as the
-/// user needs exactly this: the repository picker, the branch picker, and
-/// the provisioning queue building a machine's checkout.
+/// The one place the seal is broken: [`github_token`] takes just the
+/// bearer half for a single call, while the Codespaces link copies the
+/// grant into the account's own credentials, whose renewal runs on its
+/// stored refresh half.
 ///
 /// A grant whose access token is nearing its end is renewed here rather
 /// than handed out to fail: GitHub rotates the pair on every redemption, so
@@ -192,17 +210,17 @@ fn due_for_renewal(row: &GrantRow) -> bool {
 /// row is only ever written by a completed sign-in, which always stores one
 /// — [`ApiError::GithubTokenRevoked`] if the grant can no longer be
 /// renewed, or a database or cryptography error otherwise.
-pub async fn github_token(
+pub async fn github_grant(
     db: &Db,
     config: &ApiConfig,
     github: &impl GithubOauth,
     id: UserId,
-) -> Result<GithubToken, ApiError> {
+) -> Result<GithubGrant, ApiError> {
     let row = grant_row(db, id).await?.ok_or(ApiError::CorruptRecord(
         "the user has no stored GitHub token",
     ))?;
     if !due_for_renewal(&row) {
-        return access_token(config, &row);
+        return grant(config, &row);
     }
 
     let Some(sealed_refresh) = row.refresh_token_enc.clone() else {
@@ -213,11 +231,11 @@ pub async fn github_token(
         if row.token_expires_at_unix.is_some_and(|at| at <= now_unix()) {
             return Err(ApiError::GithubTokenRevoked);
         }
-        return access_token(config, &row);
+        return grant(config, &row);
     };
 
     let refresh_token = config.token_cipher().open(&sealed_refresh)?;
-    let grant = match github
+    let renewed = match github
         .refresh(
             config.github_client_id(),
             config.github_client_secret(),
@@ -236,20 +254,20 @@ pub async fn github_token(
             return if current.token_enc == row.token_enc {
                 Err(ApiError::GithubTokenRevoked)
             } else {
-                access_token(config, &current)
+                grant(config, &current)
             };
         }
         Err(error) => return Err(error.into()),
     };
 
     let cipher = config.token_cipher();
-    let sealed_token = cipher.seal(&grant.token.access_token)?;
-    let sealed_refresh = grant
+    let sealed_token = cipher.seal(&renewed.token.access_token)?;
+    let sealed_refresh = renewed
         .refresh_token
         .as_deref()
         .map(|refresh| cipher.seal(refresh))
         .transpose()?;
-    let expires_at = grant.expires_at_unix;
+    let expires_at = renewed.expires_at_unix;
     let written = sql!(
         db,
         "UPDATE users SET \
@@ -269,9 +287,28 @@ pub async fn github_token(
         let current = grant_row(db, id).await?.ok_or(ApiError::CorruptRecord(
             "the user has no stored GitHub token",
         ))?;
-        return access_token(config, &current);
+        return grant(config, &current);
     }
 
     tracing::info!(user = %id, "renewed a GitHub grant before handing it out");
-    Ok(grant.token)
+    Ok(renewed)
+}
+
+/// Opens the access token half of a user's stored GitHub grant.
+///
+/// The one place the seal is broken for a call flyco makes on the user's
+/// behalf — see [`github_grant`], whose renewal this shares.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] exactly as [`github_grant`] does.
+pub async fn github_token(
+    db: &Db,
+    config: &ApiConfig,
+    github: &impl GithubOauth,
+    id: UserId,
+) -> Result<GithubToken, ApiError> {
+    github_grant(db, config, github, id)
+        .await
+        .map(|grant| grant.token)
 }

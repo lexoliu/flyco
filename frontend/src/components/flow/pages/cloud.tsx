@@ -19,9 +19,11 @@ import {
   finishAzureOauth,
   finishCodespacesOauth,
   finishGcpOauth,
+  linkCodespaces,
   pollProviderOauth,
   startProviderOauth,
 } from "../../../api/client";
+import { ApiProblem } from "../../../api/problem";
 import type { CloudConsent, ConsentCloud } from "../../../lib/flow";
 import { PROVIDER_LABEL } from "../../../lib/providers";
 import type { PageComponent, Primary } from "../page";
@@ -65,8 +67,8 @@ const VENDOR: Record<
   },
   codespaces: {
     name: "GitHub",
-    signIn: "Sign in with GitHub",
-    lede: "GitHub's own sign-in page opens in a new tab — the same account flyco signs you in with, asked this time for its Codespaces. Flyco creates one private repository, flyco-sessions, to carry the session image; sessions run inside your account's own codespaces and spend its monthly free hours first.",
+    signIn: "Link GitHub Codespaces",
+    lede: "The GitHub account you signed in with already carries the grant — linking is a click, not another sign-in. Flyco creates one private repository, flyco-sessions, to carry the session image; sessions run inside your account's own codespaces and spend its monthly free hours first.",
     // Codespaces' finish takes no choice; these fields go unread.
     choice: "",
     choiceLede: "",
@@ -83,6 +85,12 @@ export const CloudSignIn: PageComponent<{
   const [failure, setFailure] = createSignal<unknown>(null);
   /** What the vendor said when the browser came back without a sign-in. */
   const [refusal, setRefusal] = createSignal<string | null>(null);
+  /**
+   * Whether the GitHub tab that just opened is widening an old grant: the
+   * direct link answered `github-scope-missing`, so the sign-in predates
+   * the codespace ask and the OAuth hop is what adds it.
+   */
+  const [widening, setWidening] = createSignal(false);
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
@@ -148,6 +156,25 @@ export const CloudSignIn: PageComponent<{
       onClick: async () => {
         setFailure(null);
         setRefusal(null);
+        if (props.page.provider === "codespaces") {
+          try {
+            await linkCodespaces();
+            await readiness.refresh();
+            props.advance({});
+            return;
+          } catch (error) {
+            if (
+              !(error instanceof ApiProblem) ||
+              !error.type.endsWith("/github-scope-missing")
+            ) {
+              setFailure(error);
+              return;
+            }
+            // The sign-in grant predates the codespace ask — the OAuth hop
+            // below is what adds the scope to it.
+            setWidening(true);
+          }
+        }
         const started = await startProviderOauth(props.page.provider);
         openInNewTab(started.authorize_url);
         setAttempt(started.attempt_id);
@@ -161,6 +188,12 @@ export const CloudSignIn: PageComponent<{
     body: (
       <>
         <p class={styles.lede}>{vendor.lede}</p>
+        <Show when={widening()}>
+          <p class={styles.hint}>
+            This sign-in predates the Codespaces grant — the GitHub tab adds
+            it.
+          </p>
+        </Show>
         <Show when={attempt() !== null}>
           <Waiting>Waiting for you to finish in the other tab…</Waiting>
         </Show>

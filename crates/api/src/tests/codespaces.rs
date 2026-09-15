@@ -26,8 +26,8 @@ use crate::openai::CodexClient;
 use crate::provider_accounts::StoredSecrets;
 use crate::session;
 use crate::testing::{
-    CLIENT_ID, CLOUD_CODE, CODESPACES_ENV_REPO, GITHUB_ACCESS_TOKEN, GITHUB_LOGIN, TestClaude,
-    TestCodespaces, TestCodex, TestGithub, TestGoogle, TestMicrosoft, migrate,
+    CLIENT_ID, CLOUD_CODE, CODESPACES_ENV_REPO, GITHUB_ACCESS_TOKEN, GITHUB_ID, GITHUB_LOGIN,
+    TestClaude, TestCodespaces, TestCodex, TestGithub, TestGoogle, TestMicrosoft, migrate,
     seed_codespaces_account, seed_session, seed_user, test_config, test_rooms, test_router_full,
 };
 use crate::vendors::Vendors;
@@ -358,6 +358,104 @@ async fn finishing_before_the_browser_comes_back_is_refused(ctx: TestContext, kv
     assert_eq!(
         response.json::<Problem>().kind,
         "https://flyco.dev/problems/provider-oauth-not-authorized"
+    );
+}
+
+// ── Linking from the sign-in grant ──
+
+const LINK: &str = "/v1/providers/codespaces/link";
+
+#[skyzen::test]
+async fn a_sign_in_grant_carrying_the_scope_links_without_an_attempt(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let (client, user, token) = signed_in(&ctx, &kv, &db).await;
+
+    let response = client.post(LINK).bearer(&token).send().await;
+    response.assert_status(201);
+    let view: ProviderAccountView = response.json();
+    assert_eq!(view.kind, CloudProviderKind::Codespaces);
+    assert_eq!(view.label, GITHUB_LOGIN);
+
+    // The sealed credential is the sign-in grant itself — the same token,
+    // refresh and expiry the OAuth finish would have stored from an attempt.
+    let user_id = user.id;
+    let sealed: String = sql!(
+        db,
+        "SELECT credentials_enc FROM provider_accounts WHERE user_id = {user_id}"
+    )
+    .fetch_scalar()
+    .await
+    .expect("read the sealed credential");
+    assert!(!sealed.contains(GITHUB_ACCESS_TOKEN));
+    let plain = test_config()
+        .token_cipher()
+        .open(&sealed)
+        .expect("the credential opens under this deployment's key");
+    let stored: StoredSecrets =
+        serde_json::from_str(&plain).expect("the sealed document is stored secrets");
+    let ProviderCredentials::Codespaces {
+        token: stored_token,
+        env_repo,
+        owner_id,
+        included_core_hours,
+        ..
+    } = &stored.credentials
+    else {
+        panic!("a Codespaces link stored {:?}", stored.credentials.kind());
+    };
+    assert_eq!(stored_token, GITHUB_ACCESS_TOKEN);
+    assert_eq!(env_repo, CODESPACES_ENV_REPO);
+    assert_eq!(*owner_id, GITHUB_ID);
+    assert_eq!(*included_core_hours, 180, "the fixture account is on Pro");
+}
+
+#[skyzen::test]
+async fn a_grant_without_the_scope_is_sent_to_the_oauth_flow(ctx: TestContext, kv: Kv, db: Db) {
+    // A sign-in grant written before flyco asked for `codespace`.
+    let (client, _user, token) = signed_in_with(
+        &ctx,
+        &kv,
+        &db,
+        TestGithub::default(),
+        TestCodespaces::succeeding(),
+    )
+    .await;
+
+    let response = client.post(LINK).bearer(&token).send().await;
+    response.assert_status(403);
+    assert_eq!(
+        response.json::<Problem>().kind,
+        "https://flyco.dev/problems/github-scope-missing"
+    );
+
+    let listed = client.get("/v1/providers").bearer(&token).send().await;
+    assert!(
+        listed.json::<Vec<ProviderAccountView>>().is_empty(),
+        "a grant that cannot drive a codespace links nothing"
+    );
+}
+
+#[skyzen::test]
+async fn a_direct_link_github_refuses_links_nothing(ctx: TestContext, kv: Kv, db: Db) {
+    let (client, _user, token) = signed_in_with(
+        &ctx,
+        &kv,
+        &db,
+        TestGithub::codespaces_authorized(),
+        // The public flyco-sessions refusal again: the environment is where
+        // a credential's honesty is proven, whichever door it came through.
+        TestCodespaces::refusing(),
+    )
+    .await;
+
+    let response = client.post(LINK).bearer(&token).send().await;
+    response.assert_status(422);
+    assert_eq!(
+        response.json::<Problem>().kind,
+        "https://flyco.dev/problems/provider-rejected-credentials"
     );
 }
 

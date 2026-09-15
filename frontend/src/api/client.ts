@@ -926,6 +926,17 @@ export async function finishCodespacesOauth(
   );
 }
 
+/**
+ * Links Codespaces straight from the sign-in grant — no GitHub round-trip.
+ *
+ * Fails with an `ApiProblem` of type `github-scope-missing` when the grant
+ * predates flyco asking for the scope, which is the caller's cue to run the
+ * OAuth flow that adds it.
+ */
+export async function linkCodespaces(): Promise<ProviderAccountView> {
+  return requestJson("POST", "/v1/providers/codespaces/link", { json: {} });
+}
+
 // --- /v1/memory ----------------------------------------------------------------
 
 export function listMemory(filter?: {

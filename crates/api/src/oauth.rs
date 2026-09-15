@@ -175,6 +175,7 @@ mod tests {
     use url::Url;
 
     use super::state_key;
+    use crate::github::SCOPE;
     use crate::testing::{
         CLIENT_ID, GITHUB_ACCESS_TOKEN, GITHUB_ID, GITHUB_LOGIN, REDIRECT_URI, migrated_router,
         test_config,
@@ -194,7 +195,7 @@ mod tests {
             .map(|(key, value)| (key.into_owned(), value.into_owned()))
             .collect();
         assert!(query.contains(&("client_id".to_owned(), CLIENT_ID.to_owned())));
-        assert!(query.contains(&("scope".to_owned(), "repo".to_owned())));
+        assert!(query.contains(&("scope".to_owned(), SCOPE.to_owned())));
         assert!(query.contains(&("redirect_uri".to_owned(), REDIRECT_URI.to_owned())));
 
         query
