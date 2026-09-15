@@ -127,19 +127,15 @@ FLYCO_AZURE_OAUTH_CLIENT_ID = "${FLYCO_AZURE_OAUTH_CLIENT_ID}"
 # `<FLYCO_REDIRECT_URI origin>/v1/providers/gcp/oauth/callback`.
 FLYCO_GOOGLE_OAUTH_CLIENT_ID = "${FLYCO_GOOGLE_OAUTH_CLIENT_ID}"
 
-# wrangler 4 custom hostname. `route` is the older workers-route form and
-# does not create DNS; this does. skyzen-cli 0.2.1 does not model
-# `custom_domain`, so it goes through the untyped wrangler overlay.
+# `dev.flyco.dev` belongs to the `flyco` Pages project, which serves the PWA
+# and proxies `/v1/*` and `/install/*` here — the Worker keeps no hostname of
+# its own, so nothing below routes a domain at it.
 # Workers Logs: every invocation's logs and exceptions are stored and
 # searchable in the dashboard (Workers & Pages → flyco → Logs), not only
 # visible while someone runs `wrangler tail`. Sampling 1 keeps all of them.
 [cloudflare.raw.observability]
 enabled = true
 head_sampling_rate = 1
-
-[[cloudflare.raw.routes]]
-pattern = "${FLYCO_CUSTOM_DOMAIN}"
-custom_domain = true
 
 [cloudflare.service.auth_kv]
 binding = "AUTH_KV"
