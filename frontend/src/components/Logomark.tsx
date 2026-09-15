@@ -19,6 +19,7 @@ import { siAnthropic, siGithub, siGooglecloud } from "simple-icons";
 import type { CloudProviderKind, HarnessKind } from "../api/client";
 import awsAsset from "../assets/logos/aws.svg?raw";
 import azureAsset from "../assets/logos/azure.svg?raw";
+import devinAsset from "../assets/logos/devin.svg?raw";
 import openaiAsset from "../assets/logos/openai.svg?raw";
 import styles from "./Logomark.module.css";
 
@@ -59,6 +60,7 @@ function iconMark(icon: { title: string; path: string }): Mark {
 export const GITHUB_MARK: Mark = iconMark(siGithub);
 export const ANTHROPIC_MARK: Mark = iconMark(siAnthropic);
 export const OPENAI_MARK: Mark = assetMark("OpenAI", openaiAsset);
+export const DEVIN_MARK: Mark = assetMark("Devin", devinAsset);
 export const AWS_MARK: Mark = assetMark("Amazon Web Services", awsAsset);
 export const AZURE_MARK: Mark = assetMark("Microsoft Azure", azureAsset);
 export const GOOGLE_CLOUD_MARK: Mark = iconMark(siGooglecloud);
@@ -67,6 +69,7 @@ export const GOOGLE_CLOUD_MARK: Mark = iconMark(siGooglecloud);
 export const HARNESS_MARK: Record<HarnessKind, Mark> = {
   claude_code: ANTHROPIC_MARK,
   codex: OPENAI_MARK,
+  devin: DEVIN_MARK,
 };
 
 /**
@@ -77,6 +80,7 @@ export const HARNESS_MARK: Record<HarnessKind, Mark> = {
  * instead, and is deliberately absent here.
  */
 export const PROVIDER_MARK: Partial<Record<CloudProviderKind, Mark>> = {
+  codespaces: GITHUB_MARK,
   azure: AZURE_MARK,
   aws: AWS_MARK,
   gcp: GOOGLE_CLOUD_MARK,

@@ -207,6 +207,7 @@ mod worker {
     use super::{accrue, deliver};
     use crate::app;
     use crate::catalog;
+    use crate::codespaces::{Codespaces, LiveCodespaces};
     use crate::config::{ApiConfig, binding};
     use crate::rooms::{HostRooms, Rooms};
     use crate::usage_limits;
@@ -275,6 +276,27 @@ mod worker {
         // Queues cap delivery delay at twelve hours and a weekly window
         // resets further out than that.
         usage_limits::sweep(&db, &config, &rooms, &hosts, &queue_for_waking, at_unix)
+            .await
+            .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
+        // A codespace's state changes underneath flyco — GitHub stops it on
+        // its own idle clock, a user deletes it from github.com — and the
+        // only truth about either is asking, once a minute, of every
+        // codespace the rows believe they hold.
+        crate::codespaces::reconcile(
+            &db,
+            &config,
+            &rooms,
+            &Codespaces::Live(LiveCodespaces::new()),
+        )
+        .await
+        .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
+        // What GitHub does for a codespace on its own clock, flyco does for
+        // every other machine on this one: an active session that has said
+        // nothing for thirty minutes has its compute released and its disk
+        // kept, and the next message starts it again. After the reconcile,
+        // so a codespace GitHub already suspended is classified by it
+        // rather than asked about twice.
+        app::suspend_idle(&db, &config, &rooms, &hosts, at_unix)
             .await
             .map_err(|error| skyzen_cloudflare::CfEventError::Runtime(error.to_string()))?;
         // Last, so it sees what the sweeps above have just ended.

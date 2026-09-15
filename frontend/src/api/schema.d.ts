@@ -1049,6 +1049,120 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/providers/codespaces/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/providers/codespaces/bootstrap` — a running codespace asks for its session's daemon configuration.
+         * @description `POST /v1/providers/codespaces/bootstrap` — a running codespace asks for
+         *     its session's daemon configuration.
+         *
+         *     Public because it cannot be anything else: the caller is a machine
+         *     GitHub just built, which holds no flyco credential. What it presents is
+         *     the `GITHUB_TOKEN` injected into it, and that is checked against the
+         *     environment repository rather than against a flyco store — a token that
+         *     can read `owner/flyco-sessions` is one GitHub minted for a codespace on
+         *     it.
+         */
+        post: operations["flyco_api::codespaces::bootstrap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/codespaces/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /v1/providers/codespaces/oauth/callback` — records what GitHub said.
+         * @description `GET /v1/providers/codespaces/oauth/callback` — records what GitHub
+         *     said.
+         *
+         *     Public, for the reason [`azure_callback`] is. Same OAuth app as the
+         *     sign-in, on its own registered URI.
+         */
+        get: operations["flyco_api::provider_oauth::codespaces_callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/codespaces/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/providers/codespaces/oauth/start` — begins a GitHub sign-in for the `codespace` scope.
+         * @description `POST /v1/providers/codespaces/oauth/start` — begins a GitHub sign-in
+         *     for the `codespace` scope.
+         */
+        post: operations["flyco_api::provider_oauth::codespaces_start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/codespaces/oauth/{attempt_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /v1/providers/codespaces/oauth/{attempt_id}` — polls it once.
+         * @description `GET /v1/providers/codespaces/oauth/{attempt_id}` — polls it once.
+         */
+        get: operations["flyco_api::provider_oauth::codespaces_poll"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/codespaces/oauth/{attempt_id}/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/providers/codespaces/oauth/{attempt_id}/finish` — creates the environment repository and links the account.
+         * @description `POST /v1/providers/codespaces/oauth/{attempt_id}/finish` — creates the
+         *     environment repository and links the account.
+         */
+        post: operations["flyco_api::provider_oauth::codespaces_finish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/providers/gcp/oauth/callback": {
         parameters: {
             query?: never;
@@ -2902,7 +3016,7 @@ export interface components {
          * @description A supported compute provider.
          * @enum {string}
          */
-        CloudProviderKind: "azure" | "aws" | "gcp" | "host";
+        CloudProviderKind: "azure" | "aws" | "gcp" | "codespaces" | "host";
         /** @description Narrows the cloud usage panel to one provider. */
         CloudUsageFilter: {
             provider?: null | components["schemas"]["CloudProviderKind"];
@@ -2929,6 +3043,34 @@ export interface components {
             remaining_credit?: null | components["schemas"]["Usd"];
             /** @description Spend the provider has metered so far this period. */
             spent: components["schemas"]["Usd"];
+        };
+        /**
+         * @description Answer of `POST /v1/providers/codespaces/bootstrap`.
+         *
+         *     The rendered `flycod` configuration document for the session this
+         *     codespace serves — credentials included, which is why it travels sealed
+         *     at rest and only ever leaves the control plane to the codespace that
+         *     proves it is that machine.
+         */
+        CodespacesBootstrap: {
+            /** @description The daemon's `config.toml`, ready to write. */
+            config_toml: string;
+        };
+        /**
+         * @description Request body of `POST /v1/providers/codespaces/bootstrap`.
+         *
+         *     Called by `flycod codespace` — the `postStart` of a running codespace,
+         *     authenticated by the `GITHUB_TOKEN` the codespace is injected with rather
+         *     than by a flyco credential: the token proves the caller is the account's
+         *     own compute, and `codespace_name` names which session's configuration it
+         *     is entitled to fetch.
+         */
+        CodespacesBootstrapRequest: {
+            /**
+             * @description The codespace's own name, from its `CODESPACE_NAME` environment
+             *     variable — which is also the machine's provider-native id.
+             */
+            codespace_name: string;
         };
         /**
          * @description Body of a `GET /v1/harness-accounts/codex/oauth/{attempt_id}` that found
@@ -3581,6 +3723,16 @@ export interface components {
             /** @description Which of the authorized subscriptions to provision into. */
             subscription_id: string;
         };
+        /**
+         * @description Request body of `POST /v1/providers/codespaces/oauth/{attempt_id}/finish`.
+         *
+         *     Empty where Azure's and Google's are not: a subscription and a project
+         *     are things an account holds many of and the user must pick between,
+         *     while a Codespaces link has nothing to choose — flyco creates the one
+         *     private repository it provisions on, `flyco-sessions`, inside whichever
+         *     GitHub account signed in.
+         */
+        FinishCodespacesOauth: Record<string, never>;
         /** @description Request body of `POST /v1/providers/gcp/oauth/{attempt_id}/finish`. */
         FinishGcpOauth: {
             /** @description Which of the authorized projects to provision into. */
@@ -3743,6 +3895,11 @@ export interface components {
             kind: "codex_oauth";
             /** @description Redeemed for a new set once the access token is near its end. */
             refresh_token: string;
+        } | {
+            /** @description The `devi…` key Devin's API server issues. */
+            key: string;
+            /** @enum {string} */
+            kind: "devin_api_key";
         };
         /**
          * @description A normalized event extracted from either harness's native stream.
@@ -3827,15 +3984,23 @@ export interface components {
             claude_code: components["schemas"]["Availability"];
             /** @description Status on Codex. */
             codex: components["schemas"]["Availability"];
+            /** @description Status on Devin. */
+            devin: components["schemas"]["Availability"];
             /** @description The capability. */
             feature: components["schemas"]["Feature"];
         };
         /**
-         * @description The coding harness driving a session. Flyco supports exactly these two
+         * @description The coding harness driving a session. Flyco supports exactly these
          *     and never builds its own.
+         *
+         *     This is the *product* vocabulary — what a session row names, what an
+         *     account is linked to, what the picker offers. How each one is driven
+         *     is [`DriverKind`]'s question: every harness but Claude Code reaches
+         *     its agent over ACP, so a Codex session and a Devin session are the
+         *     same daemon machinery pointed at a different program.
          * @enum {string}
          */
-        HarnessKind: "claude_code" | "codex";
+        HarnessKind: "claude_code" | "codex" | "devin";
         /**
          * @description One thing a session's daemon saw happen to the harness account driving
          *     it, as `POST /v1/sessions/{id}/harness-observations` records it.
@@ -4074,7 +4239,7 @@ export interface components {
          *     and cleared when the session's daemon reaches the control plane again.
          * @enum {string}
          */
-        InterruptedReason: "spot_reclaimed";
+        InterruptedReason: "spot_reclaimed" | "suspended" | "machine_lost";
         /**
          * @description What came of one container job on a host.
          *
@@ -4757,6 +4922,43 @@ export interface components {
             kind: "gcp";
             /** @description The whole service-account key document. */
             service_account_json: string;
+        } | {
+            /**
+             * @description The private environment repository every codespace is created
+             *     on, `owner/name`.
+             *
+             *     Created by flyco at link time, holding only the devcontainer
+             *     that boots a session machine. A codespace must belong to a
+             *     repository, and this one being private is what keeps the
+             *     sessions inside it the user's own.
+             */
+            env_repo: string;
+            /**
+             * Format: int64
+             * @description The environment repository's immutable numeric id, which is what
+             *     the create call names it by.
+             */
+            env_repo_id: number;
+            /**
+             * Format: int32
+             * @description Core-hours of compute the account's plan does not bill for per
+             *     month: 120 on GitHub Free, 180 on Pro.
+             *
+             *     Recorded at link time from the plan `GET /user` reported. A plan
+             *     change between links is seen on the next one; the grant is per
+             *     account and per month, so every entry of this catalog shares it.
+             */
+            included_core_hours: number;
+            /** @enum {string} */
+            kind: "codespaces";
+            /**
+             * Format: int64
+             * @description The account's immutable numeric user id — the join key, because
+             *     logins are renameable.
+             */
+            owner_id: number;
+            /** @description The account's OAuth access token. */
+            token: string;
         } | {
             /** @description The enrolled machine this account provisions onto. */
             host: components["schemas"]["Uuid"];
@@ -6733,6 +6935,8 @@ export interface operations {
                         claude_code: components["schemas"]["Availability"];
                         /** @description Status on Codex. */
                         codex: components["schemas"]["Availability"];
+                        /** @description Status on Devin. */
+                        devin: components["schemas"]["Availability"];
                         /** @description The capability. */
                         feature: components["schemas"]["Feature"];
                     }[];
@@ -7940,6 +8144,174 @@ export interface operations {
                     /** @description Which of the authorized subscriptions to provision into. */
                     subscription_id: string;
                 };
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        host_id?: null | components["schemas"]["Uuid"];
+                        /** @description Identifier used to unlink the account. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Which provider it is. */
+                        kind: components["schemas"]["CloudProviderKind"];
+                        /**
+                         * @description Label supplied when it was linked.
+                         *
+                         *     For a machine the user owns this is the host's own label, kept in
+                         *     step by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so
+                         *     a rename that moved only one of them would leave the compute chip
+                         *     calling a machine something its card no longer does.
+                         */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When it was linked, seconds since the Unix epoch.
+                         */
+                        linked_at_unix: number;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::codespaces::bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description The codespace's own name, from its `CODESPACE_NAME` environment
+                     *     variable — which is also the machine's provider-native id.
+                     */
+                    codespace_name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The daemon's `config.toml`, ready to write. */
+                        config_toml: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::codespaces_callback": {
+        parameters: {
+            query: {
+                code?: string | null;
+                error?: string | null;
+                error_description?: string | null;
+                state: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The browser is sent on to the flyco web app. */
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::provider_oauth::codespaces_start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Names this sign-in for the poll and the finish that end it. */
+                        attempt_id: components["schemas"]["Uuid"];
+                        /** @description Where the browser approves the grant. */
+                        authorize_url: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::codespaces_poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        state: "pending";
+                    } | {
+                        /** @description The account that signed in, as the vendor names it. */
+                        account: string;
+                        /** @description What that account may link, in the vendor's own order. */
+                        choices: components["schemas"]["ProviderOauthChoice"][];
+                        /** @enum {string} */
+                        state: "authorized";
+                    } | {
+                        /** @description The problem slug the return page was sent, e.g. `microsoft-rejected`. */
+                        problem: string;
+                        /** @description What the vendor said, in its own words. */
+                        reason: string;
+                        /** @enum {string} */
+                        state: "failed";
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::codespaces_finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
             };
         };
         responses: {

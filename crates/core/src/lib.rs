@@ -51,10 +51,10 @@ pub use env::{EnvDocument, EnvEntry, NETWORK_CONTROL_WARNING, UpdateEnv};
 pub use github::{BranchPage, BranchSummary, RepoSummary};
 pub use harness::{
     Availability, ClaudeOauthStart, CodexOauthPending, CodexOauthStart, CompleteClaudeOauth,
-    ContextCost, ContextUsage, ContextWindow, Feature, HarnessAccountView, HarnessCredentialInput,
-    HarnessEvent, HarnessFeature, HarnessKind, LinkHarnessAccount, ModelChoice, ModelChoiceError,
-    ModelOption, PermissionMode, ReportModels, ReportUsage, UsageLimitHit, UsageReport,
-    availability, builtin_models, matrix,
+    ContextCost, ContextUsage, ContextWindow, DriverKind, Feature, HarnessAccountView,
+    HarnessCredentialInput, HarnessEvent, HarnessFeature, HarnessKind, LinkHarnessAccount,
+    ModelChoice, ModelChoiceError, ModelOption, PermissionMode, ReportModels, ReportUsage,
+    UsageLimitHit, UsageReport, availability, builtin_models, matrix,
 };
 pub use host::{
     ENROLLMENT_TOKEN_TTL_SECONDS, EnrollHost, EnrolledHost, Enrollment, EnrollmentToken,
@@ -79,9 +79,10 @@ pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};
 pub use money::Usd;
 pub use problem::{Problem, ProblemExtensions};
 pub use providers::{
-    AwsIamPolicy, FinishAzureOauth, FinishGcpOauth, LinkProvider, ProviderAccountView,
-    ProviderBonusHint, ProviderCredentials, ProviderOauthChoice, ProviderOauthProgress,
-    ProviderOauthStart, QuickstartAnswers,
+    AwsIamPolicy, CodespacesBootstrap, CodespacesBootstrapRequest, FinishAzureOauth,
+    FinishCodespacesOauth, FinishGcpOauth, LinkProvider, ProviderAccountView, ProviderBonusHint,
+    ProviderCredentials, ProviderOauthChoice, ProviderOauthProgress, ProviderOauthStart,
+    QuickstartAnswers,
 };
 pub use push::{PushKeys, PushSubscription, PushSubscriptionView, VapidPublicKey};
 pub use release::{PublishedBinary, PublishedObject};
@@ -89,10 +90,11 @@ pub use repo::{BranchName, BranchNameError, RepoSlug, RepoStatus};
 pub use session::{
     ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, HarnessSessionView, HarnessTui,
     InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS,
-    PROVISION_DEADLINE_SECS, PausedReason, RunShell, SendMessage, SessionActivity, SessionDetail,
-    SessionState, SessionSummary, SessionTransitionError, TerminalInput, TerminalSize, TurnPage,
-    TurnSummary, USAGE_LIMIT_CONTINUE_MESSAGE, USAGE_LIMIT_STOP_AFTER_SECS,
-    USAGE_LIMIT_WAKE_LEAD_SECS, UpdateSession, UsageLimitPause, excerpt,
+    PROVISION_DEADLINE_SECS, PausedReason, RunShell, SUSPEND_AFTER_IDLE_SECS, SendMessage,
+    SessionActivity, SessionDetail, SessionState, SessionSummary, SessionTransitionError,
+    TerminalInput, TerminalSize, TurnPage, TurnSummary, USAGE_LIMIT_CONTINUE_MESSAGE,
+    USAGE_LIMIT_STOP_AFTER_SECS, USAGE_LIMIT_WAKE_LEAD_SECS, UpdateSession, UsageLimitPause,
+    excerpt,
 };
 pub use skills::{SkillScope, SkillView};
 pub use usage::{

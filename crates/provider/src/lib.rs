@@ -47,6 +47,7 @@ mod login_key;
 pub use login_key::{LoginKey, LoginKeyError};
 pub mod clock;
 pub mod cloud_init;
+pub mod codespaces;
 pub mod datetime;
 pub mod flycod;
 pub mod gcp;
@@ -62,7 +63,7 @@ use flyco_core::{BranchName, MachineId, MachineOrigin, PermissionMode, RepoSlug,
 use serde::{Deserialize, Serialize};
 
 pub use clock::{MonotonicClock, SystemClock, SystemWallClock, WallClock};
-pub use flycod::{ClaudeCredential, CodexCredential, HarnessCredential};
+pub use flycod::{ClaudeCredential, CodexCredential, DevinCredential, HarnessCredential};
 pub use http::{HttpError, HttpRequest, HttpResponse, HttpTransport, LiveTransport};
 
 /// Which capacity market a running machine actually holds.
@@ -485,6 +486,15 @@ pub enum ProviderError {
         /// Provider-native message.
         message: String,
     },
+    /// The provider no longer holds the resource the request named.
+    ///
+    /// A 404 on a lifecycle call is this, not a rejection: a codespace
+    /// past its retention is *deleted*, and starting it again will never
+    /// work — the caller's move is to rebuild rather than retry, which is
+    /// what carrying it as its own variant rather than inside
+    /// [`Rejected`](Self::Rejected) lets it decide.
+    #[error("the resource no longer exists: {0}")]
+    Gone(String),
     /// The provider answered something this driver cannot make sense of.
     #[error("the provider's response was not usable: {0}")]
     Malformed(&'static str),

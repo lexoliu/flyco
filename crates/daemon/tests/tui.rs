@@ -8,7 +8,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use flyco_core::{HarnessKind, MachineOrigin, PermissionMode, SessionId};
+use flyco_core::{DriverKind, MachineOrigin, PermissionMode, SessionId};
 use flyco_daemon::config::DaemonConfig;
 use flyco_daemon::tui::HarnessTui;
 use flyco_provider::flycod::{self, CLAUDE_CONFIG_DIR, CODEX_HOME};
@@ -169,37 +169,26 @@ async fn a_missing_claude_binary_is_an_error_not_a_guess() {
 }
 
 #[tokio::test]
-async fn a_codex_launch_carries_the_home_and_the_overrides() {
+async fn a_codex_launch_names_the_configured_tui_under_the_agents_environment() {
     let mut bootstrap = bootstrap(HarnessCredential::Codex(CodexCredential::ApiKey {
         key: OPENAI_KEY.to_owned(),
     }));
     bootstrap.permission_mode = PermissionMode::AcceptEdits;
     let config = parse(&bootstrap);
-    assert_eq!(config.harness, HarnessKind::Codex);
+    assert_eq!(config.harness, DriverKind::Acp);
 
     let tui = HarnessTui::resolve(&config).await;
     let command = tui.command(false).expect("the launch resolves");
     let argv = args_of(&command);
 
-    assert_eq!(
-        argv[0], "codex",
-        "the configured bin, PATH-resolved: {argv:?}"
-    );
-    for pair in [
-        ["-c", "model=\"sonnet\""],
-        ["-c", "model_reasoning_effort=\"high\""],
-        ["-c", "approval_policy=\"untrusted\""],
-        ["-c", "sandbox_mode=\"workspace-write\""],
-    ] {
-        assert!(
-            argv.windows(2).any(|w| w == pair),
-            "{pair:?} missing from {argv:?}"
-        );
-    }
+    // The TUI is the agent's own — `codex`, fresh — with the session's
+    // model and mode already applied to the session it re-enters, so the
+    // launch itself takes no overrides.
+    assert_eq!(argv, ["codex"], "the [acp.tui] program and args: {argv:?}");
     assert_eq!(
         command.get_env("CODEX_HOME"),
         Some(OsStr::new(CODEX_HOME)),
-        "the isolated home holding auth.json"
+        "the isolated home holding auth.json reaches the TUI"
     );
     // The key itself never appears: it lives in `auth.json` under
     // CODEX_HOME, written at provisioning.
@@ -210,17 +199,19 @@ async fn a_codex_launch_carries_the_home_and_the_overrides() {
 }
 
 #[tokio::test]
-async fn a_codex_resume_names_the_thread_or_the_latest() {
+async fn a_codex_resume_names_the_thread_or_the_picker() {
     let mut bootstrap = bootstrap(HarnessCredential::Codex(CodexCredential::Inherit));
     let config = parse(&bootstrap);
 
+    // Nothing recorded: the `{session}` placeholder is dropped, and bare
+    // `codex resume` lands on the agent's own conversation picker.
     let tui = HarnessTui::resolve(&config).await;
     let argv = args_of(&tui.command(true).expect("the resume resolves"));
-    assert_eq!(&argv[1..3], ["resume", "--last"], "{argv:?}");
+    assert_eq!(argv, ["codex", "resume"], "{argv:?}");
 
     bootstrap.resume_session_id = Some("a-codex-thread-id".to_owned());
     let config = parse(&bootstrap);
     let tui = HarnessTui::resolve(&config).await;
     let argv = args_of(&tui.command(true).expect("the resume resolves"));
-    assert_eq!(&argv[1..3], ["resume", "a-codex-thread-id"], "{argv:?}");
+    assert_eq!(argv, ["codex", "resume", "a-codex-thread-id"], "{argv:?}");
 }

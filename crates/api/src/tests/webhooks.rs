@@ -47,6 +47,7 @@ async fn configured_router(db: &Db) -> Router {
         GithubClient::Fake(TestGithub::default()),
         test_vendors(),
         test_clouds(),
+        crate::testing::test_codespaces(),
         db.clone(),
         Queue::new(InMemoryQueue::new()),
     )

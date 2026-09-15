@@ -14,15 +14,15 @@
 //! depends on being carried.
 
 use flyco_core::{
-    BillingMinimum, HarnessKind, MachineOrigin, PermissionMode, Runtime, SessionId, Usd,
+    BillingMinimum, DriverKind, MachineOrigin, PermissionMode, Runtime, SessionId, Usd,
 };
-use flyco_daemon::config::{ClaudeAuth, CodexAuth, DaemonConfig};
+use flyco_daemon::config::{ClaudeAuth, DaemonConfig};
 use flyco_provider::flycod::{
     self, CLAUDE_CONFIG_DIR, CLAUDE_MANAGED_DIR, CLAUDE_PROJECT_DIR_NAME, CODEX_HOME, WORKDIR,
 };
 use flyco_provider::{
-    ClaudeCredential, CodexCredential, DaemonBootstrap, GitIdentity, HarnessCredential,
-    RepoCheckout,
+    ClaudeCredential, CodexCredential, DaemonBootstrap, DevinCredential, GitIdentity,
+    HarnessCredential, RepoCheckout,
 };
 
 const CONTROL_PLANE: &str = "https://flyco.dev/";
@@ -79,7 +79,7 @@ fn a_provisioned_configuration_is_one_this_daemon_accepts() {
     let config = parse(&bootstrap);
 
     assert_eq!(config.session, bootstrap.session);
-    assert_eq!(config.harness, HarnessKind::ClaudeCode);
+    assert_eq!(config.harness, DriverKind::ClaudeCode);
     assert_eq!(config.workdir, std::path::PathBuf::from(WORKDIR));
     assert_eq!(
         config.claude.as_ref().expect("claude").permission_mode,
@@ -99,7 +99,7 @@ fn it_carries_the_model_the_session_was_opened_on_into_the_table_that_harness_re
     assert_eq!(claude.effort.as_deref(), Some("high"));
 
     let codex = parse(&codex(CodexCredential::Inherit));
-    let codex = codex.codex.expect("codex");
+    let codex = codex.acp.expect("acp");
     assert_eq!(codex.model.as_deref(), Some("sonnet"));
     assert_eq!(codex.effort.as_deref(), Some("high"));
 }
@@ -286,23 +286,47 @@ fn a_provisioned_codex_configuration_is_one_this_daemon_accepts() {
         account_id: "acc_01JD".to_owned(),
     }));
 
-    assert_eq!(config.harness, HarnessKind::Codex);
+    assert_eq!(config.harness, DriverKind::Acp);
     assert!(config.claude.is_none());
-    let CodexAuth::ChatGpt {
-        id_token,
-        access_token,
-        refresh_token,
-        account_id,
-        isolation,
-    } = &config.codex.as_ref().expect("codex").auth
-    else {
-        panic!("a ChatGPT grant must parse back as one");
-    };
-    assert_eq!(id_token, "header.payload.signature");
-    assert_eq!(access_token, "chatgpt-access");
-    assert_eq!(refresh_token, "chatgpt-refresh");
-    assert_eq!(account_id, "acc_01JD");
-    assert_eq!(isolation.home, std::path::PathBuf::from(CODEX_HOME));
+    let acp = config.acp.as_ref().expect("acp");
+    assert_eq!(acp.agent, "codex");
+
+    // The grant arrives as the `auth.json` the daemon writes under the
+    // isolated `CODEX_HOME`, carrying the same four values Codex's own
+    // file holds.
+    let auth = acp
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("auth.json"))
+        .expect("a ChatGPT grant writes auth.json");
+    let auth: serde_json::Value = serde_json::from_str(&auth.contents).expect("auth.json is JSON");
+    assert_eq!(auth["auth_mode"], "chatgpt");
+    assert_eq!(auth["tokens"]["id_token"], "header.payload.signature");
+    assert_eq!(auth["tokens"]["access_token"], "chatgpt-access");
+    assert_eq!(auth["tokens"]["refresh_token"], "chatgpt-refresh");
+    assert_eq!(auth["tokens"]["account_id"], "acc_01JD");
+    assert!(
+        auth["last_refresh"].is_string(),
+        "the grant's freshness stamp is written with it"
+    );
+
+    // And the MCP registry lands as the root-owned `config.toml` beside it.
+    let registry = acp
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("config.toml"))
+        .expect("the MCP registry is always written");
+    assert_eq!(
+        registry.path.parent().expect("a directory"),
+        std::path::PathBuf::from(CODEX_HOME).as_path()
+    );
+    let registry: toml::Value = toml::from_str(&registry.contents).expect("config.toml is TOML");
+    assert!(
+        registry["mcp_servers"]["flyco"]["required"]
+            .as_bool()
+            .unwrap_or(false),
+        "a thread must not open without flyco's server"
+    );
 }
 
 #[test]
@@ -311,9 +335,42 @@ fn a_provisioned_codex_api_key_arrives_with_its_isolated_home() {
         key: "sk-proj-provisioned".to_owned(),
     }));
 
-    let CodexAuth::ApiKey { key, isolation } = &config.codex.as_ref().expect("codex").auth else {
-        panic!("an API key must parse back as one");
-    };
-    assert_eq!(key, "sk-proj-provisioned");
-    assert_eq!(isolation.home, std::path::PathBuf::from(CODEX_HOME));
+    let acp = config.acp.as_ref().expect("acp");
+    let auth = acp
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("auth.json"))
+        .expect("an API key writes auth.json");
+    let auth: serde_json::Value = serde_json::from_str(&auth.contents).expect("auth.json is JSON");
+    assert_eq!(auth["OPENAI_API_KEY"], "sk-proj-provisioned");
+    assert_eq!(acp.env["CODEX_HOME"].as_str(), CODEX_HOME);
+}
+
+#[test]
+fn a_provisioned_devin_configuration_is_the_same_table_pointed_at_devin() {
+    let config = parse(&bootstrap(HarnessCredential::Devin(
+        DevinCredential::ApiKey {
+            key: "dv_provisioned".to_owned(),
+        },
+    )));
+
+    assert_eq!(config.harness, DriverKind::Acp);
+    let acp = config.acp.as_ref().expect("acp");
+    assert_eq!(acp.agent, "devin");
+    assert_eq!(acp.args, ["acp"]);
+
+    let credentials = acp
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("credentials.toml"))
+        .expect("an API key writes credentials.toml");
+    let parsed: toml::Value =
+        toml::from_str(&credentials.contents).expect("credentials.toml is TOML");
+    assert_eq!(parsed["windsurf_api_key"].as_str(), Some("dv_provisioned"));
+    // The file lands under the XDG data root the agent's env points at.
+    let data_home = acp.env.get("XDG_DATA_HOME").expect("XDG_DATA_HOME is set");
+    assert!(
+        credentials.path.starts_with(data_home),
+        "credentials.toml lands where the configured XDG_DATA_HOME reads it"
+    );
 }

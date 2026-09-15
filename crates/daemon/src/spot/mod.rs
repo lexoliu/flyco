@@ -145,9 +145,10 @@ pub fn watch(provider: Option<CloudProviderKind>) -> Notices {
         Some(CloudProviderKind::Aws) => spawn(aws::InstanceAction::live(), notices),
         Some(CloudProviderKind::Gcp) => spawn(gcp::Preempted::live(), notices),
         // A container on hardware the user owns is started and stopped by
-        // its owner: there is no metadata endpoint, and nothing to poll for
-        // a notice that cannot arrive.
-        Some(CloudProviderKind::Host) | None => {
+        // its owner, and a codespace is suspended by GitHub with no metadata
+        // endpoint to watch: there is nothing to poll for a notice that
+        // cannot arrive.
+        Some(CloudProviderKind::Host | CloudProviderKind::Codespaces) | None => {
             tracing::info!("this machine holds capacity nobody can reclaim; watching no endpoint");
             drop(notices);
         }

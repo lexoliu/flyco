@@ -57,7 +57,8 @@ describe("the agents list", () => {
     await findByRole("heading", { level: 1, name: LIST });
     expect(getByRole("radio", { name: /^Claude Code/ })).toBeInTheDocument();
     expect(getByRole("radio", { name: /^Codex/ })).toBeInTheDocument();
-    expect(getAllByText(/^Not linked/)).toHaveLength(2);
+    expect(getByRole("radio", { name: /^Devin/ })).toBeInTheDocument();
+    expect(getAllByText(/^Not linked/)).toHaveLength(3);
     // Nothing here chooses the agent tasks run on.
     expect(queryByText(/Which agent should/)).not.toBeInTheDocument();
     expect(primary(container)).toHaveTextContent("Next");
@@ -348,7 +349,7 @@ describe("Claude Code, opened for it alone", () => {
     expect(primary(container)).toBeDisabled();
     expect(primary(container)).toHaveAttribute(
       "title",
-      "Paste a key Anthropic issued to continue",
+      "Paste a key the vendor issued to continue",
     );
 
     type(field, "sk-ant-oat01-a-setup-token");

@@ -51,6 +51,22 @@ fn authorize_endpoint() -> Url {
     Url::parse(AUTHORIZE_URL).expect("the GitHub authorize URL is a valid absolute URL")
 }
 
+/// GitHub's authorize URL for one redirect URI and scope set.
+///
+/// The sign-in and the Codespaces link both begin at the same endpoint;
+/// what differs between them is which callback the browser returns to and
+/// what the token is granted.
+pub(crate) fn authorize_url(client_id: &str, redirect_uri: &Url, scope: &str, state: &str) -> Url {
+    let mut authorize_url = authorize_endpoint();
+    authorize_url
+        .query_pairs_mut()
+        .append_pair("client_id", client_id)
+        .append_pair("redirect_uri", redirect_uri.as_str())
+        .append_pair("scope", scope)
+        .append_pair("state", state);
+    authorize_url
+}
+
 fn state_key(state: &str) -> String {
     let mut key = String::with_capacity(17 + state.len());
     key.push_str("auth:oauth-state:");
@@ -68,13 +84,12 @@ async fn begin(config: &ApiConfig, kv: &Kv) -> Result<Json<AuthorizeUrl>, ApiErr
     let state = random_token()?;
     expiring::put(kv, &state_key(&state), &(), STATE_TTL_SECONDS).await?;
 
-    let mut authorize_url = authorize_endpoint();
-    authorize_url
-        .query_pairs_mut()
-        .append_pair("client_id", config.github_client_id())
-        .append_pair("redirect_uri", config.redirect_uri().as_str())
-        .append_pair("scope", SCOPE)
-        .append_pair("state", &state);
+    let authorize_url = authorize_url(
+        config.github_client_id(),
+        config.redirect_uri(),
+        SCOPE,
+        &state,
+    );
 
     tracing::debug!("issued a GitHub authorize URL");
     Ok(Json(AuthorizeUrl {

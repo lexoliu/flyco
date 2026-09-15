@@ -9,7 +9,9 @@
 # The flyco session this daemon serves.
 session = "9d0f4b1a-3b7e-4a3e-9e1a-4c2f8b6d7a10"
 
-# Which harness to drive: "claude_code" or "codex".
+# Which driver supervises the agent: "claude_code" for the Agent SDK
+# sidecar, "acp" for the generic driver every other harness — Codex,
+# Devin, anything that speaks the Agent Client Protocol — takes.
 harness = "claude_code"
 
 # Where the agent works.
@@ -127,6 +129,47 @@ dir = "/tmp/flycod-dev/sidecar"
 
 # The bun executable; a bare name is resolved through PATH.
 bun = "bun"
+
+# An ACP session spells its agent out here instead of [claude]/[sidecar].
+# `harness = "acp"` plus this table drives any ACP-compatible agent — the
+# provisioner renders Codex and Devin into this same shape, so nothing in
+# the driver knows a vendor name. `modes` says how each flyco permission
+# mode reaches the agent: a `set_mode` id and/or ordered config-option
+# writes, and a mode with no entry is refused rather than approximated.
+#
+# [acp]
+# agent = "devin"
+# program = "devin"
+# args = ["acp"]
+# env = { XDG_DATA_HOME = "/var/lib/flyco/devin/data" }
+# model = "swe-2-max"
+# effort_option = "reasoning_effort"
+# permission_mode = "default"
+#
+# [acp.methods.compact]
+# call = "thread/compact/start"
+# params = { threadId = "<session>" }
+#
+# [acp.methods.usage]
+# call = "account/rateLimits/read"
+#
+# [acp.methods.mcp_status]
+# call = "mcpServerStatus/list"
+# params = { threadId = "<session>", detail = "toolsAndAuthOnly" }
+#
+# [[acp.files]]
+# path = "/var/lib/flyco/devin/data/devin/credentials.toml"
+# contents = "…"
+#
+# [acp.modes.default]
+# set_mode = "smart"
+#
+# [acp.modes.plan]
+# options = [{ option = "collaboration_mode", value = "plan" }]
+#
+# [acp.tui]
+# program = "devin"
+# resume_args = ["--resume"]
 
 # The user's registered MCP servers, written by the provisioner from
 # `GET /v1/mcp-servers`. This is the whole set the session gets beside

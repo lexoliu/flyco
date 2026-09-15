@@ -139,14 +139,24 @@ const MIGRATING: StatusView = {
 };
 
 /**
- * The clause after `Interrupted`, for a session that lost its machine.
+ * The clause after `Interrupted`, for each reason this build knows.
  *
- * `undefined` for a session that never lost one, and for a reason this
- * build has not heard of: an unknown token is a newer control plane, and
- * rendering it raw would put a snake_case identifier in front of a person.
+ * `undefined` for a session whose interruption predates reasons, and for
+ * a reason this build has not heard of: an unknown token is a newer
+ * control plane, and rendering it raw would put a snake_case identifier
+ * in front of a person.
  */
-function lostItsMachine(reason: InterruptedReason | null | undefined): string | undefined {
-  return reason === "spot_reclaimed" ? "spot reclaimed" : undefined;
+function interruptedBecause(reason: InterruptedReason | null | undefined): string | undefined {
+  switch (reason) {
+    case "spot_reclaimed":
+      return "spot reclaimed";
+    case "suspended":
+      return "suspended";
+    case "machine_lost":
+      return "machine lost";
+    default:
+      return undefined;
+  }
 }
 
 /**
@@ -205,23 +215,23 @@ export function deriveStatus(
   now: number,
   live: LiveSignals = {},
 ): StatusView {
-  const lost = lostItsMachine(session.interrupted_reason);
+  const because = interruptedBecause(session.interrupted_reason);
   if (session.state === "provisioning") {
-    // Provisioning that follows a reclamation is flyco putting the session
-    // back on the disk it never lost, which is a different thing to a user
-    // than a machine being built for the first time (docs/ux.md §6). The
-    // reason is the only thing that tells the two apart, and it is cleared
-    // the moment the session's daemon is back.
+    // Provisioning that follows an interruption is flyco putting the
+    // session back, which is a different thing to a user than a machine
+    // being built for the first time (docs/ux.md §6). The reason is the
+    // only thing that tells the two apart, and it is cleared the moment
+    // the session's daemon is back.
     // Each counts from where its own wait began: a first machine from when
     // the session was opened, a replacement from when the old one went.
-    return lost === undefined
+    return because === undefined
       ? { ...BASE.provisioning, detail: elapsedSince(session.created_at_unix, now) }
       : { ...MIGRATING, detail: elapsedSince(session.last_active_unix, now) };
   }
   if (session.state === "interrupted") {
     // A session interrupted for a reason this build does not know reads as
     // `Interrupted` with nothing after it, rather than with a raw token.
-    return lost === undefined ? BASE.interrupted : { ...BASE.interrupted, detail: lost };
+    return because === undefined ? BASE.interrupted : { ...BASE.interrupted, detail: because };
   }
   if (session.state === "paused") {
     // Two unrelated waits share one lifecycle state, and only the reason
@@ -371,6 +381,12 @@ const RAISE_BUDGET: SessionNoticeAction = { kind: "raise_budget", label: "Raise 
 export interface NoticeFacts {
   /** Why a failed session failed, in the provider's own words if it gave any. */
   failure: string | null | undefined;
+  /**
+   * Why an interrupted session was interrupted, when the control plane
+   * said. What was lost decides what resuming gives back: a suspended
+   * machine keeps its disk and a lost one does not.
+   */
+  interruptedReason: InterruptedReason | null | undefined;
   /** What the session may spend, in microdollars: the sum a pause is about. */
   budgetLimit: number | undefined;
   /**
@@ -446,10 +462,27 @@ export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNoti
         RESUME,
       );
     case "interrupted":
-      return notice(
-        "The machine is gone and the session is waiting. Resuming puts it back on its own disk, with the conversation where it stopped.",
-        RESUME,
-      );
+      // What was lost decides what a resume gives back, so each reason
+      // says its own: a suspended machine still exists on its own disk, a
+      // lost one's disk went with it, and a reclaimed one is already being
+      // restarted — the resume there is a nudge, not the plan.
+      switch (facts.interruptedReason) {
+        case "suspended":
+          return notice(
+            "Flyco stopped the machine after the session sat idle; the disk is kept. Send a message and it starts again on its own — or resume it yourself.",
+            RESUME,
+          );
+        case "machine_lost":
+          return notice(
+            "The provider no longer has this machine. Resuming builds a new one and reopens the conversation where it stopped.",
+            RESUME,
+          );
+        default:
+          return notice(
+            "The machine is gone and the session is waiting. Resuming puts it back on its own disk, with the conversation where it stopped.",
+            RESUME,
+          );
+      }
     case "migrating":
       // The one stopped state with nothing to offer and nothing to worry
       // about: flyco is already doing the thing a `Resume` would ask for.
@@ -515,13 +548,12 @@ export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNoti
  * wants to type is the next thing to do when it does. The control plane
  * holds that message against the pause and sends it instead of its own
  * continuation, so the composer stays open and says so.
+ *
+ * `interrupted` is the last absence, and the reason is stronger still: a
+ * message sent to one is what starts its machine again (docs/ux.md §9.9),
+ * so the composer is the way out rather than a box that waits.
  */
-export const REFUSING: ReadonlySet<SessionStatus> = new Set([
-  "failed",
-  "interrupted",
-  "paused",
-  "archived",
-]);
+export const REFUSING: ReadonlySet<SessionStatus> = new Set(["failed", "paused", "archived"]);
 
 /** Whether a status belongs on the archived tab rather than the main list. */
 export function isArchived(status: SessionStatus): boolean {

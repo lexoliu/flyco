@@ -87,10 +87,15 @@ pub async fn resume(api: &Api, id: Option<String>, last: bool, mode: out::Mode) 
 /// reach a machine, or the bridge fails.
 pub async fn pick_harness(api: &Api, mode: out::Mode) -> Outcome<Exit> {
     require_terminal()?;
-    let harnesses = [HarnessKind::ClaudeCode, HarnessKind::Codex];
+    let harnesses = [
+        HarnessKind::ClaudeCode,
+        HarnessKind::Codex,
+        HarnessKind::Devin,
+    ];
     let chosen = pick::pick("Harness", &harnesses, |harness| match harness {
         HarnessKind::ClaudeCode => "Claude Code".to_owned(),
         HarnessKind::Codex => "Codex".to_owned(),
+        HarnessKind::Devin => "Devin".to_owned(),
     })?;
     launch(api, harnesses[chosen], None, &SessionSpec::default(), mode).await
 }

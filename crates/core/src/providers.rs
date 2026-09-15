@@ -67,6 +67,38 @@ pub enum ProviderCredentials {
         /// The whole service-account key document.
         service_account_json: String,
     },
+    /// A GitHub account, for Codespaces.
+    ///
+    /// The token is the user's own OAuth access token, granted `repo` and
+    /// `codespace` by the link sign-in — the same credential flyco stores
+    /// against the user record, kept here as well because a linked account
+    /// must carry everything its driver needs and the user's own token is
+    /// what the Codespaces API is called with.
+    Codespaces {
+        /// The account's OAuth access token.
+        token: String,
+        /// The private environment repository every codespace is created
+        /// on, `owner/name`.
+        ///
+        /// Created by flyco at link time, holding only the devcontainer
+        /// that boots a session machine. A codespace must belong to a
+        /// repository, and this one being private is what keeps the
+        /// sessions inside it the user's own.
+        env_repo: String,
+        /// The environment repository's immutable numeric id, which is what
+        /// the create call names it by.
+        env_repo_id: u64,
+        /// The account's immutable numeric user id — the join key, because
+        /// logins are renameable.
+        owner_id: i64,
+        /// Core-hours of compute the account's plan does not bill for per
+        /// month: 120 on GitHub Free, 180 on Pro.
+        ///
+        /// Recorded at link time from the plan `GET /user` reported. A plan
+        /// change between links is seen on the next one; the grant is per
+        /// account and per month, so every entry of this catalog shares it.
+        included_core_hours: u32,
+    },
     /// A Linux machine the user owns, enrolled with the control plane.
     ///
     /// The one variant that holds no secret, because there is none to hold:
@@ -91,6 +123,7 @@ impl ProviderCredentials {
             Self::Azure { .. } => CloudProviderKind::Azure,
             Self::Aws { .. } => CloudProviderKind::Aws,
             Self::Gcp { .. } => CloudProviderKind::Gcp,
+            Self::Codespaces { .. } => CloudProviderKind::Codespaces,
             Self::Host { .. } => CloudProviderKind::Host,
         }
     }
@@ -226,6 +259,42 @@ pub struct FinishGcpOauth {
     pub project_id: String,
 }
 
+/// Request body of `POST /v1/providers/codespaces/oauth/{attempt_id}/finish`.
+///
+/// Empty where Azure's and Google's are not: a subscription and a project
+/// are things an account holds many of and the user must pick between,
+/// while a Codespaces link has nothing to choose — flyco creates the one
+/// private repository it provisions on, `flyco-sessions`, inside whichever
+/// GitHub account signed in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FinishCodespacesOauth {}
+
+/// Request body of `POST /v1/providers/codespaces/bootstrap`.
+///
+/// Called by `flycod codespace` — the `postStart` of a running codespace,
+/// authenticated by the `GITHUB_TOKEN` the codespace is injected with rather
+/// than by a flyco credential: the token proves the caller is the account's
+/// own compute, and `codespace_name` names which session's configuration it
+/// is entitled to fetch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CodespacesBootstrapRequest {
+    /// The codespace's own name, from its `CODESPACE_NAME` environment
+    /// variable — which is also the machine's provider-native id.
+    pub codespace_name: String,
+}
+
+/// Answer of `POST /v1/providers/codespaces/bootstrap`.
+///
+/// The rendered `flycod` configuration document for the session this
+/// codespace serves — credentials included, which is why it travels sealed
+/// at rest and only ever leaves the control plane to the codespace that
+/// proves it is that machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CodespacesBootstrap {
+    /// The daemon's `config.toml`, ready to write.
+    pub config_toml: String,
+}
+
 /// Request body of `POST /v1/providers/quickstart`.
 ///
 /// Two questions, because two questions are what separate the free-credit
@@ -302,5 +371,24 @@ mod tests {
         let back: LinkProvider = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, request);
         assert_eq!(back.credentials.kind(), CloudProviderKind::Azure);
+    }
+
+    #[test]
+    fn codespaces_credentials_round_trip_with_their_tag() {
+        let credentials = ProviderCredentials::Codespaces {
+            token: "gho_a-token".to_owned(),
+            env_repo: "octocat/flyco-sessions".to_owned(),
+            env_repo_id: 42,
+            owner_id: 583_231,
+            included_core_hours: 180,
+        };
+
+        let json = serde_json::to_value(&credentials).expect("serialize");
+        assert_eq!(json["kind"], "codespaces");
+        assert_eq!(json["env_repo"], "octocat/flyco-sessions");
+
+        let back: ProviderCredentials = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, credentials);
+        assert_eq!(back.kind(), CloudProviderKind::Codespaces);
     }
 }

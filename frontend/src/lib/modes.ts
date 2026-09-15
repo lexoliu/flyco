@@ -1,7 +1,7 @@
 /**
  * The permission mode a session runs under (docs/ux.md §9.3).
  *
- * One union across both harnesses: Claude takes the modes natively
+ * One union across the harnesses: Claude takes the modes natively
  * (`setPermissionMode`), Codex takes the same six as the
  * approval/sandbox pair each maps to — so the picker is the product's
  * list, not either harness's. What differs per harness is which entries
@@ -59,12 +59,12 @@ const MODES: readonly ModeOption[] = [AUTO, DEFAULT, PLAN, ACCEPT_EDITS, BYPASS,
 /**
  * The modes a harness's picker offers, in menu order.
  *
- * Codex expresses every mode as an approval/sandbox pair, and `dontAsk`
- * maps to the same pair `plan` does — offering it would be two rows for
- * one behavior, so Codex's list stops at five.
+ * Codex expresses every mode as an approval/sandbox pair and Devin floors
+ * it to `plan`, so for both `dontAsk` is a second row for `plan`'s
+ * behavior and the list stops at five.
  */
 export function modesFor(harness: HarnessKind): ModeOption[] {
-  if (harness === "codex") {
+  if (harness === "codex" || harness === "devin") {
     return MODES.filter((mode) => mode.id !== "dontAsk");
   }
   return [...MODES];

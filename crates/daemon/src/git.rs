@@ -109,11 +109,19 @@ pub async fn clone_from(remote: &str, repo: &RepoConfig, workdir: &Path) -> Resu
     // separate value: a branch name is user input, and neither it nor a
     // remote URL may be read as an option. `BranchName` already refuses a
     // leading dash; this is the second lock on the same door.
+    //
+    // `--recurse-submodules` because a checkout without them is one whose
+    // manifest lists members that are not there — cargo refuses to even
+    // load the workspace. The clone's `-c credential.helper` and the token
+    // environment reach each submodule fetch through `GIT_CONFIG_PARAMETERS`
+    // and ordinary environment inheritance, so a private submodule
+    // authenticates exactly as its parent did.
     let branch = format!("--branch={}", repo.branch);
     authenticated(
         repo,
         &[
             OsStr::new("clone"),
+            OsStr::new("--recurse-submodules"),
             OsStr::new(&branch),
             OsStr::new("--"),
             OsStr::new(remote),
@@ -543,6 +551,86 @@ mod tests {
             }
         }
         found
+    }
+
+    #[tokio::test]
+    async fn a_clone_brings_the_repositorys_submodules() {
+        let scratch = Scratch::new();
+
+        // The submodule's own repository, exported over `git://` by a
+        // loopback `git daemon`. The fixture cannot use a `file:` URL or a
+        // local path: git denies the file transport for fetches that are
+        // not a direct user request, and a recursive clone's submodule
+        // fetch is exactly that. `git` transport is allowed by default.
+        let sub_source = scratch.child("sub-source");
+        std::fs::create_dir_all(&sub_source).expect("submodule source");
+        init(&sub_source);
+        let sub_bare = scratch.child("sub.git");
+        git(
+            &scratch.0,
+            &[
+                "clone",
+                "--bare",
+                sub_source.to_str().expect("a UTF-8 path"),
+                sub_bare.to_str().expect("a UTF-8 path"),
+            ],
+        );
+        // A port that was free a moment ago: fine for a fixture whose whole
+        // life is this test.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind an ephemeral port")
+            .local_addr()
+            .expect("read the bound port")
+            .port();
+        let mut daemon = std::process::Command::new("git")
+            .args([
+                "daemon",
+                "--export-all",
+                "--reuseaddr",
+                "--listen=127.0.0.1",
+                &format!("--port={port}"),
+                &format!("--base-path={}", scratch.0.display()),
+            ])
+            .arg(&scratch.0)
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn git daemon");
+        let sub_url = format!("git://127.0.0.1:{port}/sub.git");
+
+        let source = scratch.child("source");
+        std::fs::create_dir_all(&source).expect("source checkout");
+        init(&source);
+        git(&source, &["branch", "-M", "main"]);
+        // The fixture-side `submodule add` is a direct request, so its own
+        // fetch of the loopback URL is allowed without relaxing anything.
+        git(&source, &["submodule", "add", &sub_url, "deps/sub"]);
+        git(&source, &["commit", "-m", "record the submodule"]);
+
+        let bare = scratch.child("origin.git");
+        git(
+            &scratch.0,
+            &[
+                "clone",
+                "--bare",
+                source.to_str().expect("a UTF-8 path"),
+                bare.to_str().expect("a UTF-8 path"),
+            ],
+        );
+
+        let workdir = scratch.child("work");
+        let outcome = clone_from(
+            bare.to_str().expect("a UTF-8 path"),
+            &repo_config("main"),
+            &workdir,
+        )
+        .await;
+        let _ = daemon.kill();
+        outcome.expect("the recursive clone succeeds");
+
+        assert!(
+            workdir.join("deps/sub/README.md").is_file(),
+            "the submodule's content is in the checkout, not just its gitlink"
+        );
     }
 
     #[tokio::test]

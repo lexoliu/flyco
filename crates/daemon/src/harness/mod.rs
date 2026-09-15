@@ -1,11 +1,12 @@
 //! The harness abstraction flycod drives sessions through.
 //!
-//! Flyco supports exactly two harnesses and never builds its own, so this
-//! is a two-implementation trait rather than a plugin surface. It is stated
-//! as a trait anyway because the daemon's session loop, approvals routing,
-//! and relay must be written once against a single shape — the Codex driver
-//! ([`flyco_core::HarnessKind::Codex`], a JSON-RPC client to
-//! `codex app-server`) slots in beside [`claude`] without touching them.
+//! Flyco supports two drivers and never builds its own agent: Claude Code
+//! keeps its dedicated Agent SDK sidecar ([`claude`]), and every other
+//! harness — Codex, Devin, anything that speaks the Agent Client
+//! Protocol — is driven by the generic ACP driver ([`acp`]). The session
+//! loop, approvals routing, and relay are written once against this shape,
+//! so a provisioned `[acp]` config slots in beside [`claude`] without
+//! touching them.
 //!
 //! Everything a harness produces is normalized to
 //! [`flyco_core::HarnessEvent`], except the two things that are not events:
@@ -14,8 +15,8 @@
 //! siblings in [`SessionOutput`], mirroring
 //! [`flyco_core::wire::DaemonToControl`].
 
+pub mod acp;
 pub mod claude;
-pub mod codex;
 
 use std::future::Future;
 use std::path::PathBuf;

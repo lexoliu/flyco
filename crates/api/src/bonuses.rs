@@ -99,6 +99,18 @@ const PROGRAMMES: &[Programme] = &[
         new_customers_only: false,
         students_only: true,
     },
+    Programme {
+        provider: CloudProviderKind::Codespaces,
+        title: "GitHub Codespaces monthly allowance",
+        detail: "Every personal GitHub account includes 120 core-hours and 15 GiB of \
+                 storage each month — a 2-core codespace runs 60 hours on it, and \
+                 GitHub Pro accounts get 180 core-hours. Not a trial and not gated on \
+                 being new or a student.",
+        credit: None,
+        url: "https://docs.github.com/en/billing/concepts/product-billing/github-codespaces",
+        new_customers_only: false,
+        students_only: false,
+    },
 ];
 
 impl Programme {
@@ -143,10 +155,13 @@ mod tests {
     }
 
     #[test]
-    fn a_returning_non_student_is_told_about_nothing_they_cannot_claim() {
+    fn a_returning_non_student_is_told_only_what_anyone_can_claim() {
+        let hints = matching(&answers(false, false));
         assert!(
-            matching(&answers(false, false)).is_empty(),
-            "every programme flyco knows is either new-customer or student"
+            hints
+                .iter()
+                .all(|hint| hint.provider == CloudProviderKind::Codespaces),
+            "the only ungated programme is the Codespaces allowance: {hints:?}"
         );
     }
 
@@ -181,12 +196,14 @@ mod tests {
         let hints = matching(&answers(false, true));
         assert!(
             !hints.is_empty(),
-            "a new student should be offered something"
+            "a returning student should be offered something"
         );
         assert!(
-            hints
-                .iter()
-                .all(|hint| hint.title.contains("Student") || hint.title.contains("Educate")),
+            hints.iter().all(|hint| {
+                hint.title.contains("Student")
+                    || hint.title.contains("Educate")
+                    || hint.provider == CloudProviderKind::Codespaces
+            }),
             "a returning customer is not shown new-customer credit"
         );
     }

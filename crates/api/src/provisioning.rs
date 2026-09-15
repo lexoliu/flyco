@@ -17,6 +17,7 @@ use flyco_provider::aws::sigv4::AccessKey;
 use flyco_provider::aws::{AwsProvider, AwsWorkspace};
 use flyco_provider::azure::auth::ServicePrincipal;
 use flyco_provider::azure::{AzureProvider, Workspace};
+use flyco_provider::codespaces::CodespacesProvider;
 use flyco_provider::gcp::auth::ServiceAccountKey;
 use flyco_provider::gcp::{GcpProvider, GcpWorkspace};
 use flyco_provider::host::{ContainerJob, ControlToHost, Host};
@@ -236,6 +237,90 @@ pub(crate) fn gcp_driver(service_account_json: &str) -> Result<GcpProvider, Prov
     ))
 }
 
+/// The Codespaces driver one GitHub account's token opens.
+///
+/// Infallible where GCP is not: the credential is already fields — the
+/// token, the environment repository it provisions on, and the grant the
+/// account's plan carries — and nothing here is a document to parse.
+pub(crate) fn codespaces_driver(
+    token: &str,
+    env_repo: &str,
+    env_repo_id: u64,
+    included_core_hours: u32,
+) -> CodespacesProvider {
+    CodespacesProvider::new(token, env_repo, env_repo_id, included_core_hours)
+}
+
+/// The Codespaces driver an account opens, when it is a Codespaces account.
+fn codespaces_driver_for(account: &LinkedAccount) -> Option<CodespacesProvider> {
+    let ProviderCredentials::Codespaces {
+        token,
+        env_repo,
+        env_repo_id,
+        included_core_hours,
+        ..
+    } = account.credentials()
+    else {
+        return None;
+    };
+    Some(codespaces_driver(
+        token,
+        env_repo,
+        *env_repo_id,
+        *included_core_hours,
+    ))
+}
+
+/// What GitHub reports for the codespace a machine's native id names, as a
+/// lifecycle state — `None` when GitHub no longer holds it at all.
+///
+/// The reconcile's whole read. `inspect` is the driver's own answer to "does
+/// this still exist", and the mapping is the driver's too, so a codespace
+/// that `Failed` reads as destroyed here the same way it does everywhere
+/// else.
+///
+/// # Errors
+///
+/// Returns [`ProviderError::Malformed`] when the account is not a Codespaces
+/// account — a row claiming otherwise is flyco's own bug — or
+/// [`ProviderError`] when GitHub cannot be asked.
+pub async fn codespace_state(
+    account: &LinkedAccount,
+    native_id: &str,
+) -> Result<Option<flyco_core::MachineState>, ProviderError> {
+    let Some(driver) = codespaces_driver_for(account) else {
+        return Err(ProviderError::Malformed(
+            "a codespaces machine is provisioned through a non-codespaces account",
+        ));
+    };
+    Ok(driver
+        .inspect(native_id)
+        .await?
+        .map(|codespace| flyco_provider::codespaces::machine_state(&codespace.state)))
+}
+
+/// Deletes a codespace GitHub still holds in a dead state.
+///
+/// What the reconcile does with a `Failed` codespace before it releases the
+/// row: `Failed` still bills storage until it is deleted, and the delete is
+/// flyco's to issue because nothing else will.
+///
+/// # Errors
+///
+/// Returns [`ProviderError::Malformed`] when the account is not a Codespaces
+/// account, or [`ProviderError`] when the delete is refused.
+pub async fn destroy_codespace(
+    account: &LinkedAccount,
+    machine: &flyco_provider::Machine,
+) -> Result<(), ProviderError> {
+    let Some(mut driver) = codespaces_driver_for(account) else {
+        return Err(ProviderError::Malformed(
+            "a codespaces machine is provisioned through a non-codespaces account",
+        ));
+    };
+    driver.destroy(machine).await
+}
+
 #[derive(Debug, skyzen::FromRow)]
 struct SealedRow {
     id: ProviderAccountId,
@@ -385,6 +470,7 @@ const fn provider_name(kind: CloudProviderKind) -> &'static str {
         CloudProviderKind::Azure => flyco_provider::azure::PROVIDER,
         CloudProviderKind::Aws => flyco_provider::aws::PROVIDER,
         CloudProviderKind::Gcp => flyco_provider::gcp::PROVIDER,
+        CloudProviderKind::Codespaces => flyco_provider::codespaces::PROVIDER,
         CloudProviderKind::Host => flyco_provider::host::PROVIDER,
     }
 }
@@ -436,9 +522,12 @@ pub async fn catalog_reads(account: &LinkedAccount) -> Result<CatalogReads, Prov
             .catalog_regions()
             .await?,
         )),
-        ProviderCredentials::Aws { .. } | ProviderCredentials::Gcp { .. } => {
-            Ok(CatalogReads::Whole)
-        }
+        // One read answers for the whole account: Codespaces' machine list
+        // is per environment repository, not per geography, so the four
+        // `geo` values share it.
+        ProviderCredentials::Aws { .. }
+        | ProviderCredentials::Gcp { .. }
+        | ProviderCredentials::Codespaces { .. } => Ok(CatalogReads::Whole),
         ProviderCredentials::Host { .. } => Err(ProviderError::Unsupported {
             provider: flyco_provider::host::PROVIDER,
             operation: "reading a catalog from the provider",
@@ -541,6 +630,17 @@ async fn catalog_of(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>,
         ProviderCredentials::Gcp {
             service_account_json,
         } => gcp_driver(service_account_json)?.catalog().await,
+        ProviderCredentials::Codespaces {
+            token,
+            env_repo,
+            env_repo_id,
+            included_core_hours,
+            ..
+        } => {
+            codespaces_driver(token, env_repo, *env_repo_id, *included_core_hours)
+                .catalog()
+                .await
+        }
     }
 }
 
@@ -599,6 +699,17 @@ pub async fn cloud_usage(
         .billing_period_cost(now_unix)
         .await
         .map(Some),
+        ProviderCredentials::Codespaces {
+            token,
+            env_repo,
+            env_repo_id,
+            included_core_hours,
+            ..
+        } => {
+            codespaces_driver(token, env_repo, *env_repo_id, *included_core_hours)
+                .billing_period_cost(now_unix)
+                .await
+        }
         // Two providers contribute no row, for the two different reasons
         // this function's documentation gives: a machine the user owns has
         // nothing flyco meters, and a GCP project has plenty and no API that
@@ -672,6 +783,20 @@ pub async fn operate(
         } => {
             operation
                 .run(&mut gcp_driver(service_account_json)?, machine)
+                .await
+        }
+        ProviderCredentials::Codespaces {
+            token,
+            env_repo,
+            env_repo_id,
+            included_core_hours,
+            ..
+        } => {
+            operation
+                .run(
+                    &mut codespaces_driver(token, env_repo, *env_repo_id, *included_core_hours),
+                    machine,
+                )
                 .await
         }
     }
@@ -980,15 +1105,18 @@ impl Provisioner for CloudProvisioner {
         if let Some(mut azure) = azure_driver_for(account)? {
             return azure.provision(request).await;
         }
+        if let Some(mut codespaces) = codespaces_driver_for(account) {
+            return codespaces.provision(request).await;
+        }
 
         match account.credentials() {
             ProviderCredentials::Host { .. } => provision_on_host(&self.hosts, account, request)
                 .await
                 .map(Provisioning::Ready),
             // Unreachable: `azure_driver` answered for the Azure variant.
-            ProviderCredentials::Azure { .. } => Err(ProviderError::Malformed(
-                "an Azure account produced no Azure driver",
-            )),
+            ProviderCredentials::Azure { .. } | ProviderCredentials::Codespaces { .. } => Err(
+                ProviderError::Malformed("an answered account produced no driver"),
+            ),
             ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
                 provider: "AWS",
                 operation: "provision",
@@ -1011,15 +1139,18 @@ impl Provisioner for CloudProvisioner {
         if let Some(mut azure) = azure_driver_for(account)? {
             return azure.resume(machine, continuation).await;
         }
+        if let Some(mut codespaces) = codespaces_driver_for(account) {
+            return codespaces.resume(machine, continuation).await;
+        }
         match account.credentials() {
             // A machine the user owns takes the job or refuses it on the
             // spot: there is no build to come back to.
             ProviderCredentials::Host { .. } => Err(ProviderError::Malformed(
                 "a machine the user owns is provisioned in one call and has nothing to resume",
             )),
-            ProviderCredentials::Azure { .. } => Err(ProviderError::Malformed(
-                "an Azure account produced no Azure driver",
-            )),
+            ProviderCredentials::Azure { .. } | ProviderCredentials::Codespaces { .. } => Err(
+                ProviderError::Malformed("an answered account produced no driver"),
+            ),
             ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
                 provider: "AWS",
                 operation: "resume a provision",

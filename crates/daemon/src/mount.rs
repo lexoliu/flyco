@@ -12,14 +12,17 @@
 //! It is written twice, and the two writes do different jobs.
 //!
 //! * The **harness's own start options** — the Agent SDK's `mcpServers`,
-//!   Codex's `thread/start.config` — *mount* the servers. They travel with
-//!   the session, need no privilege, and work on a developer's machine.
+//!   the `mcpServers` of ACP's session-lifecycle requests — *mount* the
+//!   servers. They travel with the session, need no privilege, and work on
+//!   a developer's machine.
 //! * The **root-owned configuration files** — Claude Code's
-//!   `/etc/claude-code/managed-settings.json` and `managed-mcp.json`,
-//!   Codex's `$CODEX_HOME/config.toml` — make the set *exclusive*. They
-//!   outrank every other settings source and live in directories the agent's
-//!   user cannot write, which is what turns an allowlist into a fact about
-//!   the filesystem rather than a request.
+//!   `/etc/claude-code/managed-settings.json` and `managed-mcp.json`, an
+//!   ACP agent's `[acp.files]` such as Codex's `$CODEX_HOME/config.toml` —
+//!   make the set *exclusive*. They outrank every other settings source
+//!   and live in directories the agent's user cannot write, which is what
+//!   turns an allowlist into a fact about the filesystem rather than a
+//!   request. The daemon renders Claude's; an ACP agent's exclusivity
+//!   document is the provisioner's, written through `[acp.files]`.
 //!
 //! Both are rendered from this one structure, so they cannot disagree about
 //! which servers a session has.
@@ -38,9 +41,9 @@
 //! A session whose agent cannot call `budget_status` is a session that will
 //! spend the user's money without ever being able to look at the meter, so
 //! the daemon does not run one. Each driver asks its own harness what it
-//! mounted — the Agent SDK's `mcpServerStatus()`, Codex's
-//! `mcpServerStatus/list` — and hands the answer to [`verify`], which fails
-//! the session with a sentence naming what is missing.
+//! mounted — the Agent SDK's `mcpServerStatus()`, an ACP agent's
+//! configured mount-report method — and hands the answer to [`verify`],
+//! which fails the session with a sentence naming what is missing.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -287,19 +290,19 @@ impl Mount {
             .collect()
     }
 
-    /// The `[mcp_servers]` table of Codex's `config.toml`, and the same
-    /// table as a `thread/start` config override.
+    /// The `mcpServers` of ACP's `session/new`, `session/load` and
+    /// `session/resume`.
     ///
-    /// Codex has no separate allowlist document: `[mcp_servers.<id>]` *is*
-    /// the identity, so the root-owned `config.toml` this renders is the
-    /// complete registry, and `--strict-config` refuses anything it does
-    /// not recognise. `required` on flyco's entry makes a server that will
-    /// not start a thread that will not open.
+    /// ACP's mount declaration: the set travels with the session-lifecycle
+    /// request itself rather than through a config file. Exclusivity is a
+    /// separate question and is per agent — Codex gets it from the
+    /// root-owned `CODEX_HOME/config.toml` the provisioner writes into
+    /// `[acp.files]`, Devin from the registry at its `mcpConfigPath`.
     #[must_use]
-    pub fn codex_servers(&self) -> BTreeMap<String, CodexMcpServer> {
+    pub fn acp_servers(&self) -> Vec<aither_acp::McpServer> {
         self.servers()
             .into_iter()
-            .map(|(name, server)| (name.to_owned(), server.codex()))
+            .map(|(name, server)| server.acp(name))
             .collect()
     }
 
@@ -346,6 +349,38 @@ enum Server<'a> {
 }
 
 impl Server<'_> {
+    /// As ACP spells it in a session-lifecycle request.
+    fn acp(self, name: &str) -> aither_acp::McpServer {
+        match self {
+            Self::Flyco(flyco) => aither_acp::McpServerStdio::new(name, flyco.program())
+                .args(flyco.args.clone())
+                .into(),
+            Self::Registered(McpServerConfig::Stdio { command, args, env }) => {
+                aither_acp::McpServerStdio::new(name, command)
+                    .args(args.clone())
+                    .env(
+                        env.iter()
+                            .map(|entry| aither_acp::EnvVar {
+                                name: entry.key.clone(),
+                                value: entry.value.clone(),
+                            })
+                            .collect(),
+                    )
+                    .into()
+            }
+            Self::Registered(McpServerConfig::Http { url, headers }) => {
+                aither_acp::McpServerHttp::new(name, url)
+                    .headers(
+                        headers
+                            .iter()
+                            .map(|header| aither_acp::HttpHeader::new(&header.name, &header.value))
+                            .collect(),
+                    )
+                    .into()
+            }
+        }
+    }
+
     /// As Claude Code's `managed-mcp.json` and the Agent SDK spell it.
     fn claude(self) -> ClaudeMcpServer {
         match self {
@@ -398,48 +433,6 @@ impl Server<'_> {
             Self::Registered(McpServerConfig::Http { url, .. }) => {
                 AllowedMcpServer::ServerUrl(url.clone())
             }
-        }
-    }
-
-    /// As Codex's `config.toml` spells it.
-    fn codex(self) -> CodexMcpServer {
-        match self {
-            Self::Flyco(flyco) => CodexMcpServer {
-                command: Some(flyco.program()),
-                args: flyco.args.clone(),
-                env: BTreeMap::new(),
-                url: None,
-                http_headers: BTreeMap::new(),
-                enabled: true,
-                // A thread that opens without flyco's server is a thread
-                // whose agent cannot see its budget, so Codex is told to
-                // treat this one as a precondition rather than an extra.
-                required: true,
-            },
-            Self::Registered(McpServerConfig::Stdio { command, args, env }) => CodexMcpServer {
-                command: Some(command.clone()),
-                args: args.clone(),
-                env: env
-                    .iter()
-                    .map(|entry| (entry.key.clone(), entry.value.clone()))
-                    .collect(),
-                url: None,
-                http_headers: BTreeMap::new(),
-                enabled: true,
-                required: false,
-            },
-            Self::Registered(McpServerConfig::Http { url, headers }) => CodexMcpServer {
-                command: None,
-                args: Vec::new(),
-                env: BTreeMap::new(),
-                url: Some(url.clone()),
-                http_headers: headers
-                    .iter()
-                    .map(|header| (header.name.clone(), header.value.clone()))
-                    .collect(),
-                enabled: true,
-                required: false,
-            },
         }
     }
 }
@@ -532,34 +525,6 @@ enum AllowedMcpServer {
     ServerUrl(String),
 }
 
-/// One `[mcp_servers.<id>]` table of Codex's `config.toml`.
-///
-/// Field order is serialization order and TOML puts every scalar before the
-/// first table it meets, so the maps come last or `toml` refuses to
-/// serialize the document at all.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CodexMcpServer {
-    /// Executable to run, for a stdio server.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-    /// Arguments passed to it.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub args: Vec<String>,
-    /// Absolute endpoint URL, for a remote server.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    /// Whether Codex loads this server at all.
-    pub enabled: bool,
-    /// Whether a thread may open without it.
-    pub required: bool,
-    /// Extra environment for a stdio server's process.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub env: BTreeMap<String, String>,
-    /// Headers sent to a remote server.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub http_headers: BTreeMap<String, String>,
-}
-
 /// Where one server has got to in the harness's own account of it.
 ///
 /// Three states rather than a boolean because the middle one is not a
@@ -581,9 +546,9 @@ pub enum MountState {
 /// What one harness reports about one server it was told to mount.
 ///
 /// Harness-neutral on purpose: the Agent SDK answers `mcpServerStatus()`
-/// with a status string and a tool list, Codex answers
-/// `mcpServerStatus/list` with a runtime status and a tool map, and
-/// [`verify`] should not have an opinion about which it is reading.
+/// with a status string and a tool list, an ACP agent answers its own
+/// mount-report method with whatever its document says, and [`verify`]
+/// should not have an opinion about which it is reading.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MountedServer {
     /// Name the harness knows the server by.
@@ -725,17 +690,6 @@ mod tests {
         Mount::new(FlycoServer::at(FLYCOD, CONFIG), registered())
     }
 
-    fn codex_toml(mount: &Mount) -> String {
-        #[derive(serde::Serialize)]
-        struct Document {
-            mcp_servers: std::collections::BTreeMap<String, super::CodexMcpServer>,
-        }
-        toml::to_string_pretty(&Document {
-            mcp_servers: mount.codex_servers(),
-        })
-        .expect("the Codex MCP tables serialize")
-    }
-
     #[test]
     fn claudes_managed_mcp_declares_flyco_alone_when_the_user_registered_nothing() {
         assert_eq!(
@@ -765,26 +719,19 @@ mod tests {
     }
 
     #[test]
-    fn codex_declares_the_same_set_in_its_own_vocabulary() {
-        assert_eq!(
-            codex_toml(&alone()),
-            include_str!("../fixtures/mount/codex-mcp-flyco-only.toml")
-        );
-        assert_eq!(
-            codex_toml(&with_servers()),
-            include_str!("../fixtures/mount/codex-mcp.toml")
-        );
-    }
-
-    #[test]
     fn the_sdk_option_and_the_managed_file_name_one_set() {
         // Two renderings of one structure; if they could disagree, a
-        // session would mount servers its own allowlist refuses.
+        // session would mount servers its own allowlist refuses. The ACP
+        // session declaration is the third spelling of the same set.
         let mount = with_servers();
         let sdk: Vec<String> = mount.claude_sdk_servers().into_keys().collect();
-        let codex: Vec<String> = mount.codex_servers().into_keys().collect();
+        let acp: Vec<String> = mount
+            .acp_servers()
+            .iter()
+            .map(|server| server.name().to_owned())
+            .collect();
         assert_eq!(sdk, ["deepwiki", "flyco", "git"]);
-        assert_eq!(sdk, codex);
+        assert_eq!(sdk, acp);
     }
 
     fn mounted(name: &str, connected: bool, tools: &[&str]) -> MountedServer {

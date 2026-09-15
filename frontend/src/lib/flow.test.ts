@@ -109,7 +109,7 @@ describe("pagesFor", () => {
   it("swaps the sign-in's second page for the API-key page behind the link", () => {
     const claude = advance(
       advance(startFlow({ stages: ["agent"] }), { linking: "claude_code" }),
-      { routes: { claude_code: "api-key", codex: "sign-in" } },
+      { routes: { claude_code: "api-key", codex: "sign-in", devin: "api-key" } },
     );
     expect(ids(claude)).toEqual(["agents", "claude-sign-in", "api-key"]);
     expect(currentPage(claude)).toEqual({
@@ -118,10 +118,21 @@ describe("pagesFor", () => {
     });
 
     const codex = advance(startFlow({ stages: ["agent"], agents: ["codex"] }), {
-      routes: { claude_code: "sign-in", codex: "api-key" },
+      routes: { claude_code: "sign-in", codex: "api-key", devin: "api-key" },
     });
     expect(ids(codex)).toEqual(["codex-sign-in", "api-key"]);
     expect(currentPage(codex)).toEqual({ id: "api-key", agent: "codex" });
+  });
+
+  it("walks Devin straight to the key page: there is no vendor sign-in to sit in front of it", () => {
+    const devin = advance(startFlow({ stages: ["agent"] }), {
+      linking: "devin",
+    });
+    expect(ids(devin)).toEqual(["agents", "api-key"]);
+    expect(currentPage(devin)).toEqual({ id: "api-key", agent: "devin" });
+    expect(
+      ids(startFlow({ stages: ["agent"], agents: ["devin"] })),
+    ).toEqual(["api-key"]);
   });
 
   it("returns to the list when an agent links, its pages gone and the list reading Linked", () => {
@@ -144,7 +155,7 @@ describe("pagesFor", () => {
     expect(isFinished(finishLink(codex, "codex", CODEX))).toBe(true);
 
     const key = advance(startFlow({ stages: ["agent"], agents: ["codex"] }), {
-      routes: { claude_code: "sign-in", codex: "api-key" },
+      routes: { claude_code: "sign-in", codex: "api-key", devin: "api-key" },
     });
     expect(currentPage(key).id).toBe("api-key");
     expect(isFinished(finishLink(key, "codex", CODEX))).toBe(true);
@@ -228,6 +239,31 @@ describe("pagesFor", () => {
       provider: "gcp",
     });
     expect(isFinished(advance(chosen, { cloudChoice: "proj-1" }))).toBe(true);
+  });
+
+  it("walks codespaces' sign-in alone: GitHub's consent finishes with nothing to choose", () => {
+    const signIn = advance(
+      advance(
+        advance(startFlow({ stages: ["compute"] }), {
+          compute: "codespaces",
+        }),
+        { newToProvider: false },
+      ),
+      { student: false, programmes: [] },
+    );
+    expect(currentPage(signIn)).toEqual({
+      id: "cloud-sign-in",
+      provider: "codespaces",
+    });
+    // No choice page exists for it: the page's own finish call is the last
+    // step, and the plain advance it makes walks off the end of the flow.
+    expect(ids(signIn)).toEqual([
+      "compute-choice",
+      "new-to-provider",
+      "student",
+      "cloud-sign-in",
+    ]);
+    expect(isFinished(advance(signIn, {}))).toBe(true);
   });
 
   it("swaps the consent for the vendor's terminal behind the quiet link", () => {

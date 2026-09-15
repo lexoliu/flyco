@@ -20,6 +20,7 @@ pub mod claude_oauth;
 pub mod cli;
 pub mod clock;
 pub mod clouds;
+pub mod codespaces;
 pub mod codex_oauth;
 pub mod config;
 pub mod crypto;

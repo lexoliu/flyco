@@ -81,6 +81,9 @@ async fn dispatch(cli: Cli) -> Outcome<Exit> {
         Some(Command::Codex { repo, spec }) => {
             human::launch(&api, flyco_core::HarnessKind::Codex, repo, &spec, mode).await
         }
+        Some(Command::Devin { repo, spec }) => {
+            human::launch(&api, flyco_core::HarnessKind::Devin, repo, &spec, mode).await
+        }
         Some(Command::Resume { id, last }) => human::resume(&api, id, last, mode).await,
     }
 }

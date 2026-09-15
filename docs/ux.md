@@ -647,11 +647,13 @@ its action, because the composer is gone while the session is paused.
 
 That notice takes the composer's place rather than sitting above the
 transcript, and the composer is not rendered at all while it shows. A
-session that is `failed`, `interrupted`, `paused` or `archived` will not
-take a message, so a field to type one in is an offer the page cannot keep;
-what belongs in that space is the one action that will change the state.
-The same rule covers every refusing state, which is why the composer no
-longer carries a `refusal` of its own.
+session that is `failed`, `paused` or `archived` will not take a message,
+so a field to type one in is an offer the page cannot keep; what belongs
+in that space is the one action that will change the state. The same rule
+covers every refusing state, which is why the composer no longer carries a
+`refusal` of its own. An `interrupted` session is the one exception: a
+message sent to it is what starts its machine again (§9.9), so its composer
+stays open and reads `Sent when the machine is back`.
 
 ### 9.2 Transcript
 
@@ -942,6 +944,16 @@ Ten minutes before the reset flyco starts the machine again, so that the agent i
 The composer stays open the whole time and says where a message goes: `Sent when the window resets, at 7:35 PM`. What is typed there is held against the pause and sent **instead of** flyco's canned continuation, because a user who has said what to do next has said something better than "please continue". A `!` command is not held — it runs on the machine there and then, whatever the plan's limits are doing — and while the machine is stopped the composer refuses it, as in §9.6.
 
 Both ends of the wait are a web push, because the whole point is that the user does not have to sit there: one when the session pauses, saying which window and when it resets, and one when it starts working again.
+
+### 9.9 When the session sits idle
+
+A session with nothing to do still has a machine running, and a machine running is money or the user's own hardware held open. So thirty minutes after the last thing anybody did — the last message, turn, terminal keystroke or approval — flyco suspends the machine: compute is released, the disk is kept, and the session reads `Interrupted · suspended`. A turn in flight is never suspended — the agent mid-answer is the one thing on the machine worth paying for — and a session that is `paused` already has its machine decided by the mechanism that paused it.
+
+The same rule covers every provider. A codespace gets it from GitHub's own idle clock; everything else — an Azure VM, an AWS spot instance, a container on the user's own machine — is suspended by flyco on the same threshold, because a session should not cost differently for being idle on one cloud than another.
+
+Coming back is one word. A message sent to a suspended session starts the machine on its own disk and is delivered when the daemon attaches — the composer stays open for exactly this — and deciding a pending approval does the same, because the answer has to reach somebody. The timeline gains a `Migrating` row (`Starting the machine`, then `Agent ready`) where the gap happened, and the agent is told the machine was suspended and started again, so a process it left running is not mistaken for one still alive. Thirty seconds of cold start is the whole cost of the thirty minutes that were not billed.
+
+A session nobody ever speaks to again is still archived at a week — suspension changed what it costs to wait, not how long flyco waits.
 
 ## 10. Settings
 

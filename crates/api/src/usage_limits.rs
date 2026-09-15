@@ -315,8 +315,17 @@ async fn wake(
     {
         tracing::warn!(session = %wait.id, %error, "a usage-limit wake did not reach its room");
     }
-    provisioning_queue::enqueue(queue, ProvisioningJob::waking(wait.id, machine.id, at_unix))
-        .await?;
+    // A machine the provider stopped is started; one the reconcile found
+    // gone while the session waited is provisioned around — the row's
+    // `native_id` is the difference, and `reset_for_resume` is what puts it
+    // back in the queue's hands.
+    let job = if machine.native_id.is_some() {
+        ProvisioningJob::waking(wait.id, machine.id, at_unix)
+    } else {
+        machines::reset_for_resume(db, wait.id).await?;
+        ProvisioningJob::first(wait.id, machine.id)
+    };
+    provisioning_queue::enqueue(queue, job).await?;
     tracing::info!(
         session = %wait.id,
         machine = %machine.id,

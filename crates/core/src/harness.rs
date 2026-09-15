@@ -1,21 +1,49 @@
-//! Harness abstraction: the two supported coding agents and the
-//! normalized event stream flyco extracts from them.
+//! Harness abstraction: the supported coding agents and the normalized
+//! event stream flyco extracts from them.
 
 use serde::{Deserialize, Serialize};
 
 use crate::id::{ClaudeOauthAttemptId, CodexOauthAttemptId, HarnessAccountId};
 use crate::money::Usd;
 
-/// The coding harness driving a session. Flyco supports exactly these two
+/// The coding harness driving a session. Flyco supports exactly these
 /// and never builds its own.
+///
+/// This is the *product* vocabulary — what a session row names, what an
+/// account is linked to, what the picker offers. How each one is driven
+/// is [`DriverKind`]'s question: every harness but Claude Code reaches
+/// its agent over ACP, so a Codex session and a Devin session are the
+/// same daemon machinery pointed at a different program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum HarnessKind {
     /// Anthropic's Claude Code, driven through the Agent SDK sidecar.
     ClaudeCode,
-    /// `OpenAI`'s Codex, driven through `codex app-server` JSON-RPC.
+    /// `OpenAI`'s Codex, driven over ACP through the `codex-acp` adapter.
     Codex,
+    /// Cognition's Devin, driven over ACP through `devin acp`.
+    Devin,
+}
+
+/// The daemon machinery a session's harness runs on.
+///
+/// This is the *driver* vocabulary — what `flycod`'s `harness = "…"`
+/// setting selects. It is deliberately narrower than [`HarnessKind`]:
+/// a provisioned Codex or Devin session stores its product harness on the
+/// session row and renders `harness = "acp"` plus an `[acp]` table onto
+/// the machine, because ACP is the whole interface the daemon needs.
+/// A hand-written `flycod` config can drive *any* ACP agent the same
+/// way — the daemon never learns which product harness it is standing
+/// in for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DriverKind {
+    /// The Claude Code driver: the Agent SDK sidecar.
+    ClaudeCode,
+    /// The generic ACP driver: any agent speaking the Agent Client
+    /// Protocol over stdio.
+    Acp,
 }
 
 /// The permission mode a session runs under.
@@ -33,7 +61,19 @@ pub enum HarnessKind {
 /// change to the running harness — `setPermissionMode` on Claude's live
 /// query, `approvalPolicy`/`sandboxPolicy` overrides on Codex's next
 /// `turn/start`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum PermissionMode {
@@ -202,6 +242,8 @@ pub struct HarnessFeature {
     pub claude_code: Availability,
     /// Status on Codex.
     pub codex: Availability,
+    /// Status on Devin.
+    pub devin: Availability,
 }
 
 /// The verified availability of `feature` on `harness`.
@@ -209,19 +251,28 @@ pub struct HarnessFeature {
 pub const fn availability(harness: HarnessKind, feature: Feature) -> Availability {
     match (harness, feature) {
         (
-            _,
+            HarnessKind::ClaudeCode | HarnessKind::Codex,
             Feature::UsageDisplay
             | Feature::ContextWindowDisplay
             | Feature::GoalMode
-            | Feature::AutoMode
             | Feature::Compact
-            | Feature::BackgroundTasks
             | Feature::AutoContinueAtUsageLimit,
-        ) => Availability::Supported,
-        (_, Feature::SideChat) => Availability::HarnessLimitation,
-        (_, Feature::DynamicWorkflows | Feature::Settings)
+        )
+        | (_, Feature::AutoMode | Feature::BackgroundTasks) => Availability::Supported,
+        (
+            HarnessKind::Devin,
+            Feature::UsageDisplay
+            | Feature::ContextWindowDisplay
+            | Feature::GoalMode
+            | Feature::Compact
+            | Feature::AutoContinueAtUsageLimit,
+        )
+        | (_, Feature::DynamicWorkflows | Feature::Settings)
         | (HarnessKind::ClaudeCode, Feature::Advisor | Feature::Monitor) => Availability::Planned,
-        (HarnessKind::Codex, Feature::Advisor | Feature::Monitor) => Availability::NotApplicable,
+        (_, Feature::SideChat) => Availability::HarnessLimitation,
+        (HarnessKind::Codex | HarnessKind::Devin, Feature::Advisor | Feature::Monitor) => {
+            Availability::NotApplicable
+        }
         (_, Feature::RemoteControl | Feature::Resume) => Availability::Disabled,
         (_, Feature::Skills | Feature::Mcp | Feature::Memory) => Availability::Takeover,
         (_, Feature::BrowserControl | Feature::ComputerControl) => Availability::Phase2,
@@ -237,6 +288,7 @@ pub fn matrix() -> Vec<HarnessFeature> {
             feature,
             claude_code: availability(HarnessKind::ClaudeCode, feature),
             codex: availability(HarnessKind::Codex, feature),
+            devin: availability(HarnessKind::Devin, feature),
         })
         .collect()
 }
@@ -493,6 +545,7 @@ pub fn builtin_models(harness: HarnessKind) -> Vec<ModelOption> {
     let document = match harness {
         HarnessKind::ClaudeCode => include_str!("../models/claude_code.json"),
         HarnessKind::Codex => include_str!("../models/codex.json"),
+        HarnessKind::Devin => include_str!("../models/devin.json"),
     };
     serde_json::from_str(document).expect("a built-in model list parses")
 }
@@ -566,6 +619,12 @@ pub enum HarnessCredentialInput {
         /// epoch.
         expires_at_unix: u64,
     },
+    /// A Devin API key — the `windsurf_api_key` `devin auth login` writes
+    /// into `credentials.toml`.
+    DevinApiKey {
+        /// The `devi…` key Devin's API server issues.
+        key: String,
+    },
 }
 
 impl core::fmt::Debug for HarnessCredentialInput {
@@ -576,6 +635,7 @@ impl core::fmt::Debug for HarnessCredentialInput {
             Self::CodexApiKey { .. } => "codex_api_key",
             Self::ClaudeOauth { .. } => "claude_oauth",
             Self::CodexOauth { .. } => "codex_oauth",
+            Self::DevinApiKey { .. } => "devin_api_key",
         };
         f.debug_struct("HarnessCredentialInput")
             .field("kind", &kind)
@@ -592,6 +652,7 @@ impl HarnessCredentialInput {
             | Self::ClaudeApiKey { .. }
             | Self::ClaudeOauth { .. } => HarnessKind::ClaudeCode,
             Self::CodexApiKey { .. } | Self::CodexOauth { .. } => HarnessKind::Codex,
+            Self::DevinApiKey { .. } => HarnessKind::Devin,
         }
     }
 
@@ -600,7 +661,9 @@ impl HarnessCredentialInput {
     pub fn secret(&self) -> &str {
         match self {
             Self::ClaudeSetupToken { token } => token,
-            Self::ClaudeApiKey { key } | Self::CodexApiKey { key } => key,
+            Self::ClaudeApiKey { key } | Self::CodexApiKey { key } | Self::DevinApiKey { key } => {
+                key
+            }
             Self::ClaudeOauth { access_token, .. } | Self::CodexOauth { access_token, .. } => {
                 access_token
             }
@@ -895,6 +958,7 @@ mod tests {
                 availability(HarnessKind::ClaudeCode, feature)
             );
             assert_eq!(row.codex, availability(HarnessKind::Codex, feature));
+            assert_eq!(row.devin, availability(HarnessKind::Devin, feature));
         }
     }
 
@@ -917,6 +981,14 @@ mod tests {
                 availability(HarnessKind::Codex, feature),
                 Availability::Supported
             );
+            assert_eq!(
+                availability(HarnessKind::Devin, feature),
+                if feature == Feature::BackgroundTasks || feature == Feature::AutoMode {
+                    Availability::Supported
+                } else {
+                    Availability::Planned
+                }
+            );
         }
         assert_eq!(
             availability(HarnessKind::Codex, Feature::Advisor),
@@ -937,8 +1009,12 @@ mod tests {
     }
 
     #[test]
-    fn both_built_in_lists_parse_and_name_one_default() {
-        for harness in [HarnessKind::ClaudeCode, HarnessKind::Codex] {
+    fn every_built_in_list_parses_and_names_one_default() {
+        for harness in [
+            HarnessKind::ClaudeCode,
+            HarnessKind::Codex,
+            HarnessKind::Devin,
+        ] {
             let models = builtin_models(harness);
             assert!(!models.is_empty(), "{harness:?} lists no models");
             let defaults = models.iter().filter(|model| model.is_default).count();

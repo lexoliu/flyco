@@ -18,6 +18,11 @@ flyco-core.workspace = true
 # `flyco_provider::host`, so the machine cannot disagree with the planner
 # about what a job is or how it is quoted.
 flyco-provider.workspace = true
+# The generic harness driver: every agent but Claude Code is an ACP
+# process. `aither-mcp` is the JSON-RPC types the client handler returns
+# errors in.
+aither-acp.workspace = true
+aither-mcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
