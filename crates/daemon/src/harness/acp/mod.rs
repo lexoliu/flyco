@@ -591,6 +591,28 @@ async fn apply_permission_mode(
     Ok(())
 }
 
+/// The model id `set_config_option` is sent.
+///
+/// On an agent whose ids carry the effort — `fused_effort_tails` names
+/// the suffixes it hangs after the level — the chosen effort is folded
+/// back into the id: `gpt-5-6-sol-priority` at `high` sends
+/// `gpt-5-6-sol-high-priority`. A fused agent asked for no effort gets
+/// the id as written — bare ids like `adaptive` are valid on their own.
+fn model_id_to_send(config: &AcpConfig, model: &str, effort: Option<&str>) -> String {
+    let Some(effort) = effort else {
+        return model.to_owned();
+    };
+    for tail in &config.fused_effort_tails {
+        if let Some(stem) = model.strip_suffix(tail.as_str()) {
+            return format!("{stem}-{effort}{tail}");
+        }
+    }
+    if config.fused_effort_tails.is_empty() {
+        return model.to_owned();
+    }
+    format!("{model}-{effort}")
+}
+
 /// Selects the configured model and effort through the session's config
 /// options.
 async fn apply_model(
@@ -599,11 +621,12 @@ async fn apply_model(
     config: &AcpConfig,
 ) -> Result<(), AcpError> {
     if let Some(model) = &config.model {
+        let id = model_id_to_send(config, model, config.effort.as_deref());
         client
             .set_config_option(SessionSetConfigOptionParams::new(
                 session_id,
                 &config.model_option,
-                model.as_str(),
+                id.as_str(),
             ))
             .await
             .map_err(|source| AcpError::Agent {
@@ -613,6 +636,10 @@ async fn apply_model(
                 ),
                 source,
             })?;
+    }
+    if !config.fused_effort_tails.is_empty() {
+        // The effort already rode inside the model id.
+        return Ok(());
     }
     if let Some(effort) = &config.effort {
         let Some(option) = &config.effort_option else {
@@ -1522,11 +1549,12 @@ impl Driver {
 
     /// The model-choice writes a `set_model` command means.
     async fn apply_model_choice(&mut self, model: ModelChoice) -> Result<(), AcpError> {
+        let id = model_id_to_send(&self.config, &model.model, model.effort.as_deref());
         self.client
             .set_config_option(SessionSetConfigOptionParams::new(
                 &self.session_id,
                 &self.config.model_option,
-                model.model.as_str(),
+                id.as_str(),
             ))
             .await
             .map_err(|source| AcpError::Agent {
@@ -1536,7 +1564,9 @@ impl Driver {
                 ),
                 source,
             })?;
-        if let Some(effort) = model.effort {
+        if self.config.fused_effort_tails.is_empty()
+            && let Some(effort) = model.effort
+        {
             let Some(option) = &self.config.effort_option else {
                 return Err(AcpError::EffortUnsupported);
             };

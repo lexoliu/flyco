@@ -409,6 +409,14 @@ async fn resolve_request(
         }
         None => ModelChoice::default_of(&models),
     };
+    // A harness whose ids carry the effort — Devin's `swe-2-max` — has no
+    // "unset" level: the choice must name one before a daemon can build
+    // the id, so an unstated effort takes the row's own default here.
+    let model = if request.harness.effort_is_fused() {
+        model.with_default_effort(&models)
+    } else {
+        model
+    };
     let account =
         provisioning::account(db, config, github, user.id, choice.provider_account).await?;
     // Checked against the cached catalog, which is what the picker showed;
@@ -589,7 +597,14 @@ async fn apply_session_update(
             let session = sessions::find(db, user.id, id).await?;
             let models = harness_accounts::models(db, user.id, session.summary.harness).await?;
             choice.validate(&models).map_err(ApiError::InvalidModel)?;
-            let session = sessions::set_model(db, user.id, id, choice).await?;
+            // On a harness whose ids carry the effort an unstated level
+            // names the row's default — the daemon fuses it back into the
+            // id it sends.
+            let mut choice = choice.clone();
+            if session.summary.harness.effort_is_fused() {
+                choice = choice.with_default_effort(&models);
+            }
+            let session = sessions::set_model(db, user.id, id, &choice).await?;
             // Recorded first, announced second: the room's echo is what the
             // transcript shows, and an echo the database had not yet agreed
             // with would be a line about a change that could still fail.
@@ -2121,15 +2136,14 @@ async fn record_reported_models(
     let target = sessions::provisioning_target(db, id)
         .await?
         .ok_or(ApiError::SessionNotFound)?;
-    harness_accounts::record_models(db, target.user_id, target.harness, &report.models).await?;
+    // The harness answers in its own vocabulary — Devin lists one id per
+    // effort level — so the report is folded into the picker's shape once
+    // here: the stored list and the room's live update are the same
+    // document a reload would read back.
+    let models = flyco_core::normalize_models(target.harness, report.models);
+    harness_accounts::record_models(db, target.user_id, target.harness, &models).await?;
     rooms
-        .broadcast(
-            db,
-            id,
-            &ClientEvent::Models {
-                models: report.models,
-            },
-        )
+        .broadcast(db, id, &ClientEvent::Models { models })
         .await?;
     Ok(NoContent)
 }
