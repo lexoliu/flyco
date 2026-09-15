@@ -2,7 +2,12 @@
 --
 -- Codespaces joins `provider_accounts.kind` and `machines.provider`, and
 -- both joins are `CHECK`ed token lists — which SQLite cannot alter, so the
--- tables are rebuilt the way 0019 rebuilt them.
+-- tables are rebuilt the way 0019 rebuilt them — with one difference in
+-- order: D1 enforces foreign keys, and a DROP of a referenced parent is an
+-- implicit delete, so the live `machines` -> `provider_accounts` edge makes
+-- the create-copy-drop order fail. Renaming the old tables out from under
+-- their names first leaves the children pointing at `_old`, the new tables
+-- take the real names, and the drops at the end have no referrers left.
 --
 -- `machines.bootstrap_enc` is new: a codespace has no per-machine secret
 -- channel — GitHub's repository secrets are shared by every codespace on
@@ -15,7 +20,10 @@
 -- that created the codespace and NULL for every machine that boots a
 -- different way.
 
-CREATE TABLE provider_accounts_new (
+ALTER TABLE provider_accounts RENAME TO provider_accounts_old;
+DROP INDEX provider_accounts_by_user;
+
+CREATE TABLE provider_accounts (
     id               TEXT    PRIMARY KEY,
     user_id          TEXT    NOT NULL REFERENCES users(id),
     kind             TEXT    NOT NULL
@@ -28,20 +36,19 @@ CREATE TABLE provider_accounts_new (
     unlinked_at_unix INTEGER
 );
 
-INSERT INTO provider_accounts_new
+INSERT INTO provider_accounts
     (id, user_id, kind, label, credentials_enc, linked_at_unix, resource_group,
      host_id, unlinked_at_unix)
 SELECT id, user_id, kind, label, credentials_enc, linked_at_unix, resource_group,
        host_id, unlinked_at_unix
-FROM provider_accounts;
-
-DROP TABLE provider_accounts;
-
-ALTER TABLE provider_accounts_new RENAME TO provider_accounts;
+FROM provider_accounts_old;
 
 CREATE INDEX provider_accounts_by_user ON provider_accounts (user_id, kind);
 
-CREATE TABLE machines_new (
+ALTER TABLE machines RENAME TO machines_old;
+DROP INDEX machines_by_account;
+
+CREATE TABLE machines (
     id                            TEXT    PRIMARY KEY,
     session_id                    TEXT    NOT NULL UNIQUE REFERENCES sessions(id),
     provider_account_id           TEXT    NOT NULL REFERENCES provider_accounts(id),
@@ -76,7 +83,7 @@ CREATE TABLE machines_new (
     bootstrap_enc                 TEXT
 );
 
-INSERT INTO machines_new
+INSERT INTO machines
     (id, session_id, provider_account_id, provider, machine_type, region, disk_gib,
      requested_spot, spot, state, hourly_micros, native_id, address, created_at_unix,
      storage_hourly_micros, compute_meter_started_at_unix, compute_metered_at_unix,
@@ -89,10 +96,9 @@ SELECT id, session_id, provider_account_id, provider, machine_type, region, disk
        storage_meter_started_at_unix, storage_metered_at_unix, vcpus, memory_mib,
        minimum_hours, minimum_charge_micros, volume_name, runtime, stopping_since_unix,
        stopping_reason
-FROM machines;
-
-DROP TABLE machines;
-
-ALTER TABLE machines_new RENAME TO machines;
+FROM machines_old;
 
 CREATE INDEX machines_by_account ON machines (provider_account_id, state);
+
+DROP TABLE machines_old;
+DROP TABLE provider_accounts_old;
