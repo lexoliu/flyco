@@ -1024,17 +1024,19 @@ impl<
     ///
     /// 1. [Quiesce](Self::quiesce): interrupt the turn, flush the transcript
     ///    batches and the harness session id.
-    /// 2. **Write the workdir patch.** Every uncommitted change including
-    ///    untracked files, in the same format an automatic archive stores
-    ///    and a fresh machine replays onto its clone. This is the whole of
-    ///    the user's unpushed work, and it is written *after* the flush so
-    ///    it is not competing with it for the seconds available.
+    /// 2. **Write the workdir patch.** Everything the clone does not
+    ///    already have — unpushed commits, staged and unstaged edits,
+    ///    untracked files — diffed against the clone's landing commit, in
+    ///    the same format an automatic archive stores and a fresh machine
+    ///    replays onto its clone. This is the whole of the user's unpushed
+    ///    work, and it is written *after* the flush so it is not competing
+    ///    with it for the seconds available.
     /// 3. **Report.** `POST /v1/sessions/{id}/stopping`, awaited, which is
     ///    what makes the stop true for the control plane. Last on purpose:
     ///    it must not be true before the work is safe.
     ///
-    /// A clean tree writes no patch and says so. That is not a failure — it
-    /// is a session whose agent committed everything — and storing an empty
+    /// A tree that still matches its clone writes no patch and says so —
+    /// a session whose agent left nothing behind — and storing an empty
     /// patch would leave the next machine replaying nothing.
     async fn stopping(
         &mut self,
@@ -1046,17 +1048,15 @@ impl<
     ) -> Result<(), WireError> {
         self.quiesce(attach, queue, pending, applied).await?;
 
-        if let Some(patch) = self.workdir.snapshot().await? {
-            let bytes = patch.len();
-            self.api.put_workdir_patch(patch).await?;
+        if let Some(snapshot) = self.workdir.snapshot().await? {
+            let bytes = snapshot.patch.len();
+            self.api.put_workdir_patch(snapshot.encode()).await?;
             tracing::warn!(
                 bytes,
-                "stored this session's uncommitted work before the container went"
+                "stored this session's work before the container went"
             );
         } else {
-            tracing::info!(
-                "the checkout has nothing uncommitted; the next machine needs only the clone"
-            );
+            tracing::info!("the checkout matches its clone; the next machine needs only the clone");
         }
 
         self.api.report_stopping(reason).await?;
@@ -1299,8 +1299,8 @@ impl<
             }
             ControlToDaemon::InspectWorkdir { id, request } => self.answer_workdir(id, request),
             ControlToDaemon::Archive { preserve_workdir } => {
-                if preserve_workdir && let Some(patch) = self.workdir.snapshot().await? {
-                    self.api.put_workdir_patch(patch).await?;
+                if preserve_workdir && let Some(snapshot) = self.workdir.snapshot().await? {
+                    self.api.put_workdir_patch(snapshot.encode()).await?;
                 }
                 tracing::info!(session = %self.session_id, "the control plane archived this session");
                 self.terminal.shutdown()?;

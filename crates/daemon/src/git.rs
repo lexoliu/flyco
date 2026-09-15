@@ -7,8 +7,8 @@
 //! After that, dirtiness is load-bearing: an agent may not stop while the
 //! tree is dirty (unless the compute budget is exhausted), a manual archive
 //! of a dirty tree requires confirmation and discards the work, and an
-//! automatic archive snapshots the uncommitted changes before the disk is
-//! released.
+//! automatic archive snapshots everything the clone does not already have —
+//! unpushed commits included — before the disk is released.
 //!
 //! # Where the GitHub token lives
 //!
@@ -141,8 +141,19 @@ pub async fn clone_from(remote: &str, repo: &RepoConfig, workdir: &Path) -> Resu
         &["config", "user.email", repo.identity.email.as_str()],
     )
     .await?;
+    // The tip the clone landed on is the base a later snapshot diffs
+    // against — a workdir patch must carry the session's commits, not just
+    // whatever was staged when the disk went away.
+    git(workdir, &["update-ref", BASE_REF, "HEAD"]).await?;
     Ok(())
 }
+
+/// The ref a clone records its landing tip under.
+///
+/// Snapshots diff against it rather than `HEAD`: an agent that committed
+/// its work is exactly the one with the most to lose when the machine goes
+/// away, and a diff against `HEAD` would call that work clean.
+const BASE_REF: &str = "refs/flyco/base";
 
 /// Runs one git command that may have to authenticate to GitHub.
 ///
@@ -182,10 +193,11 @@ async fn authenticated(
 
 /// Rewinds `workdir`'s checked-out branch to `commit`.
 ///
-/// A handoff's patch was diffed against the local merge-base, not against
-/// the tip the clone landed on, so the branch is wound back before the
-/// patch applies. On a fresh clone the tree is clean, and `reset --hard`
-/// only moves the ref.
+/// A stored patch was diffed against the commit its provenance names — a
+/// handoff's merge-base, or a snapshot's recorded base — not the tip this
+/// clone landed on, so the branch is wound back before the patch applies.
+/// On a fresh clone the tree is clean, and `reset --hard` only moves the
+/// ref.
 ///
 /// # Errors
 ///
@@ -196,6 +208,68 @@ pub async fn reset_to(workdir: &Path, commit: &str) -> Result<(), GitError> {
     git(workdir, &["reset", "--hard", commit]).await.map(|_| ())
 }
 
+/// The commit a snapshot diffs against.
+///
+/// [`BASE_REF`] is the answer a flyco clone leaves behind. A checkout it
+/// never wrote — one made before the marker existed — falls back to the
+/// nearest ancestor `origin/HEAD` still shares, and finally to `HEAD`
+/// itself, which is the uncommitted-only shape a baseless tree can still
+/// honestly produce.
+async fn snapshot_base(path: &Path) -> Result<String, GitError> {
+    if let Some(base) = rev_parse(path, BASE_REF).await? {
+        return Ok(base);
+    }
+    if let Some(base) = merge_base(path).await? {
+        return Ok(base);
+    }
+    rev_parse(path, "HEAD")
+        .await?
+        .ok_or_else(|| GitError::Failed {
+            command: "rev-parse".to_owned(),
+            detail: "HEAD does not resolve".to_owned(),
+        })
+}
+
+/// The commit `rev` resolves to in `path`, or `None` when it does not.
+///
+/// `rev-parse --verify --quiet` exits `1` on an unresolved name — an
+/// answer, not a failure — so anything louder still propagates.
+async fn rev_parse(path: &Path, rev: &str) -> Result<Option<String>, GitError> {
+    let output = run_git(
+        path,
+        &[
+            OsStr::new("rev-parse"),
+            OsStr::new("--verify"),
+            OsStr::new("--quiet"),
+            OsStr::new(rev),
+        ],
+        &[],
+        &[1],
+    )
+    .await?;
+    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok((!resolved.is_empty()).then_some(resolved))
+}
+
+/// The nearest ancestor `HEAD` and `origin/HEAD` still share, when they
+/// share one — `merge-base` exits `1` when they do not, and `128` when
+/// `origin/HEAD` is a name the clone never recorded.
+async fn merge_base(path: &Path) -> Result<Option<String>, GitError> {
+    let output = run_git(
+        path,
+        &[
+            OsStr::new("merge-base"),
+            OsStr::new("HEAD"),
+            OsStr::new("origin/HEAD"),
+        ],
+        &[],
+        &[1, 128],
+    )
+    .await?;
+    let shared = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok((!shared.is_empty()).then_some(shared))
+}
+
 /// The working tree of a session checkout.
 pub trait WorkingTree: Send {
     /// Next `git status --short` summary, when it changes.
@@ -204,15 +278,75 @@ pub trait WorkingTree: Send {
     /// longer be observed.
     fn next_status(&mut self) -> impl Future<Output = Option<String>> + Send;
 
-    /// A binary diff of every uncommitted change, including untracked
-    /// files, or `None` when the tree is clean.
+    /// A binary diff of everything the session added on top of its clone —
+    /// committed work included — or `None` when the tree still matches the
+    /// clone's landing commit.
     ///
     /// Staging is temporary: the index is reset even if the diff fails, so
     /// a snapshot never leaves the checkout dirty in a new way.
-    fn snapshot(&self) -> impl Future<Output = Result<Option<Vec<u8>>, GitError>> + Send;
+    fn snapshot(&self) -> impl Future<Output = Result<Option<WorkdirSnapshot>, GitError>> + Send;
 
     /// Applies a previously stored snapshot onto this checkout.
     fn apply(&self, patch: &[u8]) -> impl Future<Output = Result<(), GitError>> + Send;
+}
+
+/// A working tree carried off its machine: the commit it was diffed
+/// against and the binary patch that reproduces it.
+///
+/// `base_commit` is the tip the session's clone landed on, recorded as
+/// [`BASE_REF`]. Diffing against it — rather than `HEAD` — is what puts
+/// the session's own commits into the patch; a diff against `HEAD` reads
+/// a fully committed tree as clean and would carry nothing.
+#[derive(Clone)]
+pub struct WorkdirSnapshot {
+    /// The commit `patch` was diffed against — the clone's landing tip.
+    pub base_commit: String,
+    /// `git diff --cached --binary <base_commit>` of the staged tree.
+    pub patch: Vec<u8>,
+}
+
+impl WorkdirSnapshot {
+    /// The stored shape: one line of lowercase hex — the base commit —
+    /// then the patch verbatim. Carrying the base inside the object means
+    /// the resume path needs nothing else to rewind the fresh clone before
+    /// it applies the diff.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut body = Vec::with_capacity(self.base_commit.len() + 1 + self.patch.len());
+        body.extend_from_slice(self.base_commit.as_bytes());
+        body.push(b'\n');
+        body.extend_from_slice(&self.patch);
+        body
+    }
+}
+
+impl core::fmt::Debug for WorkdirSnapshot {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WorkdirSnapshot")
+            .field("base_commit", &self.base_commit)
+            .field("patch_bytes", &self.patch.len())
+            .finish()
+    }
+}
+
+/// Splits a stored workdir patch back into its base commit and diff.
+///
+/// A `git diff` body opens with `diff --git`, never a bare hash, so a
+/// first line of exactly forty hex characters is unambiguously the base
+/// line. Anything else is a patch stored before snapshots carried one —
+/// `None`, and the whole body is the diff.
+#[must_use]
+pub fn decode_snapshot(body: &[u8]) -> (Option<&str>, &[u8]) {
+    let Some(line_end) = body.iter().position(|byte| *byte == b'\n') else {
+        return (None, body);
+    };
+    let (head, rest) = body.split_at(line_end + 1);
+    let is_base = head.len() == 41 && head[..40].iter().all(u8::is_ascii_hexdigit);
+    if !is_base {
+        return (None, body);
+    }
+    // Forty hex digits are ASCII — the line reads as text by construction.
+    std::str::from_utf8(&head[..40]).map_or((None, body), |base| (Some(base), rest))
 }
 
 /// Why a git command failed.
@@ -313,16 +447,24 @@ impl WorkingTree for GitWorkdir {
         }
     }
 
-    async fn snapshot(&self) -> Result<Option<Vec<u8>>, GitError> {
+    async fn snapshot(&self) -> Result<Option<WorkdirSnapshot>, GitError> {
+        let base_commit = snapshot_base(&self.path).await?;
         git(&self.path, &["add", "-A"]).await?;
-        let diff = git(&self.path, &["diff", "--cached", "--binary"]).await;
+        let diff = git(
+            &self.path,
+            &["diff", "--cached", "--binary", base_commit.as_str()],
+        )
+        .await;
         let reset = git(&self.path, &["reset"]).await;
         reset?;
         let output = diff?;
         if output.stdout.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(output.stdout))
+            Ok(Some(WorkdirSnapshot {
+                base_commit,
+                patch: output.stdout,
+            }))
         }
     }
 
@@ -348,7 +490,7 @@ impl WorkingTree for GitWorkdir {
 
 /// A stand-in checkout for relay tests.
 pub struct FakeWorkdir {
-    snapshot: Option<Vec<u8>>,
+    snapshot: Option<WorkdirSnapshot>,
 }
 
 impl core::fmt::Debug for FakeWorkdir {
@@ -369,7 +511,8 @@ impl FakeWorkdir {
         Self::with_snapshot(None)
     }
 
-    /// Like [`Self::pair`], but [`WorkingTree::snapshot`] returns `patch`.
+    /// Like [`Self::pair`], but [`WorkingTree::snapshot`] returns `patch`
+    /// diffed against `base_commit`.
     #[must_use]
     pub fn with_snapshot(
         patch: Option<Vec<u8>>,
@@ -379,7 +522,16 @@ impl FakeWorkdir {
         mpsc::UnboundedReceiver<String>,
     ) {
         let (sender, statuses) = mpsc::unbounded_channel();
-        (Self { snapshot: patch }, sender, statuses)
+        (
+            Self {
+                snapshot: patch.map(|patch| WorkdirSnapshot {
+                    base_commit: "0".repeat(40),
+                    patch,
+                }),
+            },
+            sender,
+            statuses,
+        )
     }
 }
 
@@ -388,7 +540,7 @@ impl WorkingTree for FakeWorkdir {
         core::future::ready(None)
     }
 
-    fn snapshot(&self) -> impl Future<Output = Result<Option<Vec<u8>>, GitError>> + Send {
+    fn snapshot(&self) -> impl Future<Output = Result<Option<WorkdirSnapshot>, GitError>> + Send {
         core::future::ready(Ok(self.snapshot.clone()))
     }
 
@@ -799,7 +951,7 @@ mod tests {
             .await
             .expect("the original machine's clone");
         std::fs::write(first.join("draft.txt"), "half a refactor\n").expect("write");
-        let patch = GitWorkdir::new(first.clone())
+        let snapshot = GitWorkdir::new(first.clone())
             .snapshot()
             .await
             .expect("snapshot")
@@ -814,8 +966,11 @@ mod tests {
             "a fresh clone starts from the branch, not from the last machine"
         );
 
+        super::reset_to(&second, &snapshot.base_commit)
+            .await
+            .expect("the clone rewinds to the patch's base");
         GitWorkdir::new(second.clone())
-            .apply(&patch)
+            .apply(&snapshot.patch)
             .await
             .expect("the stored patch applies onto the fresh clone");
         assert_eq!(
@@ -825,11 +980,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_commit_the_agent_made_is_work_the_snapshot_carries() {
+        // The shape the bug took: an agent that committed its work left a
+        // clean tree, and a snapshot diffed against HEAD called that clean —
+        // the commit went away with the disk.
+        let scratch = Scratch::new();
+        let remote = origin(&scratch, "main");
+
+        let first = scratch.child("first");
+        clone_from(&remote, &repo_config("main"), &first)
+            .await
+            .expect("the original machine's clone");
+        let landed = std::process::Command::new("git")
+            .current_dir(&first)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("read the landing tip");
+        let landed = String::from_utf8_lossy(&landed.stdout).trim().to_owned();
+
+        std::fs::write(first.join("fix.rs"), "fn fixed() {}\n").expect("write");
+        git(&first, &["add", "fix.rs"]);
+        git(&first, &["commit", "-m", "the fix"]);
+
+        let snapshot = GitWorkdir::new(first.clone())
+            .snapshot()
+            .await
+            .expect("snapshot")
+            .expect("a committed tree is not a clean one");
+        assert_eq!(
+            snapshot.base_commit, landed,
+            "the patch is diffed against the clone's landing tip"
+        );
+        assert!(
+            String::from_utf8_lossy(&snapshot.patch).contains("fix.rs"),
+            "the committed file is in the patch"
+        );
+
+        // Replay is the resume path: clone again, rewind to the base the
+        // stored object carries, apply.
+        let second = scratch.child("second");
+        clone_from(&remote, &repo_config("main"), &second)
+            .await
+            .expect("the new machine's clone");
+        let stored = snapshot.encode();
+        let (base, patch) = super::decode_snapshot(&stored);
+        assert_eq!(base, Some(snapshot.base_commit.as_str()));
+        super::reset_to(&second, base.expect("a stored snapshot names its base"))
+            .await
+            .expect("rewind");
+        GitWorkdir::new(second.clone())
+            .apply(patch)
+            .await
+            .expect("the stored patch applies onto the fresh clone");
+        assert_eq!(
+            std::fs::read_to_string(second.join("fix.rs")).expect("read the replayed file"),
+            "fn fixed() {}\n"
+        );
+    }
+
+    #[test]
+    fn a_stored_patch_from_before_bases_decodes_as_one() {
+        // Patches stored before snapshots carried a base are a bare `git
+        // diff`: they replay without a rewind, exactly as they used to.
+        let body = b"diff --git a/NOTES.md b/NOTES.md\nindex 1..2 100644\n";
+        let (base, patch) = super::decode_snapshot(body);
+        assert_eq!(base, None);
+        assert_eq!(patch, body);
+    }
+
+    #[tokio::test]
     async fn a_clean_tree_snapshots_as_none() {
         let scratch = Scratch::new();
         init(&scratch.0);
         let workdir = GitWorkdir::new(scratch.0.clone());
-        assert_eq!(workdir.snapshot().await.expect("snapshot"), None);
+        assert!(workdir.snapshot().await.expect("snapshot").is_none());
     }
 
     #[tokio::test]
@@ -847,12 +1071,12 @@ mod tests {
             String::from_utf8_lossy(&before.stdout).contains("new.txt"),
             "short status names the untracked file"
         );
-        let patch = workdir
+        let snapshot = workdir
             .snapshot()
             .await
             .expect("snapshot")
             .expect("dirty trees produce a patch");
-        let text = String::from_utf8_lossy(&patch);
+        let text = String::from_utf8_lossy(&snapshot.patch);
         assert!(
             text.contains("new.txt"),
             "the binary diff names the new file: {text}"

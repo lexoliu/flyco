@@ -335,11 +335,11 @@ async fn conversation_to_continue(config: &mut DaemonConfig, api: &HttpControlAp
 ///    timeline says what the minute before the agent appears is being spent
 ///    on (docs/ux.md §9.2).
 /// 2. The repository is cloned at the branch the session names.
-/// 3. Any uncommitted work a previous machine stored is applied back on
-///    top. A session resuming onto a new machine is a fresh clone plus that
-///    patch — which is why the patch is applied *after* the clone and
-///    *before* the harness, rather than onto whatever the last machine
-///    left. On a [`Runtime::Container`](flyco_core::Runtime::Container)
+/// 3. Any work a previous machine stored — committed or not — is applied
+///    back on top. A session resuming onto a new machine is a fresh clone
+///    plus that patch — which is why the patch is applied *after* the
+///    clone and *before* the harness, rather than onto whatever the last
+///    machine left. On a [`Runtime::Container`](flyco_core::Runtime::Container)
 ///    this is every start, not only the ones that follow an archive: the
 ///    filesystem went with the last execution, so the clone is always fresh
 ///    and the patch is always where the work is.
@@ -377,16 +377,10 @@ async fn check_out(config: &DaemonConfig, api: Option<&HttpControlApi>) -> Resul
     flyco_daemon::git::clone_into(repo, &config.workdir).await?;
 
     if let Some(api) = api {
-        // A handoff's patch was diffed against the sender's merge-base,
-        // not the tip this clone landed on: the branch is wound back
-        // first, so `git apply` reproduces the local tree byte-for-byte.
         let handoff = api
             .get_handoff()
             .await
             .map_err(flyco_daemon::control::WireError::from)?;
-        if let Some(view) = &handoff {
-            flyco_daemon::git::reset_to(&config.workdir, &view.base_commit).await?;
-        }
         apply_stored_patch(api, &config.workdir, handoff.as_ref()).await?;
         if let Some(view) = &handoff
             && view.has_transcript
@@ -603,20 +597,26 @@ fn checkout_of(config: &DaemonConfig) -> flyco_daemon::workdir::Checkout {
     )
 }
 
-/// Replays the uncommitted work a previous machine stored, if any.
+/// Replays the work a previous machine stored, if any.
 ///
-/// Two things store one, and from this side they are the same fact — this
-/// checkout is fresh and the session's work is not in it. An automatic
-/// archive writes a patch before it releases the disk, and so does every
-/// stop of a [`Runtime::Container`](flyco_core::Runtime::Container)
+/// Two things store a patch, and from this side they are the same fact —
+/// this checkout is fresh and the session's work is not in it. An
+/// automatic archive writes a patch before it releases the disk, and so
+/// does every stop of a [`Runtime::Container`](flyco_core::Runtime::Container)
 /// session, whose filesystem goes with its execution
-/// ([`flyco_daemon::stop`]).
+/// ([`flyco_daemon::stop`]). A `flyco handoff` uploads one for the local
+/// tree it is moving here.
+///
+/// A patch is not necessarily diffed against the tip this clone landed
+/// on, so the checkout is rewound first: a handoff names its sender's
+/// merge-base in the manifest, and a snapshot the daemon itself stored
+/// carries its base as the object's first line.
 ///
 /// A patch that will not apply is **fatal**, and the git error travels with
 /// it into the startup failure the control plane records. The alternative
 /// is an agent that comes up on a clean tree and carries on, which is the
-/// user's uncommitted work silently discarded and a session that looks
-/// fine until they read the diff.
+/// user's work silently discarded and a session that looks fine until
+/// they read the diff.
 async fn apply_stored_patch(
     api: &HttpControlApi,
     workdir: &std::path::Path,
@@ -624,7 +624,7 @@ async fn apply_stored_patch(
 ) -> Result<(), flyco_daemon::control::WireError> {
     use flyco_daemon::git::WorkingTree as _;
 
-    let Some(patch) = api.get_workdir_patch().await? else {
+    let Some(stored) = api.get_workdir_patch().await? else {
         tracing::info!("no stored patch: this session's work is all in the clone");
         return Ok(());
     };
@@ -634,7 +634,7 @@ async fn apply_stored_patch(
     // `git apply` syntax error.
     if let Some(view) = handoff {
         use sha2::Digest as _;
-        let actual = hex::encode(sha2::Sha256::digest(&patch));
+        let actual = hex::encode(sha2::Sha256::digest(&stored));
         if actual != view.patch_sha256 {
             return Err(flyco_daemon::control::WireError::Handoff(format!(
                 "the stored patch hashes to {actual}, not the {} its manifest recorded",
@@ -642,14 +642,24 @@ async fn apply_stored_patch(
             )));
         }
     }
+    let (envelope_base, patch) = flyco_daemon::git::decode_snapshot(&stored);
+    // A handoff's base is the manifest's provenance; a daemon snapshot's
+    // is the envelope's. A bare patch stored before bases existed applies
+    // onto the clone tip, exactly as it always did.
+    let rewind = handoff
+        .map(|view| view.base_commit.as_str())
+        .or(envelope_base);
+    if let Some(commit) = rewind {
+        flyco_daemon::git::reset_to(workdir, commit).await?;
+    }
     let bytes = patch.len();
     flyco_daemon::git::GitWorkdir::new(workdir.to_path_buf())
-        .apply(&patch)
+        .apply(patch)
         .await?;
     tracing::info!(
         bytes,
         workdir = %workdir.display(),
-        "replayed the uncommitted work the previous machine stored"
+        "replayed the work the previous machine stored"
     );
     Ok(())
 }

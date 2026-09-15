@@ -14,7 +14,10 @@ The one thing a test can vary is the directory the driver runs it in, which
 is the scratch directory the test named: a scratch called `unmounted` gets
 a mount report whose flyco server is missing `machine_status`, and one
 called `skillsreload` pushes an `available_commands_update` when a turn
-opens, so the driver's palette re-announcement can be watched.
+opens, so the driver's palette re-announcement can be watched. For the
+continuation fallback, `refuseload` offers `session/load` as the only
+resume path and then rejects it, while `continuless` speaks neither
+`session/resume` nor `session/load` at all.
 """
 
 from __future__ import annotations
@@ -141,17 +144,24 @@ def main() -> None:
         method = msg.get("method")
 
         if method == "initialize":
+            capabilities = {
+                "loadSession": True,
+                "mcpCapabilities": {"http": True},
+                "sessionCapabilities": {"resume": {}, "close": {}},
+            }
+            if "refuseload" in os.getcwd():
+                # Load is the only continuation offered, and it fails.
+                del capabilities["sessionCapabilities"]["resume"]
+            elif "continuless" in os.getcwd():
+                capabilities["loadSession"] = False
+                del capabilities["sessionCapabilities"]["resume"]
             send(
                 {
                     "id": msg["id"],
                     "result": {
                         "protocolVersion": 1,
                         "agentInfo": {"name": "fake-acp", "version": "0.1.0"},
-                        "agentCapabilities": {
-                            "loadSession": True,
-                            "mcpCapabilities": {"http": True},
-                            "sessionCapabilities": {"resume": {}, "close": {}},
-                        },
+                        "agentCapabilities": capabilities,
                     },
                 }
             )
@@ -184,6 +194,21 @@ def main() -> None:
                     "result": {"modes": MODES, "configOptions": CONFIG_OPTIONS},
                 }
             )
+        elif method == "session/load":
+            if "refuseload" in os.getcwd():
+                send(
+                    {
+                        "id": msg["id"],
+                        "error": {"code": -32602, "message": "session is gone"},
+                    }
+                )
+            else:
+                send(
+                    {
+                        "id": msg["id"],
+                        "result": {"modes": MODES, "configOptions": CONFIG_OPTIONS},
+                    }
+                )
         elif method == "session/set_mode":
             send({"id": msg["id"], "result": {}})
         elif method == "session/set_config_option":

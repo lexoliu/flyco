@@ -283,6 +283,64 @@ async fn a_resuming_session_recovers_its_native_id() {
 }
 
 #[tokio::test]
+async fn a_load_the_agent_rejects_opens_fresh_and_says_so() {
+    // `session/load` is what a resumed machine asks for; when the agent
+    // refuses it, the session is the restored workspace plus a fresh
+    // conversation — not a startup failure — and the room is told the
+    // context did not carry over.
+    let scratch = Scratch::new("refuseload");
+    let (session, mut outputs) = start_with(&scratch, Some("a-lost-session".to_owned())).await;
+
+    assert_eq!(
+        next(&mut outputs, "started").await,
+        SessionOutput::Started {
+            session_id: "fake-session".to_owned(),
+        },
+        "a fresh conversation carries its own id, not the rejected one"
+    );
+    let _ = next(&mut outputs, "capabilities").await;
+    let _ = next(&mut outputs, "models").await;
+    let _ = next(&mut outputs, "commands").await;
+    let SessionOutput::Event {
+        event: HarnessEvent::LocalCommandOutput { content },
+    } = next(&mut outputs, "the restart notice").await
+    else {
+        panic!("a refused continuation must say so in the room");
+    };
+    assert!(content.contains("session/load"), "{content}");
+
+    session.shutdown().await.expect("shut the session down");
+}
+
+#[tokio::test]
+async fn an_agent_that_cannot_continue_starts_fresh_and_says_so() {
+    // No `session/resume`, no `session/load`: the conversation cannot be
+    // continued, and an unresumable session is still not a dead one — the
+    // work in the checkout is the part that mattered.
+    let scratch = Scratch::new("continuless");
+    let (session, mut outputs) = start_with(&scratch, Some("a-lost-session".to_owned())).await;
+
+    assert_eq!(
+        next(&mut outputs, "started").await,
+        SessionOutput::Started {
+            session_id: "fake-session".to_owned(),
+        }
+    );
+    let _ = next(&mut outputs, "capabilities").await;
+    let _ = next(&mut outputs, "models").await;
+    let _ = next(&mut outputs, "commands").await;
+    let SessionOutput::Event {
+        event: HarnessEvent::LocalCommandOutput { content },
+    } = next(&mut outputs, "the restart notice").await
+    else {
+        panic!("an uncontinuable resume must say so in the room");
+    };
+    assert!(content.contains("neither resume nor load"), "{content}");
+
+    session.shutdown().await.expect("shut the session down");
+}
+
+#[tokio::test]
 async fn a_palette_update_mid_session_re_lists_the_commands() {
     // The scratch's name is what tells the stand-in agent to push an
     // `available_commands_update` when a turn opens: the palette the
