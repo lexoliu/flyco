@@ -27,6 +27,7 @@ use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::path_id;
+use crate::github::{GithubClient, GithubOauth};
 use crate::problem::Outcome;
 use crate::provisioning;
 use crate::respond::Accepted;
@@ -208,6 +209,7 @@ impl MachineRow {
 async fn run(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     hosts: &HostRooms,
     user: UserId,
     session: SessionId,
@@ -215,7 +217,7 @@ async fn run(
 ) -> Result<flyco_provider::Machine, ApiError> {
     let row = load(db, user, session).await?;
     let machine = row.as_provider_machine()?;
-    let account = provisioning::account(db, config, user, row.provider_account_id).await?;
+    let account = provisioning::account(db, config, github, user, row.provider_account_id).await?;
 
     // A machine the user owns is acted on by asking the machine, so a host
     // that is not connected is a refusal the caller can act on — start the
@@ -283,6 +285,7 @@ fn resize_filter(row: &MachineRow) -> CatalogFilter {
 pub(crate) async fn resize_catalog(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     user: UserId,
     session: SessionId,
@@ -291,6 +294,7 @@ pub(crate) async fn resize_catalog(
     Ok(catalog(
         db,
         config,
+        github,
         kv,
         Refresh::ReadOnly,
         user,
@@ -304,17 +308,26 @@ pub(crate) async fn resize_catalog(
 async fn offered(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     user: UserId,
     row: &MachineRow,
     machine_type: &str,
 ) -> Result<MachineCatalogEntry, ApiError> {
-    catalog(db, config, kv, Refresh::ReadOnly, user, &resize_filter(row))
-        .await?
-        .entries
-        .into_iter()
-        .find(|entry| entry.machine_type == machine_type)
-        .ok_or_else(|| ApiError::MachineTypeNotOffered(machine_type.to_owned()))
+    catalog(
+        db,
+        config,
+        github,
+        kv,
+        Refresh::ReadOnly,
+        user,
+        &resize_filter(row),
+    )
+    .await?
+    .entries
+    .into_iter()
+    .find(|entry| entry.machine_type == machine_type)
+    .ok_or_else(|| ApiError::MachineTypeNotOffered(machine_type.to_owned()))
 }
 
 /// Moves a session's machine to another type and tells everyone watching.
@@ -335,6 +348,7 @@ async fn offered(
 pub(crate) async fn resize(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     rooms: &Rooms,
     hosts: &HostRooms,
@@ -343,8 +357,11 @@ pub(crate) async fn resize(
     machine_type: &str,
 ) -> Result<(), ApiError> {
     let row = load(db, user, session).await?;
-    let entry = offered(db, config, kv, user, &row, machine_type).await?;
-    apply(db, config, rooms, hosts, user, session, &row, &entry).await
+    let entry = offered(db, config, github, kv, user, &row, machine_type).await?;
+    apply(
+        db, config, github, rooms, hosts, user, session, &row, &entry,
+    )
+    .await
 }
 
 /// The agent's resize, refused when it would spend money on its own.
@@ -371,6 +388,7 @@ pub(crate) async fn resize(
 pub(crate) async fn resize_for_agent(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     rooms: &Rooms,
     hosts: &HostRooms,
@@ -379,9 +397,12 @@ pub(crate) async fn resize_for_agent(
     machine_type: &str,
 ) -> Result<(), ApiError> {
     let row = load(db, user, session).await?;
-    let entry = offered(db, config, kv, user, &row, machine_type).await?;
+    let entry = offered(db, config, github, kv, user, &row, machine_type).await?;
     on_the_agents_authority(&entry)?;
-    apply(db, config, rooms, hosts, user, session, &row, &entry).await
+    apply(
+        db, config, github, rooms, hosts, user, session, &row, &entry,
+    )
+    .await
 }
 
 /// Whether an agent may move onto this type without asking.
@@ -416,6 +437,7 @@ fn on_the_agents_authority(entry: &MachineCatalogEntry) -> Result<(), ApiError> 
 async fn apply(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     hosts: &HostRooms,
     user: UserId,
@@ -426,6 +448,7 @@ async fn apply(
     let updated = run(
         db,
         config,
+        github,
         hosts,
         user,
         session,
@@ -534,6 +557,7 @@ async fn announce_machine_change(
 pub async fn destroy_for_archive(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     hosts: &HostRooms,
     user: UserId,
     session: SessionId,
@@ -545,7 +569,8 @@ pub async fn destroy_for_archive(
 
     if row.native_id.is_some() {
         let machine = row.as_provider_machine()?;
-        let account = provisioning::account(db, config, user, row.provider_account_id).await?;
+        let account =
+            provisioning::account(db, config, github, user, row.provider_account_id).await?;
         provisioning::require_host_online(hosts, &account).await?;
         provisioning::operate(hosts, &account, &machine, provisioning::Operation::Destroy)
             .await
@@ -660,15 +685,24 @@ pub struct CatalogFilter {
 async fn get_catalog(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Query(filter): Query<CatalogFilter>,
     db: Db,
     kv: Kv,
     queue: Queue,
 ) -> Outcome<Json<MachineCatalog>> {
-    catalog(&db, &config, &kv, Refresh::Ask(&queue), user.id, &filter)
-        .await
-        .map(Json)
-        .into()
+    catalog(
+        &db,
+        &config,
+        &github,
+        &kv,
+        Refresh::Ask(&queue),
+        user.id,
+        &filter,
+    )
+    .await
+    .map(Json)
+    .into()
 }
 
 /// Merges every linked account's catalog into one curated document.
@@ -691,12 +725,14 @@ async fn get_catalog(
 pub(crate) async fn catalog(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     refresh: Refresh<'_>,
     user: UserId,
     filter: &CatalogFilter,
 ) -> Result<MachineCatalog, ApiError> {
-    let mut accounts = provisioning::accounts_for(db, config, user, filter.provider).await?;
+    let mut accounts =
+        provisioning::accounts_for(db, config, github, user, filter.provider).await?;
     // Narrowed before the reads rather than after: reading the document of
     // an account nobody will look at is a round trip for nothing, and
     // asking for its refresh would put a message on the queue for nothing.
@@ -783,6 +819,7 @@ pub struct DefaultMachineQuery {
 async fn get_default_machine(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Query(query): Query<DefaultMachineQuery>,
     db: Db,
     kv: Kv,
@@ -791,6 +828,7 @@ async fn get_default_machine(
     automatic(
         &db,
         &config,
+        &github,
         &kv,
         &queue,
         user.id,
@@ -812,9 +850,15 @@ async fn get_default_machine(
 /// and none offers a Linux type big enough for flyco to choose on its own.
 /// The two are deliberately different: the first ends by itself in seconds,
 /// and the second is a fact the user has to act on.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "choosing a machine reads the catalog, the queue, and the \
+              caller's accounts"
+)]
 pub(crate) async fn automatic(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     queue: &Queue,
     user: UserId,
@@ -827,6 +871,7 @@ pub(crate) async fn automatic(
     } = catalog(
         db,
         config,
+        github,
         kv,
         Refresh::Ask(queue),
         user,
@@ -898,6 +943,7 @@ pub(crate) async fn automatic(
 pub(crate) async fn deployable(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     user: UserId,
     choice: &MachineChoice,
@@ -908,6 +954,7 @@ pub(crate) async fn deployable(
     } = catalog(
         db,
         config,
+        github,
         kv,
         Refresh::ReadOnly,
         user,
@@ -982,6 +1029,7 @@ async fn read_machine(db: &Db, user: UserId, params: &Params) -> Result<MachineV
 async fn resize_session_machine(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     params: Params,
     Json(request): Json<ResizeMachine>,
     rooms: Rooms,
@@ -990,7 +1038,7 @@ async fn resize_session_machine(
     kv: Kv,
 ) -> Outcome<Accepted> {
     user_resize(
-        &db, &config, &kv, &rooms, &hosts, user.id, &params, &request,
+        &db, &config, &github, &kv, &rooms, &hosts, user.id, &params, &request,
     )
     .await
     .into()
@@ -1004,6 +1052,7 @@ async fn resize_session_machine(
 async fn user_resize(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     rooms: &Rooms,
     hosts: &HostRooms,
@@ -1015,6 +1064,7 @@ async fn user_resize(
     resize(
         db,
         config,
+        github,
         kv,
         rooms,
         hosts,
@@ -1034,6 +1084,7 @@ async fn user_resize(
 async fn stop_session_machine(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     params: Params,
     hosts: HostRooms,
     db: Db,
@@ -1041,6 +1092,7 @@ async fn stop_session_machine(
     lifecycle(
         &db,
         &config,
+        &github,
         &hosts,
         user.id,
         &params,
@@ -1071,6 +1123,7 @@ async fn stop_session_machine(
 pub(crate) async fn stop_for_flyco(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     hosts: &HostRooms,
     user: UserId,
     session: SessionId,
@@ -1084,6 +1137,7 @@ pub(crate) async fn stop_for_flyco(
     run(
         db,
         config,
+        github,
         hosts,
         user,
         session,
@@ -1097,13 +1151,14 @@ pub(crate) async fn stop_for_flyco(
 async fn lifecycle(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     hosts: &HostRooms,
     user: UserId,
     params: &Params,
     operation: provisioning::Operation<'_>,
 ) -> Result<Accepted, ApiError> {
     let session: SessionId = path_id(params, "id")?;
-    run(db, config, hosts, user, session, operation).await?;
+    run(db, config, github, hosts, user, session, operation).await?;
     Ok(Accepted)
 }
 
@@ -1112,6 +1167,7 @@ async fn lifecycle(
 async fn start_session_machine(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     params: Params,
     hosts: HostRooms,
     db: Db,
@@ -1119,6 +1175,7 @@ async fn start_session_machine(
     lifecycle(
         &db,
         &config,
+        &github,
         &hosts,
         user.id,
         &params,

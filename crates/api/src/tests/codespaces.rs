@@ -626,6 +626,7 @@ async fn reconcile(db: &Db, github: TestCodespaces) {
     crate::codespaces::reconcile(
         db,
         &test_config(),
+        &TestGithub::default(),
         &test_rooms(),
         &crate::codespaces::Codespaces::Fake(github),
     )

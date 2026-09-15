@@ -32,7 +32,7 @@ use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 28] = [
+pub const MIGRATIONS: [&str; 29] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -61,6 +61,7 @@ pub const MIGRATIONS: [&str; 28] = [
     include_str!("../../../migrations/0027_codespaces.sql"),
     include_str!("../../../migrations/0028_devin_harness.sql"),
     include_str!("../../../migrations/0029_session_handoffs.sql"),
+    include_str!("../../../migrations/0030_github_grant.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -87,6 +88,17 @@ pub const GITHUB_WEBHOOK_SECRET: &str = "a-shared-webhook-secret";
 
 /// The GitHub access token [`TestGithub`] hands back.
 pub const GITHUB_ACCESS_TOKEN: &str = "gho_test_access_token";
+
+/// The refresh token an expiring [`TestGithub`] grant carries.
+pub const GITHUB_REFRESH_TOKEN: &str = "ghr_test_refresh_token";
+
+/// The access token a [`TestGithub`] renewal yields, so a rotation is
+/// visible.
+pub const GITHUB_RENEWED_ACCESS_TOKEN: &str = "gho_test_renewed_access_token";
+
+/// The refresh token a [`TestGithub`] renewal yields; GitHub rotates both
+/// halves.
+pub const GITHUB_RENEWED_REFRESH_TOKEN: &str = "ghr_test_renewed_refresh_token";
 
 /// The GitHub account [`TestGithub`] resolves to.
 pub const GITHUB_LOGIN: &str = "lexoliu";
@@ -205,6 +217,23 @@ pub struct TestGithub {
     /// gives a token that cannot read it, which is what the codespaces
     /// bootstrap check denies on.
     pub unreadable: Option<&'static str>,
+    /// What the token endpoint answers `exchange_code` and `refresh` with.
+    pub grant: GithubGrantShape,
+}
+
+/// Which kind of grant [`TestGithub`]'s token endpoint speaks for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GithubGrantShape {
+    /// A token GitHub never expires: the exchange answers with no refresh
+    /// half, and `refresh` is never asked.
+    #[default]
+    Lasting,
+    /// An expiring grant GitHub renews on redemption — rotating both halves
+    /// each time, as it does.
+    Renewable,
+    /// An expiring grant whose refresh token GitHub refuses — the answer a
+    /// revoked or already-spent renewal credential gets.
+    RefusedRenewal,
 }
 
 impl Default for TestGithub {
@@ -214,6 +243,7 @@ impl Default for TestGithub {
             scopes: Some(&["repo"]),
             plan: Some("pro"),
             unreadable: None,
+            grant: GithubGrantShape::Lasting,
         }
     }
 }
@@ -226,6 +256,7 @@ impl TestGithub {
             scopes: Some(&["read:user"]),
             plan: Some("pro"),
             unreadable: None,
+            grant: GithubGrantShape::Lasting,
         }
     }
 
@@ -236,6 +267,40 @@ impl TestGithub {
             scopes: Some(&["repo", "codespace", "read:packages"]),
             plan: Some("pro"),
             unreadable: None,
+            grant: GithubGrantShape::Lasting,
+        }
+    }
+
+    /// A token from an OAuth app that expires user tokens — the grant
+    /// carries the refresh half GitHub renews it with.
+    #[must_use]
+    pub const fn expiring() -> Self {
+        Self {
+            scopes: Some(&["repo"]),
+            plan: Some("pro"),
+            unreadable: None,
+            grant: GithubGrantShape::Renewable,
+        }
+    }
+
+    /// An expiring grant whose refresh token GitHub refuses — a revoked or
+    /// already-spent renewal credential.
+    #[must_use]
+    pub const fn refused_renewal() -> Self {
+        Self {
+            scopes: Some(&["repo"]),
+            plan: Some("pro"),
+            unreadable: None,
+            grant: GithubGrantShape::RefusedRenewal,
+        }
+    }
+
+    /// An expiring, renewable grant on the Codespaces link's scopes.
+    #[must_use]
+    pub const fn expiring_codespaces() -> Self {
+        Self {
+            grant: GithubGrantShape::Renewable,
+            ..Self::codespaces_authorized()
         }
     }
 
@@ -261,6 +326,46 @@ impl TestGithub {
     }
 }
 
+impl TestGithub {
+    /// The grant a fresh exchange hands back, in this fake's shape.
+    fn issued(&self) -> crate::github::GithubGrant {
+        crate::github::GithubGrant {
+            token: GithubToken {
+                access_token: GITHUB_ACCESS_TOKEN.to_owned(),
+            },
+            refresh_token: (self.grant != GithubGrantShape::Lasting)
+                .then(|| GITHUB_REFRESH_TOKEN.to_owned()),
+            expires_at_unix: (self.grant != GithubGrantShape::Lasting)
+                .then(|| crate::clock::now_unix() + 28_800),
+        }
+    }
+
+    /// The grant a renewal hands back: GitHub rotates both halves.
+    fn renewed() -> crate::github::GithubGrant {
+        crate::github::GithubGrant {
+            token: GithubToken {
+                access_token: GITHUB_RENEWED_ACCESS_TOKEN.to_owned(),
+            },
+            refresh_token: Some(GITHUB_RENEWED_REFRESH_TOKEN.to_owned()),
+            expires_at_unix: Some(crate::clock::now_unix() + 28_800),
+        }
+    }
+
+    /// GitHub's answer to a refresh token it will not take.
+    fn refused() -> GithubError {
+        GithubError::Rejected {
+            code: "bad_refresh_token".to_owned(),
+            description: "The refresh token passed is incorrect or expired.".to_owned(),
+        }
+    }
+
+    /// Whether the presented token is one this fake has minted.
+    fn is_ours(token: &GithubToken) -> bool {
+        token.access_token == GITHUB_ACCESS_TOKEN
+            || token.access_token == GITHUB_RENEWED_ACCESS_TOKEN
+    }
+}
+
 impl GithubOauth for TestGithub {
     fn exchange_code(
         &self,
@@ -268,7 +373,7 @@ impl GithubOauth for TestGithub {
         client_secret: &str,
         _code: &str,
         redirect_uri: &str,
-    ) -> impl Future<Output = Result<GithubToken, GithubError>> + Send {
+    ) -> impl Future<Output = Result<crate::github::GithubGrant, GithubError>> + Send {
         assert_eq!(client_id, CLIENT_ID);
         assert_eq!(client_secret, CLIENT_SECRET);
         assert!(
@@ -276,9 +381,27 @@ impl GithubOauth for TestGithub {
                 || redirect_uri == test_config().codespaces_oauth_redirect_uri().as_str(),
             "an exchange happens on a redirect URI this deployment registered: {redirect_uri}"
         );
-        ready(Ok(GithubToken {
-            access_token: GITHUB_ACCESS_TOKEN.to_owned(),
-        }))
+        ready(Ok(self.issued()))
+    }
+
+    fn refresh(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+        refresh_token: &str,
+    ) -> impl Future<Output = Result<crate::github::GithubGrant, GithubError>> + Send {
+        assert_eq!(client_id, CLIENT_ID);
+        assert_eq!(client_secret, CLIENT_SECRET);
+        ready(
+            if self.grant == GithubGrantShape::Renewable
+                && (refresh_token == GITHUB_REFRESH_TOKEN
+                    || refresh_token == GITHUB_RENEWED_REFRESH_TOKEN)
+            {
+                Ok(Self::renewed())
+            } else {
+                Err(Self::refused())
+            },
+        )
     }
 
     fn list_repos(
@@ -341,7 +464,10 @@ impl GithubOauth for TestGithub {
         &self,
         token: &GithubToken,
     ) -> impl Future<Output = Result<crate::github::GithubIdentity, GithubError>> + Send {
-        assert_eq!(token.access_token, GITHUB_ACCESS_TOKEN);
+        assert!(
+            Self::is_ours(token),
+            "a call ran under a token this exchange never minted"
+        );
         ready(Ok(crate::github::GithubIdentity {
             user: GithubUser {
                 id: GITHUB_ID,
@@ -1139,20 +1265,41 @@ pub async fn seed_session(db: &Db, user: &CurrentUser) -> flyco_core::SessionId 
 /// session takes from its opening prompt.
 pub const SEEDED_TITLE: &str = "wire up the relay";
 
-async fn seed_account(db: &Db, github_id: i64, login: &str) -> CurrentUser {
-    let sealed = test_config()
-        .token_cipher()
-        .seal(GITHUB_ACCESS_TOKEN)
-        .expect("seal");
+/// A signed-in user whose stored GitHub grant is `grant` — for tests that
+/// drive the renewal path, which an undated token never reaches.
+pub async fn seed_user_with_grant(db: &Db, grant: &crate::github::GithubGrant) -> CurrentUser {
     crate::users::upsert_from_github(
         db,
+        &test_config(),
+        &GithubUser {
+            id: GITHUB_ID,
+            login: GITHUB_LOGIN.to_owned(),
+            name: Some(GITHUB_NAME.to_owned()),
+            plan: None,
+        },
+        grant,
+    )
+    .await
+    .expect("seed the user row")
+}
+
+async fn seed_account(db: &Db, github_id: i64, login: &str) -> CurrentUser {
+    crate::users::upsert_from_github(
+        db,
+        &test_config(),
         &GithubUser {
             id: github_id,
             login: login.to_owned(),
             name: Some(GITHUB_NAME.to_owned()),
             plan: None,
         },
-        &sealed,
+        &crate::github::GithubGrant {
+            token: GithubToken {
+                access_token: GITHUB_ACCESS_TOKEN.to_owned(),
+            },
+            refresh_token: None,
+            expires_at_unix: None,
+        },
     )
     .await
     .expect("seed the user row")
@@ -1269,6 +1416,37 @@ pub async fn seed_codespaces_account(db: &Db, user: UserId) -> ProviderAccountId
         GITHUB_LOGIN.to_owned(),
         &ProviderCredentials::Codespaces {
             token: GITHUB_ACCESS_TOKEN.to_owned(),
+            refresh_token: None,
+            token_expires_at_unix: None,
+            env_repo: CODESPACES_ENV_REPO.to_owned(),
+            env_repo_id: CODESPACES_ENV_REPO_ID,
+            owner_id: GITHUB_ID,
+            included_core_hours: 180,
+        },
+        None,
+    )
+    .await
+    .expect("link a Codespaces account")
+    .id
+}
+
+/// Links a Codespaces account whose GitHub grant is expiring — carrying
+/// the refresh credential the renewal path rotates before the token is
+/// used.
+pub async fn seed_expiring_codespaces_account(
+    db: &Db,
+    user: UserId,
+    expires_at_unix: u64,
+) -> ProviderAccountId {
+    crate::provider_accounts::create(
+        db,
+        &test_config(),
+        user,
+        GITHUB_LOGIN.to_owned(),
+        &ProviderCredentials::Codespaces {
+            token: GITHUB_ACCESS_TOKEN.to_owned(),
+            refresh_token: Some(GITHUB_REFRESH_TOKEN.to_owned()),
+            token_expires_at_unix: Some(expires_at_unix),
             env_repo: CODESPACES_ENV_REPO.to_owned(),
             env_repo_id: CODESPACES_ENV_REPO_ID,
             owner_id: GITHUB_ID,

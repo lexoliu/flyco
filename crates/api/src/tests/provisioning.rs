@@ -633,9 +633,16 @@ async fn a_machine_that_stops_making_progress_fails_instead_of_spinning(
     .await
     .expect("age the session past the deadline");
 
-    crate::app::fail_stalled_provisions(&db, &test_config(), &rooms, &test_host_rooms(), now)
-        .await
-        .expect("sweep the stalled provisions");
+    crate::app::fail_stalled_provisions(
+        &db,
+        &test_config(),
+        &TestGithub::default(),
+        &rooms,
+        &test_host_rooms(),
+        now,
+    )
+    .await
+    .expect("sweep the stalled provisions");
 
     let failed = read(&client, &caller, session).await;
     assert_eq!(failed.summary.state, SessionState::Failed);
@@ -682,9 +689,14 @@ async fn a_machine_that_outlives_its_session_is_released_by_the_sweep(
     .await
     .expect("fail the session");
 
-    crate::app::release_ended_machines(&db, &test_config(), &test_host_rooms())
-        .await
-        .expect("sweep the machines of ended sessions");
+    crate::app::release_ended_machines(
+        &db,
+        &test_config(),
+        &TestGithub::default(),
+        &test_host_rooms(),
+    )
+    .await
+    .expect("sweep the machines of ended sessions");
 
     let machine = crate::machines::for_session(&db, session)
         .await
@@ -725,9 +737,16 @@ async fn a_machine_the_provider_never_finished_is_not_said_to_have_been_built(
     .await
     .expect("age the session past the deadline");
 
-    crate::app::fail_stalled_provisions(&db, &test_config(), &rooms, &test_host_rooms(), now)
-        .await
-        .expect("sweep the stalled provisions");
+    crate::app::fail_stalled_provisions(
+        &db,
+        &test_config(),
+        &TestGithub::default(),
+        &rooms,
+        &test_host_rooms(),
+        now,
+    )
+    .await
+    .expect("sweep the stalled provisions");
 
     let failed = read(&client, &caller, session).await;
     assert_eq!(failed.summary.state, SessionState::Failed);
@@ -776,9 +795,16 @@ async fn a_machine_still_making_progress_is_not_called_stalled(
         .await
         .expect("record a stage");
 
-    crate::app::fail_stalled_provisions(&db, &test_config(), &rooms, &test_host_rooms(), now)
-        .await
-        .expect("sweep the stalled provisions");
+    crate::app::fail_stalled_provisions(
+        &db,
+        &test_config(),
+        &TestGithub::default(),
+        &rooms,
+        &test_host_rooms(),
+        now,
+    )
+    .await
+    .expect("sweep the stalled provisions");
 
     assert_eq!(
         read(&client, &caller, session).await.summary.state,

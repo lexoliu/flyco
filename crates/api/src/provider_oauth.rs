@@ -152,10 +152,17 @@ enum Secrets {
     Azure(AzureTokens),
     /// Google's single short-lived token.
     Gcp(String),
-    /// GitHub's OAuth token, plus what `GET /user` answered beside it.
+    /// GitHub's OAuth grant, plus what `GET /user` answered beside it.
     Codespaces {
         /// The granted token — the account credential in full.
         token: String,
+        /// What the grant is renewed with, when the OAuth app expires user
+        /// tokens — `None` for an attempt recorded before flyco kept it.
+        #[serde(default)]
+        refresh_token: Option<String>,
+        /// When `token` stops working, seconds since the Unix epoch.
+        #[serde(default)]
+        token_expires_at_unix: Option<u64>,
         /// The account's immutable id, which `verify` re-checks on every
         /// link so a renamed login cannot slip a credential onto the wrong
         /// account.
@@ -873,7 +880,7 @@ async fn sign_in_codespaces(
     github: &GithubClient,
     callback: &ProviderCallback,
 ) -> Result<CodespacesSignIn, ApiError> {
-    let token = github
+    let grant = github
         .exchange_code(
             config.github_client_id(),
             config.github_client_secret(),
@@ -881,7 +888,7 @@ async fn sign_in_codespaces(
             config.codespaces_oauth_redirect_uri().as_str(),
         )
         .await?;
-    let identity = github.current_user(&token).await?;
+    let identity = github.current_user(&grant.token).await?;
     if !identity.grants_scope(CODESPACE_SCOPE) {
         return Err(Provider::Codespaces.rejected(format!(
             "the sign-in did not grant the `{CODESPACE_SCOPE}` scope — without it flyco \
@@ -896,7 +903,7 @@ async fn sign_in_codespaces(
         ));
     }
     Ok(CodespacesSignIn {
-        token: token.access_token,
+        grant,
         login: identity.user.login,
         owner_id: identity.user.id,
         included_core_hours: flyco_provider::codespaces::included_core_hours(
@@ -907,8 +914,9 @@ async fn sign_in_codespaces(
 
 /// What the callback keeps of a GitHub sign-in until the finish spends it.
 struct CodespacesSignIn {
-    /// The granted token.
-    token: String,
+    /// The grant in full — the token is the credential, and the refresh
+    /// half is what renews it once the grant nears its end.
+    grant: crate::github::GithubGrant,
     /// Who it acts as.
     login: String,
     /// The account's immutable id.
@@ -938,7 +946,9 @@ async fn record_codespaces(
         account: signed_in.login,
         choices: Vec::new(),
         secrets: Secrets::Codespaces {
-            token: signed_in.token,
+            token: signed_in.grant.token.access_token,
+            refresh_token: signed_in.grant.refresh_token,
+            token_expires_at_unix: signed_in.grant.expires_at_unix,
             owner_id: signed_in.owner_id,
             included_core_hours: signed_in.included_core_hours,
         },
@@ -1010,6 +1020,8 @@ async fn finish_codespaces(
     let attempt = authorized(kv, user, Provider::Codespaces, attempt_id).await?;
     let Secrets::Codespaces {
         token,
+        refresh_token,
+        token_expires_at_unix,
         owner_id,
         included_core_hours,
     } = attempt.secrets
@@ -1051,6 +1063,8 @@ async fn finish_codespaces(
             label: attempt.account.clone(),
             credentials: ProviderCredentials::Codespaces {
                 token,
+                refresh_token,
+                token_expires_at_unix,
                 env_repo: environment.full_name,
                 env_repo_id: environment.id,
                 owner_id,

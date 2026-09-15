@@ -124,6 +124,7 @@ async fn verify(credentials: &ProviderCredentials) -> Result<(), ApiError> {
             env_repo_id,
             owner_id,
             included_core_hours,
+            ..
         } => {
             let verified = crate::provisioning::codespaces_driver(
                 token,

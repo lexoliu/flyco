@@ -38,7 +38,7 @@ use skyzen_services::Db;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::Headers;
-use crate::github::{GithubCall, GithubClient, GithubError, GithubOauth as _, GithubToken};
+use crate::github::{GithubCall, GithubClient, GithubError, GithubOauth, GithubToken};
 use crate::problem::Outcome;
 use crate::rooms::Rooms;
 use crate::{machines, provisioning, sessions};
@@ -246,7 +246,7 @@ async fn serve(
     // The account the machine provisions through, still linked — an
     // unlinked one is `ProviderAccountNotFound`, and its codespace has no
     // business fetching a configuration that account paid for.
-    let account = provisioning::account(db, config, row.user, row.account)
+    let account = provisioning::account(db, config, github, row.user, row.account)
         .await
         .map_err(|error| match error {
             ApiError::ProviderAccountNotFound => ApiError::CodespacesBootstrapDenied,
@@ -323,11 +323,12 @@ pub fn public_routes() -> Vec<RouteNode> {
 pub async fn reconcile(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     codespaces: &Codespaces,
 ) -> Result<(), ApiError> {
     for held in machines::held_codespaces(db).await? {
-        if let Err(error) = reconcile_one(db, config, rooms, codespaces, &held).await {
+        if let Err(error) = reconcile_one(db, config, github, rooms, codespaces, &held).await {
             tracing::warn!(machine = %held.machine, %error, "a codespace could not be reconciled");
         }
     }
@@ -339,11 +340,12 @@ pub async fn reconcile(
 async fn reconcile_one(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     codespaces: &Codespaces,
     held: &machines::HeldCodespace,
 ) -> Result<(), ApiError> {
-    let account = provisioning::account(db, config, held.user_id, held.account).await?;
+    let account = provisioning::account(db, config, github, held.user_id, held.account).await?;
     let reported = codespaces
         .codespace_state(&account, &held.native_id)
         .await

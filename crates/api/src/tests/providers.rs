@@ -17,8 +17,8 @@ use skyzen_test::TestContext;
 
 use crate::error::ApiError;
 use crate::testing::{
-    SSH_HOST, host_facts, migrated_router, seed_provider_account, seed_session, seed_user,
-    test_config,
+    SSH_HOST, TestGithub, host_facts, migrated_router, seed_provider_account, seed_session,
+    seed_user, test_config,
 };
 use crate::{machines, provisioning, session};
 
@@ -189,8 +189,9 @@ async fn unlinking_an_account_with_a_live_machine_counts_what_it_would_strand(
     // …and gone as something to provision through, which is what the
     // scrubbed credential means. Naming it by id is a 404 like any account
     // the caller does not have.
+    let github = TestGithub::default();
     assert!(matches!(
-        provisioning::account(&db, &test_config(), user.id, account).await,
+        provisioning::account(&db, &test_config(), &github, user.id, account).await,
         Err(ApiError::ProviderAccountNotFound)
     ));
 
