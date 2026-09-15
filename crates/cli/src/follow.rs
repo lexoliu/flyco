@@ -200,10 +200,17 @@ impl<'a> Follow<'a> {
         }
         if seq > self.delivered_seq + 1 {
             let mut page = events(self.api, self.session, self.delivered_seq).await?;
-            loop {
+            // The walk ends at the live envelope's own position — events at
+            // or past it are already on the wire — not at the tail of the
+            // recorded history, which on a long session never arrives inside
+            // the gap and would otherwise page the same window forever.
+            'pages: loop {
                 for stored in page.events {
-                    if stored.seq <= self.delivered_seq || stored.seq >= seq {
+                    if stored.seq <= self.delivered_seq {
                         continue;
+                    }
+                    if stored.seq >= seq {
+                        break 'pages;
                     }
                     self.delivered_seq = stored.seq;
                     self.pending.push_back(Item::Replayed(stored));
@@ -228,4 +235,96 @@ impl<'a> Follow<'a> {
 pub async fn events(api: &Api, session: SessionId, after: u64) -> Outcome<EventPage> {
     api.get(&format!("/v1/sessions/{session}/events?after={after}"))
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    /// Answers every `GET` with the same canned page, counting requests:
+    /// the gap-fill is expected to ask for each window once.
+    async fn serve(page: EventPage) -> (url::Url, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a stub server");
+        let port = listener.local_addr().expect("a bound port").port();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&asked);
+        tokio::spawn(async move {
+            let body = serde_json::to_vec(&page).expect("a page serializes");
+            while let Ok((mut socket, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::Relaxed);
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut chunk = [0_u8; 1024];
+                    while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(read) => request.extend_from_slice(&chunk[..read]),
+                        }
+                    }
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.write_all(&body).await;
+                });
+            }
+        });
+        (
+            url::Url::parse(&format!("http://127.0.0.1:{port}")).expect("a URL"),
+            asked,
+        )
+    }
+
+    /// A live envelope whose `seq` lands inside the page the gap-fill
+    /// fetched used to loop forever: every row at or past the live
+    /// position was skipped without moving the cursor, so `more` staying
+    /// true re-fetched the same window. The fill must stop where the live
+    /// stream takes over — one page, three replays, then the envelope.
+    #[tokio::test]
+    async fn gap_fill_stops_at_the_live_position() {
+        let session = SessionId::generate();
+        let page = EventPage {
+            events: (5..=10)
+                .map(|seq| StoredEvent {
+                    seq,
+                    event: serde_json::json!({"kind": "anything"}),
+                    at_unix: 0,
+                })
+                .collect(),
+            more: true,
+        };
+        let (base, asked) = serve(page).await;
+        let api = Api::new(base, None);
+        let mut follow = Follow::new(&api, session).after(4);
+        tokio::time::timeout(
+            core::time::Duration::from_secs(10),
+            follow.deliver(SessionEvent {
+                session,
+                seq: Some(8),
+                at_unix: 0,
+                event: ClientEvent::Started {
+                    harness_session_id: "h".to_owned(),
+                },
+            }),
+        )
+        .await
+        .expect("the gap-fill must end")
+        .expect("the page is well-formed");
+        assert_eq!(follow.delivered_seq, 8);
+        assert_eq!(asked.load(Ordering::Relaxed), 1);
+        let seqs: Vec<Option<u64>> = follow
+            .pending
+            .iter()
+            .map(super::Item::session_seq)
+            .collect();
+        assert_eq!(seqs, [Some(5), Some(6), Some(7), Some(8)]);
+    }
 }
