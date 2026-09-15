@@ -1026,11 +1026,9 @@ async fn record(
         )
         .await
         .map(Some),
-        DaemonToControl::RepoDirty { dir, summary } => {
-            note_checkout(kv, dir.as_ref(), summary)
-                .await
-                .map(|()| None)
-        }
+        DaemonToControl::RepoDirty { dir, summary } => note_checkout(kv, dir.as_ref(), summary)
+            .await
+            .map(|()| None),
         DaemonToControl::RepoAdded { slug, branch, dir } => append(
             db,
             &ClientEvent::RepoAdded {
