@@ -79,7 +79,9 @@ mod testing;
 #[cfg(test)]
 mod tests;
 
-pub use app::{openapi_document, router, router_from_environment};
+#[cfg(not(target_arch = "wasm32"))]
+pub use app::router;
+pub use app::{openapi_document, router_from_environment};
 pub use config::ApiConfig;
 pub use error::ApiError;
 
