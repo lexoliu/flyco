@@ -1440,8 +1440,7 @@ async fn wake_interrupted_job(
 /// The reason is rewritten to `machine_lost` first — a suspended machine
 /// whose codespace was deleted under it is not suspended any more — then
 /// the session goes back to `provisioning` keeping it, so a watching page
-/// reads `Migrating · machine lost` rather than claiming a suspend it can
-/// wake from.
+/// reads `Migrating` rather than claiming a suspend it can wake from.
 async fn lost_machine_job(db: &Db, session: SessionId) -> Result<ProvisioningJob, ApiError> {
     sessions::machine_lost(db, session).await?;
     sessions::recovering(db, session).await?;

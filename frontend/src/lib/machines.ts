@@ -76,8 +76,69 @@ export const RUNTIME_LABEL: Record<Runtime, string> = {
  * axis existed describes a virtual machine and reads back as one. Resolving
  * it here means nothing downstream has to remember that.
  */
-export function runtimeOf(entry: { runtime?: Runtime }): Runtime {
+export function runtimeOf(entry: { runtime?: Runtime | null }): Runtime {
   return entry.runtime ?? "vm";
+}
+
+/**
+ * The three products a session can run on, as the user picks between them.
+ *
+ * They differ in the bargain, not the size: a container's filesystem ends
+ * when the run does, a virtual machine's disk survives a stop, and a
+ * codespace is GitHub's own product — bought in core-hours against a
+ * monthly allowance rather than from a cloud account. The picker offers
+ * them as a choice of their own, before the slider's sizes (docs/ux.md
+ * §7.7).
+ */
+export type MachineForm = "container" | "vm" | "codespace";
+
+/** The order the form picker lists the forms in. */
+export const MACHINE_FORMS: readonly MachineForm[] = ["container", "vm", "codespace"];
+
+/** What each form is called where a person reads it. */
+export const FORM_LABEL: Record<MachineForm, string> = {
+  container: "Container",
+  vm: "VM",
+  codespace: "Codespace",
+};
+
+/** The same names as nouns, for `This account offers no …`. */
+export const FORM_NOUN: Record<MachineForm, string> = {
+  container: "container",
+  vm: "VM",
+  codespace: "codespace",
+};
+
+/** …and as plurals, for `3 containers` under the track's right end. */
+export const FORM_PLURAL: Record<MachineForm, string> = {
+  container: "containers",
+  vm: "VMs",
+  codespace: "codespaces",
+};
+
+/** One line on what a form is, for the segment that offers it. */
+export const FORM_TITLE: Record<MachineForm, string> = {
+  container: "Runs the session without a disk to keep",
+  vm: "A virtual machine whose disk survives a stop",
+  codespace: "A GitHub codespace — free hours every month",
+};
+
+/**
+ * Which product an entry is.
+ *
+ * The provider is read before the runtime: a codespace is provisioned on a
+ * VM-shaped machine — `runtime` says `vm` because its disk survives a stop
+ * — but it is a different product from a cloud VM, so the provider, not
+ * the runtime, is what tells it apart.
+ */
+export function formOf(entry: {
+  provider: CloudProviderKind;
+  runtime?: Runtime | null;
+}): MachineForm {
+  if (entry.provider === "codespaces") {
+    return "codespace";
+  }
+  return runtimeOf(entry) === "container" ? "container" : "vm";
 }
 
 /**
