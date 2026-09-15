@@ -64,7 +64,7 @@ dependencies = [
 [[package]]
 name = "aither-acp"
 version = "0.4.0"
-source = "git+https://github.com/lexoliu/aither.git?rev=c8e9fa2#c8e9fa27ff8816e24046a6860f3476cefd668e34"
+source = "git+https://github.com/lexoliu/aither.git?rev=a6fc88b#a6fc88bbbba772b61b6921263ccd351fea256d77"
 dependencies = [
  "aither-agent",
  "aither-core",
@@ -83,7 +83,7 @@ dependencies = [
 [[package]]
 name = "aither-agent"
 version = "0.4.0"
-source = "git+https://github.com/lexoliu/aither.git?rev=c8e9fa2#c8e9fa27ff8816e24046a6860f3476cefd668e34"
+source = "git+https://github.com/lexoliu/aither.git?rev=a6fc88b#a6fc88bbbba772b61b6921263ccd351fea256d77"
 dependencies = [
  "aither-attachments",
  "aither-core",
@@ -116,7 +116,7 @@ dependencies = [
 [[package]]
 name = "aither-attachments"
 version = "0.4.0"
-source = "git+https://github.com/lexoliu/aither.git?rev=c8e9fa2#c8e9fa27ff8816e24046a6860f3476cefd668e34"
+source = "git+https://github.com/lexoliu/aither.git?rev=a6fc88b#a6fc88bbbba772b61b6921263ccd351fea256d77"
 dependencies = [
  "async-fs",
  "const-hex",
@@ -129,7 +129,7 @@ dependencies = [
 [[package]]
 name = "aither-core"
 version = "0.4.0"
-source = "git+https://github.com/lexoliu/aither.git?rev=c8e9fa2#c8e9fa27ff8816e24046a6860f3476cefd668e34"
+source = "git+https://github.com/lexoliu/aither.git?rev=a6fc88b#a6fc88bbbba772b61b6921263ccd351fea256d77"
 dependencies = [
  "aither-derive",
  "anyhow",
@@ -145,7 +145,7 @@ dependencies = [
 [[package]]
 name = "aither-derive"
 version = "0.4.0"
-source = "git+https://github.com/lexoliu/aither.git?rev=c8e9fa2#c8e9fa27ff8816e24046a6860f3476cefd668e34"
+source = "git+https://github.com/lexoliu/aither.git?rev=a6fc88b#a6fc88bbbba772b61b6921263ccd351fea256d77"
 dependencies = [
  "convert_case 0.11.0",
  "proc-macro2",
@@ -156,7 +156,7 @@ dependencies = [
 [[package]]
 name = "aither-mcp"
 version = "0.4.0"
-source = "git+https://github.com/lexoliu/aither.git?rev=c8e9fa2#c8e9fa27ff8816e24046a6860f3476cefd668e34"
+source = "git+https://github.com/lexoliu/aither.git?rev=a6fc88b#a6fc88bbbba772b61b6921263ccd351fea256d77"
 dependencies = [
  "aither-core",
  "aither-sandbox",
@@ -178,7 +178,7 @@ dependencies = [
 [[package]]
 name = "aither-sandbox"
 version = "0.4.0"
-source = "git+https://github.com/lexoliu/aither.git?rev=c8e9fa2#c8e9fa27ff8816e24046a6860f3476cefd668e34"
+source = "git+https://github.com/lexoliu/aither.git?rev=a6fc88b#a6fc88bbbba772b61b6921263ccd351fea256d77"
 dependencies = [
  "aither-core",
  "anyhow",
@@ -577,18 +577,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-native-tls"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9343dc5acf07e79ff82d0c37899f079db3534d99f189a1837c8e549c99405bec"
-dependencies = [
- "futures-util",
- "native-tls",
- "thiserror 1.0.69",
- "url",
-]
-
-[[package]]
 name = "async-net"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -713,23 +701,7 @@ dependencies = [
  "futures-util",
  "log",
  "pin-project-lite",
- "tungstenite 0.28.0",
-]
-
-[[package]]
-name = "async-tungstenite"
-version = "0.34.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8447f02eaa65412035e2d3eeaa3fc82bbb8d7137c84c5976b4af685136012ee9"
-dependencies = [
- "async-net",
- "atomic-waker",
- "futures-core",
- "futures-io",
- "futures-task",
- "log",
- "pin-project-lite",
- "tungstenite 0.29.0",
+ "tungstenite",
 ]
 
 [[package]]
@@ -4918,7 +4890,7 @@ dependencies = [
  "async-fs",
  "async-io 2.6.0",
  "async-net",
- "async-tungstenite 0.33.0",
+ "async-tungstenite",
  "base64 0.22.1",
  "bytes",
  "color-eyre",
@@ -5910,22 +5882,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tungstenite"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8"
-dependencies = [
- "bytes",
- "data-encoding",
- "http 1.5.0",
- "httparse",
- "log",
- "rand 0.9.5",
- "sha1",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6343,7 +6299,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -6863,9 +6819,7 @@ dependencies = [
  "async-fs",
  "async-io 2.6.0",
  "async-lock 3.4.2",
- "async-native-tls",
  "async-net",
- "async-tungstenite 0.34.1",
  "base64 0.22.1",
  "block",
  "dirs",
@@ -6882,7 +6836,6 @@ dependencies = [
  "httpdate",
  "hyper",
  "js-sys",
- "native-tls",
  "objc",
  "once_cell",
  "rustls",

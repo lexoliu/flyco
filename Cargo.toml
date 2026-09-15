@@ -86,8 +86,8 @@ futures-core = "0.3"
 # the merged extensions work on aither's dev branch — the extension
 # surface (config options, session resume, vendor notifications) is what
 # the driver is written against, and it is not on crates.io yet.
-aither-acp = { git = "https://github.com/lexoliu/aither.git", rev = "c8e9fa2" }
-aither-mcp = { git = "https://github.com/lexoliu/aither.git", rev = "c8e9fa2" }
+aither-acp = { git = "https://github.com/lexoliu/aither.git", rev = "a6fc88b" }
+aither-mcp = { git = "https://github.com/lexoliu/aither.git", rev = "a6fc88b" }
 clap = { version = "4", features = ["derive"] }
 # The CLI's pickers: a `flyco claude` with no flags asks its way through the
 # choices a session needs, and dialoguer is the library that asks.
