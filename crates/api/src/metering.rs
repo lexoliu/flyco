@@ -257,6 +257,7 @@ mod worker {
     use crate::catalog;
     use crate::codespaces::{Codespaces, LiveCodespaces};
     use crate::config::{ApiConfig, binding};
+    use crate::github::GithubClient;
     use crate::rooms::{HostRooms, Rooms};
     use crate::usage_limits;
 
@@ -333,6 +334,11 @@ mod worker {
             })
         }
 
+        // One client for every leg that unseals a GitHub grant — the
+        // codespaces reconcile, the machine releases — because a stored
+        // grant near its end is renewed before it is used.
+        let github = GithubClient::default();
+
         leg("accrue", accrue(&db, at_unix)).await?;
         leg("deliver", deliver(&db, &rooms)).await?;
         leg(
@@ -342,12 +348,12 @@ mod worker {
         .await?;
         leg(
             "fail_stalled_provisions",
-            app::fail_stalled_provisions(&db, &config, &rooms, &hosts, at_unix),
+            app::fail_stalled_provisions(&db, &config, &github, &rooms, &hosts, at_unix),
         )
         .await?;
         leg(
             "archive_idle",
-            app::archive_idle(&db, &config, &rooms, &hosts, at_unix),
+            app::archive_idle(&db, &config, &github, &rooms, &hosts, at_unix),
         )
         .await?;
         // The clock behind issue #244: a session waiting out a spent harness
@@ -357,7 +363,15 @@ mod worker {
         // resets further out than that.
         leg(
             "usage_limits",
-            usage_limits::sweep(&db, &config, &rooms, &hosts, &queue_for_waking, at_unix),
+            usage_limits::sweep(
+                &db,
+                &config,
+                &github,
+                &rooms,
+                &hosts,
+                &queue_for_waking,
+                at_unix,
+            ),
         )
         .await?;
         // A codespace's state changes underneath flyco — GitHub stops it on
@@ -369,6 +383,7 @@ mod worker {
             crate::codespaces::reconcile(
                 &db,
                 &config,
+                &github,
                 &rooms,
                 &Codespaces::Live(LiveCodespaces::new()),
             ),
@@ -382,13 +397,13 @@ mod worker {
         // rather than asked about twice.
         leg(
             "suspend_idle",
-            app::suspend_idle(&db, &config, &rooms, &hosts, at_unix),
+            app::suspend_idle(&db, &config, &github, &rooms, &hosts, at_unix),
         )
         .await?;
         // Last, so it sees what the sweeps above have just ended.
         leg(
             "release_ended_machines",
-            app::release_ended_machines(&db, &config, &hosts),
+            app::release_ended_machines(&db, &config, &github, &hosts),
         )
         .await
     }

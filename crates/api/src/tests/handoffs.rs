@@ -16,8 +16,8 @@ use skyzen_test::{TestClient, TestContext};
 
 use crate::provisioning_queue::ProvisioningJob;
 use crate::testing::{
-    machine_choice, migrated_router_on, seed_other_user, seed_provider_account, seed_user,
-    test_config, test_host_rooms, test_rooms,
+    TestGithub, machine_choice, migrated_router_on, seed_other_user, seed_provider_account,
+    seed_user, test_config, test_host_rooms, test_rooms,
 };
 use crate::{daemon_tokens, session};
 
@@ -447,6 +447,7 @@ async fn a_pending_handoff_is_no_stall_but_ages_out_on_its_own_clock(
     crate::app::fail_stalled_provisions(
         &db,
         &test_config(),
+        &TestGithub::default(),
         &test_rooms(),
         &test_host_rooms(),
         now,
@@ -477,6 +478,7 @@ async fn a_pending_handoff_is_no_stall_but_ages_out_on_its_own_clock(
     crate::app::fail_stalled_provisions(
         &db,
         &test_config(),
+        &TestGithub::default(),
         &test_rooms(),
         &test_host_rooms(),
         now,

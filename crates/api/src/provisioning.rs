@@ -27,8 +27,11 @@ use flyco_provider::{
 use skyzen::sql;
 use skyzen_services::Db;
 
+use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
+use crate::github::{GithubError, GithubOauth};
+use crate::harness_accounts::REFRESH_WINDOW_SECONDS;
 use crate::provider_accounts::StoredSecrets;
 use crate::rooms::HostRooms;
 
@@ -357,6 +360,7 @@ impl SealedRow {
 pub async fn accounts_for(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     user: UserId,
     kind: Option<CloudProviderKind>,
 ) -> Result<Vec<LinkedAccount>, ApiError> {
@@ -380,21 +384,27 @@ pub async fn accounts_for(
     .await?;
 
     let cipher = config.token_cipher();
-    rows.into_iter()
-        .map(|row| {
-            let StoredSecrets {
-                credentials,
-                machine_login_key,
-            } = unseal(&cipher.open(&row.credentials_enc)?)?;
-            Ok(LinkedAccount {
-                id: row.id,
-                credentials,
-                machine_login_key,
-                host: row.host(),
-                resource_group: row.resource_group,
-            })
-        })
-        .collect()
+    let mut accounts = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut secrets = unseal(&cipher.open(&row.credentials_enc)?)?;
+        renew_codespaces_grant(
+            db,
+            config,
+            github,
+            row.id,
+            &row.credentials_enc,
+            &mut secrets,
+        )
+        .await?;
+        accounts.push(LinkedAccount {
+            id: row.id,
+            credentials: secrets.credentials,
+            machine_login_key: secrets.machine_login_key,
+            host: row.host(),
+            resource_group: row.resource_group,
+        });
+    }
+    Ok(accounts)
 }
 
 /// Loads exactly one of the caller's accounts.
@@ -408,6 +418,7 @@ pub async fn accounts_for(
 pub async fn account(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     user: UserId,
     id: ProviderAccountId,
 ) -> Result<LinkedAccount, ApiError> {
@@ -427,18 +438,137 @@ pub async fn account(
     .await?
     .ok_or(ApiError::ProviderAccountNotFound)?;
 
-    let StoredSecrets {
-        credentials,
-        machine_login_key,
-    } = unseal(&config.token_cipher().open(&row.credentials_enc)?)?;
+    let mut secrets = unseal(&config.token_cipher().open(&row.credentials_enc)?)?;
+    renew_codespaces_grant(db, config, github, id, &row.credentials_enc, &mut secrets).await?;
 
     Ok(LinkedAccount {
         id,
-        credentials,
-        machine_login_key,
+        credentials: secrets.credentials,
+        machine_login_key: secrets.machine_login_key,
         host: row.host(),
         resource_group: row.resource_group,
     })
+}
+
+/// Renews a stored Codespaces grant that is close enough to its end.
+///
+/// Runs where the seal is broken rather than where the token is spent,
+/// because every driver-construction site would otherwise need the renewal
+/// itself. A credential with no expiry — one GitHub never kills, or one
+/// linked before flyco kept the renewal half — is used as stored.
+///
+/// GitHub rotates the pair on every redemption, so the resealed row is
+/// fenced on the exact ciphertext it was read from: a racing renewal that
+/// landed first is the grant GitHub honors next, and the row is re-read
+/// rather than overwritten. A refresh GitHub rejects on an unmoved row
+/// means the grant is dead — [`ApiError::GithubTokenRevoked`], which asks
+/// the user to link the account again.
+async fn renew_codespaces_grant(
+    db: &Db,
+    config: &ApiConfig,
+    github: &impl GithubOauth,
+    account: ProviderAccountId,
+    sealed_enc: &str,
+    secrets: &mut StoredSecrets,
+) -> Result<(), ApiError> {
+    let ProviderCredentials::Codespaces {
+        refresh_token: Some(refresh_token),
+        token_expires_at_unix: Some(expires_at),
+        ..
+    } = &secrets.credentials
+    else {
+        return Ok(());
+    };
+    if *expires_at > now_unix().saturating_add(REFRESH_WINDOW_SECONDS) {
+        return Ok(());
+    }
+
+    let grant = match github
+        .refresh(
+            config.github_client_id(),
+            config.github_client_secret(),
+            refresh_token,
+        )
+        .await
+    {
+        Ok(grant) => grant,
+        Err(GithubError::Rejected { .. }) => {
+            // The refresh token GitHub honors is whichever grant was
+            // renewed last: a refusal on a row that has since moved means
+            // a racing renewal already wrote its pair — read that instead.
+            let sealed: Option<String> = sql!(
+                db,
+                "SELECT credentials_enc FROM provider_accounts WHERE id = {account}"
+            )
+            .fetch_scalar_optional()
+            .await?;
+            return match sealed {
+                Some(sealed) if sealed != sealed_enc => {
+                    *secrets = unseal(&config.token_cipher().open(&sealed)?)?;
+                    Ok(())
+                }
+                _ => Err(ApiError::GithubTokenRevoked),
+            };
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    let ProviderCredentials::Codespaces {
+        token,
+        refresh_token: stored_refresh,
+        token_expires_at_unix: stored_expiry,
+        ..
+    } = &mut secrets.credentials
+    else {
+        return Ok(());
+    };
+    token.clone_from(&grant.token.access_token);
+    *stored_refresh = grant.refresh_token;
+    *stored_expiry = grant.expires_at_unix;
+
+    let resealed = secrets.seal(config)?;
+    let written = sql!(
+        db,
+        "UPDATE provider_accounts SET credentials_enc = {resealed} \
+         WHERE id = {account} AND credentials_enc = {sealed_enc}"
+    )
+    .execute()
+    .await?
+    .rows_written;
+    if written == 0 {
+        // The row moved under the renewal: another request refreshed the
+        // same grant first, and what it stored is the pair GitHub honors
+        // next — read that grant rather than trust ours to be the keeper.
+        reload_secrets(db, config, account, secrets).await?;
+        return Ok(());
+    }
+
+    tracing::info!(%account, "renewed a Codespaces grant before using it");
+    Ok(())
+}
+
+/// Re-reads an account's sealed credentials into `secrets`.
+///
+/// The row cannot be gone — [`unlink`](crate::provider_accounts::unlink)
+/// scrubs and marks rather than deleting — so a missing row is corrupt,
+/// and a present one always carries the grant a racing renewal wrote.
+async fn reload_secrets(
+    db: &Db,
+    config: &ApiConfig,
+    account: ProviderAccountId,
+    secrets: &mut StoredSecrets,
+) -> Result<(), ApiError> {
+    let sealed: Option<String> = sql!(
+        db,
+        "SELECT credentials_enc FROM provider_accounts WHERE id = {account}"
+    )
+    .fetch_scalar_optional()
+    .await?;
+    let sealed = sealed.ok_or(ApiError::CorruptRecord(
+        "a provider account's row vanished between its read and its renewal",
+    ))?;
+    *secrets = unseal(&config.token_cipher().open(&sealed)?)?;
+    Ok(())
 }
 
 /// Reads what an account can actually deploy today.

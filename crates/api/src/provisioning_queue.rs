@@ -562,14 +562,18 @@ async fn perform(
     // machine row, never counts attempts, and never fails a session.
     match &job {
         ProvisioningJob::RefreshCatalog { user, account } => {
-            return settle(refresh_catalog(db, config, kv, queue, *user, *account).await);
+            return settle(
+                refresh_catalog(db, config, kv, queue, clients.github, *user, *account).await,
+            );
         }
         ProvisioningJob::RefreshCatalogRegion {
             user,
             account,
             region,
         } => {
-            return settle(refresh_region(db, config, kv, *user, *account, region).await);
+            return settle(
+                refresh_region(db, config, kv, clients.github, *user, *account, region).await,
+            );
         }
         ProvisioningJob::Provision { .. }
         | ProvisioningJob::Continue { .. }
@@ -673,10 +677,11 @@ async fn refresh_catalog(
     config: &ApiConfig,
     kv: &Kv,
     queue: &Queue,
+    github: &impl GithubOauth,
     user: UserId,
     account: ProviderAccountId,
 ) -> Result<(), ApiError> {
-    let linked = match provisioning::account(db, config, user, account).await {
+    let linked = match provisioning::account(db, config, github, user, account).await {
         Ok(linked) => linked,
         // Unlinked between the ask and the read. There is nothing to write
         // and nothing to keep: the document expires on its own.
@@ -742,11 +747,12 @@ async fn refresh_region(
     db: &Db,
     config: &ApiConfig,
     kv: &Kv,
+    github: &impl GithubOauth,
     user: UserId,
     account: ProviderAccountId,
     region: &str,
 ) -> Result<(), ApiError> {
-    let linked = match provisioning::account(db, config, user, account).await {
+    let linked = match provisioning::account(db, config, github, user, account).await {
         Ok(linked) => linked,
         Err(ApiError::ProviderAccountNotFound) => {
             tracing::info!(%account, "dropping a catalog refresh for an account that is gone");
@@ -1059,9 +1065,15 @@ async fn build(
     clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
     claim: &Claim,
 ) -> Result<(), Provisioned> {
-    let account = provisioning::account(db, config, claim.user, claim.machine.provider_account_id)
-        .await
-        .map_err(Provisioned::from)?;
+    let account = provisioning::account(
+        db,
+        config,
+        clients.github,
+        claim.user,
+        claim.machine.provider_account_id,
+    )
+    .await
+    .map_err(Provisioned::from)?;
     let spec = claim.machine.spec();
 
     let entry = deployable_entry(kv, queue, claim, &account, &spec).await?;
@@ -1127,9 +1139,15 @@ async fn carry_on(
     claim: &Claim,
     continuation: &Continuation,
 ) -> Result<(), Provisioned> {
-    let account = provisioning::account(db, config, claim.user, claim.machine.provider_account_id)
-        .await
-        .map_err(Provisioned::from)?;
+    let account = provisioning::account(
+        db,
+        config,
+        clients.github,
+        claim.user,
+        claim.machine.provider_account_id,
+    )
+    .await
+    .map_err(Provisioned::from)?;
     let entry = deployable_entry(kv, queue, claim, &account, &claim.machine.spec()).await?;
     let pending = claim
         .machine
@@ -1451,9 +1469,15 @@ async fn recover(
         .map_err(Provisioned::from)?;
     announce(db, rooms, session, ProvisioningStage::Reserving).await;
 
-    let account = provisioning::account(db, config, target.user_id, row.provider_account_id)
-        .await
-        .map_err(Provisioned::from)?;
+    let account = provisioning::account(
+        db,
+        config,
+        clients.github,
+        target.user_id,
+        row.provider_account_id,
+    )
+    .await
+    .map_err(Provisioned::from)?;
     let started = match machines::restart(db, clients.provisioner, &account, &row).await {
         Ok(started) => started,
         Err(ProviderError::Gone(reason)) => {
@@ -1635,7 +1659,7 @@ async fn checkout(
     github: &impl GithubOauth,
     claim: &Claim,
 ) -> Result<RepoCheckout, Provisioned> {
-    let token = users::github_token(db, config, claim.user)
+    let token = users::github_token(db, config, github, claim.user)
         .await
         .map_err(Provisioned::from)?;
     let identity = github

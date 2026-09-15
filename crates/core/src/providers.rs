@@ -77,6 +77,21 @@ pub enum ProviderCredentials {
     Codespaces {
         /// The account's OAuth access token.
         token: String,
+        /// The credential the grant is renewed with, when the OAuth app
+        /// expires user tokens.
+        ///
+        /// Absent for a grant GitHub never expires and for every account
+        /// linked before flyco kept it: either way the token is used until
+        /// GitHub refuses it, and the account is linked again.
+        #[serde(default)]
+        refresh_token: Option<String>,
+        /// When `token` stops working, seconds since the Unix epoch.
+        ///
+        /// Set exactly when `refresh_token` is — GitHub issues the two
+        /// together — and read by the control plane to renew the grant
+        /// before a provisioning call spends it.
+        #[serde(default)]
+        token_expires_at_unix: Option<u64>,
         /// The private environment repository every codespace is created
         /// on, `owner/name`.
         ///

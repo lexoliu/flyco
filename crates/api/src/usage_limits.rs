@@ -48,6 +48,7 @@ use skyzen_services::{Db, Queue};
 
 use crate::config::ApiConfig;
 use crate::error::ApiError;
+use crate::github::GithubOauth;
 use crate::provisioning_queue::{self, ProvisioningJob};
 use crate::rooms::{HostRooms, Rooms};
 use crate::{machines, push, sessions};
@@ -188,6 +189,7 @@ async fn announce(db: &Db, rooms: &Rooms, session: SessionId, window: &UsageWind
 pub async fn sweep(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     hosts: &HostRooms,
     queue: &Queue,
@@ -219,7 +221,7 @@ pub async fn sweep(
                     "a waiting session's machine was not started for its reset"
                 );
             }
-        } else if let Err(error) = release(db, config, hosts, &wait).await {
+        } else if let Err(error) = release(db, config, github, hosts, &wait).await {
             tracing::warn!(
                 session = %wait.id,
                 %error,
@@ -263,13 +265,14 @@ const fn can_hear_us(wait: &sessions::UsageLimitWait, pause: &UsageLimitPause) -
 async fn release(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     hosts: &HostRooms,
     wait: &sessions::UsageLimitWait,
 ) -> Result<(), ApiError> {
     if wait.state != SessionState::Paused {
         return Ok(());
     }
-    if machines::stop_for_flyco(db, config, hosts, wait.user_id, wait.id).await? {
+    if machines::stop_for_flyco(db, config, github, hosts, wait.user_id, wait.id).await? {
         tracing::info!(
             session = %wait.id,
             "released the compute of a session waiting out a plan window"

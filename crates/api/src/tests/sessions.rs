@@ -15,7 +15,8 @@ use skyzen_test::{TestClient, TestContext};
 
 use crate::rooms::{NativeRooms, Rooms};
 use crate::testing::{
-    SSH_HOST, machine_choice, migrated_router, seed_other_user, seed_provider_account, seed_user,
+    SSH_HOST, TestGithub, machine_choice, migrated_router, seed_other_user, seed_provider_account,
+    seed_user,
 };
 use crate::{
     app, approvals, budgets, harness_accounts, machines, metering, session, sessions, testing,
@@ -679,6 +680,7 @@ async fn an_idle_session_is_archived_automatically(ctx: TestContext, kv: Kv, db:
     app::archive_idle(
         &db,
         &testing::test_config(),
+        &TestGithub::default(),
         &rooms,
         &testing::test_host_rooms(),
         crate::clock::now_unix(),
@@ -776,9 +778,16 @@ async fn an_idle_sessions_machine_is_suspended_with_its_disk_kept(_ctx: TestCont
     idle(&db, session).await;
 
     let config = testing::test_config();
-    app::suspend_idle(&db, &config, &rooms, &hosts, crate::clock::now_unix())
-        .await
-        .expect("the sweep runs");
+    app::suspend_idle(
+        &db,
+        &config,
+        &TestGithub::default(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs");
 
     let machine = machines::for_session(&db, session)
         .await
@@ -817,9 +826,16 @@ async fn an_idle_sessions_machine_is_suspended_with_its_disk_kept(_ctx: TestCont
 
     // And a second pass — Cloudflare overlaps crons — finds nothing to do:
     // an interrupted session is not in the set.
-    app::suspend_idle(&db, &config, &rooms, &hosts, crate::clock::now_unix())
-        .await
-        .expect("the sweep runs again");
+    app::suspend_idle(
+        &db,
+        &config,
+        &TestGithub::default(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs again");
     assert_eq!(
         sessions::find(&db, user.id, session)
             .await
@@ -843,6 +859,7 @@ async fn a_session_mid_turn_keeps_its_machine(_ctx: TestContext, db: Db) {
     app::suspend_idle(
         &db,
         &testing::test_config(),
+        &TestGithub::default(),
         &rooms,
         &hosts,
         crate::clock::now_unix(),
@@ -877,6 +894,7 @@ async fn a_session_still_in_conversation_keeps_its_machine(_ctx: TestContext, db
     app::suspend_idle(
         &db,
         &testing::test_config(),
+        &TestGithub::default(),
         &rooms,
         &hosts,
         crate::clock::now_unix(),
@@ -919,6 +937,7 @@ async fn a_machine_stopped_underneath_an_idle_session_is_recorded_suspended(
     app::suspend_idle(
         &db,
         &testing::test_config(),
+        &TestGithub::default(),
         &rooms,
         &hosts,
         crate::clock::now_unix(),
@@ -963,9 +982,16 @@ async fn a_paused_sessions_machine_is_the_usage_limit_sweeps_call(_ctx: TestCont
     .expect("the limit is recorded");
     idle(&db, session).await;
 
-    app::suspend_idle(&db, &config, &rooms, &hosts, crate::clock::now_unix())
-        .await
-        .expect("the sweep runs");
+    app::suspend_idle(
+        &db,
+        &config,
+        &TestGithub::default(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs");
 
     assert_eq!(
         sessions::find(&db, user.id, session)
@@ -1001,6 +1027,7 @@ async fn an_offline_hosts_machine_is_left_for_the_next_pass(_ctx: TestContext, d
     app::suspend_idle(
         &db,
         &testing::test_config(),
+        &TestGithub::default(),
         &rooms,
         &testing::test_host_rooms(),
         crate::clock::now_unix(),
@@ -1041,6 +1068,7 @@ async fn a_decision_on_a_suspended_sessions_approval_wakes_its_machine(
     app::suspend_idle(
         &db,
         &testing::test_config(),
+        &TestGithub::default(),
         &rooms,
         &hosts,
         crate::clock::now_unix(),

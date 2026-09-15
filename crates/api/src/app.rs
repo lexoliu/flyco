@@ -32,7 +32,7 @@ use crate::codespaces::Codespaces;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::{Headers, path_id, path_segment};
-use crate::github::GithubClient;
+use crate::github::{GithubClient, GithubOauth};
 use crate::host_room::HostAttachResponse;
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
@@ -390,7 +390,7 @@ async fn resolve_request(
     let choice = match request.machine {
         Some(choice) => choice,
         None => {
-            machines::automatic(db, config, kv, queue, user.id, request.spot, None)
+            machines::automatic(db, config, github, kv, queue, user.id, request.spot, None)
                 .await?
                 .choice
         }
@@ -409,10 +409,11 @@ async fn resolve_request(
         }
         None => ModelChoice::default_of(&models),
     };
-    let account = provisioning::account(db, config, user.id, choice.provider_account).await?;
+    let account =
+        provisioning::account(db, config, github, user.id, choice.provider_account).await?;
     // Checked against the cached catalog, which is what the picker showed;
     // the queue re-asks the provider when it actually builds the machine.
-    let entry = machines::deployable(db, config, kv, user.id, &choice).await?;
+    let entry = machines::deployable(db, config, github, kv, user.id, &choice).await?;
     let spec = MachineSpec {
         provider: account.kind(),
         machine_type: choice.machine_type,
@@ -464,7 +465,7 @@ async fn resolve_branch(
 ) -> Result<BranchName, ApiError> {
     use crate::github::{GithubOauth as _, REPO_SCOPE};
 
-    let token = users::github_token(db, config, user.id).await?;
+    let token = users::github_token(db, config, github, user.id).await?;
     if !github.current_user(&token).await?.grants_repo_scope() {
         return Err(ApiError::GithubTokenInsufficient {
             scope: REPO_SCOPE,
@@ -664,9 +665,15 @@ struct ArchiveQuery {
 
 /// Archives a session, releasing its execution environment for good.
 #[skyzen::openapi]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an archive reaches the session, the rooms, and the providers \
+              its machine may need"
+)]
 async fn archive_session(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Query(query): Query<ArchiveQuery>,
     params: Params,
     rooms: Rooms,
@@ -676,6 +683,7 @@ async fn archive_session(
     end_session(
         user.id,
         &config,
+        &github,
         &params,
         &rooms,
         &hosts,
@@ -696,9 +704,15 @@ pub(crate) enum ArchiveKind {
     Automatic,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an archive reaches the session, the rooms, and the providers \
+              its machine may need"
+)]
 async fn end_session(
     user: UserId,
     config: &ApiConfig,
+    github: &GithubClient,
     params: &Params,
     rooms: &Rooms,
     hosts: &HostRooms,
@@ -706,7 +720,7 @@ async fn end_session(
     kind: ArchiveKind,
 ) -> Result<Json<SessionDetail>, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
-    archive(db, config, rooms, hosts, user, id, kind)
+    archive(db, config, github, rooms, hosts, user, id, kind)
         .await
         .map(Json)
 }
@@ -719,9 +733,15 @@ async fn end_session(
 /// uncommitted work without confirmation, [`ApiError::RepoStatusUnknown`]
 /// when an active session has never reported its tree, or
 /// [`ApiError::InvalidTransition`] when the lifecycle forbids the move.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an archive reaches the session, the rooms, and the providers \
+              its machine may need"
+)]
 pub(crate) async fn archive(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     hosts: &HostRooms,
     user: UserId,
@@ -749,7 +769,7 @@ pub(crate) async fn archive(
     rooms
         .command(db, id, &ControlToDaemon::Archive { preserve_workdir })
         .await?;
-    machines::destroy_for_archive(db, config, hosts, user, id).await?;
+    machines::destroy_for_archive(db, config, github, hosts, user, id).await?;
     sessions::transition(db, user, id, SessionState::Archived).await
 }
 
@@ -782,6 +802,7 @@ async fn confirm_manual_archive(
 pub async fn archive_idle(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     hosts: &HostRooms,
     at_unix: u64,
@@ -790,6 +811,7 @@ pub async fn archive_idle(
         archive(
             db,
             config,
+            github,
             rooms,
             hosts,
             idle.user_id,
@@ -820,12 +842,13 @@ pub async fn archive_idle(
 pub async fn suspend_idle(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     hosts: &HostRooms,
     at_unix: u64,
 ) -> Result<(), ApiError> {
     for idle in sessions::suspendable(db, at_unix).await? {
-        if let Err(error) = suspend(db, config, rooms, hosts, &idle).await {
+        if let Err(error) = suspend(db, config, github, rooms, hosts, &idle).await {
             tracing::warn!(
                 session = %idle.id,
                 %error,
@@ -847,11 +870,12 @@ pub async fn suspend_idle(
 async fn suspend(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     hosts: &HostRooms,
     idle: &sessions::IdleSession,
 ) -> Result<(), ApiError> {
-    machines::stop_for_flyco(db, config, hosts, idle.user_id, idle.id).await?;
+    machines::stop_for_flyco(db, config, github, hosts, idle.user_id, idle.id).await?;
     sessions::interrupted(db, idle.id, InterruptedReason::Suspended).await?;
     rooms
         .broadcast(
@@ -915,6 +939,7 @@ async fn list_approvals(
 async fn decide_approval(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     params: Params,
     Json(request): Json<DecideApproval>,
     rooms: Rooms,
@@ -924,7 +949,7 @@ async fn decide_approval(
     queue: Queue,
 ) -> Outcome<Json<ApprovalView>> {
     settle_approval(
-        &user, &params, request, &config, &rooms, &hosts, &db, &kv, &queue,
+        &user, &params, request, &config, &github, &rooms, &hosts, &db, &kv, &queue,
     )
     .await
     .into()
@@ -940,6 +965,7 @@ async fn settle_approval(
     params: &Params,
     request: DecideApproval,
     config: &ApiConfig,
+    github: &GithubClient,
     rooms: &Rooms,
     hosts: &HostRooms,
     db: &Db,
@@ -983,6 +1009,7 @@ async fn settle_approval(
         request.decision,
         user.id,
         config,
+        github,
         rooms,
         hosts,
         db,
@@ -1014,6 +1041,7 @@ async fn perform_approved(
     decision: ApprovalDecision,
     user: UserId,
     config: &ApiConfig,
+    github: &GithubClient,
     rooms: &Rooms,
     hosts: &HostRooms,
     db: &Db,
@@ -1033,6 +1061,7 @@ async fn perform_approved(
     machines::resize(
         db,
         config,
+        github,
         kv,
         rooms,
         hosts,
@@ -2432,6 +2461,7 @@ async fn record_provisioning_stage(
 pub async fn fail_stalled_provisions(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     hosts: &HostRooms,
     at_unix: u64,
@@ -2469,7 +2499,8 @@ pub async fn fail_stalled_provisions(
         // session is failed either way, and a machine left behind is a
         // cost to report, not a reason to keep the page spinning.
         if let Err(error) =
-            machines::destroy_for_archive(db, config, hosts, stalled.user_id, stalled.id).await
+            machines::destroy_for_archive(db, config, github, hosts, stalled.user_id, stalled.id)
+                .await
         {
             tracing::warn!(
                 session = %stalled.id,
@@ -2489,8 +2520,15 @@ pub async fn fail_stalled_provisions(
              stopped waiting for them and released the reservation",
             handoffs::HANDOFF_DEADLINE_SECS / 60
         );
-        if let Err(error) =
-            machines::destroy_for_archive(db, config, hosts, abandoned.user_id, abandoned.id).await
+        if let Err(error) = machines::destroy_for_archive(
+            db,
+            config,
+            github,
+            hosts,
+            abandoned.user_id,
+            abandoned.id,
+        )
+        .await
         {
             tracing::warn!(
                 session = %abandoned.id,
@@ -2514,15 +2552,24 @@ pub async fn fail_stalled_provisions(
 async fn report_startup_failure(
     State(session): State<DaemonSession>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Json(report): Json<ReportStartupFailure>,
     db: Db,
     rooms: Rooms,
     hosts: HostRooms,
 ) -> Outcome<NoContent> {
-    take_failure_report(&db, &config, &rooms, &hosts, session.0, &report.message)
-        .await
-        .map(|()| NoContent)
-        .into()
+    take_failure_report(
+        &db,
+        &config,
+        &github,
+        &rooms,
+        &hosts,
+        session.0,
+        &report.message,
+    )
+    .await
+    .map(|()| NoContent)
+    .into()
 }
 
 /// Destroys the machines of sessions that are already over.
@@ -2547,11 +2594,12 @@ async fn report_startup_failure(
 pub async fn release_ended_machines(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     hosts: &HostRooms,
 ) -> Result<(), ApiError> {
     for ended in sessions::ended_holding_a_machine(db).await? {
         if let Err(error) =
-            machines::destroy_for_archive(db, config, hosts, ended.user_id, ended.id).await
+            machines::destroy_for_archive(db, config, github, hosts, ended.user_id, ended.id).await
         {
             tracing::warn!(
                 session = %ended.id,
@@ -2586,6 +2634,7 @@ pub async fn release_ended_machines(
 async fn take_failure_report(
     db: &Db,
     config: &ApiConfig,
+    github: &GithubClient,
     rooms: &Rooms,
     hosts: &HostRooms,
     id: SessionId,
@@ -2612,7 +2661,9 @@ async fn take_failure_report(
     // the session failed either way, and `release_ended_machines` sweeps
     // whatever this attempt did not finish.
     sessions::fail(db, rooms, id, message).await?;
-    if let Err(error) = machines::destroy_for_archive(db, config, hosts, target.user_id, id).await {
+    if let Err(error) =
+        machines::destroy_for_archive(db, config, github, hosts, target.user_id, id).await
+    {
         tracing::warn!(
             session = %id,
             %error,
@@ -2963,10 +3014,11 @@ async fn read_agent_machine(session: SessionId, db: &Db) -> Result<AgentMachineV
 async fn get_agent_machine_catalog(
     State(session): State<DaemonSession>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     db: Db,
     kv: Kv,
 ) -> Outcome<Json<Vec<MachineCatalogEntry>>> {
-    read_agent_catalog(session.0, &config, &db, &kv)
+    read_agent_catalog(session.0, &config, &github, &db, &kv)
         .await
         .map(Json)
         .into()
@@ -2975,11 +3027,12 @@ async fn get_agent_machine_catalog(
 async fn read_agent_catalog(
     session: SessionId,
     config: &ApiConfig,
+    github: &GithubClient,
     db: &Db,
     kv: &Kv,
 ) -> Result<Vec<MachineCatalogEntry>, ApiError> {
     let user = sessions::owner(db, session).await?;
-    machines::resize_catalog(db, config, kv, user, session).await
+    machines::resize_catalog(db, config, github, kv, user, session).await
 }
 
 /// Moves the session onto another machine type, on the agent's own say-so.
@@ -2988,24 +3041,38 @@ async fn read_agent_catalog(
 /// user's money committed before anything runs, so the daemon raises an
 /// approval instead and the resize happens when the user decides.
 #[skyzen::openapi]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a resize names the session, the caller, the type, and every \
+              service it touches"
+)]
 async fn agent_resize_machine(
     State(session): State<DaemonSession>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Json(request): Json<ResizeMachine>,
     rooms: Rooms,
     hosts: HostRooms,
     db: Db,
     kv: Kv,
 ) -> Outcome<Accepted> {
-    run_agent_resize(session.0, &request, &config, &rooms, &hosts, &db, &kv)
-        .await
-        .into()
+    run_agent_resize(
+        session.0, &request, &config, &github, &rooms, &hosts, &db, &kv,
+    )
+    .await
+    .into()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a resize names the session, the caller, the type, and every \
+              service it touches"
+)]
 async fn run_agent_resize(
     session: SessionId,
     request: &ResizeMachine,
     config: &ApiConfig,
+    github: &GithubClient,
     rooms: &Rooms,
     hosts: &HostRooms,
     db: &Db,
@@ -3015,6 +3082,7 @@ async fn run_agent_resize(
     machines::resize_for_agent(
         db,
         config,
+        github,
         kv,
         rooms,
         hosts,
