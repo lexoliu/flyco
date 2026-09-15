@@ -1836,7 +1836,9 @@ async fn a_stopping_container_flushes_before_it_writes_the_patch_and_reports_las
     );
     assert_eq!(
         harness.next_call().await,
-        Call::WorkdirPatchStored(WORKDIR_PATCH.len()),
+        // The stored object is the snapshot's envelope: the base-commit
+        // line (40 hex + newline), then the patch.
+        Call::WorkdirPatchStored(WORKDIR_PATCH.len() + 41),
         "the working tree leaves the machine, because nothing here survives the stop"
     );
     assert_eq!(
@@ -1867,7 +1869,7 @@ async fn a_stop_ends_the_run_rather_than_holding_the_stream() {
     assert_eq!(harness.next_call().await, Call::Flush);
     assert_eq!(
         harness.next_call().await,
-        Call::WorkdirPatchStored(WORKDIR_PATCH.len())
+        Call::WorkdirPatchStored(WORKDIR_PATCH.len() + 41)
     );
     assert_eq!(
         harness.next_call().await,

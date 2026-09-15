@@ -119,16 +119,6 @@ pub enum AcpError {
     /// The agent closed its connection or exited.
     #[error("the ACP agent's connection closed")]
     Closed,
-    /// The session asked to resume an id on an agent that can neither
-    /// resume nor load sessions.
-    #[error(
-        "a resume_session_id was configured but {agent} supports neither session/resume nor \
-         session/load — the conversation cannot be continued on this agent"
-    )]
-    NoResume {
-        /// The configured agent name.
-        agent: String,
-    },
     /// A registered MCP server needs a transport the agent does not speak.
     #[error(
         "the MCP server `{server}` is reached over HTTP, which the configured agent's \
@@ -398,6 +388,9 @@ struct Opened {
     models: Vec<flyco_core::ModelOption>,
     /// The commands the agent's session-open answer listed, if any.
     commands: Vec<flyco_core::HarnessCommand>,
+    /// Why a fresh session stands where a continued one was asked for —
+    /// said in the room, where the gap is visible.
+    notice: Option<String>,
 }
 
 /// Opens the ACP session — new, resumed, or loaded.
@@ -407,6 +400,12 @@ struct Opened {
 /// streams the whole transcript back as updates. Replay is suppressed at
 /// the handler — a loaded history re-emitted as deltas would duplicate the
 /// conversation in flyco's transcript.
+///
+/// A continuation that cannot happen — the agent supports neither method,
+/// or rejects the one it advertised — is not a session failure. The
+/// workspace was already restored from the stored patch before the
+/// harness started, so the session opens fresh over it and says so in the
+/// room; the alternative is a dead session standing on live work.
 async fn open_session(
     client: &AcpClient<AgentHandler>,
     config: &AcpConfig,
@@ -416,66 +415,82 @@ async fn open_session(
     initialized: &aither_acp::InitializeResult,
 ) -> Result<Opened, AcpError> {
     let capabilities = &initialized.agent_capabilities;
-    let servers = mount.acp_servers();
-    let context = |method: &str| format!("rejected `{method}`");
 
-    let (session_id, modes, config_options, extra) = match &request.resume_session_id {
+    let (session_id, modes, config_options, extra, notice) = match &request.resume_session_id {
         Some(id) if capabilities.session_capabilities.resume.is_some() => {
-            let result = client
+            match client
                 .resume_session(
                     SessionResumeParams::new(id.clone(), request.workdir.clone())
-                        .mcp_servers(servers),
+                        .mcp_servers(mount.acp_servers()),
                 )
                 .await
-                .map_err(|source| AcpError::Agent {
-                    context: context("session/resume"),
-                    source,
-                })?;
-            (
-                id.clone(),
-                result.modes,
-                result.config_options,
-                result.extra,
-            )
+            {
+                Ok(result) => (
+                    id.clone(),
+                    result.modes,
+                    result.config_options,
+                    result.extra,
+                    None,
+                ),
+                Err(source) => {
+                    let fresh = new_conversation(client, mount, request).await?;
+                    (
+                        fresh.session_id,
+                        fresh.modes,
+                        fresh.config_options,
+                        fresh.extra,
+                        Some(restarted_fresh(config, "session/resume", &source)),
+                    )
+                }
+            }
         }
         Some(id) if capabilities.load_session => {
             replaying.store(true, Ordering::SeqCst);
             let loaded = client
                 .load_session(
                     aither_acp::SessionLoadParams::new(id.clone(), request.workdir.clone())
-                        .mcp_servers(servers),
+                        .mcp_servers(mount.acp_servers()),
                 )
                 .await;
             replaying.store(false, Ordering::SeqCst);
-            let result = loaded.map_err(|source| AcpError::Agent {
-                context: context("session/load"),
-                source,
-            })?;
-            (
-                id.clone(),
-                result.modes,
-                result.config_options,
-                result.extra,
-            )
+            match loaded {
+                Ok(result) => (
+                    id.clone(),
+                    result.modes,
+                    result.config_options,
+                    result.extra,
+                    None,
+                ),
+                Err(source) => {
+                    let fresh = new_conversation(client, mount, request).await?;
+                    (
+                        fresh.session_id,
+                        fresh.modes,
+                        fresh.config_options,
+                        fresh.extra,
+                        Some(restarted_fresh(config, "session/load", &source)),
+                    )
+                }
+            }
         }
         Some(_) => {
-            return Err(AcpError::NoResume {
-                agent: config.agent.clone(),
-            });
+            let fresh = new_conversation(client, mount, request).await?;
+            (
+                fresh.session_id,
+                fresh.modes,
+                fresh.config_options,
+                fresh.extra,
+                Some(uncontinuable(config)),
+            )
         }
         None => {
-            let result = client
-                .new_session(SessionNewParams::new(request.workdir.clone()).mcp_servers(servers))
-                .await
-                .map_err(|source| AcpError::Agent {
-                    context: context("session/new"),
-                    source,
-                })?;
+            let fresh = new_conversation(client, mount, request).await?;
             (
-                result.session_id,
-                result.modes,
-                result.config_options,
-                result.extra,
+                fresh.session_id,
+                fresh.modes,
+                fresh.config_options,
+                fresh.extra,
+                None,
             )
         }
     };
@@ -485,7 +500,51 @@ async fn open_session(
         modes,
         config_options.as_deref(),
         &extra,
+        notice,
     ))
+}
+
+/// `session/new` — where a session whose conversation cannot be continued
+/// lands, and where one with nothing to continue starts.
+async fn new_conversation(
+    client: &AcpClient<AgentHandler>,
+    mount: &Mount,
+    request: &StartRequest,
+) -> Result<aither_acp::SessionNewResult, AcpError> {
+    client
+        .new_session(
+            SessionNewParams::new(request.workdir.clone()).mcp_servers(mount.acp_servers()),
+        )
+        .await
+        .map_err(|source| AcpError::Agent {
+            context: "rejected `session/new`".to_owned(),
+            source,
+        })
+}
+
+/// The room line a fresh session carries when it stands where a continued
+/// conversation was asked for: the continuation was offered and refused.
+fn restarted_fresh(config: &AcpConfig, method: &str, source: &ClientError) -> String {
+    tracing::warn!(agent = %config.agent, %source, "{method} was rejected; the session opens fresh");
+    format!(
+        "The previous conversation could not be continued — {} rejected `{method}` — so this \
+         session started fresh. The workspace still holds all of its work.",
+        config.agent
+    )
+}
+
+/// The room line a fresh session carries on an agent that speaks no
+/// continuation method at all.
+fn uncontinuable(config: &AcpConfig) -> String {
+    tracing::warn!(
+        agent = %config.agent,
+        "the agent supports neither session/resume nor session/load; the session opens fresh"
+    );
+    format!(
+        "{} can neither resume nor load a stored conversation, so this session started fresh. \
+         The workspace still holds all of the previous work.",
+        config.agent
+    )
 }
 
 /// What the session-open answer settles, as an [`Opened`].
@@ -495,6 +554,7 @@ fn describe_opened(
     modes: Option<aither_acp::SessionModeState>,
     config_options: Option<&[aither_acp::ConfigOption]>,
     extra: &BTreeMap<String, Value>,
+    notice: Option<String>,
 ) -> Opened {
     let mut tokens = vec!["acp".to_owned()];
     if capabilities.load_session {
@@ -548,6 +608,7 @@ fn describe_opened(
                     .collect()
             })
             .unwrap_or_default(),
+        notice,
     }
 }
 
@@ -1184,6 +1245,17 @@ impl Driver {
                 &self.outputs,
                 SessionOutput::Commands {
                     commands: opened.commands,
+                },
+            )
+            .await
+        {
+            return;
+        }
+        if let Some(notice) = opened.notice
+            && !emit(
+                &self.outputs,
+                SessionOutput::Event {
+                    event: HarnessEvent::LocalCommandOutput { content: notice },
                 },
             )
             .await

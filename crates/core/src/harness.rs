@@ -34,7 +34,8 @@ impl HarnessKind {
     /// the id does not exist until a level is named, which is why the
     /// composer-facing catalog is normalized and the daemon fuses the
     /// level back in at `session/set_config_option`.
-    pub fn effort_is_fused(self) -> bool {
+    #[must_use]
+    pub const fn effort_is_fused(self) -> bool {
         matches!(self, Self::Devin)
     }
 }
@@ -683,10 +684,10 @@ fn devin_group_label(label: &str, tail: &str) -> String {
 /// member, which merges nothing.
 #[must_use]
 pub fn normalize_models(harness: HarnessKind, models: Vec<ModelOption>) -> Vec<ModelOption> {
+    use std::collections::{BTreeMap, BTreeSet};
     if harness != HarnessKind::Devin {
         return models;
     }
-    use std::collections::{BTreeMap, BTreeSet};
     let bare: BTreeSet<&str> = models.iter().map(|model| model.id.as_str()).collect();
     let mut groups: BTreeMap<String, Vec<(usize, &str)>> = BTreeMap::new();
     let mut member_of: Vec<Option<String>> = vec![None; models.len()];

@@ -392,6 +392,8 @@ mod tests {
     fn codespaces_credentials_round_trip_with_their_tag() {
         let credentials = ProviderCredentials::Codespaces {
             token: "gho_a-token".to_owned(),
+            refresh_token: Some("ghr_a-refresh-token".to_owned()),
+            token_expires_at_unix: Some(1_700_000_000),
             env_repo: "octocat/flyco-sessions".to_owned(),
             env_repo_id: 42,
             owner_id: 583_231,
