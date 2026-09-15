@@ -547,6 +547,29 @@ export default function SessionDetail() {
   const [machinePanelAt, setMachinePanelAt] = createSignal<number>();
   const [machineResizeAt, setMachineResizeAt] = createSignal<number>();
   const [envPanelAt, setEnvPanelAt] = createSignal<number>();
+  /**
+   * The instant the agent last stepped onto the screen — `desktop_active`
+   * is the daemon's once-per-burst announcement, and it is what opens the
+   * drawer's `Screen` tab without the user going looking for it.
+   */
+  const [screenPanelAt, setScreenPanelAt] = createSignal<number>();
+  let screenSeen = 0;
+  createEffect(() => {
+    const events = relay.events();
+    for (let i = screenSeen; i < events.length; i += 1) {
+      const entry = events[i];
+      // `desktop_active` is recorded, so catch-up replays it — a minute-old
+      // announcement from a session being opened now is history, not a
+      // knock on the drawer's door.
+      if (
+        entry?.event.type === "desktop_active" &&
+        entry.atUnix > Date.now() / 1000 - 60
+      ) {
+        setScreenPanelAt(Date.now());
+      }
+    }
+    screenSeen = events.length;
+  });
 
   function requestPanel(request: { panel: "machine" | "env"; resize?: boolean }): void {
     const at = Date.now();
@@ -1251,6 +1274,8 @@ export default function SessionDetail() {
           open={drawerOpen()}
           onOpenChange={setDrawerOpen}
           openEnv={envPanelAt()}
+          openScreen={screenPanelAt()}
+          computerUse={session()?.computer_use === true}
           onError={setError}
         />
       </div>

@@ -85,6 +85,7 @@ fn open(caller: &Caller, repo: &str, dollars: u64) -> CreateSession {
         spot: true,
         model: None,
         permission_mode: None,
+        computer_use: false,
     }
 }
 
@@ -217,6 +218,7 @@ async fn omitting_the_machine_lets_flyco_pick_one(ctx: TestContext, kv: Kv, db: 
             spot: true,
             model: None,
             permission_mode: None,
+            computer_use: false,
         },
     )
     .await;
@@ -482,6 +484,7 @@ async fn flyco_cannot_choose_a_machine_without_a_deployable_linux_type(
             spot: true,
             model: None,
             permission_mode: None,
+            computer_use: false,
         })
         .send()
         .await;
@@ -1928,6 +1931,7 @@ async fn an_update_refuses_a_budget_nothing_can_run_on_and_a_body_that_says_noth
             budget_limit: Some(Usd::from_dollars(30)),
             model: None,
             permission_mode: None,
+            computer_use: Some(false),
         })
         .send()
         .await;
@@ -1981,6 +1985,7 @@ async fn ownership_is_answered_per_user(db: Db) {
                 HarnessKind::Codex,
             )),
             permission_mode: None,
+            computer_use: false,
         },
     )
     .await

@@ -115,7 +115,12 @@ next_subid() {
 install_session_runtime() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install --yes --no-install-recommends ca-certificates curl fish git unzip
+  # xvfb + openbox + xfonts-base are the desktop a `computer_use` session
+  # drives: Xvfb is the screen the daemon captures, openbox the window
+  # manager its tools open windows under, and the fonts are what X clients
+  # draw text with. They ship in every image because the daemon runs
+  # unprivileged and cannot install them per-session.
+  apt-get install --yes --no-install-recommends ca-certificates curl fish git unzip xvfb openbox xfonts-base
   rm -rf /var/lib/apt/lists/*
 
   create_runtime_user /usr/bin/fish

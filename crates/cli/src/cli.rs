@@ -253,6 +253,10 @@ pub enum SessionCommand {
         /// `dont-ask`, `auto`, `bypass-permissions`.
         #[arg(long, value_parser = parse_permission_mode)]
         permission_mode: Option<flyco_core::PermissionMode>,
+        /// Give the session a desktop the agent can see and drive —
+        /// `--computer-use false` takes it away.
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        computer_use: Option<bool>,
     },
     /// Stop the session's machine; disk and session survive.
     Stop {
@@ -385,6 +389,9 @@ pub struct SessionSpec {
     /// `KEY=VALUE` environment variable (repeatable).
     #[arg(long, value_name = "KEY=VALUE")]
     pub env: Vec<String>,
+    /// Give the session a desktop the agent can see and drive.
+    #[arg(long)]
+    pub computer_use: bool,
     /// Reuse a prior attempt's outcome within its 24-hour window: a retried
     /// `run` or `create` names the same key and gets the same session back
     /// rather than provisioning a second machine.
@@ -452,6 +459,7 @@ impl SessionSpec {
                 effort: self.effort.clone(),
             }),
             permission_mode: self.permission_mode,
+            computer_use: self.computer_use,
             source: None,
         })
     }

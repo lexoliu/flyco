@@ -288,8 +288,13 @@ pub const fn availability(harness: HarnessKind, feature: Feature) -> Availabilit
             Availability::NotApplicable
         }
         (_, Feature::RemoteControl | Feature::Resume) => Availability::Disabled,
-        (_, Feature::Skills | Feature::Mcp | Feature::Memory) => Availability::Takeover,
-        (_, Feature::BrowserControl | Feature::ComputerControl) => Availability::Phase2,
+        // Computer control joins the takeover set: one implementation
+        // serves both harnesses, because the session's own flyco MCP
+        // server carries the tools — the harness never had them.
+        (_, Feature::Skills | Feature::Mcp | Feature::Memory | Feature::ComputerControl) => {
+            Availability::Takeover
+        }
+        (_, Feature::BrowserControl) => Availability::Phase2,
     }
 }
 

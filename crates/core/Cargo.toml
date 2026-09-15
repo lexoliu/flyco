@@ -8,6 +8,14 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# Desktop stream chunks are byte strings crossing JSON: base64 is the
+# wire form [`wire::base64_bytes`] puts on them.
+base64.workspace = true
+# Optional because the JSON-schema surface exists for one consumer — the
+# `computer_input` MCP tool describes its `Vec<DesktopInputEvent>` argument
+# with a schemars schema — and flyco-api, which compiles this crate to wasm,
+# pays for the derive on every build it is left on.
+schemars = { version = "1.2", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -28,6 +36,10 @@ skyzen-services = { workspace = true, optional = true }
 [features]
 # The SQL column mapping of the stored domain types. Enabled by flyco-api.
 sql = ["dep:skyzen", "dep:skyzen-services"]
+# `schemars::JsonSchema` on the desktop input wire types, so `flycod mcp`
+# can publish a schema for `computer_input`'s arguments. Enabled by
+# flyco-daemon.
+schemars = ["dep:schemars"]
 
 [dev-dependencies]
 

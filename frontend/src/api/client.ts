@@ -466,6 +466,35 @@ export function contextSession(id: string): Promise<void> {
   return requestVoid("POST", `/v1/sessions/${id}/context`);
 }
 
+// --- /v1/sessions/{id}/desktop ------------------------------------------------
+
+export type DesktopTakeoverRequest = Schemas["DesktopTakeoverRequest"];
+export type DesktopInputRequest = Schemas["DesktopInputRequest"];
+
+/**
+ * Opens the session's desktop stream: an SSE response of `hello`, `chunk`
+ * and `resync` events carrying the encoded AV1 tail and then live chunks.
+ *
+ * Returns the raw response — the caller reads `body` as an SSE frame
+ * stream; `signal` is what a closed panel aborts it with.
+ */
+export function openDesktopStream(id: string, signal?: AbortSignal): Promise<Response> {
+  return send("GET", `/v1/sessions/${id}/desktop/stream`, { signal });
+}
+
+/** Takes the session's screen, or hands it back, for one watcher lease. */
+export function desktopTakeover(
+  id: string,
+  request: DesktopTakeoverRequest,
+): Promise<void> {
+  return requestVoid("POST", `/v1/sessions/${id}/desktop/takeover`, { json: request });
+}
+
+/** Sends one batch of a driving watcher's desktop input. */
+export function desktopInput(id: string, request: DesktopInputRequest): Promise<void> {
+  return requestVoid("POST", `/v1/sessions/${id}/desktop/input`, { json: request });
+}
+
 export function listTurns(
   id: string,
   page?: { cursor?: string; limit?: number },

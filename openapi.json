@@ -4431,12 +4431,17 @@
                       "created_at_unix",
                       "last_active_unix",
                       "model",
-                      "permission_mode"
+                      "permission_mode",
+                      "computer_use"
                     ],
                     "properties": {
                       "activity": {
                         "$ref": "#/components/schemas/SessionActivity",
                         "description": "What it is doing, for an [`Active`](SessionState::Active) session.\n\nWhat lets the home list say `Working` and `Needs input` rather than\nreading every running session as `Idle`: the facts behind those two\nlive in the relay and in the `approvals` table, and this is the\ncontrol plane's own answer, carried on the row the list is built\nfrom (docs/ux.md §6).\n\nMeaningless for every other state, and the UI ignores it there — a\nsession keeps the activity it had when it was paused, interrupted or\narchived rather than being reset to a position it was never in."
+                      },
+                      "computer_use": {
+                        "type": "boolean",
+                        "description": "Whether the session may have a desktop.\n\nOn the summary rather than only on [`SessionDetail`] because the\n`Screen` drawer entry is drawn from it: a session without the flag\nhas no panel to open, and the chip the composer shows reads this\nrather than asking the machine."
                       },
                       "created_at_unix": {
                         "type": "integer",
@@ -4536,6 +4541,10 @@
                   "budget_limit": {
                     "$ref": "#/components/schemas/Usd",
                     "description": "Spending limit for the whole session."
+                  },
+                  "computer_use": {
+                    "type": "boolean",
+                    "description": "Whether the session gets a screen: a desktop the model can see and\ndrive, and a live video of it the user can watch and take over.\n\nNamed at creation because the machine provisions differently for it\n— the display stack is part of what boots, not something bolted on\nafter. A live session can still gain it through\n[`UpdateSession::computer_use`], which has the daemon install and\nstart the stack in the background."
                   },
                   "harness": {
                     "$ref": "#/components/schemas/HarnessKind",
@@ -4752,6 +4761,13 @@
                         "description": "What the session may spend on compute, in microdollars.\n\nThe one thing that releases a session paused on an exhausted\nbudget: a limit above what the ledger has already spent puts the\nsession back to [`SessionState::Active`] and tells its daemon to\ncarry on. A limit that is still under the spend is accepted and\nchanges nothing else — the session stays paused, because it is."
                       }
                     ]
+                  },
+                  "computer_use": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ],
+                    "description": "Give the session a screen, or take it away.\n\nApplied to the session already in progress: the control plane\nrecords it and sends the daemon a\n[`SetComputerUse`](crate::wire::ControlToDaemon::SetComputerUse),\nwhich starts or stops the display stack without a reboot. Turning\nit off does not kill anything the agent started on the display —\nthe screen is gone, and whatever was on it went with it."
                   },
                   "model": {
                     "oneOf": [
@@ -5556,6 +5572,131 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/desktop/input": {
+      "post": {
+        "summary": "Sends one batch of the user's desktop input.",
+        "description": "Sends one batch of the user's desktop input.\n\nKeystrokes, pointer moves, clicks and scrolls collected by the screen\npanel since its last send — refused with `409` unless the named\nwatcher holds takeover, so a second tab cannot reach into the screen\nthe first is driving.",
+        "operationId": "flyco_api::app::desktop_input",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions/{id}/desktop/input`.\n\nOne batch of user input for the desktop — the keystrokes and pointer\nmoves the screen panel collected since its last send. The room\nforwards it only while the named watcher holds takeover, which is\nwhat keeps a second open tab from reaching into the screen the first\none is driving.",
+                "required": [
+                  "watcher",
+                  "events"
+                ],
+                "properties": {
+                  "events": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/DesktopInputEvent"
+                    },
+                    "description": "The input, in display coordinates."
+                  },
+                  "watcher": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "The watcher id the desktop stream's `hello` event named.",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/desktop/stream": {
+      "get": {
+        "summary": "Opens the session's desktop stream.",
+        "description": "Opens the session's desktop stream.\n\nThe screen panel's video feed: an SSE stream of encoded AV1 chunks,\nreplayed from the newest keyframe and then live. The room mints the\ncaller's watcher lease in answering — the stream staying open is the\naudience the daemon encodes for, and a backgrounded tab closing it is\nwhat turns the encoder off.",
+        "operationId": "flyco_api::app::desktop_stream",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/desktop/takeover": {
+      "post": {
+        "summary": "Takes the session's screen, or hands it back.",
+        "description": "Takes the session's screen, or hands it back.\n\nThe `Take over`/`Release` button on the screen panel. The watcher id\nthe desktop stream announced names the lease taking over — a takeover\nheld by a dead browser lapses with it instead of locking the agent\nout — and the room interrupts the running turn on a take, exactly as\n`Stop` does.",
+        "operationId": "flyco_api::app::desktop_takeover",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/sessions/{id}/desktop/takeover`.\n\nTakeover is scoped to a watcher — the lease the desktop stream minted\n— because the screen belongs to an open viewer, not to the account:\na browser that dies mid-takeover hands the screen back when its\nwatcher expires, rather than locking the agent out of a session\nnobody is looking at.",
+                "required": [
+                  "watcher",
+                  "active"
+                ],
+                "properties": {
+                  "active": {
+                    "type": "boolean",
+                    "description": "Whether the user is taking the screen (`true`) or handing it back."
+                  },
+                  "watcher": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "The watcher id the desktop stream's `hello` event named.",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Recorded. The outcome arrives on the session relay, not in this response."
           }
         }
       }
@@ -9135,6 +9276,10 @@
             "$ref": "#/components/schemas/Usd",
             "description": "Spending limit for the whole session."
           },
+          "computer_use": {
+            "type": "boolean",
+            "description": "Whether the session gets a screen: a desktop the model can see and\ndrive, and a live video of it the user can watch and take over.\n\nNamed at creation because the machine provisions differently for it\n— the display stack is part of what boots, not something bolted on\nafter. A live session can still gain it through\n[`UpdateSession::computer_use`], which has the daemon install and\nstart the stack in the background."
+          },
           "harness": {
             "$ref": "#/components/schemas/HarnessKind",
             "description": "Which coding harness drives the session."
@@ -9664,6 +9809,78 @@
           },
           {
             "type": "object",
+            "description": "Where the session's desktop is: coming up, ready, in use, or failed.\n\nReported on change only — a daemon that reports nothing yet has a\nscreen nobody can watch, and the newest report is the whole story.\n`detail` carries the failure's sentence when `status` is\n[`DesktopStatus::Failed`], and the reason a desktop is taking its\ntime when it is [`DesktopStatus::Starting`].",
+            "required": [
+              "status",
+              "type"
+            ],
+            "properties": {
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The sentence a panel shows beside it, when there is one."
+              },
+              "status": {
+                "$ref": "#/components/schemas/DesktopStatus",
+                "description": "The lifecycle state."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "desktop_state"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The agent is on the screen — the `Screen` panel opens itself.\n\nSent once per idle→use transition, never per action: the first\n`computer_*` call after a quiet spell announces the desktop, and a\nburst of them is still one announcement. The transition is what a\nbrowser opens the panel on, which is why it is a frame of its own\nrather than another reading of [`DesktopStatus`].",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "desktop_active"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "One encoded temporal unit of the desktop stream.\n\nChunks ride the frame batch like every other report — one\ntransport, one epoch, one ordering — and the room routes them to\nthe stream's own table when they land rather than replaying them\nthrough the event log. `keyframe` marks a chunk a decoder can\nstart from cold; it is what a joining watcher is replayed from,\nand what the room asks the daemon to re-arm when the tail is cut.",
+            "required": [
+              "keyframe",
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "The encoded bytes — base64 on the wire, since a JSON array of\nnumbers would cost three bytes per byte of stream."
+              },
+              "keyframe": {
+                "type": "boolean",
+                "description": "Whether a decoder can start from this chunk."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "desktop_chunk"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "The machine reached a provisioning milestone the daemon can see.\n\nThe control plane cannot observe anything past the provider's\nanswer — it has no way onto the machine — so the last stages are\nreported from the machine itself.",
             "required": [
               "stage",
@@ -9744,6 +9961,214 @@
               "null"
             ],
             "description": "Whether to price and pick against spot capacity. Spot is the default\nbecause it is cheaper and flyco handles eviction."
+          }
+        }
+      },
+      "DesktopButton": {
+        "type": "string",
+        "description": "Which mouse button a [`DesktopInputEvent::Button`] reports.",
+        "enum": [
+          "left",
+          "middle",
+          "right",
+          "back",
+          "forward"
+        ]
+      },
+      "DesktopInputEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The pointer moved to (x, y).",
+            "required": [
+              "x",
+              "y",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "move"
+                ]
+              },
+              "x": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Display x.",
+                "minimum": 0
+              },
+              "y": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Display y.",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A mouse button at (x, y) changed state.",
+            "required": [
+              "x",
+              "y",
+              "button",
+              "pressed",
+              "kind"
+            ],
+            "properties": {
+              "button": {
+                "$ref": "#/components/schemas/DesktopButton",
+                "description": "Which button."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "button"
+                ]
+              },
+              "pressed": {
+                "type": "boolean",
+                "description": "Whether it is now held."
+              },
+              "x": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Display x.",
+                "minimum": 0
+              },
+              "y": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Display y.",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A wheel or trackpad scroll at (x, y), in pixels of intent.\n\nThe daemon turns a scroll into the display's own unit — button-4/5\nclicks under X — so the browser sends the DOM delta it has rather\nthan a guess at line counts.",
+            "required": [
+              "x",
+              "y",
+              "delta_x",
+              "delta_y",
+              "kind"
+            ],
+            "properties": {
+              "delta_x": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Horizontal delta, DOM convention (positive scrolls right)."
+              },
+              "delta_y": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Vertical delta, DOM convention (positive scrolls down)."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "scroll"
+                ]
+              },
+              "x": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Display x.",
+                "minimum": 0
+              },
+              "y": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Display y.",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A key changed state.\n\n`code` is the DOM `KeyboardEvent.code` — the physical position —\nand `key` the character or named key it produced. The daemon maps\nthe position first, because a display has a keymap and a browser\nhas a layout, and the two only agree through the physical key; the\nproduced key is the fallback for anything the map does not cover.",
+            "required": [
+              "code",
+              "key",
+              "pressed",
+              "kind"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "`KeyboardEvent.code`, e.g. `KeyW` or `ShiftLeft`."
+              },
+              "key": {
+                "type": "string",
+                "description": "`KeyboardEvent.key`, e.g. `w` or `Shift`."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "key"
+                ]
+              },
+              "pressed": {
+                "type": "boolean",
+                "description": "Whether it is now held."
+              }
+            }
+          }
+        ],
+        "description": "One user input on the session's desktop, in display coordinates.\n\nCoordinates are the display's own, not the viewer's: a browser scales\nits rendered frame down to fit the panel and has to scale the input\nback up, so the protocol carries the pixel the screen itself would\nsee and nothing else.\n\nTagged on `kind` rather than `type`, because it nests inside\n[`ControlToDaemon::DesktopInput`], which is already tagged on `type` —\nthe same convention [`ShellOutcome`] follows inside a `shell_exited`."
+      },
+      "DesktopInputRequest": {
+        "type": "object",
+        "description": "Request body of `POST /v1/sessions/{id}/desktop/input`.\n\nOne batch of user input for the desktop — the keystrokes and pointer\nmoves the screen panel collected since its last send. The room\nforwards it only while the named watcher holds takeover, which is\nwhat keeps a second open tab from reaching into the screen the first\none is driving.",
+        "required": [
+          "watcher",
+          "events"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DesktopInputEvent"
+            },
+            "description": "The input, in display coordinates."
+          },
+          "watcher": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The watcher id the desktop stream's `hello` event named.",
+            "minimum": 0
+          }
+        }
+      },
+      "DesktopStatus": {
+        "type": "string",
+        "description": "Where a session's desktop is in its lifecycle, as the daemon reports it.\n\nA state, not an instant: the newest report wins, and a browser that\nopens the session after the fact reads the last one rather than a\nhistory of the display server coming up.",
+        "enum": [
+          "starting",
+          "ready",
+          "active",
+          "failed"
+        ]
+      },
+      "DesktopTakeoverRequest": {
+        "type": "object",
+        "description": "Request body of `POST /v1/sessions/{id}/desktop/takeover`.\n\nTakeover is scoped to a watcher — the lease the desktop stream minted\n— because the screen belongs to an open viewer, not to the account:\na browser that dies mid-takeover hands the screen back when its\nwatcher expires, rather than locking the agent out of a session\nnobody is looking at.",
+        "required": [
+          "watcher",
+          "active"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "Whether the user is taking the screen (`true`) or handing it back."
+          },
+          "watcher": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The watcher id the desktop stream's `hello` event named.",
+            "minimum": 0
           }
         }
       },
@@ -12992,12 +13417,17 @@
           "created_at_unix",
           "last_active_unix",
           "model",
-          "permission_mode"
+          "permission_mode",
+          "computer_use"
         ],
         "properties": {
           "activity": {
             "$ref": "#/components/schemas/SessionActivity",
             "description": "What it is doing, for an [`Active`](SessionState::Active) session.\n\nWhat lets the home list say `Working` and `Needs input` rather than\nreading every running session as `Idle`: the facts behind those two\nlive in the relay and in the `approvals` table, and this is the\ncontrol plane's own answer, carried on the row the list is built\nfrom (docs/ux.md §6).\n\nMeaningless for every other state, and the UI ignores it there — a\nsession keeps the activity it had when it was paused, interrupted or\narchived rather than being reset to a position it was never in."
+          },
+          "computer_use": {
+            "type": "boolean",
+            "description": "Whether the session may have a desktop.\n\nOn the summary rather than only on [`SessionDetail`] because the\n`Screen` drawer entry is drawn from it: a session without the flag\nhas no panel to open, and the chip the composer shows reads this\nrather than asking the machine."
           },
           "created_at_unix": {
             "type": "integer",
@@ -13583,6 +14013,13 @@
                 "description": "What the session may spend on compute, in microdollars.\n\nThe one thing that releases a session paused on an exhausted\nbudget: a limit above what the ledger has already spent puts the\nsession back to [`SessionState::Active`] and tells its daemon to\ncarry on. A limit that is still under the spend is accepted and\nchanges nothing else — the session stays paused, because it is."
               }
             ]
+          },
+          "computer_use": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Give the session a screen, or take it away.\n\nApplied to the session already in progress: the control plane\nrecords it and sends the daemon a\n[`SetComputerUse`](crate::wire::ControlToDaemon::SetComputerUse),\nwhich starts or stops the display stack without a reboot. Turning\nit off does not kill anything the agent started on the display —\nthe screen is gone, and whatever was on it went with it."
           },
           "model": {
             "oneOf": [

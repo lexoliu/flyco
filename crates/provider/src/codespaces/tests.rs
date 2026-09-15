@@ -113,6 +113,7 @@ fn request_spec(machine: MachineId) -> ProvisionRequest {
             resume_session_id: None,
             model: crate::testing::session_model(),
             mcp_servers: crate::testing::mcp_servers(),
+            computer_use: false,
         },
     }
 }

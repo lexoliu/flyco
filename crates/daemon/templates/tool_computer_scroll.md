@@ -1,0 +1,1 @@
+Scroll the wheel at (x, y). `delta_y` follows the DOM convention — positive scrolls down, negative up — and `delta_x` likewise sideways. The display turns the delta into wheel clicks, so a few hundred pixels is a comfortable scroll.

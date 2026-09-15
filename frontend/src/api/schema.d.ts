@@ -1665,6 +1665,83 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/desktop/input": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sends one batch of the user's desktop input.
+         * @description Sends one batch of the user's desktop input.
+         *
+         *     Keystrokes, pointer moves, clicks and scrolls collected by the screen
+         *     panel since its last send — refused with `409` unless the named
+         *     watcher holds takeover, so a second tab cannot reach into the screen
+         *     the first is driving.
+         */
+        post: operations["flyco_api::app::desktop_input"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/desktop/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Opens the session's desktop stream.
+         * @description Opens the session's desktop stream.
+         *
+         *     The screen panel's video feed: an SSE stream of encoded AV1 chunks,
+         *     replayed from the newest keyframe and then live. The room mints the
+         *     caller's watcher lease in answering — the stream staying open is the
+         *     audience the daemon encodes for, and a backgrounded tab closing it is
+         *     what turns the encoder off.
+         */
+        get: operations["flyco_api::app::desktop_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/desktop/takeover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Takes the session's screen, or hands it back.
+         * @description Takes the session's screen, or hands it back.
+         *
+         *     The `Take over`/`Release` button on the screen panel. The watcher id
+         *     the desktop stream announced names the lease taking over — a takeover
+         *     held by a dead browser lapses with it instead of locking the agent
+         *     out — and the room interrupts the running turn on a take, exactly as
+         *     `Stop` does.
+         */
+        post: operations["flyco_api::app::desktop_takeover"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/diff": {
         parameters: {
             query?: never;
@@ -3398,6 +3475,17 @@ export interface components {
         CreateSession: {
             /** @description Spending limit for the whole session. */
             budget_limit: components["schemas"]["Usd"];
+            /**
+             * @description Whether the session gets a screen: a desktop the model can see and
+             *     drive, and a live video of it the user can watch and take over.
+             *
+             *     Named at creation because the machine provisions differently for it
+             *     — the display stack is part of what boots, not something bolted on
+             *     after. A live session can still gain it through
+             *     [`UpdateSession::computer_use`], which has the daemon install and
+             *     start the stack in the background.
+             */
+            computer_use?: boolean;
             /** @description Which coding harness drives the session. */
             harness: components["schemas"]["HarnessKind"];
             machine?: null | components["schemas"]["MachineChoice"];
@@ -3637,6 +3725,26 @@ export interface components {
             /** @enum {string} */
             type: "workdir_reply";
         } | {
+            /** @description The sentence a panel shows beside it, when there is one. */
+            detail?: string | null;
+            /** @description The lifecycle state. */
+            status: components["schemas"]["DesktopStatus"];
+            /** @enum {string} */
+            type: "desktop_state";
+        } | {
+            /** @enum {string} */
+            type: "desktop_active";
+        } | {
+            /**
+             * @description The encoded bytes — base64 on the wire, since a JSON array of
+             *     numbers would cost three bytes per byte of stream.
+             */
+            data: number[];
+            /** @description Whether a decoder can start from this chunk. */
+            keyframe: boolean;
+            /** @enum {string} */
+            type: "desktop_chunk";
+        } | {
             /**
              * Format: int64
              * @description When it was reached, seconds since the Unix epoch.
@@ -3673,6 +3781,131 @@ export interface components {
              *     because it is cheaper and flyco handles eviction.
              */
             spot?: boolean | null;
+        };
+        /**
+         * @description Which mouse button a [`DesktopInputEvent::Button`] reports.
+         * @enum {string}
+         */
+        DesktopButton: "left" | "middle" | "right" | "back" | "forward";
+        /**
+         * @description One user input on the session's desktop, in display coordinates.
+         *
+         *     Coordinates are the display's own, not the viewer's: a browser scales
+         *     its rendered frame down to fit the panel and has to scale the input
+         *     back up, so the protocol carries the pixel the screen itself would
+         *     see and nothing else.
+         *
+         *     Tagged on `kind` rather than `type`, because it nests inside
+         *     [`ControlToDaemon::DesktopInput`], which is already tagged on `type` —
+         *     the same convention [`ShellOutcome`] follows inside a `shell_exited`.
+         */
+        DesktopInputEvent: {
+            /** @enum {string} */
+            kind: "move";
+            /**
+             * Format: int32
+             * @description Display x.
+             */
+            x: number;
+            /**
+             * Format: int32
+             * @description Display y.
+             */
+            y: number;
+        } | {
+            /** @description Which button. */
+            button: components["schemas"]["DesktopButton"];
+            /** @enum {string} */
+            kind: "button";
+            /** @description Whether it is now held. */
+            pressed: boolean;
+            /**
+             * Format: int32
+             * @description Display x.
+             */
+            x: number;
+            /**
+             * Format: int32
+             * @description Display y.
+             */
+            y: number;
+        } | {
+            /**
+             * Format: int32
+             * @description Horizontal delta, DOM convention (positive scrolls right).
+             */
+            delta_x: number;
+            /**
+             * Format: int32
+             * @description Vertical delta, DOM convention (positive scrolls down).
+             */
+            delta_y: number;
+            /** @enum {string} */
+            kind: "scroll";
+            /**
+             * Format: int32
+             * @description Display x.
+             */
+            x: number;
+            /**
+             * Format: int32
+             * @description Display y.
+             */
+            y: number;
+        } | {
+            /** @description `KeyboardEvent.code`, e.g. `KeyW` or `ShiftLeft`. */
+            code: string;
+            /** @description `KeyboardEvent.key`, e.g. `w` or `Shift`. */
+            key: string;
+            /** @enum {string} */
+            kind: "key";
+            /** @description Whether it is now held. */
+            pressed: boolean;
+        };
+        /**
+         * @description Request body of `POST /v1/sessions/{id}/desktop/input`.
+         *
+         *     One batch of user input for the desktop — the keystrokes and pointer
+         *     moves the screen panel collected since its last send. The room
+         *     forwards it only while the named watcher holds takeover, which is
+         *     what keeps a second open tab from reaching into the screen the first
+         *     one is driving.
+         */
+        DesktopInputRequest: {
+            /** @description The input, in display coordinates. */
+            events: components["schemas"]["DesktopInputEvent"][];
+            /**
+             * Format: int64
+             * @description The watcher id the desktop stream's `hello` event named.
+             */
+            watcher: number;
+        };
+        /**
+         * @description Where a session's desktop is in its lifecycle, as the daemon reports it.
+         *
+         *     A state, not an instant: the newest report wins, and a browser that
+         *     opens the session after the fact reads the last one rather than a
+         *     history of the display server coming up.
+         * @enum {string}
+         */
+        DesktopStatus: "starting" | "ready" | "active" | "failed";
+        /**
+         * @description Request body of `POST /v1/sessions/{id}/desktop/takeover`.
+         *
+         *     Takeover is scoped to a watcher — the lease the desktop stream minted
+         *     — because the screen belongs to an open viewer, not to the account:
+         *     a browser that dies mid-takeover hands the screen back when its
+         *     watcher expires, rather than locking the agent out of a session
+         *     nobody is looking at.
+         */
+        DesktopTakeoverRequest: {
+            /** @description Whether the user is taking the screen (`true`) or handing it back. */
+            active: boolean;
+            /**
+             * Format: int64
+             * @description The watcher id the desktop stream's `hello` event named.
+             */
+            watcher: number;
         };
         /** @description Which checkout a `diff` asks about. */
         DiffQuery: {
@@ -5732,6 +5965,15 @@ export interface components {
              */
             activity: components["schemas"]["SessionActivity"];
             /**
+             * @description Whether the session may have a desktop.
+             *
+             *     On the summary rather than only on [`SessionDetail`] because the
+             *     `Screen` drawer entry is drawn from it: a session without the flag
+             *     has no panel to open, and the chip the composer shows reads this
+             *     rather than asking the machine.
+             */
+            computer_use: boolean;
+            /**
              * Format: int64
              * @description When it was created, seconds since the Unix epoch.
              */
@@ -6054,6 +6296,17 @@ export interface components {
          */
         UpdateSession: {
             budget_limit?: null | components["schemas"]["Usd"];
+            /**
+             * @description Give the session a screen, or take it away.
+             *
+             *     Applied to the session already in progress: the control plane
+             *     records it and sends the daemon a
+             *     [`SetComputerUse`](crate::wire::ControlToDaemon::SetComputerUse),
+             *     which starts or stops the display stack without a reboot. Turning
+             *     it off does not kill anything the agent started on the display —
+             *     the screen is gone, and whatever was on it went with it.
+             */
+            computer_use?: boolean | null;
             model?: null | components["schemas"]["ModelChoice"];
             permission_mode?: null | components["schemas"]["PermissionMode"];
             /**
@@ -9024,6 +9277,15 @@ export interface operations {
                          */
                         activity: components["schemas"]["SessionActivity"];
                         /**
+                         * @description Whether the session may have a desktop.
+                         *
+                         *     On the summary rather than only on [`SessionDetail`] because the
+                         *     `Screen` drawer entry is drawn from it: a session without the flag
+                         *     has no panel to open, and the chip the composer shows reads this
+                         *     rather than asking the machine.
+                         */
+                        computer_use: boolean;
+                        /**
                          * Format: int64
                          * @description When it was created, seconds since the Unix epoch.
                          */
@@ -9097,6 +9359,17 @@ export interface operations {
                 "application/json": {
                     /** @description Spending limit for the whole session. */
                     budget_limit: components["schemas"]["Usd"];
+                    /**
+                     * @description Whether the session gets a screen: a desktop the model can see and
+                     *     drive, and a live video of it the user can watch and take over.
+                     *
+                     *     Named at creation because the machine provisions differently for it
+                     *     — the display stack is part of what boots, not something bolted on
+                     *     after. A live session can still gain it through
+                     *     [`UpdateSession::computer_use`], which has the daemon install and
+                     *     start the stack in the background.
+                     */
+                    computer_use?: boolean;
                     /** @description Which coding harness drives the session. */
                     harness: components["schemas"]["HarnessKind"];
                     machine?: null | components["schemas"]["MachineChoice"];
@@ -9206,6 +9479,17 @@ export interface operations {
             content: {
                 "application/json": {
                     budget_limit?: null | components["schemas"]["Usd"];
+                    /**
+                     * @description Give the session a screen, or take it away.
+                     *
+                     *     Applied to the session already in progress: the control plane
+                     *     records it and sends the daemon a
+                     *     [`SetComputerUse`](crate::wire::ControlToDaemon::SetComputerUse),
+                     *     which starts or stops the display stack without a reboot. Turning
+                     *     it off does not kill anything the agent started on the display —
+                     *     the screen is gone, and whatever was on it went with it.
+                     */
+                    computer_use?: boolean | null;
                     model?: null | components["schemas"]["ModelChoice"];
                     permission_mode?: null | components["schemas"]["PermissionMode"];
                     /**
@@ -9606,6 +9890,92 @@ export interface operations {
                         token: string;
                     };
                 };
+            };
+        };
+    };
+    "flyco_api::app::desktop_input": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The input, in display coordinates. */
+                    events: components["schemas"]["DesktopInputEvent"][];
+                    /**
+                     * Format: int64
+                     * @description The watcher id the desktop stream's `hello` event named.
+                     */
+                    watcher: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::desktop_stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::desktop_takeover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Whether the user is taking the screen (`true`) or handing it back. */
+                    active: boolean;
+                    /**
+                     * Format: int64
+                     * @description The watcher id the desktop stream's `hello` event named.
+                     */
+                    watcher: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded. The outcome arrives on the session relay, not in this response. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

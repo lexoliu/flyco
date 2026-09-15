@@ -252,6 +252,7 @@ impl<S: TranscriptStore> Harness for ClaudeCodeHarness<S> {
                 exit: None,
                 stderr_tail: VecDeque::new(),
                 managed: self.claude.managed_dir.clone(),
+                required_tools: self.mount.required_tools(),
             }
             .run(inbox),
         );
@@ -591,6 +592,10 @@ struct Driver<S> {
     /// named only the mount would leave the reader unable to tell a policy
     /// flycod failed to write from one the CLI declined to read.
     managed: Option<std::path::PathBuf>,
+    /// The tools this session's flyco server must expose — the mount's
+    /// own expectation, which grows by the `computer_*` set when the
+    /// session has a screen.
+    required_tools: Vec<&'static str>,
 }
 
 impl<S: TranscriptStore> Driver<S> {
@@ -894,7 +899,7 @@ impl<S: TranscriptStore> Driver<S> {
     /// spending; one that cannot is stopped here rather than left to find
     /// out by trying.
     async fn on_mcp_servers(&mut self, servers: Vec<MountedServer>) -> bool {
-        if let Err(error) = crate::mount::verify(&servers) {
+        if let Err(error) = crate::mount::verify(&servers, &self.required_tools) {
             // With the CLI's own words attached: a mount that came up
             // short is nearly always the CLI refusing a server for a
             // reason it states on stderr and nowhere else, and the

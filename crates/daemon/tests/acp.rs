@@ -28,6 +28,7 @@ fn mount() -> Mount {
     Mount::new(
         FlycoServer::of(Path::new("/etc/flyco/flycod.toml")).expect("this test binary has a path"),
         Vec::new(),
+        false,
     )
 }
 

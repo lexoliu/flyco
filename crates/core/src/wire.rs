@@ -610,6 +610,43 @@ pub enum DaemonToControl {
         /// The listing, the file, the diff, or the refusal.
         reply: WorkdirReply,
     },
+    /// Where the session's desktop is: coming up, ready, in use, or failed.
+    ///
+    /// Reported on change only — a daemon that reports nothing yet has a
+    /// screen nobody can watch, and the newest report is the whole story.
+    /// `detail` carries the failure's sentence when `status` is
+    /// [`DesktopStatus::Failed`], and the reason a desktop is taking its
+    /// time when it is [`DesktopStatus::Starting`].
+    DesktopState {
+        /// The lifecycle state.
+        status: DesktopStatus,
+        /// The sentence a panel shows beside it, when there is one.
+        detail: Option<String>,
+    },
+    /// The agent is on the screen — the `Screen` panel opens itself.
+    ///
+    /// Sent once per idle→use transition, never per action: the first
+    /// `computer_*` call after a quiet spell announces the desktop, and a
+    /// burst of them is still one announcement. The transition is what a
+    /// browser opens the panel on, which is why it is a frame of its own
+    /// rather than another reading of [`DesktopStatus`].
+    DesktopActive,
+    /// One encoded temporal unit of the desktop stream.
+    ///
+    /// Chunks ride the frame batch like every other report — one
+    /// transport, one epoch, one ordering — and the room routes them to
+    /// the stream's own table when they land rather than replaying them
+    /// through the event log. `keyframe` marks a chunk a decoder can
+    /// start from cold; it is what a joining watcher is replayed from,
+    /// and what the room asks the daemon to re-arm when the tail is cut.
+    DesktopChunk {
+        /// Whether a decoder can start from this chunk.
+        keyframe: bool,
+        /// The encoded bytes — base64 on the wire, since a JSON array of
+        /// numbers would cost three bytes per byte of stream.
+        #[serde(with = "base64_bytes")]
+        data: Vec<u8>,
+    },
     /// The machine reached a provisioning milestone the daemon can see.
     ///
     /// The control plane cannot observe anything past the provider's
@@ -620,6 +657,110 @@ pub enum DaemonToControl {
         stage: ProvisioningStage,
         /// When it was reached, seconds since the Unix epoch.
         at_unix: u64,
+    },
+}
+
+/// Where a session's desktop is in its lifecycle, as the daemon reports it.
+///
+/// A state, not an instant: the newest report wins, and a browser that
+/// opens the session after the fact reads the last one rather than a
+/// history of the display server coming up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopStatus {
+    /// The display stack is being installed or started — nothing is on the
+    /// screen yet, and a `Screen` panel opened now shows it warming up.
+    Starting,
+    /// The display is up and accepting input; nobody is driving it yet.
+    Ready,
+    /// The agent — or the user, under takeover — is on the screen.
+    Active,
+    /// The desktop could not be provided on this machine.
+    ///
+    /// The frame's `detail` carries the sentence the panel shows: a
+    /// missing package, a permission the OS would not grant, a capture
+    /// that never produced a frame.
+    Failed,
+}
+
+/// Which mouse button a [`DesktopInputEvent::Button`] reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopButton {
+    /// The primary button.
+    Left,
+    /// The wheel-as-button.
+    Middle,
+    /// The secondary button.
+    Right,
+    /// The browser-back side button.
+    Back,
+    /// The browser-forward side button.
+    Forward,
+}
+
+/// One user input on the session's desktop, in display coordinates.
+///
+/// Coordinates are the display's own, not the viewer's: a browser scales
+/// its rendered frame down to fit the panel and has to scale the input
+/// back up, so the protocol carries the pixel the screen itself would
+/// see and nothing else.
+///
+/// Tagged on `kind` rather than `type`, because it nests inside
+/// [`ControlToDaemon::DesktopInput`], which is already tagged on `type` —
+/// the same convention [`ShellOutcome`] follows inside a `shell_exited`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DesktopInputEvent {
+    /// The pointer moved to (x, y).
+    Move {
+        /// Display x.
+        x: u16,
+        /// Display y.
+        y: u16,
+    },
+    /// A mouse button at (x, y) changed state.
+    Button {
+        /// Display x.
+        x: u16,
+        /// Display y.
+        y: u16,
+        /// Which button.
+        button: DesktopButton,
+        /// Whether it is now held.
+        pressed: bool,
+    },
+    /// A wheel or trackpad scroll at (x, y), in pixels of intent.
+    ///
+    /// The daemon turns a scroll into the display's own unit — button-4/5
+    /// clicks under X — so the browser sends the DOM delta it has rather
+    /// than a guess at line counts.
+    Scroll {
+        /// Display x.
+        x: u16,
+        /// Display y.
+        y: u16,
+        /// Horizontal delta, DOM convention (positive scrolls right).
+        delta_x: i32,
+        /// Vertical delta, DOM convention (positive scrolls down).
+        delta_y: i32,
+    },
+    /// A key changed state.
+    ///
+    /// `code` is the DOM `KeyboardEvent.code` — the physical position —
+    /// and `key` the character or named key it produced. The daemon maps
+    /// the position first, because a display has a keymap and a browser
+    /// has a layout, and the two only agree through the physical key; the
+    /// produced key is the fallback for anything the map does not cover.
+    Key {
+        /// `KeyboardEvent.code`, e.g. `KeyW` or `ShiftLeft`.
+        code: String,
+        /// `KeyboardEvent.key`, e.g. `w` or `Shift`.
+        key: String,
+        /// Whether it is now held.
+        pressed: bool,
     },
 }
 
@@ -830,6 +971,58 @@ pub enum ControlToDaemon {
         /// The mode the session runs under now.
         mode: crate::harness::PermissionMode,
     },
+    /// Give the session a screen, or take it away.
+    ///
+    /// Sent when `PATCH /v1/sessions/{id}` flips `computer_use` on a live
+    /// session — a daemon that has been told starts its display stack in
+    /// the background rather than on the boot path. Held for a daemon that
+    /// is not connected on the same terms as [`Self::SetModel`]: the flag
+    /// is a state the session row already records, and a daemon that
+    /// missed it would run a session its own row disagrees with.
+    SetComputerUse {
+        /// Whether the session may have a desktop.
+        enabled: bool,
+    },
+    /// Whether any browser is watching the session's screen.
+    ///
+    /// The room's aggregation of its open desktop streams — a fact the
+    /// room composes itself, never one a client states — because every
+    /// encoded frame out of the machine is billed egress on the user's
+    /// cloud account: `false` tells the daemon to stop encoding entirely,
+    /// and `true` starts the cadence again. Ephemeral rather than held:
+    /// the room replays the current state to every fresh attach, so a
+    /// queued copy would only say the same thing twice.
+    DesktopAudience {
+        /// Whether at least one browser is watching.
+        watching: bool,
+    },
+    /// The user took the screen, or handed it back.
+    ///
+    /// Taking it interrupts the running turn exactly as Stop does, and
+    /// while it is held the daemon refuses the agent's `computer_*` calls
+    /// with "the user is driving" — a click into the desktop mid-gesture
+    /// is never ambiguous, because the last one to take over owns it.
+    /// Handed back by a release or by the user sending a message.
+    ///
+    /// Held for a daemon that is not connected, like
+    /// [`Self::SetComputerUse`]: it describes a state — who owns the
+    /// screen — and a daemon that missed it would inject the model's input
+    /// over the user's own hands.
+    DesktopTakeover {
+        /// Whether the user now owns the screen.
+        active: bool,
+    },
+    /// One batch of the user's input for the desktop.
+    ///
+    /// Batched rather than one command per motion, because a pointer drag
+    /// is dozens of events a second and the command log is not the place
+    /// for them. Ephemeral: input held for a daemon that reconnects later
+    /// would be applied to a screen that no longer exists, so a session
+    /// with no daemon attached drops it instead.
+    DesktopInput {
+        /// The events, in the order the user produced them.
+        events: Vec<DesktopInputEvent>,
+    },
     /// Add a repository to the session's workspace.
     ///
     /// Sent after the repository is recorded in the session's row set —
@@ -896,6 +1089,10 @@ impl ControlToDaemon {
             Self::MachineChanged { .. } => "machine_changed",
             Self::SetModel { .. } => "set_model",
             Self::SetPermissionMode { .. } => "set_permission_mode",
+            Self::SetComputerUse { .. } => "set_computer_use",
+            Self::DesktopAudience { .. } => "desktop_audience",
+            Self::DesktopTakeover { .. } => "desktop_takeover",
+            Self::DesktopInput { .. } => "desktop_input",
             Self::InspectWorkdir { .. } => "inspect_workdir",
             Self::AddRepo { .. } => "add_repo",
             Self::Archive { .. } => "archive",
@@ -904,12 +1101,15 @@ impl ControlToDaemon {
 
     /// Whether a session's owner may send this command.
     ///
-    /// A session room accepts exactly seven commands from a user client;
+    /// A session room accepts exactly nine commands from a user client;
     /// everything else is control-plane authority (budget signals, approval
     /// decisions, archival, and the identified [`Self::RunShell`] the room
     /// reissues a [`Self::ShellCommand`] as) and reaches the daemon only
     /// through the room itself or an authenticated REST handler. A client
-    /// that sends anything else is refused rather than ignored.
+    /// that sends anything else is refused rather than ignored. The two
+    /// desktop commands arrive through their own routes — the takeover
+    /// route is also where the room decides the flip against the watcher
+    /// leases — but they are still client commands by origin.
     #[must_use]
     pub const fn is_client_command(&self) -> bool {
         matches!(
@@ -922,6 +1122,8 @@ impl ControlToDaemon {
                 | Self::TerminalInput { .. }
                 | Self::TerminalResize { .. }
                 | Self::TerminalHarness { .. }
+                | Self::DesktopTakeover { .. }
+                | Self::DesktopInput { .. }
         )
     }
 
@@ -942,10 +1144,19 @@ impl ControlToDaemon {
     /// exceptions by consequence: the control plane has already recorded
     /// what they carry, and a daemon that missed either would run the
     /// session on a model or under a mode its own row disagrees with.
+    /// [`SetComputerUse`](Self::SetComputerUse) is the same shape: the
+    /// flag on the session row is what the next machine comes up with.
     /// [`AddRepo`](Self::AddRepo) is the same kind of fact: the repository
     /// is on the session's row set the moment the command is queued, so the
     /// daemon owes the workspace a checkout for it whenever it next
     /// attaches.
+    ///
+    /// [`DesktopTakeover`](Self::DesktopTakeover) is a state too, but it
+    /// is deliberately absent: who owns the screen is leased to a live
+    /// watcher row in the room, and a reattaching daemon is reconciled
+    /// against that table rather than against commands queued while it
+    /// was away — a takeover whose browser died in the gap would
+    /// otherwise arrive as a lock nobody can lift.
     ///
     /// A user message survives too, but because the room records it as
     /// conversation rather than because delivery is owed: a message is part
@@ -958,6 +1169,7 @@ impl ControlToDaemon {
             Self::MachineChanged { .. }
                 | Self::SetModel { .. }
                 | Self::SetPermissionMode { .. }
+                | Self::SetComputerUse { .. }
                 | Self::AddRepo { .. }
         )
     }
@@ -1312,6 +1524,40 @@ pub enum ClientEvent {
         /// When it was reached, seconds since the Unix epoch.
         at_unix: u64,
     },
+    /// Where the session's desktop is: coming up, ready, in use, failed.
+    ///
+    /// State, newest wins — the `Screen` panel's status line reads the
+    /// last one. Recorded rather than live-only because a desktop that
+    /// failed while nobody watched is still what the session did.
+    DesktopState {
+        /// The lifecycle state.
+        status: DesktopStatus,
+        /// The sentence beside it, when there is one.
+        detail: Option<String>,
+    },
+    /// The agent is on the screen — the `Screen` panel opens itself.
+    ///
+    /// Recorded like a machine change: a replay that never showed the
+    /// screen being touched would leave the transcript pretending the
+    /// session only ever typed.
+    DesktopActive,
+    /// The user took the screen, or handed it back.
+    ///
+    /// Recorded for the same reason a takeover interrupts a turn: the
+    /// seam between "the agent was driving" and "the user is driving" is
+    /// where the transcript's actions stop being the model's.
+    DesktopTakeover {
+        /// Whether the user now owns the screen.
+        active: bool,
+    },
+    /// The session's `computer_use` flag changed.
+    ///
+    /// Rendered as one line in the transcript, like a model change and for
+    /// the same reason: what the agent may reach for changes from here on.
+    ComputerUseChanged {
+        /// Whether the session may have a desktop now.
+        enabled: bool,
+    },
 }
 
 impl ClientEvent {
@@ -1321,12 +1567,14 @@ impl ClientEvent {
     /// [`Self::ApprovalPending`], because "pending" is the state the UI
     /// renders rather than the act of asking. A
     /// [`DaemonToControl::WorkdirReply`] is addressed to one waiting HTTP
-    /// request and is collected by the Worker rather than broadcast, so it
-    /// has no client form.
+    /// request and is collected by the Worker rather than broadcast, and a
+    /// [`DaemonToControl::DesktopChunk`] is stream bytes rather than an
+    /// event — the room moves it to the desktop's own table — so neither
+    /// has a client form.
     #[must_use]
     pub fn from_daemon(frame: DaemonToControl) -> Option<Self> {
         match frame {
-            DaemonToControl::WorkdirReply { .. } => None,
+            DaemonToControl::WorkdirReply { .. } | DaemonToControl::DesktopChunk { .. } => None,
             DaemonToControl::Started { harness_session_id } => {
                 Some(Self::Started { harness_session_id })
             }
@@ -1363,7 +1611,34 @@ impl ClientEvent {
             DaemonToControl::ProvisioningStage { stage, at_unix } => {
                 Some(Self::ProvisioningStage { stage, at_unix })
             }
+            DaemonToControl::DesktopState { status, detail } => {
+                Some(Self::DesktopState { status, detail })
+            }
+            DaemonToControl::DesktopActive => Some(Self::DesktopActive),
         }
+    }
+}
+
+/// The base64 arm of the wire: a `Vec<u8>` that crosses JSON as text.
+///
+/// `serde_bytes` exists for formats that know what a byte string is; JSON
+/// does not, so the honest `Vec<u8>` field gets an explicit string form
+/// rather than the array-of-numbers it would otherwise emit.
+mod base64_bytes {
+    use base64::Engine as _;
+    use serde::{Deserialize as _, Deserializer, Serializer};
+
+    /// The serialized form.
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    /// The parsed form.
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(&text)
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -1371,9 +1646,9 @@ impl ClientEvent {
 mod tests {
     use super::{
         ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-        HarnessCommand, MessageOrigin, ProvisioningStage, ReportProvisioningStage,
-        ReportSpotNotice, ReportStopping, ShellOutcome, ShellStream, StopReason, UsageWindow,
-        blocking_window,
+        DesktopButton, DesktopInputEvent, DesktopStatus, HarnessCommand, MessageOrigin,
+        ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ReportStopping, ShellOutcome,
+        ShellStream, StopReason, UsageWindow, blocking_window,
     };
     use crate::budget::BudgetSignal;
     use crate::harness::{ContextWindow, HarnessEvent, UsageReport};
@@ -1498,6 +1773,15 @@ mod tests {
                 stage: ProvisioningStage::Ready,
                 at_unix: 1_800_000_000,
             },
+            DaemonToControl::DesktopState {
+                status: DesktopStatus::Ready,
+                detail: None,
+            },
+            DaemonToControl::DesktopState {
+                status: DesktopStatus::Failed,
+                detail: Some("Xvfb is not installed on this image".to_owned()),
+            },
+            DaemonToControl::DesktopActive,
             DaemonToControl::WorkdirReply {
                 id: WorkdirRequestId::generate(),
                 reply: WorkdirReply::Entries {
@@ -1562,6 +1846,12 @@ mod tests {
         ]
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one entry per variant, which is the point: the vector is the \
+                  protocol's whole vocabulary, so a variant added anywhere in \
+                  it exercises every test that iterates it"
+    )]
     fn every_control_frame() -> Vec<ControlToDaemon> {
         vec![
             ControlToDaemon::UserMessage {
@@ -1619,6 +1909,37 @@ mod tests {
                     model: "haiku".to_owned(),
                     effort: None,
                 },
+            },
+            ControlToDaemon::SetPermissionMode {
+                mode: crate::harness::PermissionMode::AcceptEdits,
+            },
+            ControlToDaemon::SetComputerUse { enabled: true },
+            ControlToDaemon::SetComputerUse { enabled: false },
+            ControlToDaemon::DesktopAudience { watching: true },
+            ControlToDaemon::DesktopAudience { watching: false },
+            ControlToDaemon::DesktopTakeover { active: true },
+            ControlToDaemon::DesktopTakeover { active: false },
+            ControlToDaemon::DesktopInput {
+                events: vec![
+                    DesktopInputEvent::Move { x: 640, y: 400 },
+                    DesktopInputEvent::Button {
+                        x: 640,
+                        y: 400,
+                        button: DesktopButton::Left,
+                        pressed: true,
+                    },
+                    DesktopInputEvent::Scroll {
+                        x: 640,
+                        y: 400,
+                        delta_x: 0,
+                        delta_y: 240,
+                    },
+                    DesktopInputEvent::Key {
+                        code: "KeyW".to_owned(),
+                        key: "w".to_owned(),
+                        pressed: true,
+                    },
+                ],
             },
             ControlToDaemon::Archive {
                 preserve_workdir: false,
@@ -1964,15 +2285,17 @@ mod tests {
     #[test]
     fn only_the_state_commands_outlive_the_daemon_they_were_sent_to() {
         // The commands that describe a state rather than an instant: a
-        // machine, a model, a permission mode, a repository owed to the
-        // workspace. Everything else replayed into a later turn would be
-        // an instruction about something that is no longer happening.
+        // machine, a model, a permission mode, whether the session may
+        // have a screen, a repository owed to the workspace. Everything
+        // else replayed into a later turn would be an instruction about
+        // something that is no longer happening.
         for frame in every_control_frame() {
             let held = matches!(
                 frame,
                 ControlToDaemon::MachineChanged { .. }
                     | ControlToDaemon::SetModel { .. }
                     | ControlToDaemon::SetPermissionMode { .. }
+                    | ControlToDaemon::SetComputerUse { .. }
                     | ControlToDaemon::AddRepo { .. }
             );
             assert_eq!(frame.survives_a_disconnect(), held, "{frame:?}");
@@ -1992,6 +2315,8 @@ mod tests {
                     | ControlToDaemon::TerminalInput { .. }
                     | ControlToDaemon::TerminalResize { .. }
                     | ControlToDaemon::TerminalHarness { .. }
+                    | ControlToDaemon::DesktopTakeover { .. }
+                    | ControlToDaemon::DesktopInput { .. }
             );
             assert_eq!(frame.is_client_command(), allowed, "{frame:?}");
         }

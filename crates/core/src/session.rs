@@ -565,6 +565,16 @@ pub struct CreateSession {
     /// one.
     #[serde(default)]
     pub permission_mode: Option<crate::harness::PermissionMode>,
+    /// Whether the session gets a screen: a desktop the model can see and
+    /// drive, and a live video of it the user can watch and take over.
+    ///
+    /// Named at creation because the machine provisions differently for it
+    /// — the display stack is part of what boots, not something bolted on
+    /// after. A live session can still gain it through
+    /// [`UpdateSession::computer_use`], which has the daemon install and
+    /// start the stack in the background.
+    #[serde(default, skip_serializing_if = "crate::wire::is_false")]
+    pub computer_use: bool,
     /// Where the session's context comes from — absent for a fresh
     /// session, [`SessionSource::LocalHandoff`](crate::handoff::SessionSource)
     /// when `flyco handoff` is importing a local session's state. A
@@ -650,6 +660,13 @@ pub struct SessionSummary {
     /// at read, so every row states the mode it is on rather than leaving
     /// the composer's chip to guess.
     pub permission_mode: crate::harness::PermissionMode,
+    /// Whether the session may have a desktop.
+    ///
+    /// On the summary rather than only on [`SessionDetail`] because the
+    /// `Screen` drawer entry is drawn from it: a session without the flag
+    /// has no panel to open, and the chip the composer shows reads this
+    /// rather than asking the machine.
+    pub computer_use: bool,
 }
 
 /// A single session, with its budget.
@@ -762,6 +779,16 @@ pub struct UpdateSession {
     /// needs no per-harness validation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<crate::harness::PermissionMode>,
+    /// Give the session a screen, or take it away.
+    ///
+    /// Applied to the session already in progress: the control plane
+    /// records it and sends the daemon a
+    /// [`SetComputerUse`](crate::wire::ControlToDaemon::SetComputerUse),
+    /// which starts or stops the display stack without a reboot. Turning
+    /// it off does not kill anything the agent started on the display —
+    /// the screen is gone, and whatever was on it went with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computer_use: Option<bool>,
 }
 
 /// Request body of `POST /v1/sessions/{id}/messages`.
@@ -813,6 +840,36 @@ pub struct HarnessTui {
     /// screen.
     #[serde(default, skip_serializing_if = "crate::wire::is_false")]
     pub resume: bool,
+}
+
+/// Request body of `POST /v1/sessions/{id}/desktop/takeover`.
+///
+/// Takeover is scoped to a watcher — the lease the desktop stream minted
+/// — because the screen belongs to an open viewer, not to the account:
+/// a browser that dies mid-takeover hands the screen back when its
+/// watcher expires, rather than locking the agent out of a session
+/// nobody is looking at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct DesktopTakeoverRequest {
+    /// The watcher id the desktop stream's `hello` event named.
+    pub watcher: u64,
+    /// Whether the user is taking the screen (`true`) or handing it back.
+    pub active: bool,
+}
+
+/// Request body of `POST /v1/sessions/{id}/desktop/input`.
+///
+/// One batch of user input for the desktop — the keystrokes and pointer
+/// moves the screen panel collected since its last send. The room
+/// forwards it only while the named watcher holds takeover, which is
+/// what keeps a second open tab from reaching into the screen the first
+/// one is driving.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct DesktopInputRequest {
+    /// The watcher id the desktop stream's `hello` event named.
+    pub watcher: u64,
+    /// The input, in display coordinates.
+    pub events: Vec<crate::wire::DesktopInputEvent>,
 }
 
 /// One turn of a session, as the history list renders it.
@@ -985,6 +1042,7 @@ mod tests {
                 effort: None,
             },
             permission_mode: crate::PermissionMode::Auto,
+            computer_use: false,
         };
         let json = serde_json::to_string(&summary).expect("serialize");
         assert!(!json.contains("interrupted_reason"), "{json}");

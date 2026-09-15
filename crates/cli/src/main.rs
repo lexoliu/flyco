@@ -143,6 +143,7 @@ async fn session_command(api: &Api, command: SessionCommand, mode: Mode) -> Outc
             model,
             effort,
             permission_mode,
+            computer_use,
         } => done('set: {
             let model = match (model, effort) {
                 (Some(model), effort) => Some(flyco_core::ModelChoice { model, effort }),
@@ -159,6 +160,7 @@ async fn session_command(api: &Api, command: SessionCommand, mode: Mode) -> Outc
                     budget_limit: budget,
                     model,
                     permission_mode,
+                    computer_use,
                 },
                 mode,
             )

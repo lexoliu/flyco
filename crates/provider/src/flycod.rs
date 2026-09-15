@@ -423,6 +423,17 @@ struct Acp<'a> {
     tui: Option<AcpTui>,
 }
 
+/// The `[computer]` table.
+///
+/// Carries only the flag: the display's geometry and the encoder's budget
+/// are the daemon's defaults, not the control plane's to decide — the
+/// session names *whether* it has a screen, and the machine it lands on
+/// decides what that screen is.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct Computer {
+    enabled: bool,
+}
+
 /// The whole document.
 ///
 /// Field order is the serialization order and TOML puts every scalar before
@@ -452,6 +463,9 @@ struct Document<'a> {
     control_plane: ControlPlane<'a>,
     github: Github<'a>,
     machine: &'a SessionMachine,
+    /// Always written, on the same terms as `runtime`: "no screen" is a
+    /// fact the session stated, not a table a provisioning bug forgot.
+    computer: Computer,
     #[serde(skip_serializing_if = "Option::is_none")]
     claude: Option<Claude<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1013,6 +1027,9 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
             identity: &bootstrap.github.identity,
         },
         machine: &bootstrap.machine,
+        computer: Computer {
+            enabled: bootstrap.computer_use,
+        },
         claude,
         sidecar,
         acp,
@@ -1058,6 +1075,7 @@ mod tests {
             machine: crate::testing::session_machine(),
             resume_session_id: None,
             model: crate::testing::session_model(),
+            computer_use: true,
             mcp_servers: crate::testing::mcp_servers(),
         }
     }

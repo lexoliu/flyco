@@ -81,6 +81,12 @@ struct SessionRow {
     /// row opened before flyco recorded one — read through [`mode_of`],
     /// which resolves it the way [`model_of`] resolves a legacy model.
     permission_mode: Option<PermissionMode>,
+    /// Whether the session may have a screen.
+    ///
+    /// `NOT NULL DEFAULT 0` since migration 0027, so no resolution: a row
+    /// that predates the column was a session without a screen, which is
+    /// what the default already says.
+    computer_use: bool,
 }
 
 /// The choice a stored row names, resolving a legacy `NULL` model.
@@ -140,6 +146,7 @@ impl SessionRow {
             last_active_unix: self.last_active_unix,
             model: model_of(self.harness, self.model, self.effort),
             permission_mode: mode_of(self.permission_mode),
+            computer_use: self.computer_use,
         })
     }
 }
@@ -279,6 +286,10 @@ pub struct Opening<'a> {
     /// `NULL`, which [`mode_of`] reads as the product default, so an
     /// unopinionated create stores no opinion.
     pub permission_mode: Option<PermissionMode>,
+    /// Whether it gets a screen. Carried into the provisioned `flycod`
+    /// configuration's `[computer]` table, and into `SetComputerUse` if it
+    /// changes while the session is live.
+    pub computer_use: bool,
 }
 
 /// Creates a session and the budget it accounts against.
@@ -314,6 +325,7 @@ pub async fn create(db: &Db, cap: u32, opening: Opening<'_>) -> Result<SessionDe
         machine_origin,
         model,
         permission_mode,
+        computer_use,
         ..
     } = opening;
     let effort = model.effort.as_deref();
@@ -323,10 +335,10 @@ pub async fn create(db: &Db, cap: u32, opening: Opening<'_>) -> Result<SessionDe
         db,
         "INSERT INTO sessions \
          (id, user_id, title, harness, state, machine_origin, budget_id, \
-          created_at_unix, last_active_unix, model, effort, permission_mode) \
+          created_at_unix, last_active_unix, model, effort, permission_mode, computer_use) \
          VALUES ({id}, {user}, {title}, {harness}, \
                  {SessionState::Provisioning}, {machine_origin}, {budget_id}, {now}, {now}, \
-                 {model}, {effort}, {permission_mode})"
+                 {model}, {effort}, {permission_mode}, {computer_use})"
     )
     .execute()
     .await?;
@@ -461,6 +473,40 @@ pub async fn set_mode(
     find(db, user, id).await
 }
 
+/// Gives one of the caller's sessions a screen, or takes it away.
+///
+/// The durable half alone, on the same terms as [`set_mode`]: the running
+/// daemon is told separately, by the
+/// [`SetComputerUse`](flyco_core::ControlToDaemon::SetComputerUse) the
+/// caller sends the session's room once this has returned — and held for
+/// one that is away, `survives_a_disconnect`, because it is what the next
+/// machine comes up with.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is not the
+/// caller's, or [`ApiError`] if the database fails.
+pub async fn set_computer_use(
+    db: &Db,
+    user: UserId,
+    id: SessionId,
+    enabled: bool,
+) -> Result<SessionDetail, ApiError> {
+    // The row is loaded first so a session that is not the caller's is a
+    // 404 rather than an UPDATE that quietly writes nothing.
+    load(db, user, id).await?;
+
+    sql!(
+        db,
+        "UPDATE sessions SET computer_use = {enabled} \
+         WHERE id = {id} AND user_id = {user}"
+    )
+    .execute()
+    .await?;
+
+    find(db, user, id).await
+}
+
 /// What changing a session's budget did to the session.
 #[derive(Debug)]
 pub struct BudgetRaise {
@@ -534,7 +580,8 @@ pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError
          s.machine_origin, s.budget_id, s.failure_reason, s.interrupted_reason, \
          s.paused_reason, s.usage_limit_window, s.usage_limit_resets_at_unix, \
          s.usage_limit_resume_at_unix, s.usage_limit_queued_message, \
-         s.created_at_unix, s.last_active_unix, s.model, s.effort, s.permission_mode \
+         s.created_at_unix, s.last_active_unix, s.model, s.effort, s.permission_mode, \
+         s.computer_use \
          FROM sessions s WHERE s.user_id = ? \
          ORDER BY s.created_at_unix DESC, s.id DESC"
     );
@@ -648,7 +695,8 @@ async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiErr
          s.machine_origin, s.budget_id, s.failure_reason, s.interrupted_reason, \
          s.paused_reason, s.usage_limit_window, s.usage_limit_resets_at_unix, \
          s.usage_limit_resume_at_unix, s.usage_limit_queued_message, \
-         s.created_at_unix, s.last_active_unix, s.model, s.effort, s.permission_mode \
+         s.created_at_unix, s.last_active_unix, s.model, s.effort, s.permission_mode, \
+         s.computer_use \
          FROM sessions s WHERE s.id = ? AND s.user_id = ?"
     );
     db.query(&statement)
@@ -700,6 +748,9 @@ pub struct ProvisioningTarget {
     /// [`permission_mode`](Self::permission_mode), which resolves that to
     /// the product default the machine was provisioned under all along.
     pub permission_mode: Option<PermissionMode>,
+    /// Whether the machine's `flycod` is configured to give the session a
+    /// screen — the `[computer]` table's `enabled`.
+    pub computer_use: bool,
 }
 
 impl ProvisioningTarget {
@@ -739,7 +790,7 @@ pub async fn provisioning_target(
     Ok(sql!(
         db,
         "SELECT user_id, harness, machine_origin, state, model, effort, \
-         permission_mode FROM sessions WHERE id = {id}"
+         permission_mode, computer_use FROM sessions WHERE id = {id}"
     )
     .fetch_optional()
     .await?)

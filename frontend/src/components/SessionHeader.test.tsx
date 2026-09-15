@@ -17,6 +17,7 @@ const SESSION: SessionDetail = {
   state: "active",
   activity: "working",
   machine_origin: "auto",
+  computer_use: false,
   created_at_unix: 1_790_000_000,
   last_active_unix: 1_790_000_600,
   budget: { limit: 10_000_000, spent: 1_200_000, remaining: 8_800_000, stage: "ok" },

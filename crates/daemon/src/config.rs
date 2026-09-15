@@ -602,6 +602,69 @@ pub(crate) fn valid_repo_dir(dir: &str) -> bool {
         && !dir.contains('\0')
 }
 
+/// The display's width, in pixels.
+///
+/// 1280×800 is the geometry Anthropic's computer-use stack trains and
+/// evals at, which makes it the geometry the `computer_*` tools' coordinate
+/// space is documented in rather than an arbitrary default.
+const fn default_display_width() -> u32 {
+    1280
+}
+
+/// The display's height, in pixels.
+const fn default_display_height() -> u32 {
+    800
+}
+
+/// How many frames a second the encoder is asked to keep while a browser
+/// watches.
+///
+/// Five is a watchable cadence for an agent driving a desktop and a sixth
+/// of what interactive streaming would ask for — the budget it sets is the
+/// VM's encoder CPU and the egress meter, not the eye's.
+const fn default_fps() -> u32 {
+    5
+}
+
+/// The session's desktop — the screen the model sees and drives, and the
+/// stream the user watches and takes over.
+///
+/// The provisioned configuration always writes this table; on a developer
+/// machine it is absent and the session has no screen.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComputerConfig {
+    /// Whether this session may have a screen.
+    ///
+    /// The capability at boot, not a lock: a session that starts with the
+    /// flag off can still be given a screen later through
+    /// [`SetComputerUse`](flyco_core::ControlToDaemon::SetComputerUse),
+    /// which starts the same stack this flag would have started here.
+    pub enabled: bool,
+    /// Display width in pixels.
+    #[serde(default = "default_display_width")]
+    pub width: u32,
+    /// Display height in pixels.
+    #[serde(default = "default_display_height")]
+    pub height: u32,
+    /// Frames per second the encoder keeps while a browser watches. Encoded
+    /// at all only while [`DesktopAudience`](flyco_core::ControlToDaemon::DesktopAudience)
+    /// says someone is watching.
+    #[serde(default = "default_fps")]
+    pub fps: u32,
+}
+
+impl Default for ComputerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            width: default_display_width(),
+            height: default_display_height(),
+            fps: default_fps(),
+        }
+    }
+}
+
 /// Everything `flycod run` needs.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -716,6 +779,10 @@ pub struct DaemonConfig {
     /// server that is not here, and cannot add one.
     #[serde(default)]
     pub mcp_servers: Vec<McpServerMount>,
+    /// The session's desktop. A configuration without the table is a
+    /// session without a screen.
+    #[serde(default)]
+    pub computer: ComputerConfig,
 }
 
 impl DaemonConfig {

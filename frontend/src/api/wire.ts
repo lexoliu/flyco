@@ -29,6 +29,9 @@ export type ModelChoice = components["schemas"]["ModelChoice"];
 export type ModelOption = components["schemas"]["ModelOption"];
 export type PermissionMode = components["schemas"]["PermissionMode"];
 export type UsageWindow = components["schemas"]["UsageWindow"];
+export type DesktopStatus = components["schemas"]["DesktopStatus"];
+export type DesktopButton = components["schemas"]["DesktopButton"];
+export type DesktopInputEvent = components["schemas"]["DesktopInputEvent"];
 
 /**
  * Who wrote a message that appears in the conversation as the user's.
@@ -220,16 +223,36 @@ export type ClientEvent =
    * State rather than history, like `models`: the newest list wins and the
    * composer's `/` palette reads the last one.
    */
-  | { type: "commands"; commands: HarnessCommand[] };
+  | { type: "commands"; commands: HarnessCommand[] }
+  /**
+   * Where the session's desktop is: coming up, ready, in use, or failed.
+   * The newest report wins — a browser that opens late reads the last one.
+   */
+  | { type: "desktop_state"; status: DesktopStatus; detail?: string | null }
+  /**
+   * The agent is on the screen. One frame per idle→use transition — the
+   * `Screen` panel opens itself on it.
+   */
+  | { type: "desktop_active" }
+  /**
+   * Who owns the screen changed. State, not history: `active` is whether
+   * anyone is driving now, and the panel reads it rather than tracking its
+   * own button's answer.
+   */
+  | { type: "desktop_takeover"; active: boolean };
 
 /**
- * The seven `ControlToDaemon` variants a browser may send, mirroring
- * `ControlToDaemon::is_client_command()` — each reaches the daemon through
- * its own REST route (see `send()` in `src/api/relay.ts`). Every other
- * command (approval decisions, budget signals, archive, and the
- * identified `run_shell` the room reissues a `shell_command` as) is
- * control-plane authority and reaches the daemon only through the room
- * itself or an authenticated REST handler.
+ * The `ControlToDaemon` variants a browser may send through `send()`,
+ * mirroring `ControlToDaemon::is_client_command()` — each reaches the
+ * daemon through its own REST route (see `send()` in `src/api/relay.ts`).
+ * Two client commands are absent here on purpose: `desktop_takeover` and
+ * `desktop_input` name the watcher lease their stream minted, which the
+ * generic command shape has nowhere to carry, so they ride their own
+ * routes through `src/api/desktop.ts` instead. Every other command
+ * (approval decisions, budget signals, archive, and the identified
+ * `run_shell` the room reissues a `shell_command` as) is control-plane
+ * authority and reaches the daemon only through the room itself or an
+ * authenticated REST handler.
  */
 export type ClientCommand =
   | { type: "user_message"; text: string }
@@ -332,4 +355,7 @@ const CLIENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "models",
   "plan_usage",
   "commands",
+  "desktop_state",
+  "desktop_active",
+  "desktop_takeover",
 ]);

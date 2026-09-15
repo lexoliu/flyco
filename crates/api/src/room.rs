@@ -62,8 +62,8 @@
 use flyco_core::wire::{DaemonAttach, DaemonFrames, EventPage, StoredEvent};
 use flyco_core::workdir::WorkdirReply;
 use flyco_core::{
-    CheckoutStatus, ClientEvent, ControlToDaemon, DaemonToControl, MessageOrigin, RepoStatus,
-    ShellRunId, WorkdirRequestId,
+    CheckoutStatus, ClientEvent, ControlToDaemon, DaemonToControl, DesktopInputRequest,
+    DesktopTakeoverRequest, MessageOrigin, RepoStatus, ShellRunId, WorkdirRequestId,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::durable::{DurableObject, DurableObjectError};
@@ -106,6 +106,29 @@ const PRESENCE_TTL_SECONDS: u64 = 30;
 /// Every poll would write the same row a hundred times inside one TTL;
 /// the marker only needs to stay ahead of expiry.
 const PRESENCE_REFRESH_SECONDS: u64 = 10;
+
+/// How long a desktop watcher's lease survives its last contact.
+///
+/// Same shape as [`PRESENCE_TTL_SECONDS`]: the watch stream renews it,
+/// and its takeover and input calls count as contact. Expiry is what
+/// hands the screen back when a browser dies mid-takeover — the
+/// reconcile in the command feed sees the row lapse and tells the
+/// daemon the audience is gone.
+const WATCHER_TTL_SECONDS: u64 = 30;
+
+/// How often the watch stream renews its watcher lease.
+const WATCHER_REFRESH_SECONDS: u64 = 10;
+
+/// How many encoded chunks the desktop tail keeps.
+///
+/// The stream's store is one GOP tail: a keyframe's insert drops
+/// everything before it, so the cap only ever binds a runaway GOP — a
+/// screen the encoder cannot cut into keyframes fast enough. At the
+/// stream's 5fps cadence it is about a minute of video.
+const DESKTOP_CHUNKS_KEPT: u64 = 300;
+
+/// How many chunks one watch-stream poll hands over.
+const DESKTOP_CHUNK_BATCH: u64 = 64;
 
 /// One event a room made, as an internal route reports it for fan-out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -211,6 +234,9 @@ impl DurableObject for SessionRoom {
             "/internal/workdir"
                 .post(ask_workdir)
                 .get(collect_workdir_reply),
+            "/internal/desktop/watch".at(watch_desktop),
+            "/internal/desktop/takeover".post(desktop_takeover),
+            "/internal/desktop/input".post(desktop_input),
         ))
         .build()
     }
@@ -327,6 +353,7 @@ async fn open_command_stream(
         epoch,
         cursor: 0,
         sent_resize: false,
+        desktop_fresh: true,
         last_touch: 0,
     };
     Ok(crate::sse::serve(
@@ -403,6 +430,23 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
         feed.last_touch = now;
     }
 
+    let mut emitted = Vec::new();
+    if feed.desktop_fresh {
+        feed.desktop_fresh = false;
+        emitted.extend(fresh_desktop_announce(db, now).await);
+    }
+
+    // Reconcile the desktop leases against what the daemon was last
+    // told. A watcher that joined or lapsed since the last tick changes
+    // what the encoder should be doing, and this stream is the room's
+    // only way to say so — which is also what carries the correction to
+    // a fresh attach's first poll. State announcements go ahead of the
+    // queued rows so a daemon learns who owns the screen before the work.
+    emitted.extend(reconcile_desktop(db, now).await.unwrap_or_else(|error| {
+        tracing::warn!(%error, "a command stream could not reconcile the desktop audience");
+        Vec::new()
+    }));
+
     let cursor = feed.cursor;
     let rows: Vec<CommandRow> = sql!(
         db,
@@ -413,7 +457,7 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
     .map_err(|error| {
         tracing::warn!(%error, "a command stream could not poll its commands");
     })?;
-    if rows.is_empty() {
+    if rows.is_empty() && emitted.is_empty() {
         return Ok(crate::sse::Poll::Idle);
     }
     // The poll just drained `rows` of backlog — bill them. An idle poll
@@ -425,11 +469,208 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
             tracing::warn!(%error, "a command stream hit the row budget");
         })?;
     feed.cursor = rows.last().map_or(feed.cursor, |row| row.seq);
-    Ok(crate::sse::Poll::Emit(
+    emitted.extend(
         rows.iter()
-            .map(|row| command_event(Some(row.seq), &row.json))
-            .collect(),
-    ))
+            .map(|row| command_event(Some(row.seq), &row.json)),
+    );
+    Ok(crate::sse::Poll::Emit(emitted))
+}
+
+/// Reads the desktop lease table against what the daemon was last told,
+/// emitting the command each change calls for.
+///
+/// The aggregate — is anyone watching, is anyone driving — lives in
+/// `desktop_watchers`, and the last-announced reading of it in
+/// `desktop_state`. This is the only writer that fires without a
+/// request behind it: a watch stream ending is not an event anyone
+/// sends, so expiry is noticed here, on the daemon's own heartbeat.
+/// What a *fresh* attach is owed it does not cover — `desktop_state`
+/// says what the previous daemon heard, which is replayed by the feed's
+/// `desktop_fresh` emit instead, unconditionally.
+async fn reconcile_desktop(db: &DurableDb, now: u64) -> Result<Vec<Event>, DurableObjectError> {
+    let (watching, takeover) = desktop_aggregate(db, now).await?;
+
+    let mut events = Vec::new();
+    if note_audience(db, watching).await? {
+        events.push(command_event(
+            None,
+            &command_value(&ControlToDaemon::DesktopAudience { watching })?,
+        ));
+    }
+    if note_takeover(db, takeover).await? {
+        events.push(command_event(
+            None,
+            &command_value(&ControlToDaemon::DesktopTakeover { active: takeover })?,
+        ));
+        // The seam between drivers is transcript whichever way it moved —
+        // an expiry release is recorded exactly as an explicit one is.
+        append(db, &ClientEvent::DesktopTakeover { active: takeover }).await?;
+    }
+    Ok(events)
+}
+
+/// The desktop aggregate a stream serving a fresh attach owes its
+/// daemon, told outright.
+///
+/// A restarted daemon powers its supervisor on clear, and a watcher
+/// still holding the screen across the gap is a fact nothing else
+/// re-sends — `reconcile_desktop` only fires on a change from
+/// `desktop_state`. Only the set halves need saying: a daemon boots
+/// assuming no audience and no takeover, so a false announces nothing
+/// it does not already believe — and emitting it would replay a phantom
+/// release into a live watcher's stream.
+///
+/// The aggregate is then landed on `desktop_state` through the same
+/// CAS the routes and the reconcile claim, so a flip nobody announced
+/// is still recorded once, and the poll's own reconcile does not
+/// announce the same state a second time. Rows still queued from the
+/// daemon this attach replaces are stale in its hands and swept.
+async fn fresh_desktop_announce(db: &DurableDb, now: u64) -> Vec<Event> {
+    let mut emitted = Vec::new();
+    let (watching, takeover) = match desktop_aggregate(db, now).await {
+        Ok(aggregate) => aggregate,
+        Err(error) => {
+            tracing::warn!(%error, "a command stream could not read the desktop leases");
+            return emitted;
+        }
+    };
+    for command in [
+        watching.then_some(ControlToDaemon::DesktopAudience { watching }),
+        takeover.then_some(ControlToDaemon::DesktopTakeover { active: takeover }),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        match command_value(&command) {
+            Ok(value) => emitted.push(command_event(None, &value)),
+            Err(error) => {
+                tracing::warn!(%error, "a desktop state would not encode");
+            }
+        }
+    }
+    if let Err(error) = note_desktop_state(db, watching, takeover).await {
+        tracing::warn!(%error, "a command stream could not note the desktop state");
+    }
+    if let Err(error) = sweep_stale_desktop_commands(db).await {
+        tracing::warn!(%error, "a command stream could not sweep stale desktop commands");
+    }
+    emitted
+}
+
+/// Lands the desktop aggregate on `desktop_state` without emitting —
+/// the fresh attach that runs this was already told outright. Landing
+/// the takeover half is still the announce: a flip that reached the
+/// lease table but never a daemon (the caller that made it was cut off
+/// mid-write) is recorded here, under the same CAS the routes and the
+/// reconcile claim.
+async fn note_desktop_state(
+    db: &DurableDb,
+    watching: bool,
+    takeover: bool,
+) -> Result<(), DurableObjectError> {
+    note_audience(db, watching).await?;
+    if note_takeover(db, takeover).await? {
+        append(db, &ClientEvent::DesktopTakeover { active: takeover }).await?;
+    }
+    Ok(())
+}
+
+/// Drops the `daemon_commands` rows a fresh attach must not inherit.
+///
+/// State rows — an audience flip, a takeover — are covered by the
+/// aggregate the attach was just told; replaying the queue's copy after
+/// it would hand the daemon a state older than the announce. An input
+/// batch is staler still: it was only ever live for the daemon holding
+/// the screen when it was sent, and `survives_a_disconnect` names it
+/// ephemeral. Everything else keeps its place in the queue.
+async fn sweep_stale_desktop_commands(db: &DurableDb) -> Result<(), DurableObjectError> {
+    let rows: Vec<CommandRow> = sql!(db, "SELECT seq, json FROM daemon_commands")
+        .fetch_all()
+        .await?;
+    for row in rows {
+        let Ok(
+            ControlToDaemon::DesktopAudience { .. }
+            | ControlToDaemon::DesktopTakeover { .. }
+            | ControlToDaemon::DesktopInput { .. },
+        ) = serde_json::from_value::<ControlToDaemon>(row.json)
+        else {
+            continue;
+        };
+        sql!(db, "DELETE FROM daemon_commands WHERE seq = {row.seq}")
+            .execute()
+            .await?;
+    }
+    Ok(())
+}
+
+/// Who is on the session's screen right now: (anyone watching, anyone
+/// driving).
+///
+/// The sweep is part of the answer: a lapsed lease is already nobody, so
+/// expired rows are deleted before either count runs — a dead tab holds
+/// neither the encoder nor the screen past its deadline.
+async fn desktop_aggregate(db: &DurableDb, now: u64) -> Result<(bool, bool), DurableObjectError> {
+    sql!(db, "DELETE FROM desktop_watchers WHERE live_until < {now}")
+        .execute()
+        .await?;
+    let watchers: u64 = sql!(
+        db,
+        "SELECT count(*) FROM desktop_watchers WHERE live_until >= {now}"
+    )
+    .fetch_scalar()
+    .await?;
+    let taken: u64 = sql!(
+        db,
+        "SELECT count(*) FROM desktop_watchers \
+         WHERE takeover != 0 AND live_until >= {now}"
+    )
+    .fetch_scalar()
+    .await?;
+    Ok((watchers > 0, taken > 0))
+}
+
+/// The attach's replay of the desktop aggregate, and the live
+/// corrections after it.
+///
+/// `note_audience`/`note_takeover` are conditional updates on the one
+/// `desktop_state` row: landing the write is what names the caller the
+/// flip's announcer, so the takeover route, the watch route, and this
+/// reconcile can never emit the same transition twice.
+async fn note_audience(db: &DurableDb, watching: bool) -> Result<bool, DurableObjectError> {
+    Ok(sql!(
+        db,
+        "UPDATE desktop_state SET watching = {watching} \
+         WHERE id = 0 AND watching != {watching}"
+    )
+    .execute()
+    .await?
+    .rows_written
+        > 0)
+}
+
+/// See [`note_audience`].
+async fn note_takeover(db: &DurableDb, takeover: bool) -> Result<bool, DurableObjectError> {
+    Ok(sql!(
+        db,
+        "UPDATE desktop_state SET takeover = {takeover} \
+         WHERE id = 0 AND takeover != {takeover}"
+    )
+    .execute()
+    .await?
+    .rows_written
+        > 0)
+}
+
+/// A command as the `daemon_commands` row would store it.
+///
+/// The desktop announcements the feed emits are not rows — they carry
+/// no ordering obligation and are acknowledged for nothing — but they
+/// encode through the real variant rather than a literal, so a tag or
+/// field rename fails to compile instead of silently emitting a command
+/// the daemon does not know.
+fn command_value(command: &ControlToDaemon) -> Result<serde_json::Value, DurableObjectError> {
+    serde_json::to_value(command)
+        .map_err(|error| DurableObjectError::Serialization(error.to_string()))
 }
 
 /// Encodes one command for the wire.
@@ -460,6 +701,9 @@ struct CommandFeed {
     cursor: u64,
     /// Whether the remembered pane size has been replayed yet.
     sent_resize: bool,
+    /// Whether this stream still owes its daemon the desktop aggregate —
+    /// set only for the attach it opens on, cleared by the first poll.
+    desktop_fresh: bool,
     /// When presence was last renewed, seconds.
     last_touch: u64,
 }
@@ -582,6 +826,16 @@ async fn apply_daemon_frame(
     // HTTP request this answers, and nobody else has any use for it.
     if let DaemonToControl::WorkdirReply { id, reply } = frame {
         store_workdir_reply(db, *id, reply)
+            .await
+            .map_err(|error| room_failed(&error))?;
+        return Ok(Vec::new());
+    }
+
+    // Stream bytes rather than an event: chunks land in the stream's own
+    // table, where watch streams read them, and never in `events` — a
+    // replayed transcript is not a screen recording.
+    if let DaemonToControl::DesktopChunk { keyframe, data } = frame {
+        store_desktop_chunk(db, *keyframe, data)
             .await
             .map_err(|error| room_failed(&error))?;
         return Ok(Vec::new());
@@ -919,6 +1173,9 @@ async fn echo_of(db: &DurableDb, command: &ControlToDaemon) -> Result<Vec<Emitte
         ControlToDaemon::SetPermissionMode { mode } => {
             (ClientEvent::PermissionModeChanged { mode: *mode }, true)
         }
+        ControlToDaemon::SetComputerUse { enabled } => {
+            (ClientEvent::ComputerUseChanged { enabled: *enabled }, true)
+        }
         _ => return Ok(Vec::new()),
     };
 
@@ -1023,6 +1280,16 @@ async fn record(
         )
         .await
         .map(Some),
+        DaemonToControl::DesktopState { status, detail } => append(
+            db,
+            &ClientEvent::DesktopState {
+                status: *status,
+                detail: detail.clone(),
+            },
+        )
+        .await
+        .map(Some),
+        DaemonToControl::DesktopActive => append(db, &ClientEvent::DesktopActive).await.map(Some),
         // Appended rather than only forwarded: a reclamation is something
         // that *happened* to the session, and the browser most likely to
         // want it is one opened after the machine was already gone.
@@ -1165,7 +1432,7 @@ async fn put_latest<T: Serialize + Sync>(
 /// append, each page read, each attach) calls `ensure_schema` first. Bump
 /// it when the DDL below changes so a room built by an older build
 /// upgrades once, on its next call.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Creates the room's tables if this is its first write.
 ///
@@ -1237,12 +1504,49 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
         // `row_budget::charge_reads`, and the circuit breaker that keeps a
         // runaway reader here from spending the account's quota.
         crate::row_budget::SCHEMA,
+        // The desktop stream's GOP tail: the newest keyframe plus
+        // everything encoded since. Not `events` — a replayed transcript
+        // is not a screen recording — and bounded, so a live session
+        // cannot grow it without limit.
+        "CREATE TABLE IF NOT EXISTS desktop_chunks (\
+             seq      INTEGER PRIMARY KEY AUTOINCREMENT, \
+             keyframe INTEGER NOT NULL, \
+             data     TEXT    NOT NULL, \
+             at_unix  INTEGER NOT NULL)",
+        // One lease per browser watching the desktop stream. A row is a
+        // heartbeat — the stream and its takeover and input calls renew
+        // `live_until` — so a tab that dies stops counting, and a
+        // takeover it held lapses, on the deadline rather than on a close
+        // event nothing sends. `takeover` marks the one row allowed to
+        // drive the screen.
+        "CREATE TABLE IF NOT EXISTS desktop_watchers (\
+             id         INTEGER PRIMARY KEY AUTOINCREMENT, \
+             takeover   INTEGER NOT NULL, \
+             live_until INTEGER NOT NULL)",
+        // What the daemon was last told about its desktop audience. The
+        // conditional updates in `note_audience`/`note_takeover` make a
+        // flip atomic — whichever room call lands it is the one that
+        // emits the command, so a join racing an expiry can never emit
+        // the same transition twice. One row, like the pane size.
+        "CREATE TABLE IF NOT EXISTS desktop_state (\
+             id       INTEGER PRIMARY KEY CHECK (id = 0), \
+             watching INTEGER NOT NULL, \
+             takeover INTEGER NOT NULL)",
     ] {
         db.query(statement)
             .execute()
             .await
             .map_err(|error| stored(&error))?;
     }
+    // The row the conditional updates CAS against; absent it, a first
+    // flip would have nothing to flip from.
+    sql!(
+        db,
+        "INSERT OR IGNORE INTO desktop_state (id, watching, takeover) VALUES (0, 0, 0)"
+    )
+    .execute()
+    .await
+    .map_err(|error| stored(&error))?;
     db.query(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
         .execute()
         .await
@@ -1480,6 +1784,419 @@ async fn collect(
     serde_json::from_str(&json)
         .map(Json)
         .map_err(|error| ApiError::Room(format!("a stored workdir reply did not parse: {error}")))
+}
+
+// ── The desktop stream ──
+
+/// Opens a browser's desktop stream: the encoded tail, then live chunks.
+///
+/// The lease is the request's first act: `desktop_watchers` is the
+/// audience the daemon encodes for and the identity takeover and input
+/// calls name, and the stream that serves the watcher is also what keeps
+/// it alive. The join cursor is the newest keyframe — a decoder starts
+/// from nothing else — and the GOP trim keeps that the table's head.
+async fn watch_desktop(headers: Headers, db: DurableDb) -> Outcome<Sse> {
+    open_desktop_stream(&headers, db).await.into()
+}
+
+async fn open_desktop_stream(headers: &Headers, db: DurableDb) -> Result<Sse, ApiError> {
+    internal(headers)?;
+    ensure_schema(&db)
+        .await
+        .map_err(|error| room_failed(&error))?;
+    let now = now_unix();
+    let live_until = now.saturating_add(WATCHER_TTL_SECONDS);
+    let watcher: u64 = sql!(
+        db,
+        "INSERT INTO desktop_watchers (takeover, live_until) \
+         VALUES (0, {live_until}) RETURNING id"
+    )
+    .fetch_scalar()
+    .await
+    .map_err(|error| room_failed(&error))?;
+    let cursor: u64 = sql!(
+        db,
+        "SELECT seq FROM desktop_chunks WHERE keyframe != 0 ORDER BY seq DESC LIMIT 1"
+    )
+    .fetch_scalar_optional::<u64>()
+    .await
+    .map_err(|error| room_failed(&error))?
+    .map_or(0, |seq| seq.saturating_sub(1));
+
+    // A join is already an audience flip: land it now rather than on the
+    // command feed's next reconcile, so the encoder starts one tick
+    // sooner. The CAS keeps a second watcher's stream from re-announcing.
+    if note_audience(&db, true)
+        .await
+        .map_err(|error| room_failed(&error))?
+        && daemon_live(&db)
+            .await
+            .map_err(|error| room_failed(&error))?
+    {
+        queue_command(&db, &ControlToDaemon::DesktopAudience { watching: true })
+            .await
+            .map_err(|error| room_failed(&error))?;
+    }
+
+    let feed = ChunkFeed {
+        db,
+        watcher,
+        cursor,
+        greeted: false,
+        last_touch: 0,
+    };
+    Ok(crate::sse::serve(
+        feed,
+        poll_chunk_feed,
+        crate::sse::HEARTBEAT,
+    ))
+}
+
+/// Takes the screen, or hands it back, on behalf of one watcher.
+///
+/// The watcher must be a live lease — a takeover from a stream that has
+/// already ended would lock the agent behind a screen nobody holds. The
+/// flip is decided by the CAS on `desktop_state`: whoever lands it is
+/// the one that records the seam and tells the daemon, so an explicit
+/// release racing a lease expiry emits exactly one transition.
+async fn desktop_takeover(
+    headers: Headers,
+    Json(request): Json<DesktopTakeoverRequest>,
+    db: DurableDb,
+) -> Outcome<Json<Emitted>> {
+    take_desktop(&headers, &request, &db).await.into()
+}
+
+async fn take_desktop(
+    headers: &Headers,
+    request: &DesktopTakeoverRequest,
+    db: &DurableDb,
+) -> Result<Json<Emitted>, ApiError> {
+    internal(headers)?;
+    ensure_schema(db)
+        .await
+        .map_err(|error| room_failed(&error))?;
+    let now = now_unix();
+    let watcher = request.watcher;
+    let live: Option<u8> = sql!(
+        db,
+        "SELECT takeover FROM desktop_watchers \
+         WHERE id = {watcher} AND live_until >= {now}"
+    )
+    .fetch_scalar_optional()
+    .await
+    .map_err(|error| room_failed(&error))?;
+    if live.is_none() {
+        return Err(ApiError::DesktopWatcherGone);
+    }
+    let active = request.active;
+    let live_until = now.saturating_add(WATCHER_TTL_SECONDS);
+    sql!(
+        db,
+        "UPDATE desktop_watchers SET takeover = {active}, live_until = {live_until} \
+         WHERE id = {watcher}"
+    )
+    .execute()
+    .await
+    .map_err(|error| room_failed(&error))?;
+    if active {
+        // One screen, one driver: a second tab taking over steals the
+        // lease outright, and the tab it displaced learns of it as a
+        // refusal on its next input rather than co-driving silently.
+        sql!(
+            db,
+            "UPDATE desktop_watchers SET takeover = 0 WHERE id != {watcher}"
+        )
+        .execute()
+        .await
+        .map_err(|error| room_failed(&error))?;
+    }
+
+    let taken: u64 = sql!(
+        db,
+        "SELECT count(*) FROM desktop_watchers \
+         WHERE takeover != 0 AND live_until >= {now}"
+    )
+    .fetch_scalar()
+    .await
+    .map_err(|error| room_failed(&error))?;
+    let takeover = taken > 0;
+
+    let mut events = Vec::new();
+    if note_takeover(db, takeover)
+        .await
+        .map_err(|error| room_failed(&error))?
+    {
+        let event = ClientEvent::DesktopTakeover { active: takeover };
+        let seq = append(db, &event)
+            .await
+            .map_err(|error| room_failed(&error))?;
+        events.push(EmittedEvent {
+            seq: Some(seq),
+            event,
+        });
+        if daemon_live(db).await.map_err(|error| room_failed(&error))? {
+            queue_command(db, &ControlToDaemon::DesktopTakeover { active: takeover })
+                .await
+                .map_err(|error| room_failed(&error))?;
+        }
+    }
+    Ok(Json(Emitted { events }))
+}
+
+/// Forwards one batch of a driving watcher's input to the daemon.
+///
+/// Refused rather than dropped when the watcher does not hold the
+/// screen: a click silently ignored looks exactly like a display that
+/// did not respond, and the refusal is what tells the panel its
+/// takeover lapsed.
+async fn desktop_input(
+    headers: Headers,
+    Json(request): Json<DesktopInputRequest>,
+    db: DurableDb,
+) -> Outcome<NoContent> {
+    drive_desktop_input(&headers, &request, &db).await.into()
+}
+
+async fn drive_desktop_input(
+    headers: &Headers,
+    request: &DesktopInputRequest,
+    db: &DurableDb,
+) -> Result<NoContent, ApiError> {
+    internal(headers)?;
+    ensure_schema(db)
+        .await
+        .map_err(|error| room_failed(&error))?;
+    let now = now_unix();
+    let watcher = request.watcher;
+    let held: Option<WatcherRow> = sql!(
+        db,
+        "SELECT takeover, live_until FROM desktop_watchers WHERE id = {watcher}"
+    )
+    .fetch_optional()
+    .await
+    .map_err(|error| room_failed(&error))?;
+    match held {
+        Some(row) if row.live_until >= now && row.takeover != 0 => {}
+        Some(row) if row.live_until >= now => return Err(ApiError::DesktopTakeoverRequired),
+        _ => return Err(ApiError::DesktopWatcherGone),
+    }
+    if !daemon_live(db).await.map_err(|error| room_failed(&error))? {
+        return Err(ApiError::SessionDaemonOffline);
+    }
+
+    // The call is contact: an active driver's lease must not lapse
+    // between heartbeats of a stream that is stalled behind it.
+    let live_until = now.saturating_add(WATCHER_TTL_SECONDS);
+    sql!(
+        db,
+        "UPDATE desktop_watchers SET live_until = {live_until} WHERE id = {watcher}"
+    )
+    .execute()
+    .await
+    .map_err(|error| room_failed(&error))?;
+    queue_command(
+        db,
+        &ControlToDaemon::DesktopInput {
+            events: request.events.clone(),
+        },
+    )
+    .await
+    .map_err(|error| room_failed(&error))?;
+    Ok(NoContent)
+}
+
+/// One poll of a desktop watch stream.
+fn poll_chunk_feed(feed: &mut ChunkFeed) -> crate::sse::PollFn<'_> {
+    Box::pin(async move {
+        chunk_feed_step(feed)
+            .await
+            .unwrap_or(crate::sse::Poll::Idle)
+    })
+}
+
+/// One poll step, fallible so a failed read surfaces once as a warning
+/// rather than killing the stream — storage retries answer next tick.
+async fn chunk_feed_step(feed: &mut ChunkFeed) -> Result<crate::sse::Poll, ()> {
+    let now = now_unix();
+    let db = &feed.db;
+    let mut events = Vec::new();
+
+    // The hello names this watcher's lease — the id takeover and input
+    // calls carry — and says whether the screen is already driven, so
+    // the panel opens on the truth rather than on its first refusal.
+    if !feed.greeted {
+        feed.greeted = true;
+        let taken: u64 = sql!(
+            db,
+            "SELECT count(*) FROM desktop_watchers \
+             WHERE takeover != 0 AND live_until >= {now}"
+        )
+        .fetch_scalar()
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "a desktop stream could not read the watchers");
+        })?;
+        let watcher = feed.watcher;
+        events.push(
+            Event::data(
+                serde_json::json!({
+                    "watcher": watcher,
+                    "takeover": taken > 0,
+                })
+                .to_string(),
+            )
+            .event("hello"),
+        );
+    }
+
+    if now.saturating_sub(feed.last_touch) >= WATCHER_REFRESH_SECONDS {
+        let live_until = now.saturating_add(WATCHER_TTL_SECONDS);
+        let watcher = feed.watcher;
+        sql!(
+            db,
+            "UPDATE desktop_watchers SET live_until = {live_until} WHERE id = {watcher}"
+        )
+        .execute()
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "a desktop stream could not renew its watcher");
+        })?;
+        feed.last_touch = now;
+    }
+
+    // A GOP trim that ran ahead of this cursor took rows the stream still
+    // owed: jump to the newest keyframe and mark the cut for the client,
+    // whose decoder cannot span it.
+    let oldest: Option<u64> = sql!(db, "SELECT seq FROM desktop_chunks ORDER BY seq LIMIT 1")
+        .fetch_scalar_optional()
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "a desktop stream could not read the chunk tail");
+        })?;
+    if oldest.is_some_and(|oldest| feed.cursor.saturating_add(1) < oldest) {
+        let head: Option<u64> = sql!(
+            db,
+            "SELECT seq FROM desktop_chunks WHERE keyframe != 0 ORDER BY seq DESC LIMIT 1"
+        )
+        .fetch_scalar_optional()
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "a desktop stream could not find the newest keyframe");
+        })?;
+        feed.cursor = head.map_or(0, |seq| seq.saturating_sub(1));
+        events.push(Event::data("{}").event("resync"));
+    }
+
+    let cursor = feed.cursor;
+    let limit = DESKTOP_CHUNK_BATCH;
+    let rows: Vec<ChunkRow> = sql!(
+        db,
+        "SELECT seq, keyframe, data FROM desktop_chunks \
+         WHERE seq > {cursor} ORDER BY seq LIMIT {limit}"
+    )
+    .fetch_all()
+    .await
+    .map_err(|error| {
+        tracing::warn!(%error, "a desktop stream could not poll its chunks");
+    })?;
+    // A cursor feed bills the rows it actually returned — an idle poll
+    // reads nothing and is billed nothing, so a quiet screen costs the
+    // watcher nothing.
+    if !rows.is_empty() {
+        crate::row_budget::charge_reads(db, rows.len() as u64)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "a desktop stream hit the row budget");
+            })?;
+    }
+    feed.cursor = rows.last().map_or(feed.cursor, |row| row.seq);
+    events.extend(rows.iter().map(|row| {
+        Event::data(
+            serde_json::json!({
+                "keyframe": row.keyframe != 0,
+                "data": row.data,
+            })
+            .to_string(),
+        )
+        .event("chunk")
+        .id(row.seq.to_string())
+    }));
+    if events.is_empty() {
+        return Ok(crate::sse::Poll::Idle);
+    }
+    Ok(crate::sse::Poll::Emit(events))
+}
+
+/// The watch stream's working state.
+struct ChunkFeed {
+    db: DurableDb,
+    /// The lease this stream minted and renews.
+    watcher: u64,
+    /// How far down `desktop_chunks` it has handed over.
+    cursor: u64,
+    /// Whether the hello has gone out yet.
+    greeted: bool,
+    /// When the lease was last renewed, seconds.
+    last_touch: u64,
+}
+
+/// The columns the `desktop_chunks` table stores.
+#[derive(Debug, skyzen::FromRow)]
+struct ChunkRow {
+    seq: u64,
+    keyframe: u8,
+    /// The encoded bytes, base64 — the wire form the room stores verbatim.
+    data: String,
+}
+
+/// The columns the `desktop_watchers` table stores.
+#[derive(Debug, skyzen::FromRow)]
+struct WatcherRow {
+    takeover: u8,
+    live_until: u64,
+}
+
+/// Stores one encoded chunk and keeps the tail to one GOP.
+///
+/// The bytes land as base64 text: it is the wire form the daemon already
+/// speaks and the watch stream re-emits, so the room never transcodes.
+/// The trims are the two bounds — a keyframe makes everything before it
+/// unreachable (the join and the resync both read forward from the
+/// newest one), and the row cap is the hard bound a runaway GOP cannot
+/// grow past.
+async fn store_desktop_chunk(
+    db: &DurableDb,
+    keyframe: bool,
+    data: &[u8],
+) -> Result<(), DurableObjectError> {
+    use base64::Engine as _;
+    let data = base64::engine::general_purpose::STANDARD.encode(data);
+    let at = now_unix();
+    let seq: u64 = sql!(
+        db,
+        "INSERT INTO desktop_chunks (keyframe, data, at_unix) \
+         VALUES ({keyframe}, {data}, {at}) RETURNING seq"
+    )
+    .fetch_scalar()
+    .await
+    .map_err(|error| stored(&error))?;
+    if keyframe {
+        sql!(db, "DELETE FROM desktop_chunks WHERE seq < {seq}")
+            .execute()
+            .await
+            .map_err(|error| stored(&error))?;
+    }
+    let keep = DESKTOP_CHUNKS_KEPT;
+    sql!(
+        db,
+        "DELETE FROM desktop_chunks WHERE seq < \
+         (SELECT seq FROM desktop_chunks ORDER BY seq DESC LIMIT 1 OFFSET {keep})"
+    )
+    .execute()
+    .await
+    .map_err(|error| stored(&error))?;
+    Ok(())
 }
 
 fn room_failed(error: &impl core::fmt::Display) -> ApiError {

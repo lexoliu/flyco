@@ -57,6 +57,7 @@ fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
         machine: flyco_provider::testing::session_machine(),
         resume_session_id: None,
         model: flyco_provider::testing::session_model(),
+        computer_use: true,
         mcp_servers: flyco_provider::testing::mcp_servers(),
     }
 }
@@ -144,6 +145,24 @@ fn it_carries_whether_the_disk_survives_a_stop() {
     });
     assert_eq!(container.runtime, Runtime::Container);
     assert!(!container.runtime.keeps_disk());
+}
+
+#[test]
+fn it_states_whether_the_session_may_have_a_screen() {
+    // The flag survives a rename on either side of the render the way the
+    // model does: a table dropped or renamed produces a machine that boots
+    // with a screen the session never asked for, or asks for one that
+    // never arrives.
+    let bootstrap = claude(ClaudeCredential::Inherit);
+    let config = parse(&bootstrap);
+    assert_eq!(config.computer.enabled, bootstrap.computer_use);
+
+    let mut unscreened = claude(ClaudeCredential::Inherit);
+    unscreened.computer_use = false;
+    assert!(
+        !parse(&unscreened).computer.enabled,
+        "a session without the flag is a session without a screen"
+    );
 }
 
 #[test]

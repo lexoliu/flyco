@@ -107,6 +107,14 @@ memory_mib = 16384
 # hours = 24
 # charge = 15600000
 
+# The session's desktop — the screen the model sees and drives, and the
+# stream the user watches and takes over. The provisioner writes this
+# table for every machine; on a developer machine it is absent and the
+# session has no screen. `width`, `height` and `fps` default to a
+# 1280×800 display encoded at five frames a second while anyone watches.
+# [computer]
+# enabled = true
+
 [claude]
 # Model override, written by the control plane from the model the session
 # was opened on. It is the identifier the Agent SDK's own model list names —

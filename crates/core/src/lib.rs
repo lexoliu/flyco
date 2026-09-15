@@ -97,8 +97,9 @@ pub use repo::{
     RepoSlug, RepoStatus, SessionRepo, checkout_dir,
 };
 pub use session::{
-    ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, HarnessSessionView, HarnessTui,
-    InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS,
+    ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, DesktopInputRequest,
+    DesktopTakeoverRequest, HarnessSessionView, HarnessTui, InterruptedReason,
+    MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS,
     PROVISION_DEADLINE_SECS, PausedReason, RunShell, SUSPEND_AFTER_IDLE_SECS, SendMessage,
     SessionActivity, SessionDetail, SessionState, SessionSummary, SessionTransitionError,
     TerminalInput, TerminalSize, TurnPage, TurnSummary, USAGE_LIMIT_CONTINUE_MESSAGE,
@@ -112,9 +113,9 @@ pub use usage::{
 };
 pub use wire::{
     ApprovalDecision, ApprovalPayload, ClientEvent, ControlToDaemon, DaemonToControl,
-    HarnessCommand, MessageOrigin, ProvisioningStage, ReportProvisioningStage, ReportSpotNotice,
-    ReportStartupFailure, ReportStopping, ShellOutcome, ShellStream, StopReason, UsageWindow,
-    blocking_window,
+    DesktopButton, DesktopInputEvent, DesktopStatus, HarnessCommand, MessageOrigin,
+    ProvisioningStage, ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure,
+    ReportStopping, ShellOutcome, ShellStream, StopReason, UsageWindow, blocking_window,
 };
 pub use workdir::{
     DIFF_PATCH_BYTES_MAX, DIRECTORY_ENTRIES_MAX, DirectoryEntry, DirectoryListing, EntryKind,

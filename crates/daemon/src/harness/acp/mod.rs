@@ -247,7 +247,7 @@ impl Harness for AcpHarness {
         // for the driver to process first.
         let mut prelude = Vec::new();
         let mount_outcome = match &config.methods.mcp_status {
-            Some(method) => verify_mount(&connected.client, &session_id, method).await,
+            Some(method) => verify_mount(&connected.client, &session_id, method, &self.mount).await,
             None => observe_mount(&mut events_rx, &mut prelude).await,
         };
         if let Err(error) = mount_outcome {
@@ -780,12 +780,14 @@ async fn verify_mount(
     client: &AcpClient<AgentHandler>,
     session_id: &str,
     method: &AcpMethodCall,
+    mount: &Mount,
 ) -> Result<(), AcpError> {
     let deadline = tokio::time::Instant::now() + MOUNT_SETTLE;
     loop {
         let servers = mounted_servers(client, session_id, method).await?;
         if crate::mount::settled(&servers) || tokio::time::Instant::now() >= deadline {
-            return crate::mount::verify(&servers).map_err(AcpError::Mount);
+            return crate::mount::verify(&servers, &mount.required_tools())
+                .map_err(AcpError::Mount);
         }
         tokio::time::sleep(MOUNT_POLL).await;
     }

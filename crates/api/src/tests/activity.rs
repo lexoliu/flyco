@@ -54,6 +54,7 @@ async fn running(client: &TestClient<Router>, kv: &Kv, db: &Db) -> Running {
             spot: true,
             model: None,
             permission_mode: None,
+            computer_use: false,
         })
         .send()
         .await;

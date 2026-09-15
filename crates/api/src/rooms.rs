@@ -30,7 +30,8 @@ use core::time::Duration;
 use flyco_core::wire::{DaemonAttach, DaemonAttached, DaemonFrames};
 use flyco_core::workdir::{WorkdirReply, WorkdirRequest};
 use flyco_core::{
-    ClientEvent, ControlToDaemon, HostId, Problem, RepoStatus, SessionId, UserId, WorkdirRequestId,
+    ClientEvent, ControlToDaemon, DesktopInputRequest, DesktopTakeoverRequest, HostId, Problem,
+    RepoStatus, SessionId, UserId, WorkdirRequestId,
 };
 use flyco_provider::host::{HostAttach, HostFrames};
 use skyzen::extract::Extractor;
@@ -626,6 +627,75 @@ impl Rooms {
                 session,
                 &format!("/internal/events?after={after}"),
                 "an event page",
+            )
+            .await
+    }
+
+    /// Opens a browser's desktop stream against a session's room.
+    ///
+    /// The response is the room's SSE stream of encoded chunks, still
+    /// running; the Worker's route hands it to the client verbatim. The
+    /// room mints the caller's watcher lease as part of answering — the
+    /// stream staying open is what keeps the daemon encoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Room`] if the room could not be reached or
+    /// refused the stream.
+    pub async fn desktop_stream(&self, session: SessionId) -> Result<skyzen::Response, ApiError> {
+        self.rooms
+            .call_streaming(session, "/internal/desktop/watch", "a desktop stream")
+            .await
+    }
+
+    /// Takes or releases a session's screen on behalf of one watcher.
+    ///
+    /// The room decides the flip — whether anyone is driving after this
+    /// call — and answers with the events it produced, which are
+    /// published to the owner's stream like any command's.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::DesktopWatcherGone`] if the watcher lease has
+    /// lapsed or never was, or [`ApiError::Room`] if the room could not
+    /// be reached.
+    pub async fn desktop_takeover(
+        &self,
+        db: &Db,
+        session: SessionId,
+        request: &DesktopTakeoverRequest,
+    ) -> Result<(), ApiError> {
+        let emitted = self
+            .rooms
+            .post_json_for(
+                session,
+                "/internal/desktop/takeover",
+                "a desktop takeover",
+                request,
+            )
+            .await?;
+        self.fan_out(db, session, emitted).await
+    }
+
+    /// Sends one batch of a driving watcher's desktop input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::DesktopWatcherGone`] if the watcher lease has
+    /// lapsed, [`ApiError::DesktopTakeoverRequired`] if it is not driving
+    /// the screen, [`ApiError::SessionDaemonOffline`] if no daemon is
+    /// attached, or [`ApiError::Room`] if the room could not be reached.
+    pub async fn desktop_input(
+        &self,
+        session: SessionId,
+        request: &DesktopInputRequest,
+    ) -> Result<(), ApiError> {
+        self.rooms
+            .post_json(
+                session,
+                "/internal/desktop/input",
+                "a desktop input batch",
+                request,
             )
             .await
     }

@@ -21,17 +21,18 @@
  * toggle is behind it.
  */
 import { For, Match, Show, Switch, createEffect, createSignal, on, onCleanup } from "solid-js";
-import { FileCode2, GitCompare, SlidersHorizontal, TerminalSquare, X } from "lucide-solid";
+import { FileCode2, GitCompare, Monitor, SlidersHorizontal, TerminalSquare, X } from "lucide-solid";
 import DiffPanel from "./DiffPanel";
 import EnvEditor from "./EnvEditor";
 import FilesPanel from "./FilesPanel";
+import ScreenPanel from "./screen/ScreenPanel";
 import TerminalPanel from "./terminal/TerminalPanel";
 import type { SessionRelay } from "../api/relay";
 import type { SessionRepo } from "../api/client";
 import { cx } from "../lib/cx";
 import styles from "./SessionDrawer.module.css";
 
-type Tab = "terminal" | "files" | "diff" | "env";
+type Tab = "screen" | "terminal" | "files" | "diff" | "env";
 
 const TABS: readonly { id: Tab; label: string; needsMachine?: boolean }[] = [
   { id: "terminal", label: "Terminal", needsMachine: true },
@@ -39,6 +40,9 @@ const TABS: readonly { id: Tab; label: string; needsMachine?: boolean }[] = [
   { id: "diff", label: "Diff", needsMachine: true },
   { id: "env", label: "Env" },
 ];
+
+/** The screen leads the list when the session has a desktop to show. */
+const SCREEN_TAB = { id: "screen", label: "Screen", needsMachine: true } as const;
 
 export interface SessionDrawerProps {
   sessionId: string;
@@ -81,6 +85,21 @@ export interface SessionDrawerProps {
    * would set an unchanged signal and see nothing happen.
    */
   openEnv?: number | undefined;
+  /**
+   * A request to open the drawer on the `Screen` tab, made by the session
+   * itself: the daemon's `desktop_active` frame is the agent stepping onto
+   * the screen, and that is the moment a watcher is worth opening for.
+   *
+   * Carries the instant, like `openEnv`, so a second announcement is a
+   * second request.
+   */
+  openScreen?: number | undefined;
+  /**
+   * Whether the session was created with computer use. Without it there is
+   * no desktop and no `Screen` tab — the stream would answer a watcher
+   * with silence, so the tab does not exist to be opened.
+   */
+  computerUse: boolean;
   /** Where a pane reports what it could not deliver; the page owns the banner. */
   onError: (failure: unknown) => void;
 }
@@ -88,14 +107,22 @@ export interface SessionDrawerProps {
 export default function SessionDrawer(props: SessionDrawerProps) {
   const open = () => props.open;
   const [tab, setTab] = createSignal<Tab>("terminal");
+  /** The screen exists only on a session that has a desktop to show. */
+  const tabs = () => (props.computerUse ? [SCREEN_TAB, ...TABS] : TABS);
   /**
    * A disabled tab cannot be the selected one: when the machine leaves,
-   * the tab that was open on it yields to the one that still answers.
+   * the tab that was open on it yields to the one that still answers. The
+   * same holds for a `Screen` tab that outlives nothing to show.
    */
   createEffect(() => {
+    const current = tab();
+    if (current === "screen" && !props.computerUse) {
+      setTab("terminal");
+      return;
+    }
     if (
       props.machineUp === false &&
-      TABS.find((entry) => entry.id === tab())?.needsMachine === true
+      tabs().find((entry) => entry.id === current)?.needsMachine === true
     ) {
       setTab("env");
     }
@@ -107,6 +134,18 @@ export default function SessionDrawer(props: SessionDrawerProps) {
       (at) => {
         if (at !== undefined) {
           setTab("env");
+          props.onOpenChange(true);
+        }
+      },
+    ),
+  );
+
+  createEffect(
+    on(
+      () => props.openScreen,
+      (at) => {
+        if (at !== undefined && props.computerUse) {
+          setTab("screen");
           props.onOpenChange(true);
         }
       },
@@ -129,7 +168,7 @@ export default function SessionDrawer(props: SessionDrawerProps) {
       <div class={cx(styles.drawer, styles.drawerOpen)}>
         <div class={styles.panel}>
           <div class={styles.tabs} role="tablist" aria-label="Session panels">
-            <For each={TABS}>
+            <For each={tabs()}>
               {(entry) => (
                 <button
                   type="button"
@@ -150,6 +189,9 @@ export default function SessionDrawer(props: SessionDrawerProps) {
                   onClick={() => setTab(entry.id)}
                 >
                   <Switch>
+                    <Match when={entry.id === "screen"}>
+                      <Monitor size={13} aria-hidden="true" />
+                    </Match>
                     <Match when={entry.id === "terminal"}>
                       <TerminalSquare size={13} aria-hidden="true" />
                     </Match>
@@ -179,6 +221,13 @@ export default function SessionDrawer(props: SessionDrawerProps) {
 
           <div class={styles.body} role="tabpanel">
             <Switch>
+              <Match when={tab() === "screen"}>
+                <ScreenPanel
+                  sessionId={props.sessionId}
+                  relay={props.relay}
+                  onError={props.onError}
+                />
+              </Match>
               <Match when={tab() === "terminal"}>
                 <TerminalPanel
                   sessionId={props.sessionId}

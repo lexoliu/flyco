@@ -56,6 +56,7 @@ async fn open_session(client: &TestClient<Router>, caller: &Caller, repo: &str) 
             spot: true,
             model: None,
             permission_mode: None,
+            computer_use: false,
         })
         .send()
         .await;

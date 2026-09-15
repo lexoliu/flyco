@@ -1,0 +1,1 @@
+Type text one keystroke per character. Shifted characters, symbols, and non-ASCII input are resolved through the display's keymap, so spell exactly the characters you mean — including capitals. For one named key or a modifier chord, use `computer_key` instead.
