@@ -228,17 +228,25 @@ pub trait ControlApi: ApprovalRaiser {
         harness_session_id: &str,
     ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 
-    /// Stores a binary diff of uncommitted work, taken just before an
-    /// automatic archive releases the disk.
+    /// Stores a binary diff of one checkout's uncommitted work, taken just
+    /// before an automatic archive releases the disk.
+    ///
+    /// `dir` is the checkout's directory under the workdir, as
+    /// [`SessionRepo::dir`](flyco_core::SessionRepo::dir) names it — a
+    /// session can hold several, and each snapshot is stored under its own
+    /// key. `None` is the developer-machine shape, where the workdir
+    /// itself is the checkout.
     fn put_workdir_patch(
         &self,
+        dir: Option<&str>,
         patch: Vec<u8>,
     ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 
-    /// Reads a previously stored workdir patch, if an automatic archive
-    /// left one.
+    /// Reads a previously stored workdir patch of one checkout, if an
+    /// automatic archive left one.
     fn get_workdir_patch(
         &self,
+        dir: Option<&str>,
     ) -> impl Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send;
 
     /// Reads the handoff manifest behind this session — the base commit to
@@ -512,6 +520,16 @@ impl HttpControlApi {
             .map(|url| url.to_string())
             .map_err(|_| ControlApiError::Unaddressable(path))
     }
+
+    /// The `workdir-patch` URL for one checkout — `?repo=<dir>`, or bare
+    /// for the workspace root of a developer machine.
+    fn patch_url(&self, dir: Option<&str>) -> Result<String, ControlApiError> {
+        let suffix = dir.map_or_else(
+            || "workdir-patch".to_owned(),
+            |dir| format!("workdir-patch?repo={dir}"),
+        );
+        self.url(&suffix)
+    }
 }
 
 impl ApprovalRaiser for HttpControlApi {
@@ -747,8 +765,12 @@ impl ControlApi for HttpControlApi {
         Ok(())
     }
 
-    async fn put_workdir_patch(&self, patch: Vec<u8>) -> Result<(), ControlApiError> {
-        let url = self.url("workdir-patch")?;
+    async fn put_workdir_patch(
+        &self,
+        dir: Option<&str>,
+        patch: Vec<u8>,
+    ) -> Result<(), ControlApiError> {
+        let url = self.patch_url(dir)?;
         let mut client = zenwave::client();
         let response = client
             .put(&url)
@@ -764,8 +786,11 @@ impl ControlApi for HttpControlApi {
         Ok(())
     }
 
-    async fn get_workdir_patch(&self) -> Result<Option<Vec<u8>>, ControlApiError> {
-        let url = self.url("workdir-patch")?;
+    async fn get_workdir_patch(
+        &self,
+        dir: Option<&str>,
+    ) -> Result<Option<Vec<u8>>, ControlApiError> {
+        let url = self.patch_url(dir)?;
         let mut client = zenwave::client();
         let response = match client
             .get(&url)

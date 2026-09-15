@@ -21,7 +21,7 @@ import { ChevronRight } from "lucide-solid";
 import DiffView from "./DiffView";
 import ProblemNotice from "./ProblemNotice";
 import RepoStatusPanel from "./RepoStatusPanel";
-import { getSessionDiff, type FileDiff } from "../api/client";
+import { getSessionDiff, type FileDiff, type SessionRepo } from "../api/client";
 import { cx } from "../lib/cx";
 import { LARGE_DIFF_LINES, patchRows } from "../lib/patch";
 import styles from "./DiffPanel.module.css";
@@ -36,16 +36,74 @@ const CHANGE_LABEL: Readonly<Record<FileDiff["change"], string>> = {
 
 export interface DiffPanelProps {
   sessionId: string;
-  /** Latest `repo_dirty` summary from the relay, when one has arrived. */
-  liveRepoSummary?: string | null;
+  /**
+   * The session's checkouts, as `SessionSummary.repos` lists them.
+   *
+   * A provisioned session diffs one checkout at a time — the workspace
+   * root is not a repository — so the request always names the selected
+   * `dir`. A developer machine's workdir is itself the checkout: the
+   * request names nothing, and `devMachine` is what says so.
+   */
+  repos: readonly SessionRepo[];
+  /** Whether the session's machine is a developer's own (`host`) machine. */
+  devMachine: boolean;
+  /** Latest `repo_dirty` summary per checkout `dir`, from the relay. */
+  liveRepoSummaries?: ReadonlyMap<string, string>;
 }
 
 export default function DiffPanel(props: DiffPanelProps) {
-  const [diff] = createQuery(() => props.sessionId, getSessionDiff);
+  const [picked, setPicked] = createSignal<string>();
+  /**
+   * The checkout being diffed, as its workspace `dir` — the explicit pick
+   * while it names a checkout the session still has, else the primary.
+   * Reading the list rather than capturing it is what keeps the default
+   * right when the session arrives after the panel did.
+   */
+  const checkout = createMemo(() => {
+    const chosen = picked();
+    return chosen !== undefined && props.repos.some((repo) => repo.dir === chosen)
+      ? chosen
+      : props.repos[0]?.dir;
+  });
+
+  const [diff] = createQuery(
+    () => ({ session: props.sessionId, repo: props.devMachine ? undefined : checkout() }),
+    (key) => getSessionDiff(key.session, key.repo),
+  );
 
   return (
     <section class={styles.panel} aria-label="Diff">
-      <RepoStatusPanel sessionId={props.sessionId} liveSummary={props.liveRepoSummary ?? null} />
+      <RepoStatusPanel
+        sessionId={props.sessionId}
+        repos={props.repos}
+        devMachine={props.devMachine}
+        liveSummaries={props.liveRepoSummaries}
+      />
+
+      <Show when={!props.devMachine && props.repos.length > 1}>
+        {/*
+          One checkout per row rather than a select: three or four named
+          rows read faster than a closed dropdown, and a session past the
+          checkout cap is not a real shape to design around.
+        */}
+        <ul class={styles.checkouts} role="tablist" aria-label="Checkout">
+          <For each={props.repos}>
+            {(repo) => (
+              <li>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={checkout() === repo.dir}
+                  class={cx(styles.checkout, checkout() === repo.dir && styles.checkoutActive)}
+                  onClick={() => setPicked(repo.dir)}
+                >
+                  {repo.slug}
+                </button>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
 
       <ProblemNotice error={diff.error} />
       <Show when={diff.loading}>

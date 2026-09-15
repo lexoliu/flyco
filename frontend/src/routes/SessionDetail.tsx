@@ -43,6 +43,7 @@ import SessionHeader from "../components/SessionHeader";
 import Transcript, { ProvisioningTimeline } from "../components/Transcript";
 import composerStyles from "../components/Composer.module.css";
 import {
+  addSessionRepo,
   archiveSession,
   decideApproval,
   getSession,
@@ -60,6 +61,7 @@ import type { ContextUsage, ContextWindow, UsageWindow } from "../api/wire";
 import { createSessionRelay } from "../api/relay";
 import type { HarnessCommand } from "../api/wire";
 import { formatTimeOfDay } from "../lib/dates";
+import { reposLabel } from "../lib/repos";
 import { PROVIDER_LABEL } from "../lib/providers";
 import { machineChip } from "../lib/machines";
 import { modesFor } from "../lib/modes";
@@ -126,7 +128,13 @@ export default function SessionDetail() {
       relay
         .events()
         .filter(
-          ({ event }) => event.type === "machine_changed" || event.type === "session_state_changed",
+          ({ event }) =>
+            event.type === "machine_changed" ||
+            event.type === "session_state_changed" ||
+            // A repository landed mid-session: the header's checkout list
+            // and the drawer's diff selector both read `session.repos`,
+            // which is stale until re-fetched.
+            event.type === "repo_added",
         ).length,
   );
   createEffect(
@@ -437,15 +445,20 @@ export default function SessionDetail() {
     return view === undefined ? null : PROVIDER_LABEL[view.spec.provider];
   });
 
-  const liveRepoSummary = createMemo(() => {
-    const events = relay.events();
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const entry = events[i];
-      if (entry !== undefined && entry.event.type === "repo_dirty") {
-        return entry.event.summary;
+  /**
+   * The latest `repo_dirty` summary per checkout, keyed by the `dir` the
+   * event carries — `""` for the developer-machine root, whose events name
+   * no dir. The newest frame wins per checkout, which is what lets the
+   * diff panel's status strip stay right when two trees go dirty at once.
+   */
+  const liveRepoSummaries = createMemo(() => {
+    const latest = new Map<string, string>();
+    for (const { event } of relay.events()) {
+      if (event.type === "repo_dirty") {
+        latest.set(event.dir ?? "", event.summary);
       }
     }
-    return null;
+    return latest;
   });
 
   /**
@@ -619,6 +632,30 @@ export default function SessionDetail() {
         // (issue #138).
         requestPanel({ panel: "machine", resize: true });
         break;
+    }
+  }
+
+  const [addingRepo, setAddingRepo] = createSignal(false);
+
+  /**
+   * Attaches a repository to the running session, from the header's
+   * repositories popover.
+   *
+   * The answer is the session already carrying the row — `repos` gains an
+   * entry and the header's `+N` updates without a second read.
+   */
+  async function onAddRepo(selection: { repo: string; branch?: string }): Promise<void> {
+    if (addingRepo()) {
+      return;
+    }
+    setError(null);
+    setAddingRepo(true);
+    try {
+      mutateSession(await addSessionRepo(params.id, selection));
+    } catch (failure) {
+      setError(failure);
+    } finally {
+      setAddingRepo(false);
     }
   }
 
@@ -837,6 +874,12 @@ export default function SessionDetail() {
         drawerOpen={drawerOpen()}
         onToggleDrawer={() => setDrawerOpen((was) => !was)}
         onOpenPanel={requestPanel}
+        onAddRepo={
+          session()?.state === "archived" || session()?.state === "failed"
+            ? undefined
+            : (selection) => void onAddRepo(selection)
+        }
+        addingRepo={addingRepo()}
       />
 
       {/*
@@ -923,7 +966,7 @@ export default function SessionDetail() {
             >
               <Transcript
                 items={transcript}
-                repo={session()?.repo ?? "the repository"}
+                repo={reposLabel(session()?.repos ?? [])}
                 provider={providerLabel()}
                 models={models()}
                 onDecide={(id, decision) => {
@@ -956,7 +999,7 @@ export default function SessionDetail() {
                   recovery={status()?.status === "migrating"}
                   attempt={1}
                   endedAtUnix={null}
-                  repo={current().repo}
+                  repo={reposLabel(current().repos)}
                   provider={providerLabel()}
                   now={now()}
                   stoppedAtUnix={stoppedAtUnix()}
@@ -1212,7 +1255,9 @@ export default function SessionDetail() {
           sessionId={params.id}
           relay={relay}
           machineUp={machineUp()}
-          liveRepoSummary={liveRepoSummary()}
+          repos={session()?.repos ?? []}
+          devMachine={machine()?.spec.provider === "host"}
+          liveRepoSummaries={liveRepoSummaries()}
           open={drawerOpen()}
           onOpenChange={setDrawerOpen}
           openEnv={envPanelAt()}

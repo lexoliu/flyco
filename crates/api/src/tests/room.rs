@@ -1233,7 +1233,7 @@ async fn a_workdir_question_for_an_offline_daemon_is_refused_rather_than_held() 
             Some(
                 serde_json::to_vec(&ControlToDaemon::InspectWorkdir {
                     id: flyco_core::WorkdirRequestId::generate(),
-                    request: flyco_core::workdir::WorkdirRequest::Diff,
+                    request: flyco_core::workdir::WorkdirRequest::Diff { repo: None },
                 })
                 .expect("serialize"),
             ),

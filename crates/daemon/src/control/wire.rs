@@ -57,15 +57,18 @@ use futures_util::StreamExt as _;
 use rand::Rng as _;
 use tokio::sync::mpsc;
 
+use crate::config::{GithubAccess, RepoConfig, valid_repo_dir};
 use crate::control::rest::{CommandStream, ControlApi, ControlApiError, RelayTransport};
-use crate::git::{GitError, WorkingTree};
+use crate::git::{GitError, WorkingSet};
 use crate::harness::{HarnessSession, SessionOutput, ToolApproval};
-use crate::notice::{BudgetRaised, MachineChanged, MachineLine, OpeningMessage, SessionStart};
+use crate::notice::{
+    BudgetRaised, MachineChanged, MachineLine, OpeningMessage, RepoAddedNotice, SessionStart,
+};
 use crate::shell::{Shell, ShellEvent, ShellRun, ShellUpdate};
 use crate::spot::{Disk, Notices, SpotNotice};
 use crate::stop::Stops;
 use crate::terminal::{TerminalError, TerminalEvent, TerminalSession};
-use crate::workdir::Checkout;
+use crate::workdir::Workspace;
 
 /// How many frames may wait for a stream that is not there.
 ///
@@ -536,10 +539,15 @@ struct Connection<S, T, A, W, D, H> {
     /// since been taken by the next command.
     running_shell: Option<(ShellRunId, ShellRun)>,
     api: A,
-    workdir: W,
-    /// The read-only view of the checkout the `Files` and `Diff` tabs are
+    /// Every checkout in the workspace: snapshots, patch replay, and the
+    /// `git status` summaries that keep the session awake while dirty.
+    repos: W,
+    /// The read-only view of the workspace the `Files` and `Diff` tabs are
     /// served from.
-    checkout: Checkout,
+    workspace: Workspace,
+    /// GitHub credentials for a mid-session `AddRepo` clone, or `None` on
+    /// a developer machine.
+    github: Option<GithubAccess>,
     /// Where an answered workdir question is handed back to the pump.
     ///
     /// Its own channel rather than the harness's outbound queue, because
@@ -547,7 +555,6 @@ struct Connection<S, T, A, W, D, H> {
     /// second sender kept for replies would hold it open for ever.
     reply_out: mpsc::Sender<DaemonToControl>,
     replies: mpsc::Receiver<DaemonToControl>,
-    repo_status: mpsc::UnboundedReceiver<String>,
     disk: D,
     /// Eviction notices from the provider's metadata endpoint.
     spot: Notices,
@@ -582,7 +589,9 @@ struct Connection<S, T, A, W, D, H> {
     /// plane reporting that the user gave the session more money than it
     /// has spent. What ends a budget pause is a decision, not a timeout.
     paused: bool,
-    tree: Tree,
+    /// Per-checkout dirty state, keyed by checkout directory (`None` for
+    /// the developer-machine root checkout).
+    trees: BTreeMap<Option<String>, Tree>,
     /// REST-assigned approval id → harness-native id.
     approvals: BTreeMap<ApprovalId, ApprovalId>,
     /// The machine notice waiting to ride on the session's first message.
@@ -617,7 +626,7 @@ impl<
     S: HarnessSession,
     T: TerminalSession,
     A: ControlApi + RelayTransport,
-    W: WorkingTree,
+    W: WorkingSet,
     D: Disk,
     H: Shell,
 > Connection<S, T, A, W, D, H>
@@ -816,32 +825,35 @@ impl<
                     };
                     pending.push_back(frame);
                 }
-                summary = self.repo_status.recv(), if self.alive.repo_watch.armed() => {
-                    let Some(summary) = summary else {
+                status = self.repos.next_status(), if self.alive.repo_watch.armed() => {
+                    let Some((dir, summary)) = status else {
                         self.alive.repo_watch = Producing::No;
                         continue;
                     };
-                    self.note_tree(&summary);
-                    pending.push_back(DaemonToControl::RepoDirty { summary });
+                    self.note_tree(dir.as_ref(), &summary);
+                    pending.push_back(DaemonToControl::RepoDirty { dir, summary });
                 }
             }
         }
     }
 
-    /// Records what the working tree looks like now.
+    /// Records what one checkout's working tree looks like now.
     ///
     /// An episode of dirtiness is one episode: a tree that was already
     /// dirty and has been mentioned to the agent stays mentioned, so the
     /// nudge of [`Self::nudge_if_dirty`] is not repeated on every status
     /// poll while the agent works.
-    fn note_tree(&mut self, summary: &str) {
-        self.tree = if summary.trim().is_empty() {
-            Tree::Clean
-        } else {
-            Tree::Dirty {
-                noticed: matches!(self.tree, Tree::Dirty { noticed: true }),
-            }
-        };
+    fn note_tree(&mut self, dir: Option<&String>, summary: &str) {
+        let dir = dir.cloned();
+        let noticed = matches!(self.trees.get(&dir), Some(Tree::Dirty { noticed: true }));
+        self.trees.insert(
+            dir,
+            if summary.trim().is_empty() {
+                Tree::Clean
+            } else {
+                Tree::Dirty { noticed }
+            },
+        );
     }
 
     /// Runs the stop sequence under the platform's own clock.
@@ -887,7 +899,12 @@ impl<
     ) -> Result<Option<Ended>, WireError> {
         let Some(outbound) = outbound else {
             self.alive.harness = Producing::No;
-            if matches!(self.tree, Tree::Dirty { .. }) && !self.paused {
+            if self
+                .trees
+                .values()
+                .any(|tree| matches!(tree, Tree::Dirty { .. }))
+                && !self.paused
+            {
                 tracing::info!("the harness stopped on a dirty tree; keeping the session awake");
                 return Ok(None);
             }
@@ -1047,18 +1064,7 @@ impl<
         reason: StopReason,
     ) -> Result<(), WireError> {
         self.quiesce(attach, queue, pending, applied).await?;
-
-        if let Some(snapshot) = self.workdir.snapshot().await? {
-            let bytes = snapshot.patch.len();
-            self.api.put_workdir_patch(snapshot.encode()).await?;
-            tracing::warn!(
-                bytes,
-                "stored this session's work before the container went"
-            );
-        } else {
-            tracing::info!("the checkout matches its clone; the next machine needs only the clone");
-        }
-
+        self.snapshot_all().await?;
         self.api.report_stopping(reason).await?;
         Ok(())
     }
@@ -1298,9 +1304,12 @@ impl<
                     .await?;
             }
             ControlToDaemon::InspectWorkdir { id, request } => self.answer_workdir(id, request),
+            ControlToDaemon::AddRepo { slug, branch, dir } => {
+                self.add_repo(slug, branch, dir).await?;
+            }
             ControlToDaemon::Archive { preserve_workdir } => {
-                if preserve_workdir && let Some(snapshot) = self.workdir.snapshot().await? {
-                    self.api.put_workdir_patch(snapshot.encode()).await?;
+                if preserve_workdir {
+                    self.snapshot_all().await?;
                 }
                 tracing::info!(session = %self.session_id, "the control plane archived this session");
                 self.terminal.shutdown()?;
@@ -1308,6 +1317,141 @@ impl<
             }
         }
         Ok(Ended::Disconnected)
+    }
+
+    /// Snapshots every checkout's work to the control plane.
+    ///
+    /// Shared by [`stopping`](Self::stopping) and `Archive`: both are the
+    /// same "the filesystem is about to be gone" moment, and both need
+    /// every checkout's patch stored independently — one checkout that
+    /// will not snapshot is not a reason the others lose their work, so
+    /// each is tried before the first failure propagates. A tree that
+    /// still matches its clone writes no patch, and the stored object
+    /// carries the commit it was diffed against so the next machine can
+    /// rewind a moved tip before applying it.
+    async fn snapshot_all(&self) -> Result<(), WireError> {
+        let mut failure = None;
+        for dir in self.repos.dirs() {
+            let label = dir.as_deref().unwrap_or(".");
+            let result: Result<usize, WireError> = match self.repos.snapshot(&dir).await {
+                Ok(Some(snapshot)) => {
+                    let bytes = snapshot.patch.len();
+                    self.api
+                        .put_workdir_patch(dir.as_deref(), snapshot.encode())
+                        .await
+                        .map(|()| bytes)
+                        .map_err(WireError::from)
+                }
+                Ok(None) => {
+                    tracing::info!(
+                        dir = label,
+                        "the checkout matches its clone; the next machine needs only the clone"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    tracing::error!(dir = label, %error, "a checkout could not be snapshotted");
+                    Err(WireError::from(error))
+                }
+            };
+            match result {
+                Ok(bytes) => tracing::warn!(
+                    dir = label,
+                    bytes,
+                    "stored a checkout's work before it went"
+                ),
+                Err(error) => {
+                    tracing::error!(
+                        dir = label,
+                        %error,
+                        "a checkout's patch did not reach the control plane"
+                    );
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Clones and registers a repository the control plane approved mid-session.
+    ///
+    /// The command is durable — it is redelivered until this daemon says it
+    /// applied — so everything here is idempotent. A directory that already
+    /// holds a checkout (a replay, or a replacement machine whose config
+    /// already lists the repo) is adopted rather than cloned again, and
+    /// only an actual clone announces [`DaemonToControl::RepoAdded`] and
+    /// tells the agent: a replayed command announcing a second time would
+    /// leave a transcript event saying a repository arrived that was there
+    /// all along.
+    ///
+    /// A refusal — an unsafe directory name, no GitHub access, a failed
+    /// clone — is logged and told to the agent rather than ending the
+    /// relay: the session is healthy, it is this one command that cannot
+    /// complete.
+    async fn add_repo(
+        &mut self,
+        slug: flyco_core::RepoSlug,
+        branch: flyco_core::BranchName,
+        dir: String,
+    ) -> Result<(), WireError> {
+        if !valid_repo_dir(&dir) {
+            // The room stores what it is given, so a directory that would
+            // escape the workspace is refused here rather than passed to
+            // `git clone`. `valid_repo_dir` is also how the config is
+            // checked, so this can only fire on a room message this build
+            // does not trust.
+            tracing::error!(
+                dir,
+                "an AddRepo named a checkout directory that is not safe"
+            );
+            return Ok(());
+        }
+        let Some(github) = self.github.clone() else {
+            tracing::error!("an AddRepo arrived on a machine with no GitHub access configured");
+            return Ok(());
+        };
+        let repo = RepoConfig {
+            slug: slug.clone(),
+            branch: branch.clone(),
+            dir: dir.clone(),
+        };
+        match self.repos.clone_repo(&repo, &github).await {
+            Ok(false) => {
+                // The set already knew the directory — the repo is in the
+                // session's config, so this is a replayed command. Nothing
+                // to clone, nothing to announce.
+                tracing::info!(
+                    dir,
+                    "an AddRepo replayed for a checkout that already exists"
+                );
+            }
+            Err(error) => {
+                tracing::error!(dir, %slug, %error, "the approved repository could not be cloned");
+                let notice = RepoAddedNotice::failed(&slug, &dir, &error)
+                    .render()
+                    .map_err(|error| notice_failed(&error))?;
+                self.tell_the_agent(&notice).await?;
+            }
+            Ok(true) => {
+                self.workspace.register(&dir, branch.as_str());
+                self.reply_out
+                    .send(DaemonToControl::RepoAdded {
+                        slug: slug.clone(),
+                        branch,
+                        dir: dir.clone(),
+                    })
+                    .await
+                    .map_err(|_| WireError::Harness("the reply channel closed".to_owned()))?;
+                let notice = RepoAddedNotice::added(&slug, &dir)
+                    .render()
+                    .map_err(|error| notice_failed(&error))?;
+                self.tell_the_agent(&notice).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Sends one user message into the harness.
@@ -1368,10 +1512,10 @@ impl<
     /// nothing about it depends on what else the session is doing — a
     /// paused or reclaiming session still shows the user its files.
     fn answer_workdir(&self, id: WorkdirRequestId, request: WorkdirRequest) {
-        let checkout = self.checkout.clone();
+        let workspace = self.workspace.clone();
         let replies = self.reply_out.clone();
         tokio::spawn(async move {
-            let reply = checkout.inspect(request).await;
+            let reply = workspace.inspect(request).await;
             if replies
                 .send(DaemonToControl::WorkdirReply { id, reply })
                 .await
@@ -1401,16 +1545,29 @@ impl<
             .map_err(harness)
     }
 
-    /// Tells the agent it may not stop while the tree is dirty.
+    /// Tells the agent it may not stop while a checkout is dirty.
     async fn nudge_if_dirty(&mut self) -> Result<(), WireError> {
-        if !self.paused && !self.reclaiming && matches!(self.tree, Tree::Dirty { noticed: false }) {
-            self.tree = Tree::Dirty { noticed: true };
-            self.session
-                .send_user_message(DIRTY_NOTICE.to_owned())
-                .await
-                .map_err(harness)?;
+        if self.paused || self.reclaiming {
+            return Ok(());
         }
-        Ok(())
+        let dirty: Vec<String> = self
+            .trees
+            .iter()
+            .filter(|(_, tree)| matches!(tree, Tree::Dirty { noticed: false }))
+            .map(|(dir, _)| dir.clone().unwrap_or_else(|| ".".to_owned()))
+            .collect();
+        if dirty.is_empty() {
+            return Ok(());
+        }
+        for tree in self.trees.values_mut() {
+            if matches!(tree, Tree::Dirty { noticed: false }) {
+                *tree = Tree::Dirty { noticed: true };
+            }
+        }
+        self.session
+            .send_user_message(format!("{DIRTY_NOTICE} Dirty: {}.", dirty.join(", ")))
+            .await
+            .map_err(harness)
     }
 
     /// Hands the user's decision to the tool call waiting on it.
@@ -1598,12 +1755,14 @@ pub struct SessionRelay<S, A, T, W, D, H> {
     pub tui: crate::tui::HarnessTui,
     /// Runs the composer's `!` commands on this machine.
     pub shell: H,
-    /// Snapshot handle for the checkout.
-    pub workdir: W,
-    /// The same checkout, read-only, for the `Files` and `Diff` tabs.
-    pub checkout: Checkout,
-    /// `git status --short` summaries as they change.
-    pub repo_status: mpsc::UnboundedReceiver<String>,
+    /// Every checkout in the workspace: snapshot, restore, and the dirty
+    /// summaries that keep a session awake.
+    pub repos: W,
+    /// The workspace root, read-only, for the `Files` and `Diff` tabs.
+    pub workspace: Workspace,
+    /// GitHub access for mid-session `AddRepo` clones — `None` on a
+    /// developer machine, where the command is refused.
+    pub github: Option<GithubAccess>,
     /// The filesystems a reclamation flushes before the compute goes.
     pub disk: D,
     /// Eviction notices from the provider's metadata endpoint, or a closed
@@ -1641,7 +1800,7 @@ where
     S: HarnessSession + 'static,
     A: ControlApi + RelayTransport + Clone,
     T: TerminalSession + 'static,
-    W: WorkingTree + 'static,
+    W: WorkingSet + 'static,
     D: Disk,
     H: Shell,
 {
@@ -1672,11 +1831,11 @@ where
         shell_reports,
         running_shell: None,
         api: relay.api,
-        workdir: relay.workdir,
-        checkout: relay.checkout,
+        repos: relay.repos,
+        workspace: relay.workspace,
+        github: relay.github,
         reply_out,
         replies,
-        repo_status: relay.repo_status,
         disk: relay.disk,
         spot: relay.spot,
         stops: relay.stops,
@@ -1684,7 +1843,7 @@ where
         harness_session_id: None,
         session_id: relay.session_id,
         paused: false,
-        tree: Tree::Clean,
+        trees: BTreeMap::new(),
         alive: Alive {
             harness: Producing::Yes,
             repo_watch: Producing::Yes,

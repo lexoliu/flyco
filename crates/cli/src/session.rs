@@ -43,13 +43,26 @@ pub async fn list(
                     vec![
                         session.id.to_string(),
                         state_label(session),
-                        session.repo.to_string(),
+                        repos_label(&session.repos),
                         session.title.clone(),
                     ]
                 })
                 .collect();
             out::print(&out::table(&["ID", "STATE", "REPO", "TITLE"], &rows))
         }
+    }
+}
+
+/// The label a session's checkouts render as — the primary slug, plus
+/// `+N` for the rest.
+#[must_use]
+pub fn repos_label(repos: &[flyco_core::SessionRepo]) -> String {
+    let Some(first) = repos.first() else {
+        return String::new();
+    };
+    match repos.len() - 1 {
+        0 => first.slug.to_string(),
+        extra => format!("{} +{extra}", first.slug),
     }
 }
 
@@ -90,13 +103,20 @@ pub async fn get(api: &Api, id: &str, mode: out::Mode) -> Outcome<()> {
             "{}  {}  {}\n{}\n{}",
             session.summary.id,
             state_label(&session.summary),
-            session.summary.repo,
+            repos_label(&session.summary.repos),
             session.summary.title,
             session
                 .summary
-                .branch
-                .as_ref()
-                .map_or(String::new(), |branch| format!("branch: {branch}")),
+                .repos
+                .iter()
+                .map(|repo| {
+                    repo.branch.as_ref().map_or_else(
+                        || repo.slug.to_string(),
+                        |branch| format!("{}: {branch}", repo.slug),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
         )),
     }
 }

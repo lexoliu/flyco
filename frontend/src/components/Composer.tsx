@@ -17,11 +17,13 @@ import { A } from "@solidjs/router";
 import {
   AlertTriangle,
   ArrowUp,
+  ArrowUpToLine,
+  Check,
   FolderGit2,
-  GitBranch,
   Plus,
   Server,
   Wallet,
+  X,
 } from "lucide-solid";
 import BudgetPicker, { DEFAULT_BUDGET } from "./BudgetPicker";
 import ComposerShell from "./ComposerShell";
@@ -29,13 +31,13 @@ import MachinePicker from "./MachinePicker";
 import EffortChip from "./EffortChip";
 import ModelChip from "./ModelChip";
 import Popover from "./Popover";
+import RepoBranchPicker from "./RepoBranchPicker";
 import Logomark, { HARNESS_MARK, PROVIDER_MARK } from "./Logomark";
 import ProblemNotice from "./ProblemNotice";
 import { useReadiness } from "./Readiness";
 import {
   getDefaultMachine,
   getMachineCatalog,
-  listBranches,
   listRepos,
   type HarnessAccountView,
   type HarnessKind,
@@ -46,7 +48,7 @@ import {
   type RepoSummary,
 } from "../api/client";
 import { beginGithubLogin, githubTokenRevoked } from "../api/auth";
-import type { NewSessionInput } from "../api/sessions";
+import type { NewSessionInput, NewSessionRepo } from "../api/sessions";
 import { cx } from "../lib/cx";
 import { HARNESS_LABEL } from "../lib/harnesses";
 import { defaultChoice, optionOf } from "../lib/models";
@@ -89,12 +91,19 @@ export default function Composer(props: ComposerProps) {
   const readiness = useReadiness();
 
   const [prompt, setPrompt] = createSignal("");
-  const [repo, setRepo] = createSignal<string | null>(recentRepos()[0] ?? null);
-  // `null` is "whatever this repository's default branch is", which the
-  // control plane resolves and records. Storing the choice rather than the
-  // resolved name is what keeps the two from disagreeing when the repository
-  // changes under it.
-  const [branch, setBranch] = createSignal<string | null>(null);
+  /**
+   * The repositories the session will work across, in the order the user
+   * picked them: `repos()[0]` is primary — the one the session's header
+   * names.
+   *
+   * A `null` branch is "whatever this repository's default branch is",
+   * which the control plane resolves and records. Storing the choice rather
+   * than the resolved name is what keeps the two from disagreeing when the
+   * repository changes under it.
+   */
+  const [repos, setRepos] = createSignal<NewSessionRepo[]>(
+    recentRepos()[0] === undefined ? [] : [{ repo: recentRepos()[0]! }],
+  );
   const [budget, setBudget] = createSignal(DEFAULT_BUDGET);
   const [spot, setSpot] = createSignal(spotPreference());
   const [chosenKey, setChosenKey] = createSignal<string | null>(null);
@@ -249,7 +258,7 @@ export default function Composer(props: ComposerProps) {
     if (readiness.compute().length === 0) {
       return "Add compute first";
     }
-    if (repo() === null) {
+    if (repos().length === 0) {
       return "Pick a repository first";
     }
     if (prompt().trim() === "") {
@@ -258,14 +267,39 @@ export default function Composer(props: ComposerProps) {
     return null;
   });
 
-  function chooseRepo(slug: string): void {
-    setRepo(slug);
-    // A branch belongs to a repository. Carrying `dev` across to a
-    // repository that has no `dev` would fail the clone minutes later, on a
-    // machine, with a git error — so the choice is dropped and the new
-    // repository's default takes over.
-    setBranch(null);
+  /** Toggles a repository in or out of the selection, keeping pick order. */
+  function toggleRepo(slug: string): void {
+    const picked = repos();
+    if (picked.some((entry) => entry.repo === slug)) {
+      setRepos(picked.filter((entry) => entry.repo !== slug));
+      return;
+    }
+    // No branch: the new repository's default takes it. Carrying `dev`
+    // across to a repository that has no `dev` would fail the clone minutes
+    // later, on a machine, with a git error.
+    setRepos([...picked, { repo: slug }]);
     rememberRepo(slug);
+  }
+
+  /** Moves a picked repository to the front, making it the primary one. */
+  function makePrimary(slug: string): void {
+    setRepos((picked) => {
+      const entry = picked.find((candidate) => candidate.repo === slug);
+      return entry === undefined
+        ? picked
+        : [entry, ...picked.filter((candidate) => candidate.repo !== slug)];
+    });
+  }
+
+  /** Pins a branch on one picked repository; `undefined` restores its default. */
+  function setRepoBranch(slug: string, branch: string | undefined): void {
+    setRepos((picked) =>
+      picked.map((entry) =>
+        entry.repo === slug
+          ? { repo: entry.repo, ...(branch === undefined ? {} : { branch }) }
+          : entry,
+      ),
+    );
   }
 
   /** Remembered, because it is a default for the next session too. */
@@ -275,8 +309,8 @@ export default function Composer(props: ComposerProps) {
   }
 
   async function send(): Promise<void> {
-    const slug = repo();
-    if (blocker() !== null || slug === null) {
+    const picked = repos();
+    if (blocker() !== null || picked.length === 0) {
       return;
     }
     setSending(true);
@@ -284,16 +318,11 @@ export default function Composer(props: ComposerProps) {
     try {
       const entry = chosen();
       const account = entry?.account;
-      const chosenBranch = branch();
       const chosenModel = model();
       await props.onSend({
         prompt: prompt().trim(),
-        repo: slug,
+        repos: picked,
         ...(chosenModel === null ? {} : { model: chosenModel }),
-        // Sent only when the user picked one: omitted, the control plane
-        // reads the repository's default from GitHub and records *that*, so
-        // the branch a session is on is never this browser's guess.
-        ...(chosenBranch === null ? {} : { branch: chosenBranch }),
         harness: harness(),
         budgetLimitDollars: budget(),
         // An explicit machine is only sent when the user picked one: that
@@ -349,8 +378,12 @@ export default function Composer(props: ComposerProps) {
             onChoose={setChosenKey}
             onSpot={chooseSpot}
           />
-          <RepoChip slug={repo()} onChoose={chooseRepo} />
-          <BranchChip slug={repo()} branch={branch()} onChoose={setBranch} />
+          <RepoChip
+            repos={repos()}
+            onToggle={toggleRepo}
+            onPrimary={makePrimary}
+            onBranch={setRepoBranch}
+          />
           <BudgetChip dollars={budget()} onChange={setBudget} />
         </div>
       }
@@ -580,11 +613,32 @@ function ComputeChip(props: {
   );
 }
 
-/** Which repository the agent works in. */
-function RepoChip(props: { slug: string | null; onChoose: (slug: string) => void }) {
+/**
+ * Which repositories the agent works across.
+ *
+ * Multi-select rather than the single choice it was: a session can work
+ * over several checkouts, so every repository row is a toggle and the
+ * popover keeps the picked set on top, in the order they were picked — the
+ * first is the session's primary repository, the one its header names.
+ * Each picked row carries its own branch picker, because a branch is a
+ * fact about one repository and a session of three needs three answers.
+ *
+ * Picking stays open rather than closing on each click: choosing three
+ * repositories through a popover that shut after each would be three trips
+ * through the same search.
+ */
+function RepoChip(props: {
+  repos: NewSessionRepo[];
+  onToggle: (slug: string) => void;
+  onPrimary: (slug: string) => void;
+  onBranch: (slug: string, branch: string | undefined) => void;
+}) {
   const [query, setQuery] = createSignal("");
   const [results] = createQuery(query, listRepos);
   const recents = createMemo(() => recentRepos().slice(0, MAX_RECENT_REPOS));
+
+  /** The picked slugs, for the check each listed row carries. */
+  const picked = createMemo(() => new Set(props.repos.map((entry) => entry.repo)));
 
   /**
    * The rest of the account's repositories.
@@ -598,9 +652,19 @@ function RepoChip(props: { slug: string | null; onChoose: (slug: string) => void
     return (results() ?? []).filter((candidate) => !listed.has(candidate.slug));
   });
 
+  /** `flyco`, `flyco +2`, or the ask. */
+  const label = createMemo(() => {
+    const [first] = props.repos;
+    if (first === undefined) {
+      return "Select repositories";
+    }
+    const extra = props.repos.length - 1;
+    return extra === 0 ? first.repo : `${first.repo} +${extra}`;
+  });
+
   return (
     <Popover
-      label="Repository"
+      label="Repositories"
       panelClass={styles.popoverWide}
       trigger={(attrs) => (
         <button
@@ -609,15 +673,54 @@ function RepoChip(props: { slug: string | null; onChoose: (slug: string) => void
           aria-expanded={attrs.expanded()}
           aria-haspopup="dialog"
           type="button"
-          class={cx(styles.chip, props.slug === null && styles.chipMissing)}
+          class={cx(styles.chip, props.repos.length === 0 && styles.chipMissing)}
         >
           <FolderGit2 size={13} aria-hidden="true" />
-          <span class={styles.chipLabel}>{props.slug ?? "Select repository"}</span>
+          <span class={styles.chipLabel}>{label()}</span>
         </button>
       )}
     >
-      {(close) => (
+      {() => (
         <div class={styles.popover}>
+          <Show when={props.repos.length > 0}>
+            <p class={styles.popoverTitle}>Selected — first is primary</p>
+            <ul class={styles.options}>
+              <For each={props.repos}>
+                {(entry, index) => (
+                  <li class={styles.pickedRow}>
+                    <span class={styles.pickedSlug} title={entry.repo}>
+                      {entry.repo}
+                    </span>
+                    <RepoBranchPicker
+                      slug={entry.repo}
+                      branch={entry.branch ?? null}
+                      onChoose={(branch) => props.onBranch(entry.repo, branch)}
+                    />
+                    <Show when={index() > 0}>
+                      <button
+                        type="button"
+                        class={styles.pickedAction}
+                        title="Make primary"
+                        aria-label={`Make ${entry.repo} the primary repository`}
+                        onClick={() => props.onPrimary(entry.repo)}
+                      >
+                        <ArrowUpToLine size={13} aria-hidden="true" />
+                      </button>
+                    </Show>
+                    <button
+                      type="button"
+                      class={styles.pickedAction}
+                      title="Remove"
+                      aria-label={`Remove ${entry.repo}`}
+                      onClick={() => props.onToggle(entry.repo)}
+                    >
+                      <X size={13} aria-hidden="true" />
+                    </button>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </Show>
           <input
             class={styles.search}
             type="search"
@@ -631,18 +734,11 @@ function RepoChip(props: { slug: string | null; onChoose: (slug: string) => void
             <ul class={styles.options}>
               <For each={recents()}>
                 {(slug) => (
-                  <li>
-                    <button
-                      type="button"
-                      class={cx(styles.option, props.slug === slug && styles.optionChosen)}
-                      onClick={() => {
-                        props.onChoose(slug);
-                        close();
-                      }}
-                    >
-                      {slug}
-                    </button>
-                  </li>
+                  <RepoRow
+                    slug={slug}
+                    picked={picked().has(slug)}
+                    onToggle={props.onToggle}
+                  />
                 )}
               </For>
             </ul>
@@ -652,21 +748,12 @@ function RepoChip(props: { slug: string | null; onChoose: (slug: string) => void
             <ul class={styles.options}>
               <For each={rest()}>
                 {(candidate: RepoSummary) => (
-                  <li>
-                    <button
-                      type="button"
-                      class={cx(styles.option, props.slug === candidate.slug && styles.optionChosen)}
-                      onClick={() => {
-                        props.onChoose(candidate.slug);
-                        close();
-                      }}
-                    >
-                      {candidate.slug}
-                      <Show when={candidate.private}>
-                        <span class={styles.optionMeta}>private</span>
-                      </Show>
-                    </button>
-                  </li>
+                  <RepoRow
+                    slug={candidate.slug}
+                    picked={picked().has(candidate.slug)}
+                    isPrivate={candidate.private}
+                    onToggle={props.onToggle}
+                  />
                 )}
               </For>
             </ul>
@@ -678,95 +765,31 @@ function RepoChip(props: { slug: string | null; onChoose: (slug: string) => void
   );
 }
 
-/**
- * Which branch the agent starts from (docs/ux.md §9.1).
- *
- * Beside the repository chip because it is the same decision continued: a
- * repository without a branch is not somewhere an agent can be put to work.
- * The list is only fetched when the popover opens — the chip reads the
- * repository's default until then, and most sessions never change it.
- */
-function BranchChip(props: {
-  slug: string | null;
-  branch: string | null;
-  onChoose: (branch: string | null) => void;
+/** One repository row in the picker: a toggle, checked when picked. */
+function RepoRow(props: {
+  slug: string;
+  picked: boolean;
+  isPrivate?: boolean;
+  onToggle: (slug: string) => void;
 }) {
-  // Read as soon as a repository is chosen, so the chip names the branch
-  // the session will start on instead of the words "Default branch": a
-  // name is shorter, and it is the fact the user is being shown.
-  const [page] = createQuery(
-    () => (props.slug !== null ? props.slug : undefined),
-    (slug: string) => listBranches(slug),
-  );
-
-  /** The branch a session would start on right now. */
-  const effective = createMemo(
-    () => props.branch ?? page()?.branches.find((candidate) => candidate.is_default)?.name ?? null,
-  );
-
-  // Nothing at all until a repository is chosen: a branch is a fact about
-  // one repository, and a disabled `Branch` chip beside `Select repository`
-  // is a second thing to wonder about on a page that should pose one
-  // question at a time.
   return (
-    <Show when={props.slug !== null}>
-      <Popover
-        label="Branch"
-        trigger={(attrs) => (
-          <button
-            id={attrs.id}
-            onClick={attrs.onClick}
-            aria-expanded={attrs.expanded()}
-            aria-haspopup="dialog"
-            type="button"
-            class={styles.chip}
-          >
-            <GitBranch size={13} aria-hidden="true" />
-            <span class={styles.chipLabel}>{effective() ?? "Branch\u2026"}</span>
-          </button>
-        )}
+    <li>
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={props.picked}
+        class={cx(styles.option, props.picked && styles.optionChosen)}
+        onClick={() => props.onToggle(props.slug)}
       >
-        {(close) => (
-          <div class={styles.popover}>
-            <Show when={page.loading}>
-              <p class={styles.note}>Reading branches…</p>
-            </Show>
-            <Show when={page()}>
-              {(loaded) => (
-                <ul class={styles.options}>
-                  <For each={loaded().branches}>
-                    {(candidate) => (
-                      <li>
-                        <button
-                          type="button"
-                          class={cx(
-                            styles.option,
-                            effective() === candidate.name && styles.optionChosen,
-                          )}
-                          onClick={() => {
-                            // Choosing the default is choosing *the default*,
-                            // not pinning today's name: a repository that
-                            // renames it should carry the session with it.
-                            props.onChoose(candidate.is_default ? null : candidate.name);
-                            close();
-                          }}
-                        >
-                          {candidate.name}
-                          <Show when={candidate.is_default}>
-                            <span class={styles.optionMeta}>default</span>
-                          </Show>
-                        </button>
-                      </li>
-                    )}
-                  </For>
-                </ul>
-              )}
-            </Show>
-            <ProblemNotice error={page.error} action={reconnectGithub(page.error)} />
-          </div>
-        )}
-      </Popover>
-    </Show>
+        {props.slug}
+        <Show when={props.isPrivate === true}>
+          <span class={styles.optionMeta}>private</span>
+        </Show>
+        <Show when={props.picked}>
+          <Check size={13} aria-hidden="true" class={cx(styles.pickedCheck)} />
+        </Show>
+      </button>
+    </li>
   );
 }
 

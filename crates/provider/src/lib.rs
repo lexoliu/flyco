@@ -144,35 +144,55 @@ pub struct GitIdentity {
     pub email: String,
 }
 
-/// The repository a session's machine checks out before its agent starts.
+/// One repository a session's machine checks out before its agent starts.
 ///
 /// Carried as a structure rather than as environment strings the daemon
-/// would have to re-parse: the slug and the branch are already types by the
-/// time the control plane has them, and a machine is not the place to
-/// discover that one of them was never a repository.
+/// would have to re-parse: the slug, the branch and the directory are
+/// already types by the time the control plane has them, and a machine is
+/// not the place to discover that one of them was never a repository.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RepoCheckout {
+pub struct CheckoutSpec {
     /// The repository, `owner/name`.
     pub slug: RepoSlug,
     /// The branch to check out.
     pub branch: BranchName,
-    /// The user's own GitHub token, which is what "behave as the user"
-    /// means in practice: the clone and any later push are the user's, not a
-    /// flyco bot's.
-    ///
-    /// Kept out of [`fmt::Debug`] and never written into a remote URL — the
-    /// daemon feeds it to git through a credential helper that reads it from
-    /// the environment of that one child process.
+    /// The directory under the workdir to clone into, as the session's row
+    /// set recorded it.
+    pub dir: String,
+}
+
+impl fmt::Debug for CheckoutSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CheckoutSpec")
+            .field("slug", &self.slug)
+            .field("branch", &self.branch)
+            .field("dir", &self.dir)
+            .finish()
+    }
+}
+
+/// How a machine's git calls authenticate as the user.
+///
+/// One per machine rather than one per repository — the session's
+/// checkouts all clone and push under the same authorization, so it is
+/// carried once beside the list rather than repeated into every entry.
+///
+/// The token is the user's own, which is what "behave as the user" means
+/// in practice: the clones and any later push are the user's, not a flyco
+/// bot's. Kept out of [`fmt::Debug`] and never written into a remote URL —
+/// the daemon feeds it to git through a credential helper that reads it
+/// from the environment of that one child process.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitAccess {
+    /// The user's own GitHub token.
     pub token: String,
-    /// Who the checkout's commits are authored as.
+    /// Who the checkouts' commits are authored as.
     pub identity: GitIdentity,
 }
 
-impl fmt::Debug for RepoCheckout {
+impl fmt::Debug for GitAccess {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RepoCheckout")
-            .field("slug", &self.slug)
-            .field("branch", &self.branch)
+        f.debug_struct("GitAccess")
             .field("identity", &self.identity)
             .finish_non_exhaustive()
     }
@@ -183,7 +203,7 @@ impl fmt::Debug for RepoCheckout {
 ///
 /// Three of these fields are live credentials — the daemon token, the
 /// harness credential inside [`auth`](Self::auth), and the GitHub token
-/// inside [`repo`](Self::repo) — and all three travel inside
+/// inside [`github`](Self::github) — and all three travel inside
 /// cloud-init documents and container environments, which are exactly the
 /// values a driver is tempted to trace. The hand-written [`fmt::Debug`] is
 /// what keeps them out of a log line.
@@ -220,8 +240,16 @@ pub struct DaemonBootstrap {
     /// How the supervised harness authenticates, which is also which
     /// harness the daemon drives.
     pub auth: HarnessCredential,
-    /// The repository to check out before the harness starts.
-    pub repo: RepoCheckout,
+    /// The repositories to check out before the harness starts, in the
+    /// order the session carries them — the first is the primary the
+    /// session is named after.
+    ///
+    /// Each is cloned into its own directory under the workdir, which is
+    /// the workspace root the harness runs in; see [`CheckoutSpec::dir`].
+    pub repos: Vec<CheckoutSpec>,
+    /// What the checkouts, and every later clone and push, authenticate
+    /// with.
+    pub github: GitAccess,
     /// Whether flyco or the user chose the machine this session runs on.
     ///
     /// The agent is told, and told what it means: a machine the user picked
@@ -266,7 +294,8 @@ impl fmt::Debug for DaemonBootstrap {
             .field("control_plane_url", &self.control_plane_url)
             .field("permission_mode", &self.permission_mode)
             .field("auth", &self.auth)
-            .field("repo", &self.repo)
+            .field("repos", &self.repos)
+            .field("github", &self.github)
             .field("machine_origin", &self.machine_origin)
             .field("machine", &self.machine)
             .field("resume_session_id", &self.resume_session_id)
@@ -759,7 +788,8 @@ mod tests {
             auth: crate::HarnessCredential::ClaudeCode(crate::ClaudeCredential::OauthToken {
                 token: "sk-ant-oat01-live".to_owned(),
             }),
-            repo: crate::testing::checkout(),
+            repos: crate::testing::checkouts(),
+            github: crate::testing::github(),
             machine_origin: flyco_core::MachineOrigin::Auto,
             machine: crate::testing::session_machine(),
             resume_session_id: None,

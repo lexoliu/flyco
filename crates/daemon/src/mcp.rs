@@ -53,8 +53,8 @@ use serde::Deserialize;
 use crate::control::rest::{AgentApi, ControlApiError};
 use crate::git::{GitError, GitWorkdir};
 use crate::notice::{
-    BudgetStatus, MachineLine, MachineStatus, ResizeAccepted, ResizeDescription, ResizePending,
-    ResizeRefusedDirty,
+    BudgetStatus, MachineLine, MachineStatus, RepoPending, ResizeAccepted, ResizeDescription,
+    ResizePending, ResizeRefusedDirty,
 };
 
 /// Name of the tool that reports the machine.
@@ -66,20 +66,81 @@ pub const BUDGET_STATUS: &str = "budget_status";
 /// Name of the tool that moves the session onto another machine.
 pub const MACHINE_RESIZE: &str = "machine_resize";
 
-/// The working tree, as the resize tool needs to see it.
+/// Name of the tool that asks for another repository in the workspace.
+pub const REPO_ADD: &str = "repo_add";
+
+/// The working trees, as the resize tool needs to see them.
 ///
-/// Narrower than [`WorkingTree`](crate::git::WorkingTree), which is a
+/// Narrower than [`WorkingSet`](crate::git::WorkingSet), which is a
 /// long-lived watcher with a snapshot handle: this process asks once,
 /// answers one tool call, and exits. Stated as a trait so the refusal can be
 /// tested without a checkout on disk.
 pub trait TreeStatus: Send + Sync {
-    /// `git status --short` as it stands right now. Empty is a clean tree.
-    fn status(&self) -> impl Future<Output = Result<String, GitError>> + Send;
+    /// `git status --short` per checkout, as it stands right now.
+    ///
+    /// Each pair is the checkout's workspace directory — `None` for the
+    /// developer-machine shape, where the workspace root is the checkout —
+    /// and its summary; an empty summary is a clean tree.
+    fn status(
+        &self,
+    ) -> impl Future<Output = Result<Vec<(Option<String>, String)>, GitError>> + Send;
 }
 
-impl TreeStatus for GitWorkdir {
-    async fn status(&self) -> Result<String, GitError> {
-        self.read_status().await
+/// The session's checkouts as one-shot status readers.
+///
+/// `flycod mcp` is a second process beside `flycod run` and shares none of
+/// the relay's state, so it answers "is the work safe to restart" by
+/// running `git status` itself, once per checkout.
+pub struct RepoTrees {
+    checkouts: Vec<(Option<String>, GitWorkdir)>,
+}
+
+impl core::fmt::Debug for RepoTrees {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RepoTrees")
+            .field(
+                "dirs",
+                &self
+                    .checkouts
+                    .iter()
+                    .map(|(dir, _)| dir)
+                    .collect::<Vec<_>>(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl RepoTrees {
+    /// One reader per configured `[[repos]]` entry — or the workspace root
+    /// alone, keyed `None`, when none are: the developer-machine shape,
+    /// where the root itself is the checkout.
+    #[must_use]
+    pub fn over(workdir: &std::path::Path, repos: &[crate::config::RepoConfig]) -> Self {
+        Self {
+            checkouts: if repos.is_empty() {
+                vec![(None, GitWorkdir::new(workdir.to_owned()))]
+            } else {
+                repos
+                    .iter()
+                    .map(|repo| {
+                        (
+                            Some(repo.dir.clone()),
+                            GitWorkdir::new(repo.checkout_path(workdir)),
+                        )
+                    })
+                    .collect()
+            },
+        }
+    }
+}
+
+impl TreeStatus for RepoTrees {
+    async fn status(&self) -> Result<Vec<(Option<String>, String)>, GitError> {
+        let mut statuses = Vec::with_capacity(self.checkouts.len());
+        for (dir, checkout) in &self.checkouts {
+            statuses.push((dir.clone(), checkout.read_status().await?));
+        }
+        Ok(statuses)
     }
 }
 
@@ -101,6 +162,21 @@ pub struct ResizeInput {
     /// but every running process dies with the machine.
     #[serde(default)]
     pub force: bool,
+}
+
+/// What `repo_add` takes.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct RepoAddInput {
+    /// Repository in `owner/name` form.
+    pub repo: String,
+    /// Branch to check out — the repository's default when absent.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Why this session needs the repository.
+    ///
+    /// Required rather than optional: it is what the user reads on the
+    /// approval card, and a clone they never picked is their call.
+    pub reason: String,
 }
 
 /// Why a tool call could not be answered at all.
@@ -211,6 +287,14 @@ impl<A: AgentApi, T: TreeStatus + 'static> FlycoTools<A, T> {
                     detail,
                 })?,
             ),
+            tool(
+                REPO_ADD,
+                include_str!("../templates/tool_repo_add.md"),
+                schema_for_input::<RepoAddInput>().map_err(|detail| ToolFailure::Arguments {
+                    tool: REPO_ADD,
+                    detail,
+                })?,
+            ),
         ])
     }
 
@@ -223,6 +307,7 @@ impl<A: AgentApi, T: TreeStatus + 'static> FlycoTools<A, T> {
                 self.machine_resize(arguments(MACHINE_RESIZE, request.arguments)?)
                     .await
             }
+            REPO_ADD => self.repo_add(arguments(REPO_ADD, request.arguments)?).await,
             other => Err(ToolFailure::UnknownTool(other.to_owned())),
         }
     }
@@ -258,11 +343,18 @@ impl<A: AgentApi, T: TreeStatus + 'static> FlycoTools<A, T> {
         };
         let wanted = SessionMachine::of(entry, current.machine.spot);
 
-        // The working tree is on this machine and the control plane cannot
-        // see it, so this check lives here and nowhere else.
-        let summary = self.tree.status().await?;
-        if !summary.trim().is_empty() && !input.force {
-            return Ok(refusal(&ResizeRefusedDirty { summary }.render()?));
+        // The working trees are on this machine and the control plane
+        // cannot see them, so this check lives here and nowhere else.
+        let dirty: Vec<(String, String)> = self
+            .tree
+            .status()
+            .await?
+            .into_iter()
+            .filter(|(_, summary)| !summary.trim().is_empty())
+            .map(|(dir, summary)| (dir.unwrap_or_else(|| ".".to_owned()), summary))
+            .collect();
+        if !dirty.is_empty() && !input.force {
+            return Ok(refusal(&ResizeRefusedDirty { checkouts: dirty }.render()?));
         }
 
         if let Some(minimum) = wanted.minimum {
@@ -305,6 +397,56 @@ impl<A: AgentApi, T: TreeStatus + 'static> FlycoTools<A, T> {
             .render()?,
         ))
     }
+
+    /// Asks the user to add a repository to this session's workspace.
+    ///
+    /// The clone is never this tool's to perform: a repository the user
+    /// did not pick is code they have not agreed to put on the machine, so
+    /// the tool raises an approval and the control plane is what performs
+    /// the `AddRepo` once — and only if — it is allowed. The agent's answer
+    /// is therefore "asked", never "added": the checkout landing is
+    /// announced separately, when the clone finishes.
+    ///
+    /// The slug and branch are parsed here rather than left to the control
+    /// plane because a malformed one is an argument error the agent can fix
+    /// and retry — it should not be a card the user reads, decides on, and
+    /// only then learns could never have been cloned.
+    async fn repo_add(&self, input: RepoAddInput) -> Result<CallToolResult, ToolFailure> {
+        let slug =
+            input
+                .repo
+                .parse::<flyco_core::RepoSlug>()
+                .map_err(|_| ToolFailure::Arguments {
+                    tool: REPO_ADD,
+                    detail: format!("`{}` is not a repository in `owner/name` form", input.repo),
+                })?;
+        let branch = input
+            .branch
+            .map(|branch| {
+                branch
+                    .parse::<flyco_core::BranchName>()
+                    .map_err(|_| ToolFailure::Arguments {
+                        tool: REPO_ADD,
+                        detail: format!("`{branch}` is not a branch name git accepts"),
+                    })
+            })
+            .transpose()?;
+        let id = self
+            .api
+            .raise_approval(ApprovalPayload::RepoAdd {
+                repo: slug.as_str().to_owned(),
+                branch: branch.map(|branch| branch.as_str().to_owned()),
+                reason: input.reason,
+            })
+            .await?;
+        tracing::info!(approval = %id, repo = %slug, "raised an approval to add a repository");
+        Ok(answer(
+            &RepoPending {
+                repo: slug.to_string(),
+            }
+            .render()?,
+        ))
+    }
 }
 
 /// One tool definition.
@@ -317,10 +459,10 @@ fn tool(name: &'static str, description: &str, input_schema: Arc<JsonObject>) ->
 }
 
 /// Reads a call's arguments, or says what was wrong with them.
-fn arguments(
+fn arguments<I: for<'de> Deserialize<'de>>(
     tool: &'static str,
     arguments: Option<JsonObject>,
-) -> Result<ResizeInput, ToolFailure> {
+) -> Result<I, ToolFailure> {
     serde_json::from_value(serde_json::Value::Object(arguments.unwrap_or_default())).map_err(
         |error| ToolFailure::Arguments {
             tool,
@@ -376,7 +518,7 @@ mod tests {
 
     use super::{
         BUDGET_STATUS, CallToolResult, ContentBlock, FlycoTools, MACHINE_RESIZE, MACHINE_STATUS,
-        ResizeInput, TreeStatus,
+        REPO_ADD, RepoAddInput, ResizeInput, TreeStatus,
     };
     use crate::control::rest::{AgentApi, ApprovalRaiser, ControlApiError};
     use crate::git::GitError;
@@ -440,13 +582,19 @@ mod tests {
         }
     }
 
-    /// A working tree that is whatever the test says it is.
+    /// The session's checkouts as one status string apiece.
+    ///
+    /// A single `&'static str` is the developer-machine shape — one
+    /// checkout, the root, keyed `None` — which is what the resize tests
+    /// exercise.
     #[derive(Debug)]
     struct FakeTree(&'static str);
 
     impl TreeStatus for FakeTree {
-        fn status(&self) -> impl Future<Output = Result<String, GitError>> + Send {
-            ready(Ok(self.0.to_owned()))
+        fn status(
+            &self,
+        ) -> impl Future<Output = Result<Vec<(Option<String>, String)>, GitError>> + Send {
+            ready(Ok(vec![(None, self.0.to_owned())]))
         }
     }
 
@@ -526,10 +674,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_three_tools_are_named_and_described_as_the_contract_says() {
+    async fn the_tools_are_named_and_described_as_the_contract_says() {
         let listed = tools("", MachineOrigin::Auto).tools().await.expect("list");
         let names: Vec<&str> = listed.iter().map(|tool| tool.name.as_ref()).collect();
-        assert_eq!(names, [MACHINE_STATUS, BUDGET_STATUS, MACHINE_RESIZE]);
+        assert_eq!(
+            names,
+            [MACHINE_STATUS, BUDGET_STATUS, MACHINE_RESIZE, REPO_ADD]
+        );
 
         let described = listed
             .iter()
@@ -598,7 +749,7 @@ mod tests {
             .expect("a refusal is an answer");
         assert_eq!(refused.is_error, Some(true));
         let said = text(&refused);
-        assert!(said.starts_with("Refused: the working tree has uncommitted changes."));
+        assert!(said.starts_with("Refused: a working tree has uncommitted changes."));
         assert!(said.contains(" M crates/daemon/src/mcp.rs"));
         assert!(dirty.api.resizes.lock().expect("not poisoned").is_empty());
 
@@ -693,5 +844,60 @@ mod tests {
                 .expect("budget"),
         );
         assert!(said.contains("spent $2.00 of its $10.00 compute budget, leaving $8.00"));
+    }
+
+    fn repo_add(repo: &str, branch: Option<&str>) -> RepoAddInput {
+        RepoAddInput {
+            repo: repo.to_owned(),
+            branch: branch.map(str::to_owned),
+            reason: "the task needs the fixture repository".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn repo_add_raises_an_approval_and_says_it_is_pending() {
+        let tools = tools("", MachineOrigin::Auto);
+        let asked = tools
+            .repo_add(repo_add("lexoliu/aither", Some("main")))
+            .await
+            .expect("an approval is an answer");
+
+        assert_ne!(asked.is_error, Some(true));
+        let said = text(&asked);
+        assert!(said.contains("Asked the user to add `lexoliu/aither`"));
+        assert!(said.contains("approval card"));
+
+        let raised = tools.api.approvals.lock().expect("not poisoned").clone();
+        assert_eq!(
+            raised,
+            [ApprovalPayload::RepoAdd {
+                repo: "lexoliu/aither".to_owned(),
+                branch: Some("main".to_owned()),
+                reason: "the task needs the fixture repository".to_owned(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn repo_add_refuses_arguments_no_card_should_carry() {
+        let tools = tools("", MachineOrigin::Auto);
+
+        let bad_slug = tools.repo_add(repo_add("not-a-slug", None)).await;
+        assert!(
+            matches!(
+                bad_slug,
+                Err(crate::mcp::ToolFailure::Arguments { tool: REPO_ADD, .. })
+            ),
+            "a malformed slug is an argument error, not an approval card: {bad_slug:?}"
+        );
+        let bad_branch = tools.repo_add(repo_add("lexoliu/aither", Some("-f"))).await;
+        assert!(
+            matches!(
+                bad_branch,
+                Err(crate::mcp::ToolFailure::Arguments { tool: REPO_ADD, .. })
+            ),
+            "a branch git would read as a flag is an argument error: {bad_branch:?}"
+        );
+        assert!(tools.api.approvals.lock().expect("not poisoned").is_empty());
     }
 }

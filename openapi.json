@@ -4400,7 +4400,7 @@
                       "title",
                       "machine_origin",
                       "harness",
-                      "repo",
+                      "repos",
                       "state",
                       "activity",
                       "created_at_unix",
@@ -4412,17 +4412,6 @@
                       "activity": {
                         "$ref": "#/components/schemas/SessionActivity",
                         "description": "What it is doing, for an [`Active`](SessionState::Active) session.\n\nWhat lets the home list say `Working` and `Needs input` rather than\nreading every running session as `Idle`: the facts behind those two\nlive in the relay and in the `approvals` table, and this is the\ncontrol plane's own answer, carried on the row the list is built\nfrom (docs/ux.md §6).\n\nMeaningless for every other state, and the UI ignores it there — a\nsession keeps the activity it had when it was paused, interrupted or\narchived rather than being reset to a position it was never in."
-                      },
-                      "branch": {
-                        "oneOf": [
-                          {
-                            "type": "null"
-                          },
-                          {
-                            "$ref": "#/components/schemas/BranchName",
-                            "description": "Branch it works on, which the header renders as `repo · branch`\n(docs/ux.md §9.1).\n\n`None` only for a session opened before flyco recorded a branch at\nall. A placeholder would be a claim about somebody's checkout that\nflyco cannot support, so the header shows the repository alone for\nthose and every session opened since names its branch."
-                          }
-                        ]
                       },
                       "created_at_unix": {
                         "type": "integer",
@@ -4478,9 +4467,12 @@
                         "$ref": "#/components/schemas/PermissionMode",
                         "description": "The permission mode the session's agent runs under.\n\nAlways concrete for the same reason `model` is: a session opened\nbefore flyco recorded a mode resolves to\n[`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT)\nat read, so every row states the mode it is on rather than leaving\nthe composer's chip to guess."
                       },
-                      "repo": {
-                        "$ref": "#/components/schemas/RepoSlug",
-                        "description": "Repository it works in."
+                      "repos": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/SessionRepo"
+                        },
+                        "description": "Repositories it works across, in `session_repos` order.\n\nThe first entry is the session's primary repository — the one the\nheader renders as `repo · branch` (docs/ux.md §9.1), with `+N` for\nthe rest. Never empty: a session is created with at least one\nrepository and the list only grows when one is added later."
                       },
                       "state": {
                         "$ref": "#/components/schemas/SessionState",
@@ -4512,17 +4504,10 @@
                 "required": [
                   "prompt",
                   "harness",
-                  "repo",
+                  "repos",
                   "budget_limit"
                 ],
                 "properties": {
-                  "branch": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "description": "Branch to check out. Untyped for the same reason as\n[`repo`](Self::repo): the control plane parses it into a\n[`BranchName`](crate::repo::BranchName) and refuses anything git\nwould.\n\nOmitted, the control plane asks GitHub for the repository's default\nbranch and records *that*, so a session always names the branch it\nworks on rather than leaving every later reader to guess."
-                  },
                   "budget_limit": {
                     "$ref": "#/components/schemas/Usd",
                     "description": "Spending limit for the whole session."
@@ -4568,9 +4553,12 @@
                     "type": "string",
                     "description": "What the agent should do first.\n\nRequired, because a session with nothing to do is a machine nobody\nasked for: the prompt is recorded as the session's first user\nmessage and delivered to the daemon as soon as one connects. Its\nexcerpt is also the session's opening [`title`](SessionSummary::title)."
                   },
-                  "repo": {
-                    "type": "string",
-                    "description": "Repository to work in, `owner/name`. Untyped here because it is\nuntrusted input; the control plane parses it into a\n[`RepoSlug`](crate::repo::RepoSlug) and rejects anything else."
+                  "repos": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/RepoSelection"
+                    },
+                    "description": "Repositories the session works across, primary first.\n\nA session always has at least one: the workdir is laid out as a\nworkspace holding every checkout, and the first entry is the\nrepository the header names. Untrusted input — the control plane\nparses each `repo` into a [`RepoSlug`](crate::repo::RepoSlug) and\neach `branch` into a [`BranchName`](crate::repo::BranchName), and\nrefuses anything else."
                   },
                   "source": {
                     "oneOf": [
@@ -5224,6 +5212,38 @@
                   },
                   {
                     "type": "object",
+                    "description": "Add a repository to the session's workspace.\n\nRaised rather than performed, because cloning a repository the user\nnever picked onto the session's machine is a decision about which\ncode the agent may act on — the same reason a license-bound resize\nis the user's call. Approving records the repository and sends the\ndaemon [`ControlToDaemon::AddRepo`]; denying is answered to the\nagent as a refusal.",
+                    "required": [
+                      "repo",
+                      "reason",
+                      "kind"
+                    ],
+                    "properties": {
+                      "branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "Branch to check out. `None` asks for the repository's default."
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "repo_add"
+                        ]
+                      },
+                      "reason": {
+                        "type": "string",
+                        "description": "Why the agent says the session needs it, as shown on the card."
+                      },
+                      "repo": {
+                        "type": "string",
+                        "description": "Repository in `owner/name` form."
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
                     "description": "A harness tool call routed to the user for permission.",
                     "required": [
                       "tool",
@@ -5517,8 +5537,8 @@
     },
     "/v1/sessions/{id}/diff": {
       "get": {
-        "summary": "Diffs a session's working tree against the branch it started from.",
-        "description": "Diffs a session's working tree against the branch it started from.",
+        "summary": "Diffs one checkout of a session's workspace against the branch it started from.",
+        "description": "Diffs one checkout of a session's workspace against the branch it\nstarted from.",
         "operationId": "flyco_api::app::get_session_diff",
         "parameters": [
           {
@@ -5527,6 +5547,18 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The checkout's directory under the workdir, as\n[`SessionRepo::dir`](flyco_core::SessionRepo::dir) names it.\nOmitted on a session whose workdir is itself the checkout — the\ndeveloper-machine shape."
             }
           }
         ],
@@ -6752,21 +6784,112 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "description": "The working tree of a session's checkout, as `GET\n/v1/sessions/{id}/repo-status` reports it.\n\nDirtiness is load-bearing rather than informational: an agent may not\nstop while the tree is dirty, and archiving a dirty session warns the\nuser before the disk is released. The UI needs the same fact.",
+                  "description": "The working trees of a session's checkouts, as `GET\n/v1/sessions/{id}/repo-status` reports them.\n\nDirtiness is load-bearing rather than informational: an agent may not\nstop while any tree is dirty, and archiving a dirty session warns the\nuser before the disk is released. The UI needs the same fact per\ncheckout, because a session can work across several repositories at\nonce and `dirty` without *which* would be half the answer.",
                   "required": [
-                    "dirty",
-                    "summary"
+                    "checkouts"
                   ],
                   "properties": {
-                    "dirty": {
-                      "type": "boolean",
-                      "description": "Whether the working tree has changes that are not committed."
-                    },
-                    "summary": {
-                      "type": "string",
-                      "description": "`git status --short`, as the daemon last read it. Empty when clean."
+                    "checkouts": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CheckoutStatus"
+                      },
+                      "description": "One entry per checkout the daemon has reported on.\n\nA session that has reported nothing answers with an empty list —\nnot a failure: no daemon has attached yet, or no watcher has\nfinished a first pass."
                     }
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/repos": {
+      "post": {
+        "summary": "Adds a repository to a session's workspace, at the user's hand.",
+        "description": "Adds a repository to a session's workspace, at the user's hand.\n\nThe row is written before the daemon is told, in the same order a\ndecided approval works in: the repository is a fact of the session\nwhether or not a machine is listening — a daemon that is not attached\nhas the command held for it, and a machine provisioned after this reads\nthe whole set at boot anyway.",
+        "operationId": "flyco_api::app::add_session_repo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "One repository a request asks a session to work in.\n\nThe `repos` entry of [`CreateSession`](crate::session::CreateSession)\nand the body of `POST /v1/sessions/{id}/repos`. Strings rather than\ntyped values for the same reason [`CreateSession`]'s other fields are:\nthis is untrusted input, and the control plane's parse of it is the\nrefusal that tells the caller which character git would not accept.",
+                "required": [
+                  "repo"
+                ],
+                "properties": {
+                  "branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Branch to check out.\n\nOmitted, the control plane asks GitHub for the repository's default\nbranch and records *that*, so a session always names the branch each\ncheckout works on rather than leaving every later reader to guess."
+                  },
+                  "repo": {
+                    "type": "string",
+                    "description": "Repository to check out, `owner/name`."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionSummary",
+                      "description": "Everything a list entry carries."
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "budget"
+                      ],
+                      "properties": {
+                        "budget": {
+                          "$ref": "#/components/schemas/BudgetView",
+                          "description": "Budget accounting as of this request."
+                        },
+                        "failure": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Why the session is [`SessionState::Failed`], in the provider's own\nwords where it has any.\n\n`None` for every other state. A failed session that could not say\nwhy would leave the user with a dead session and no idea whether to\nretry it, pick another region, or ask for a quota increase."
+                        },
+                        "usage_limit": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "$ref": "#/components/schemas/UsageLimitPause",
+                              "description": "What a session waiting out a harness usage limit is waiting for.\n\n`Some` exactly while\n[`paused_reason`](SessionSummary::paused_reason) is\n[`PausedReason::UsageLimit`], and on the detail rather than the\nsummary because this is the page's story and not the rail's dot: a\nlist row says the session is waiting, and the page says which window,\nuntil when, and whether the machine is still costing anything.\n\nIt outlives the [`Paused`](SessionState::Paused) state on purpose.\nThe wake runs through [`Provisioning`](SessionState::Provisioning),\nand this is the only thing that tells that provisioning apart from a\nfirst one — the same job [`InterruptedReason`] does for a\nreclamation."
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ],
+                  "description": "A single session, with its budget."
                 }
               }
             }
@@ -7443,8 +7566,8 @@
     },
     "/v1/sessions/{id}/workdir-patch": {
       "get": {
-        "summary": "Reads a previously stored uncommitted diff, for a resume onto a new host.",
-        "description": "Reads a previously stored uncommitted diff, for a resume onto a new host.",
+        "summary": "Reads a previously stored uncommitted diff of one checkout, for a resume onto a new host.",
+        "description": "Reads a previously stored uncommitted diff of one checkout, for a resume\nonto a new host.",
         "operationId": "flyco_api::app::get_workdir_patch",
         "parameters": [
           {
@@ -7453,6 +7576,18 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The checkout's directory under the workdir."
             }
           }
         ],
@@ -7463,8 +7598,8 @@
         }
       },
       "put": {
-        "summary": "Stores the uncommitted diff of a session about to be archived automatically.",
-        "description": "Stores the uncommitted diff of a session about to be archived automatically.",
+        "summary": "Stores the uncommitted diff of one checkout of a session about to be archived automatically.",
+        "description": "Stores the uncommitted diff of one checkout of a session about to be\narchived automatically.",
         "operationId": "flyco_api::app::put_workdir_patch",
         "parameters": [
           {
@@ -7473,6 +7608,18 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The checkout's directory under the workdir."
             }
           }
         ],
@@ -8141,6 +8288,38 @@
           },
           {
             "type": "object",
+            "description": "Add a repository to the session's workspace.\n\nRaised rather than performed, because cloning a repository the user\nnever picked onto the session's machine is a decision about which\ncode the agent may act on — the same reason a license-bound resize\nis the user's call. Approving records the repository and sends the\ndaemon [`ControlToDaemon::AddRepo`]; denying is answered to the\nagent as a refusal.",
+            "required": [
+              "repo",
+              "reason",
+              "kind"
+            ],
+            "properties": {
+              "branch": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Branch to check out. `None` asks for the repository's default."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "repo_add"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "description": "Why the agent says the session needs it, as shown on the card."
+              },
+              "repo": {
+                "type": "string",
+                "description": "Repository in `owner/name` form."
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "A harness tool call routed to the user for permission.",
             "required": [
               "tool",
@@ -8469,6 +8648,31 @@
               "null"
             ],
             "description": "A path inside the session's checkout, `/`-separated and relative to\nits root. Omitted lists the root itself."
+          }
+        }
+      },
+      "CheckoutStatus": {
+        "type": "object",
+        "description": "One checkout's working-tree state.",
+        "required": [
+          "dirty",
+          "summary"
+        ],
+        "properties": {
+          "dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Which checkout, as [`SessionRepo::dir`] names it.\n\n`None` is the workspace root itself — the shape of a session on a\ndeveloper's machine, where the workdir *is* the checkout."
+          },
+          "dirty": {
+            "type": "boolean",
+            "description": "Whether the working tree has changes that are not committed."
+          },
+          "summary": {
+            "type": "string",
+            "description": "`git status --short`, as the daemon last read it. Empty when clean."
           }
         }
       },
@@ -8916,17 +9120,10 @@
         "required": [
           "prompt",
           "harness",
-          "repo",
+          "repos",
           "budget_limit"
         ],
         "properties": {
-          "branch": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Branch to check out. Untyped for the same reason as\n[`repo`](Self::repo): the control plane parses it into a\n[`BranchName`](crate::repo::BranchName) and refuses anything git\nwould.\n\nOmitted, the control plane asks GitHub for the repository's default\nbranch and records *that*, so a session always names the branch it\nworks on rather than leaving every later reader to guess."
-          },
           "budget_limit": {
             "$ref": "#/components/schemas/Usd",
             "description": "Spending limit for the whole session."
@@ -8972,9 +9169,12 @@
             "type": "string",
             "description": "What the agent should do first.\n\nRequired, because a session with nothing to do is a machine nobody\nasked for: the prompt is recorded as the session's first user\nmessage and delivered to the daemon as soon as one connects. Its\nexcerpt is also the session's opening [`title`](SessionSummary::title)."
           },
-          "repo": {
-            "type": "string",
-            "description": "Repository to work in, `owner/name`. Untyped here because it is\nuntrusted input; the control plane parses it into a\n[`RepoSlug`](crate::repo::RepoSlug) and rejects anything else."
+          "repos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepoSelection"
+            },
+            "description": "Repositories the session works across, primary first.\n\nA session always has at least one: the workdir is laid out as a\nworkspace holding every checkout, and the first entry is the\nrepository the header names. Untrusted input — the control plane\nparses each `repo` into a [`RepoSlug`](crate::repo::RepoSlug) and\neach `branch` into a [`BranchName`](crate::repo::BranchName), and\nrefuses anything else."
           },
           "source": {
             "oneOf": [
@@ -9353,12 +9553,19 @@
           },
           {
             "type": "object",
-            "description": "The repo has uncommitted changes; the agent is kept awake rather\nthan allowed to complete.",
+            "description": "A checkout has uncommitted changes; the agent is kept awake rather\nthan allowed to complete.",
             "required": [
               "summary",
               "type"
             ],
             "properties": {
+              "dir": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Which checkout — [`SessionRepo::dir`](crate::repo::SessionRepo::dir),\nor `None` for a session whose workdir is itself the checkout\n(the developer-machine shape)."
+              },
               "summary": {
                 "type": "string",
                 "description": "`git status --porcelain` summary shown to the user."
@@ -9367,6 +9574,36 @@
                 "type": "string",
                 "enum": [
                   "repo_dirty"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A repository was added to the session's workspace.\n\nReported rather than implied by [`ControlToDaemon::AddRepo`], so a\ntranscript records the checkout actually landing on the machine —\nand a clone that failed reports nothing instead of claiming a\nrepository the disk does not hold.",
+            "required": [
+              "slug",
+              "branch",
+              "dir",
+              "type"
+            ],
+            "properties": {
+              "branch": {
+                "$ref": "#/components/schemas/BranchName",
+                "description": "The branch it is on."
+              },
+              "dir": {
+                "type": "string",
+                "description": "The directory under the workdir it was cloned into."
+              },
+              "slug": {
+                "$ref": "#/components/schemas/RepoSlug",
+                "description": "The repository now checked out."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "repo_added"
                 ]
               }
             }
@@ -9500,6 +9737,19 @@
               "null"
             ],
             "description": "Whether to price and pick against spot capacity. Spot is the default\nbecause it is cheaper and flyco handles eviction."
+          }
+        }
+      },
+      "DiffQuery": {
+        "type": "object",
+        "description": "Which checkout a `diff` asks about.",
+        "properties": {
+          "repo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The checkout's directory under the workdir, as\n[`SessionRepo::dir`](flyco_core::SessionRepo::dir) names it.\nOmitted on a session whose workdir is itself the checkout — the\ndeveloper-machine shape."
           }
         }
       },
@@ -11672,6 +11922,19 @@
           "windows"
         ]
       },
+      "PatchQuery": {
+        "type": "object",
+        "description": "Which checkout a `workdir-patch` is the diff of.\n\nDaemon-scoped, so the value is trusted to be one of the session's own\n`dir`s — the daemon wrote them — but the key is still built from the\nsession id rather than from the caller's claim, which is what keeps the\nscope airtight. Absent names the workspace root itself: the\ndeveloper-machine shape, where the workdir is the checkout and no `dir`\nexists.",
+        "properties": {
+          "repo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The checkout's directory under the workdir."
+          }
+        }
+      },
       "PausedReason": {
         "type": "string",
         "description": "Why a session is [`SessionState::Paused`].\n\nRecorded beside the state for the reason [`InterruptedReason`] is: the\nstate says the session is stopped on purpose, and this says what would\nstart it again. The two answers point the reader at completely different\nthings — a spent budget is a number only the user can raise, and a spent\nplan window is a wait flyco ends by itself — so a single `Paused` pill\ncovering both would send half the people who read it to the wrong\ncontrol (docs/ux.md §6).\n\n`None` is a session the user paused, which is the only pause with no\nmechanism behind it and nothing to say beyond the word.",
@@ -12007,9 +12270,25 @@
                 "format": "int64",
                 "description": "The account's immutable numeric user id — the join key, because\nlogins are renameable."
               },
+              "refresh_token": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The credential the grant is renewed with, when the OAuth app\nexpires user tokens.\n\nAbsent for a grant GitHub never expires and for every account\nlinked before flyco kept it: either way the token is used until\nGitHub refuses it, and the account is linked again."
+              },
               "token": {
                 "type": "string",
                 "description": "The account's OAuth access token."
+              },
+              "token_expires_at_unix": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "When `token` stops working, seconds since the Unix epoch.\n\nSet exactly when `refresh_token` is — GitHub issues the two\ntogether — and read by the control plane to renew the grant\nbefore a provisioning call spends it.",
+                "minimum": 0
               }
             }
           },
@@ -12268,6 +12547,14 @@
           }
         }
       },
+      "RepoAddedBy": {
+        "type": "string",
+        "description": "Who attached a repository to a session.\n\nRecorded because the two paths carry different weight: a repository the\nuser picked was chosen before the machine booted, while one the agent\nasked for reached the session through an approval the user granted —\nand a UI listing the checkouts owes the reader that distinction.",
+        "enum": [
+          "user",
+          "agent"
+        ]
+      },
       "RepoQuery": {
         "type": "object",
         "description": "Narrows the repository picker.",
@@ -12281,25 +12568,43 @@
           }
         }
       },
+      "RepoSelection": {
+        "type": "object",
+        "description": "One repository a request asks a session to work in.\n\nThe `repos` entry of [`CreateSession`](crate::session::CreateSession)\nand the body of `POST /v1/sessions/{id}/repos`. Strings rather than\ntyped values for the same reason [`CreateSession`]'s other fields are:\nthis is untrusted input, and the control plane's parse of it is the\nrefusal that tells the caller which character git would not accept.",
+        "required": [
+          "repo"
+        ],
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Branch to check out.\n\nOmitted, the control plane asks GitHub for the repository's default\nbranch and records *that*, so a session always names the branch each\ncheckout works on rather than leaving every later reader to guess."
+          },
+          "repo": {
+            "type": "string",
+            "description": "Repository to check out, `owner/name`."
+          }
+        }
+      },
       "RepoSlug": {
         "type": "string",
         "description": "GitHub repository in `owner/name` form"
       },
       "RepoStatus": {
         "type": "object",
-        "description": "The working tree of a session's checkout, as `GET\n/v1/sessions/{id}/repo-status` reports it.\n\nDirtiness is load-bearing rather than informational: an agent may not\nstop while the tree is dirty, and archiving a dirty session warns the\nuser before the disk is released. The UI needs the same fact.",
+        "description": "The working trees of a session's checkouts, as `GET\n/v1/sessions/{id}/repo-status` reports them.\n\nDirtiness is load-bearing rather than informational: an agent may not\nstop while any tree is dirty, and archiving a dirty session warns the\nuser before the disk is released. The UI needs the same fact per\ncheckout, because a session can work across several repositories at\nonce and `dirty` without *which* would be half the answer.",
         "required": [
-          "dirty",
-          "summary"
+          "checkouts"
         ],
         "properties": {
-          "dirty": {
-            "type": "boolean",
-            "description": "Whether the working tree has changes that are not committed."
-          },
-          "summary": {
-            "type": "string",
-            "description": "`git status --short`, as the daemon last read it. Empty when clean."
+          "checkouts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CheckoutStatus"
+            },
+            "description": "One entry per checkout the daemon has reported on.\n\nA session that has reported nothing answers with an empty list —\nnot a failure: no daemon has attached yet, or no watcher has\nfinished a first pass."
           }
         }
       },
@@ -12592,6 +12897,40 @@
           }
         }
       },
+      "SessionRepo": {
+        "type": "object",
+        "description": "A repository a session checks out, as `SessionSummary::repos` reports it.",
+        "required": [
+          "slug",
+          "dir",
+          "added_by"
+        ],
+        "properties": {
+          "added_by": {
+            "$ref": "#/components/schemas/RepoAddedBy",
+            "description": "Who put it on the session."
+          },
+          "branch": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BranchName",
+                "description": "The branch the checkout is on.\n\n`None` only for a repository recorded before its branch could be\nresolved — the provisioning queue asks GitHub for the default at\nprovision and writes it back, so a session that has been on a\nmachine always names one."
+              }
+            ]
+          },
+          "dir": {
+            "type": "string",
+            "description": "The directory under the session's workdir this checkout lives in.\n\nHow the browser names one checkout of several: workdir paths are\nworkspace-relative, so `dir` is both the tree's top level and the\nidentity a `Diff` request or a dirty status carries."
+          },
+          "slug": {
+            "$ref": "#/components/schemas/RepoSlug",
+            "description": "The repository, `owner/name`."
+          }
+        }
+      },
       "SessionSource": {
         "oneOf": [
           {
@@ -12640,7 +12979,7 @@
           "title",
           "machine_origin",
           "harness",
-          "repo",
+          "repos",
           "state",
           "activity",
           "created_at_unix",
@@ -12652,17 +12991,6 @@
           "activity": {
             "$ref": "#/components/schemas/SessionActivity",
             "description": "What it is doing, for an [`Active`](SessionState::Active) session.\n\nWhat lets the home list say `Working` and `Needs input` rather than\nreading every running session as `Idle`: the facts behind those two\nlive in the relay and in the `approvals` table, and this is the\ncontrol plane's own answer, carried on the row the list is built\nfrom (docs/ux.md §6).\n\nMeaningless for every other state, and the UI ignores it there — a\nsession keeps the activity it had when it was paused, interrupted or\narchived rather than being reset to a position it was never in."
-          },
-          "branch": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/BranchName",
-                "description": "Branch it works on, which the header renders as `repo · branch`\n(docs/ux.md §9.1).\n\n`None` only for a session opened before flyco recorded a branch at\nall. A placeholder would be a claim about somebody's checkout that\nflyco cannot support, so the header shows the repository alone for\nthose and every session opened since names its branch."
-              }
-            ]
           },
           "created_at_unix": {
             "type": "integer",
@@ -12718,9 +13046,12 @@
             "$ref": "#/components/schemas/PermissionMode",
             "description": "The permission mode the session's agent runs under.\n\nAlways concrete for the same reason `model` is: a session opened\nbefore flyco recorded a mode resolves to\n[`PermissionMode::PRODUCT_DEFAULT`](crate::harness::PermissionMode::PRODUCT_DEFAULT)\nat read, so every row states the mode it is on rather than leaving\nthe composer's chip to guess."
           },
-          "repo": {
-            "$ref": "#/components/schemas/RepoSlug",
-            "description": "Repository it works in."
+          "repos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionRepo"
+            },
+            "description": "Repositories it works across, in `session_repos` order.\n\nThe first entry is the session's primary repository — the one the\nheader renders as `repo · branch` (docs/ux.md §9.1), with `+N` for\nthe rest. Never empty: a session is created with at least one\nrepository and the list only grows when one is added later."
           },
           "state": {
             "$ref": "#/components/schemas/SessionState",
@@ -13678,6 +14009,26 @@
                 "enum": [
                   "no_base_branch"
                 ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The named checkout does not exist.\n\nA `Diff` that names a directory no repository is checked out into —\na stale picker row, a repository added after the page loaded — is\nrefused rather than answered with the workspace's own status, which\nis not a checkout's diff at all.",
+            "required": [
+              "repo",
+              "refusal"
+            ],
+            "properties": {
+              "refusal": {
+                "type": "string",
+                "enum": [
+                  "unknown_checkout"
+                ]
+              },
+              "repo": {
+                "type": "string",
+                "description": "The `repo` the request named."
               }
             }
           },

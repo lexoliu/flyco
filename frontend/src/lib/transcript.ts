@@ -622,8 +622,17 @@ export function foldTranscript(events: readonly TimedEvent[]): TranscriptItem[] 
       case "repo_dirty":
         // An empty summary is a clean tree, and a clean tree is not news.
         if (event.summary.trim() !== "") {
-          notice(`Uncommitted changes in the working tree: ${event.summary}`, "warning", atUnix);
+          notice(
+            event.dir === undefined || event.dir === null
+              ? `Uncommitted changes in the working tree: ${event.summary}`
+              : `Uncommitted changes in ${event.dir}: ${event.summary}`,
+            "warning",
+            atUnix,
+          );
         }
+        break;
+      case "repo_added":
+        notice(`Added ${event.slug} to the workspace as ${event.dir}/`, "info", atUnix);
         break;
       case "machine_changed":
         items.push({

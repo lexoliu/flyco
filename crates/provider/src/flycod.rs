@@ -298,18 +298,26 @@ struct ControlPlane<'a> {
     daemon_token: &'a str,
 }
 
-/// The `[repo]` table, and `[repo.identity]` under it.
+/// The `[github]` table — how every checkout authenticates — and
+/// `[github.identity]` under it.
 ///
-/// The token is a field of the same table as the slug because the two are
-/// one decision: a checkout flyco cannot authenticate is not a checkout, and
-/// a token with no repository to spend it on has no reason to be on the
-/// machine at all.
+/// One table for the whole workspace rather than a field of each
+/// `[[repos]]` element, because the authorization is the workspace's, not
+/// the repository's: every clone and later push is the same user's, and
+/// repeating the token under each entry would say otherwise.
+#[derive(Debug, Clone, Serialize)]
+struct Github<'a> {
+    token: &'a str,
+    identity: &'a GitIdentity,
+}
+
+/// One `[[repos]]` element: a repository the workspace checks out.
 #[derive(Debug, Clone, Serialize)]
 struct Repo<'a> {
     slug: &'a RepoSlug,
     branch: &'a BranchName,
-    token: &'a str,
-    identity: &'a GitIdentity,
+    /// The directory under the workdir it is cloned into.
+    dir: &'a str,
 }
 
 /// The `[sidecar]` table.
@@ -442,7 +450,7 @@ struct Document<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     resume_session_id: Option<&'a str>,
     control_plane: ControlPlane<'a>,
-    repo: Repo<'a>,
+    github: Github<'a>,
     machine: &'a SessionMachine,
     #[serde(skip_serializing_if = "Option::is_none")]
     claude: Option<Claude<'a>>,
@@ -450,6 +458,10 @@ struct Document<'a> {
     sidecar: Option<Sidecar>,
     #[serde(skip_serializing_if = "Option::is_none")]
     acp: Option<Acp<'a>>,
+    /// `[[repos]]`, at the tail with `mcp_servers` because an array of
+    /// tables opens a new table context: a table after it would be parsed
+    /// as a sub-table of its last element.
+    repos: Vec<Repo<'a>>,
     /// `[[mcp_servers]]`, last because an array of tables closes the
     /// document: everything after it in TOML would land inside its last
     /// element.
@@ -996,16 +1008,23 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
             url: &bootstrap.control_plane_url,
             daemon_token: &bootstrap.daemon_token,
         },
-        repo: Repo {
-            slug: &bootstrap.repo.slug,
-            branch: &bootstrap.repo.branch,
-            token: &bootstrap.repo.token,
-            identity: &bootstrap.repo.identity,
+        github: Github {
+            token: &bootstrap.github.token,
+            identity: &bootstrap.github.identity,
         },
         machine: &bootstrap.machine,
         claude,
         sidecar,
         acp,
+        repos: bootstrap
+            .repos
+            .iter()
+            .map(|repo| Repo {
+                slug: &repo.slug,
+                branch: &repo.branch,
+                dir: &repo.dir,
+            })
+            .collect(),
         mcp_servers: &bootstrap.mcp_servers,
     };
 
@@ -1022,7 +1041,7 @@ mod tests {
         CLAUDE_CONFIG_DIR, CODEX_HOME, ClaudeCredential, CodexCredential, HarnessCredential, render,
     };
     use crate::DaemonBootstrap;
-    use crate::testing::{GITHUB_TOKEN, checkout};
+    use crate::testing::{GITHUB_TOKEN, checkouts, github};
 
     fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
         DaemonBootstrap {
@@ -1033,7 +1052,8 @@ mod tests {
             daemon_token: "fd_token".to_owned(),
             permission_mode: PermissionMode::Default,
             auth,
-            repo: checkout(),
+            repos: checkouts(),
+            github: github(),
             machine_origin: MachineOrigin::Auto,
             machine: crate::testing::session_machine(),
             resume_session_id: None,
@@ -1111,10 +1131,10 @@ mod tests {
     fn the_machine_is_told_which_repository_and_branch_to_check_out() {
         let rendered = render(&claude(ClaudeCredential::Inherit)).expect("render");
 
-        assert!(rendered.contains("[repo]"));
+        assert!(rendered.contains("[[repos]]"));
         assert!(rendered.contains("slug = \"lexoliu/flyco\""));
         assert!(rendered.contains("branch = \"dev\""));
-        assert!(rendered.contains("[repo.identity]"));
+        assert!(rendered.contains("[github.identity]"));
         assert!(rendered.contains("email = \"4242+lexoliu@users.noreply.github.com\""));
     }
 

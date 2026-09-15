@@ -74,7 +74,7 @@ const FAILING_CONCLUSIONS: [&str; 3] = ["failure", "timed_out", "action_required
 /// The repository half of every delivery flyco reads.
 #[derive(Debug, Deserialize)]
 struct Repository {
-    /// `owner/name`, which is exactly what `sessions.repo` holds.
+    /// `owner/name`, which is exactly what `session_repos.slug` holds.
     full_name: String,
 }
 
@@ -302,8 +302,10 @@ async fn dispatch(
 
     let sessions: Vec<ActiveSessionRow> = sql!(
         db,
-        "SELECT id FROM sessions WHERE repo = {&repo} AND state = {SessionState::Active} \
-         ORDER BY last_active_unix DESC, id"
+        "SELECT s.id FROM sessions s \
+         JOIN session_repos r ON r.session_id = s.id AND r.slug = {&repo} \
+         WHERE s.state = {SessionState::Active} \
+         ORDER BY s.last_active_unix DESC, s.id"
     )
     .fetch_all()
     .await?;

@@ -32,7 +32,9 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Interval};
 
-use crate::config::RepoConfig;
+use std::collections::BTreeMap;
+
+use crate::config::{GithubAccess, RepoConfig};
 
 /// How often a live checkout is polled.
 pub const POLL: Duration = Duration::from_secs(5);
@@ -65,16 +67,25 @@ const CREDENTIAL_HELPER: &str = "!f() { test \"$1\" = get && printf 'username=x-
 /// that is not possible (git refuses a non-empty destination) and would not
 /// be wanted if it were: the working tree is the thing the reclamation was
 /// careful to keep.
+///
+/// The same check makes an `AddRepo` command idempotent: the control plane
+/// holds the command for a disconnected daemon and may deliver it again
+/// after a reconnect, so a directory that is already a checkout is adopted
+/// rather than cloned over.
 pub async fn has_checkout(workdir: &Path) -> bool {
     tokio::fs::metadata(workdir.join(".git")).await.is_ok()
 }
 
-/// Clones a session's repository into `workdir`.
+/// Clones a session's repository into `checkout`.
+///
+/// `checkout` is the directory the clone creates — `workdir/<dir>` for the
+/// repository's configured `dir` — not the shared workdir itself: a session
+/// can carry several repositories, and each keeps its own root.
 ///
 /// The branch is checked out by name rather than fetched and switched to:
-/// a session names one branch for its whole life, and a clone that pulled
-/// every branch would spend a session VM's first minute on history nothing
-/// is going to read.
+/// a session names one branch per checkout for its whole life, and a clone
+/// that pulled every branch would spend a session VM's first minute on
+/// history nothing is going to read.
 ///
 /// The commit identity is written into the checkout's own `.git/config`
 /// rather than a global one, so it applies to this repository and says who
@@ -84,18 +95,22 @@ pub async fn has_checkout(workdir: &Path) -> bool {
 ///
 /// Returns [`GitError`] if git could not be started or refused — an
 /// unreachable remote, a token the repository does not admit, a branch that
-/// does not exist, or a workdir that already holds something. Every one of
+/// does not exist, or a checkout that already holds something. Every one of
 /// those is a session failure rather than something to work around, and the
 /// error carries git's own words so the user is told which.
-pub async fn clone_into(repo: &RepoConfig, workdir: &Path) -> Result<(), GitError> {
+pub async fn clone_into(
+    repo: &RepoConfig,
+    access: &GithubAccess,
+    checkout: &Path,
+) -> Result<(), GitError> {
     let remote = repo.remote_url();
     tracing::info!(
         slug = %repo.slug,
         branch = %repo.branch,
-        workdir = %workdir.display(),
+        checkout = %checkout.display(),
         "cloning the session's repository"
     );
-    clone_from(&remote, repo, workdir).await
+    clone_from(&remote, repo, access, checkout).await
 }
 
 /// Clones `remote` — the URL split out from [`clone_into`] so a test can
@@ -104,7 +119,12 @@ pub async fn clone_into(repo: &RepoConfig, workdir: &Path) -> Result<(), GitErro
 /// # Errors
 ///
 /// Returns [`GitError`] exactly as [`clone_into`] does.
-pub async fn clone_from(remote: &str, repo: &RepoConfig, workdir: &Path) -> Result<(), GitError> {
+pub async fn clone_from(
+    remote: &str,
+    repo: &RepoConfig,
+    access: &GithubAccess,
+    checkout: &Path,
+) -> Result<(), GitError> {
     // `--` before the positional arguments, and `--branch=` rather than a
     // separate value: a branch name is user input, and neither it nor a
     // remote URL may be read as an option. `BranchName` already refuses a
@@ -118,33 +138,33 @@ pub async fn clone_from(remote: &str, repo: &RepoConfig, workdir: &Path) -> Resu
     // authenticates exactly as its parent did.
     let branch = format!("--branch={}", repo.branch);
     authenticated(
-        repo,
+        access,
         &[
             OsStr::new("clone"),
             OsStr::new("--recurse-submodules"),
             OsStr::new(&branch),
             OsStr::new("--"),
             OsStr::new(remote),
-            workdir.as_os_str(),
+            checkout.as_os_str(),
         ],
         Path::new("."),
     )
     .await?;
 
     git(
-        workdir,
-        &["config", "user.name", repo.identity.name.as_str()],
+        checkout,
+        &["config", "user.name", access.identity.name.as_str()],
     )
     .await?;
     git(
-        workdir,
-        &["config", "user.email", repo.identity.email.as_str()],
+        checkout,
+        &["config", "user.email", access.identity.email.as_str()],
     )
     .await?;
     // The tip the clone landed on is the base a later snapshot diffs
     // against — a workdir patch must carry the session's commits, not just
     // whatever was staged when the disk went away.
-    git(workdir, &["update-ref", BASE_REF, "HEAD"]).await?;
+    git(checkout, &["update-ref", BASE_REF, "HEAD"]).await?;
     Ok(())
 }
 
@@ -167,7 +187,7 @@ const BASE_REF: &str = "refs/flyco/base";
 /// immediate failure rather than a process waiting on a terminal no session
 /// VM has.
 async fn authenticated(
-    repo: &RepoConfig,
+    access: &GithubAccess,
     args: &[&OsStr],
     current_dir: &Path,
 ) -> Result<std::process::Output, GitError> {
@@ -183,7 +203,7 @@ async fn authenticated(
         .arg("-c")
         .arg(format!("credential.helper={CREDENTIAL_HELPER}"))
         .args(args)
-        .env(TOKEN_VAR, &repo.token)
+        .env(TOKEN_VAR, &access.token)
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
@@ -270,7 +290,7 @@ async fn merge_base(path: &Path) -> Result<Option<String>, GitError> {
     Ok((!shared.is_empty()).then_some(shared))
 }
 
-/// The working tree of a session checkout.
+/// The working tree of one session checkout.
 pub trait WorkingTree: Send {
     /// Next `git status --short` summary, when it changes.
     ///
@@ -349,6 +369,59 @@ pub fn decode_snapshot(body: &[u8]) -> (Option<&str>, &[u8]) {
     std::str::from_utf8(&head[..40]).map_or((None, body), |base| (Some(base), rest))
 }
 
+/// The session's checkouts, as the relay drives them.
+///
+/// The plural counterpart of [`WorkingTree`]: a session can work across
+/// several repositories, and everything the relay does with the working
+/// tree — dirty reporting, snapshotting on stop, applying a stored patch —
+/// is answered per checkout directory, the `dir` the control plane
+/// recorded for it. The directory key is `Option<String>` because a
+/// developer machine's checkout *is* the workspace root, which has no
+/// name of its own — `None` keys it, matching the wire's
+/// [`RepoDirty`](flyco_core::DaemonToControl::RepoDirty).
+pub trait WorkingSet: Send {
+    /// Next `(dir, status)` pair from any checkout, when it changes.
+    ///
+    /// `dir` is the checkout's workspace-relative directory, or `None` for
+    /// the root checkout of a developer machine; an empty summary is a
+    /// clean tree. `None` as the whole answer means no checkout can be
+    /// observed any more.
+    fn next_status(&mut self) -> impl Future<Output = Option<(Option<String>, String)>> + Send;
+
+    /// Every checkout directory this set watches.
+    fn dirs(&self) -> Vec<Option<String>>;
+
+    /// Clones `repo` into its configured directory under the workspace and
+    /// begins watching it.
+    ///
+    /// `Ok(true)` is a checkout the set did not know — the wire's cue to
+    /// announce it. `Ok(false)` means the directory was already watched:
+    /// an `AddRepo` replay, which must not announce again. A directory
+    /// whose contents already form a checkout is adopted rather than
+    /// cloned over.
+    fn clone_repo(
+        &mut self,
+        repo: &RepoConfig,
+        access: &GithubAccess,
+    ) -> impl Future<Output = Result<bool, GitError>> + Send;
+
+    /// A [`WorkdirSnapshot`] of `dir`, or `None` when it is clean.
+    ///
+    /// Same staging discipline as [`WorkingTree::snapshot`]: the index is
+    /// reset even when the diff fails.
+    fn snapshot(
+        &self,
+        dir: &Option<String>,
+    ) -> impl Future<Output = Result<Option<WorkdirSnapshot>, GitError>> + Send;
+
+    /// Applies a previously stored snapshot onto `dir`.
+    fn apply(
+        &self,
+        dir: &Option<String>,
+        patch: &[u8],
+    ) -> impl Future<Output = Result<(), GitError>> + Send;
+}
+
 /// Why a git command failed.
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
@@ -363,6 +436,13 @@ pub enum GitError {
         /// stderr, or a note when it was empty.
         detail: String,
     },
+    /// The named directory holds none of the session's checkouts.
+    ///
+    /// Raised by [`WorkingSet::snapshot`] and [`WorkingSet::apply`] when a
+    /// `dir` names no watched checkout — a stale `AddRepo`, or a stored
+    /// patch written for a directory this boot never cloned.
+    #[error("no checkout lives in `{0}`")]
+    UnknownCheckout(String),
 }
 
 /// A checkout on disk, polled with `git status --short`.
@@ -488,64 +568,224 @@ impl WorkingTree for GitWorkdir {
     }
 }
 
-/// A stand-in checkout for relay tests.
-pub struct FakeWorkdir {
-    snapshot: Option<WorkdirSnapshot>,
+/// The session's checkouts on disk: one [`GitWorkdir`] per `dir`, with
+/// their status streams folded into one.
+///
+/// Built at boot from `[[repos]]` — [`crate::main`] clones or adopts each
+/// configured checkout — and grown by `clone_repo` as the control plane
+/// approves more. `root` is the workspace every `dir` lives under; the
+/// `None` key is the developer-machine shape, where the root itself is
+/// the checkout.
+pub struct GitRepos {
+    root: PathBuf,
+    workdirs: BTreeMap<Option<String>, GitWorkdir>,
+    status_tx: mpsc::UnboundedSender<(Option<String>, String)>,
+    status_rx: mpsc::UnboundedReceiver<(Option<String>, String)>,
 }
 
-impl core::fmt::Debug for FakeWorkdir {
+impl core::fmt::Debug for GitRepos {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("FakeWorkdir").finish_non_exhaustive()
+        f.debug_struct("GitRepos")
+            .field("dirs", &self.workdirs.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
     }
 }
 
-impl FakeWorkdir {
-    /// A pair: the handle the relay snapshots from, the sender tests inject
-    /// status summaries through, and the stream the relay reads.
+impl GitRepos {
+    /// An empty set over `root`; checkouts join through
+    /// [`Self::watch`] or [`WorkingSet::clone_repo`].
     #[must_use]
-    pub fn pair() -> (
-        Self,
-        mpsc::UnboundedSender<String>,
-        mpsc::UnboundedReceiver<String>,
-    ) {
-        Self::with_snapshot(None)
+    pub fn new(root: PathBuf) -> Self {
+        let (status_tx, status_rx) = mpsc::unbounded_channel();
+        Self {
+            root,
+            workdirs: BTreeMap::new(),
+            status_tx,
+            status_rx,
+        }
     }
 
-    /// Like [`Self::pair`], but [`WorkingTree::snapshot`] returns `patch`
-    /// diffed against `base_commit`.
+    /// Begins watching the checkout at `path` under the name `dir`.
+    ///
+    /// Boot-time registration: [`crate::main`] calls it once per
+    /// configured repo after its clone-or-adopt, and once with `None` on
+    /// a developer machine whose workspace root is itself the checkout.
+    pub fn watch(&mut self, dir: Option<String>, path: PathBuf) {
+        let (workdir, mut statuses) = GitWorkdir::spawn(path);
+        let tx = self.status_tx.clone();
+        let label = dir.clone();
+        tokio::spawn(async move {
+            while let Some(summary) = statuses.recv().await {
+                if tx.send((label.clone(), summary)).is_err() {
+                    break;
+                }
+            }
+        });
+        self.workdirs.insert(dir, workdir);
+    }
+}
+
+impl WorkingSet for GitRepos {
+    async fn next_status(&mut self) -> Option<(Option<String>, String)> {
+        self.status_rx.recv().await
+    }
+
+    fn dirs(&self) -> Vec<Option<String>> {
+        self.workdirs.keys().cloned().collect()
+    }
+
+    async fn clone_repo(
+        &mut self,
+        repo: &RepoConfig,
+        access: &GithubAccess,
+    ) -> Result<bool, GitError> {
+        let dir = Some(repo.dir.clone());
+        if self.workdirs.contains_key(&dir) {
+            return Ok(false);
+        }
+        clone_into(repo, access, &repo.checkout_path(&self.root)).await?;
+        self.watch(dir, repo.checkout_path(&self.root));
+        Ok(true)
+    }
+
+    async fn snapshot(&self, dir: &Option<String>) -> Result<Option<WorkdirSnapshot>, GitError> {
+        self.workdirs
+            .get(dir)
+            .ok_or_else(|| {
+                GitError::UnknownCheckout(dir.clone().unwrap_or_else(|| ".".to_owned()))
+            })?
+            .snapshot()
+            .await
+    }
+
+    async fn apply(&self, dir: &Option<String>, patch: &[u8]) -> Result<(), GitError> {
+        self.workdirs
+            .get(dir)
+            .ok_or_else(|| {
+                GitError::UnknownCheckout(dir.clone().unwrap_or_else(|| ".".to_owned()))
+            })?
+            .apply(patch)
+            .await
+    }
+}
+
+/// A stand-in checkout set for relay tests.
+///
+/// One status sender serves every directory: a test injects a dirty report
+/// by sending `(dir, summary)`, the same pair the wire carries, so a test
+/// does not have to hold a channel per checkout.
+pub struct FakeRepos {
+    snapshots: BTreeMap<Option<String>, Option<WorkdirSnapshot>>,
+    /// Dirs a `clone_repo` must refuse, so a test can drive the
+    /// failed-clone path without a network.
+    unclonable: std::collections::BTreeSet<String>,
+    status_rx: mpsc::UnboundedReceiver<(Option<String>, String)>,
+}
+
+impl core::fmt::Debug for FakeRepos {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FakeRepos")
+            .field("dirs", &self.snapshots.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
+impl FakeRepos {
+    /// A pair: the set the relay drives, and the sender tests inject
+    /// `(dir, summary)` status reports through. Every `dir` starts clean.
     #[must_use]
-    pub fn with_snapshot(
-        patch: Option<Vec<u8>>,
-    ) -> (
-        Self,
-        mpsc::UnboundedSender<String>,
-        mpsc::UnboundedReceiver<String>,
-    ) {
-        let (sender, statuses) = mpsc::unbounded_channel();
+    pub fn pair(
+        dirs: &[Option<String>],
+    ) -> (Self, mpsc::UnboundedSender<(Option<String>, String)>) {
+        Self::with_snapshots(dirs.iter().map(|dir| (dir.clone(), None)))
+    }
+
+    /// Like [`Self::pair`], but each `dir`'s [`WorkingSet::snapshot`]
+    /// returns its patch, diffed against a stand-in base.
+    #[must_use]
+    pub fn with_snapshots(
+        snapshots: impl IntoIterator<Item = (Option<String>, Option<Vec<u8>>)>,
+    ) -> (Self, mpsc::UnboundedSender<(Option<String>, String)>) {
+        let (status_tx, status_rx) = mpsc::unbounded_channel();
         (
             Self {
-                snapshot: patch.map(|patch| WorkdirSnapshot {
-                    base_commit: "0".repeat(40),
-                    patch,
-                }),
+                snapshots: snapshots
+                    .into_iter()
+                    .map(|(dir, patch)| {
+                        (
+                            dir,
+                            patch.map(|patch| WorkdirSnapshot {
+                                base_commit: "0".repeat(40),
+                                patch,
+                            }),
+                        )
+                    })
+                    .collect(),
+                unclonable: std::collections::BTreeSet::new(),
+                status_rx,
             },
-            sender,
-            statuses,
+            status_tx,
         )
+    }
+
+    /// Every `clone_repo` naming one of these directories fails.
+    #[must_use]
+    pub fn unclonable(mut self, dirs: &[&str]) -> Self {
+        self.unclonable
+            .extend(dirs.iter().map(|dir| (*dir).to_owned()));
+        self
     }
 }
 
-impl WorkingTree for FakeWorkdir {
-    fn next_status(&mut self) -> impl Future<Output = Option<String>> + Send {
-        core::future::ready(None)
+impl WorkingSet for FakeRepos {
+    async fn next_status(&mut self) -> Option<(Option<String>, String)> {
+        self.status_rx.recv().await
     }
 
-    fn snapshot(&self) -> impl Future<Output = Result<Option<WorkdirSnapshot>, GitError>> + Send {
-        core::future::ready(Ok(self.snapshot.clone()))
+    fn dirs(&self) -> Vec<Option<String>> {
+        self.snapshots.keys().cloned().collect()
     }
 
-    fn apply(&self, _patch: &[u8]) -> impl Future<Output = Result<(), GitError>> + Send {
-        core::future::ready(Ok(()))
+    fn clone_repo(
+        &mut self,
+        repo: &RepoConfig,
+        _access: &GithubAccess,
+    ) -> impl Future<Output = Result<bool, GitError>> + Send {
+        let answer = if self.snapshots.contains_key(&Some(repo.dir.clone())) {
+            Ok(false)
+        } else if self.unclonable.contains(&repo.dir) {
+            Err(GitError::Failed {
+                command: "clone".to_owned(),
+                detail: format!("{} was refused by the test", repo.slug),
+            })
+        } else {
+            self.snapshots.insert(Some(repo.dir.clone()), None);
+            Ok(true)
+        };
+        core::future::ready(answer)
+    }
+
+    fn snapshot(
+        &self,
+        dir: &Option<String>,
+    ) -> impl Future<Output = Result<Option<WorkdirSnapshot>, GitError>> + Send {
+        core::future::ready(self.snapshots.get(dir).cloned().ok_or_else(|| {
+            GitError::UnknownCheckout(dir.clone().unwrap_or_else(|| ".".to_owned()))
+        }))
+    }
+
+    fn apply(
+        &self,
+        dir: &Option<String>,
+        _patch: &[u8],
+    ) -> impl Future<Output = Result<(), GitError>> + Send {
+        core::future::ready(if self.snapshots.contains_key(dir) {
+            Ok(())
+        } else {
+            Err(GitError::UnknownCheckout(
+                dir.clone().unwrap_or_else(|| ".".to_owned()),
+            ))
+        })
     }
 }
 
@@ -611,7 +851,7 @@ fn finished(
 #[cfg(test)]
 mod tests {
     use super::{GitWorkdir, WorkingTree, clone_from};
-    use crate::config::{GitIdentity, RepoConfig};
+    use crate::config::{GitIdentity, GithubAccess, RepoConfig};
     use uuid::Uuid;
 
     /// The token every clone test authenticates with.
@@ -696,6 +936,13 @@ mod tests {
         RepoConfig {
             slug: "lexoliu/flyco".parse().expect("a valid slug"),
             branch: branch.parse().expect("a valid branch"),
+            dir: "flyco".to_owned(),
+        }
+    }
+
+    /// The shared `[github]` access the clone tests authenticate with.
+    fn access() -> GithubAccess {
+        GithubAccess {
             token: TOKEN.to_owned(),
             identity: GitIdentity {
                 name: COMMIT_NAME.to_owned(),
@@ -801,6 +1048,7 @@ mod tests {
         let outcome = clone_from(
             bare.to_str().expect("a UTF-8 path"),
             &repo_config("main"),
+            &access(),
             &workdir,
         )
         .await;
@@ -822,7 +1070,7 @@ mod tests {
         let remote = origin(&scratch, "dev");
         let workdir = scratch.child("work");
 
-        clone_from(&remote, &repo_config("dev"), &workdir)
+        clone_from(&remote, &repo_config("dev"), &access(), &workdir)
             .await
             .expect("the clone succeeds against a bare repository on disk");
 
@@ -849,13 +1097,13 @@ mod tests {
         let workdir = scratch.child("work");
         assert!(!super::has_checkout(&workdir).await);
 
-        clone_from(&remote, &repo_config("main"), &workdir)
+        clone_from(&remote, &repo_config("main"), &access(), &workdir)
             .await
             .expect("clone");
         assert!(super::has_checkout(&workdir).await);
 
         // And cloning over it is not a thing that could quietly work.
-        clone_from(&remote, &repo_config("main"), &workdir)
+        clone_from(&remote, &repo_config("main"), &access(), &workdir)
             .await
             .expect_err("git refuses a destination that is not empty");
     }
@@ -866,7 +1114,7 @@ mod tests {
         let remote = origin(&scratch, "main");
         let workdir = scratch.child("work");
 
-        clone_from(&remote, &repo_config("main"), &workdir)
+        clone_from(&remote, &repo_config("main"), &access(), &workdir)
             .await
             .expect("clone");
 
@@ -890,7 +1138,7 @@ mod tests {
         let remote = origin(&scratch, "main");
         let workdir = scratch.child("work");
 
-        clone_from(&remote, &repo_config("main"), &workdir)
+        clone_from(&remote, &repo_config("main"), &access(), &workdir)
             .await
             .expect("clone");
 
@@ -913,12 +1161,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_github_token_never_survives_a_debug_rendering() {
-        let config = repo_config("main");
-        let debugged = format!("{config:?}");
+        let github = access();
+        let debugged = format!("{github:?}");
         assert!(!debugged.contains(TOKEN));
-        // Still enough to identify the checkout in a log line.
-        assert!(debugged.contains("lexoliu/flyco"));
-        assert!(debugged.contains("main"));
+        // Still enough to identify whose access it is in a log line.
+        assert!(debugged.contains(COMMIT_NAME));
     }
 
     #[tokio::test]
@@ -927,7 +1174,7 @@ mod tests {
         let remote = origin(&scratch, "main");
         let workdir = scratch.child("work");
 
-        let error = clone_from(&remote, &repo_config("nope"), &workdir)
+        let error = clone_from(&remote, &repo_config("nope"), &access(), &workdir)
             .await
             .expect_err("a missing branch is a session failure, not an empty checkout");
 
@@ -947,7 +1194,7 @@ mod tests {
         let remote = origin(&scratch, "main");
 
         let first = scratch.child("first");
-        clone_from(&remote, &repo_config("main"), &first)
+        clone_from(&remote, &repo_config("main"), &access(), &first)
             .await
             .expect("the original machine's clone");
         std::fs::write(first.join("draft.txt"), "half a refactor\n").expect("write");
@@ -958,7 +1205,7 @@ mod tests {
             .expect("a dirty tree produces a patch");
 
         let second = scratch.child("second");
-        clone_from(&remote, &repo_config("main"), &second)
+        clone_from(&remote, &repo_config("main"), &access(), &second)
             .await
             .expect("the new machine's clone");
         assert!(
@@ -988,7 +1235,7 @@ mod tests {
         let remote = origin(&scratch, "main");
 
         let first = scratch.child("first");
-        clone_from(&remote, &repo_config("main"), &first)
+        clone_from(&remote, &repo_config("main"), &access(), &first)
             .await
             .expect("the original machine's clone");
         let landed = std::process::Command::new("git")
@@ -1019,7 +1266,7 @@ mod tests {
         // Replay is the resume path: clone again, rewind to the base the
         // stored object carries, apply.
         let second = scratch.child("second");
-        clone_from(&remote, &repo_config("main"), &second)
+        clone_from(&remote, &repo_config("main"), &access(), &second)
             .await
             .expect("the new machine's clone");
         let stored = snapshot.encode();

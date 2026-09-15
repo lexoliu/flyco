@@ -8,8 +8,9 @@ const SESSION_ID = "3f2b1c9d-6a4e-4d8b-9f21-7c5a0e3b8d14";
 const SESSION: SessionDetail = {
   id: SESSION_ID,
   title: "Audit the relay for dropped frames",
-  repo: "octocat/hello-world",
-  branch: "dev",
+  repos: [
+    { slug: "octocat/hello-world", branch: "dev", dir: "hello-world", added_by: "user" },
+  ],
   harness: "claude_code",
   model: { model: "default" },
   permission_mode: "auto",
@@ -52,15 +53,18 @@ describe("SessionHeader", () => {
   });
 
   it("reads as the title and the repository, and nothing that is not the conversation", () => {
-    const { getByRole, getByText, queryByLabelText, queryByRole, queryByText } = mount({
+    const { getByRole, queryByLabelText, queryByRole, queryByText } = mount({
       session: SESSION,
       machine: undefined,
     });
 
     expect(getByRole("button", { name: "Audit the relay for dropped frames" })).toBeInTheDocument();
     expect(queryByLabelText("Loading the session")).not.toBeInTheDocument();
-    expect(getByText("octocat/hello-world")).toBeInTheDocument();
-    expect(getByText("· dev")).toBeInTheDocument();
+    // The readout is the popover's trigger: primary repository and its
+    // branch, one label.
+    expect(
+      getByRole("button", { name: "octocat/hello-world · dev" }),
+    ).toBeInTheDocument();
     // No pill, no rings, no SKU (issue #229): the status is read off the
     // transcript, and the budget and context are the composer's row.
     expect(queryByText("Working")).not.toBeInTheDocument();

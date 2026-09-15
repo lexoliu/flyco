@@ -214,6 +214,31 @@ describe("foldTranscript notices", () => {
       1,
     );
   });
+
+  it("names the checkout a dirty tree is in", () => {
+    const [notice] = foldTranscript([
+      at(0, { type: "repo_dirty", dir: "wiki", summary: " M README.md" }),
+    ]);
+
+    expect(notice).toMatchObject({ kind: "notice", tone: "warning" });
+    expect((notice as { text: string }).text).toContain("wiki");
+    expect((notice as { text: string }).text).toContain("M README.md");
+  });
+
+  it("notes a repository joining the workspace", () => {
+    const [notice] = foldTranscript([
+      at(0, {
+        type: "repo_added",
+        slug: "octocat/wiki",
+        branch: "main",
+        dir: "wiki",
+      }),
+    ]);
+
+    expect(notice).toMatchObject({ kind: "notice", tone: "info" });
+    expect((notice as { text: string }).text).toContain("octocat/wiki");
+    expect((notice as { text: string }).text).toContain("wiki/");
+  });
 });
 
 describe("foldTranscript machine changes", () => {

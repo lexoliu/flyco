@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { render } from "@solidjs/testing-library";
 
-import DiffPanel from "./DiffPanel";
+import DiffPanel, { type DiffPanelProps } from "./DiffPanel";
 import { LARGE_DIFF_LINES } from "../lib/patch";
-import type { FileDiff, WorkdirDiff } from "../api/client";
+import type { FileDiff, SessionRepo, WorkdirDiff } from "../api/client";
 
 /** A patch of `lines` added lines, as git would write it. */
 function patchOf(path: string, lines: number): string {
@@ -39,17 +39,41 @@ let diff: WorkdirDiff = {
   truncated: false,
 };
 
+const REPO: SessionRepo = {
+  slug: "octocat/hello-world",
+  branch: "main",
+  dir: "hello-world",
+  added_by: "user",
+};
+
+const SECOND: SessionRepo = {
+  slug: "octocat/wiki",
+  branch: "main",
+  dir: "wiki",
+  added_by: "user",
+};
+
+/** The `repo` argument every `getSessionDiff` call was made with. */
+const diffCalls: (string | undefined)[] = [];
+
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client");
   return {
     ...actual,
-    getSessionDiff: async () => diff,
-    getRepoStatus: async () => ({ dirty: true, summary: " M src/lib.rs" }),
+    getSessionDiff: async (_id: string, repo?: string) => {
+      diffCalls.push(repo);
+      return diff;
+    },
+    getRepoStatus: async () => ({
+      checkouts: [{ dir: "hello-world", dirty: true, summary: " M src/lib.rs" }],
+    }),
   };
 });
 
-function mount() {
-  return render(() => <DiffPanel sessionId="session-1" liveRepoSummary={null} />);
+function mount(overrides: Partial<DiffPanelProps> = {}) {
+  return render(() => (
+    <DiffPanel sessionId="session-1" repos={[REPO]} devMachine={false} {...overrides} />
+  ));
 }
 
 describe("DiffPanel", () => {
@@ -159,5 +183,35 @@ describe("DiffPanel", () => {
     (await findByRole("button", { name: /logo\.png/ })).click();
 
     expect(getByText(/Binary file/)).toBeInTheDocument();
+  });
+
+  it("diffs the primary checkout on a provisioned session", async () => {
+    diffCalls.length = 0;
+    mount();
+
+    // The workspace root is not a repository, so the request always names
+    // a checkout's dir; the default is the primary.
+    await vi.waitFor(() => expect(diffCalls).toContain("hello-world"));
+    expect(diffCalls).not.toContain(undefined);
+  });
+
+  it("names no checkout on a developer machine, whose workdir is the checkout", async () => {
+    diffCalls.length = 0;
+    mount({ devMachine: true });
+
+    await vi.waitFor(() => expect(diffCalls.length).toBeGreaterThan(0));
+    expect(diffCalls).toEqual([undefined]);
+  });
+
+  it("switches checkouts from the row of tabs", async () => {
+    diffCalls.length = 0;
+    const { findByRole } = mount({ repos: [REPO, SECOND] });
+
+    const tab = await findByRole("tab", { name: "octocat/wiki" });
+    expect(tab).toHaveAttribute("aria-selected", "false");
+    tab.click();
+
+    expect(tab).toHaveAttribute("aria-selected", "true");
+    await vi.waitFor(() => expect(diffCalls).toContain("wiki"));
   });
 });

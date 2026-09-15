@@ -1,6 +1,9 @@
-Refused: the working tree has uncommitted changes.
+Refused: a working tree has uncommitted changes.
 
 Resizing restarts the machine, and only what is on the disk survives that — every process you have running dies, and so does anything you were holding but had not written down. Commit or stash the changes first. If you mean to resize with the tree dirty, call this again with `force: true` and a `reason`: the changes themselves stay on the disk, but nothing else about the running state does.
 
-git status --short:
+git status --short, per checkout:
+{% for (dir, summary) in checkouts -%}
+{{ dir }}:
 {{ summary }}
+{% endfor -%}

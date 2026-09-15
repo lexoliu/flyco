@@ -32,7 +32,7 @@ use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 29] = [
+pub const MIGRATIONS: [&str; 30] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -62,6 +62,7 @@ pub const MIGRATIONS: [&str; 29] = [
     include_str!("../../../migrations/0028_devin_harness.sql"),
     include_str!("../../../migrations/0029_session_handoffs.sql"),
     include_str!("../../../migrations/0030_github_grant.sql"),
+    include_str!("../../../migrations/0031_session_repos.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -1244,8 +1245,10 @@ pub async fn seed_session(db: &Db, user: &CurrentUser) -> flyco_core::SessionId 
             user: user.id,
             title: SEEDED_TITLE,
             harness: flyco_core::HarnessKind::ClaudeCode,
-            repo: &TEST_REPO.parse().expect("a valid repo slug"),
-            branch: &TEST_DEFAULT_BRANCH.parse().expect("a valid branch"),
+            repos: &[crate::sessions::RepoOpening {
+                slug: TEST_REPO.parse().expect("a valid repo slug"),
+                branch: TEST_DEFAULT_BRANCH.parse().expect("a valid branch"),
+            }],
             machine_origin: flyco_core::MachineOrigin::Auto,
             budget: flyco_core::BudgetConfig::new(flyco_core::Usd::from_dollars(10))
                 .expect("a valid budget"),

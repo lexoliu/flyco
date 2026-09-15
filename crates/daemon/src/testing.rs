@@ -42,7 +42,8 @@ pub fn bootstrap() -> flyco_provider::DaemonBootstrap {
         auth: flyco_provider::HarnessCredential::ClaudeCode(
             flyco_provider::ClaudeCredential::Inherit,
         ),
-        repo: flyco_provider::testing::checkout(),
+        repos: flyco_provider::testing::checkouts(),
+        github: flyco_provider::testing::github(),
         machine_origin: flyco_core::MachineOrigin::Auto,
         machine: flyco_provider::testing::session_machine(),
         resume_session_id: None,
@@ -93,12 +94,14 @@ pub enum Call {
     Synced,
     /// The reclamation was reported to the control plane over REST.
     SpotNoticeReported(u32),
-    /// The working tree was stored as a patch, with its size in bytes.
+    /// A checkout's uncommitted work was stored as a patch, with the
+    /// checkout's directory (`None` for the developer-machine root) and the
+    /// patch's size in bytes.
     ///
     /// The container counterpart of [`Self::Synced`]: a machine with no
     /// disk gets its uncommitted work off the machine rather than onto a
     /// disk, and the ordering test asserts which of the two happened.
-    WorkdirPatchStored(usize),
+    WorkdirPatchStored(Option<String>, usize),
     /// The stop was reported to the control plane over REST.
     StoppingReported(flyco_core::StopReason),
     /// The models the harness offers were filed with the control plane.

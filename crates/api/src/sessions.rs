@@ -8,9 +8,9 @@
 use flyco_core::{
     ARCHIVE_AFTER_IDLE_SECS, ApprovalState, BranchName, BudgetConfig, BudgetId, BudgetStage,
     ClientEvent, HarnessKind, HarnessSessionView, InterruptedReason, MAX_SESSION_TITLE_CHARS,
-    MachineOrigin, ModelChoice, PROVISION_DEADLINE_SECS, PausedReason, PermissionMode, RepoSlug,
-    SUSPEND_AFTER_IDLE_SECS, SessionActivity, SessionDetail, SessionId, SessionState,
-    SessionSummary, UsageLimitPause, Usd, UserId, builtin_models,
+    MachineOrigin, ModelChoice, PROVISION_DEADLINE_SECS, PausedReason, PermissionMode, RepoAddedBy,
+    RepoSlug, SUSPEND_AFTER_IDLE_SECS, SessionActivity, SessionDetail, SessionId, SessionRepo,
+    SessionState, SessionSummary, UsageLimitPause, Usd, UserId, builtin_models,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -20,6 +20,22 @@ use crate::clock::now_unix;
 use crate::error::ApiError;
 use crate::machines;
 use crate::rooms::Rooms;
+use crate::session_repos;
+
+/// The repositories a session checks out, packed into the session row.
+///
+/// A session's rows are one-to-many with `session_repos`, and the shape
+/// the API serves is a summary carrying the whole set — so the queries
+/// read them as a `json_group_array` document rather than joining rows
+/// that would multiply every other column. Parsed in [`repos_of`], which
+/// is where a row whose JSON does not describe repositories is reported
+/// as corrupt rather than silently answered with none.
+const REPOS_JSON: &str = "COALESCE(\
+    (SELECT json_group_array(json_object(\
+        'slug', r.slug, 'branch', r.branch, 'dir', r.dir, 'added_by', r.added_by)) \
+     FROM (SELECT slug, branch, dir, added_by FROM session_repos \
+           WHERE session_id = s.id ORDER BY position) r), \
+    '[]') AS repos_json";
 
 /// The session a caller may still archive, and its budget.
 #[derive(Debug, skyzen::FromRow)]
@@ -27,8 +43,9 @@ struct SessionRow {
     id: SessionId,
     title: String,
     harness: HarnessKind,
-    repo: RepoSlug,
-    branch: Option<BranchName>,
+    /// Every `session_repos` row for this session as one JSON array, in
+    /// `position` order. Read by [`repos_of`].
+    repos_json: String,
     state: SessionState,
     activity: SessionActivity,
     /// Whether an approval raised against this session is still undecided.
@@ -90,27 +107,40 @@ fn mode_of(mode: Option<PermissionMode>) -> PermissionMode {
     mode.unwrap_or(PermissionMode::PRODUCT_DEFAULT)
 }
 
-impl From<SessionRow> for SessionSummary {
-    fn from(row: SessionRow) -> Self {
-        Self {
-            id: row.id,
-            title: row.title,
-            harness: row.harness,
-            repo: row.repo,
-            branch: row.branch,
-            state: row.state,
+/// The repositories a stored session checks out, as the summary carries
+/// them.
+///
+/// A row whose `repos_json` does not decode is corrupt — nothing writes
+/// the column but `session_repos` itself — and a summary built without the
+/// set would tell the header a session has no repository at all, which is
+/// a worse answer than an error.
+fn repos_of(row: &SessionRow) -> Result<Vec<SessionRepo>, ApiError> {
+    serde_json::from_str(&row.repos_json)
+        .map_err(|_| ApiError::CorruptRecord("session_repos did not read back as repositories"))
+}
+
+impl SessionRow {
+    /// The summary a stored row projects to, repositories included.
+    fn into_summary(self) -> Result<SessionSummary, ApiError> {
+        let repos = repos_of(&self)?;
+        Ok(SessionSummary {
+            id: self.id,
+            title: self.title,
+            harness: self.harness,
+            repos,
+            state: self.state,
             // An undecided approval blocks the agent whatever the last turn
             // event said, so it is applied here, once, where every reader
             // of a session goes through.
-            activity: row.activity.with_pending_approval(row.approval_pending),
-            machine_origin: row.machine_origin,
-            interrupted_reason: row.interrupted_reason,
-            paused_reason: row.paused_reason,
-            created_at_unix: row.created_at_unix,
-            last_active_unix: row.last_active_unix,
-            model: model_of(row.harness, row.model, row.effort),
-            permission_mode: mode_of(row.permission_mode),
-        }
+            activity: self.activity.with_pending_approval(self.approval_pending),
+            machine_origin: self.machine_origin,
+            interrupted_reason: self.interrupted_reason,
+            paused_reason: self.paused_reason,
+            created_at_unix: self.created_at_unix,
+            last_active_unix: self.last_active_unix,
+            model: model_of(self.harness, self.model, self.effort),
+            permission_mode: mode_of(self.permission_mode),
+        })
     }
 }
 
@@ -124,7 +154,7 @@ async fn detail_from(db: &Db, row: SessionRow) -> Result<SessionDetail, ApiError
         .flatten();
     let usage_limit = usage_limit_of(&row)?;
     Ok(SessionDetail {
-        summary: row.into(),
+        summary: row.into_summary()?,
         budget,
         failure,
         usage_limit,
@@ -206,12 +236,26 @@ pub async fn live_on_harness(db: &Db, user: UserId, harness: HarnessKind) -> Res
     .await?)
 }
 
+/// One repository a session opens with.
+///
+/// The branch is the concrete name [`crate::repos`] resolved — the caller's
+/// or the repository's default — never the `None` the request carries:
+/// what a checkout is on is recorded once, here, and the provisioning
+/// queue reads it rather than asking GitHub again.
+#[derive(Debug, Clone)]
+pub struct RepoOpening {
+    /// Repository it works in.
+    pub slug: RepoSlug,
+    /// Branch it works on, already resolved.
+    pub branch: BranchName,
+}
+
 /// Everything `POST /v1/sessions` decided before a row could be written.
 ///
-/// One argument rather than six positional ones: `harness`, `repo`, and
+/// One argument rather than six positional ones: `harness`, `repos`, and
 /// `title` are all things a session is opened with, and a call site that
 /// swaps two of them would still compile.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Opening<'a> {
     /// Whose session it is.
     pub user: UserId,
@@ -219,11 +263,10 @@ pub struct Opening<'a> {
     pub title: &'a str,
     /// Which coding harness drives it.
     pub harness: HarnessKind,
-    /// Repository it works in.
-    pub repo: &'a RepoSlug,
-    /// Branch it works on — the one the caller named, or the repository's
-    /// default as GitHub reported it while the session was being created.
-    pub branch: &'a BranchName,
+    /// Repositories it works in, in the order the caller chose them. The
+    /// first is the primary the session header names; at least one is
+    /// required — a session that checks out nothing has nothing to work in.
+    pub repos: &'a [RepoOpening],
     /// Whether flyco or the caller chose the machine.
     pub machine_origin: MachineOrigin,
     /// What it may spend.
@@ -267,8 +310,7 @@ pub async fn create(db: &Db, cap: u32, opening: Opening<'_>) -> Result<SessionDe
     let Opening {
         title,
         harness,
-        repo,
-        branch,
+        repos,
         machine_origin,
         model,
         permission_mode,
@@ -280,14 +322,22 @@ pub async fn create(db: &Db, cap: u32, opening: Opening<'_>) -> Result<SessionDe
     sql!(
         db,
         "INSERT INTO sessions \
-         (id, user_id, title, harness, repo, branch, state, machine_origin, budget_id, \
+         (id, user_id, title, harness, state, machine_origin, budget_id, \
           created_at_unix, last_active_unix, model, effort, permission_mode) \
-         VALUES ({id}, {user}, {title}, {harness}, {repo}, {branch}, \
+         VALUES ({id}, {user}, {title}, {harness}, \
                  {SessionState::Provisioning}, {machine_origin}, {budget_id}, {now}, {now}, \
                  {model}, {effort}, {permission_mode})"
     )
     .execute()
     .await?;
+
+    // Each repository gets its row through `attach` so the directory it is
+    // checked out under is chosen against the same set the write sees —
+    // `owner--name` when the repository's own name is already taken — and
+    // a request that names one twice is refused rather than doubled.
+    for repo in repos {
+        session_repos::attach(db, id, &repo.slug, &repo.branch, RepoAddedBy::User).await?;
+    }
 
     find(db, user, id).await
 }
@@ -469,27 +519,33 @@ pub async fn set_budget_limit(
 
 /// Lists the caller's sessions, newest first.
 ///
+/// The statement is built rather than literal because [`REPOS_JSON`] — the
+/// `session_repos` document the summary is served with — is written once
+/// and shared with [`load`].
+///
 /// # Errors
 ///
 /// Returns [`ApiError`] if the database fails or a stored row is malformed.
 pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError> {
-    let pending = ApprovalState::Pending;
-    let rows: Vec<SessionRow> = sql!(
-        db,
-        "SELECT s.id, s.title, s.harness, s.repo, s.branch, s.state, s.activity, \
-         EXISTS (SELECT 1 FROM approvals a WHERE a.session_id = s.id AND a.state = {pending}) \
+    let statement = format!(
+        "SELECT s.id, s.title, s.harness, {REPOS_JSON}, s.state, s.activity, \
+         EXISTS (SELECT 1 FROM approvals a WHERE a.session_id = s.id AND a.state = ?) \
          AS approval_pending, \
          s.machine_origin, s.budget_id, s.failure_reason, s.interrupted_reason, \
          s.paused_reason, s.usage_limit_window, s.usage_limit_resets_at_unix, \
          s.usage_limit_resume_at_unix, s.usage_limit_queued_message, \
          s.created_at_unix, s.last_active_unix, s.model, s.effort, s.permission_mode \
-         FROM sessions s WHERE s.user_id = {user} \
+         FROM sessions s WHERE s.user_id = ? \
          ORDER BY s.created_at_unix DESC, s.id DESC"
-    )
-    .fetch_all()
-    .await?;
+    );
+    let rows: Vec<SessionRow> = db
+        .query(&statement)
+        .bind(ApprovalState::Pending)
+        .bind(user)
+        .fetch_all()
+        .await?;
 
-    Ok(rows.into_iter().map(Into::into).collect())
+    rows.into_iter().map(SessionRow::into_summary).collect()
 }
 
 /// Loads one of the caller's sessions.
@@ -585,21 +641,23 @@ pub async fn require_active(db: &Db, user: UserId, id: SessionId) -> Result<(), 
 }
 
 async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiError> {
-    let pending = ApprovalState::Pending;
-    sql!(
-        db,
-        "SELECT s.id, s.title, s.harness, s.repo, s.branch, s.state, s.activity, \
-         EXISTS (SELECT 1 FROM approvals a WHERE a.session_id = s.id AND a.state = {pending}) \
+    let statement = format!(
+        "SELECT s.id, s.title, s.harness, {REPOS_JSON}, s.state, s.activity, \
+         EXISTS (SELECT 1 FROM approvals a WHERE a.session_id = s.id AND a.state = ?) \
          AS approval_pending, \
          s.machine_origin, s.budget_id, s.failure_reason, s.interrupted_reason, \
          s.paused_reason, s.usage_limit_window, s.usage_limit_resets_at_unix, \
          s.usage_limit_resume_at_unix, s.usage_limit_queued_message, \
          s.created_at_unix, s.last_active_unix, s.model, s.effort, s.permission_mode \
-         FROM sessions s WHERE s.id = {id} AND s.user_id = {user}"
-    )
-    .fetch_optional()
-    .await?
-    .ok_or(ApiError::SessionNotFound)
+         FROM sessions s WHERE s.id = ? AND s.user_id = ?"
+    );
+    db.query(&statement)
+        .bind(ApprovalState::Pending)
+        .bind(id)
+        .bind(user)
+        .fetch_optional()
+        .await?
+        .ok_or(ApiError::SessionNotFound)
 }
 
 // ── The provisioning queue's own reads and writes ──
@@ -615,18 +673,10 @@ async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiErr
 #[derive(Debug, Clone, skyzen::FromRow)]
 pub struct ProvisioningTarget {
     /// Whose session it is, which is whose harness account funds it, and
-    /// whose GitHub authorization its checkout is made with.
+    /// whose GitHub authorization its checkouts are made with.
     pub user_id: UserId,
     /// Which harness the machine's daemon will drive.
     pub harness: HarnessKind,
-    /// The repository the machine checks out.
-    pub repo: RepoSlug,
-    /// The branch it checks out.
-    ///
-    /// `None` for a session opened before flyco recorded one; the queue
-    /// resolves the repository's default branch from GitHub and writes it
-    /// back, so it is `None` at most once per session.
-    pub branch: Option<BranchName>,
     /// Whether flyco or the user chose the machine being built.
     ///
     /// Carried into the daemon's bootstrap so the agent can be told, and
@@ -688,31 +738,11 @@ pub async fn provisioning_target(
 ) -> Result<Option<ProvisioningTarget>, ApiError> {
     Ok(sql!(
         db,
-        "SELECT user_id, harness, repo, branch, machine_origin, state, model, effort, \
+        "SELECT user_id, harness, machine_origin, state, model, effort, \
          permission_mode FROM sessions WHERE id = {id}"
     )
     .fetch_optional()
     .await?)
-}
-
-/// Records the branch a session works on.
-///
-/// Written by `POST /v1/sessions` through [`create`] for every session
-/// opened since flyco recorded branches, and by the provisioning queue for
-/// the ones opened before it — which resolve the repository's default branch
-/// from GitHub the first time they are put on a machine. Recording it there
-/// rather than resolving it again on every provision is what makes a
-/// session's branch stable: a repository whose default moves must not move
-/// a session that has already been built on the old one.
-///
-/// # Errors
-///
-/// Returns [`ApiError`] if the write fails.
-pub async fn record_branch(db: &Db, id: SessionId, branch: &BranchName) -> Result<(), ApiError> {
-    sql!(db, "UPDATE sessions SET branch = {branch} WHERE id = {id}")
-        .execute()
-        .await?;
-    Ok(())
 }
 
 /// Reads whose session this is.
