@@ -23,6 +23,7 @@ pub mod pick;
 
 pub mod auth;
 pub mod discover;
+pub mod handoff;
 pub mod human;
 pub mod run;
 pub mod session;

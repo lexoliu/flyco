@@ -1049,6 +1049,120 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/providers/codespaces/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/providers/codespaces/bootstrap` — a running codespace asks for its session's daemon configuration.
+         * @description `POST /v1/providers/codespaces/bootstrap` — a running codespace asks for
+         *     its session's daemon configuration.
+         *
+         *     Public because it cannot be anything else: the caller is a machine
+         *     GitHub just built, which holds no flyco credential. What it presents is
+         *     the `GITHUB_TOKEN` injected into it, and that is checked against the
+         *     environment repository rather than against a flyco store — a token that
+         *     can read `owner/flyco-sessions` is one GitHub minted for a codespace on
+         *     it.
+         */
+        post: operations["flyco_api::codespaces::bootstrap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/codespaces/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /v1/providers/codespaces/oauth/callback` — records what GitHub said.
+         * @description `GET /v1/providers/codespaces/oauth/callback` — records what GitHub
+         *     said.
+         *
+         *     Public, for the reason [`azure_callback`] is. Same OAuth app as the
+         *     sign-in, on its own registered URI.
+         */
+        get: operations["flyco_api::provider_oauth::codespaces_callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/codespaces/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/providers/codespaces/oauth/start` — begins a GitHub sign-in for the `codespace` scope.
+         * @description `POST /v1/providers/codespaces/oauth/start` — begins a GitHub sign-in
+         *     for the `codespace` scope.
+         */
+        post: operations["flyco_api::provider_oauth::codespaces_start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/codespaces/oauth/{attempt_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /v1/providers/codespaces/oauth/{attempt_id}` — polls it once.
+         * @description `GET /v1/providers/codespaces/oauth/{attempt_id}` — polls it once.
+         */
+        get: operations["flyco_api::provider_oauth::codespaces_poll"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers/codespaces/oauth/{attempt_id}/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/providers/codespaces/oauth/{attempt_id}/finish` — creates the environment repository and links the account.
+         * @description `POST /v1/providers/codespaces/oauth/{attempt_id}/finish` — creates the
+         *     environment repository and links the account.
+         */
+        post: operations["flyco_api::provider_oauth::codespaces_finish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/providers/gcp/oauth/callback": {
         parameters: {
             query?: never;
@@ -1628,8 +1742,9 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Diffs a session's working tree against the branch it started from.
-         * @description Diffs a session's working tree against the branch it started from.
+         * Diffs one checkout of a session's workspace against the branch it started from.
+         * @description Diffs one checkout of a session's workspace against the branch it
+         *     started from.
          */
         get: operations["flyco_api::app::get_session_diff"];
         put?: never;
@@ -1733,6 +1848,95 @@ export interface paths {
          */
         get: operations["flyco_api::app::read_session_file"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/handoff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reads the handoff manifest behind the daemon's session, or 404s when the session is none — the boot path's way to learn there is a patch to apply and a transcript to land.
+         * @description Reads the handoff manifest behind the daemon's session, or 404s when
+         *     the session is none — the boot path's way to learn there is a patch to
+         *     apply and a transcript to land.
+         */
+        get: operations["flyco_api::app::get_handoff"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/handoff/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verifies a handoff's payloads against its manifest and frees the session to provision. Idempotent: a replayed manifest answers as a second call rather than a second machine.
+         * @description Verifies a handoff's payloads against its manifest and frees the
+         *     session to provision. Idempotent: a replayed manifest answers as a
+         *     second call rather than a second machine.
+         */
+        post: operations["flyco_api::app::complete_handoff"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/handoff/patch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Stores a handoff's working-tree patch.
+         * @description Stores a handoff's working-tree patch.
+         */
+        put: operations["flyco_api::app::put_handoff_patch"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/handoff/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Streams the handoff's uploaded transcript.
+         * @description Streams the handoff's uploaded transcript.
+         */
+        get: operations["flyco_api::app::get_handoff_transcript"];
+        /**
+         * Stores a handoff's full transcript, which the daemon later writes to disk for the cloud harness to consult.
+         * @description Stores a handoff's full transcript, which the daemon later writes to
+         *     disk for the cloud harness to consult.
+         */
+        put: operations["flyco_api::app::put_handoff_transcript"];
         post?: never;
         delete?: never;
         options?: never;
@@ -2074,6 +2278,32 @@ export interface paths {
         get: operations["flyco_api::app::get_repo_status"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/repos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adds a repository to a session's workspace, at the user's hand.
+         * @description Adds a repository to a session's workspace, at the user's hand.
+         *
+         *     The row is written before the daemon is told, in the same order a
+         *     decided approval works in: the repository is a fact of the session
+         *     whether or not a machine is listening — a daemon that is not attached
+         *     has the command held for it, and a machine provisioned after this reads
+         *     the whole set at boot anyway.
+         */
+        post: operations["flyco_api::app::add_session_repo"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2503,13 +2733,15 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Reads a previously stored uncommitted diff, for a resume onto a new host.
-         * @description Reads a previously stored uncommitted diff, for a resume onto a new host.
+         * Reads a previously stored uncommitted diff of one checkout, for a resume onto a new host.
+         * @description Reads a previously stored uncommitted diff of one checkout, for a resume
+         *     onto a new host.
          */
         get: operations["flyco_api::app::get_workdir_patch"];
         /**
-         * Stores the uncommitted diff of a session about to be archived automatically.
-         * @description Stores the uncommitted diff of a session about to be archived automatically.
+         * Stores the uncommitted diff of one checkout of a session about to be archived automatically.
+         * @description Stores the uncommitted diff of one checkout of a session about to be
+         *     archived automatically.
          */
         put: operations["flyco_api::app::put_workdir_patch"];
         post?: never;
@@ -2740,6 +2972,15 @@ export interface components {
             /** @description Why the agent says the session needs this machine. */
             reason: string;
         } | {
+            /** @description Branch to check out. `None` asks for the repository's default. */
+            branch?: string | null;
+            /** @enum {string} */
+            kind: "repo_add";
+            /** @description Why the agent says the session needs it, as shown on the card. */
+            reason: string;
+            /** @description Repository in `owner/name` form. */
+            repo: string;
+        } | {
             /** @description Tool input as the harness reports it. */
             input: unknown;
             /** @enum {string} */
@@ -2922,6 +3163,20 @@ export interface components {
              */
             path?: string | null;
         };
+        /** @description One checkout's working-tree state. */
+        CheckoutStatus: {
+            /**
+             * @description Which checkout, as [`SessionRepo::dir`] names it.
+             *
+             *     `None` is the workspace root itself — the shape of a session on a
+             *     developer's machine, where the workdir *is* the checkout.
+             */
+            dir?: string | null;
+            /** @description Whether the working tree has changes that are not committed. */
+            dirty: boolean;
+            /** @description `git status --short`, as the daemon last read it. Empty when clean. */
+            summary: string;
+        };
         /**
          * @description Response of `POST /v1/harness-accounts/claude/oauth/start`.
          *
@@ -2979,7 +3234,7 @@ export interface components {
          * @description A supported compute provider.
          * @enum {string}
          */
-        CloudProviderKind: "azure" | "aws" | "gcp" | "host";
+        CloudProviderKind: "azure" | "aws" | "gcp" | "codespaces" | "host";
         /** @description Narrows the cloud usage panel to one provider. */
         CloudUsageFilter: {
             provider?: null | components["schemas"]["CloudProviderKind"];
@@ -3006,6 +3261,34 @@ export interface components {
             remaining_credit?: null | components["schemas"]["Usd"];
             /** @description Spend the provider has metered so far this period. */
             spent: components["schemas"]["Usd"];
+        };
+        /**
+         * @description Answer of `POST /v1/providers/codespaces/bootstrap`.
+         *
+         *     The rendered `flycod` configuration document for the session this
+         *     codespace serves — credentials included, which is why it travels sealed
+         *     at rest and only ever leaves the control plane to the codespace that
+         *     proves it is that machine.
+         */
+        CodespacesBootstrap: {
+            /** @description The daemon's `config.toml`, ready to write. */
+            config_toml: string;
+        };
+        /**
+         * @description Request body of `POST /v1/providers/codespaces/bootstrap`.
+         *
+         *     Called by `flycod codespace` — the `postStart` of a running codespace,
+         *     authenticated by the `GITHUB_TOKEN` the codespace is injected with rather
+         *     than by a flyco credential: the token proves the caller is the account's
+         *     own compute, and `codespace_name` names which session's configuration it
+         *     is entitled to fetch.
+         */
+        CodespacesBootstrapRequest: {
+            /**
+             * @description The codespace's own name, from its `CODESPACE_NAME` environment
+             *     variable — which is also the machine's provider-native id.
+             */
+            codespace_name: string;
         };
         /**
          * @description Body of a `GET /v1/harness-accounts/codex/oauth/{attempt_id}` that found
@@ -3189,17 +3472,6 @@ export interface components {
         };
         /** @description Request body of `POST /v1/sessions`. */
         CreateSession: {
-            /**
-             * @description Branch to check out. Untyped for the same reason as
-             *     [`repo`](Self::repo): the control plane parses it into a
-             *     [`BranchName`](crate::repo::BranchName) and refuses anything git
-             *     would.
-             *
-             *     Omitted, the control plane asks GitHub for the repository's default
-             *     branch and records *that*, so a session always names the branch it
-             *     works on rather than leaving every later reader to guess.
-             */
-            branch?: string | null;
             /** @description Spending limit for the whole session. */
             budget_limit: components["schemas"]["Usd"];
             /**
@@ -3228,11 +3500,17 @@ export interface components {
              */
             prompt: string;
             /**
-             * @description Repository to work in, `owner/name`. Untyped here because it is
-             *     untrusted input; the control plane parses it into a
-             *     [`RepoSlug`](crate::repo::RepoSlug) and rejects anything else.
+             * @description Repositories the session works across, primary first.
+             *
+             *     A session always has at least one: the workdir is laid out as a
+             *     workspace holding every checkout, and the first entry is the
+             *     repository the header names. Untrusted input — the control plane
+             *     parses each `repo` into a [`RepoSlug`](crate::repo::RepoSlug) and
+             *     each `branch` into a [`BranchName`](crate::repo::BranchName), and
+             *     refuses anything else.
              */
-            repo: string;
+            repos: components["schemas"]["RepoSelection"][];
+            source?: null | components["schemas"]["SessionSource"];
             /**
              * @description Whether to ask for interruptible spot capacity when flyco picks the
              *     machine. Ignored when [`Self::machine`] names a type, because that
@@ -3411,10 +3689,25 @@ export interface components {
             /** @enum {string} */
             type: "shell_exited";
         } | {
+            /**
+             * @description Which checkout — [`SessionRepo::dir`](crate::repo::SessionRepo::dir),
+             *     or `None` for a session whose workdir is itself the checkout
+             *     (the developer-machine shape).
+             */
+            dir?: string | null;
             /** @description `git status --porcelain` summary shown to the user. */
             summary: string;
             /** @enum {string} */
             type: "repo_dirty";
+        } | {
+            /** @description The branch it is on. */
+            branch: components["schemas"]["BranchName"];
+            /** @description The directory under the workdir it was cloned into. */
+            dir: string;
+            /** @description The repository now checked out. */
+            slug: components["schemas"]["RepoSlug"];
+            /** @enum {string} */
+            type: "repo_added";
         } | {
             /**
              * Format: int32
@@ -3612,6 +3905,16 @@ export interface components {
              * @description The watcher id the desktop stream's `hello` event named.
              */
             watcher: number;
+        };
+        /** @description Which checkout a `diff` asks about. */
+        DiffQuery: {
+            /**
+             * @description The checkout's directory under the workdir, as
+             *     [`SessionRepo::dir`](flyco_core::SessionRepo::dir) names it.
+             *     Omitted on a session whose workdir is itself the checkout — the
+             *     developer-machine shape.
+             */
+            repo?: string | null;
         };
         /** @description One row of a directory listing. */
         DirectoryEntry: {
@@ -3814,6 +4117,16 @@ export interface components {
             /** @description Which of the authorized subscriptions to provision into. */
             subscription_id: string;
         };
+        /**
+         * @description Request body of `POST /v1/providers/codespaces/oauth/{attempt_id}/finish`.
+         *
+         *     Empty where Azure's and Google's are not: a subscription and a project
+         *     are things an account holds many of and the user must pick between,
+         *     while a Codespaces link has nothing to choose — flyco creates the one
+         *     private repository it provisions on, `flyco-sessions`, inside whichever
+         *     GitHub account signed in.
+         */
+        FinishCodespacesOauth: Record<string, never>;
         /** @description Request body of `POST /v1/providers/gcp/oauth/{attempt_id}/finish`. */
         FinishGcpOauth: {
             /** @description Which of the authorized projects to provision into. */
@@ -3846,6 +4159,49 @@ export interface components {
              * @description vCPU-seconds the provider does not bill for, per month.
              */
             vcpu_seconds_per_month: number;
+        };
+        /**
+         * @description `POST /v1/sessions/{id}/handoff/complete` body — the integrity record
+         *     of the two uploaded objects.
+         *
+         *     Checksums, not just sizes: the daemon verifies `patch_sha256` before
+         *     `git apply`, so a corrupted object is a clear startup failure rather
+         *     than a mysteriously malformed diff.
+         */
+        HandoffManifest: {
+            /**
+             * Format: int64
+             * @description Byte length of the patch object.
+             */
+            patch_bytes: number;
+            /** @description Lowercase hex SHA-256 of the patch object. */
+            patch_sha256: string;
+            /**
+             * Format: int64
+             * @description Byte length of the transcript object.
+             */
+            transcript_bytes: number;
+            /** @description Lowercase hex SHA-256 of the transcript object. */
+            transcript_sha256: string;
+        };
+        /**
+         * @description `GET /v1/sessions/{id}/handoff`, daemon-scoped — what the daemon
+         *     materializes after cloning, or `404` for a session that was never a
+         *     handoff.
+         */
+        HandoffView: {
+            /** @description The commit to check out before applying the stored patch. */
+            base_commit: string;
+            /**
+             * @description Whether a transcript object exists for
+             *     `GET /v1/sessions/{id}/handoff/transcript` to fetch.
+             */
+            has_transcript: boolean;
+            /**
+             * @description SHA-256 the applied patch must hash to, verified before `git
+             *     apply` so a corrupt object fails loudly.
+             */
+            patch_sha256: string;
         };
         /**
          * @description A Claude or Codex account the user has linked, as `GET
@@ -3976,6 +4332,11 @@ export interface components {
             kind: "codex_oauth";
             /** @description Redeemed for a new set once the access token is near its end. */
             refresh_token: string;
+        } | {
+            /** @description The `devi…` key Devin's API server issues. */
+            key: string;
+            /** @enum {string} */
+            kind: "devin_api_key";
         };
         /**
          * @description A normalized event extracted from either harness's native stream.
@@ -4060,15 +4421,23 @@ export interface components {
             claude_code: components["schemas"]["Availability"];
             /** @description Status on Codex. */
             codex: components["schemas"]["Availability"];
+            /** @description Status on Devin. */
+            devin: components["schemas"]["Availability"];
             /** @description The capability. */
             feature: components["schemas"]["Feature"];
         };
         /**
-         * @description The coding harness driving a session. Flyco supports exactly these two
+         * @description The coding harness driving a session. Flyco supports exactly these
          *     and never builds its own.
+         *
+         *     This is the *product* vocabulary — what a session row names, what an
+         *     account is linked to, what the picker offers. How each one is driven
+         *     is [`DriverKind`]'s question: every harness but Claude Code reaches
+         *     its agent over ACP, so a Codex session and a Devin session are the
+         *     same daemon machinery pointed at a different program.
          * @enum {string}
          */
-        HarnessKind: "claude_code" | "codex";
+        HarnessKind: "claude_code" | "codex" | "devin";
         /**
          * @description One thing a session's daemon saw happen to the harness account driving
          *     it, as `POST /v1/sessions/{id}/harness-observations` records it.
@@ -4307,7 +4676,7 @@ export interface components {
          *     and cleared when the session's daemon reaches the control plane again.
          * @enum {string}
          */
-        InterruptedReason: "spot_reclaimed";
+        InterruptedReason: "spot_reclaimed" | "suspended" | "machine_lost";
         /**
          * @description What came of one container job on a host.
          *
@@ -4380,6 +4749,33 @@ export interface components {
              * @description When that limit resets, when the harness named a time.
              */
             resets_at_unix?: number | null;
+        };
+        /** @description The provenance a `flyco handoff` create declares. */
+        LocalHandoff: {
+            /**
+             * @description The commit the local work was based on — `git merge-base HEAD
+             *     origin/<branch>` — which the cloud checkout rewinds the branch to
+             *     before the patch applies, so the patch reproduces the local tree
+             *     byte-for-byte rather than failing against a moved branch tip.
+             */
+            base_commit: string;
+            /**
+             * @description Which harness the local session ran under. The cloud session's own
+             *     `harness` may differ — a Claude session handed to Codex is a
+             *     legitimate move — so the source is recorded rather than assumed.
+             */
+            harness: components["schemas"]["HarnessKind"];
+            /**
+             * @description The sender's local workdir as an absolute path. Recorded for the
+             *     handoff prompt's path map and for forensics; the daemon never
+             *     materializes it.
+             */
+            local_workdir: string;
+            /**
+             * @description The harness-native session id being handed off — Claude's session
+             *     UUID, Codex's rollout/thread id, Devin's session name.
+             */
+            session_id: string;
         };
         /**
          * @description How much compute a catalog entry offers.
@@ -4798,6 +5194,20 @@ export interface components {
          */
         OsFamily: "linux" | "mac_os" | "windows";
         /**
+         * @description Which checkout a `workdir-patch` is the diff of.
+         *
+         *     Daemon-scoped, so the value is trusted to be one of the session's own
+         *     `dir`s — the daemon wrote them — but the key is still built from the
+         *     session id rather than from the caller's claim, which is what keeps the
+         *     scope airtight. Absent names the workspace root itself: the
+         *     developer-machine shape, where the workdir is the checkout and no `dir`
+         *     exists.
+         */
+        PatchQuery: {
+            /** @description The checkout's directory under the workdir. */
+            repo?: string | null;
+        };
+        /**
          * @description Why a session is [`SessionState::Paused`].
          *
          *     Recorded beside the state for the reason [`InterruptedReason`] is: the
@@ -4991,6 +5401,61 @@ export interface components {
             /** @description The whole service-account key document. */
             service_account_json: string;
         } | {
+            /**
+             * @description The private environment repository every codespace is created
+             *     on, `owner/name`.
+             *
+             *     Created by flyco at link time, holding only the devcontainer
+             *     that boots a session machine. A codespace must belong to a
+             *     repository, and this one being private is what keeps the
+             *     sessions inside it the user's own.
+             */
+            env_repo: string;
+            /**
+             * Format: int64
+             * @description The environment repository's immutable numeric id, which is what
+             *     the create call names it by.
+             */
+            env_repo_id: number;
+            /**
+             * Format: int32
+             * @description Core-hours of compute the account's plan does not bill for per
+             *     month: 120 on GitHub Free, 180 on Pro.
+             *
+             *     Recorded at link time from the plan `GET /user` reported. A plan
+             *     change between links is seen on the next one; the grant is per
+             *     account and per month, so every entry of this catalog shares it.
+             */
+            included_core_hours: number;
+            /** @enum {string} */
+            kind: "codespaces";
+            /**
+             * Format: int64
+             * @description The account's immutable numeric user id — the join key, because
+             *     logins are renameable.
+             */
+            owner_id: number;
+            /**
+             * @description The credential the grant is renewed with, when the OAuth app
+             *     expires user tokens.
+             *
+             *     Absent for a grant GitHub never expires and for every account
+             *     linked before flyco kept it: either way the token is used until
+             *     GitHub refuses it, and the account is linked again.
+             */
+            refresh_token?: string | null;
+            /** @description The account's OAuth access token. */
+            token: string;
+            /**
+             * Format: int64
+             * @description When `token` stops working, seconds since the Unix epoch.
+             *
+             *     Set exactly when `refresh_token` is — GitHub issues the two
+             *     together — and read by the control plane to renew the grant
+             *     before a provisioning call spends it.
+             */
+            token_expires_at_unix?: number | null;
+        } | {
             /** @description The enrolled machine this account provisions onto. */
             host: components["schemas"]["Uuid"];
             /** @enum {string} */
@@ -5148,6 +5613,16 @@ export interface components {
              */
             force?: boolean;
         };
+        /**
+         * @description Who attached a repository to a session.
+         *
+         *     Recorded because the two paths carry different weight: a repository the
+         *     user picked was chosen before the machine booted, while one the agent
+         *     asked for reached the session through an approval the user granted —
+         *     and a UI listing the checkouts owes the reader that distinction.
+         * @enum {string}
+         */
+        RepoAddedBy: "user" | "agent";
         /** @description Narrows the repository picker. */
         RepoQuery: {
             /**
@@ -5156,21 +5631,48 @@ export interface components {
              */
             q?: string | null;
         };
+        /**
+         * @description One repository a request asks a session to work in.
+         *
+         *     The `repos` entry of [`CreateSession`](crate::session::CreateSession)
+         *     and the body of `POST /v1/sessions/{id}/repos`. Strings rather than
+         *     typed values for the same reason [`CreateSession`]'s other fields are:
+         *     this is untrusted input, and the control plane's parse of it is the
+         *     refusal that tells the caller which character git would not accept.
+         */
+        RepoSelection: {
+            /**
+             * @description Branch to check out.
+             *
+             *     Omitted, the control plane asks GitHub for the repository's default
+             *     branch and records *that*, so a session always names the branch each
+             *     checkout works on rather than leaving every later reader to guess.
+             */
+            branch?: string | null;
+            /** @description Repository to check out, `owner/name`. */
+            repo: string;
+        };
         /** @description GitHub repository in `owner/name` form */
         RepoSlug: string;
         /**
-         * @description The working tree of a session's checkout, as `GET
-         *     /v1/sessions/{id}/repo-status` reports it.
+         * @description The working trees of a session's checkouts, as `GET
+         *     /v1/sessions/{id}/repo-status` reports them.
          *
          *     Dirtiness is load-bearing rather than informational: an agent may not
-         *     stop while the tree is dirty, and archiving a dirty session warns the
-         *     user before the disk is released. The UI needs the same fact.
+         *     stop while any tree is dirty, and archiving a dirty session warns the
+         *     user before the disk is released. The UI needs the same fact per
+         *     checkout, because a session can work across several repositories at
+         *     once and `dirty` without *which* would be half the answer.
          */
         RepoStatus: {
-            /** @description Whether the working tree has changes that are not committed. */
-            dirty: boolean;
-            /** @description `git status --short`, as the daemon last read it. Empty when clean. */
-            summary: string;
+            /**
+             * @description One entry per checkout the daemon has reported on.
+             *
+             *     A session that has reported nothing answers with an empty list —
+             *     not a failure: no daemon has attached yet, or no watcher has
+             *     finished a first pass.
+             */
+            checkouts: components["schemas"]["CheckoutStatus"][];
         };
         /** @description One row of `GET /v1/github/repos`. */
         RepoSummary: {
@@ -5414,6 +5916,32 @@ export interface components {
             /** @description Whether the machine holds interruptible capacity. */
             spot: boolean;
         };
+        /** @description A repository a session checks out, as `SessionSummary::repos` reports it. */
+        SessionRepo: {
+            /** @description Who put it on the session. */
+            added_by: components["schemas"]["RepoAddedBy"];
+            branch?: null | components["schemas"]["BranchName"];
+            /**
+             * @description The directory under the session's workdir this checkout lives in.
+             *
+             *     How the browser names one checkout of several: workdir paths are
+             *     workspace-relative, so `dir` is both the tree's top level and the
+             *     identity a `Diff` request or a dirty status carries.
+             */
+            dir: string;
+            /** @description The repository, `owner/name`. */
+            slug: components["schemas"]["RepoSlug"];
+        };
+        /**
+         * @description Where a new session's context comes from, as `CreateSession::source`.
+         *
+         *     Absent means a fresh session — the overwhelmingly common case, so the
+         *     field is an `Option` rather than a required tag.
+         */
+        SessionSource: components["schemas"]["LocalHandoff"] & {
+            /** @enum {string} */
+            kind: "local_handoff";
+        };
         /**
          * @description Lifecycle state of a session.
          * @enum {string}
@@ -5435,7 +5963,6 @@ export interface components {
              *     archived rather than being reset to a position it was never in.
              */
             activity: components["schemas"]["SessionActivity"];
-            branch?: null | components["schemas"]["BranchName"];
             /**
              * @description Whether the session may have a desktop.
              *
@@ -5482,8 +6009,15 @@ export interface components {
              *     the composer's chip to guess.
              */
             permission_mode: components["schemas"]["PermissionMode"];
-            /** @description Repository it works in. */
-            repo: components["schemas"]["RepoSlug"];
+            /**
+             * @description Repositories it works across, in `session_repos` order.
+             *
+             *     The first entry is the session's primary repository — the one the
+             *     header renders as `repo · branch` (docs/ux.md §9.1), with `+N` for
+             *     the rest. Never empty: a session is created with at least one
+             *     repository and the list only grows when one is added later.
+             */
+            repos: components["schemas"]["SessionRepo"][];
             /** @description Where it is in its lifecycle. */
             state: components["schemas"]["SessionState"];
             /**
@@ -6026,6 +6560,11 @@ export interface components {
         } | {
             /** @enum {string} */
             refusal: "no_base_branch";
+        } | {
+            /** @enum {string} */
+            refusal: "unknown_checkout";
+            /** @description The `repo` the request named. */
+            repo: string;
         } | {
             /** @description What git said, for the log and for the problem detail. */
             detail: string;
@@ -6986,6 +7525,8 @@ export interface operations {
                         claude_code: components["schemas"]["Availability"];
                         /** @description Status on Codex. */
                         codex: components["schemas"]["Availability"];
+                        /** @description Status on Devin. */
+                        devin: components["schemas"]["Availability"];
                         /** @description The capability. */
                         feature: components["schemas"]["Feature"];
                     }[];
@@ -8227,6 +8768,174 @@ export interface operations {
             };
         };
     };
+    "flyco_api::codespaces::bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description The codespace's own name, from its `CODESPACE_NAME` environment
+                     *     variable — which is also the machine's provider-native id.
+                     */
+                    codespace_name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The daemon's `config.toml`, ready to write. */
+                        config_toml: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::codespaces_callback": {
+        parameters: {
+            query: {
+                code?: string | null;
+                error?: string | null;
+                error_description?: string | null;
+                state: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The browser is sent on to the flyco web app. */
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::provider_oauth::codespaces_start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Names this sign-in for the poll and the finish that end it. */
+                        attempt_id: components["schemas"]["Uuid"];
+                        /** @description Where the browser approves the grant. */
+                        authorize_url: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::codespaces_poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        state: "pending";
+                    } | {
+                        /** @description The account that signed in, as the vendor names it. */
+                        account: string;
+                        /** @description What that account may link, in the vendor's own order. */
+                        choices: components["schemas"]["ProviderOauthChoice"][];
+                        /** @enum {string} */
+                        state: "authorized";
+                    } | {
+                        /** @description The problem slug the return page was sent, e.g. `microsoft-rejected`. */
+                        problem: string;
+                        /** @description What the vendor said, in its own words. */
+                        reason: string;
+                        /** @enum {string} */
+                        state: "failed";
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::provider_oauth::codespaces_finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        host_id?: null | components["schemas"]["Uuid"];
+                        /** @description Identifier used to unlink the account. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Which provider it is. */
+                        kind: components["schemas"]["CloudProviderKind"];
+                        /**
+                         * @description Label supplied when it was linked.
+                         *
+                         *     For a machine the user owns this is the host's own label, kept in
+                         *     step by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so
+                         *     a rename that moved only one of them would leave the compute chip
+                         *     calling a machine something its card no longer does.
+                         */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When it was linked, seconds since the Unix epoch.
+                         */
+                        linked_at_unix: number;
+                    };
+                };
+            };
+        };
+    };
     "flyco_api::provider_oauth::gcp_callback": {
         parameters: {
             query: {
@@ -8547,7 +9256,6 @@ export interface operations {
                          *     archived rather than being reset to a position it was never in.
                          */
                         activity: components["schemas"]["SessionActivity"];
-                        branch?: null | components["schemas"]["BranchName"];
                         /**
                          * @description Whether the session may have a desktop.
                          *
@@ -8594,8 +9302,15 @@ export interface operations {
                          *     the composer's chip to guess.
                          */
                         permission_mode: components["schemas"]["PermissionMode"];
-                        /** @description Repository it works in. */
-                        repo: components["schemas"]["RepoSlug"];
+                        /**
+                         * @description Repositories it works across, in `session_repos` order.
+                         *
+                         *     The first entry is the session's primary repository — the one the
+                         *     header renders as `repo · branch` (docs/ux.md §9.1), with `+N` for
+                         *     the rest. Never empty: a session is created with at least one
+                         *     repository and the list only grows when one is added later.
+                         */
+                        repos: components["schemas"]["SessionRepo"][];
                         /** @description Where it is in its lifecycle. */
                         state: components["schemas"]["SessionState"];
                         /**
@@ -8622,17 +9337,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /**
-                     * @description Branch to check out. Untyped for the same reason as
-                     *     [`repo`](Self::repo): the control plane parses it into a
-                     *     [`BranchName`](crate::repo::BranchName) and refuses anything git
-                     *     would.
-                     *
-                     *     Omitted, the control plane asks GitHub for the repository's default
-                     *     branch and records *that*, so a session always names the branch it
-                     *     works on rather than leaving every later reader to guess.
-                     */
-                    branch?: string | null;
                     /** @description Spending limit for the whole session. */
                     budget_limit: components["schemas"]["Usd"];
                     /**
@@ -8661,11 +9365,17 @@ export interface operations {
                      */
                     prompt: string;
                     /**
-                     * @description Repository to work in, `owner/name`. Untyped here because it is
-                     *     untrusted input; the control plane parses it into a
-                     *     [`RepoSlug`](crate::repo::RepoSlug) and rejects anything else.
+                     * @description Repositories the session works across, primary first.
+                     *
+                     *     A session always has at least one: the workdir is laid out as a
+                     *     workspace holding every checkout, and the first entry is the
+                     *     repository the header names. Untrusted input — the control plane
+                     *     parses each `repo` into a [`RepoSlug`](crate::repo::RepoSlug) and
+                     *     each `branch` into a [`BranchName`](crate::repo::BranchName), and
+                     *     refuses anything else.
                      */
-                    repo: string;
+                    repos: components["schemas"]["RepoSelection"][];
+                    source?: null | components["schemas"]["SessionSource"];
                     /**
                      * @description Whether to ask for interruptible spot capacity when flyco picks the
                      *     machine. Ignored when [`Self::machine`] names a type, because that
@@ -8984,6 +9694,15 @@ export interface operations {
                     /** @description Why the agent says the session needs this machine. */
                     reason: string;
                 } | {
+                    /** @description Branch to check out. `None` asks for the repository's default. */
+                    branch?: string | null;
+                    /** @enum {string} */
+                    kind: "repo_add";
+                    /** @description Why the agent says the session needs it, as shown on the card. */
+                    reason: string;
+                    /** @description Repository in `owner/name` form. */
+                    repo: string;
+                } | {
                     /** @description Tool input as the harness reports it. */
                     input: unknown;
                     /** @enum {string} */
@@ -9242,7 +9961,9 @@ export interface operations {
     };
     "flyco_api::app::get_session_diff": {
         parameters: {
-            query?: never;
+            query?: {
+                repo?: string | null;
+            };
             header?: never;
             path: {
                 id: string;
@@ -9445,6 +10166,151 @@ export interface operations {
                         text: string;
                     };
                 };
+            };
+        };
+    };
+    "flyco_api::app::get_handoff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The commit to check out before applying the stored patch. */
+                        base_commit: string;
+                        /**
+                         * @description Whether a transcript object exists for
+                         *     `GET /v1/sessions/{id}/handoff/transcript` to fetch.
+                         */
+                        has_transcript: boolean;
+                        /**
+                         * @description SHA-256 the applied patch must hash to, verified before `git
+                         *     apply` so a corrupt object fails loudly.
+                         */
+                        patch_sha256: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::app::complete_handoff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: int64
+                     * @description Byte length of the patch object.
+                     */
+                    patch_bytes: number;
+                    /** @description Lowercase hex SHA-256 of the patch object. */
+                    patch_sha256: string;
+                    /**
+                     * Format: int64
+                     * @description Byte length of the transcript object.
+                     */
+                    transcript_bytes: number;
+                    /** @description Lowercase hex SHA-256 of the transcript object. */
+                    transcript_sha256: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::put_handoff_patch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/octet-stream": unknown;
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::get_handoff_transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::put_handoff_transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/octet-stream": unknown;
+            };
+        };
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -9905,10 +10771,65 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        /** @description Whether the working tree has changes that are not committed. */
-                        dirty: boolean;
-                        /** @description `git status --short`, as the daemon last read it. Empty when clean. */
-                        summary: string;
+                        /**
+                         * @description One entry per checkout the daemon has reported on.
+                         *
+                         *     A session that has reported nothing answers with an empty list —
+                         *     not a failure: no daemon has attached yet, or no watcher has
+                         *     finished a first pass.
+                         */
+                        checkouts: components["schemas"]["CheckoutStatus"][];
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::app::add_session_repo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Branch to check out.
+                     *
+                     *     Omitted, the control plane asks GitHub for the repository's default
+                     *     branch and records *that*, so a session always names the branch each
+                     *     checkout works on rather than leaving every later reader to guess.
+                     */
+                    branch?: string | null;
+                    /** @description Repository to check out, `owner/name`. */
+                    repo: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionSummary"] & {
+                        /** @description Budget accounting as of this request. */
+                        budget: components["schemas"]["BudgetView"];
+                        /**
+                         * @description Why the session is [`SessionState::Failed`], in the provider's own
+                         *     words where it has any.
+                         *
+                         *     `None` for every other state. A failed session that could not say
+                         *     why would leave the user with a dead session and no idea whether to
+                         *     retry it, pick another region, or ask for a quota increase.
+                         */
+                        failure?: string | null;
+                        usage_limit?: null | components["schemas"]["UsageLimitPause"];
                     };
                 };
             };
@@ -10357,7 +11278,9 @@ export interface operations {
     };
     "flyco_api::app::get_workdir_patch": {
         parameters: {
-            query?: never;
+            query?: {
+                repo?: string | null;
+            };
             header?: never;
             path: {
                 id: string;
@@ -10377,7 +11300,9 @@ export interface operations {
     };
     "flyco_api::app::put_workdir_patch": {
         parameters: {
-            query?: never;
+            query?: {
+                repo?: string | null;
+            };
             header?: never;
             path: {
                 id: string;

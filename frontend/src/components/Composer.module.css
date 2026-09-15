@@ -324,6 +324,53 @@
   white-space: nowrap;
 }
 
+/* One picked repository in the repo chip's `Selected` block: slug, its own
+   branch picker, and the small actions. Not an `.option` — the row is a
+   readout with controls, not a button. */
+.pickedRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-md);
+}
+
+.pickedSlug {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.pickedAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-faint);
+  flex: none;
+}
+
+.pickedAction:hover {
+  color: var(--color-text);
+}
+
+/* The check a picked repository row carries. It owns the right edge, so a
+   `private` meta beside it gives the auto margin up rather than splitting
+   the row's free space between them. */
+.pickedCheck {
+  margin-left: auto;
+  color: var(--color-text-faint);
+  flex: none;
+}
+
+.optionMeta:has(+ .pickedCheck) {
+  margin-left: 0;
+}
+
 .toggleRow {
   display: flex;
   align-items: center;

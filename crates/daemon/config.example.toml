@@ -9,7 +9,9 @@
 # The flyco session this daemon serves.
 session = "9d0f4b1a-3b7e-4a3e-9e1a-4c2f8b6d7a10"
 
-# Which harness to drive: "claude_code" or "codex".
+# Which driver supervises the agent: "claude_code" for the Agent SDK
+# sidecar, "acp" for the generic driver every other harness — Codex,
+# Devin, anything that speaks the Agent Client Protocol — takes.
 harness = "claude_code"
 
 # Where the agent works.
@@ -47,21 +49,38 @@ transcript_dir = "/tmp/flycod-dev/transcripts"
 # url = "https://flyco.dev/"
 # daemon_token = "fd_a-token-from-the-control-plane"
 
-# The repository to clone into `workdir` before the harness starts. Present
-# on a provisioned session VM; omitted here, so `flycod run` works in
-# whatever `workdir` already holds — which is what a developer wants when
+# The repositories to clone into `workdir` before the harness starts, one
+# `[[repos]]` table each. `dir` is the directory under `workdir` the clone
+# lands in — `workdir/flyco/` for the first below — chosen by the control
+# plane so the daemon, the browser, and the stored workdir patch name the
+# same directory. The agent's working directory stays `workdir` itself: a
+# session can hold several checkouts, and one `cwd` is the only shape every
+# harness shares.
+#
+# Present on a provisioned session VM; omitted here, so `flycod run` works
+# in whatever `workdir` already holds — which is what a developer wants when
 # they are reproducing a harness bug in a checkout they already have.
 #
+# `[github]` is the access every `[[repos]]` clone shares — one table,
+# because the authorization is the workspace's rather than the repository's.
 # `token` is the user's own GitHub token: flyco behaves as the user rather
 # than as a bot, so the clone and any push the agent makes are theirs. It
 # reaches git through a credential helper that reads it from the environment
 # of one child process, and is therefore never written into the remote URL,
 # into .git/config, or into a log line.
-# [repo]
-# slug = "lexoliu/flyco"
-# branch = "dev"
+# [github]
 # token = "gho_a-user-access-token"
 # identity = { name = "lexoliu", email = "4242+lexoliu@users.noreply.github.com" }
+#
+# [[repos]]
+# slug = "lexoliu/flyco"
+# branch = "dev"
+# dir = "flyco"
+#
+# [[repos]]
+# slug = "lexoliu/aither"
+# branch = "main"
+# dir = "aither"
 # The machine this daemon booted on, as the agent is told about it. Written
 # by the provisioner from the curated catalog entry the machine was created
 # from, and not rewritten afterwards: a resize restarts the machine without
@@ -135,6 +154,48 @@ dir = "/tmp/flycod-dev/sidecar"
 
 # The bun executable; a bare name is resolved through PATH.
 bun = "bun"
+
+# An ACP session spells its agent out here instead of [claude]/[sidecar].
+# `harness = "acp"` plus this table drives any ACP-compatible agent — the
+# provisioner renders Codex and Devin into this same shape, so nothing in
+# the driver knows a vendor name. `modes` says how each flyco permission
+# mode reaches the agent: a `set_mode` id and/or ordered config-option
+# writes, and a mode with no entry is refused rather than approximated.
+#
+# [acp]
+# agent = "devin"
+# program = "devin"
+# args = ["acp"]
+# env = { XDG_DATA_HOME = "/var/lib/flyco/devin/data" }
+# model = "swe-2"
+# effort = "max"
+# fused_effort_tails = ["-1m", "-fast", "-priority"]
+# permission_mode = "default"
+#
+# [acp.methods.compact]
+# call = "thread/compact/start"
+# params = { threadId = "<session>" }
+#
+# [acp.methods.usage]
+# call = "account/rateLimits/read"
+#
+# [acp.methods.mcp_status]
+# call = "mcpServerStatus/list"
+# params = { threadId = "<session>", detail = "toolsAndAuthOnly" }
+#
+# [[acp.files]]
+# path = "/var/lib/flyco/devin/data/devin/credentials.toml"
+# contents = "…"
+#
+# [acp.modes.default]
+# set_mode = "smart"
+#
+# [acp.modes.plan]
+# options = [{ option = "collaboration_mode", value = "plan" }]
+#
+# [acp.tui]
+# program = "devin"
+# resume_args = ["--resume"]
 
 # The user's registered MCP servers, written by the provisioner from
 # `GET /v1/mcp-servers`. This is the whole set the session gets beside

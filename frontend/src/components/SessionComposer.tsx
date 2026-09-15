@@ -106,7 +106,7 @@ const FLYCO_NAMES: ReadonlySet<string> = new Set(FLYCO_COMMANDS.map((entry) => e
 /**
  * Harness commands the palette never shows even when reported, because a
  * control is already their door: `/context` and `/usage` are the ring's
- * panel, `/model` is the model chip's, `/effort` the effort chip's, and
+ * panel, `/model` and `/effort` the model chip's, and
  * `/goal` is its own chip. A second door that types a command is worse
  * than none, so
  * the harness's copies are dropped rather than listed beside the controls

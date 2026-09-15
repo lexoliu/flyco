@@ -47,6 +47,7 @@ async fn configured_router(db: &Db) -> Router {
         GithubClient::Fake(TestGithub::default()),
         test_vendors(),
         test_clouds(),
+        crate::testing::test_codespaces(),
         db.clone(),
         Queue::new(InMemoryQueue::new()),
     )
@@ -89,10 +90,12 @@ async fn active_session(db: &Db, user: &CurrentUser, repo: &str) -> SessionId {
             user: user.id,
             title: crate::testing::SEEDED_TITLE,
             harness: flyco_core::HarnessKind::ClaudeCode,
-            repo: &repo.parse().expect("a valid repo slug"),
-            branch: &crate::testing::TEST_DEFAULT_BRANCH
-                .parse()
-                .expect("a valid branch"),
+            repos: &[crate::sessions::RepoOpening {
+                slug: repo.parse().expect("a valid repo slug"),
+                branch: crate::testing::TEST_DEFAULT_BRANCH
+                    .parse()
+                    .expect("a valid branch"),
+            }],
             machine_origin: flyco_core::MachineOrigin::Auto,
             budget: flyco_core::BudgetConfig::new(flyco_core::Usd::from_dollars(10))
                 .expect("a valid budget"),

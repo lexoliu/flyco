@@ -40,6 +40,7 @@ const HARNESSES: readonly { kind: HarnessKind; label: string; runsOn: string }[]
     runsOn: "Runs on your Claude subscription, or an Anthropic API key.",
   },
   { kind: "codex", label: "Codex", runsOn: "Runs on your ChatGPT subscription, or an OpenAI API key." },
+  { kind: "devin", label: "Devin", runsOn: "Runs on your Devin account, with a token from its settings." },
 ];
 
 /** How often the clock this page reads against moves. */
@@ -102,8 +103,8 @@ export default function AgentsSection() {
       <header class={styles.sectionHead}>
         <h2>Agents</h2>
         <p class={styles.lede}>
-          Flyco runs the official Claude Code and Codex on your own account, so every token is
-          billed by your plan and never resold.
+          Flyco runs the official Claude Code, Codex and Devin on your own account, so every token
+          is billed by your plan and never resold.
         </p>
       </header>
 

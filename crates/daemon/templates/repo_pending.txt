@@ -1,0 +1,3 @@
+Asked the user to add `{{ repo }}` to this session's workspace.
+
+Cloning a repository the user did not pick is their decision, not yours — the request is on their approval card now. If they approve, the checkout lands under the workspace root and you are told where; if they deny, the request is refused. Do not wait on it — carry on with the work that does not need the repository.

@@ -87,10 +87,15 @@ pub async fn resume(api: &Api, id: Option<String>, last: bool, mode: out::Mode) 
 /// reach a machine, or the bridge fails.
 pub async fn pick_harness(api: &Api, mode: out::Mode) -> Outcome<Exit> {
     require_terminal()?;
-    let harnesses = [HarnessKind::ClaudeCode, HarnessKind::Codex];
+    let harnesses = [
+        HarnessKind::ClaudeCode,
+        HarnessKind::Codex,
+        HarnessKind::Devin,
+    ];
     let chosen = pick::pick("Harness", &harnesses, |harness| match harness {
         HarnessKind::ClaudeCode => "Claude Code".to_owned(),
         HarnessKind::Codex => "Codex".to_owned(),
+        HarnessKind::Devin => "Devin".to_owned(),
     })?;
     launch(api, harnesses[chosen], None, &SessionSpec::default(), mode).await
 }
@@ -131,7 +136,12 @@ async fn find_session(api: &Api, id: Option<String>, last: bool) -> Outcome<Sess
         return Ok(resumable.into_iter().next().expect("non-empty"));
     }
     let chosen = pick::pick("Resume which session", &resumable, |session| {
-        format!("{}  {}  {}", state_of(session), session.repo, session.title)
+        format!(
+            "{}  {}  {}",
+            state_of(session),
+            crate::session::repos_label(&session.repos),
+            session.title
+        )
     })?;
     Ok(resumable.into_iter().nth(chosen).expect("picked in range"))
 }
@@ -155,14 +165,25 @@ async fn resolve(
     repo_arg: Option<String>,
     spec: &SessionSpec,
 ) -> Outcome<(CreateSession, Vec<String>)> {
-    let repo = match repo_arg.or_else(|| spec.repo.clone()) {
-        Some(repo) => repo,
-        None => pick_repo(api).await?,
-    };
+    let mut slugs = spec.repo.clone();
+    if let Some(repo) = repo_arg {
+        slugs.insert(0, repo);
+    }
+    if slugs.is_empty() {
+        slugs.push(pick_repo(api).await?);
+    }
     let branch = match &spec.branch {
         Some(branch) => Some(branch.clone()),
-        None => pick_branch(api, &repo).await?,
+        None => pick_branch(api, &slugs[0]).await?,
     };
+    let repos = slugs
+        .into_iter()
+        .enumerate()
+        .map(|(index, repo)| flyco_core::RepoSelection {
+            repo,
+            branch: if index == 0 { branch.clone() } else { None },
+        })
+        .collect();
     let machine = match spec_machine(spec)? {
         Some(machine) => Some(machine),
         None => Some(pick_machine(api, spec).await?),
@@ -191,8 +212,7 @@ async fn resolve(
         CreateSession {
             prompt,
             harness,
-            repo,
-            branch,
+            repos,
             budget_limit,
             machine,
             spot: !spec.on_demand,
@@ -201,6 +221,8 @@ async fn resolve(
                 effort: spec.effort.clone(),
             }),
             permission_mode: spec.permission_mode,
+            computer_use: spec.computer_use,
+            source: None,
         },
         env,
     ))
@@ -272,7 +294,7 @@ async fn pick_branch(api: &Api, repo: &str) -> Outcome<Option<String>> {
 /// Also answers the spot and disk questions, since they belong to the
 /// machine choice: spot only exists where the entry offers it, and the
 /// disk default is the platform's.
-async fn pick_machine(api: &Api, spec: &SessionSpec) -> Outcome<MachineChoice> {
+pub(crate) async fn pick_machine(api: &Api, spec: &SessionSpec) -> Outcome<MachineChoice> {
     let catalog: MachineCatalog = api.get("/v1/machines/catalog").await?;
     let default: Option<MachineDefault> = api.get("/v1/machines/default").await.ok();
     let entries: Vec<&flyco_core::MachineCatalogEntry> = catalog

@@ -43,6 +43,20 @@ const SCOPES_HEADER: &str = "x-oauth-scopes";
 /// OAuth scopes flyco needs: session VMs clone and push the user's repos.
 pub const SCOPE: &str = "repo";
 
+/// OAuth scopes a Codespaces link needs.
+///
+/// `repo` creates the private environment repository and writes its
+/// devcontainer, `codespace` creates and drives the codespaces on it, and
+/// `read:packages` is what lets GitHub pull the private session image into
+/// them — a codespace is created by the account's token before its own
+/// `GITHUB_TOKEN` exists, so the image grant has to ride on this one.
+pub const CODESPACES_SCOPE: &str = "repo codespace read:packages";
+
+/// The one scope of [`CODESPACES_SCOPE`] nothing else in flyco ever asks
+/// for — its presence is what distinguishes a link token from the sign-in
+/// token, so it is checked by name.
+pub const CODESPACE_SCOPE: &str = "codespace";
+
 /// The single scope a session's machine cannot work without.
 ///
 /// `repo` is what lets a clone reach a *private* repository and what lets a
@@ -66,6 +80,20 @@ pub struct GithubUser {
     /// the stale one the day somebody renames themselves.
     #[serde(default)]
     pub name: Option<String>,
+    /// The billing plan the account is on, when GitHub reports one.
+    ///
+    /// Read rather than stored, for the same reason `name` is: the
+    /// Codespaces link translates it into the included core-hours the
+    /// account's provision catalog is priced from, at link time.
+    #[serde(default)]
+    pub plan: Option<GithubPlan>,
+}
+
+/// An account's billing plan, as `GET /user` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct GithubPlan {
+    /// GitHub's plan name — `free`, `pro`, a team tier.
+    pub name: String,
 }
 
 impl GithubUser {
@@ -112,15 +140,25 @@ pub struct GithubIdentity {
 }
 
 impl GithubIdentity {
+    /// Whether GitHub reported this token carrying `scope`.
+    ///
+    /// Scope names are not case-sensitive, and `None` scopes — a credential
+    /// that is not an OAuth token — answer false rather than being guessed
+    /// permissive.
+    #[must_use]
+    pub fn grants_scope(&self, scope: &str) -> bool {
+        self.scopes.as_ref().is_some_and(|scopes| {
+            scopes
+                .iter()
+                .any(|granted| granted.trim().eq_ignore_ascii_case(scope))
+        })
+    }
+
     /// Whether this token can read and push the user's private
     /// repositories.
     #[must_use]
     pub fn grants_repo_scope(&self) -> bool {
-        self.scopes.as_ref().is_some_and(|scopes| {
-            scopes
-                .iter()
-                .any(|scope| scope.trim().eq_ignore_ascii_case(REPO_SCOPE))
-        })
+        self.grants_scope(REPO_SCOPE)
     }
 }
 
@@ -158,7 +196,7 @@ fn branches_url(slug: &RepoSlug, page: u32) -> String {
 }
 
 /// A user-scoped GitHub access token.
-#[derive(Clone, Deserialize)]
+#[derive(Clone)]
 pub struct GithubToken {
     /// The bearer token itself.
     pub access_token: String,
@@ -167,6 +205,62 @@ pub struct GithubToken {
 impl core::fmt::Debug for GithubToken {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GithubToken").finish_non_exhaustive()
+    }
+}
+
+/// What the token endpoint hands back for one authorization: the usable
+/// token and — only when the OAuth app expires user tokens — the credential
+/// that renews it and the moment it stops working.
+///
+/// The pair is `Some` together and `None` together: GitHub issues a
+/// `refresh_token` exactly when it issues an `expires_in`, so
+/// `expires_at_unix` being set is what tells a stored grant it can and must
+/// be renewed rather than used until revoked.
+#[derive(Clone)]
+pub struct GithubGrant {
+    /// The bearer credential API calls run under.
+    pub token: GithubToken,
+    /// Redeemed for the next grant once this one nears its end.
+    ///
+    /// GitHub rotates it on every redemption: whichever grant stored it
+    /// last is the only one GitHub will renew.
+    pub refresh_token: Option<String>,
+    /// When [`token`](Self::token) stops working, seconds since the Unix
+    /// epoch.
+    pub expires_at_unix: Option<u64>,
+}
+
+impl core::fmt::Debug for GithubGrant {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GithubGrant").finish_non_exhaustive()
+    }
+}
+
+/// The token endpoint's success document, as GitHub writes it.
+///
+/// `expires_in` is seconds *from the answer* — a relative duration only the
+/// receiving side can pin to a wall clock, so the wire name is kept here
+/// and [`GrantBody::into_grant`] is the one place it becomes absolute.
+#[derive(Debug, Clone, Deserialize)]
+struct GrantBody {
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: Option<u64>,
+}
+
+impl GrantBody {
+    /// Reads the document into a grant, pinning the relative lifetime to
+    /// the moment it was received.
+    fn into_grant(self) -> GithubGrant {
+        GithubGrant {
+            token: GithubToken {
+                access_token: self.access_token,
+            },
+            refresh_token: self.refresh_token,
+            expires_at_unix: self
+                .expires_in
+                .map(|seconds| crate::clock::now_unix().saturating_add(seconds)),
+        }
     }
 }
 
@@ -182,7 +276,7 @@ struct GithubOauthError {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum TokenResponse {
-    Token(GithubToken),
+    Token(GrantBody),
     Failure(GithubOauthError),
 }
 
@@ -193,6 +287,18 @@ struct ExchangeRequest<'a> {
     client_secret: &'a str,
     code: &'a str,
     redirect_uri: &'a str,
+}
+
+/// Request body of a refresh-token redemption.
+///
+/// Same endpoint, same client pair as the exchange; `grant_type` is what
+/// turns it from "redeem this code" into "renew this grant".
+#[derive(Debug, Serialize)]
+struct RefreshRequest<'a> {
+    client_id: &'a str,
+    client_secret: &'a str,
+    grant_type: &'static str,
+    refresh_token: &'a str,
 }
 
 /// Which of flyco's calls to GitHub a failure came out of.
@@ -206,6 +312,8 @@ struct ExchangeRequest<'a> {
 pub enum GithubCall {
     /// `POST /login/oauth/access_token` — the sign-in's code exchange.
     TokenExchange,
+    /// `POST /login/oauth/access_token` — renewing a grant before use.
+    TokenRefresh,
     /// `GET /user` — who a token belongs to, and what it may do.
     UserProfile,
     /// `GET /user/repos` — the picker's list of the caller's repositories.
@@ -221,6 +329,7 @@ impl core::fmt::Display for GithubCall {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
             Self::TokenExchange => "authorization code exchange",
+            Self::TokenRefresh => "token refresh",
             Self::UserProfile => "account profile",
             Self::Repositories => "repository list",
             Self::Repository => "repository lookup",
@@ -274,7 +383,7 @@ pub enum GithubError {
 /// Kept behind a trait because the happy path is otherwise untestable: the
 /// callback handler cannot be exercised without standing in for `github.com`.
 pub trait GithubOauth: Send + Sync + Clone + 'static {
-    /// Exchanges an authorization code for a user access token.
+    /// Exchanges an authorization code for a user grant.
     ///
     /// # Errors
     ///
@@ -286,7 +395,22 @@ pub trait GithubOauth: Send + Sync + Clone + 'static {
         client_secret: &str,
         code: &str,
         redirect_uri: &str,
-    ) -> impl Future<Output = Result<GithubToken, GithubError>> + Send;
+    ) -> impl Future<Output = Result<GithubGrant, GithubError>> + Send;
+
+    /// Exchanges a grant's refresh token for its next token pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GithubError`] if the call fails. A
+    /// [`GithubError::Rejected`] means the grant is dead — GitHub will not
+    /// renew it — and the user has to authorize again; transports and
+    /// statuses are worth retrying instead.
+    fn refresh(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+        refresh_token: &str,
+    ) -> impl Future<Output = Result<GithubGrant, GithubError>> + Send;
 
     /// Reads the account a token belongs to, and what the token may do.
     ///
@@ -465,7 +589,7 @@ impl GithubOauth for GithubClient {
         client_secret: &str,
         code: &str,
         redirect_uri: &str,
-    ) -> Result<GithubToken, GithubError> {
+    ) -> Result<GithubGrant, GithubError> {
         match self {
             Self::Live(client) => {
                 client
@@ -476,6 +600,27 @@ impl GithubOauth for GithubClient {
             Self::Fake(client) => {
                 client
                     .exchange_code(client_id, client_secret, code, redirect_uri)
+                    .await
+            }
+        }
+    }
+
+    async fn refresh(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+        refresh_token: &str,
+    ) -> Result<GithubGrant, GithubError> {
+        match self {
+            Self::Live(client) => {
+                client
+                    .refresh(client_id, client_secret, refresh_token)
+                    .await
+            }
+            #[cfg(test)]
+            Self::Fake(client) => {
+                client
+                    .refresh(client_id, client_secret, refresh_token)
                     .await
             }
         }
@@ -625,7 +770,7 @@ impl GithubOauth for ZenwaveGithub {
         client_secret: &str,
         code: &str,
         redirect_uri: &str,
-    ) -> Result<GithubToken, GithubError> {
+    ) -> Result<GithubGrant, GithubError> {
         let call = GithubCall::TokenExchange;
         let mut client = zenwave::client();
         let response = client
@@ -640,6 +785,34 @@ impl GithubOauth for ZenwaveGithub {
                 client_secret,
                 code,
                 redirect_uri,
+            })
+            .map_err(transport(call))?
+            .await
+            .map_err(transport(call))?;
+
+        token_response(json_body::<TokenResponse>(call, response).await?)
+    }
+
+    async fn refresh(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+        refresh_token: &str,
+    ) -> Result<GithubGrant, GithubError> {
+        let call = GithubCall::TokenRefresh;
+        let mut client = zenwave::client();
+        let response = client
+            .post(ACCESS_TOKEN_URL)
+            .map_err(transport(call))?
+            .header("Accept", "application/json")
+            .map_err(transport(call))?
+            .header("User-Agent", USER_AGENT)
+            .map_err(transport(call))?
+            .json_body(&RefreshRequest {
+                client_id,
+                client_secret,
+                grant_type: "refresh_token",
+                refresh_token,
             })
             .map_err(transport(call))?
             .await
@@ -717,9 +890,9 @@ fn unusable_repo(slug: &RepoSlug) -> GithubError {
     }
 }
 
-fn token_response(response: TokenResponse) -> Result<GithubToken, GithubError> {
+fn token_response(response: TokenResponse) -> Result<GithubGrant, GithubError> {
     match response {
-        TokenResponse::Token(token) => Ok(token),
+        TokenResponse::Token(body) => Ok(body.into_grant()),
         TokenResponse::Failure(failure) => Err(GithubError::Rejected {
             description: failure
                 .error_description
@@ -813,7 +986,7 @@ impl GithubOauth for WorkerGithub {
         client_secret: &str,
         code: &str,
         redirect_uri: &str,
-    ) -> Result<GithubToken, GithubError> {
+    ) -> Result<GithubGrant, GithubError> {
         let call = GithubCall::TokenExchange;
         let request = skyzen_cloudflare::json_request(
             skyzen_cloudflare::worker::Method::Post,
@@ -823,6 +996,30 @@ impl GithubOauth for WorkerGithub {
                 client_secret,
                 code,
                 redirect_uri,
+            },
+            &[("Accept", "application/json"), ("User-Agent", USER_AGENT)],
+        )
+        .map_err(transport(call))?;
+        let response = worker_fetch(call, request).await?;
+
+        token_response(worker_json_body::<TokenResponse>(call, response).await?)
+    }
+
+    async fn refresh(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+        refresh_token: &str,
+    ) -> Result<GithubGrant, GithubError> {
+        let call = GithubCall::TokenRefresh;
+        let request = skyzen_cloudflare::json_request(
+            skyzen_cloudflare::worker::Method::Post,
+            ACCESS_TOKEN_URL,
+            &RefreshRequest {
+                client_id,
+                client_secret,
+                grant_type: "refresh_token",
+                refresh_token,
             },
             &[("Accept", "application/json"), ("User-Agent", USER_AGENT)],
         )
@@ -897,7 +1094,7 @@ impl GithubOauth for WorkerGithub {
 mod tests {
     use super::{
         BRANCHES_PER_PAGE, GithubBranch, GithubCall, GithubError, GithubIdentity, GithubOauthError,
-        GithubToken, GithubUser, TokenResponse, branch_listing, branches_url, parse_scopes,
+        GithubUser, GrantBody, TokenResponse, branch_listing, branches_url, parse_scopes,
         refusal_reason, repo_url, token_response, transport, unusable_repo,
     };
 
@@ -907,6 +1104,7 @@ mod tests {
                 id: 4_242,
                 login: "lexoliu".to_owned(),
                 name: Some("Lexo Liu".to_owned()),
+                plan: None,
             },
             scopes,
         }
@@ -1004,13 +1202,35 @@ mod tests {
     }
 
     #[test]
-    fn a_token_response_yields_the_token() {
-        let token = token_response(TokenResponse::Token(GithubToken {
+    fn a_token_response_yields_the_grant() {
+        let grant = token_response(TokenResponse::Token(GrantBody {
             access_token: "github-test-token".to_owned(),
+            refresh_token: None,
+            expires_in: None,
         }))
         .expect("token response");
 
-        assert_eq!(token.access_token, "github-test-token");
+        assert_eq!(grant.token.access_token, "github-test-token");
+        assert!(grant.refresh_token.is_none());
+        assert!(grant.expires_at_unix.is_none());
+    }
+
+    #[test]
+    fn an_expiring_grant_pins_its_lifetime_to_receipt() {
+        let before = crate::clock::now_unix();
+        let grant = token_response(TokenResponse::Token(GrantBody {
+            access_token: "github-test-token".to_owned(),
+            refresh_token: Some("github-test-refresh".to_owned()),
+            expires_in: Some(28_800),
+        }))
+        .expect("token response");
+
+        assert_eq!(grant.refresh_token.as_deref(), Some("github-test-refresh"));
+        let expires_at = grant
+            .expires_at_unix
+            .expect("an expiring grant states its end");
+        assert!(expires_at >= before + 28_800);
+        assert!(expires_at <= crate::clock::now_unix() + 28_800);
     }
 
     #[test]
@@ -1033,6 +1253,7 @@ mod tests {
     fn every_call_names_itself_the_way_a_sentence_reads_it() {
         for (call, prose) in [
             (GithubCall::TokenExchange, "authorization code exchange"),
+            (GithubCall::TokenRefresh, "token refresh"),
             (GithubCall::UserProfile, "account profile"),
             (GithubCall::Repositories, "repository list"),
             (GithubCall::Repository, "repository lookup"),

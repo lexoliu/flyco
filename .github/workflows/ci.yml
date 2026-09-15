@@ -22,9 +22,21 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.4
+      # flyco-api embeds frontend/dist (skyzen::embed_dir!), which is
+      # gitignored — every job that compiles the crate has to build it first.
+      - name: Build the frontend flyco-api embeds
+        run: |
+          cd frontend
+          bun install --frozen-lockfile
+          bun run build
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
-      - run: cargo test --workspace
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace
+      - run: cargo test --workspace --doc
       # The checked-in spec is the TypeScript client's input; regenerate it
       # and fail if the working tree disagrees. Debug build on purpose:
       # skyzen only collects handler metadata when `debug_assertions` is on.
@@ -63,6 +75,16 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.4
+      # flyco-api embeds frontend/dist (skyzen::embed_dir!), which is
+      # gitignored — every job that compiles the crate has to build it first.
+      - name: Build the frontend flyco-api embeds
+        run: |
+          cd frontend
+          bun install --frozen-lockfile
+          bun run build
       - run: cargo check -p flyco-api --target wasm32-unknown-unknown
 
   frontend:

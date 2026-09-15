@@ -13,10 +13,11 @@
  * renaming a session is a one-word change and a dialog would be three
  * clicks around it. Escape abandons the edit; Enter and blur commit it.
  */
-import { Show, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import {
   Archive,
   Copy,
+  FolderGit2,
   MoreHorizontal,
   PanelRightClose,
   PanelRightOpen,
@@ -27,8 +28,12 @@ import {
   Square,
 } from "lucide-solid";
 import Popover from "./Popover";
-import type { MachineView, SessionDetail } from "../api/client";
+import ProblemNotice from "./ProblemNotice";
+import RepoBranchPicker from "./RepoBranchPicker";
+import { listRepos, type MachineView, type SessionDetail } from "../api/client";
 import type { ConnectionState } from "../api/relay";
+import { createQuery } from "../lib/query";
+import { cx } from "../lib/cx";
 import { MACHINE_STATE_LABEL } from "../lib/machines";
 import { PROVIDER_LABEL } from "../lib/providers";
 import styles from "./SessionHeader.module.css";
@@ -77,6 +82,14 @@ export interface SessionHeaderProps {
    * the button did half of what it said (issue #138).
    */
   onOpenPanel: (request: { panel: "machine" | "env"; resize?: boolean }) => void;
+  /**
+   * Adds a repository to the session's workspace — `POST
+   * /v1/sessions/{id}/repos`. `undefined` on a session whose lifecycle
+   * cannot take one (archived).
+   */
+  onAddRepo?: ((selection: { repo: string; branch?: string }) => void) | undefined;
+  /** Whether an add is in flight, so the row does not ask twice. */
+  addingRepo?: boolean | undefined;
 }
 
 export default function SessionHeader(props: SessionHeaderProps) {
@@ -148,18 +161,20 @@ export default function SessionHeader(props: SessionHeaderProps) {
         </Show>
         <Show when={props.session}>
           {/*
-            `repo · branch` in docs/ux.md §9.1. A session opened before flyco
-            recorded branches has none, and the repository stands alone for
-            those: a placeholder would be a claim about somebody's checkout,
-            and an em dash would be a claim that there is no branch.
+            `repo · branch` in docs/ux.md §9.1 — the primary repository,
+            with `+N` when the session works across more. The label is a
+            popover rather than a bare readout: the panel is where the
+            checkout list lives, and where a repository is added mid-session.
+            A session opened before flyco recorded branches has none, and
+            the repository stands alone for those: a placeholder would be a
+            claim about somebody's checkout.
           */}
           {(session) => (
-            <span class={styles.repo}>
-              {session().repo}
-              <Show when={session().branch}>
-                {(branch) => <span class={styles.branch}>· {branch()}</span>}
-              </Show>
-            </span>
+            <ReposChip
+              session={session()}
+              onAdd={props.onAddRepo}
+              adding={props.addingRepo}
+            />
           )}
         </Show>
       </div>
@@ -308,5 +323,150 @@ export default function SessionHeader(props: SessionHeaderProps) {
         </Popover>
       </div>
     </header>
+  );
+}
+
+/**
+ * The repositories the session works across, as the header's `repo ·
+ * branch` readout.
+ *
+ * The label is the primary repository and a `+N` for the rest; the popover
+ * lists every checkout with its branch and its directory, and says who put
+ * it there — a checkout the agent asked for is marked `added by agent`,
+ * because that distinction is the fact a reader needs to trust the list.
+ * The same panel is where a repository is added mid-session: the row is a
+ * search of the account's repositories with its own branch picker, and the
+ * choice is `POST`ed straight away.
+ */
+function ReposChip(props: {
+  session: SessionDetail;
+  onAdd: ((selection: { repo: string; branch?: string }) => void) | undefined;
+  adding: boolean | undefined;
+}) {
+  const [adding, setAdding] = createSignal(false);
+  const [query, setQuery] = createSignal("");
+  const [pickedBranch, setPickedBranch] = createSignal<Record<string, string | undefined>>({});
+  const [results] = createQuery(
+    () => (adding() ? query() : undefined),
+    (needle: string) => listRepos(needle),
+  );
+
+  const primary = () => props.session.repos[0];
+
+  /** `flyco · main +2`, or `flyco +2` for a session whose branch was never recorded. */
+  const label = createMemo(() => {
+    const first = primary();
+    if (first === undefined) {
+      return "the repositories";
+    }
+    const extra = props.session.repos.length - 1;
+    const rest = extra === 0 ? "" : ` +${extra}`;
+    return first.branch === null || first.branch === undefined
+      ? `${first.slug}${rest}`
+      : `${first.slug} · ${first.branch}${rest}`;
+  });
+
+  /** Repositories not already on the session — adding one twice is a 409. */
+  const attachable = createMemo(() => {
+    const held = new Set(props.session.repos.map((entry) => entry.slug));
+    return (results() ?? []).filter((candidate) => !held.has(candidate.slug));
+  });
+
+  return (
+    <Popover
+      label="Repositories"
+      trigger={(attrs) => (
+        <button
+          id={attrs.id}
+          onClick={attrs.onClick}
+          aria-expanded={attrs.expanded()}
+          aria-haspopup="dialog"
+          type="button"
+          class={styles.repo}
+          title="The session's repositories"
+        >
+          {label()}
+        </button>
+      )}
+    >
+      {(close) => (
+        <div class={styles.popover}>
+          <ul class={styles.repoList}>
+            <For each={props.session.repos}>
+              {(repo, index) => (
+                <li class={styles.repoRow}>
+                  <FolderGit2 size={13} aria-hidden="true" class={cx(styles.repoIcon)} />
+                  <span class={styles.repoSlug} title={repo.slug}>
+                    {repo.slug}
+                  </span>
+                  <Show when={repo.branch}>
+                    {(branch) => <span class={styles.repoBranch}>{branch()}</span>}
+                  </Show>
+                  <span class={styles.repoMeta}>
+                    {index() === 0 ? "primary" : repo.dir}
+                    <Show when={repo.added_by === "agent"}> · added by agent</Show>
+                  </span>
+                </li>
+              )}
+            </For>
+          </ul>
+          <Show when={props.onAdd !== undefined}>
+            <Show
+              when={adding()}
+              fallback={
+                <button type="button" class={styles.repoAdd} onClick={() => setAdding(true)}>
+                  Add a repository
+                </button>
+              }
+            >
+              <input
+                class={styles.search}
+                type="search"
+                placeholder="Search your repositories"
+                aria-label="Search your repositories"
+                value={query()}
+                autofocus
+                onInput={(event) => setQuery(event.currentTarget.value)}
+              />
+              <ul class={styles.repoList}>
+                <For each={attachable()}>
+                  {(candidate) => (
+                    <li class={styles.repoRow}>
+                      <span class={styles.repoSlug} title={candidate.slug}>
+                        {candidate.slug}
+                      </span>
+                      <RepoBranchPicker
+                        slug={candidate.slug}
+                        branch={pickedBranch()[candidate.slug] ?? null}
+                        onChoose={(branch) =>
+                          setPickedBranch((held) => ({ ...held, [candidate.slug]: branch }))
+                        }
+                      />
+                      <button
+                        type="button"
+                        class={styles.repoAddConfirm}
+                        disabled={props.adding === true}
+                        onClick={() => {
+                          const branch = pickedBranch()[candidate.slug];
+                          props.onAdd?.(
+                            branch === undefined
+                              ? { repo: candidate.slug }
+                              : { repo: candidate.slug, branch },
+                          );
+                          close();
+                        }}
+                      >
+                        {props.adding === true ? "Adding…" : "Add"}
+                      </button>
+                    </li>
+                  )}
+                </For>
+              </ul>
+              <ProblemNotice error={results.error} />
+            </Show>
+          </Show>
+        </div>
+      )}
+    </Popover>
   );
 }

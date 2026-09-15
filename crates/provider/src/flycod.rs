@@ -17,15 +17,17 @@
 //! [`DaemonConfig`]: https://github.com/lexoliu/flyco/blob/main/crates/daemon/src/config.rs
 
 use core::fmt;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use flyco_core::machine::SessionMachine;
 use flyco_core::{
-    BranchName, CloudProviderKind, HarnessKind, MachineOrigin, PermissionMode, RepoSlug, Runtime,
-    SessionId,
+    BranchName, CloudProviderKind, DEVIN_ID_TAILS, DriverKind, HarnessKind, MachineOrigin,
+    McpServerConfig, McpServerMount, PermissionMode, RepoSlug, Runtime, SessionId,
 };
 use serde::Serialize;
 
-use crate::{DaemonBootstrap, GitIdentity};
+use crate::{DaemonBootstrap, GitIdentity, cloud_init, datetime};
 
 /// Where the agent's checkout lives inside a flyco machine.
 pub const WORKDIR: &str = "/srv/flyco/work";
@@ -50,6 +52,28 @@ pub const CLAUDE_PROJECT_DIR_NAME: &str = "flyco-session";
 
 /// The isolated `CODEX_HOME` an injected Codex credential runs under.
 pub const CODEX_HOME: &str = "/var/lib/flyco/codex";
+
+/// Where the session image and the installer put the daemon binary.
+///
+/// Every harness's flyco MCP entry launches a second copy of it — the
+/// daemon resolves its own path at runtime, but the root-owned registry
+/// files are rendered here, on the control plane, where only the image's
+/// install location is known.
+pub const FLYCOD: &str = "/usr/local/bin/flycod";
+
+/// The `XDG_DATA_HOME` a provisioned Devin runs under.
+///
+/// `devin` keeps its `credentials.toml` at `<XDG_DATA_HOME>/devin/`, so
+/// pointing the variable at a flyco-owned root is what isolates one
+/// session's login from everything else the CLI would read.
+pub const DEVIN_DATA_HOME: &str = "/var/lib/flyco/devin";
+
+/// The `XDG_CONFIG_HOME` a provisioned Devin runs under.
+///
+/// `mcp_config.json` lands at `<XDG_CONFIG_HOME>/devin/` — the registry
+/// written through `[acp.files]` is the whole of what the agent sees at
+/// that scope.
+pub const DEVIN_CONFIG_HOME: &str = "/var/lib/flyco/devin-config";
 
 /// Claude Code's managed-policy directory, declared with the release that
 /// has to make it writable. An absolute path outside `CLAUDE_CONFIG_DIR` on
@@ -140,6 +164,40 @@ impl fmt::Debug for CodexCredential {
     }
 }
 
+/// How the supervised Devin agent authenticates on a provisioned machine.
+///
+/// Driven over ACP like every harness but Claude Code: credentials reach it
+/// as files and environment under the `[acp]` table rather than as a
+/// vendor-shaped home directory. [`Inherit`](Self::Inherit) is the
+/// developer-machine mode — the agent uses whatever login the image
+/// carries.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum DevinCredential {
+    /// No credential injected.
+    Inherit,
+    /// A Devin API key, written as `credentials.toml`'s `windsurf_api_key`.
+    ///
+    /// The field's name is the CLI's own, predating the Devin branding —
+    /// the file predates it too, and `devin` reads it verbatim.
+    ApiKey {
+        /// The key the user linked in the browser.
+        key: String,
+    },
+}
+
+impl fmt::Debug for DevinCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mode = match self {
+            Self::Inherit => "inherit",
+            Self::ApiKey { .. } => "api_key",
+        };
+        f.debug_struct("DevinCredential")
+            .field("mode", &mode)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The credential a provisioned machine's harness runs under.
 ///
 /// Tagged by harness rather than carried beside a separate `harness` field:
@@ -152,6 +210,8 @@ pub enum HarnessCredential {
     ClaudeCode(ClaudeCredential),
     /// Codex's credential.
     Codex(CodexCredential),
+    /// Devin's credential.
+    Devin(DevinCredential),
 }
 
 impl fmt::Debug for HarnessCredential {
@@ -165,6 +225,10 @@ impl fmt::Debug for HarnessCredential {
                 .debug_tuple("HarnessCredential::Codex")
                 .field(credential)
                 .finish(),
+            Self::Devin(credential) => f
+                .debug_tuple("HarnessCredential::Devin")
+                .field(credential)
+                .finish(),
         }
     }
 }
@@ -176,6 +240,7 @@ impl HarnessCredential {
         match self {
             Self::ClaudeCode(_) => HarnessKind::ClaudeCode,
             Self::Codex(_) => HarnessKind::Codex,
+            Self::Devin(_) => HarnessKind::Devin,
         }
     }
 
@@ -185,6 +250,7 @@ impl HarnessCredential {
         match harness {
             HarnessKind::ClaudeCode => Self::ClaudeCode(ClaudeCredential::Inherit),
             HarnessKind::Codex => Self::Codex(CodexCredential::Inherit),
+            HarnessKind::Devin => Self::Devin(DevinCredential::Inherit),
         }
     }
 }
@@ -232,18 +298,26 @@ struct ControlPlane<'a> {
     daemon_token: &'a str,
 }
 
-/// The `[repo]` table, and `[repo.identity]` under it.
+/// The `[github]` table — how every checkout authenticates — and
+/// `[github.identity]` under it.
 ///
-/// The token is a field of the same table as the slug because the two are
-/// one decision: a checkout flyco cannot authenticate is not a checkout, and
-/// a token with no repository to spend it on has no reason to be on the
-/// machine at all.
+/// One table for the whole workspace rather than a field of each
+/// `[[repos]]` element, because the authorization is the workspace's, not
+/// the repository's: every clone and later push is the same user's, and
+/// repeating the token under each entry would say otherwise.
+#[derive(Debug, Clone, Serialize)]
+struct Github<'a> {
+    token: &'a str,
+    identity: &'a GitIdentity,
+}
+
+/// One `[[repos]]` element: a repository the workspace checks out.
 #[derive(Debug, Clone, Serialize)]
 struct Repo<'a> {
     slug: &'a RepoSlug,
     branch: &'a BranchName,
-    token: &'a str,
-    identity: &'a GitIdentity,
+    /// The directory under the workdir it is cloned into.
+    dir: &'a str,
 }
 
 /// The `[sidecar]` table.
@@ -253,47 +327,100 @@ struct Sidecar {
     bun: &'static str,
 }
 
-/// An isolated Codex home, as the daemon's config spells it.
-#[derive(Debug, Clone, Copy, Serialize)]
-struct CodexIsolation {
-    home: &'static str,
+/// One file of `[acp.files]`: credentials and managed configuration the
+/// daemon materializes — mode `0600` — before spawning the agent.
+#[derive(Debug, Clone, Serialize)]
+struct AcpFile {
+    path: PathBuf,
+    contents: String,
 }
 
-/// The `[codex.auth]` table.
+/// One `session/set_config_option` write, as the daemon's `[acp]` table
+/// spells it.
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-enum CodexAuth<'a> {
-    Inherit,
-    ApiKey {
-        key: &'a str,
-        isolation: CodexIsolation,
-    },
-    #[serde(rename = "chatgpt")]
-    ChatGpt {
-        id_token: &'a str,
-        access_token: &'a str,
-        refresh_token: &'a str,
-        account_id: &'a str,
-        isolation: CodexIsolation,
-    },
+struct AcpOptionWrite {
+    option: &'static str,
+    value: &'static str,
 }
 
-/// The `[codex]` table.
+/// How one flyco permission mode reaches the agent — a `session/set_mode`
+/// id plus ordered config-option writes, as `[acp.modes.<mode>]`.
+#[derive(Debug, Clone, Default, Serialize)]
+struct AcpMode {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    set_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    options: Vec<AcpOptionWrite>,
+}
+
+impl AcpMode {
+    /// A mode that is only a `set_mode` id.
+    const fn mode(id: &'static str) -> Self {
+        Self {
+            set_mode: Some(id),
+            options: Vec::new(),
+        }
+    }
+}
+
+/// One agent extension method and its params — `[acp.methods.<name>]`.
 #[derive(Debug, Clone, Serialize)]
-struct Codex<'a> {
-    bin: &'static str,
-    /// Model override for `thread/start` and every `turn/start` after it.
+struct AcpMethodCall {
+    call: &'static str,
+    params: serde_json::Value,
+}
+
+/// The `[acp.methods]` table: the vendor extension methods the driver
+/// calls, configured rather than assumed.
+#[derive(Debug, Clone, Default, Serialize)]
+struct AcpMethods {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compact: Option<AcpMethodCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<AcpMethodCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp_status: Option<AcpMethodCall>,
+}
+
+/// The `[acp.tui]` table: the agent's own interactive interface, bridged
+/// to by `flyco <agent>`.
+#[derive(Debug, Clone, Serialize)]
+struct AcpTui {
+    program: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    args: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    resume_args: Vec<&'static str>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    env: BTreeMap<&'static str, &'static str>,
+}
+
+/// The `[acp]` table — the one shape every non-Claude harness renders
+/// into, so the daemon's driver never learns which agent it is steering.
+#[derive(Debug, Clone, Serialize)]
+struct Acp<'a> {
+    agent: &'static str,
+    program: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    args: Vec<&'static str>,
+    env: BTreeMap<&'static str, &'static str>,
+    files: Vec<AcpFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<&'a str>,
-    /// Reasoning effort, omitted where the session chose none so the
-    /// app-server's own `defaultReasoningEffort` for the model stands.
     #[serde(skip_serializing_if = "Option::is_none")]
     effort: Option<&'a str>,
-    /// The mode the thread runs under, flyco's spelling — the daemon's
-    /// Codex driver translates it into the `approval_policy`/`sandbox`
-    /// pair the app-server takes.
+    model_option: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort_option: Option<&'static str>,
+    /// Suffixes the agent hangs after the effort word inside a fused
+    /// model id — non-empty marks the ids as effort-fused.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    fused_effort_tails: &'a [&'static str],
     permission_mode: PermissionMode,
-    auth: CodexAuth<'a>,
+    modes: BTreeMap<PermissionMode, AcpMode>,
+    methods: AcpMethods,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tui: Option<AcpTui>,
 }
 
 /// The `[computer]` table.
@@ -315,7 +442,10 @@ struct Computer {
 #[derive(Debug, Clone, Serialize)]
 struct Document<'a> {
     session: SessionId,
-    harness: HarnessKind,
+    /// The driver the daemon runs — `acp` for every harness but Claude
+    /// Code, because the product harness lives on the session row and the
+    /// daemon only needs to know which machinery steers it.
+    harness: DriverKind,
     workdir: &'static str,
     transcript_dir: &'static str,
     /// Whether this machine's filesystem outlives a stop.
@@ -331,7 +461,7 @@ struct Document<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     resume_session_id: Option<&'a str>,
     control_plane: ControlPlane<'a>,
-    repo: Repo<'a>,
+    github: Github<'a>,
     machine: &'a SessionMachine,
     /// Always written, on the same terms as `runtime`: "no screen" is a
     /// fact the session stated, not a table a provisioning bug forgot.
@@ -341,7 +471,11 @@ struct Document<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     sidecar: Option<Sidecar>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    codex: Option<Codex<'a>>,
+    acp: Option<Acp<'a>>,
+    /// `[[repos]]`, at the tail with `mcp_servers` because an array of
+    /// tables opens a new table context: a table after it would be parsed
+    /// as a sub-table of its last element.
+    repos: Vec<Repo<'a>>,
     /// `[[mcp_servers]]`, last because an array of tables closes the
     /// document: everything after it in TOML would land inside its last
     /// element.
@@ -372,24 +506,425 @@ fn claude_auth(credential: &ClaudeCredential) -> Auth<'_> {
     }
 }
 
-/// The `[codex.auth]` table for one credential, under the same rule.
-fn codex_auth(credential: &CodexCredential) -> CodexAuth<'_> {
-    let isolation = CodexIsolation { home: CODEX_HOME };
-    match credential {
-        CodexCredential::Inherit => CodexAuth::Inherit,
-        CodexCredential::ApiKey { key } => CodexAuth::ApiKey { key, isolation },
+/// `$CODEX_HOME/config.toml`, written into `[acp.files]`.
+///
+/// The file is the machine's MCP registry *and* its credential-store
+/// setting: Codex has no separate allowlist document — `[mcp_servers.<id>]`
+/// *is* the server's identity — so the complete set being here, in a home
+/// the agent cannot write before flycod owns it, is the allowlist.
+#[derive(Debug, Serialize)]
+struct CodexHomeFile {
+    cli_auth_credentials_store: &'static str,
+    mcp_servers: BTreeMap<String, CodexMcpServer>,
+}
+
+/// One `[mcp_servers.<id>]` table of Codex's `config.toml`.
+///
+/// Field order is serialization order and TOML puts every scalar before
+/// the first table it meets, so the maps come last or `toml` refuses to
+/// serialize the document at all.
+#[derive(Debug, Serialize)]
+struct CodexMcpServer {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    args: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    enabled: bool,
+    required: bool,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    env: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    http_headers: BTreeMap<String, String>,
+}
+
+/// `$CODEX_HOME/auth.json`, as Codex's own loader reads it.
+#[derive(Debug, Serialize)]
+struct CodexAuthFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auth_mode: Option<&'static str>,
+    #[serde(rename = "OPENAI_API_KEY", skip_serializing_if = "Option::is_none")]
+    openai_api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tokens: Option<CodexTokens>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_refresh: Option<String>,
+}
+
+/// The `tokens` object of a `ChatGPT` `auth.json`.
+#[derive(Debug, Serialize)]
+struct CodexTokens {
+    id_token: String,
+    access_token: String,
+    refresh_token: String,
+    account_id: String,
+}
+
+/// `mcp_config.json`, as `devin` reads it at its `XDG_CONFIG_HOME`.
+///
+/// One `mcpServers` map — the same key Claude's files use, because Devin's
+/// registry inherited the shape. Each entry spells its transport
+/// explicitly; `stdio` servers carry `command`/`args`/`env`, remote ones
+/// `url`/`headers`.
+#[derive(Debug, Serialize)]
+struct DevinMcpFile {
+    #[serde(rename = "mcpServers")]
+    mcp_servers: BTreeMap<String, DevinMcpServer>,
+}
+
+/// One `mcpServers` entry of Devin's `mcp_config.json`.
+#[derive(Debug, Serialize)]
+struct DevinMcpServer {
+    transport: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    args: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    env: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    headers: BTreeMap<String, String>,
+}
+
+/// The flyco MCP server's own entry, in every vendor's registry file.
+///
+/// A second `flycod` process serves the session's tools; the path and the
+/// config it reads are the image's contract, fixed by the entrypoint and
+/// installer rather than resolved at runtime the way the daemon's own
+/// mount declaration is.
+fn flyco_entry() -> (String, McpServerConfig) {
+    (
+        "flyco".to_owned(),
+        McpServerConfig::Stdio {
+            command: FLYCOD.to_owned(),
+            args: vec![
+                "mcp".to_owned(),
+                "--config".to_owned(),
+                cloud_init::CONFIG_PATH.to_owned(),
+            ],
+            env: Vec::new(),
+        },
+    )
+}
+
+/// Every server the registry file lists: flyco's first, then the user's
+/// mounts, keyed by name so a database's `ORDER BY` never shuffles the
+/// rendered file.
+fn registry(mounts: &[McpServerMount]) -> BTreeMap<String, McpServerConfig> {
+    let mut servers = BTreeMap::from([flyco_entry()]);
+    servers.extend(
+        mounts
+            .iter()
+            .map(|mount| (mount.name.clone(), mount.config.clone())),
+    );
+    servers
+}
+
+/// One registered server as Codex's `config.toml` spells it; flyco's own
+/// entry is marked `required` so a thread cannot open without it.
+fn codex_mcp(name: &str, config: &McpServerConfig) -> CodexMcpServer {
+    let required = name == "flyco";
+    match config {
+        McpServerConfig::Stdio { command, args, env } => CodexMcpServer {
+            command: Some(command.clone()),
+            args: args.clone(),
+            url: None,
+            enabled: true,
+            required,
+            env: env
+                .iter()
+                .map(|entry| (entry.key.clone(), entry.value.clone()))
+                .collect(),
+            http_headers: BTreeMap::new(),
+        },
+        McpServerConfig::Http { url, headers } => CodexMcpServer {
+            command: None,
+            args: Vec::new(),
+            url: Some(url.clone()),
+            enabled: true,
+            required,
+            env: BTreeMap::new(),
+            http_headers: headers
+                .iter()
+                .map(|header| (header.name.clone(), header.value.clone()))
+                .collect(),
+        },
+    }
+}
+
+/// One registered server as Devin's `mcp_config.json` spells it.
+fn devin_mcp(config: &McpServerConfig) -> DevinMcpServer {
+    match config {
+        McpServerConfig::Stdio { command, args, env } => DevinMcpServer {
+            transport: "stdio",
+            command: Some(command.clone()),
+            args: args.clone(),
+            env: env
+                .iter()
+                .map(|entry| (entry.key.clone(), entry.value.clone()))
+                .collect(),
+            url: None,
+            headers: BTreeMap::new(),
+        },
+        McpServerConfig::Http { url, headers } => DevinMcpServer {
+            transport: "http",
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            url: Some(url.clone()),
+            headers: headers
+                .iter()
+                .map(|header| (header.name.clone(), header.value.clone()))
+                .collect(),
+        },
+    }
+}
+
+/// The contents of `$CODEX_HOME/config.toml` for one session.
+fn codex_config_toml(mounts: &[McpServerMount]) -> String {
+    let file = CodexHomeFile {
+        cli_auth_credentials_store: "file",
+        mcp_servers: registry(mounts)
+            .iter()
+            .map(|(name, config)| (name.clone(), codex_mcp(name, config)))
+            .collect(),
+    };
+    toml::to_string_pretty(&file).expect("CodexHomeFile serializes")
+}
+
+/// The contents of `$CODEX_HOME/auth.json` for one credential — `None`
+/// when the session injects nothing and the image's own login stands.
+fn codex_auth_json(credential: &CodexCredential) -> Option<String> {
+    let file = match credential {
+        CodexCredential::Inherit => return None,
+        CodexCredential::ApiKey { key } => CodexAuthFile {
+            auth_mode: None,
+            openai_api_key: Some(key.clone()),
+            tokens: None,
+            last_refresh: None,
+        },
         CodexCredential::ChatGpt {
             id_token,
             access_token,
             refresh_token,
             account_id,
-        } => CodexAuth::ChatGpt {
-            id_token,
-            access_token,
-            refresh_token,
-            account_id,
-            isolation,
+        } => CodexAuthFile {
+            auth_mode: Some("chatgpt"),
+            openai_api_key: None,
+            tokens: Some(CodexTokens {
+                id_token: id_token.clone(),
+                access_token: access_token.clone(),
+                refresh_token: refresh_token.clone(),
+                account_id: account_id.clone(),
+            }),
+            // Codex reads this to decide how stale the grant is; the grant
+            // was minted or renewed at provision time, so "now" is the
+            // truth.
+            last_refresh: Some(now_rfc3339()),
         },
+    };
+    Some(serde_json::to_string_pretty(&file).expect("CodexAuthFile serializes"))
+}
+
+/// The current instant as Codex writes `last_refresh`: RFC 3339, UTC.
+fn now_rfc3339() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is set before the Unix epoch")
+        .as_secs();
+    datetime::rfc3339(seconds).expect("a current timestamp is representable")
+}
+
+/// The contents of Devin's `credentials.toml` for one credential — `None`
+/// when the session injects nothing.
+fn devin_credentials_toml(credential: &DevinCredential) -> Option<String> {
+    match credential {
+        DevinCredential::Inherit => None,
+        DevinCredential::ApiKey { key } => Some(
+            toml::to_string(&toml::map::Map::from_iter([(
+                "windsurf_api_key".to_owned(),
+                toml::Value::String(key.clone()),
+            )]))
+            .expect("a one-key table serializes"),
+        ),
+    }
+}
+
+/// The contents of Devin's `mcp_config.json` for one session.
+fn devin_mcp_config_json(mounts: &[McpServerMount]) -> String {
+    let file = DevinMcpFile {
+        mcp_servers: registry(mounts)
+            .iter()
+            .map(|(name, config)| (name.clone(), devin_mcp(config)))
+            .collect(),
+    };
+    serde_json::to_string_pretty(&file).expect("DevinMcpFile serializes")
+}
+
+/// How flyco's permission modes reach Codex through the `codex-acp`
+/// adapter.
+///
+/// Codex's ACP surface has two dials: the session mode — `read-only`,
+/// `agent`, `agent-full-access` — and a `collaboration_mode` config option
+/// whose `plan` value is what planning actually is on this agent. The
+/// pairings follow the ones the retired app-server driver encoded: every
+/// mutation asking reads as the read-only mode, workspace-write reads as
+/// `agent`, and full access is reserved for `bypassPermissions`.
+fn codex_modes() -> BTreeMap<PermissionMode, AcpMode> {
+    BTreeMap::from([
+        (PermissionMode::Default, AcpMode::mode("read-only")),
+        (PermissionMode::AcceptEdits, AcpMode::mode("agent")),
+        (
+            PermissionMode::Plan,
+            AcpMode {
+                set_mode: Some("read-only"),
+                options: vec![AcpOptionWrite {
+                    option: "collaboration_mode",
+                    value: "plan",
+                }],
+            },
+        ),
+        (PermissionMode::Auto, AcpMode::mode("agent")),
+        (
+            PermissionMode::BypassPermissions,
+            AcpMode::mode("agent-full-access"),
+        ),
+        (PermissionMode::DontAsk, AcpMode::mode("read-only")),
+    ])
+}
+
+/// The app-server extension methods the `codex-acp` adapter forwards.
+fn codex_methods() -> AcpMethods {
+    let call = |call: &'static str, params: serde_json::Value| Some(AcpMethodCall { call, params });
+    AcpMethods {
+        compact: call(
+            "thread/compact/start",
+            serde_json::json!({ "threadId": "<session>" }),
+        ),
+        usage: call("account/rateLimits/read", serde_json::json!({})),
+        mcp_status: call(
+            "mcpServerStatus/list",
+            serde_json::json!({ "threadId": "<session>" }),
+        ),
+    }
+}
+
+/// How flyco's permission modes reach Devin — a near-verbatim mapping,
+/// because Devin's mode names are Claude's own vocabulary. `dontAsk` has
+/// no counterpart: nothing on this agent both refuses mutation and never
+/// asks, so it shares `plan`'s read-only floor.
+fn devin_modes() -> BTreeMap<PermissionMode, AcpMode> {
+    BTreeMap::from([
+        (PermissionMode::Default, AcpMode::mode("ask")),
+        (PermissionMode::AcceptEdits, AcpMode::mode("accept-edits")),
+        (PermissionMode::Plan, AcpMode::mode("plan")),
+        (PermissionMode::Auto, AcpMode::mode("smart")),
+        (PermissionMode::BypassPermissions, AcpMode::mode("bypass")),
+        (PermissionMode::DontAsk, AcpMode::mode("plan")),
+    ])
+}
+
+/// The `[acp]` table a Codex session is rendered into.
+fn codex_acp<'a>(
+    credential: &CodexCredential,
+    model: &'a str,
+    effort: Option<&'a str>,
+    permission_mode: PermissionMode,
+    mounts: &[McpServerMount],
+) -> Acp<'a> {
+    let home = PathBuf::from(CODEX_HOME);
+    let mut files = vec![AcpFile {
+        path: home.join("config.toml"),
+        contents: codex_config_toml(mounts),
+    }];
+    files.extend(codex_auth_json(credential).map(|contents| AcpFile {
+        path: home.join("auth.json"),
+        contents,
+    }));
+    Acp {
+        agent: "codex",
+        // The `@agentclientprotocol/codex-acp` adapter, which owns the
+        // `codex app-server` subprocess it spawns through `CODEX_PATH`.
+        program: "codex-acp",
+        args: Vec::new(),
+        env: BTreeMap::from([
+            ("CODEX_PATH", "/usr/local/bin/codex"),
+            ("CODEX_HOME", CODEX_HOME),
+        ]),
+        files,
+        model: Some(model),
+        effort,
+        model_option: "model",
+        effort_option: Some("reasoning_effort"),
+        fused_effort_tails: &[],
+        permission_mode,
+        modes: codex_modes(),
+        methods: codex_methods(),
+        tui: Some(AcpTui {
+            program: "codex",
+            args: Vec::new(),
+            // `codex resume <id>`; the id is substituted at launch, and a
+            // launch with no recorded id drops the placeholder and lands
+            // on the picker.
+            resume_args: vec!["resume", "{session}"],
+            env: BTreeMap::from([("CODEX_HOME", CODEX_HOME)]),
+        }),
+    }
+}
+
+/// The `[acp]` table a Devin session is rendered into.
+fn devin_acp<'a>(
+    credential: &DevinCredential,
+    model: &'a str,
+    effort: Option<&'a str>,
+    permission_mode: PermissionMode,
+    mounts: &[McpServerMount],
+) -> Acp<'a> {
+    let data = PathBuf::from(DEVIN_DATA_HOME);
+    let config = PathBuf::from(DEVIN_CONFIG_HOME);
+    let env = BTreeMap::from([
+        ("XDG_DATA_HOME", DEVIN_DATA_HOME),
+        ("XDG_CONFIG_HOME", DEVIN_CONFIG_HOME),
+    ]);
+    let mut files = vec![AcpFile {
+        path: config.join("devin/mcp_config.json"),
+        contents: devin_mcp_config_json(mounts),
+    }];
+    files.extend(devin_credentials_toml(credential).map(|contents| AcpFile {
+        path: data.join("devin/credentials.toml"),
+        contents,
+    }));
+    Acp {
+        agent: "devin",
+        program: "devin",
+        args: vec!["acp"],
+        env,
+        files,
+        model: Some(model),
+        // Devin has no effort dial: the level is part of the model id,
+        // folded back in by the daemon through `fused_effort_tails`.
+        effort,
+        model_option: "model",
+        effort_option: None,
+        fused_effort_tails: &DEVIN_ID_TAILS,
+        permission_mode,
+        modes: devin_modes(),
+        // No extension methods are configured: Devin's vendor surface is
+        // notifications, which the mount watch reads, not calls to make.
+        methods: AcpMethods::default(),
+        tui: Some(AcpTui {
+            program: "devin",
+            args: Vec::new(),
+            // `devin --resume <id>`; bare `--resume` opens the picker.
+            resume_args: vec!["--resume", "{session}"],
+            env: BTreeMap::from([
+                ("XDG_DATA_HOME", DEVIN_DATA_HOME),
+                ("XDG_CONFIG_HOME", DEVIN_CONFIG_HOME),
+            ]),
+        }),
     }
 }
 
@@ -404,7 +939,10 @@ fn codex_auth(credential: &CodexCredential) -> CodexAuth<'_> {
 /// by its owner, and there is no notice to watch for.
 const fn spot_provider(bootstrap: &DaemonBootstrap) -> Option<CloudProviderKind> {
     match bootstrap.provider {
-        CloudProviderKind::Host => None,
+        // Codespaces has no capacity market to be evicted from — GitHub's
+        // idle suspension arrives with no metadata endpoint to watch and is
+        // reconciled by the control plane instead.
+        CloudProviderKind::Host | CloudProviderKind::Codespaces => None,
         provider @ (CloudProviderKind::Azure | CloudProviderKind::Aws | CloudProviderKind::Gcp) => {
             if bootstrap.machine.spot {
                 Some(provider)
@@ -428,7 +966,7 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
     // credential names, so a Codex model can never land in `[claude]`.
     let model = bootstrap.model.model.as_str();
     let effort = bootstrap.model.effort.as_deref();
-    let (claude, sidecar, codex) = match &bootstrap.auth {
+    let (claude, sidecar, acp) = match &bootstrap.auth {
         HarnessCredential::ClaudeCode(credential) => (
             Some(Claude {
                 model: Some(model),
@@ -446,19 +984,34 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
         HarnessCredential::Codex(credential) => (
             None,
             None,
-            Some(Codex {
-                bin: "codex",
-                model: Some(model),
+            Some(codex_acp(
+                credential,
+                model,
                 effort,
-                permission_mode: bootstrap.permission_mode,
-                auth: codex_auth(credential),
-            }),
+                bootstrap.permission_mode,
+                &bootstrap.mcp_servers,
+            )),
+        ),
+        HarnessCredential::Devin(credential) => (
+            None,
+            None,
+            Some(devin_acp(
+                credential,
+                model,
+                effort,
+                bootstrap.permission_mode,
+                &bootstrap.mcp_servers,
+            )),
         ),
     };
 
+    let driver = match bootstrap.auth.harness() {
+        HarnessKind::ClaudeCode => DriverKind::ClaudeCode,
+        HarnessKind::Codex | HarnessKind::Devin => DriverKind::Acp,
+    };
     let document = Document {
         session: bootstrap.session,
-        harness: bootstrap.auth.harness(),
+        harness: driver,
         workdir: WORKDIR,
         transcript_dir: TRANSCRIPT_DIR,
         runtime: bootstrap.runtime,
@@ -469,11 +1022,9 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
             url: &bootstrap.control_plane_url,
             daemon_token: &bootstrap.daemon_token,
         },
-        repo: Repo {
-            slug: &bootstrap.repo.slug,
-            branch: &bootstrap.repo.branch,
-            token: &bootstrap.repo.token,
-            identity: &bootstrap.repo.identity,
+        github: Github {
+            token: &bootstrap.github.token,
+            identity: &bootstrap.github.identity,
         },
         machine: &bootstrap.machine,
         computer: Computer {
@@ -481,7 +1032,16 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
         },
         claude,
         sidecar,
-        codex,
+        acp,
+        repos: bootstrap
+            .repos
+            .iter()
+            .map(|repo| Repo {
+                slug: &repo.slug,
+                branch: &repo.branch,
+                dir: &repo.dir,
+            })
+            .collect(),
         mcp_servers: &bootstrap.mcp_servers,
     };
 
@@ -498,7 +1058,7 @@ mod tests {
         CLAUDE_CONFIG_DIR, CODEX_HOME, ClaudeCredential, CodexCredential, HarnessCredential, render,
     };
     use crate::DaemonBootstrap;
-    use crate::testing::{GITHUB_TOKEN, checkout};
+    use crate::testing::{GITHUB_TOKEN, checkouts, github};
 
     fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
         DaemonBootstrap {
@@ -509,7 +1069,8 @@ mod tests {
             daemon_token: "fd_token".to_owned(),
             permission_mode: PermissionMode::Default,
             auth,
-            repo: checkout(),
+            repos: checkouts(),
+            github: github(),
             machine_origin: MachineOrigin::Auto,
             machine: crate::testing::session_machine(),
             resume_session_id: None,
@@ -588,10 +1149,10 @@ mod tests {
     fn the_machine_is_told_which_repository_and_branch_to_check_out() {
         let rendered = render(&claude(ClaudeCredential::Inherit)).expect("render");
 
-        assert!(rendered.contains("[repo]"));
+        assert!(rendered.contains("[[repos]]"));
         assert!(rendered.contains("slug = \"lexoliu/flyco\""));
         assert!(rendered.contains("branch = \"dev\""));
-        assert!(rendered.contains("[repo.identity]"));
+        assert!(rendered.contains("[github.identity]"));
         assert!(rendered.contains("email = \"4242+lexoliu@users.noreply.github.com\""));
     }
 
@@ -613,11 +1174,13 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_session_writes_the_codex_table_and_not_claude() {
+    fn a_codex_session_writes_the_acp_table_and_not_claude() {
         let rendered = render(&codex(chatgpt())).expect("render");
 
-        assert!(rendered.contains("[codex]"));
-        assert!(rendered.contains("harness = \"codex\""));
+        assert!(rendered.contains("[acp]"));
+        assert!(rendered.contains("harness = \"acp\""));
+        assert!(rendered.contains(r#"agent = "codex""#));
+        assert!(rendered.contains(r#"program = "codex-acp""#));
         assert!(rendered.contains("permission_mode = \"default\""));
         assert!(rendered.contains(CODEX_HOME));
         assert!(!rendered.contains("[claude]"));
@@ -629,11 +1192,12 @@ mod tests {
     fn a_chatgpt_grant_carries_every_value_auth_json_needs() {
         let rendered = render(&codex(chatgpt())).expect("render");
 
-        assert!(rendered.contains("mode = \"chatgpt\""));
-        assert!(rendered.contains("id_token = \"header.payload.signature\""));
-        assert!(rendered.contains("access_token = \"chatgpt-access\""));
-        assert!(rendered.contains("refresh_token = \"chatgpt-refresh\""));
-        assert!(rendered.contains("account_id = \"acc_01JD\""));
+        assert!(rendered.contains("auth.json"));
+        assert!(rendered.contains(r#""auth_mode": "chatgpt""#), "{rendered}");
+        assert!(rendered.contains("header.payload.signature"), "{rendered}");
+        assert!(rendered.contains("chatgpt-access"), "{rendered}");
+        assert!(rendered.contains("chatgpt-refresh"), "{rendered}");
+        assert!(rendered.contains("acc_01JD"), "{rendered}");
     }
 
     #[test]
@@ -643,9 +1207,29 @@ mod tests {
         }))
         .expect("render");
 
-        assert!(rendered.contains("mode = \"api_key\""));
-        assert!(rendered.contains("key = \"sk-proj-openai\""));
+        assert!(rendered.contains("auth.json"));
+        assert!(rendered.contains("OPENAI_API_KEY"), "{rendered}");
+        assert!(rendered.contains("sk-proj-openai"), "{rendered}");
         assert!(rendered.contains(CODEX_HOME));
+    }
+
+    #[test]
+    fn a_devin_session_is_the_same_acp_table_pointed_at_devin() {
+        let rendered = render(&bootstrap(HarnessCredential::Devin(
+            super::DevinCredential::ApiKey {
+                key: "dv_test_key".to_owned(),
+            },
+        )))
+        .expect("render");
+
+        assert!(rendered.contains("harness = \"acp\""));
+        assert!(rendered.contains(r#"agent = "devin""#), "{rendered}");
+        assert!(rendered.contains(r#"program = "devin""#), "{rendered}");
+        assert!(rendered.contains("credentials.toml"), "{rendered}");
+        assert!(rendered.contains("windsurf_api_key"), "{rendered}");
+        assert!(rendered.contains("dv_test_key"), "{rendered}");
+        assert!(rendered.contains("mcp_config.json"), "{rendered}");
+        assert!(!rendered.contains("[claude]"), "{rendered}");
     }
 
     #[test]
@@ -758,7 +1342,7 @@ mod tests {
         assert!(rendered.contains(r#"effort = "high""#), "{rendered}");
 
         let rendered = render(&codex(chatgpt())).expect("render");
-        assert!(rendered.contains("[codex]"));
+        assert!(rendered.contains("[acp]"));
         assert!(rendered.contains(r#"model = "sonnet""#), "{rendered}");
         assert!(rendered.contains(r#"effort = "high""#), "{rendered}");
     }

@@ -28,6 +28,7 @@
 //! that against the base branch. The checkout's index is untouched, and the
 //! scratch file is deleted whether or not the diff succeeded.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -44,26 +45,72 @@ use crate::git::run_git;
 /// The `.git` directory, which no listing shows and no path may enter.
 const GIT_DIR: &str = ".git";
 
-/// One session's checkout, as the browser is allowed to see it.
+/// One session's workspace, as the browser is allowed to see it.
+///
+/// The workspace root is the harness's working directory and the parent of
+/// every checkout: a session's `[[repos]]` each land in `root/<dir>/`, and
+/// the guidance files written beside them are listed and read like any
+/// other directory. `Entries` and `File` therefore answer against the
+/// whole workspace — a checkout's files are just its `dir/` subtree — while
+/// `Diff` is per-checkout, because `git diff` is a repository operation and
+/// the workspace root is not a repository.
 #[derive(Debug, Clone)]
-pub struct Checkout {
-    /// Where the session works.
+pub struct Workspace {
+    /// The directory the session works in.
     root: PathBuf,
-    /// The ref a diff is taken against — `origin/{branch}` for a cloned
-    /// session — or `None` on a daemon that was pointed at a directory
-    /// rather than given a repository to clone, which has no branch the
-    /// session began at.
+    /// The diff base of each checkout beneath the root, by `dir` —
+    /// `origin/{branch}` as the clone's `[[repos]]` entry names it.
+    repos: BTreeMap<String, String>,
+    /// The base a root-level diff is taken against, when the workspace
+    /// itself is the checkout — the developer-machine shape, where `repos`
+    /// is empty and `root` is the repository. Always `None` on a
+    /// provisioned machine, where a `Diff` naming no `repo` is refused.
     base: Option<String>,
 }
 
-impl Checkout {
-    /// Reads `root`, diffing against `base` when the session has one.
+impl Workspace {
+    /// Reads `root`, diffing a root checkout against `base` when the
+    /// session has one — the developer-machine shape.
     #[must_use]
     pub const fn new(root: PathBuf, base: Option<String>) -> Self {
-        Self { root, base }
+        Self {
+            root,
+            repos: BTreeMap::new(),
+            base,
+        }
     }
 
-    /// Answers one question about the checkout.
+    /// Reads `root` with `[[repos]]` checkouts beneath it — the
+    /// provisioned shape.
+    ///
+    /// `branches` pairs each checkout's `dir` with the branch its clone
+    /// started on; the diff base recorded for it is `origin/{branch}`.
+    #[must_use]
+    pub fn provisioned(
+        root: PathBuf,
+        branches: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        Self {
+            root,
+            repos: branches
+                .into_iter()
+                .map(|(dir, branch)| (dir, format!("origin/{branch}")))
+                .collect(),
+            base: None,
+        }
+    }
+
+    /// Registers a checkout that landed mid-session.
+    ///
+    /// An `AddRepo` the control plane approved names its `dir` and the
+    /// branch the clone is on; from then on a `Diff` may name it like any
+    /// configured one.
+    pub fn register(&mut self, dir: &str, branch: &str) {
+        self.repos
+            .insert(dir.to_owned(), format!("origin/{branch}"));
+    }
+
+    /// Answers one question about the workspace.
     ///
     /// Infallible by construction: every way of failing is a
     /// [`WorkdirRefusal`], because the control plane turns each one into its
@@ -78,7 +125,7 @@ impl Checkout {
                 Ok(content) => WorkdirReply::File { content },
                 Err(refusal) => WorkdirReply::refused(refusal),
             },
-            WorkdirRequest::Diff => match self.diff().await {
+            WorkdirRequest::Diff { repo } => match self.diff(repo.as_deref()).await {
                 Ok(diff) => WorkdirReply::Diff { diff },
                 Err(refusal) => WorkdirReply::refused(refusal),
             },
@@ -111,7 +158,10 @@ impl Checkout {
             .map_err(|error| unreadable(&error))?
         {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if prefix.is_empty() && name == GIT_DIR {
+            // `.git` at any depth is one checkout's machinery — a
+            // provisioned workspace holds one per `dir`, and none of them
+            // is the user's work.
+            if name == GIT_DIR {
                 continue;
             }
             // `metadata` rather than the directory entry's own file type, so
@@ -150,17 +200,19 @@ impl Checkout {
         let truncated = entries.len() > DIRECTORY_ENTRIES_MAX;
         entries.truncate(DIRECTORY_ENTRIES_MAX);
 
-        // Ignore rules come from a repository. A daemon pointed at a plain
-        // directory — the developer-machine shape, with no `[repo]` to
-        // clone — has none, and asking git about them there is an error
-        // rather than an empty answer.
-        let ignored = if crate::git::has_checkout(&self.root).await {
-            self.ignored(&entries).await?
+        // Ignore rules come from a repository, and which repository is the
+        // listed directory's own business: `flyco/` answers out of that
+        // checkout's `.gitignore` while the workspace root — not a
+        // repository at all on a provisioned machine — marks nothing. The
+        // probe runs where the listing is, so a directory inside a checkout
+        // is answered by that checkout.
+        let ignored = if inside_work_tree(&directory).await? {
+            self.ignored(&directory, &entries).await?
         } else {
             std::collections::BTreeSet::new()
         };
         for entry in &mut entries {
-            entry.ignored = ignored.contains(&entry.path);
+            entry.ignored = ignored.contains(&entry.name);
         }
 
         Ok(DirectoryListing {
@@ -172,12 +224,20 @@ impl Checkout {
 
     /// Which of `entries` git's ignore rules exclude.
     ///
+    /// Runs inside the listed `directory`, so the rules answered are that
+    /// checkout's own: the workspace root of a provisioned session is not a
+    /// repository, and a path handed to the wrong clone would borrow the
+    /// wrong `.gitignore`. Entry *names* go in and come back — the listing
+    /// they describe is the directory's, so a name is the relative path
+    /// `check-ignore` expects.
+    ///
     /// One `check-ignore` for the whole listing rather than one per row:
     /// the answer is the same and a directory of five hundred files is not
     /// five hundred processes. It exits 1 when nothing matched, which is an
     /// answer rather than a failure.
     async fn ignored(
         &self,
+        directory: &Path,
         entries: &[DirectoryEntry],
     ) -> Result<std::collections::BTreeSet<String>, WorkdirRefusal> {
         if entries.is_empty() {
@@ -185,7 +245,7 @@ impl Checkout {
         }
 
         let mut child = Command::new("git")
-            .current_dir(&self.root)
+            .current_dir(directory)
             .args(["check-ignore", "-z", "--stdin"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -200,7 +260,7 @@ impl Checkout {
             })?;
         let mut paths = Vec::new();
         for entry in entries {
-            paths.extend_from_slice(entry.path.as_bytes());
+            paths.extend_from_slice(entry.name.as_bytes());
             paths.push(0);
         }
         stdin
@@ -268,11 +328,31 @@ impl Checkout {
         })
     }
 
-    /// Diffs the working tree against the session's base branch.
-    async fn diff(&self) -> Result<WorkdirDiff, WorkdirRefusal> {
-        let base = self.base.clone().ok_or(WorkdirRefusal::NoBaseBranch)?;
+    /// Diffs one checkout's working tree against the branch it began on.
+    ///
+    /// `repo` names the checkout as `SessionRepo::dir` does; `None` asks
+    /// for the workspace root itself, which only the developer-machine
+    /// shape has — a provisioned session's root is a directory of
+    /// checkouts, and diffing it would compare guidance files against no
+    /// branch at all.
+    async fn diff(&self, repo: Option<&str>) -> Result<WorkdirDiff, WorkdirRefusal> {
+        let (root, base) = match repo {
+            Some(dir) => {
+                let base = self
+                    .repos
+                    .get(dir)
+                    .ok_or_else(|| WorkdirRefusal::UnknownCheckout {
+                        repo: dir.to_owned(),
+                    })?;
+                (self.root.join(dir), base.clone())
+            }
+            None => (
+                self.root.clone(),
+                self.base.clone().ok_or(WorkdirRefusal::NoBaseBranch)?,
+            ),
+        };
         let resolved = run_git(
-            &self.root,
+            &root,
             &[
                 OsStr::new("rev-parse"),
                 OsStr::new("--verify"),
@@ -289,7 +369,7 @@ impl Checkout {
         }
 
         let index = std::env::temp_dir().join(format!("flyco-diff-{}.index", uuid::Uuid::new_v4()));
-        let staged = self.stage_into(&index, &base).await;
+        let staged = self.stage_into(&root, &index, &base).await;
         // The scratch index is deleted whichever way the diff went: it is a
         // few kilobytes per request on a machine that runs for days.
         if let Err(error) = tokio::fs::remove_file(&index).await {
@@ -312,10 +392,11 @@ impl Checkout {
         })
     }
 
-    /// Stages the whole working tree into `index` and diffs it against
-    /// `base`, answering with git's numstat and its patch.
+    /// Stages the whole working tree of `root` into `index` and diffs it
+    /// against `base`, answering with git's numstat and its patch.
     async fn stage_into(
         &self,
+        root: &Path,
         index: &Path,
         base: &str,
     ) -> Result<(String, String), WorkdirRefusal> {
@@ -324,13 +405,13 @@ impl Checkout {
             [OsStr::new("read-tree"), OsStr::new("HEAD")].as_slice(),
             [OsStr::new("add"), OsStr::new("-A")].as_slice(),
         ] {
-            run_git(&self.root, args, &env, &[])
+            run_git(root, args, &env, &[])
                 .await
                 .map_err(|error| unreadable(&error))?;
         }
 
         let numstat = run_git(
-            &self.root,
+            root,
             &[
                 OsStr::new("diff"),
                 OsStr::new("--cached"),
@@ -345,7 +426,7 @@ impl Checkout {
         .await
         .map_err(|error| unreadable(&error))?;
         let patch = run_git(
-            &self.root,
+            root,
             &[
                 OsStr::new("diff"),
                 OsStr::new("--cached"),
@@ -364,12 +445,13 @@ impl Checkout {
         ))
     }
 
-    /// Resolves a browser-supplied path inside the checkout.
+    /// Resolves a browser-supplied path inside the workspace.
     ///
     /// Two checks, and both are load-bearing. The textual one refuses `..`,
-    /// an absolute path and the `.git` directory before anything touches the
-    /// disk; the canonical one refuses a symlink that leaves the tree, which
-    /// no amount of string inspection can see.
+    /// an absolute path and `.git` — at any depth, since each checkout
+    /// carries its own — before anything touches the disk; the canonical
+    /// one refuses a symlink that leaves the tree, which no amount of
+    /// string inspection can see.
     async fn resolve(&self, path: &str) -> Result<PathBuf, WorkdirRefusal> {
         let outside = || WorkdirRefusal::OutsideCheckout {
             path: path.to_owned(),
@@ -379,8 +461,8 @@ impl Checkout {
         }
 
         let mut resolved = self.root.clone();
-        for (position, segment) in path.split('/').filter(|part| !part.is_empty()).enumerate() {
-            if segment == "." || segment == ".." || (position == 0 && segment == GIT_DIR) {
+        for segment in path.split('/').filter(|part| !part.is_empty()) {
+            if segment == "." || segment == ".." || segment == GIT_DIR {
                 return Err(outside());
             }
             resolved.push(segment);
@@ -400,6 +482,26 @@ impl Checkout {
         }
         Ok(canonical)
     }
+}
+
+/// Whether `path` sits inside a git working tree.
+///
+/// The probe that tells a provisioned workspace's root (not a repository)
+/// from a directory inside one of its checkouts: `rev-parse` answers from
+/// wherever it is pointed, so the same question serves both. A refusal —
+/// exit 128, git missing — is an [`WorkdirRefusal::Unreadable`] rather
+/// than a quiet "no", because a listing that marks nothing ignored inside
+/// a repository is claiming a `target/` is checked in.
+async fn inside_work_tree(path: &Path) -> Result<bool, WorkdirRefusal> {
+    let output = run_git(
+        path,
+        &[OsStr::new("rev-parse"), OsStr::new("--is-inside-work-tree")],
+        &[],
+        &[128],
+    )
+    .await
+    .map_err(|error| unreadable(&error))?;
+    Ok(output.status.success() && output.stdout.starts_with(b"true"))
 }
 
 /// Where a kind of entry sorts: directories above files.
@@ -562,7 +664,7 @@ mod tests {
         EntryKind, FileChange, WorkdirRefusal, WorkdirReply, WorkdirRequest,
     };
 
-    use super::Checkout;
+    use super::Workspace;
 
     /// A scratch checkout with one commit on `main`, and an `origin/main`
     /// to diff against — the shape a session VM has after `git clone`.
@@ -571,8 +673,15 @@ mod tests {
     }
 
     impl Scratch {
+        /// A standalone checkout — the developer-machine shape, where the
+        /// workspace root is the repository.
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("flyco-workdir-{}", uuid::Uuid::new_v4()));
+            Self::at(std::env::temp_dir().join(format!("flyco-workdir-{}", uuid::Uuid::new_v4())))
+        }
+
+        /// A checkout at `path` — for the provisioned shape, where the
+        /// workspace holds each repository in a named directory.
+        fn at(path: std::path::PathBuf) -> Self {
             std::fs::create_dir_all(&path).expect("scratch checkout");
             let scratch = Self { path };
             scratch.git(&["init", "--initial-branch=main"]);
@@ -610,12 +719,59 @@ mod tests {
             std::fs::write(file, content).expect("write");
         }
 
-        fn checkout(&self) -> Checkout {
-            Checkout::new(self.path.clone(), Some("origin/main".to_owned()))
+        fn checkout(&self) -> Workspace {
+            Workspace::new(self.path.clone(), Some("origin/main".to_owned()))
         }
     }
 
     impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// A provisioned-shaped workspace: a plain directory holding one
+    /// `Scratch` checkout per `dir`, beside the guidance files a session
+    /// VM's workdir root carries.
+    struct MultiScratch {
+        path: std::path::PathBuf,
+        dirs: Vec<String>,
+        /// Held so a checkout's `Drop` does not delete it mid-test; the
+        /// field order removes them with the workspace.
+        _checkouts: Vec<Scratch>,
+    }
+
+    impl MultiScratch {
+        fn new(dirs: &[&str]) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("flyco-workspace-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).expect("scratch workspace");
+            let checkouts = dirs.iter().map(|dir| Scratch::at(path.join(dir))).collect();
+            Self {
+                path,
+                dirs: dirs.iter().map(|dir| (*dir).to_owned()).collect(),
+                _checkouts: checkouts,
+            }
+        }
+
+        /// Writes `content` at `dir/path`, inside that checkout.
+        fn write(&self, dir: &str, path: &str, content: &str) {
+            let file = self.path.join(dir).join(path);
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent).expect("parent directory");
+            }
+            std::fs::write(file, content).expect("write");
+        }
+
+        fn workspace(&self) -> Workspace {
+            Workspace::provisioned(
+                self.path.clone(),
+                self.dirs.iter().map(|dir| (dir.clone(), "main".to_owned())),
+            )
+        }
+    }
+
+    impl Drop for MultiScratch {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
@@ -815,7 +971,10 @@ mod tests {
         // Ignored, which must stay out of the diff entirely.
         scratch.write("target/debug.log", "noise\n");
 
-        let WorkdirReply::Diff { diff } = scratch.checkout().inspect(WorkdirRequest::Diff).await
+        let WorkdirReply::Diff { diff } = scratch
+            .checkout()
+            .inspect(WorkdirRequest::Diff { repo: None })
+            .await
         else {
             panic!("the checkout has a base branch");
         };
@@ -861,7 +1020,10 @@ mod tests {
         scratch.git(&["mv", "README.md", "READ.md"]);
         scratch.git(&["commit", "-m", "rename"]);
 
-        let WorkdirReply::Diff { diff } = scratch.checkout().inspect(WorkdirRequest::Diff).await
+        let WorkdirReply::Diff { diff } = scratch
+            .checkout()
+            .inspect(WorkdirRequest::Diff { repo: None })
+            .await
         else {
             panic!("the checkout has a base branch");
         };
@@ -874,16 +1036,131 @@ mod tests {
     #[tokio::test]
     async fn a_session_with_no_base_branch_refuses_a_diff() {
         let scratch = Scratch::new();
-        let checkout = Checkout::new(scratch.path.clone(), None);
+        let checkout = Workspace::new(scratch.path.clone(), None);
         assert_eq!(
-            refusal(checkout.inspect(WorkdirRequest::Diff).await),
+            refusal(checkout.inspect(WorkdirRequest::Diff { repo: None }).await),
             WorkdirRefusal::NoBaseBranch
         );
 
-        let unknown = Checkout::new(scratch.path.clone(), Some("origin/nope".to_owned()));
+        let unknown = Workspace::new(scratch.path.clone(), Some("origin/nope".to_owned()));
         assert_eq!(
-            refusal(unknown.inspect(WorkdirRequest::Diff).await),
+            refusal(unknown.inspect(WorkdirRequest::Diff { repo: None }).await),
             WorkdirRefusal::NoBaseBranch
         );
+    }
+
+    #[tokio::test]
+    async fn a_workspace_lists_its_checkouts_and_routes_each_diff() {
+        // The provisioned shape: `flyco/` and `other/` are checkouts of two
+        // repositories, `AGENTS.md` is workspace machinery, and each
+        // checkout's diff is its own.
+        let multi = MultiScratch::new(&["flyco", "other"]);
+        multi.write("flyco", "notes.md", "first repo's work\n");
+        multi.write("other", "notes.md", "second repo's work\n");
+        std::fs::write(multi.path.join("AGENTS.md"), "checkouts live in dirs\n")
+            .expect("write workspace guidance");
+
+        let workspace = multi.workspace();
+        let listing = listing(
+            workspace
+                .inspect(WorkdirRequest::Entries {
+                    path: String::new(),
+                })
+                .await,
+        );
+        let names: Vec<&str> = listing
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["flyco", "other", "AGENTS.md"],
+            "the workspace root lists the checkout directories and its own files, no `.git`"
+        );
+        // None of them is inside a repository, so nothing is marked ignored
+        // and asking git about them is not attempted.
+        assert!(listing.entries.iter().all(|entry| !entry.ignored));
+
+        for (dir, expected) in [("flyco", "first"), ("other", "second")] {
+            let WorkdirReply::Diff { diff } = workspace
+                .inspect(WorkdirRequest::Diff {
+                    repo: Some(dir.to_owned()),
+                })
+                .await
+            else {
+                panic!("{dir} has a base branch");
+            };
+            let note = diff
+                .files
+                .iter()
+                .find(|file| file.path == "notes.md")
+                .expect("the untracked note is in the diff");
+            assert!(
+                note.patch
+                    .as_ref()
+                    .expect("a patch")
+                    .contains(&format!("+{expected}")),
+                "{dir}'s diff is {dir}'s own work"
+            );
+        }
+
+        // A `repo` the workspace does not hold is refused rather than
+        // answered with some other checkout's diff.
+        assert_eq!(
+            refusal(
+                workspace
+                    .inspect(WorkdirRequest::Diff {
+                        repo: Some("ghost".to_owned())
+                    })
+                    .await
+            ),
+            WorkdirRefusal::UnknownCheckout {
+                repo: "ghost".to_owned()
+            }
+        );
+        // And a provisioned workspace names no root checkout at all.
+        assert_eq!(
+            refusal(workspace.inspect(WorkdirRequest::Diff { repo: None }).await),
+            WorkdirRefusal::NoBaseBranch
+        );
+    }
+
+    #[tokio::test]
+    async fn a_checkouts_own_ignore_rules_and_git_directory_stay_inside_it() {
+        let multi = MultiScratch::new(&["flyco"]);
+        multi.write("flyco", "target/debug.log", "noise\n");
+
+        let workspace = multi.workspace();
+        // Inside the checkout, ignore rules are that checkout's.
+        let inside = listing(
+            workspace
+                .inspect(WorkdirRequest::Entries {
+                    path: "flyco".to_owned(),
+                })
+                .await,
+        );
+        let target = inside
+            .entries
+            .iter()
+            .find(|entry| entry.name == "target")
+            .expect("target is listed");
+        assert!(target.ignored, "flyco's .gitignore applies inside flyco/");
+        assert!(
+            inside.entries.iter().all(|entry| entry.name != ".git"),
+            "the checkout's machinery is not listed"
+        );
+
+        // And a path into a checkout's .git is refused like the root's was.
+        assert!(matches!(
+            refusal(
+                workspace
+                    .inspect(WorkdirRequest::File {
+                        path: "flyco/.git/config".to_owned()
+                    })
+                    .await
+            ),
+            WorkdirRefusal::OutsideCheckout { .. }
+        ));
     }
 }

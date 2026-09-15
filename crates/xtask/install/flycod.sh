@@ -125,7 +125,7 @@ install_session_runtime() {
 
   create_runtime_user /usr/bin/fish
 
-  install -d -o "$runtime_user" -g "$runtime_group" /srv/flyco/work /var/lib/flyco/transcripts /var/lib/flyco/sidecar /var/lib/flyco/claude /var/lib/flyco/codex
+  install -d -o "$runtime_user" -g "$runtime_group" /srv/flyco/work /var/lib/flyco/transcripts /var/lib/flyco/sidecar /var/lib/flyco/claude /var/lib/flyco/codex /var/lib/flyco/devin /var/lib/flyco/devin-config
   # Claude Code reads its managed policy from here and the daemon writes it
   # on every start, so it exists before the unit does and belongs to the
   # user the unit runs as.
@@ -173,6 +173,33 @@ EOF
   tar xzf "$scratch/codex.tar.gz" -C "$scratch"
   install -m 0755 "$scratch/codex-$codex_target" "$install_root/codex"
 
+  # Codex is driven over ACP: the adapter is a bun-installed package the
+  # runtime user owns, and it finds the binary installed above through
+  # CODEX_PATH. Global bun installs land on the image's PATH.
+  runuser -u "$runtime_user" -- env HOME=/home/flyco "$runtime_home/.bun/bin/bun" install -g @agentclientprotocol/codex-acp
+
+  # Devin, from the manifest its own installer reads: the bundle is a
+  # tarball carrying bin/devin, and the manifest carries its sha256.
+  case "$artifact" in
+    flycod-linux-x86_64) devin_target=x86_64-unknown-linux ;;
+    flycod-linux-aarch64) devin_target=aarch64-unknown-linux ;;
+  esac
+  download https://static.devin.ai/cli/current/manifest.json "$scratch/devin-manifest.json"
+  devin_meta=$(DEVIN_MANIFEST_JSON="$scratch/devin-manifest.json" DEVIN_TARGET="$devin_target" "$runtime_home/.bun/bin/bun" -e '
+const manifest = JSON.parse(require("fs").readFileSync(process.env.DEVIN_MANIFEST_JSON, "utf8"));
+const platform = manifest.platforms?.[process.env.DEVIN_TARGET];
+if (!platform?.url || !platform.sha256) process.exit(1);
+console.log(platform.url, platform.sha256);
+')
+  read devin_url devin_sha256 <<EOF
+$devin_meta
+EOF
+  download "$devin_url" "$scratch/devin.tar.gz"
+  printf '%s  %s\n' "$devin_sha256" "$scratch/devin.tar.gz" | sha256sum --check -
+  mkdir "$scratch/devin"
+  tar xzf "$scratch/devin.tar.gz" -C "$scratch/devin" bin/devin
+  install -m 0755 "$scratch/devin/bin/devin" "$install_root/devin"
+
   # `node` and `npx` are the commands MCP server registrations name, and
   # there is no Node on this runtime: bunx runs the same packages, so the
   # aliases keep those servers working.
@@ -191,6 +218,8 @@ verify_session_runtime() {
   command -v fish >/dev/null
   runuser -u "$runtime_user" -- env HOME=/home/flyco /home/flyco/.bun/bin/bun --version
   runuser -u "$runtime_user" -- env HOME=/home/flyco codex --version
+  runuser -u "$runtime_user" -- env HOME=/home/flyco PATH="$runtime_home/.bun/bin:/usr/local/bin:/usr/bin:/bin" codex-acp --version
+  runuser -u "$runtime_user" -- env HOME=/home/flyco devin --version
 }
 
 install_session() {

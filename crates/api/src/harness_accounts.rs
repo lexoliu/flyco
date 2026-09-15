@@ -20,8 +20,9 @@
 use flyco_core::{
     CurrentUser, HarnessAccountId, HarnessAccountView, HarnessCredentialInput, HarnessKind,
     LinkHarnessAccount, LlmUsageView, ModelOption, UsageWindow, UserId, builtin_models,
+    normalize_models,
 };
-use flyco_provider::{ClaudeCredential, CodexCredential, HarnessCredential};
+use flyco_provider::{ClaudeCredential, CodexCredential, DevinCredential, HarnessCredential};
 use serde::{Deserialize, Serialize};
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
 use skyzen::sql;
@@ -182,8 +183,11 @@ impl StoredCredential {
             (Self::ApiKey { .. }, _)
             | (Self::OauthToken { .. } | Self::ClaudeOauth { .. }, HarnessKind::ClaudeCode)
             | (Self::CodexOauth { .. }, HarnessKind::Codex) => true,
-            (Self::OauthToken { .. } | Self::ClaudeOauth { .. }, HarnessKind::Codex)
-            | (Self::CodexOauth { .. }, HarnessKind::ClaudeCode) => false,
+            (
+                Self::OauthToken { .. } | Self::ClaudeOauth { .. },
+                HarnessKind::Codex | HarnessKind::Devin,
+            )
+            | (Self::CodexOauth { .. }, HarnessKind::ClaudeCode | HarnessKind::Devin) => false,
         }
     }
 
@@ -212,6 +216,9 @@ impl StoredCredential {
             }
             (Self::ApiKey { key }, HarnessKind::Codex) => {
                 HarnessCredential::Codex(CodexCredential::ApiKey { key })
+            }
+            (Self::ApiKey { key }, HarnessKind::Devin) => {
+                HarnessCredential::Devin(DevinCredential::ApiKey { key })
             }
             (
                 Self::CodexOauth {
@@ -275,13 +282,18 @@ impl TryFrom<HarnessAccountRow> for HarnessAccountView {
     }
 }
 
-/// The models an account offers: the stored list, or the built-in one.
+/// The models an account offers: the stored list, or the built-in one,
+/// normalized into the picker's shape — a harness like Devin whose ids
+/// carry the effort is folded back into one row per model with the
+/// levels on it, the same fold the daemon undoes when it sends a choice.
 fn parse_models(harness: HarnessKind, stored: Option<&str>) -> Result<Vec<ModelOption>, ApiError> {
-    let Some(stored) = stored else {
-        return Ok(builtin_models(harness));
+    let models = match stored {
+        Some(stored) => serde_json::from_str(stored).map_err(|_| {
+            ApiError::CorruptRecord("a stored harness model list could not be decoded")
+        })?,
+        None => builtin_models(harness),
     };
-    serde_json::from_str(stored)
-        .map_err(|_| ApiError::CorruptRecord("a stored harness model list could not be decoded"))
+    Ok(normalize_models(harness, models))
 }
 
 /// The plan-usage windows an account last reported.
@@ -499,7 +511,8 @@ fn validated(
             token: token.trim().to_owned(),
         },
         HarnessCredentialInput::ClaudeApiKey { key }
-        | HarnessCredentialInput::CodexApiKey { key } => StoredCredential::ApiKey {
+        | HarnessCredentialInput::CodexApiKey { key }
+        | HarnessCredentialInput::DevinApiKey { key } => StoredCredential::ApiKey {
             key: key.trim().to_owned(),
         },
         HarnessCredentialInput::ClaudeOauth {

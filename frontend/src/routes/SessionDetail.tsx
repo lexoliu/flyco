@@ -29,7 +29,6 @@ import { AlertTriangle, Server, Wallet } from "lucide-solid";
 import { BudgetRaise } from "../components/BudgetPicker";
 import GoalChip from "../components/GoalChip";
 import ConfirmDialog from "../components/ConfirmDialog";
-import EffortChip from "../components/EffortChip";
 import ModelChip from "../components/ModelChip";
 import ModeChip from "../components/ModeChip";
 import MachinePanel from "../components/MachinePanel";
@@ -43,6 +42,7 @@ import SessionHeader from "../components/SessionHeader";
 import Transcript, { ProvisioningTimeline } from "../components/Transcript";
 import composerStyles from "../components/Composer.module.css";
 import {
+  addSessionRepo,
   archiveSession,
   decideApproval,
   getSession,
@@ -60,6 +60,7 @@ import type { ContextUsage, ContextWindow, UsageWindow } from "../api/wire";
 import { createSessionRelay } from "../api/relay";
 import type { HarnessCommand } from "../api/wire";
 import { formatTimeOfDay } from "../lib/dates";
+import { reposLabel } from "../lib/repos";
 import { PROVIDER_LABEL } from "../lib/providers";
 import { machineChip } from "../lib/machines";
 import { modesFor } from "../lib/modes";
@@ -126,7 +127,13 @@ export default function SessionDetail() {
       relay
         .events()
         .filter(
-          ({ event }) => event.type === "machine_changed" || event.type === "session_state_changed",
+          ({ event }) =>
+            event.type === "machine_changed" ||
+            event.type === "session_state_changed" ||
+            // A repository landed mid-session: the header's checkout list
+            // and the drawer's diff selector both read `session.repos`,
+            // which is stale until re-fetched.
+            event.type === "repo_added",
         ).length,
   );
   createEffect(
@@ -437,15 +444,20 @@ export default function SessionDetail() {
     return view === undefined ? null : PROVIDER_LABEL[view.spec.provider];
   });
 
-  const liveRepoSummary = createMemo(() => {
-    const events = relay.events();
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const entry = events[i];
-      if (entry !== undefined && entry.event.type === "repo_dirty") {
-        return entry.event.summary;
+  /**
+   * The latest `repo_dirty` summary per checkout, keyed by the `dir` the
+   * event carries — `""` for the developer-machine root, whose events name
+   * no dir. The newest frame wins per checkout, which is what lets the
+   * diff panel's status strip stay right when two trees go dirty at once.
+   */
+  const liveRepoSummaries = createMemo(() => {
+    const latest = new Map<string, string>();
+    for (const { event } of relay.events()) {
+      if (event.type === "repo_dirty") {
+        latest.set(event.dir ?? "", event.summary);
       }
     }
-    return null;
+    return latest;
   });
 
   /**
@@ -458,6 +470,7 @@ export default function SessionDetail() {
       ? null
       : sessionNotice(view, {
           failure: session()?.failure,
+          interruptedReason: session()?.interrupted_reason,
           budgetLimit: session()?.budget.limit,
           usageLimit: session()?.usage_limit,
           now: now(),
@@ -467,14 +480,21 @@ export default function SessionDetail() {
   /**
    * What the composer says about a message it will not deliver yet.
    *
-   * Only the plan wait has anything to say: every other state that holds a
-   * message — a machine still being built, a daemon reconnecting — delivers
-   * it within the minute, and a line about it would be chrome that appears
-   * and disappears. This wait is measured in hours, so the field says where
-   * the message goes before it is typed rather than after it is sent.
+   * Two states have something to say. The plan wait is measured in hours,
+   * so the field says where the message goes before it is typed rather
+   * than after it is sent. An interrupted session's machine is off until
+   * something wakes it — and the message itself is the wake (docs/ux.md
+   * §9.9), which a reader cannot guess from a field that looks ordinary.
+   * Every other state that holds a message — a machine still being built,
+   * a daemon reconnecting — delivers within the minute, and a line about
+   * it would be chrome that appears and disappears.
    */
   const deferredNote = createMemo(() => {
-    if (status()?.status !== "usage_limit") {
+    const view = status();
+    if (view?.status === "interrupted") {
+      return "Sent when the machine is back";
+    }
+    if (view?.status !== "usage_limit") {
       return undefined;
     }
     const resets = session()?.usage_limit?.resets_at_unix;
@@ -634,6 +654,30 @@ export default function SessionDetail() {
         // (issue #138).
         requestPanel({ panel: "machine", resize: true });
         break;
+    }
+  }
+
+  const [addingRepo, setAddingRepo] = createSignal(false);
+
+  /**
+   * Attaches a repository to the running session, from the header's
+   * repositories popover.
+   *
+   * The answer is the session already carrying the row — `repos` gains an
+   * entry and the header's `+N` updates without a second read.
+   */
+  async function onAddRepo(selection: { repo: string; branch?: string }): Promise<void> {
+    if (addingRepo()) {
+      return;
+    }
+    setError(null);
+    setAddingRepo(true);
+    try {
+      mutateSession(await addSessionRepo(params.id, selection));
+    } catch (failure) {
+      setError(failure);
+    } finally {
+      setAddingRepo(false);
     }
   }
 
@@ -852,6 +896,12 @@ export default function SessionDetail() {
         drawerOpen={drawerOpen()}
         onToggleDrawer={() => setDrawerOpen((was) => !was)}
         onOpenPanel={requestPanel}
+        onAddRepo={
+          session()?.state === "archived" || session()?.state === "failed"
+            ? undefined
+            : (selection) => void onAddRepo(selection)
+        }
+        addingRepo={addingRepo()}
       />
 
       {/*
@@ -938,7 +988,7 @@ export default function SessionDetail() {
             >
               <Transcript
                 items={transcript}
-                repo={session()?.repo ?? "the repository"}
+                repo={reposLabel(session()?.repos ?? [])}
                 provider={providerLabel()}
                 models={models()}
                 onDecide={(id, decision) => {
@@ -971,7 +1021,7 @@ export default function SessionDetail() {
                   recovery={status()?.status === "migrating"}
                   attempt={1}
                   endedAtUnix={null}
-                  repo={current().repo}
+                  repo={reposLabel(current().repos)}
                   provider={providerLabel()}
                   now={now()}
                   stoppedAtUnix={stoppedAtUnix()}
@@ -1179,22 +1229,13 @@ export default function SessionDetail() {
                     </Show>
                     <Show when={session() !== undefined && models().length > 0 && session()}>
                       {(current) => (
-                        <>
-                          <ModelChip
-                            models={models()}
-                            choice={current().model}
-                            saving={settingModel()}
-                            align="end"
-                            onChoose={(choice) => void onSetModel(choice)}
-                          />
-                          <EffortChip
-                            models={models()}
-                            choice={current().model}
-                            saving={settingModel()}
-                            align="end"
-                            onChoose={(choice) => void onSetModel(choice)}
-                          />
-                        </>
+                        <ModelChip
+                          models={models()}
+                          choice={current().model}
+                          saving={settingModel()}
+                          align="end"
+                          onChoose={(choice) => void onSetModel(choice)}
+                        />
                       )}
                     </Show>
                     {/*
@@ -1227,7 +1268,9 @@ export default function SessionDetail() {
           sessionId={params.id}
           relay={relay}
           machineUp={machineUp()}
-          liveRepoSummary={liveRepoSummary()}
+          repos={session()?.repos ?? []}
+          devMachine={machine()?.spec.provider === "host"}
+          liveRepoSummaries={liveRepoSummaries()}
           open={drawerOpen()}
           onOpenChange={setDrawerOpen}
           openEnv={envPanelAt()}

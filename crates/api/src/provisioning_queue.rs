@@ -46,13 +46,13 @@ use core::time::Duration;
 
 use askama::Template;
 use flyco_core::{
-    BranchName, ClientEvent, ControlToDaemon, HarnessKind, MachineId, MachineOrigin, ModelChoice,
-    PermissionMode, ProviderAccountId, ProvisioningStage, RepoSlug, SessionId, SessionState,
-    UserId,
+    ClientEvent, CloudProviderKind, ControlToDaemon, HarnessKind, InterruptedReason, MachineId,
+    MachineOrigin, ModelChoice, PermissionMode, ProviderAccountId, ProvisioningStage, SessionId,
+    SessionRepo, SessionState, UserId,
 };
 use flyco_provider::{
-    Continuation, DaemonBootstrap, GitIdentity, ProviderError, ProvisionRequest, Provisioning,
-    RepoCheckout,
+    CheckoutSpec, Continuation, DaemonBootstrap, GitAccess, GitIdentity, ProviderError,
+    ProvisionRequest, Provisioning,
 };
 use serde::{Deserialize, Serialize};
 use skyzen_services::queue::{
@@ -69,7 +69,8 @@ use crate::provisioning::Provisioner;
 use crate::rooms::Rooms;
 use crate::vendors::Vendors;
 use crate::{
-    budgets, catalog, daemon_tokens, harness_accounts, machines, mcp, provisioning, sessions, users,
+    budgets, catalog, daemon_tokens, harness_accounts, machines, mcp, provisioning, session_repos,
+    sessions, users,
 };
 
 /// How many times one machine is asked for before the session is failed.
@@ -201,12 +202,13 @@ pub enum ProvisioningJob {
 
 /// Why a session is off the machine a recovery is putting it back on.
 ///
-/// The two ways a session comes off a machine it still owns are a provider
-/// taking its spot capacity and flyco releasing it to wait out a spent
-/// harness plan window. *Starting the machine again is the same operation
-/// for both* — same row, same disk, same provider-native names — so they
-/// share the job and this is the whole of what differs: what the recovery
-/// bills, and what it says to the agent when it lands.
+/// The ways a session comes off a machine it still owns are a provider
+/// taking its spot capacity, flyco releasing it to wait out a spent
+/// harness plan window, a provider suspending it for idleness, and the
+/// user simply asking for it back. *Starting the machine again is the same
+/// operation for all of them* — same row, same disk, same provider-native
+/// names — so they share the job and this is the whole of what differs:
+/// what the recovery bills, and what it says to the agent when it lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryCause {
@@ -225,6 +227,23 @@ pub enum RecoveryCause {
     /// the window actually resets, which is a minute or ten later and is the
     /// message that matters.
     UsageLimit,
+    /// The provider suspended the machine for idleness, keeping its disk.
+    ///
+    /// A codespace GitHub stopped on its own idle clock — the reconcile
+    /// recorded it and the first thing to speak to the session enqueued
+    /// this. Nothing is billed: the compute meter stopped at the suspend
+    /// and restarts at the start, the storage meter never paused, and a
+    /// routine suspend is not the kind of gap the ledger keeps a line for.
+    /// The agent *is* told, because everything it had running died with the
+    /// machine.
+    Suspended,
+    /// The user asked for the session back.
+    ///
+    /// `POST /v1/sessions/{id}/resume` on a machine the provider still
+    /// held — a suspended codespace resumed by hand, say. Nothing is
+    /// billed and nothing is said: the person who clicked it watched it
+    /// happen.
+    Resumed,
 }
 
 /// Why a session is off its machine, and since when.
@@ -292,6 +311,40 @@ impl ProvisioningJob {
             machine,
             attempt: 1,
             cause: RecoveryCause::UsageLimit,
+            since_unix: at_unix,
+        }
+    }
+
+    /// The first attempt at starting a machine the provider suspended for
+    /// idleness.
+    ///
+    /// A suspended codespace is woken by the first thing that speaks to its
+    /// session — a message, a resume click — and this is the job that thing
+    /// enqueues. Same disk, same start as every other recovery.
+    #[must_use]
+    pub const fn resuming(session: SessionId, machine: MachineId, at_unix: u64) -> Self {
+        Self::Recover {
+            session,
+            machine,
+            attempt: 1,
+            cause: RecoveryCause::Suspended,
+            since_unix: at_unix,
+        }
+    }
+
+    /// The first attempt at starting a machine the user asked for back.
+    ///
+    /// `POST /v1/sessions/{id}/resume` on a machine the provider still
+    /// holds: the same start as every recovery, said nothing about and
+    /// billed nothing for, because the person who clicked it watched it
+    /// happen.
+    #[must_use]
+    pub const fn resumed(session: SessionId, machine: MachineId, at_unix: u64) -> Self {
+        Self::Recover {
+            session,
+            machine,
+            attempt: 1,
+            cause: RecoveryCause::Resumed,
             since_unix: at_unix,
         }
     }
@@ -510,14 +563,18 @@ async fn perform(
     // machine row, never counts attempts, and never fails a session.
     match &job {
         ProvisioningJob::RefreshCatalog { user, account } => {
-            return settle(refresh_catalog(db, config, kv, queue, *user, *account).await);
+            return settle(
+                refresh_catalog(db, config, kv, queue, clients.github, *user, *account).await,
+            );
         }
         ProvisioningJob::RefreshCatalogRegion {
             user,
             account,
             region,
         } => {
-            return settle(refresh_region(db, config, kv, *user, *account, region).await);
+            return settle(
+                refresh_region(db, config, kv, clients.github, *user, *account, region).await,
+            );
         }
         ProvisioningJob::Provision { .. }
         | ProvisioningJob::Continue { .. }
@@ -559,10 +616,13 @@ async fn perform(
             db,
             config,
             rooms,
+            queue,
             clients,
-            session,
-            machine,
-            Interruption { cause, since_unix },
+            Recovery {
+                session,
+                machine,
+                interruption: Interruption { cause, since_unix },
+            },
         )
         .await
         {
@@ -618,10 +678,11 @@ async fn refresh_catalog(
     config: &ApiConfig,
     kv: &Kv,
     queue: &Queue,
+    github: &impl GithubOauth,
     user: UserId,
     account: ProviderAccountId,
 ) -> Result<(), ApiError> {
-    let linked = match provisioning::account(db, config, user, account).await {
+    let linked = match provisioning::account(db, config, github, user, account).await {
         Ok(linked) => linked,
         // Unlinked between the ask and the read. There is nothing to write
         // and nothing to keep: the document expires on its own.
@@ -687,11 +748,12 @@ async fn refresh_region(
     db: &Db,
     config: &ApiConfig,
     kv: &Kv,
+    github: &impl GithubOauth,
     user: UserId,
     account: ProviderAccountId,
     region: &str,
 ) -> Result<(), ApiError> {
-    let linked = match provisioning::account(db, config, user, account).await {
+    let linked = match provisioning::account(db, config, github, user, account).await {
         Ok(linked) => linked,
         Err(ApiError::ProviderAccountNotFound) => {
             tracing::info!(%account, "dropping a catalog refresh for an account that is gone");
@@ -732,11 +794,12 @@ struct Claim {
     session: SessionId,
     user: UserId,
     harness: HarnessKind,
-    repo: RepoSlug,
-    /// The branch, when the session already records one. `None` is a
-    /// session opened before flyco recorded branches; [`checkout`] resolves
-    /// the repository's default and writes it back.
-    branch: Option<BranchName>,
+    /// The repositories the machine checks out, in the session's order.
+    ///
+    /// A row whose branch is still unset is one the session was created
+    /// with unresolved; [`checkouts`] resolves the repository's default and
+    /// writes it back, so it is `None` at most once per repository.
+    repos: Vec<SessionRepo>,
     machine_origin: MachineOrigin,
     machine: MachineRow,
     /// What the session runs on, as the control plane records it.
@@ -834,12 +897,18 @@ async fn claim(db: &Db, rooms: &Rooms, job: ProvisioningJob) -> Result<Option<Cl
 
     let model = target.model_choice();
     let permission_mode = target.permission_mode();
+    // A session whose repository set reads back empty is corrupt — nothing
+    // creates one without at least one row — and a machine built for it
+    // would boot a harness over an empty workspace.
+    let repos = session_repos::of_session(db, session).await?;
+    if repos.is_empty() {
+        return Err(ApiError::CorruptRecord("a session records no repositories"));
+    }
     Ok(Some(Claim {
         session,
         user: target.user_id,
         harness: target.harness,
-        repo: target.repo,
-        branch: target.branch,
+        repos,
         machine_origin: target.machine_origin,
         machine,
         model,
@@ -1008,14 +1077,44 @@ async fn build(
     clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
     claim: &Claim,
 ) -> Result<(), Provisioned> {
-    let account = provisioning::account(db, config, claim.user, claim.machine.provider_account_id)
-        .await
-        .map_err(Provisioned::from)?;
+    let account = provisioning::account(
+        db,
+        config,
+        clients.github,
+        claim.user,
+        claim.machine.provider_account_id,
+    )
+    .await
+    .map_err(Provisioned::from)?;
     let spec = claim.machine.spec();
 
     let entry = deployable_entry(kv, queue, claim, &account, &spec).await?;
 
     let bootstrap = bootstrap(db, config, clients, claim, &entry, spec.spot).await?;
+
+    // A codespace has no user-data channel — GitHub offers no
+    // per-codespace secret, and a repository-level one is shared by every
+    // concurrent session — so what its `postStart` fetches is sealed onto
+    // the machine row *before* the provider is asked: the machine may boot
+    // and call `codespaces::bootstrap` before the provision has even
+    // answered, and the row it finds by name must already be holding the
+    // document it is there for.
+    if entry.provider == CloudProviderKind::Codespaces {
+        let sealed = config
+            .token_cipher()
+            .seal(
+                &flyco_provider::flycod::render(&bootstrap).map_err(|error| {
+                    Provisioned::Failed(format!(
+                        "the daemon configuration cannot be rendered: {error}"
+                    ))
+                })?,
+            )
+            .map_err(|error| Provisioned::from(ApiError::from(error)))?;
+        machines::store_bootstrap(db, claim.machine.id, &sealed)
+            .await
+            .map_err(Provisioned::from)?;
+    }
+
     announce(db, rooms, claim.session, ProvisioningStage::Reserving).await;
     let outcome = clients
         .provisioner
@@ -1052,9 +1151,15 @@ async fn carry_on(
     claim: &Claim,
     continuation: &Continuation,
 ) -> Result<(), Provisioned> {
-    let account = provisioning::account(db, config, claim.user, claim.machine.provider_account_id)
-        .await
-        .map_err(Provisioned::from)?;
+    let account = provisioning::account(
+        db,
+        config,
+        clients.github,
+        claim.user,
+        claim.machine.provider_account_id,
+    )
+    .await
+    .map_err(Provisioned::from)?;
     let entry = deployable_entry(kv, queue, claim, &account, &claim.machine.spec()).await?;
     let pending = claim
         .machine
@@ -1160,6 +1265,31 @@ struct MachineReplaced {
     machine_type: String,
 }
 
+/// What the agent is told once a suspended machine is running again.
+///
+/// The suspension counterpart of [`MachineReplaced`]: a codespace that
+/// idled out under GitHub's own timer kept its disk, so the checkout and
+/// the caches survived exactly — and every process on it did not, which is
+/// the one fact the agent needs before it carries on.
+#[derive(Debug, Template)]
+#[template(path = "codespaces/machine_suspended.txt", escape = "none")]
+struct MachineSuspended {
+    /// The provider-native type the session is running on now.
+    machine_type: String,
+}
+
+/// A `Recover` job's identity: which session, which machine row, and what
+/// provoked it.
+struct Recovery {
+    /// The session being put back.
+    session: SessionId,
+    /// The machine row the start must land on — any other is a superseded
+    /// attempt and the job is spent.
+    machine: MachineId,
+    /// Why the machine was gone and when it went.
+    interruption: Interruption,
+}
+
 /// Whether a recovery had anything to do.
 enum Recovered {
     /// It ran: the machine was started again.
@@ -1167,6 +1297,142 @@ enum Recovered {
     /// There was nothing to recover — the session is gone, archived, or
     /// already back on a machine — and the message is spent.
     Done,
+}
+
+/// The machine row a recovery is cleared to start, or none.
+///
+/// `None` is the spent cases: the session is gone, no longer holds an
+/// environment, is already live, or its machine row is a different or
+/// nameless one. The nameless case is the sweep having already released the
+/// row — there is nothing to start — and the session is marked
+/// `machine_lost` for the wake that provisions.
+///
+/// # Errors
+///
+/// Returns [`Provisioned`] if a read or the `machine_lost` write fails.
+async fn recoverable(
+    db: &Db,
+    session: SessionId,
+    machine: MachineId,
+) -> Result<Option<(sessions::ProvisioningTarget, MachineRow)>, Provisioned> {
+    let Some(target) = sessions::provisioning_target(db, session)
+        .await
+        .map_err(Provisioned::from)?
+    else {
+        tracing::info!(%session, "dropping a recovery for a session that no longer exists");
+        return Ok(None);
+    };
+    if !target.state.holds_environment() {
+        tracing::info!(
+            %session,
+            state = ?target.state,
+            "dropping a recovery for a session that no longer holds a machine"
+        );
+        return Ok(None);
+    }
+    if target.state == SessionState::Active {
+        // Back on a machine already — a suspended codespace somebody opened
+        // on github.com, say, whose daemon attached while this job was in
+        // flight. `Recover` is the one job that does not first claim its
+        // session is `provisioning`, so this is the check that keeps a late
+        // delivery from restarting a live machine.
+        tracing::info!(%session, "dropping a recovery for a session that is already live");
+        return Ok(None);
+    }
+
+    let Some(row) = machines::for_session(db, session)
+        .await
+        .map_err(Provisioned::from)?
+    else {
+        return Err(Provisioned::Failed(
+            "this session has no machine row to recover".to_owned(),
+        ));
+    };
+    if row.id != machine {
+        tracing::info!(
+            %session,
+            job = %machine,
+            machine = %row.id,
+            "dropping a recovery superseded by a later machine"
+        );
+        return Ok(None);
+    }
+    if row.native_id.is_none() {
+        // Whatever took the name off this row — the reconcile's
+        // `mark_lost` — already decided there is no machine to start, and
+        // a start against a name that answers 404 is a retry forever. The
+        // session is marked `machine_lost`; what speaks to it next
+        // provisions.
+        sessions::machine_lost(db, session)
+            .await
+            .map_err(Provisioned::from)?;
+        return Ok(None);
+    }
+    Ok(Some((target, row)))
+}
+
+/// Releases the row of a machine the provider's own start reported as gone,
+/// and queues the provision there is no longer anything to recover into.
+///
+/// The start is the call that learned it — a codespace deleted between the
+/// last reconcile and now — and the disk went with it. This job exists only
+/// where somebody was waiting on the session, and "interrupted until the
+/// next message" is not an answer to the message that just arrived.
+///
+/// # Errors
+///
+/// Returns [`Provisioned`] if the row release or the enqueue fails.
+async fn reprovision_gone(
+    db: &Db,
+    queue: &Queue,
+    session: SessionId,
+    row: &MachineRow,
+    reason: &str,
+) -> Result<Recovered, Provisioned> {
+    machines::mark_lost(db, row.id)
+        .await
+        .map_err(Provisioned::from)?;
+    // The session is `provisioning` — `recovering` ran before the start —
+    // so this writes only the reason, which is what keeps the UI reading
+    // `Migrating · machine lost` rather than suspending.
+    sessions::interrupted(db, session, InterruptedReason::MachineLost)
+        .await
+        .map_err(Provisioned::from)?;
+    machines::reset_for_resume(db, session)
+        .await
+        .map_err(Provisioned::from)?;
+    enqueue(queue, ProvisioningJob::first(session, row.id))
+        .await
+        .map_err(Provisioned::from)?;
+    tracing::warn!(
+        %session,
+        machine = %row.id,
+        %reason,
+        "the machine a recovery was to start is gone; a fresh one is being built"
+    );
+    Ok(Recovered::Ran)
+}
+
+/// Tells the agent what happened to its machine, once it is back to hear it.
+///
+/// Best-effort by place: the machine is coming back either way, and losing
+/// the sentence that explains it is not worth failing the session over.
+async fn tell_the_agent(db: &Db, rooms: &Rooms, session: SessionId, notice: String) {
+    if let Err(error) = rooms
+        .command(
+            db,
+            session,
+            &ControlToDaemon::UserMessage {
+                text: notice.trim_end().to_owned(),
+                // Flyco speaking: the machine changed under the agent,
+                // which is not something the user said.
+                origin: flyco_core::MessageOrigin::Flyco,
+            },
+        )
+        .await
+    {
+        tracing::warn!(%session, %error, "the machine notice did not reach the session room");
+    }
 }
 
 /// Puts a reclaimed session back on the machine it was taken off.
@@ -1201,116 +1467,114 @@ async fn recover(
     db: &Db,
     config: &ApiConfig,
     rooms: &Rooms,
+    queue: &Queue,
     clients: &mut Clients<'_, impl Provisioner, impl GithubOauth>,
-    session: SessionId,
-    machine: MachineId,
-    interruption: Interruption,
+    recovery: Recovery,
 ) -> Result<Recovered, Provisioned> {
-    let Some(target) = sessions::provisioning_target(db, session)
-        .await
-        .map_err(Provisioned::from)?
-    else {
-        tracing::info!(%session, "dropping a recovery for a session that no longer exists");
+    let session = recovery.session;
+    let Some((target, row)) = recoverable(db, session, recovery.machine).await? else {
         return Ok(Recovered::Done);
     };
-    if !target.state.holds_environment() {
-        tracing::info!(
-            %session,
-            state = ?target.state,
-            "dropping a recovery for a session that no longer holds a machine"
-        );
-        return Ok(Recovered::Done);
-    }
-
-    let Some(row) = machines::for_session(db, session)
-        .await
-        .map_err(Provisioned::from)?
-    else {
-        return Err(Provisioned::Failed(
-            "this session has no machine row to recover".to_owned(),
-        ));
-    };
-    if row.id != machine {
-        tracing::info!(
-            %session,
-            job = %machine,
-            machine = %row.id,
-            "dropping a recovery superseded by a later machine"
-        );
-        return Ok(Recovered::Done);
-    }
 
     sessions::recovering(db, session)
         .await
         .map_err(Provisioned::from)?;
     announce(db, rooms, session, ProvisioningStage::Reserving).await;
 
-    let account = provisioning::account(db, config, target.user_id, row.provider_account_id)
-        .await
-        .map_err(Provisioned::from)?;
-    let started = machines::restart(db, clients.provisioner, &account, &row)
-        .await
-        .map_err(|error| classify(&error))?;
-    announce(db, rooms, session, ProvisioningStage::Booting).await;
-
-    // Everything from here is about a *reclamation*, and a session waking to
-    // meet its plan window's reset is not one: nothing was replaced, nobody
-    // is being billed twice, and the agent's next message is the
-    // continuation `crate::usage_limits` sends at the reset itself.
-    if interruption.cause == RecoveryCause::UsageLimit {
-        tracing::info!(
-            %session,
-            machine = %row.id,
-            state = ?started.state,
-            "started a waiting session's machine ahead of its plan window reset"
-        );
-        return Ok(Recovered::Ran);
-    }
-
-    // The gap is what the user is being asked to pay for twice, so it is
-    // named in the ledger rather than folded into the next metering window.
-    budgets::record_replacement(
+    let account = provisioning::account(
         db,
-        session,
-        machine,
-        interruption.since_unix,
-        &row.machine_type(),
+        config,
+        clients.github,
+        target.user_id,
+        row.provider_account_id,
     )
     .await
     .map_err(Provisioned::from)?;
+    let started = match machines::restart(db, clients.provisioner, &account, &row).await {
+        Ok(started) => started,
+        Err(ProviderError::Gone(reason)) => {
+            return reprovision_gone(db, queue, session, &row, &reason).await;
+        }
+        Err(error) => return Err(classify(&error)),
+    };
+    announce(db, rooms, session, ProvisioningStage::Booting).await;
 
-    // Last, and only after the machine is on its way back: the agent is
-    // told in the conversation, and the room holds the message until the
-    // daemon on the restarted machine comes to take it.
-    let notice = MachineReplaced {
-        machine_type: row.machine_type(),
-    }
-    .render()
-    .map_err(|error| Provisioned::Failed(format!("the reclaim notice did not render: {error}")))?;
-    if let Err(error) = rooms
-        .command(
-            db,
-            session,
-            &ControlToDaemon::UserMessage {
-                text: notice.trim_end().to_owned(),
-                // Flyco speaking: the machine was replaced under the agent,
-                // which is not something the user said.
-                origin: flyco_core::MessageOrigin::Flyco,
-            },
-        )
-        .await
-    {
-        // The machine is coming back either way; losing the sentence that
-        // explains it is not worth failing the session over.
-        tracing::warn!(%session, %error, "the reclaim notice did not reach the session room");
-    }
+    // What the recovery says about itself is the cause's whole difference.
+    match recovery.interruption.cause {
+        // A session waking to meet its plan window's reset is not a
+        // reclamation: nothing was replaced, nobody is being billed twice,
+        // and the agent's next message is the continuation
+        // `crate::usage_limits` sends at the reset itself. A machine the
+        // user resumed by hand is the same shape minus the wait.
+        RecoveryCause::UsageLimit => {
+            tracing::info!(
+                %session,
+                machine = %row.id,
+                state = ?started.state,
+                "started a waiting session's machine ahead of its plan window reset"
+            );
+        }
+        RecoveryCause::Resumed => {
+            tracing::info!(
+                %session,
+                machine = %row.id,
+                state = ?started.state,
+                "started a resumed session's machine on its own disk"
+            );
+        }
+        RecoveryCause::Suspended => {
+            // Nothing is billed — the compute meter stopped at the suspend
+            // and the storage meter never paused — but the agent is told,
+            // because everything it had running died with the machine.
+            let notice = MachineSuspended {
+                machine_type: row.machine_type(),
+            }
+            .render()
+            .map_err(|error| {
+                Provisioned::Failed(format!("the suspension notice did not render: {error}"))
+            })?;
+            tell_the_agent(db, rooms, session, notice).await;
+            tracing::info!(
+                %session,
+                machine = %row.id,
+                state = ?started.state,
+                "started a suspended session's machine on its own disk"
+            );
+        }
+        RecoveryCause::SpotReclaimed => {
+            // The gap is what the user is being asked to pay for twice, so
+            // it is named in the ledger rather than folded into the next
+            // metering window.
+            budgets::record_replacement(
+                db,
+                session,
+                recovery.machine,
+                recovery.interruption.since_unix,
+                &row.machine_type(),
+            )
+            .await
+            .map_err(Provisioned::from)?;
 
-    tracing::info!(
-        %session,
-        machine = %row.id,
-        state = ?started.state,
-        "restarted a reclaimed session's machine on its own disk"
-    );
+            // Last, and only after the machine is on its way back: the
+            // agent is told in the conversation, and the room holds the
+            // message until the daemon on the restarted machine comes to
+            // take it.
+            let notice = MachineReplaced {
+                machine_type: row.machine_type(),
+            }
+            .render()
+            .map_err(|error| {
+                Provisioned::Failed(format!("the reclaim notice did not render: {error}"))
+            })?;
+            tell_the_agent(db, rooms, session, notice).await;
+            tracing::info!(
+                %session,
+                machine = %row.id,
+                state = ?started.state,
+                "restarted a reclaimed session's machine on its own disk"
+            );
+        }
+    }
     Ok(Recovered::Ran)
 }
 
@@ -1338,7 +1602,7 @@ async fn bootstrap(
     let auth = harness_accounts::credential(db, config, clients.vendors, claim.user, claim.harness)
         .await
         .map_err(Provisioned::from)?;
-    let repo = checkout(db, config, clients.github, claim).await?;
+    let (github, repos) = checkouts(db, config, clients.github, claim).await?;
 
     Ok(DaemonBootstrap {
         session: claim.session,
@@ -1357,7 +1621,8 @@ async fn bootstrap(
         // the same claim-carried fact `model` is.
         permission_mode: claim.permission_mode,
         auth,
-        repo,
+        repos,
+        github,
         machine_origin: claim.machine_origin,
         // The capacity mode asked for, because the document is written
         // *into* the provision call and nothing has answered it yet. A
@@ -1387,7 +1652,8 @@ async fn bootstrap(
     })
 }
 
-/// Builds the checkout the machine comes up holding.
+/// Builds the checkouts the machine comes up holding, and the GitHub
+/// access they — and every clone and push after them — authenticate with.
 ///
 /// Flyco's GitHub integration behaves *as the user* (docs/proposal.md), so
 /// this is the user's own OAuth token and the user's own commit identity —
@@ -1402,16 +1668,18 @@ async fn bootstrap(
 ///   later on a machine, with a git error about authentication.
 /// * The commit identity is read from the same response, so a machine's
 ///   commits carry the user's name rather than `flyco@<hostname>`.
-/// * A session that records no branch — one opened before flyco recorded
-///   any — has the repository's default resolved and *written back*, so the
-///   answer is stable for every later provision of that session.
-async fn checkout(
+/// * A checkout that records no branch — one added before flyco resolved
+///   any, which a direct `POST /v1/sessions/{id}/repos` leaves until the
+///   next provision — has the repository's default resolved and *written
+///   back*, so the answer is stable for every later provision of that
+///   session.
+async fn checkouts(
     db: &Db,
     config: &ApiConfig,
     github: &impl GithubOauth,
     claim: &Claim,
-) -> Result<RepoCheckout, Provisioned> {
-    let token = users::github_token(db, config, claim.user)
+) -> Result<(GitAccess, Vec<CheckoutSpec>), Provisioned> {
+    let token = users::github_token(db, config, github, claim.user)
         .await
         .map_err(Provisioned::from)?;
     let identity = github
@@ -1421,39 +1689,53 @@ async fn checkout(
     if !identity.grants_repo_scope() {
         return Err(Provisioned::from(ApiError::GithubTokenInsufficient {
             scope: REPO_SCOPE,
-            repo: claim.repo.clone(),
+            // The refusal names the session's primary: which repository
+            // specifically would have failed is a question the token cannot
+            // yet answer, because answering it is exactly what the missing
+            // scope is needed for.
+            repo: claim.repos[0].slug.clone(),
         }));
     }
 
-    let branch = if let Some(branch) = claim.branch.clone() {
-        branch
-    } else {
-        let default_branch = github
-            .get_repo(&token, &claim.repo)
-            .await
-            .map_err(|error| Provisioned::from(ApiError::from(error)))?
-            .default_branch;
-        sessions::record_branch(db, claim.session, &default_branch)
-            .await
-            .map_err(Provisioned::from)?;
-        tracing::info!(
-            session = %claim.session,
-            repo = %claim.repo,
-            branch = %default_branch,
-            "recorded the default branch for a session opened before flyco tracked one"
-        );
-        default_branch
-    };
+    let mut specs = Vec::with_capacity(claim.repos.len());
+    for repo in &claim.repos {
+        let branch = if let Some(branch) = repo.branch.clone() {
+            branch
+        } else {
+            let default_branch = github
+                .get_repo(&token, &repo.slug)
+                .await
+                .map_err(|error| Provisioned::from(ApiError::from(error)))?
+                .default_branch;
+            session_repos::record_branch(db, claim.session, &repo.dir, &default_branch)
+                .await
+                .map_err(Provisioned::from)?;
+            tracing::info!(
+                session = %claim.session,
+                repo = %repo.slug,
+                dir = %repo.dir,
+                branch = %default_branch,
+                "recorded the default branch for a checkout whose session had none"
+            );
+            default_branch
+        };
+        specs.push(CheckoutSpec {
+            slug: repo.slug.clone(),
+            branch,
+            dir: repo.dir.clone(),
+        });
+    }
 
-    Ok(RepoCheckout {
-        slug: claim.repo.clone(),
-        branch,
-        token: token.access_token,
-        identity: GitIdentity {
-            name: identity.user.commit_name().to_owned(),
-            email: identity.user.commit_email(),
+    Ok((
+        GitAccess {
+            token: token.access_token,
+            identity: GitIdentity {
+                name: identity.user.commit_name().to_owned(),
+                email: identity.user.commit_email(),
+            },
         },
-    })
+        specs,
+    ))
 }
 
 /// Tells the session's watchers how far its machine has got.

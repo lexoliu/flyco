@@ -4,10 +4,11 @@
 //! typo in a session VM's config is a provisioning bug, and the daemon says
 //! so at startup rather than running with a silently ignored setting.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use flyco_core::{
-    BranchName, DAEMON_TOKEN_PREFIX, HarnessKind, MachineOrigin, McpServerMount, RepoSlug,
+    BranchName, DAEMON_TOKEN_PREFIX, DriverKind, MachineOrigin, McpServerMount, RepoSlug,
     SessionId, SessionMachine,
 };
 use serde::Deserialize;
@@ -43,6 +44,9 @@ pub enum ConfigError {
          `POST /v1/sessions/{{id}}/daemon-token`, not a session token or an API key"
     )]
     NotADaemonToken,
+    /// `[[repos]]` and `[github]` disagree, or a `dir` cannot name a checkout.
+    #[error("{0}")]
+    WrongRepos(String),
     /// The tables in the file do not match `harness`.
     #[error("{0}")]
     WrongHarness(&'static str),
@@ -153,98 +157,207 @@ pub struct ClaudeConfig {
     pub auth: ClaudeAuth,
 }
 
-/// An isolated Codex home directory.
+/// A file the daemon writes before spawning an ACP agent.
 ///
-/// Present on exactly the auth modes that inject credentials: a session VM
-/// gets its own `CODEX_HOME`, so nothing about one session's Codex state can
-/// be seen or trampled by another.
+/// Credentials and managed configuration reach an ACP agent as files —
+/// Codex's `auth.json`, Devin's `credentials.toml`, an MCP registry — so
+/// the `[acp]` table carries them as content rather than as a shape per
+/// vendor. Everything here is written mode `0600`: the point of the field
+/// is secrets, and a secret file's permissions are not a choice.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CodexIsolation {
-    /// `CODEX_HOME` for the supervised app-server.
-    pub home: PathBuf,
+pub struct AcpFile {
+    /// Absolute path to write.
+    pub path: PathBuf,
+    /// The file's exact contents.
+    pub contents: String,
 }
 
-/// How the supervised `codex` CLI authenticates.
+/// One config-option write on the agent's `session/set_config_option`.
 ///
-/// The two modes Codex's own `auth.json` has, spelled the way Codex spells
-/// them: an `OPENAI_API_KEY`, or the `ChatGPT` grant `codex login
-/// --device-auth` produces. The `ChatGPT` grant is four values rather than
-/// one because `auth.json` is four values — the access token expires within
-/// the hour, and the control plane, not the daemon, is what renews it.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CodexAuth {
-    /// Use the host user's existing Codex login.
-    Inherit,
-    /// An `OpenAI` API key in an isolated `CODEX_HOME`.
-    ApiKey {
-        /// Value written into `auth.json` as `OPENAI_API_KEY`.
-        key: String,
-        /// The home directory it applies to.
-        isolation: CodexIsolation,
-    },
-    /// A `ChatGPT` subscription grant in an isolated `CODEX_HOME`.
-    #[serde(rename = "chatgpt")]
-    ChatGpt {
-        /// Written into `auth.json` as `tokens.id_token`.
-        id_token: String,
-        /// Written into `auth.json` as `tokens.access_token`.
-        access_token: String,
-        /// Written into `auth.json` as `tokens.refresh_token`.
-        refresh_token: String,
-        /// Written into `auth.json` as `tokens.account_id`.
-        account_id: String,
-        /// The home directory it applies to.
-        isolation: CodexIsolation,
-    },
-}
-
-impl CodexAuth {
-    /// The isolated `CODEX_HOME`, when this mode has one.
-    #[must_use]
-    pub fn home(&self) -> Option<&Path> {
-        match self {
-            Self::Inherit => None,
-            Self::ApiKey { isolation, .. } | Self::ChatGpt { isolation, .. } => {
-                Some(isolation.home.as_path())
-            }
-        }
-    }
-}
-
-fn default_codex_bin() -> PathBuf {
-    PathBuf::from("codex")
-}
-
-/// Settings specific to the Codex harness.
+/// A list rather than a map because writes can be order-dependent: Codex's
+/// plan mode is a `collaboration_mode` write that reads differently
+/// depending on the `mode` beside it, so the provisioner picks the order
+/// and the daemon keeps it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CodexConfig {
-    /// The `codex` executable. A bare name is resolved through `PATH`.
-    #[serde(default = "default_codex_bin")]
-    pub bin: PathBuf,
-    /// Model override; omitted leaves the CLI's own default in place.
+pub struct AcpOptionWrite {
+    /// The config option's id.
+    pub option: String,
+    /// The value to select.
+    pub value: String,
+}
+
+/// How one flyco [`PermissionMode`] is expressed to an ACP agent.
+///
+/// ACP has two related dials — `session/set_mode` and
+/// `session/set_config_option` — and agents expose their permission
+/// surface through either or both. `set_mode` runs first, then the
+/// option writes in order; an entry naming neither is a mode the agent
+/// simply does not have, which the daemon refuses rather than approximates.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcpMode {
+    /// `session/set_mode` mode id, when the agent exposes modes.
+    #[serde(default)]
+    pub set_mode: Option<String>,
+    /// Ordered `session/set_config_option` writes.
+    #[serde(default)]
+    pub options: Vec<AcpOptionWrite>,
+}
+
+/// How an ACP session's harness TUI is launched, when the agent has one.
+///
+/// Optional because the protocol carries no terminal surface: `devin` and
+/// `codex` have interactive TUIs a `flyco devin`/`flyco codex` bridges to,
+/// an arbitrary ACP agent may have nothing to launch.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcpTui {
+    /// The executable. A bare name is resolved through `PATH`.
+    pub program: PathBuf,
+    /// Arguments a fresh launch takes.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Arguments re-entering the session's own conversation takes.
+    ///
+    /// Distinct from `args` for the same reason Claude's `--resume <id>`
+    /// is: a conversation that can be re-entered is what makes
+    /// `flyco resume` more than a new window.
+    #[serde(default)]
+    pub resume_args: Vec<String>,
+    /// Extra environment for the child, on top of the daemon's own.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// Settings for the generic ACP driver — `[acp]`.
+///
+/// Everything the driver needs to spawn and steer one agent process:
+/// which program, under which environment, with which files in place, and
+/// how flyco's session vocabulary — model, effort, permission mode —
+/// maps onto the agent's config options. Provisioned Codex and Devin
+/// sessions are both rendered into this one table; a hand-written config
+/// pointing `program` at any other ACP agent drives it identically.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcpConfig {
+    /// What to call the agent in logs and diagnostics (`"codex"`,
+    /// `"devin"`, or whatever a hand-written config is driving).
+    pub agent: String,
+    /// The ACP server executable. A bare name is resolved through `PATH`.
+    pub program: PathBuf,
+    /// Arguments the program is spawned with (`["acp"]` for `devin acp`).
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Extra environment for the agent process, on top of the daemon's
+    /// own. Where credentials that travel as variables are injected —
+    /// `CODEX_HOME`, `XDG_DATA_HOME` and friends are values here.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Files materialized before the agent is spawned: credentials and
+    /// managed configuration, every one mode `0600`.
+    #[serde(default)]
+    pub files: Vec<AcpFile>,
+    /// Model to select at session start, written to
+    /// [`model_option`](Self::model_option). Omitted leaves the agent's
+    /// own default in place.
     #[serde(default)]
     pub model: Option<String>,
-    /// Reasoning effort, which reaches the app-server as
-    /// `model_reasoning_effort` on `thread/start` and as `effort` on every
-    /// `turn/start`.
-    ///
-    /// Omitted where the session chose none, so the app-server's own
-    /// `defaultReasoningEffort` for the model stands.
+    /// Effort level to select at session start, written to
+    /// [`effort_option`](Self::effort_option).
     #[serde(default)]
     pub effort: Option<String>,
-    /// Permission mode the thread runs under.
+    /// Id of the config option that carries the model — `"model"` on both
+    /// provisioned agents, configured rather than assumed because ACP does
+    /// not reserve the id.
+    #[serde(default = "default_model_option")]
+    pub model_option: String,
+    /// Id of the config option that carries the effort level, where the
+    /// agent keeps one — Codex's `reasoning_effort`. `None` on an agent
+    /// like Devin whose model ids carry the effort; a configured `effort`
+    /// then fails loudly rather than being dropped.
+    #[serde(default)]
+    pub effort_option: Option<String>,
+    /// Suffixes this agent hangs after the effort word inside a fused
+    /// model id — Devin's `-fast`, `-priority`, `-1m`.
     ///
-    /// Spelled flyco's way rather than the app-server's: Codex has no
-    /// permission modes, it has an approval policy and a sandbox that say
-    /// the same thing together, so the driver holds the one mode and
-    /// translates it into the pair — [`PermissionMode::codex_approval_policy`]
-    /// and [`PermissionMode::codex_sandbox`] — wherever the protocol asks.
+    /// Non-empty marks the agent's ids as effort-fused: a configured
+    /// `effort` is folded back into the model id (before the tail, so
+    /// `gpt-5-6-sol-priority` at `high` sends `gpt-5-6-sol-high-priority`)
+    /// instead of reaching `effort_option`. Empty, the default, leaves
+    /// `effort` to the separate option as usual.
+    #[serde(default)]
+    pub fused_effort_tails: Vec<String>,
+    /// Permission mode the session opens under, expressed through
+    /// [`modes`](Self::modes).
     pub permission_mode: PermissionMode,
-    /// Credentials and `CODEX_HOME` isolation.
-    pub auth: CodexAuth,
+    /// How each flyco [`PermissionMode`] reaches this agent. A mode with
+    /// no entry is one the agent cannot express: asking for it fails with
+    /// the name of the mode rather than silently running under another.
+    #[serde(default)]
+    pub modes: BTreeMap<PermissionMode, AcpMode>,
+    /// Agent extension methods the driver calls, configured rather than
+    /// assumed because none of them are ACP. Each entry names a JSON-RPC
+    /// method and the params object to send; a `"<session>"` string in the
+    /// params is replaced by the live session id, which is how
+    /// `thread/compact/start` gets its `threadId` and
+    /// `mcpServerStatus/list` its page parameters.
+    #[serde(default)]
+    pub methods: AcpMethods,
+    /// The agent's interactive TUI, when it has one `flyco <agent>` can
+    /// bridge to.
+    #[serde(default)]
+    pub tui: Option<AcpTui>,
+}
+
+/// One agent extension method and the params to send it.
+///
+/// Params are a template rather than a literal because the one value every
+/// such method wants — which session to act on — only exists at runtime:
+/// a string field reading exactly `"<session>"` is substituted with the
+/// session id wherever it appears in the object.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcpMethodCall {
+    /// The JSON-RPC method name, e.g. `"thread/compact/start"`.
+    pub call: String,
+    /// The params object to send. Defaults to no params.
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
+/// The agent extension methods the driver knows how to use.
+///
+/// ACP standardizes the conversation, not the instrumentation around it:
+/// compaction, plan-usage metering and MCP introspection are vendor
+/// methods, and the provisioner that knows an agent's surface writes them
+/// here. An agent without an entry simply lacks the feature — compacting
+/// a session on an agent with no `compact` answers that plainly.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcpMethods {
+    /// Compacts the conversation's context — Codex's
+    /// `thread/compact/start` through the adapter.
+    #[serde(default)]
+    pub compact: Option<AcpMethodCall>,
+    /// Answers the account's plan-usage windows — Codex's
+    /// `account/rateLimits/read`.
+    #[serde(default)]
+    pub usage: Option<AcpMethodCall>,
+    /// Answers the mounted MCP servers' status — Codex's
+    /// `mcpServerStatus/list`. With no method configured the mount is
+    /// observed rather than asked: the driver watches the agent's own
+    /// notifications for evidence the flyco server connected, and logs a
+    /// mount it can neither prove nor disprove.
+    #[serde(default)]
+    pub mcp_status: Option<AcpMethodCall>,
+}
+
+/// `"model"`, the config-option id both provisioned ACP agents carry their
+/// model selection under.
+fn default_model_option() -> String {
+    "model".to_owned()
 }
 
 fn default_shell() -> PathBuf {
@@ -395,39 +508,58 @@ pub struct GitIdentity {
     pub email: String,
 }
 
-/// The repository this session works in, and what authenticates it.
+/// The GitHub access every `[[repos]]` clone shares.
 ///
-/// Present on a provisioned session VM; omitted on a developer machine,
-/// where [`DaemonConfig::workdir`] is a directory the developer already
-/// has. A daemon with no `[repo]` clones nothing and works in the directory
-/// it was pointed at.
+/// One table rather than a field per `[[repos]]` element, because the
+/// authorization is the workspace's, not the repository's: every clone and
+/// every later push is the same user's, and a per-repo copy could only
+/// disagree with itself.
+///
+/// The token is fed to git through a credential helper that reads it from
+/// the environment of one child process, so it is never written into a
+/// remote URL, into `.git/config`, or into a log line. The hand-written
+/// [`fmt::Debug`] is the other half of that: this structure is exactly what
+/// a `?config` in a trace would print.
 #[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GithubAccess {
+    /// The user's GitHub token.
+    pub token: String,
+    /// Who the checkouts' commits are authored as.
+    pub identity: GitIdentity,
+}
+
+impl core::fmt::Debug for GithubAccess {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GithubAccess")
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One repository the session checks out.
+///
+/// Present on a provisioned session VM, once per repository it works
+/// across; omitted entirely on a developer machine, where
+/// [`DaemonConfig::workdir`] is a directory the developer already has. A
+/// daemon with no `[[repos]]` clones nothing and works in the directory it
+/// was pointed at.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepoConfig {
     /// The repository, `owner/name`.
     pub slug: RepoSlug,
     /// The branch to check out.
     pub branch: BranchName,
-    /// The user's GitHub token.
+    /// The directory under [`DaemonConfig::workdir`] the clone lands in.
     ///
-    /// Fed to git through a credential helper that reads it from the
-    /// environment of one child process, so it is never written into a
-    /// remote URL, into `.git/config`, or into a log line. The hand-written
-    /// [`fmt::Debug`] is the other half of that: this structure is exactly
-    /// what a `?config` in a trace would print.
-    pub token: String,
-    /// Who the checkout's commits are authored as.
-    pub identity: GitIdentity,
-}
-
-impl core::fmt::Debug for RepoConfig {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("RepoConfig")
-            .field("slug", &self.slug)
-            .field("branch", &self.branch)
-            .field("identity", &self.identity)
-            .finish_non_exhaustive()
-    }
+    /// Chosen by the control plane ([`flyco_core::checkout_dir`]) and
+    /// recorded on the session's row, so the daemon, the browser and the
+    /// stored workdir patch all name the same directory. Checked at load
+    /// for the same reason `deny_unknown_fields` exists: a `dir` that is
+    /// not a single in-workspace component is a provisioning bug, and the
+    /// daemon says so before it writes anywhere.
+    pub dir: String,
 }
 
 impl RepoConfig {
@@ -442,6 +574,32 @@ impl RepoConfig {
     pub fn remote_url(&self) -> String {
         format!("https://github.com/{}.git", self.slug)
     }
+
+    /// The absolute path the clone lands in, under `workdir`.
+    ///
+    /// Safe by construction: [`DaemonConfig::load`] has already refused a
+    /// `dir` that is not one in-workspace component.
+    #[must_use]
+    pub fn checkout_path(&self, workdir: &Path) -> PathBuf {
+        workdir.join(&self.dir)
+    }
+}
+
+/// Whether `dir` is a single path component that stays inside the workdir.
+///
+/// The rule the control plane's [`flyco_core::checkout_dir`] already
+/// writes by, restated here so a hand-written or tampered config cannot
+/// step outside the workspace: one segment, no separators, never `.` or
+/// `..`, and not `.git` — the checkout's own metadata directory is
+/// machinery a clone must not be pointed at.
+pub(crate) fn valid_repo_dir(dir: &str) -> bool {
+    !dir.is_empty()
+        && dir != "."
+        && dir != ".."
+        && dir != ".git"
+        && !dir.contains('/')
+        && !dir.contains('\\')
+        && !dir.contains('\0')
 }
 
 /// The display's width, in pixels.
@@ -513,8 +671,9 @@ impl Default for ComputerConfig {
 pub struct DaemonConfig {
     /// The flyco session this daemon serves.
     pub session: SessionId,
-    /// Which harness to drive.
-    pub harness: HarnessKind,
+    /// Which driver supervises the agent: `claude_code` for the Agent SDK
+    /// sidecar, `acp` for the generic driver every other harness takes.
+    pub harness: DriverKind,
     /// Directory the agent works in.
     pub workdir: PathBuf,
     /// Whether flyco or the user chose the machine this session runs on.
@@ -572,23 +731,37 @@ pub struct DaemonConfig {
     /// [REPL](crate::repl) instead.
     #[serde(default)]
     pub control_plane: Option<ControlPlaneConfig>,
-    /// The repository to clone into [`workdir`](Self::workdir) before the
-    /// harness starts. Omitted works in whatever is already there, which is
-    /// the developer-machine shape.
+    /// The repositories to clone into [`workdir`](Self::workdir) before the
+    /// harness starts, one `[[repos]]` table each. The clone for `dir`
+    /// lands in `workdir/<dir>/` while the harness's working directory
+    /// stays the shared `workdir`, so the session's prompt files and the
+    /// checkouts all sit beneath the one path the harness is sandboxed to.
+    /// Empty works in whatever is already there — the developer-machine
+    /// shape. A provisioned machine may still grow entries after boot: an
+    /// approved `AddRepo` clones into the next directory without
+    /// rewriting this file.
     #[serde(default)]
-    pub repo: Option<RepoConfig>,
+    pub repos: Vec<RepoConfig>,
+    /// The GitHub access the `[[repos]]` clones share.
+    ///
+    /// `Some` exactly when `repos` is non-empty — a provisioned machine
+    /// brings both, a developer machine neither. [`load`](Self::load)
+    /// refuses a config that names repositories without the access to
+    /// clone them.
+    #[serde(default)]
+    pub github: Option<GithubAccess>,
     /// Claude Code settings. Required when [`harness`](Self::harness) is
-    /// [`HarnessKind::ClaudeCode`].
+    /// [`DriverKind::ClaudeCode`].
     #[serde(default)]
     pub claude: Option<ClaudeConfig>,
     /// Where the Bun sidecar is materialized and how Bun is run. Required
-    /// when [`harness`](Self::harness) is [`HarnessKind::ClaudeCode`].
+    /// when [`harness`](Self::harness) is [`DriverKind::ClaudeCode`].
     #[serde(default)]
     pub sidecar: Option<SidecarConfig>,
-    /// Codex settings. Required when [`harness`](Self::harness) is
-    /// [`HarnessKind::Codex`].
+    /// ACP settings. Required when [`harness`](Self::harness) is
+    /// [`DriverKind::Acp`].
     #[serde(default)]
-    pub codex: Option<CodexConfig>,
+    pub acp: Option<AcpConfig>,
     /// The interactive web terminal. Omitted uses `fish` in the session
     /// workdir.
     #[serde(default)]
@@ -631,6 +804,7 @@ impl DaemonConfig {
         if let Some(control_plane) = &config.control_plane {
             control_plane.validate()?;
         }
+        config.validate_repos()?;
         config.validate_harness()?;
         Ok(config)
     }
@@ -661,22 +835,58 @@ impl DaemonConfig {
             .expect("a loaded Claude Code config has a [sidecar] table")
     }
 
-    /// Returns the Codex settings, which a Codex session always has.
+    /// Returns the ACP settings, which an `acp` session always has.
     ///
     /// # Panics
     ///
-    /// Panics if [`load`](Self::load) admitted a Codex session without a
-    /// `[codex]` table — that combination is unrepresentable after load.
+    /// Panics if [`load`](Self::load) admitted an ACP session without an
+    /// `[acp]` table — that combination is unrepresentable after load.
     #[must_use]
-    pub const fn codex(&self) -> &CodexConfig {
-        self.codex
+    pub const fn acp(&self) -> &AcpConfig {
+        self.acp
             .as_ref()
-            .expect("a loaded Codex config has a [codex] table")
+            .expect("a loaded ACP config has an [acp] table")
+    }
+
+    /// Checks `[[repos]]` and `[github]` agree, and that every `dir` names
+    /// a distinct directory the workdir may hold.
+    ///
+    /// The repos-without-access half is the one a provisioner could write:
+    /// a config listing repositories but no token produces a daemon that
+    /// cannot clone them, and saying so at load beats a clone that fails
+    /// with a credential error after the harness has been promised them.
+    /// The access-without-repos half is only waste, so it is permitted:
+    /// an approved `AddRepo` may need the token before the file gained a
+    /// row for it.
+    fn validate_repos(&self) -> Result<(), ConfigError> {
+        if !self.repos.is_empty() && self.github.is_none() {
+            return Err(ConfigError::WrongRepos(
+                "a config that lists [[repos]] needs a [github] table to clone them with"
+                    .to_owned(),
+            ));
+        }
+        let mut dirs = std::collections::BTreeSet::new();
+        for repo in &self.repos {
+            if !valid_repo_dir(&repo.dir) {
+                return Err(ConfigError::WrongRepos(format!(
+                    "`{}` cannot name a checkout directory: it must be one plain \
+                     directory name inside the workdir",
+                    repo.dir,
+                )));
+            }
+            if !dirs.insert(repo.dir.as_str()) {
+                return Err(ConfigError::WrongRepos(format!(
+                    "two repositories claim the checkout directory `{}`",
+                    repo.dir,
+                )));
+            }
+        }
+        Ok(())
     }
 
     const fn validate_harness(&self) -> Result<(), ConfigError> {
         match self.harness {
-            HarnessKind::ClaudeCode => {
+            DriverKind::ClaudeCode => {
                 if self.claude.is_none() {
                     return Err(ConfigError::WrongHarness(
                         "a claude_code session requires a [claude] table",
@@ -688,10 +898,10 @@ impl DaemonConfig {
                     ));
                 }
             }
-            HarnessKind::Codex => {
-                if self.codex.is_none() {
+            DriverKind::Acp => {
+                if self.acp.is_none() {
                     return Err(ConfigError::WrongHarness(
-                        "a codex session requires a [codex] table",
+                        "an acp session requires an [acp] table",
                     ));
                 }
             }
@@ -707,7 +917,7 @@ pub const EXAMPLE: &str = include_str!("../config.example.toml");
 mod tests {
     use super::{ClaudeAuth, DaemonConfig, EXAMPLE};
     use crate::harness::claude::protocol::{PermissionMode, SidecarAuth};
-    use flyco_core::HarnessKind;
+    use flyco_core::DriverKind;
 
     fn parse(text: &str) -> Result<DaemonConfig, toml::de::Error> {
         toml::from_str(text)
@@ -716,7 +926,7 @@ mod tests {
     #[test]
     fn the_shipped_example_is_a_valid_config() {
         let config = parse(EXAMPLE).expect("the example config must parse");
-        assert_eq!(config.harness, HarnessKind::ClaudeCode);
+        assert_eq!(config.harness, DriverKind::ClaudeCode);
         let claude = config
             .claude
             .as_ref()

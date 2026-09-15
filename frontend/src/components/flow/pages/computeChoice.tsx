@@ -1,7 +1,7 @@
 /**
  * Stage C, page 1: where sessions run (docs/ux.md §4 C1).
  *
- * Four cards with radio semantics. The fourth is the one that takes no
+ * Five cards with radio semantics. The last is the one that takes no
  * credential: the control plane runs on Cloudflare Workers and has no TCP
  * sockets, so a machine the user owns is *enrolled* rather than dialled.
  */
@@ -13,8 +13,12 @@ import { PROVIDER_LABEL } from "../../../lib/providers";
 import type { PageComponent, Primary } from "../page";
 import { ChoiceCards, type Choice } from "./shared";
 
-/** The four places a session can run, in the order the page lists them. */
+/** The five places a session can run, in the order the page lists them. */
 const PLACES: readonly { kind: CloudProviderKind; line: string }[] = [
+  {
+    kind: "codespaces",
+    line: "Your GitHub account's own codespaces — free hours every month.",
+  },
   {
     kind: "azure",
     line: "Sign in with Microsoft and pick a subscription.",

@@ -1,7 +1,7 @@
 /**
  * The one-field page behind *Use an API key instead* (docs/ux.md §4 B2″).
  *
- * The same page for both agents: what differs is the vendor, the key's
+ * The same page for every agent: what differs is the vendor, the key's
  * name, and where one is made. One field, not one credential kind: for
  * Claude Code the field also takes the token `claude setup-token` prints,
  * because Anthropic's secrets carry their kind in their prefix and nothing
@@ -39,6 +39,8 @@ type ReadSecret =
 
 /** What one vendor's secret is called, where it comes from, and how it is read. */
 interface KeyVendor {
+  readonly title: string;
+  readonly lede: string;
   readonly label: string;
   readonly hint: string;
   readonly keysUrl: string;
@@ -47,8 +49,14 @@ interface KeyVendor {
   readonly read: (value: string) => ReadSecret;
 }
 
+/** The lede every subscription-vs-key vendor shares; Devin overrides it. */
+const KEY_LEDE =
+  "Billed per token by the vendor rather than by your subscription. Flyco encrypts the key before storing it.";
+
 const VENDORS: Record<HarnessKind, KeyVendor> = {
   claude_code: {
+    title: "Paste your API key",
+    lede: KEY_LEDE,
     label: "Anthropic API key",
     hint: `Starts with sk-ant-api03-. The token claude setup-token prints (sk-ant-oat01-…) works here too.`,
     keysUrl: "https://console.anthropic.com/settings/keys",
@@ -74,6 +82,8 @@ const VENDORS: Record<HarnessKind, KeyVendor> = {
     },
   },
   codex: {
+    title: "Paste your API key",
+    lede: KEY_LEDE,
     label: "OpenAI API key",
     hint: "Starts with sk-.",
     keysUrl: "https://platform.openai.com/api-keys",
@@ -83,6 +93,22 @@ const VENDORS: Record<HarnessKind, KeyVendor> = {
       link: {
         label: "OpenAI API key",
         credential: { kind: "codex_api_key", key: value },
+      },
+    }),
+  },
+  devin: {
+    title: "Paste your Devin token",
+    lede:
+      "Devin links with a token from its settings rather than a sign-in. Flyco encrypts it before storing it.",
+    label: "Devin token",
+    hint: "Created in your Devin settings.",
+    keysUrl: "https://app.devin.ai/settings/environment?tab=outposts",
+    keysPage: "Devin settings",
+    read: (value) => ({
+      ok: true,
+      link: {
+        label: "Devin token",
+        credential: { kind: "devin_api_key", key: value },
       },
     }),
   },
@@ -115,7 +141,7 @@ export const ApiKey: PageComponent<{ id: "api-key"; agent: HarnessKind }> = (
         result === null
           ? "Paste a key to continue"
           : link === null
-            ? "Paste a key Anthropic issued to continue"
+            ? "Paste a key the vendor issued to continue"
             : null,
       onClick: async () => {
         if (link === null) {
@@ -129,13 +155,10 @@ export const ApiKey: PageComponent<{ id: "api-key"; agent: HarnessKind }> = (
   };
 
   return {
-    title: "Paste your API key",
+    title: vendor.title,
     body: (
       <>
-        <p class={styles.lede}>
-          Billed per token by the vendor rather than by your subscription. Flyco
-          encrypts the key before storing it.
-        </p>
+        <p class={styles.lede}>{vendor.lede}</p>
         <div class={styles.field}>
           <label for="harness-api-key">{vendor.label}</label>
           <input

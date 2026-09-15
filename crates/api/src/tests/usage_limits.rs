@@ -23,8 +23,8 @@ use skyzen_test::{TestContext, mock::InMemoryQueue};
 use crate::provisioning_queue::{ProvisioningJob, RecoveryCause};
 use crate::rooms::Rooms;
 use crate::testing::{
-    machine_choice, migrate, migrated_router, seed_provider_account, seed_session, seed_user,
-    test_config, test_host_rooms, test_rooms,
+    TestGithub, machine_choice, migrate, migrated_router, seed_provider_account, seed_session,
+    seed_user, test_config, test_host_rooms, test_rooms,
 };
 use crate::{daemon_tokens, machines, session, sessions, usage_limits};
 
@@ -319,9 +319,17 @@ async fn the_sweep_starts_the_machine_before_the_reset_exactly_once(_ctx: TestCo
     let resume_at = NOW + 3 * DAYS - USAGE_LIMIT_WAKE_LEAD_SECS;
 
     // A minute before the wake is due: nothing is started.
-    usage_limits::sweep(&db, &config, &waiting.rooms, &hosts, &queue, resume_at - 60)
-        .await
-        .expect("the sweep runs");
+    usage_limits::sweep(
+        &db,
+        &config,
+        &TestGithub::default(),
+        &waiting.rooms,
+        &hosts,
+        &queue,
+        resume_at - 60,
+    )
+    .await
+    .expect("the sweep runs");
     assert!(queued(&backend).is_empty(), "the wake is not due yet");
     assert_eq!(
         detail(&db, &waiting).await.summary.state,
@@ -330,9 +338,17 @@ async fn the_sweep_starts_the_machine_before_the_reset_exactly_once(_ctx: TestCo
 
     // And at the wake, twice, because Cloudflare overlaps and retries crons.
     for _ in 0..2 {
-        usage_limits::sweep(&db, &config, &waiting.rooms, &hosts, &queue, resume_at)
-            .await
-            .expect("the sweep runs");
+        usage_limits::sweep(
+            &db,
+            &config,
+            &TestGithub::default(),
+            &waiting.rooms,
+            &hosts,
+            &queue,
+            resume_at,
+        )
+        .await
+        .expect("the sweep runs");
     }
 
     let jobs = queued(&backend);
@@ -385,6 +401,7 @@ async fn a_woken_session_is_continued_once_its_daemon_is_back_and_the_window_has
     usage_limits::sweep(
         &db,
         &config,
+        &TestGithub::default(),
         &waiting.rooms,
         &hosts,
         &queue,
@@ -396,9 +413,17 @@ async fn a_woken_session_is_continued_once_its_daemon_is_back_and_the_window_has
     // The window has turned over but the machine is still coming up. Nothing
     // is said to a session with no daemon to hear it.
     let before = recorded(&waiting.rooms, waiting.session).await.len();
-    usage_limits::sweep(&db, &config, &waiting.rooms, &hosts, &queue, resets_at)
-        .await
-        .expect("the sweep runs");
+    usage_limits::sweep(
+        &db,
+        &config,
+        &TestGithub::default(),
+        &waiting.rooms,
+        &hosts,
+        &queue,
+        resets_at,
+    )
+    .await
+    .expect("the sweep runs");
     assert_eq!(
         recorded(&waiting.rooms, waiting.session).await.len(),
         before,
@@ -410,9 +435,17 @@ async fn a_woken_session_is_continued_once_its_daemon_is_back_and_the_window_has
     sessions::daemon_arrived(&db, &waiting.rooms, waiting.session)
         .await
         .expect("the restarted machine's daemon reported in");
-    usage_limits::sweep(&db, &config, &waiting.rooms, &hosts, &queue, resets_at)
-        .await
-        .expect("the sweep continues it");
+    usage_limits::sweep(
+        &db,
+        &config,
+        &TestGithub::default(),
+        &waiting.rooms,
+        &hosts,
+        &queue,
+        resets_at,
+    )
+    .await
+    .expect("the sweep continues it");
 
     let events = recorded(&waiting.rooms, waiting.session).await;
     assert!(
@@ -431,9 +464,17 @@ async fn a_woken_session_is_continued_once_its_daemon_is_back_and_the_window_has
 
     // And a cron that runs again says nothing a second time.
     let after = recorded(&waiting.rooms, waiting.session).await.len();
-    usage_limits::sweep(&db, &config, &waiting.rooms, &hosts, &queue, resets_at)
-        .await
-        .expect("the sweep runs");
+    usage_limits::sweep(
+        &db,
+        &config,
+        &TestGithub::default(),
+        &waiting.rooms,
+        &hosts,
+        &queue,
+        resets_at,
+    )
+    .await
+    .expect("the sweep runs");
     assert_eq!(recorded(&waiting.rooms, waiting.session).await.len(), after);
 }
 
@@ -460,9 +501,17 @@ async fn a_session_that_kept_its_machine_is_continued_at_the_reset(_ctx: TestCon
     .await
     .expect("the limit is recorded");
 
-    usage_limits::sweep(&db, &config, &waiting.rooms, &hosts, &queue, resets_at)
-        .await
-        .expect("the sweep continues it");
+    usage_limits::sweep(
+        &db,
+        &config,
+        &TestGithub::default(),
+        &waiting.rooms,
+        &hosts,
+        &queue,
+        resets_at,
+    )
+    .await
+    .expect("the sweep continues it");
 
     assert!(
         queued(&backend).is_empty(),
@@ -537,6 +586,7 @@ async fn a_message_typed_while_waiting_is_what_the_session_says_when_it_comes_ba
     usage_limits::sweep(
         &db,
         &config,
+        &TestGithub::default(),
         &waiting.rooms,
         &test_host_rooms(),
         &Queue::new(InMemoryQueue::new()),
@@ -584,6 +634,7 @@ async fn the_sweep_leaves_a_machine_that_is_already_off_alone(_ctx: TestContext,
     usage_limits::sweep(
         &db,
         &config,
+        &TestGithub::default(),
         &waiting.rooms,
         &test_host_rooms(),
         &Queue::new(InMemoryQueue::new()),

@@ -8,12 +8,13 @@ use flyco_core::{
     ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, DesktopInputRequest,
     DesktopTakeoverRequest, EnvDocument, HarnessFeature, HarnessObservation, HarnessSessionView,
-    HarnessTui, MAX_SESSION_TITLE_CHARS, MachineCatalogEntry, MachineOrigin, MachineSpec,
-    MessageOrigin, ModelChoice, ProvisioningStage, RepoSlug, RepoStatus, ReportModels,
-    ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure, ReportStopping, ReportUsage,
-    ResizeMachine, RunShell, SendMessage, SessionActivity, SessionDetail, SessionId, SessionState,
-    SessionSummary, TerminalInput, TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession,
-    UsageLimitHit, UserId,
+    HarnessTui, InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineCatalogEntry, MachineOrigin,
+    MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage, RepoAddedBy, RepoSelection,
+    RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
+    ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, RunShell, SendMessage,
+    SessionActivity, SessionDetail, SessionId, SessionRepo, SessionState, SessionSummary,
+    TerminalInput, TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UsageLimitHit,
+    UserId,
     wire::{ApprovalPayload, DaemonAttach, DaemonAttached, DaemonFrames},
 };
 use flyco_provider::host::{HostAttach, HostFrames};
@@ -28,10 +29,11 @@ use skyzen_services::{Db, Kv, Queue, Storage};
 
 use crate::authenticator::FlycoAuthenticator;
 use crate::clouds::Clouds;
+use crate::codespaces::Codespaces;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::{Headers, path_id, path_segment};
-use crate::github::GithubClient;
+use crate::github::{GithubClient, GithubOauth};
 use crate::host_room::HostAttachResponse;
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
@@ -40,10 +42,11 @@ use crate::respond::{Accepted, Created, NoContent};
 use crate::rooms::{HostRooms, Rooms, UserStreams};
 use crate::vendors::Vendors;
 use crate::{
-    agents_md, api_keys, approvals, claude_oauth, cli, codex_oauth, daemon_tokens, env,
-    harness_accounts, hosts, idempotency, machines, mcp, memory, oauth, observations, problem,
-    provider_accounts, provider_oauth, provisioning, push, relay, releases, repos, responses,
-    sessions, skills, transcripts, turns, usage_limits, users, webhooks, workdirs,
+    agents_md, api_keys, approvals, claude_oauth, cli, codespaces, codex_oauth, daemon_tokens, env,
+    handoffs, harness_accounts, hosts, idempotency, machines, mcp, memory, oauth, observations,
+    problem, provider_accounts, provider_oauth, provisioning, push, relay, releases, repos,
+    responses, session_repos, sessions, skills, transcripts, turns, usage_limits, users, webhooks,
+    workdirs,
 };
 use flyco_core::wire::EventPage;
 
@@ -209,6 +212,10 @@ async fn start_session(
     db: &Db,
     kv: &Kv,
 ) -> Result<Created<Json<SessionDetail>>, ApiError> {
+    // Pulled off before the request is consumed: a handoff source changes
+    // what creation commits the session to, so it travels alongside the
+    // resolution rather than through it.
+    let source = request.source.clone();
     let resolved = resolve_request(user, request, config, github, db, kv, queue).await?;
 
     // Claimed only once everything that could refuse the request has
@@ -234,8 +241,7 @@ async fn start_session(
             user: user.id,
             title: &flyco_core::excerpt(&resolved.prompt, MAX_SESSION_TITLE_CHARS),
             harness: resolved.harness,
-            repo: &resolved.repo,
-            branch: &resolved.branch,
+            repos: &resolved.repos,
             machine_origin: resolved.machine_origin,
             budget: resolved.budget,
             model: &resolved.model,
@@ -257,6 +263,19 @@ async fn start_session(
         claim.record(db, session.summary.id).await?;
     }
     let id = session.summary.id;
+    // The pending-handoff row lands before anything else that could fail:
+    // a session created with a source but no row would sit in `provisioning`
+    // with no route able to complete it.
+    if let Some(flyco_core::SessionSource::LocalHandoff(handoff)) = &source {
+        fail_session_on(
+            db,
+            rooms,
+            id,
+            "the session's handoff could not be recorded",
+            handoffs::create_pending(db, id, handoff).await,
+        )
+        .await?;
+    }
     let machine = machines::reserve(db, id, resolved.account.id, &resolved.spec).await?;
 
     // The prompt is posted to the session's room *before* the machine is
@@ -285,18 +304,22 @@ async fn start_session(
             .await,
     )
     .await?;
-    fail_session_on(
-        db,
-        rooms,
-        id,
-        "the provisioning queue would not accept this session's job",
-        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await,
-    )
-    .await?;
+    // A handoff stays out of the queue until `handoff/complete` has
+    // verified its patch and transcript in storage; enqueueing here would
+    // let the daemon boot a machine against objects still in flight.
+    if source.is_none() {
+        fail_session_on(
+            db,
+            rooms,
+            id,
+            "the provisioning queue would not accept this session's job",
+            provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await,
+        )
+        .await?;
+    }
 
     tracing::info!(
-        repo = %resolved.repo,
-        branch = %resolved.branch,
+        repos = ?resolved.repos.iter().map(|repo| repo.slug.as_str()).collect::<Vec<_>>(),
         harness = ?resolved.harness,
         model = %resolved.model.model,
         effort = ?resolved.model.effort,
@@ -314,10 +337,9 @@ async fn start_session(
 struct ResolvedSession {
     /// The trimmed first prompt.
     prompt: String,
-    /// The repository the session works on.
-    repo: RepoSlug,
-    /// Its branch — named or the repository's default.
-    branch: BranchName,
+    /// The repositories the session works in, in the order the caller
+    /// chose them, each branch already resolved.
+    repos: Vec<sessions::RepoOpening>,
     /// The harness the session runs.
     harness: flyco_core::HarnessKind,
     /// How the harness treats its own confirmations — `None` stores no
@@ -356,11 +378,7 @@ async fn resolve_request(
     if prompt.is_empty() {
         return Err(ApiError::EmptyMessage);
     }
-    let repo = request
-        .repo
-        .parse::<RepoSlug>()
-        .map_err(|_| ApiError::InvalidRepo(request.repo.clone()))?;
-    let branch = resolve_branch(github, config, db, user, &repo, request.branch.as_deref()).await?;
+    let repos = resolve_repos(github, config, db, user, &request.repos).await?;
 
     let machine_origin = if request.machine.is_some() {
         MachineOrigin::User
@@ -370,7 +388,7 @@ async fn resolve_request(
     let choice = match request.machine {
         Some(choice) => choice,
         None => {
-            machines::automatic(db, config, kv, queue, user.id, request.spot, None)
+            machines::automatic(db, config, github, kv, queue, user.id, request.spot, None)
                 .await?
                 .choice
         }
@@ -389,10 +407,19 @@ async fn resolve_request(
         }
         None => ModelChoice::default_of(&models),
     };
-    let account = provisioning::account(db, config, user.id, choice.provider_account).await?;
+    // A harness whose ids carry the effort — Devin's `swe-2-max` — has no
+    // "unset" level: the choice must name one before a daemon can build
+    // the id, so an unstated effort takes the row's own default here.
+    let model = if request.harness.effort_is_fused() {
+        model.with_default_effort(&models)
+    } else {
+        model
+    };
+    let account =
+        provisioning::account(db, config, github, user.id, choice.provider_account).await?;
     // Checked against the cached catalog, which is what the picker showed;
     // the queue re-asks the provider when it actually builds the machine.
-    let entry = machines::deployable(db, config, kv, user.id, &choice).await?;
+    let entry = machines::deployable(db, config, github, kv, user.id, &choice).await?;
     let spec = MachineSpec {
         provider: account.kind(),
         machine_type: choice.machine_type,
@@ -408,8 +435,7 @@ async fn resolve_request(
     };
     Ok(ResolvedSession {
         prompt: prompt.to_owned(),
-        repo,
-        branch,
+        repos,
         harness: request.harness,
         permission_mode: request.permission_mode,
         machine_origin,
@@ -421,37 +447,80 @@ async fn resolve_request(
     })
 }
 
-/// Settles which branch a session works on, before any row is written.
+/// Settles which repositories a session works in, and which branch each
+/// checks out, before any row is written.
 ///
-/// A session must always know its branch — the machine has to clone
+/// A session must always know its branches — the machine has to clone
 /// *something*, and the header renders `repo · branch` (docs/ux.md §9.1) —
-/// so a request that names none has the repository's default read from
+/// so a selection that names none has the repository's default read from
 /// GitHub here rather than left for the provisioning queue to guess at
 /// minutes later.
 ///
 /// The same call establishes that the caller's stored GitHub authorization
-/// can actually reach the repository. Checking it here as well as in the
+/// can actually reach the repositories. Checking it here as well as in the
 /// queue is deliberate: this is where the user is watching, and being told
 /// to sign in again in the moment they pressed send is worth a great deal
 /// more than the same sentence attached to a session that failed while they
 /// were elsewhere.
-async fn resolve_branch(
+async fn resolve_repos(
     github: &GithubClient,
     config: &ApiConfig,
     db: &Db,
     user: &CurrentUser,
-    repo: &RepoSlug,
-    requested: Option<&str>,
-) -> Result<BranchName, ApiError> {
+    selections: &[flyco_core::RepoSelection],
+) -> Result<Vec<sessions::RepoOpening>, ApiError> {
     use crate::github::{GithubOauth as _, REPO_SCOPE};
 
-    let token = users::github_token(db, config, user.id).await?;
+    if selections.is_empty() {
+        return Err(ApiError::NoRepositories);
+    }
+    if selections.len() > flyco_core::MAX_SESSION_REPOS {
+        return Err(ApiError::SessionRepoCapReached {
+            cap: flyco_core::MAX_SESSION_REPOS,
+        });
+    }
+    let mut slugs = Vec::with_capacity(selections.len());
+    for selection in selections {
+        let slug = selection
+            .repo
+            .parse::<RepoSlug>()
+            .map_err(|_| ApiError::InvalidRepo(selection.repo.clone()))?;
+        // A request that names one repository twice is refused rather than
+        // doubled: the checkout would carry it once anyway, and silently
+        // dropping a selection the user made would leave them thinking a
+        // second worktree exists.
+        if slugs.contains(&slug) {
+            return Err(ApiError::RepoAlreadyAttached { repo: slug });
+        }
+        slugs.push(slug);
+    }
+    let token = users::github_token(db, config, github, user.id).await?;
     if !github.current_user(&token).await?.grants_repo_scope() {
         return Err(ApiError::GithubTokenInsufficient {
             scope: REPO_SCOPE,
-            repo: repo.clone(),
+            repo: slugs[0].clone(),
         });
     }
+    let mut repos = Vec::with_capacity(slugs.len());
+    for (slug, selection) in slugs.into_iter().zip(selections) {
+        let branch = resolve_branch(github, &token, &slug, selection.branch.as_deref()).await?;
+        repos.push(sessions::RepoOpening { slug, branch });
+    }
+    Ok(repos)
+}
+
+/// Settles which branch one checkout works on.
+///
+/// The token's scope was established by the caller, once for the whole
+/// selection; what is left per repository is the name itself — the
+/// caller's, parsed, or the repository's default read from GitHub.
+async fn resolve_branch(
+    github: &GithubClient,
+    token: &crate::github::GithubToken,
+    repo: &RepoSlug,
+    requested: Option<&str>,
+) -> Result<BranchName, ApiError> {
+    use crate::github::GithubOauth as _;
 
     match requested {
         Some(name) => name
@@ -463,7 +532,7 @@ async fn resolve_branch(
                     reason: error.to_string(),
                 },
             ),
-        None => Ok(github.get_repo(&token, repo).await?.default_branch),
+        None => Ok(github.get_repo(token, repo).await?.default_branch),
     }
 }
 
@@ -569,7 +638,14 @@ async fn apply_session_update(
             let session = sessions::find(db, user.id, id).await?;
             let models = harness_accounts::models(db, user.id, session.summary.harness).await?;
             choice.validate(&models).map_err(ApiError::InvalidModel)?;
-            let session = sessions::set_model(db, user.id, id, choice).await?;
+            // On a harness whose ids carry the effort an unstated level
+            // names the row's default — the daemon fuses it back into the
+            // id it sends.
+            let mut choice = choice.clone();
+            if session.summary.harness.effort_is_fused() {
+                choice = choice.with_default_effort(&models);
+            }
+            let session = sessions::set_model(db, user.id, id, &choice).await?;
             // Recorded first, announced second: the room's echo is what the
             // transcript shows, and an echo the database had not yet agreed
             // with would be a line about a change that could still fail.
@@ -661,9 +737,15 @@ struct ArchiveQuery {
 
 /// Archives a session, releasing its execution environment for good.
 #[skyzen::openapi]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an archive reaches the session, the rooms, and the providers \
+              its machine may need"
+)]
 async fn archive_session(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Query(query): Query<ArchiveQuery>,
     params: Params,
     rooms: Rooms,
@@ -673,6 +755,7 @@ async fn archive_session(
     end_session(
         user.id,
         &config,
+        &github,
         &params,
         &rooms,
         &hosts,
@@ -693,9 +776,15 @@ pub(crate) enum ArchiveKind {
     Automatic,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an archive reaches the session, the rooms, and the providers \
+              its machine may need"
+)]
 async fn end_session(
     user: UserId,
     config: &ApiConfig,
+    github: &GithubClient,
     params: &Params,
     rooms: &Rooms,
     hosts: &HostRooms,
@@ -703,7 +792,7 @@ async fn end_session(
     kind: ArchiveKind,
 ) -> Result<Json<SessionDetail>, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
-    archive(db, config, rooms, hosts, user, id, kind)
+    archive(db, config, github, rooms, hosts, user, id, kind)
         .await
         .map(Json)
 }
@@ -716,9 +805,15 @@ async fn end_session(
 /// uncommitted work without confirmation, [`ApiError::RepoStatusUnknown`]
 /// when an active session has never reported its tree, or
 /// [`ApiError::InvalidTransition`] when the lifecycle forbids the move.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an archive reaches the session, the rooms, and the providers \
+              its machine may need"
+)]
 pub(crate) async fn archive(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     hosts: &HostRooms,
     user: UserId,
@@ -746,7 +841,7 @@ pub(crate) async fn archive(
     rooms
         .command(db, id, &ControlToDaemon::Archive { preserve_workdir })
         .await?;
-    machines::destroy_for_archive(db, config, hosts, user, id).await?;
+    machines::destroy_for_archive(db, config, github, hosts, user, id).await?;
     sessions::transition(db, user, id, SessionState::Archived).await
 }
 
@@ -763,9 +858,9 @@ async fn confirm_manual_archive(
         return Ok(());
     }
     let status = rooms.repo_status(id).await?;
-    if status.dirty && !discard_uncommitted {
+    if status.dirty() && !discard_uncommitted {
         return Err(ApiError::DirtyArchive {
-            summary: status.summary,
+            summary: status.dirty_summary(),
         });
     }
     Ok(())
@@ -779,6 +874,7 @@ async fn confirm_manual_archive(
 pub async fn archive_idle(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     hosts: &HostRooms,
     at_unix: u64,
@@ -787,6 +883,7 @@ pub async fn archive_idle(
         archive(
             db,
             config,
+            github,
             rooms,
             hosts,
             idle.user_id,
@@ -796,6 +893,71 @@ pub async fn archive_idle(
         .await?;
     }
     Ok(())
+}
+
+/// Suspends the machine of every session idle past
+/// [`SUSPEND_AFTER_IDLE_SECS`].
+///
+/// A codespace gets this from GitHub's own idle clock; every other machine
+/// runs — and bills, or holds a user's host resources — until flyco stops
+/// it, so this sweep is that stop. The interruption is the same
+/// [`InterruptedReason::Suspended`] a reconcile writes: the disk is kept,
+/// the next message or resume starts the machine again by name, and the
+/// daemon's own attach returns the session to `active`. One failure does
+/// not stop the rest — a session whose stop was refused is left active and
+/// billing until the next pass, which is the honest answer to a provider
+/// that could not be asked.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the list itself fails.
+pub async fn suspend_idle(
+    db: &Db,
+    config: &ApiConfig,
+    github: &impl GithubOauth,
+    rooms: &Rooms,
+    hosts: &HostRooms,
+    at_unix: u64,
+) -> Result<(), ApiError> {
+    for idle in sessions::suspendable(db, at_unix).await? {
+        if let Err(error) = suspend(db, config, github, rooms, hosts, &idle).await {
+            tracing::warn!(
+                session = %idle.id,
+                %error,
+                "an idle session's machine was not suspended"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Stops one idle session's machine and marks the session suspended.
+///
+/// The provider call comes first: a refusal leaves everything as it was —
+/// still active, still running — and the next pass asks again. A machine
+/// already deallocated is the gap a pass cut short leaves, or a Stop
+/// button the user pressed themselves: [`machines::stop_for_flyco`]
+/// answers `false` for it and the session write is still owed, so this is
+/// where the interruption is recorded either way.
+async fn suspend(
+    db: &Db,
+    config: &ApiConfig,
+    github: &impl GithubOauth,
+    rooms: &Rooms,
+    hosts: &HostRooms,
+    idle: &sessions::IdleSession,
+) -> Result<(), ApiError> {
+    machines::stop_for_flyco(db, config, github, hosts, idle.user_id, idle.id).await?;
+    sessions::interrupted(db, idle.id, InterruptedReason::Suspended).await?;
+    rooms
+        .broadcast(
+            db,
+            idle.id,
+            &ClientEvent::SessionStateChanged {
+                state: SessionState::Interrupted,
+            },
+        )
+        .await
 }
 
 /// Reports a session's budget, recomputed from its spend ledger.
@@ -849,32 +1011,38 @@ async fn list_approvals(
 async fn decide_approval(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     params: Params,
     Json(request): Json<DecideApproval>,
     rooms: Rooms,
     hosts: HostRooms,
     db: Db,
     kv: Kv,
+    queue: Queue,
 ) -> Outcome<Json<ApprovalView>> {
-    settle_approval(&user, &params, request, &config, &rooms, &hosts, &db, &kv)
-        .await
-        .into()
+    settle_approval(
+        &user, &params, request, &config, &github, &rooms, &hosts, &db, &kv, &queue,
+    )
+    .await
+    .into()
 }
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "an approved license-bound resize is a decision and a machine \
-              change in one request"
+    reason = "an approved license-bound resize is a decision, a machine \
+              change and possibly a wake in one request"
 )]
 async fn settle_approval(
     user: &CurrentUser,
     params: &Params,
     request: DecideApproval,
     config: &ApiConfig,
+    github: &GithubClient,
     rooms: &Rooms,
     hosts: &HostRooms,
     db: &Db,
     kv: &Kv,
+    queue: &Queue,
 ) -> Result<Json<ApprovalView>, ApiError> {
     let id = path_id::<ApprovalId>(params, "id")?;
 
@@ -902,11 +1070,18 @@ async fn settle_approval(
         tracing::warn!(%error, session = %decided.session, "a decided approval did not reach its room");
     }
 
+    // Deciding is activity, and on a suspended session it is also the wake:
+    // the daemon re-reads pending approvals on attach, so the machine has
+    // to be coming back for the answer to reach it.
+    sessions::touch(db, decided.session).await?;
+    wake_interrupted(db, queue, decided.session).await;
+
     perform_approved(
         &decided,
         request.decision,
         user.id,
         config,
+        github,
         rooms,
         hosts,
         db,
@@ -938,6 +1113,7 @@ async fn perform_approved(
     decision: ApprovalDecision,
     user: UserId,
     config: &ApiConfig,
+    github: &GithubClient,
     rooms: &Rooms,
     hosts: &HostRooms,
     db: &Db,
@@ -946,25 +1122,68 @@ async fn perform_approved(
     if decision != ApprovalDecision::Approved {
         return Ok(());
     }
-    let ApprovalPayload::MachineResizeLicenseBound { machine_type, .. } = &approval.payload else {
-        return Ok(());
-    };
-    tracing::info!(
-        session = %approval.session,
-        machine_type,
-        "the user approved a license-bound resize; moving the machine"
-    );
-    machines::resize(
-        db,
-        config,
-        kv,
-        rooms,
-        hosts,
-        user,
-        approval.session,
-        machine_type,
-    )
-    .await
+    match &approval.payload {
+        ApprovalPayload::MachineResizeLicenseBound { machine_type, .. } => {
+            tracing::info!(
+                session = %approval.session,
+                machine_type,
+                "the user approved a license-bound resize; moving the machine"
+            );
+            machines::resize(
+                db,
+                config,
+                github,
+                kv,
+                rooms,
+                hosts,
+                user,
+                approval.session,
+                machine_type,
+            )
+            .await
+        }
+        ApprovalPayload::RepoAdd { repo, branch, .. } => {
+            // The payload stored the resolved branch — `settle_repo_add`
+            // filled it at raise — so an approved add asks GitHub nothing.
+            let slug = repo
+                .parse::<RepoSlug>()
+                .map_err(|_| ApiError::InvalidRepo(repo.clone()))?;
+            let branch = branch
+                .as_deref()
+                .ok_or(ApiError::CorruptRecord(
+                    "an approved repository add names no branch",
+                ))?
+                .parse::<BranchName>()
+                .map_err(|_| {
+                    ApiError::CorruptRecord("an approved repository add names an invalid branch")
+                })?;
+            let attached = match session_repos::attach(
+                db,
+                approval.session,
+                &slug,
+                &branch,
+                RepoAddedBy::Agent,
+            )
+            .await
+            {
+                Ok(repo) => repo,
+                // The user added the same repository themselves between the
+                // raise and the decision — the checkout is already a fact,
+                // so the approval has nothing left to record.
+                Err(ApiError::RepoAlreadyAttached { .. }) => return Ok(()),
+                Err(error) => return Err(error),
+            };
+            tracing::info!(
+                session = %approval.session,
+                repo = %attached.slug,
+                dir = %attached.dir,
+                "the user approved a repository the agent asked for; cloning it"
+            );
+            announce_add_repo(rooms, db, approval.session, &attached).await;
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 // ── Pairing a session with its daemon ──
@@ -1260,9 +1479,12 @@ async fn send_message(
     params: Params,
     Json(message): Json<SendMessage>,
     rooms: Rooms,
+    queue: Queue,
     db: Db,
 ) -> Outcome<Accepted> {
-    say(&user, &params, message, &rooms, &db).await.into()
+    say(&user, &params, message, &rooms, &queue, &db)
+        .await
+        .into()
 }
 
 async fn say(
@@ -1270,6 +1492,7 @@ async fn say(
     params: &Params,
     message: SendMessage,
     rooms: &Rooms,
+    queue: &Queue,
     db: &Db,
 ) -> Result<Accepted, ApiError> {
     if message.text.trim().is_empty() {
@@ -1291,7 +1514,8 @@ async fn say(
     // from reclamation, the room's command log carries it to the next
     // attach — which is what the composer means by not gating prompts on
     // a live machine. Everything else a session can be in refuses.
-    match sessions::state_of(db, user.id, id).await? {
+    let state = sessions::state_of(db, user.id, id).await?;
+    match state {
         SessionState::Provisioning | SessionState::Active | SessionState::Interrupted => {}
         state => return Err(ApiError::SessionNotActive { state }),
     }
@@ -1311,7 +1535,82 @@ async fn say(
     // session whose command was refused is never recorded as having heard
     // one — and `drive` has already proved the session is the caller's.
     sessions::record_activity(db, id, SessionActivity::Idle).await?;
+
+    // A message to an interrupted session is also what wakes its machine:
+    // a codespace GitHub suspended starts again, one that was deleted is
+    // provisioned around. Best-effort by place — the message is already
+    // the room's, and every message after this one asks again.
+    if state == SessionState::Interrupted {
+        wake_interrupted(db, queue, id).await;
+    }
     Ok(Accepted)
+}
+
+/// Wakes the machine of a session somebody just spoke to, when it still
+/// can be woken.
+///
+/// [`InterruptedReason::Suspended`] and [`InterruptedReason::MachineLost`]
+/// are the interruptions a message answers: the first starts the codespace
+/// GitHub stopped, the second provisions around one that is not coming
+/// back. A spot reclamation needs nothing here — its recovery was enqueued
+/// where the reclaim was reported — and any other reason is not one speech
+/// fixes. Nothing returns an error: `say` has already accepted the message,
+/// and a failure here is retried by the next one.
+async fn wake_interrupted(db: &Db, queue: &Queue, session: SessionId) {
+    match wake_interrupted_job(db, session).await {
+        Ok(Some(job)) => {
+            if let Err(error) = provisioning_queue::enqueue(queue, job).await {
+                tracing::warn!(%session, %error, "a wake for an interrupted session would not queue");
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(%session, %error, "an interrupted session's wake could not be read");
+        }
+    }
+}
+
+/// The job a message to an interrupted session enqueues, or `None` when the
+/// interruption is not one a message answers.
+async fn wake_interrupted_job(
+    db: &Db,
+    session: SessionId,
+) -> Result<Option<ProvisioningJob>, ApiError> {
+    match sessions::interruption_reason(db, session).await? {
+        Some(InterruptedReason::Suspended) => {
+            match machines::for_session(db, session).await? {
+                // The ordinary case: the codespace is suspended, not gone —
+                // start it.
+                Some(row) if row.native_id.is_some() => Ok(Some(ProvisioningJob::resuming(
+                    session,
+                    row.id,
+                    crate::clock::now_unix(),
+                ))),
+                // The reconcile deleted the codespace between the
+                // interruption and this message: suspend became loss, and
+                // what answers the message is a fresh machine.
+                Some(_) => lost_machine_job(db, session).await.map(Some),
+                None => Ok(None),
+            }
+        }
+        Some(InterruptedReason::MachineLost) => lost_machine_job(db, session).await.map(Some),
+        // A reclamation's recovery was enqueued where it was reported, and
+        // a bare `interrupted` has nothing to wake.
+        _ => Ok(None),
+    }
+}
+
+/// The job that provisions around a machine that is gone for good.
+///
+/// The reason is rewritten to `machine_lost` first — a suspended machine
+/// whose codespace was deleted under it is not suspended any more — then
+/// the session goes back to `provisioning` keeping it, so a watching page
+/// reads `Migrating` rather than claiming a suspend it can wake from.
+async fn lost_machine_job(db: &Db, session: SessionId) -> Result<ProvisioningJob, ApiError> {
+    sessions::machine_lost(db, session).await?;
+    sessions::recovering(db, session).await?;
+    let machine = machines::reset_for_resume(db, session).await?;
+    Ok(ProvisioningJob::first(session, machine))
 }
 
 /// Holds a message against a session that is waiting out a plan window.
@@ -1628,6 +1927,10 @@ async fn drive(
     sessions::require_active(db, user.id, id).await?;
 
     rooms.command(db, id, &command).await?;
+    // The room took the command, so the session was provably in use — a
+    // terminal keystroke is what keeps an interactive machine off the
+    // idle-suspension sweep's list.
+    sessions::touch(db, id).await?;
     tracing::info!(session = %id, command = ?core::mem::discriminant(&command), "drove a session");
     Ok(id)
 }
@@ -1665,11 +1968,23 @@ async fn restart_session(
 ) -> Result<Json<SessionDetail>, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
     let session = sessions::resume(db, user.id, id).await?;
-    let machine = machines::reset_for_resume(db, id).await?;
+    let row = machines::for_session(db, id)
+        .await?
+        .ok_or(ApiError::MachineNotFound)?;
 
-    if let Err(error) =
-        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await
-    {
+    // What a resume asks for depends on whether the provider still holds
+    // the machine the row names. With a native id it may — a suspended
+    // codespace, a deallocated spot instance — and starting it keeps the
+    // disk the session left behind; without one it cannot, and the row is
+    // reset for a fresh provision instead.
+    let job = if row.native_id.is_some() {
+        ProvisioningJob::resumed(id, row.id, crate::clock::now_unix())
+    } else {
+        machines::reset_for_resume(db, id).await?;
+        ProvisioningJob::first(id, row.id)
+    };
+
+    if let Err(error) = provisioning_queue::enqueue(queue, job).await {
         sessions::fail(
             db,
             rooms,
@@ -1680,7 +1995,7 @@ async fn restart_session(
         return Err(error);
     }
 
-    tracing::info!(session = %id, machine = %machine, "resumed a session onto its machine");
+    tracing::info!(session = %id, machine = %row.id, "resumed a session onto its machine");
     Ok(Json(session))
 }
 
@@ -1815,6 +2130,83 @@ async fn read_repo_status(
     rooms.repo_status(id).await.map(Json)
 }
 
+/// Adds a repository to a session's workspace, at the user's hand.
+///
+/// The row is written before the daemon is told, in the same order a
+/// decided approval works in: the repository is a fact of the session
+/// whether or not a machine is listening — a daemon that is not attached
+/// has the command held for it, and a machine provisioned after this reads
+/// the whole set at boot anyway.
+#[skyzen::openapi]
+async fn add_session_repo(
+    State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
+    params: Params,
+    Json(selection): Json<RepoSelection>,
+    rooms: Rooms,
+    db: Db,
+) -> Outcome<Created<Json<SessionDetail>>> {
+    attach_repo(&user, &params, selection, &config, &github, &rooms, &db)
+        .await
+        .into()
+}
+
+async fn attach_repo(
+    user: &CurrentUser,
+    params: &Params,
+    selection: RepoSelection,
+    config: &ApiConfig,
+    github: &GithubClient,
+    rooms: &Rooms,
+    db: &Db,
+) -> Result<Created<Json<SessionDetail>>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    if !sessions::is_owned_by(db, user.id, id).await? {
+        return Err(ApiError::SessionNotFound);
+    }
+    let slug = selection
+        .repo
+        .parse::<RepoSlug>()
+        .map_err(|_| ApiError::InvalidRepo(selection.repo.clone()))?;
+    let token = users::github_token(db, config, github, user.id).await?;
+    let branch = resolve_branch(github, &token, &slug, selection.branch.as_deref()).await?;
+    let repo = session_repos::attach(db, id, &slug, &branch, RepoAddedBy::User).await?;
+    announce_add_repo(rooms, db, id, &repo).await;
+    sessions::find(db, user.id, id)
+        .await
+        .map(|detail| Created(Json(detail)))
+}
+
+/// Tells a session's daemon it has another checkout, logging rather than
+/// failing when nobody is there to hear it.
+///
+/// The command is held for a disconnected daemon, so an unreachable room
+/// costs a delayed clone rather than a repository the machine never learns
+/// about.
+async fn announce_add_repo(rooms: &Rooms, db: &Db, session: SessionId, repo: &SessionRepo) {
+    let Some(branch) = repo.branch.clone() else {
+        // `attach` only ever writes a concrete branch, so this is dead — but
+        // an `AddRepo` without one would send the daemon cloning a guess.
+        tracing::error!(%session, dir = %repo.dir, "a recorded repository carries no branch");
+        return;
+    };
+    let result = rooms
+        .command(
+            db,
+            session,
+            &ControlToDaemon::AddRepo {
+                slug: repo.slug.clone(),
+                branch,
+                dir: repo.dir.clone(),
+            },
+        )
+        .await;
+    if let Err(error) = result {
+        tracing::warn!(%session, dir = %repo.dir, %error, "an added repository did not reach its room");
+    }
+}
+
 /// Query of the two `Files` routes.
 #[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
 struct CheckoutPath {
@@ -1888,24 +2280,40 @@ async fn read_file_content(
     }
 }
 
-/// Diffs a session's working tree against the branch it started from.
+/// Which checkout a `diff` asks about.
+#[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
+struct DiffQuery {
+    /// The checkout's directory under the workdir, as
+    /// [`SessionRepo::dir`](flyco_core::SessionRepo::dir) names it.
+    /// Omitted on a session whose workdir is itself the checkout — the
+    /// developer-machine shape.
+    repo: Option<String>,
+}
+
+/// Diffs one checkout of a session's workspace against the branch it
+/// started from.
 #[skyzen::openapi]
 async fn get_session_diff(
     State(user): State<CurrentUser>,
     params: Params,
+    Query(query): Query<DiffQuery>,
     rooms: Rooms,
     db: Db,
 ) -> Outcome<Json<WorkdirDiff>> {
-    read_session_diff(&user, &params, &rooms, &db).await.into()
+    read_session_diff(&user, &params, query, &rooms, &db)
+        .await
+        .into()
 }
 
 async fn read_session_diff(
     user: &CurrentUser,
     params: &Params,
+    query: DiffQuery,
     rooms: &Rooms,
     db: &Db,
 ) -> Result<Json<WorkdirDiff>, ApiError> {
-    match inspect_workdir(user, params, rooms, db, WorkdirRequest::Diff).await? {
+    let request = WorkdirRequest::Diff { repo: query.repo };
+    match inspect_workdir(user, params, rooms, db, request).await? {
         WorkdirReply::Diff { diff } => Ok(Json(diff)),
         other => Err(mismatched("a diff", &other)),
     }
@@ -2021,15 +2429,14 @@ async fn record_reported_models(
     let target = sessions::provisioning_target(db, id)
         .await?
         .ok_or(ApiError::SessionNotFound)?;
-    harness_accounts::record_models(db, target.user_id, target.harness, &report.models).await?;
+    // The harness answers in its own vocabulary — Devin lists one id per
+    // effort level — so the report is folded into the picker's shape once
+    // here: the stored list and the room's live update are the same
+    // document a reload would read back.
+    let models = flyco_core::normalize_models(target.harness, report.models);
+    harness_accounts::record_models(db, target.user_id, target.harness, &models).await?;
     rooms
-        .broadcast(
-            db,
-            id,
-            &ClientEvent::Models {
-                models: report.models,
-            },
-        )
+        .broadcast(db, id, &ClientEvent::Models { models })
         .await?;
     Ok(NoContent)
 }
@@ -2202,7 +2609,7 @@ async fn reclaim(
     queue: &Queue,
     db: &Db,
 ) -> Result<Accepted, ApiError> {
-    sessions::interrupt_for_spot(db, session).await?;
+    sessions::interrupted(db, session, InterruptedReason::SpotReclaimed).await?;
 
     let machine = machines::for_session(db, session)
         .await?
@@ -2236,25 +2643,78 @@ async fn reclaim(
 async fn raise_approval(
     State(session): State<DaemonSession>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Json(payload): Json<ApprovalPayload>,
     db: Db,
 ) -> Outcome<Created<Json<ApprovalView>>> {
-    record_approval(session.0, &payload, &db, &config)
+    record_approval(session.0, payload, &db, &config, &github)
         .await
         .into()
 }
 
 async fn record_approval(
     session: SessionId,
-    payload: &ApprovalPayload,
+    payload: ApprovalPayload,
     db: &Db,
     config: &ApiConfig,
+    github: &GithubClient,
 ) -> Result<Created<Json<ApprovalView>>, ApiError> {
-    let id = approvals::raise(db, session, payload).await?;
+    let payload = settle_repo_add(session, payload, db, config, github).await?;
+    let id = approvals::raise(db, session, &payload).await?;
     let view = approvals::find_for_session(db, session, id).await?;
     push::notify_approval(db, config, session).await?;
     tracing::info!(%session, "a daemon raised an approval");
     Ok(Created(Json(view)))
+}
+
+/// Validates an [`ApprovalPayload::RepoAdd`] the daemon asked for, and
+/// resolves the branch it does not name.
+///
+/// The check is the same one a user's own pick goes through — the slug is
+/// `owner/name`, the branch parses, and the owner's stored token can see
+/// the repository — because an approval the user can only refuse is a
+/// worse answer to the agent than the error itself: a `RepoAdd` for a
+/// repository that does not exist should come back as the tool's failure,
+/// not as a card asking the user to decide on a clone that cannot happen.
+///
+/// The payload that is stored carries the *resolved* branch rather than
+/// the `None` the agent sent, so approving it later performs the clone it
+/// described without asking GitHub again.
+async fn settle_repo_add(
+    session: SessionId,
+    payload: ApprovalPayload,
+    db: &Db,
+    config: &ApiConfig,
+    github: &GithubClient,
+) -> Result<ApprovalPayload, ApiError> {
+    let ApprovalPayload::RepoAdd {
+        repo,
+        branch,
+        reason,
+    } = payload
+    else {
+        return Ok(payload);
+    };
+    let slug = repo
+        .parse::<RepoSlug>()
+        .map_err(|_| ApiError::InvalidRepo(repo.clone()))?;
+    let owner = sessions::owner(db, session).await?;
+    let token = users::github_token(db, config, github, owner).await?;
+    let branch = resolve_branch(github, &token, &slug, branch.as_deref()).await?;
+    let attached = session_repos::of_session(db, session).await?;
+    if attached.iter().any(|existing| existing.slug == slug) {
+        return Err(ApiError::RepoAlreadyAttached { repo: slug });
+    }
+    if attached.len() >= flyco_core::MAX_SESSION_REPOS {
+        return Err(ApiError::SessionRepoCapReached {
+            cap: flyco_core::MAX_SESSION_REPOS,
+        });
+    }
+    Ok(ApprovalPayload::RepoAdd {
+        repo: slug.as_str().to_owned(),
+        branch: Some(branch.as_str().to_owned()),
+        reason,
+    })
 }
 
 /// Records that this session's harness began a turn.
@@ -2361,6 +2821,7 @@ async fn record_provisioning_stage(
 pub async fn fail_stalled_provisions(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     hosts: &HostRooms,
     at_unix: u64,
@@ -2398,7 +2859,8 @@ pub async fn fail_stalled_provisions(
         // session is failed either way, and a machine left behind is a
         // cost to report, not a reason to keep the page spinning.
         if let Err(error) =
-            machines::destroy_for_archive(db, config, hosts, stalled.user_id, stalled.id).await
+            machines::destroy_for_archive(db, config, github, hosts, stalled.user_id, stalled.id)
+                .await
         {
             tracing::warn!(
                 session = %stalled.id,
@@ -2407,6 +2869,34 @@ pub async fn fail_stalled_provisions(
             );
         }
         sessions::fail(db, rooms, stalled.id, &reason).await?;
+    }
+
+    // Handoffs whose uploads never finished run on their own, longer
+    // clock: `stalled_provisions` skips them while a pending row exists,
+    // and this sweep is what fails the ones the sender walked away from.
+    for abandoned in handoffs::abandoned(db, at_unix).await? {
+        let reason = format!(
+            "the handoff's payloads were not uploaded within {} minutes, so flyco \
+             stopped waiting for them and released the reservation",
+            handoffs::HANDOFF_DEADLINE_SECS / 60
+        );
+        if let Err(error) = machines::destroy_for_archive(
+            db,
+            config,
+            github,
+            hosts,
+            abandoned.user_id,
+            abandoned.id,
+        )
+        .await
+        {
+            tracing::warn!(
+                session = %abandoned.id,
+                %error,
+                "an abandoned handoff's machine could not be released"
+            );
+        }
+        sessions::fail(db, rooms, abandoned.id, &reason).await?;
     }
     Ok(())
 }
@@ -2422,15 +2912,24 @@ pub async fn fail_stalled_provisions(
 async fn report_startup_failure(
     State(session): State<DaemonSession>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Json(report): Json<ReportStartupFailure>,
     db: Db,
     rooms: Rooms,
     hosts: HostRooms,
 ) -> Outcome<NoContent> {
-    take_failure_report(&db, &config, &rooms, &hosts, session.0, &report.message)
-        .await
-        .map(|()| NoContent)
-        .into()
+    take_failure_report(
+        &db,
+        &config,
+        &github,
+        &rooms,
+        &hosts,
+        session.0,
+        &report.message,
+    )
+    .await
+    .map(|()| NoContent)
+    .into()
 }
 
 /// Destroys the machines of sessions that are already over.
@@ -2455,11 +2954,12 @@ async fn report_startup_failure(
 pub async fn release_ended_machines(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     hosts: &HostRooms,
 ) -> Result<(), ApiError> {
     for ended in sessions::ended_holding_a_machine(db).await? {
         if let Err(error) =
-            machines::destroy_for_archive(db, config, hosts, ended.user_id, ended.id).await
+            machines::destroy_for_archive(db, config, github, hosts, ended.user_id, ended.id).await
         {
             tracing::warn!(
                 session = %ended.id,
@@ -2494,6 +2994,7 @@ pub async fn release_ended_machines(
 async fn take_failure_report(
     db: &Db,
     config: &ApiConfig,
+    github: &GithubClient,
     rooms: &Rooms,
     hosts: &HostRooms,
     id: SessionId,
@@ -2520,7 +3021,9 @@ async fn take_failure_report(
     // the session failed either way, and `release_ended_machines` sweeps
     // whatever this attempt did not finish.
     sessions::fail(db, rooms, id, message).await?;
-    if let Err(error) = machines::destroy_for_archive(db, config, hosts, target.user_id, id).await {
+    if let Err(error) =
+        machines::destroy_for_archive(db, config, github, hosts, target.user_id, id).await
+    {
         tracing::warn!(
             session = %id,
             %error,
@@ -2623,42 +3126,253 @@ async fn read_transcript(
     Ok(response)
 }
 
-/// Stores the uncommitted diff of a session about to be archived automatically.
+/// Which checkout a `workdir-patch` is the diff of.
+///
+/// Daemon-scoped, so the value is trusted to be one of the session's own
+/// `dir`s — the daemon wrote them — but the key is still built from the
+/// session id rather than from the caller's claim, which is what keeps the
+/// scope airtight. Absent names the workspace root itself: the
+/// developer-machine shape, where the workdir is the checkout and no `dir`
+/// exists.
+#[derive(Debug, Deserialize, skyzen::ToSchema)]
+struct PatchQuery {
+    /// The checkout's directory under the workdir.
+    repo: Option<String>,
+}
+
+/// Stores the uncommitted diff of one checkout of a session about to be
+/// archived automatically.
 #[skyzen::openapi]
 async fn put_workdir_patch(
     State(session): State<DaemonSession>,
+    Query(query): Query<PatchQuery>,
     body: Bytes,
     storage: Storage,
 ) -> Outcome<NoContent> {
-    store_workdir_patch(session.0, body, &storage).await.into()
+    store_workdir_patch(session.0, query.repo.as_deref(), body, &storage)
+        .await
+        .into()
 }
 
 async fn store_workdir_patch(
     session: SessionId,
+    dir: Option<&str>,
     body: Bytes,
     storage: &Storage,
 ) -> Result<NoContent, ApiError> {
-    workdirs::put(storage, session, body.to_vec()).await?;
+    workdirs::put(storage, session, dir.unwrap_or("."), body.to_vec()).await?;
     Ok(NoContent)
 }
 
-/// Reads a previously stored uncommitted diff, for a resume onto a new host.
+/// Reads a previously stored uncommitted diff of one checkout, for a resume
+/// onto a new host.
 #[skyzen::openapi]
 async fn get_workdir_patch(
     State(session): State<DaemonSession>,
+    Query(query): Query<PatchQuery>,
     storage: Storage,
 ) -> Outcome<Response> {
-    read_workdir_patch(session.0, &storage).await.into()
+    read_workdir_patch(session.0, query.repo.as_deref(), &storage)
+        .await
+        .into()
 }
 
-async fn read_workdir_patch(session: SessionId, storage: &Storage) -> Result<Response, ApiError> {
-    let Some(body) = workdirs::get(storage, session).await? else {
+async fn read_workdir_patch(
+    session: SessionId,
+    dir: Option<&str>,
+    storage: &Storage,
+) -> Result<Response, ApiError> {
+    let Some(body) = workdirs::get(storage, session, dir.unwrap_or(".")).await? else {
         return Err(ApiError::SessionNotFound);
     };
     let mut response = Response::new(skyzen::Body::from(body));
     response.headers_mut().insert(
         skyzen::header::CONTENT_TYPE,
         skyzen::header::HeaderValue::from_static(workdirs::CONTENT_TYPE),
+    );
+    Ok(response)
+}
+
+// ── Handoffs ──
+//
+// A session created with `source.local_handoff` lands in `provisioning`
+// with no queue job: these user-scoped routes are what the CLI uploads
+// through, and `complete` is what finally frees the machine to build. The
+// patch shares the archive's `workdirs/` object, so the daemon's replay
+// path reads it unchanged; the transcript lives under `handoffs/`, where
+// only these routes and the daemon's two reads can reach it.
+
+/// Stores a handoff's working-tree patch.
+#[skyzen::openapi]
+async fn put_handoff_patch(
+    State(user): State<CurrentUser>,
+    params: Params,
+    body: Bytes,
+    db: Db,
+    storage: Storage,
+) -> Outcome<NoContent> {
+    store_handoff_patch(&user, &params, body, &db, &storage)
+        .await
+        .into()
+}
+
+async fn store_handoff_patch(
+    user: &CurrentUser,
+    params: &Params,
+    body: Bytes,
+    db: &Db,
+    storage: &Storage,
+) -> Result<NoContent, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    handoffs::require_pending(db, user.id, id).await?;
+    let bytes = body.len() as u64;
+    if bytes > flyco_core::HANDOFF_PATCH_BYTES_MAX {
+        return Err(ApiError::HandoffTooLarge {
+            object: "patch",
+            bytes,
+            limit: flyco_core::HANDOFF_PATCH_BYTES_MAX,
+        });
+    }
+    // The patch lands under the primary checkout's directory — the key the
+    // daemon reads it back from — because a handoff always describes the
+    // session's first repository.
+    let primary = session_repos::of_session(db, id)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(ApiError::CorruptRecord("a session with no repository"))?;
+    workdirs::put(storage, id, &primary.dir, body.to_vec()).await?;
+    // Recorded after the put, never before: a row claiming an upload that
+    // never landed would let `complete` pass against a missing object.
+    handoffs::record_patch(db, id, &body).await?;
+    Ok(NoContent)
+}
+
+/// Stores a handoff's full transcript, which the daemon later writes to
+/// disk for the cloud harness to consult.
+#[skyzen::openapi]
+async fn put_handoff_transcript(
+    State(user): State<CurrentUser>,
+    params: Params,
+    body: Bytes,
+    db: Db,
+    storage: Storage,
+) -> Outcome<NoContent> {
+    store_handoff_transcript(&user, &params, body, &db, &storage)
+        .await
+        .into()
+}
+
+async fn store_handoff_transcript(
+    user: &CurrentUser,
+    params: &Params,
+    body: Bytes,
+    db: &Db,
+    storage: &Storage,
+) -> Result<NoContent, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    handoffs::require_pending(db, user.id, id).await?;
+    let bytes = body.len() as u64;
+    if bytes > flyco_core::HANDOFF_TRANSCRIPT_BYTES_MAX {
+        return Err(ApiError::HandoffTooLarge {
+            object: "transcript",
+            bytes,
+            limit: flyco_core::HANDOFF_TRANSCRIPT_BYTES_MAX,
+        });
+    }
+    handoffs::put_transcript(storage, id, body.to_vec()).await?;
+    handoffs::record_transcript(db, id, &body).await?;
+    Ok(NoContent)
+}
+
+/// Verifies a handoff's payloads against its manifest and frees the
+/// session to provision. Idempotent: a replayed manifest answers as a
+/// second call rather than a second machine.
+#[skyzen::openapi]
+async fn complete_handoff(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(manifest): Json<flyco_core::HandoffManifest>,
+    db: Db,
+    queue: Queue,
+) -> Outcome<NoContent> {
+    finish_handoff(&user, &params, &manifest, &db, &queue)
+        .await
+        .into()
+}
+
+async fn finish_handoff(
+    user: &CurrentUser,
+    params: &Params,
+    manifest: &flyco_core::HandoffManifest,
+    db: &Db,
+    queue: &Queue,
+) -> Result<NoContent, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    let detail = sessions::find(db, user.id, id).await?;
+    // A session that left `provisioning` — archived mid-upload, failed by
+    // the stall sweep — can never take a machine, so completing its
+    // handoff would mark it finished with nothing to run.
+    if detail.summary.state != SessionState::Provisioning {
+        return Err(ApiError::InvalidTransition {
+            from: detail.summary.state,
+            to: SessionState::Provisioning,
+        });
+    }
+    // `false` is a replayed manifest on a finished row: the machine's job
+    // was queued by the call that completed it, and a second enqueue would
+    // start a second build.
+    if handoffs::complete(db, id, manifest).await? {
+        let machine = machines::for_session(db, id)
+            .await?
+            .ok_or(ApiError::CorruptRecord(
+                "a session with no machine row reached handoff completion",
+            ))?;
+        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine.id)).await?;
+    }
+    Ok(NoContent)
+}
+
+/// Reads the handoff manifest behind the daemon's session, or 404s when
+/// the session is none — the boot path's way to learn there is a patch to
+/// apply and a transcript to land.
+#[skyzen::openapi]
+async fn get_handoff(
+    State(session): State<DaemonSession>,
+    db: Db,
+) -> Outcome<Json<flyco_core::HandoffView>> {
+    read_handoff(session.0, &db).await.map(Json).into()
+}
+
+async fn read_handoff(session: SessionId, db: &Db) -> Result<flyco_core::HandoffView, ApiError> {
+    handoffs::view_for_daemon(db, session)
+        .await?
+        .ok_or(ApiError::SessionNotFound)
+}
+
+/// Streams the handoff's uploaded transcript.
+#[skyzen::openapi]
+async fn get_handoff_transcript(
+    State(session): State<DaemonSession>,
+    storage: Storage,
+) -> Outcome<Response> {
+    read_handoff_transcript(session.0, &storage).await.into()
+}
+
+async fn read_handoff_transcript(
+    session: SessionId,
+    storage: &Storage,
+) -> Result<Response, ApiError> {
+    let Some(body) = handoffs::get_transcript(storage, session).await? else {
+        return Err(ApiError::SessionNotFound);
+    };
+    let mut response = Response::new(skyzen::Body::from(body));
+    // `application/octet-stream` and not anything narrower: the bytes are a
+    // Claude JSONL, a Codex rollout, or a Devin ATIF document depending on
+    // which harness the session came from.
+    response.headers_mut().insert(
+        skyzen::header::CONTENT_TYPE,
+        skyzen::header::HeaderValue::from_static("application/octet-stream"),
     );
     Ok(response)
 }
@@ -2695,10 +3409,11 @@ async fn read_agent_machine(session: SessionId, db: &Db) -> Result<AgentMachineV
 async fn get_agent_machine_catalog(
     State(session): State<DaemonSession>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     db: Db,
     kv: Kv,
 ) -> Outcome<Json<Vec<MachineCatalogEntry>>> {
-    read_agent_catalog(session.0, &config, &db, &kv)
+    read_agent_catalog(session.0, &config, &github, &db, &kv)
         .await
         .map(Json)
         .into()
@@ -2707,11 +3422,12 @@ async fn get_agent_machine_catalog(
 async fn read_agent_catalog(
     session: SessionId,
     config: &ApiConfig,
+    github: &GithubClient,
     db: &Db,
     kv: &Kv,
 ) -> Result<Vec<MachineCatalogEntry>, ApiError> {
     let user = sessions::owner(db, session).await?;
-    machines::resize_catalog(db, config, kv, user, session).await
+    machines::resize_catalog(db, config, github, kv, user, session).await
 }
 
 /// Moves the session onto another machine type, on the agent's own say-so.
@@ -2720,24 +3436,38 @@ async fn read_agent_catalog(
 /// user's money committed before anything runs, so the daemon raises an
 /// approval instead and the resize happens when the user decides.
 #[skyzen::openapi]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a resize names the session, the caller, the type, and every \
+              service it touches"
+)]
 async fn agent_resize_machine(
     State(session): State<DaemonSession>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Json(request): Json<ResizeMachine>,
     rooms: Rooms,
     hosts: HostRooms,
     db: Db,
     kv: Kv,
 ) -> Outcome<Accepted> {
-    run_agent_resize(session.0, &request, &config, &rooms, &hosts, &db, &kv)
-        .await
-        .into()
+    run_agent_resize(
+        session.0, &request, &config, &github, &rooms, &hosts, &db, &kv,
+    )
+    .await
+    .into()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a resize names the session, the caller, the type, and every \
+              service it touches"
+)]
 async fn run_agent_resize(
     session: SessionId,
     request: &ResizeMachine,
     config: &ApiConfig,
+    github: &GithubClient,
     rooms: &Rooms,
     hosts: &HostRooms,
     db: &Db,
@@ -2747,6 +3477,7 @@ async fn run_agent_resize(
     machines::resize_for_agent(
         db,
         config,
+        github,
         kv,
         rooms,
         hosts,
@@ -2790,6 +3521,7 @@ fn public_routes() -> Vec<RouteNode> {
     nodes.extend(webhooks::routes());
     nodes.extend(hosts::public_routes());
     nodes.extend(provider_oauth::public_routes());
+    nodes.extend(codespaces::public_routes());
     nodes.extend(cli::public_routes());
     nodes
 }
@@ -2857,6 +3589,8 @@ fn daemon_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/workdir-patch"
             .at(get_workdir_patch)
             .put(put_workdir_patch),
+        "/v1/sessions/{id}/handoff".at(get_handoff),
+        "/v1/sessions/{id}/handoff/transcript".at(get_handoff_transcript),
     ))
     .middleware(RequireDaemon::new())
     .into_route_nodes();
@@ -2907,7 +3641,11 @@ fn session_routes() -> Vec<RouteNode> {
         "/v1/sessions/{id}/env"
             .at(get_session_env)
             .put(put_session_env),
+        "/v1/sessions/{id}/handoff/patch".put(put_handoff_patch),
+        "/v1/sessions/{id}/handoff/transcript".put(put_handoff_transcript),
+        "/v1/sessions/{id}/handoff/complete".post(complete_handoff),
         "/v1/sessions/{id}/repo-status".at(get_repo_status),
+        "/v1/sessions/{id}/repos".post(add_session_repo),
     ))
     .into_route_nodes();
     // Split rather than one tuple: a route tree is a tuple, and tuples stop
@@ -3061,10 +3799,11 @@ pub fn router(
     github: GithubClient,
     vendors: Vendors,
     clouds: Clouds,
+    codespaces: Codespaces,
     db: Db,
     queue: Queue,
 ) -> Router {
-    configured(config, github, vendors, clouds)
+    configured(config, github, vendors, clouds, codespaces)
         .with(db)
         .with(queue)
         .build()
@@ -3078,12 +3817,19 @@ pub fn router(
 /// [`ClaudeClient`], the Codex routes ask for [`CodexClient`], and the one
 /// place that may renew either — the provisioning consumer — asks for
 /// [`Vendors`].
-fn configured(config: ApiConfig, github: GithubClient, vendors: Vendors, clouds: Clouds) -> Route {
+fn configured(
+    config: ApiConfig,
+    github: GithubClient,
+    vendors: Vendors,
+    clouds: Clouds,
+    codespaces: Codespaces,
+) -> Route {
     with_error_handling(
         with_rooms(Route::new((routes(), frontend())))
             .with(State(config))
             .with(State(github))
             .with(State(clouds))
+            .with(State(codespaces))
             .with(State(vendors.claude.clone()))
             .with(State(vendors.codex.clone()))
             .with(State(vendors.microsoft.clone()))
@@ -3095,12 +3841,18 @@ fn configured(config: ApiConfig, github: GithubClient, vendors: Vendors, clouds:
 /// Worker path: configuration is read from the request's `env`, not at
 /// isolate startup. See [`crate::middleware::LoadApiConfig`].
 #[cfg(target_arch = "wasm32")]
-fn configured_from_request(github: GithubClient, vendors: Vendors, clouds: Clouds) -> Route {
+fn configured_from_request(
+    github: GithubClient,
+    vendors: Vendors,
+    clouds: Clouds,
+    codespaces: Codespaces,
+) -> Route {
     with_error_handling(
         with_rooms(Route::new((routes(), frontend())))
             .with(crate::middleware::LoadApiConfig)
             .with(State(github))
             .with(State(clouds))
+            .with(State(codespaces))
             .with(State(vendors.claude.clone()))
             .with(State(vendors.codex.clone()))
             .with(State(vendors.microsoft.clone()))
@@ -3151,6 +3903,7 @@ pub fn router_from_environment() -> Router {
             GithubClient::default(),
             Vendors::default(),
             Clouds::default(),
+            Codespaces::default(),
         )
         .build()
     }
@@ -3160,6 +3913,7 @@ pub fn router_from_environment() -> Router {
             GithubClient::default(),
             Vendors::default(),
             Clouds::default(),
+            Codespaces::default(),
         )
         .build()
     }

@@ -7,8 +7,8 @@
 //! After that, dirtiness is load-bearing: an agent may not stop while the
 //! tree is dirty (unless the compute budget is exhausted), a manual archive
 //! of a dirty tree requires confirmation and discards the work, and an
-//! automatic archive snapshots the uncommitted changes before the disk is
-//! released.
+//! automatic archive snapshots everything the clone does not already have —
+//! unpushed commits included — before the disk is released.
 //!
 //! # Where the GitHub token lives
 //!
@@ -32,7 +32,9 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Interval};
 
-use crate::config::RepoConfig;
+use std::collections::BTreeMap;
+
+use crate::config::{GithubAccess, RepoConfig};
 
 /// How often a live checkout is polled.
 pub const POLL: Duration = Duration::from_secs(5);
@@ -65,16 +67,25 @@ const CREDENTIAL_HELPER: &str = "!f() { test \"$1\" = get && printf 'username=x-
 /// that is not possible (git refuses a non-empty destination) and would not
 /// be wanted if it were: the working tree is the thing the reclamation was
 /// careful to keep.
+///
+/// The same check makes an `AddRepo` command idempotent: the control plane
+/// holds the command for a disconnected daemon and may deliver it again
+/// after a reconnect, so a directory that is already a checkout is adopted
+/// rather than cloned over.
 pub async fn has_checkout(workdir: &Path) -> bool {
     tokio::fs::metadata(workdir.join(".git")).await.is_ok()
 }
 
-/// Clones a session's repository into `workdir`.
+/// Clones a session's repository into `checkout`.
+///
+/// `checkout` is the directory the clone creates — `workdir/<dir>` for the
+/// repository's configured `dir` — not the shared workdir itself: a session
+/// can carry several repositories, and each keeps its own root.
 ///
 /// The branch is checked out by name rather than fetched and switched to:
-/// a session names one branch for its whole life, and a clone that pulled
-/// every branch would spend a session VM's first minute on history nothing
-/// is going to read.
+/// a session names one branch per checkout for its whole life, and a clone
+/// that pulled every branch would spend a session VM's first minute on
+/// history nothing is going to read.
 ///
 /// The commit identity is written into the checkout's own `.git/config`
 /// rather than a global one, so it applies to this repository and says who
@@ -84,18 +95,22 @@ pub async fn has_checkout(workdir: &Path) -> bool {
 ///
 /// Returns [`GitError`] if git could not be started or refused — an
 /// unreachable remote, a token the repository does not admit, a branch that
-/// does not exist, or a workdir that already holds something. Every one of
+/// does not exist, or a checkout that already holds something. Every one of
 /// those is a session failure rather than something to work around, and the
 /// error carries git's own words so the user is told which.
-pub async fn clone_into(repo: &RepoConfig, workdir: &Path) -> Result<(), GitError> {
+pub async fn clone_into(
+    repo: &RepoConfig,
+    access: &GithubAccess,
+    checkout: &Path,
+) -> Result<(), GitError> {
     let remote = repo.remote_url();
     tracing::info!(
         slug = %repo.slug,
         branch = %repo.branch,
-        workdir = %workdir.display(),
+        checkout = %checkout.display(),
         "cloning the session's repository"
     );
-    clone_from(&remote, repo, workdir).await
+    clone_from(&remote, repo, access, checkout).await
 }
 
 /// Clones `remote` — the URL split out from [`clone_into`] so a test can
@@ -104,37 +119,61 @@ pub async fn clone_into(repo: &RepoConfig, workdir: &Path) -> Result<(), GitErro
 /// # Errors
 ///
 /// Returns [`GitError`] exactly as [`clone_into`] does.
-pub async fn clone_from(remote: &str, repo: &RepoConfig, workdir: &Path) -> Result<(), GitError> {
+pub async fn clone_from(
+    remote: &str,
+    repo: &RepoConfig,
+    access: &GithubAccess,
+    checkout: &Path,
+) -> Result<(), GitError> {
     // `--` before the positional arguments, and `--branch=` rather than a
     // separate value: a branch name is user input, and neither it nor a
     // remote URL may be read as an option. `BranchName` already refuses a
     // leading dash; this is the second lock on the same door.
+    //
+    // `--recurse-submodules` because a checkout without them is one whose
+    // manifest lists members that are not there — cargo refuses to even
+    // load the workspace. The clone's `-c credential.helper` and the token
+    // environment reach each submodule fetch through `GIT_CONFIG_PARAMETERS`
+    // and ordinary environment inheritance, so a private submodule
+    // authenticates exactly as its parent did.
     let branch = format!("--branch={}", repo.branch);
     authenticated(
-        repo,
+        access,
         &[
             OsStr::new("clone"),
+            OsStr::new("--recurse-submodules"),
             OsStr::new(&branch),
             OsStr::new("--"),
             OsStr::new(remote),
-            workdir.as_os_str(),
+            checkout.as_os_str(),
         ],
         Path::new("."),
     )
     .await?;
 
     git(
-        workdir,
-        &["config", "user.name", repo.identity.name.as_str()],
+        checkout,
+        &["config", "user.name", access.identity.name.as_str()],
     )
     .await?;
     git(
-        workdir,
-        &["config", "user.email", repo.identity.email.as_str()],
+        checkout,
+        &["config", "user.email", access.identity.email.as_str()],
     )
     .await?;
+    // The tip the clone landed on is the base a later snapshot diffs
+    // against — a workdir patch must carry the session's commits, not just
+    // whatever was staged when the disk went away.
+    git(checkout, &["update-ref", BASE_REF, "HEAD"]).await?;
     Ok(())
 }
+
+/// The ref a clone records its landing tip under.
+///
+/// Snapshots diff against it rather than `HEAD`: an agent that committed
+/// its work is exactly the one with the most to lose when the machine goes
+/// away, and a diff against `HEAD` would call that work clean.
+const BASE_REF: &str = "refs/flyco/base";
 
 /// Runs one git command that may have to authenticate to GitHub.
 ///
@@ -148,7 +187,7 @@ pub async fn clone_from(remote: &str, repo: &RepoConfig, workdir: &Path) -> Resu
 /// immediate failure rather than a process waiting on a terminal no session
 /// VM has.
 async fn authenticated(
-    repo: &RepoConfig,
+    access: &GithubAccess,
     args: &[&OsStr],
     current_dir: &Path,
 ) -> Result<std::process::Output, GitError> {
@@ -164,7 +203,7 @@ async fn authenticated(
         .arg("-c")
         .arg(format!("credential.helper={CREDENTIAL_HELPER}"))
         .args(args)
-        .env(TOKEN_VAR, &repo.token)
+        .env(TOKEN_VAR, &access.token)
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
@@ -172,7 +211,86 @@ async fn authenticated(
     finished(command, output)
 }
 
-/// The working tree of a session checkout.
+/// Rewinds `workdir`'s checked-out branch to `commit`.
+///
+/// A stored patch was diffed against the commit its provenance names — a
+/// handoff's merge-base, or a snapshot's recorded base — not the tip this
+/// clone landed on, so the branch is wound back before the patch applies.
+/// On a fresh clone the tree is clean, and `reset --hard` only moves the
+/// ref.
+///
+/// # Errors
+///
+/// Returns [`GitError`] if `commit` is not in the clone — a base a
+/// force-push removed between send and provision is a session failure,
+/// not something to patch around.
+pub async fn reset_to(workdir: &Path, commit: &str) -> Result<(), GitError> {
+    git(workdir, &["reset", "--hard", commit]).await.map(|_| ())
+}
+
+/// The commit a snapshot diffs against.
+///
+/// [`BASE_REF`] is the answer a flyco clone leaves behind. A checkout it
+/// never wrote — one made before the marker existed — falls back to the
+/// nearest ancestor `origin/HEAD` still shares, and finally to `HEAD`
+/// itself, which is the uncommitted-only shape a baseless tree can still
+/// honestly produce.
+async fn snapshot_base(path: &Path) -> Result<String, GitError> {
+    if let Some(base) = rev_parse(path, BASE_REF).await? {
+        return Ok(base);
+    }
+    if let Some(base) = merge_base(path).await? {
+        return Ok(base);
+    }
+    rev_parse(path, "HEAD")
+        .await?
+        .ok_or_else(|| GitError::Failed {
+            command: "rev-parse".to_owned(),
+            detail: "HEAD does not resolve".to_owned(),
+        })
+}
+
+/// The commit `rev` resolves to in `path`, or `None` when it does not.
+///
+/// `rev-parse --verify --quiet` exits `1` on an unresolved name — an
+/// answer, not a failure — so anything louder still propagates.
+async fn rev_parse(path: &Path, rev: &str) -> Result<Option<String>, GitError> {
+    let output = run_git(
+        path,
+        &[
+            OsStr::new("rev-parse"),
+            OsStr::new("--verify"),
+            OsStr::new("--quiet"),
+            OsStr::new(rev),
+        ],
+        &[],
+        &[1],
+    )
+    .await?;
+    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok((!resolved.is_empty()).then_some(resolved))
+}
+
+/// The nearest ancestor `HEAD` and `origin/HEAD` still share, when they
+/// share one — `merge-base` exits `1` when they do not, and `128` when
+/// `origin/HEAD` is a name the clone never recorded.
+async fn merge_base(path: &Path) -> Result<Option<String>, GitError> {
+    let output = run_git(
+        path,
+        &[
+            OsStr::new("merge-base"),
+            OsStr::new("HEAD"),
+            OsStr::new("origin/HEAD"),
+        ],
+        &[],
+        &[1, 128],
+    )
+    .await?;
+    let shared = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok((!shared.is_empty()).then_some(shared))
+}
+
+/// The working tree of one session checkout.
 pub trait WorkingTree: Send {
     /// Next `git status --short` summary, when it changes.
     ///
@@ -180,15 +298,128 @@ pub trait WorkingTree: Send {
     /// longer be observed.
     fn next_status(&mut self) -> impl Future<Output = Option<String>> + Send;
 
-    /// A binary diff of every uncommitted change, including untracked
-    /// files, or `None` when the tree is clean.
+    /// A binary diff of everything the session added on top of its clone —
+    /// committed work included — or `None` when the tree still matches the
+    /// clone's landing commit.
     ///
     /// Staging is temporary: the index is reset even if the diff fails, so
     /// a snapshot never leaves the checkout dirty in a new way.
-    fn snapshot(&self) -> impl Future<Output = Result<Option<Vec<u8>>, GitError>> + Send;
+    fn snapshot(&self) -> impl Future<Output = Result<Option<WorkdirSnapshot>, GitError>> + Send;
 
     /// Applies a previously stored snapshot onto this checkout.
     fn apply(&self, patch: &[u8]) -> impl Future<Output = Result<(), GitError>> + Send;
+}
+
+/// A working tree carried off its machine: the commit it was diffed
+/// against and the binary patch that reproduces it.
+///
+/// `base_commit` is the tip the session's clone landed on, recorded as
+/// [`BASE_REF`]. Diffing against it — rather than `HEAD` — is what puts
+/// the session's own commits into the patch; a diff against `HEAD` reads
+/// a fully committed tree as clean and would carry nothing.
+#[derive(Clone)]
+pub struct WorkdirSnapshot {
+    /// The commit `patch` was diffed against — the clone's landing tip.
+    pub base_commit: String,
+    /// `git diff --cached --binary <base_commit>` of the staged tree.
+    pub patch: Vec<u8>,
+}
+
+impl WorkdirSnapshot {
+    /// The stored shape: one line of lowercase hex — the base commit —
+    /// then the patch verbatim. Carrying the base inside the object means
+    /// the resume path needs nothing else to rewind the fresh clone before
+    /// it applies the diff.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut body = Vec::with_capacity(self.base_commit.len() + 1 + self.patch.len());
+        body.extend_from_slice(self.base_commit.as_bytes());
+        body.push(b'\n');
+        body.extend_from_slice(&self.patch);
+        body
+    }
+}
+
+impl core::fmt::Debug for WorkdirSnapshot {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WorkdirSnapshot")
+            .field("base_commit", &self.base_commit)
+            .field("patch_bytes", &self.patch.len())
+            .finish()
+    }
+}
+
+/// Splits a stored workdir patch back into its base commit and diff.
+///
+/// A `git diff` body opens with `diff --git`, never a bare hash, so a
+/// first line of exactly forty hex characters is unambiguously the base
+/// line. Anything else is a patch stored before snapshots carried one —
+/// `None`, and the whole body is the diff.
+#[must_use]
+pub fn decode_snapshot(body: &[u8]) -> (Option<&str>, &[u8]) {
+    let Some(line_end) = body.iter().position(|byte| *byte == b'\n') else {
+        return (None, body);
+    };
+    let (head, rest) = body.split_at(line_end + 1);
+    let is_base = head.len() == 41 && head[..40].iter().all(u8::is_ascii_hexdigit);
+    if !is_base {
+        return (None, body);
+    }
+    // Forty hex digits are ASCII — the line reads as text by construction.
+    std::str::from_utf8(&head[..40]).map_or((None, body), |base| (Some(base), rest))
+}
+
+/// The session's checkouts, as the relay drives them.
+///
+/// The plural counterpart of [`WorkingTree`]: a session can work across
+/// several repositories, and everything the relay does with the working
+/// tree — dirty reporting, snapshotting on stop, applying a stored patch —
+/// is answered per checkout directory, the `dir` the control plane
+/// recorded for it. The directory key is `Option<String>` because a
+/// developer machine's checkout *is* the workspace root, which has no
+/// name of its own — `None` keys it, matching the wire's
+/// [`RepoDirty`](flyco_core::DaemonToControl::RepoDirty).
+pub trait WorkingSet: Send {
+    /// Next `(dir, status)` pair from any checkout, when it changes.
+    ///
+    /// `dir` is the checkout's workspace-relative directory, or `None` for
+    /// the root checkout of a developer machine; an empty summary is a
+    /// clean tree. `None` as the whole answer means no checkout can be
+    /// observed any more.
+    fn next_status(&mut self) -> impl Future<Output = Option<(Option<String>, String)>> + Send;
+
+    /// Every checkout directory this set watches.
+    fn dirs(&self) -> Vec<Option<String>>;
+
+    /// Clones `repo` into its configured directory under the workspace and
+    /// begins watching it.
+    ///
+    /// `Ok(true)` is a checkout the set did not know — the wire's cue to
+    /// announce it. `Ok(false)` means the directory was already watched:
+    /// an `AddRepo` replay, which must not announce again. A directory
+    /// whose contents already form a checkout is adopted rather than
+    /// cloned over.
+    fn clone_repo(
+        &mut self,
+        repo: &RepoConfig,
+        access: &GithubAccess,
+    ) -> impl Future<Output = Result<bool, GitError>> + Send;
+
+    /// A [`WorkdirSnapshot`] of `dir`, or `None` when it is clean.
+    ///
+    /// Same staging discipline as [`WorkingTree::snapshot`]: the index is
+    /// reset even when the diff fails.
+    fn snapshot(
+        &self,
+        dir: &Option<String>,
+    ) -> impl Future<Output = Result<Option<WorkdirSnapshot>, GitError>> + Send;
+
+    /// Applies a previously stored snapshot onto `dir`.
+    fn apply(
+        &self,
+        dir: &Option<String>,
+        patch: &[u8],
+    ) -> impl Future<Output = Result<(), GitError>> + Send;
 }
 
 /// Why a git command failed.
@@ -205,6 +436,13 @@ pub enum GitError {
         /// stderr, or a note when it was empty.
         detail: String,
     },
+    /// The named directory holds none of the session's checkouts.
+    ///
+    /// Raised by [`WorkingSet::snapshot`] and [`WorkingSet::apply`] when a
+    /// `dir` names no watched checkout — a stale `AddRepo`, or a stored
+    /// patch written for a directory this boot never cloned.
+    #[error("no checkout lives in `{0}`")]
+    UnknownCheckout(String),
 }
 
 /// A checkout on disk, polled with `git status --short`.
@@ -289,16 +527,24 @@ impl WorkingTree for GitWorkdir {
         }
     }
 
-    async fn snapshot(&self) -> Result<Option<Vec<u8>>, GitError> {
+    async fn snapshot(&self) -> Result<Option<WorkdirSnapshot>, GitError> {
+        let base_commit = snapshot_base(&self.path).await?;
         git(&self.path, &["add", "-A"]).await?;
-        let diff = git(&self.path, &["diff", "--cached", "--binary"]).await;
+        let diff = git(
+            &self.path,
+            &["diff", "--cached", "--binary", base_commit.as_str()],
+        )
+        .await;
         let reset = git(&self.path, &["reset"]).await;
         reset?;
         let output = diff?;
         if output.stdout.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(output.stdout))
+            Ok(Some(WorkdirSnapshot {
+                base_commit,
+                patch: output.stdout,
+            }))
         }
     }
 
@@ -322,54 +568,224 @@ impl WorkingTree for GitWorkdir {
     }
 }
 
-/// A stand-in checkout for relay tests.
-pub struct FakeWorkdir {
-    snapshot: Option<Vec<u8>>,
+/// The session's checkouts on disk: one [`GitWorkdir`] per `dir`, with
+/// their status streams folded into one.
+///
+/// Built at boot from `[[repos]]` — [`crate::main`] clones or adopts each
+/// configured checkout — and grown by `clone_repo` as the control plane
+/// approves more. `root` is the workspace every `dir` lives under; the
+/// `None` key is the developer-machine shape, where the root itself is
+/// the checkout.
+pub struct GitRepos {
+    root: PathBuf,
+    workdirs: BTreeMap<Option<String>, GitWorkdir>,
+    status_tx: mpsc::UnboundedSender<(Option<String>, String)>,
+    status_rx: mpsc::UnboundedReceiver<(Option<String>, String)>,
 }
 
-impl core::fmt::Debug for FakeWorkdir {
+impl core::fmt::Debug for GitRepos {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("FakeWorkdir").finish_non_exhaustive()
+        f.debug_struct("GitRepos")
+            .field("dirs", &self.workdirs.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
     }
 }
 
-impl FakeWorkdir {
-    /// A pair: the handle the relay snapshots from, the sender tests inject
-    /// status summaries through, and the stream the relay reads.
+impl GitRepos {
+    /// An empty set over `root`; checkouts join through
+    /// [`Self::watch`] or [`WorkingSet::clone_repo`].
     #[must_use]
-    pub fn pair() -> (
-        Self,
-        mpsc::UnboundedSender<String>,
-        mpsc::UnboundedReceiver<String>,
-    ) {
-        Self::with_snapshot(None)
+    pub fn new(root: PathBuf) -> Self {
+        let (status_tx, status_rx) = mpsc::unbounded_channel();
+        Self {
+            root,
+            workdirs: BTreeMap::new(),
+            status_tx,
+            status_rx,
+        }
     }
 
-    /// Like [`Self::pair`], but [`WorkingTree::snapshot`] returns `patch`.
-    #[must_use]
-    pub fn with_snapshot(
-        patch: Option<Vec<u8>>,
-    ) -> (
-        Self,
-        mpsc::UnboundedSender<String>,
-        mpsc::UnboundedReceiver<String>,
-    ) {
-        let (sender, statuses) = mpsc::unbounded_channel();
-        (Self { snapshot: patch }, sender, statuses)
+    /// Begins watching the checkout at `path` under the name `dir`.
+    ///
+    /// Boot-time registration: [`crate::main`] calls it once per
+    /// configured repo after its clone-or-adopt, and once with `None` on
+    /// a developer machine whose workspace root is itself the checkout.
+    pub fn watch(&mut self, dir: Option<String>, path: PathBuf) {
+        let (workdir, mut statuses) = GitWorkdir::spawn(path);
+        let tx = self.status_tx.clone();
+        let label = dir.clone();
+        tokio::spawn(async move {
+            while let Some(summary) = statuses.recv().await {
+                if tx.send((label.clone(), summary)).is_err() {
+                    break;
+                }
+            }
+        });
+        self.workdirs.insert(dir, workdir);
     }
 }
 
-impl WorkingTree for FakeWorkdir {
-    fn next_status(&mut self) -> impl Future<Output = Option<String>> + Send {
-        core::future::ready(None)
+impl WorkingSet for GitRepos {
+    async fn next_status(&mut self) -> Option<(Option<String>, String)> {
+        self.status_rx.recv().await
     }
 
-    fn snapshot(&self) -> impl Future<Output = Result<Option<Vec<u8>>, GitError>> + Send {
-        core::future::ready(Ok(self.snapshot.clone()))
+    fn dirs(&self) -> Vec<Option<String>> {
+        self.workdirs.keys().cloned().collect()
     }
 
-    fn apply(&self, _patch: &[u8]) -> impl Future<Output = Result<(), GitError>> + Send {
-        core::future::ready(Ok(()))
+    async fn clone_repo(
+        &mut self,
+        repo: &RepoConfig,
+        access: &GithubAccess,
+    ) -> Result<bool, GitError> {
+        let dir = Some(repo.dir.clone());
+        if self.workdirs.contains_key(&dir) {
+            return Ok(false);
+        }
+        clone_into(repo, access, &repo.checkout_path(&self.root)).await?;
+        self.watch(dir, repo.checkout_path(&self.root));
+        Ok(true)
+    }
+
+    async fn snapshot(&self, dir: &Option<String>) -> Result<Option<WorkdirSnapshot>, GitError> {
+        self.workdirs
+            .get(dir)
+            .ok_or_else(|| {
+                GitError::UnknownCheckout(dir.clone().unwrap_or_else(|| ".".to_owned()))
+            })?
+            .snapshot()
+            .await
+    }
+
+    async fn apply(&self, dir: &Option<String>, patch: &[u8]) -> Result<(), GitError> {
+        self.workdirs
+            .get(dir)
+            .ok_or_else(|| {
+                GitError::UnknownCheckout(dir.clone().unwrap_or_else(|| ".".to_owned()))
+            })?
+            .apply(patch)
+            .await
+    }
+}
+
+/// A stand-in checkout set for relay tests.
+///
+/// One status sender serves every directory: a test injects a dirty report
+/// by sending `(dir, summary)`, the same pair the wire carries, so a test
+/// does not have to hold a channel per checkout.
+pub struct FakeRepos {
+    snapshots: BTreeMap<Option<String>, Option<WorkdirSnapshot>>,
+    /// Dirs a `clone_repo` must refuse, so a test can drive the
+    /// failed-clone path without a network.
+    unclonable: std::collections::BTreeSet<String>,
+    status_rx: mpsc::UnboundedReceiver<(Option<String>, String)>,
+}
+
+impl core::fmt::Debug for FakeRepos {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FakeRepos")
+            .field("dirs", &self.snapshots.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
+impl FakeRepos {
+    /// A pair: the set the relay drives, and the sender tests inject
+    /// `(dir, summary)` status reports through. Every `dir` starts clean.
+    #[must_use]
+    pub fn pair(
+        dirs: &[Option<String>],
+    ) -> (Self, mpsc::UnboundedSender<(Option<String>, String)>) {
+        Self::with_snapshots(dirs.iter().map(|dir| (dir.clone(), None)))
+    }
+
+    /// Like [`Self::pair`], but each `dir`'s [`WorkingSet::snapshot`]
+    /// returns its patch, diffed against a stand-in base.
+    #[must_use]
+    pub fn with_snapshots(
+        snapshots: impl IntoIterator<Item = (Option<String>, Option<Vec<u8>>)>,
+    ) -> (Self, mpsc::UnboundedSender<(Option<String>, String)>) {
+        let (status_tx, status_rx) = mpsc::unbounded_channel();
+        (
+            Self {
+                snapshots: snapshots
+                    .into_iter()
+                    .map(|(dir, patch)| {
+                        (
+                            dir,
+                            patch.map(|patch| WorkdirSnapshot {
+                                base_commit: "0".repeat(40),
+                                patch,
+                            }),
+                        )
+                    })
+                    .collect(),
+                unclonable: std::collections::BTreeSet::new(),
+                status_rx,
+            },
+            status_tx,
+        )
+    }
+
+    /// Every `clone_repo` naming one of these directories fails.
+    #[must_use]
+    pub fn unclonable(mut self, dirs: &[&str]) -> Self {
+        self.unclonable
+            .extend(dirs.iter().map(|dir| (*dir).to_owned()));
+        self
+    }
+}
+
+impl WorkingSet for FakeRepos {
+    async fn next_status(&mut self) -> Option<(Option<String>, String)> {
+        self.status_rx.recv().await
+    }
+
+    fn dirs(&self) -> Vec<Option<String>> {
+        self.snapshots.keys().cloned().collect()
+    }
+
+    fn clone_repo(
+        &mut self,
+        repo: &RepoConfig,
+        _access: &GithubAccess,
+    ) -> impl Future<Output = Result<bool, GitError>> + Send {
+        let answer = if self.snapshots.contains_key(&Some(repo.dir.clone())) {
+            Ok(false)
+        } else if self.unclonable.contains(&repo.dir) {
+            Err(GitError::Failed {
+                command: "clone".to_owned(),
+                detail: format!("{} was refused by the test", repo.slug),
+            })
+        } else {
+            self.snapshots.insert(Some(repo.dir.clone()), None);
+            Ok(true)
+        };
+        core::future::ready(answer)
+    }
+
+    fn snapshot(
+        &self,
+        dir: &Option<String>,
+    ) -> impl Future<Output = Result<Option<WorkdirSnapshot>, GitError>> + Send {
+        core::future::ready(self.snapshots.get(dir).cloned().ok_or_else(|| {
+            GitError::UnknownCheckout(dir.clone().unwrap_or_else(|| ".".to_owned()))
+        }))
+    }
+
+    fn apply(
+        &self,
+        dir: &Option<String>,
+        _patch: &[u8],
+    ) -> impl Future<Output = Result<(), GitError>> + Send {
+        core::future::ready(if self.snapshots.contains_key(dir) {
+            Ok(())
+        } else {
+            Err(GitError::UnknownCheckout(
+                dir.clone().unwrap_or_else(|| ".".to_owned()),
+            ))
+        })
     }
 }
 
@@ -435,7 +851,7 @@ fn finished(
 #[cfg(test)]
 mod tests {
     use super::{GitWorkdir, WorkingTree, clone_from};
-    use crate::config::{GitIdentity, RepoConfig};
+    use crate::config::{GitIdentity, GithubAccess, RepoConfig};
     use uuid::Uuid;
 
     /// The token every clone test authenticates with.
@@ -520,6 +936,13 @@ mod tests {
         RepoConfig {
             slug: "lexoliu/flyco".parse().expect("a valid slug"),
             branch: branch.parse().expect("a valid branch"),
+            dir: "flyco".to_owned(),
+        }
+    }
+
+    /// The shared `[github]` access the clone tests authenticate with.
+    fn access() -> GithubAccess {
+        GithubAccess {
             token: TOKEN.to_owned(),
             identity: GitIdentity {
                 name: COMMIT_NAME.to_owned(),
@@ -546,12 +969,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_clone_brings_the_repositorys_submodules() {
+        let scratch = Scratch::new();
+
+        // The submodule's own repository, exported over `git://` by a
+        // loopback `git daemon`. The fixture cannot use a `file:` URL or a
+        // local path: git denies the file transport for fetches that are
+        // not a direct user request, and a recursive clone's submodule
+        // fetch is exactly that. `git` transport is allowed by default.
+        let sub_source = scratch.child("sub-source");
+        std::fs::create_dir_all(&sub_source).expect("submodule source");
+        init(&sub_source);
+        let sub_bare = scratch.child("sub.git");
+        git(
+            &scratch.0,
+            &[
+                "clone",
+                "--bare",
+                sub_source.to_str().expect("a UTF-8 path"),
+                sub_bare.to_str().expect("a UTF-8 path"),
+            ],
+        );
+        // A port that was free a moment ago: fine for a fixture whose whole
+        // life is this test.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind an ephemeral port")
+            .local_addr()
+            .expect("read the bound port")
+            .port();
+        let mut daemon = std::process::Command::new("git")
+            .args([
+                "daemon",
+                "--export-all",
+                "--reuseaddr",
+                "--listen=127.0.0.1",
+                &format!("--port={port}"),
+                &format!("--base-path={}", scratch.0.display()),
+            ])
+            .arg(&scratch.0)
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn git daemon");
+        // `spawn` returns before the daemon has bound its port — a client
+        // that lands first is refused, so the fixture waits for the
+        // listener it asked for.
+        let mut listening = false;
+        for _ in 0..50 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                listening = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(listening, "git daemon never listened on 127.0.0.1:{port}");
+        let sub_url = format!("git://127.0.0.1:{port}/sub.git");
+
+        let source = scratch.child("source");
+        std::fs::create_dir_all(&source).expect("source checkout");
+        init(&source);
+        git(&source, &["branch", "-M", "main"]);
+        // The fixture-side `submodule add` is a direct request, so its own
+        // fetch of the loopback URL is allowed without relaxing anything.
+        git(&source, &["submodule", "add", &sub_url, "deps/sub"]);
+        git(&source, &["commit", "-m", "record the submodule"]);
+
+        let bare = scratch.child("origin.git");
+        git(
+            &scratch.0,
+            &[
+                "clone",
+                "--bare",
+                source.to_str().expect("a UTF-8 path"),
+                bare.to_str().expect("a UTF-8 path"),
+            ],
+        );
+
+        let workdir = scratch.child("work");
+        let outcome = clone_from(
+            bare.to_str().expect("a UTF-8 path"),
+            &repo_config("main"),
+            &access(),
+            &workdir,
+        )
+        .await;
+        let _ = daemon.kill();
+        // `kill` only sends the signal; `wait` is what reaps the child —
+        // without it the daemon stays a zombie until the test exits.
+        let _ = daemon.wait();
+        outcome.expect("the recursive clone succeeds");
+
+        assert!(
+            workdir.join("deps/sub/README.md").is_file(),
+            "the submodule's content is in the checkout, not just its gitlink"
+        );
+    }
+
+    #[tokio::test]
     async fn a_clone_lands_the_named_branch_in_the_workdir() {
         let scratch = Scratch::new();
         let remote = origin(&scratch, "dev");
         let workdir = scratch.child("work");
 
-        clone_from(&remote, &repo_config("dev"), &workdir)
+        clone_from(&remote, &repo_config("dev"), &access(), &workdir)
             .await
             .expect("the clone succeeds against a bare repository on disk");
 
@@ -578,13 +1097,13 @@ mod tests {
         let workdir = scratch.child("work");
         assert!(!super::has_checkout(&workdir).await);
 
-        clone_from(&remote, &repo_config("main"), &workdir)
+        clone_from(&remote, &repo_config("main"), &access(), &workdir)
             .await
             .expect("clone");
         assert!(super::has_checkout(&workdir).await);
 
         // And cloning over it is not a thing that could quietly work.
-        clone_from(&remote, &repo_config("main"), &workdir)
+        clone_from(&remote, &repo_config("main"), &access(), &workdir)
             .await
             .expect_err("git refuses a destination that is not empty");
     }
@@ -595,7 +1114,7 @@ mod tests {
         let remote = origin(&scratch, "main");
         let workdir = scratch.child("work");
 
-        clone_from(&remote, &repo_config("main"), &workdir)
+        clone_from(&remote, &repo_config("main"), &access(), &workdir)
             .await
             .expect("clone");
 
@@ -619,7 +1138,7 @@ mod tests {
         let remote = origin(&scratch, "main");
         let workdir = scratch.child("work");
 
-        clone_from(&remote, &repo_config("main"), &workdir)
+        clone_from(&remote, &repo_config("main"), &access(), &workdir)
             .await
             .expect("clone");
 
@@ -642,12 +1161,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_github_token_never_survives_a_debug_rendering() {
-        let config = repo_config("main");
-        let debugged = format!("{config:?}");
+        let github = access();
+        let debugged = format!("{github:?}");
         assert!(!debugged.contains(TOKEN));
-        // Still enough to identify the checkout in a log line.
-        assert!(debugged.contains("lexoliu/flyco"));
-        assert!(debugged.contains("main"));
+        // Still enough to identify whose access it is in a log line.
+        assert!(debugged.contains(COMMIT_NAME));
     }
 
     #[tokio::test]
@@ -656,7 +1174,7 @@ mod tests {
         let remote = origin(&scratch, "main");
         let workdir = scratch.child("work");
 
-        let error = clone_from(&remote, &repo_config("nope"), &workdir)
+        let error = clone_from(&remote, &repo_config("nope"), &access(), &workdir)
             .await
             .expect_err("a missing branch is a session failure, not an empty checkout");
 
@@ -676,18 +1194,18 @@ mod tests {
         let remote = origin(&scratch, "main");
 
         let first = scratch.child("first");
-        clone_from(&remote, &repo_config("main"), &first)
+        clone_from(&remote, &repo_config("main"), &access(), &first)
             .await
             .expect("the original machine's clone");
         std::fs::write(first.join("draft.txt"), "half a refactor\n").expect("write");
-        let patch = GitWorkdir::new(first.clone())
+        let snapshot = GitWorkdir::new(first.clone())
             .snapshot()
             .await
             .expect("snapshot")
             .expect("a dirty tree produces a patch");
 
         let second = scratch.child("second");
-        clone_from(&remote, &repo_config("main"), &second)
+        clone_from(&remote, &repo_config("main"), &access(), &second)
             .await
             .expect("the new machine's clone");
         assert!(
@@ -695,8 +1213,11 @@ mod tests {
             "a fresh clone starts from the branch, not from the last machine"
         );
 
+        super::reset_to(&second, &snapshot.base_commit)
+            .await
+            .expect("the clone rewinds to the patch's base");
         GitWorkdir::new(second.clone())
-            .apply(&patch)
+            .apply(&snapshot.patch)
             .await
             .expect("the stored patch applies onto the fresh clone");
         assert_eq!(
@@ -706,11 +1227,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_commit_the_agent_made_is_work_the_snapshot_carries() {
+        // The shape the bug took: an agent that committed its work left a
+        // clean tree, and a snapshot diffed against HEAD called that clean —
+        // the commit went away with the disk.
+        let scratch = Scratch::new();
+        let remote = origin(&scratch, "main");
+
+        let first = scratch.child("first");
+        clone_from(&remote, &repo_config("main"), &access(), &first)
+            .await
+            .expect("the original machine's clone");
+        let landed = std::process::Command::new("git")
+            .current_dir(&first)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("read the landing tip");
+        let landed = String::from_utf8_lossy(&landed.stdout).trim().to_owned();
+
+        std::fs::write(first.join("fix.rs"), "fn fixed() {}\n").expect("write");
+        git(&first, &["add", "fix.rs"]);
+        git(&first, &["commit", "-m", "the fix"]);
+
+        let snapshot = GitWorkdir::new(first.clone())
+            .snapshot()
+            .await
+            .expect("snapshot")
+            .expect("a committed tree is not a clean one");
+        assert_eq!(
+            snapshot.base_commit, landed,
+            "the patch is diffed against the clone's landing tip"
+        );
+        assert!(
+            String::from_utf8_lossy(&snapshot.patch).contains("fix.rs"),
+            "the committed file is in the patch"
+        );
+
+        // Replay is the resume path: clone again, rewind to the base the
+        // stored object carries, apply.
+        let second = scratch.child("second");
+        clone_from(&remote, &repo_config("main"), &access(), &second)
+            .await
+            .expect("the new machine's clone");
+        let stored = snapshot.encode();
+        let (base, patch) = super::decode_snapshot(&stored);
+        assert_eq!(base, Some(snapshot.base_commit.as_str()));
+        super::reset_to(&second, base.expect("a stored snapshot names its base"))
+            .await
+            .expect("rewind");
+        GitWorkdir::new(second.clone())
+            .apply(patch)
+            .await
+            .expect("the stored patch applies onto the fresh clone");
+        assert_eq!(
+            std::fs::read_to_string(second.join("fix.rs")).expect("read the replayed file"),
+            "fn fixed() {}\n"
+        );
+    }
+
+    #[test]
+    fn a_stored_patch_from_before_bases_decodes_as_one() {
+        // Patches stored before snapshots carried a base are a bare `git
+        // diff`: they replay without a rewind, exactly as they used to.
+        let body = b"diff --git a/NOTES.md b/NOTES.md\nindex 1..2 100644\n";
+        let (base, patch) = super::decode_snapshot(body);
+        assert_eq!(base, None);
+        assert_eq!(patch, body);
+    }
+
+    #[tokio::test]
     async fn a_clean_tree_snapshots_as_none() {
         let scratch = Scratch::new();
         init(&scratch.0);
         let workdir = GitWorkdir::new(scratch.0.clone());
-        assert_eq!(workdir.snapshot().await.expect("snapshot"), None);
+        assert!(workdir.snapshot().await.expect("snapshot").is_none());
     }
 
     #[tokio::test]
@@ -728,12 +1318,12 @@ mod tests {
             String::from_utf8_lossy(&before.stdout).contains("new.txt"),
             "short status names the untracked file"
         );
-        let patch = workdir
+        let snapshot = workdir
             .snapshot()
             .await
             .expect("snapshot")
             .expect("dirty trees produce a patch");
-        let text = String::from_utf8_lossy(&patch);
+        let text = String::from_utf8_lossy(&snapshot.patch);
         assert!(
             text.contains("new.txt"),
             "the binary diff names the new file: {text}"

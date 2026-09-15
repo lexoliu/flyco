@@ -1,0 +1,11 @@
+{
+  "login": "octocat",
+  "id": 583231,
+  "type": "User",
+  "plan": {
+    "name": "pro",
+    "space": 976562499,
+    "collaborators": 0,
+    "private_repos": 9999
+  }
+}

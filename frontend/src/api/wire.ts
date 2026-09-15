@@ -171,7 +171,23 @@ export type ClientEvent =
   | { type: "machine_connection"; connected: boolean }
   | { type: "usage"; usage: UsageReport }
   | { type: "terminal_output"; data: string }
-  | { type: "repo_dirty"; summary: string }
+  /**
+   * A checkout has uncommitted changes and the agent is kept awake.
+   *
+   * `dir` names which checkout — the `SessionRepo.dir` the workspace holds
+   * it under. Absent on a session whose workdir is itself the checkout —
+   * the developer-machine shape, where there is exactly one tree to name.
+   */
+  | { type: "repo_dirty"; dir?: string | undefined; summary: string }
+  /**
+   * A repository landed in the session's workspace — one it did not start
+   * with, cloned while the session was running.
+   *
+   * A transcript line, like a machine change: the code the agent can reach
+   * changed from here on, and a transcript without the seam would show
+   * edits to a repository nobody added.
+   */
+  | { type: "repo_added"; slug: string; branch: string; dir: string }
   | { type: "spot_notice"; seconds_remaining: number }
   | { type: "provisioning_stage"; stage: ProvisioningStage; at_unix: number }
   | {
@@ -330,6 +346,7 @@ const CLIENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "usage",
   "terminal_output",
   "repo_dirty",
+  "repo_added",
   "spot_notice",
   "provisioning_stage",
   "machine_changed",

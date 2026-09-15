@@ -118,6 +118,34 @@ async fn verify(credentials: &ProviderCredentials) -> Result<(), ApiError> {
                 crate::provisioning::gcp_driver(service_account_json).map_err(rejected)?;
             provider.mint_token().await.map(|_| ()).map_err(rejected)
         }
+        ProviderCredentials::Codespaces {
+            token,
+            env_repo,
+            env_repo_id,
+            owner_id,
+            included_core_hours,
+            ..
+        } => {
+            let verified = crate::provisioning::codespaces_driver(
+                token,
+                env_repo,
+                *env_repo_id,
+                *included_core_hours,
+            )
+            .verify()
+            .await
+            .map_err(rejected)?;
+            if verified.user.id != *owner_id {
+                return Err(ApiError::ProviderRejectedCredentials {
+                    reason: format!(
+                        "the token belongs to {}, not the GitHub account this credential was \
+                         linked for — link the account again",
+                        verified.user.login
+                    ),
+                });
+            }
+            Ok(())
+        }
     }
 }
 
@@ -214,7 +242,7 @@ impl CloudLink for Clouds {
 /// repeating ("Client application has no configured keys"); that sentence
 /// is the reason, without the driver's own "provider rejected the request"
 /// wrapper in front of it. Any other failure keeps its full description.
-fn rejected(error: ProviderError) -> ApiError {
+pub(crate) fn rejected(error: ProviderError) -> ApiError {
     ApiError::ProviderRejectedCredentials {
         reason: match error {
             ProviderError::Rejected(reason) => reason,

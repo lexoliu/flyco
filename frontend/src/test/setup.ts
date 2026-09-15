@@ -101,7 +101,14 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
       jsonResponse({
         id,
         title: "Audit the relay for dropped frames",
-        repo: "octocat/hello-world",
+        repos: [
+          {
+            slug: "octocat/hello-world",
+            branch: "main",
+            dir: "hello-world",
+            added_by: "user",
+          },
+        ],
         harness: "claude_code",
         model: { model: "default" },
         permission_mode: "auto",
@@ -195,7 +202,33 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
     );
   }
   if (method === "GET" && /^\/v1\/sessions\/[^/]+\/repo-status$/.test(path)) {
-    return Promise.resolve(jsonResponse({ dirty: false, summary: "" }));
+    return Promise.resolve(
+      jsonResponse({ checkouts: [{ dir: "hello-world", dirty: false, summary: "" }] }),
+    );
+  }
+  if (method === "POST" && /^\/v1\/sessions\/[^/]+\/repos$/.test(path)) {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { repo?: string };
+    return Promise.resolve(
+      jsonResponse(
+        {
+          id: path.split("/")[3],
+          title: "Audit the relay for dropped frames",
+          repos: [
+            { slug: "octocat/hello-world", branch: "main", dir: "hello-world", added_by: "user" },
+            { slug: body.repo ?? "octocat/second", branch: "main", dir: "second", added_by: "user" },
+          ],
+          harness: "claude_code",
+          model: { model: "default" },
+          permission_mode: "auto",
+          state: "active",
+          machine_origin: "auto",
+          created_at_unix: 0,
+          last_active_unix: 0,
+          budget: { limit: 10_000_000, spent: 0, remaining: 10_000_000, stage: "ok" },
+        },
+        201,
+      ),
+    );
   }
   if (method === "GET" && /^\/v1\/sessions\/[^/]+\/files$/.test(path)) {
     return Promise.resolve(

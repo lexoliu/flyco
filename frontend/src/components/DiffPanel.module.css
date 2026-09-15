@@ -11,6 +11,39 @@
   min-height: 0;
 }
 
+/* The checkout selector: which of the session's repositories the diff is
+   about. One quiet row of tabs — pills, like the drawer's own tab row. */
+.checkouts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.checkout {
+  padding: var(--space-1) var(--space-2);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.checkout:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.checkoutActive {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+  background: var(--color-surface-sunken);
+}
+
 .summary {
   display: flex;
   align-items: baseline;

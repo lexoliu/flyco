@@ -1,6 +1,8 @@
 /*
  * The model picker: a list of the agent's models, each with the harness's
- * own one-line description.
+ * own one-line description, drilling into the chosen model's effort —
+ * the level the thumb names, the model it belongs to, and the detented
+ * rail of stops the choice can take, `Default` first.
  */
 
 .panel {
@@ -39,4 +41,67 @@
   margin-left: auto;
   margin-top: 2px;
   color: var(--color-text);
+}
+
+/* The effort view's head: the level the thumb sits on as the way back to
+   the list, and the reset that hands the choice back to the model. */
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  margin-left: -4px;
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+
+.reset {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.reset:disabled {
+  color: var(--color-text-faint);
+  cursor: default;
+}
+
+/* The model the level belongs to, and what `Default` resolves to where
+   the harness says. */
+.effortModel {
+  margin: 1px 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--line-normal);
+}
+
+.control {
+  --thumb: 20px;
+  /* Half the thumb, so the end labels tuck inside the end detents the way
+     the rail's own dots do. */
+  padding-inline: calc(var(--thumb) / 2);
+  margin-top: var(--space-2);
+}
+
+.ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
 }

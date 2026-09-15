@@ -17,6 +17,13 @@ pub enum CloudProviderKind {
     Aws,
     /// Google Cloud Platform.
     Gcp,
+    /// GitHub Codespaces: a per-user dev container the account's own
+    /// `codespace`-scoped token creates and drives.
+    ///
+    /// Counted as a cloud rather than a host: flyco opens the account's
+    /// Codespaces API and bills against its free core-hour grant and its
+    /// paid rate, exactly as it does for a subscription.
+    Codespaces,
     /// A Linux machine the user owns, enrolled with the control plane and
     /// running sessions as Podman containers.
     ///

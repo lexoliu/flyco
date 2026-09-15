@@ -45,6 +45,7 @@ impl From<WorkdirRefusal> for ApiError {
                 limit: FILE_BYTES_MAX,
             },
             WorkdirRefusal::NoBaseBranch => Self::NoBaseBranch,
+            WorkdirRefusal::UnknownCheckout { repo } => Self::UnknownCheckout { repo },
             WorkdirRefusal::Unreadable { detail } => Self::WorkdirUnreadable(detail),
         }
     }
@@ -295,6 +296,18 @@ pub enum ApiError {
         reason: String,
     },
 
+    /// GitHub refused a Codespaces link sign-in, and said why.
+    ///
+    /// The same refusal [`MicrosoftRejected`](Self::MicrosoftRejected) is,
+    /// on the one provider whose sign-in is OAuth rather than an issued
+    /// credential: consent declined, the code expired, or the granted
+    /// scopes do not cover what a codespace needs.
+    #[error("GitHub refused this sign-in: {reason}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    GithubRejected {
+        /// GitHub's own reason, or which required scope was not granted.
+        reason: String,
+    },
+
     /// The machine exists but the provider has not named it yet.
     ///
     /// It is still being created, so there is nothing to act on. Distinct
@@ -354,6 +367,30 @@ pub enum ApiError {
     /// Distinct from a destroyed one: nothing was ever provisioned.
     #[error("this session has no machine", status = StatusCode::NOT_FOUND)]
     MachineNotFound,
+
+    /// A codespace asked for a daemon configuration, and no flyco machine
+    /// goes by the name it presented.
+    ///
+    /// `404` rather than a refusal: the provisioning leg writes the codespace's
+    /// name to the row after GitHub starts the machine, so a bootstrap that
+    /// arrives in that window is told the truth — nothing answers to this
+    /// name *yet* — and the entrypoint retries until the row lands.
+    #[error("no flyco machine is a codespace of this name", status = StatusCode::NOT_FOUND)]
+    CodespacesMachineUnknown,
+
+    /// A codespace asked for a daemon configuration with a `GITHUB_TOKEN`
+    /// that cannot read the private environment repository the session's
+    /// account provisions on.
+    ///
+    /// That read is the whole authentication of the bootstrap endpoint: a
+    /// codespace's injected token is scoped to exactly that repository, so
+    /// a token GitHub turns away from it is not a credential flyco answers
+    /// to — whatever else it may open.
+    #[error(
+        "this codespace's token cannot read the environment repository its session's account provisions on",
+        status = StatusCode::FORBIDDEN
+    )]
+    CodespacesBootstrapDenied,
 
     /// The named type is not in the curated catalog this session can move to.
     ///
@@ -635,6 +672,20 @@ pub enum ApiError {
     )]
     NoBaseBranch,
 
+    /// The checkout the request named is not one the session carries.
+    ///
+    /// A `404`: the picker row that named it is stale — the directory is
+    /// not a bug in the request's shape, it is a name for something that
+    /// does not exist.
+    #[error(
+        "this session checks out no repository under `{repo}`",
+        status = StatusCode::NOT_FOUND
+    )]
+    UnknownCheckout {
+        /// The directory the request named.
+        repo: String,
+    },
+
     /// git could not read the session's checkout.
     #[error("the session's checkout could not be read: {0}", status = StatusCode::BAD_GATEWAY)]
     WorkdirUnreadable(String),
@@ -658,6 +709,51 @@ pub enum ApiError {
     SessionCapReached {
         /// The cap that was reached.
         cap: u32,
+    },
+
+    /// A `handoff` upload route or `handoff/complete` named a session that
+    /// is not a pending handoff — either it never was one, or `complete`
+    /// already ran under a different manifest.
+    #[error(
+        "this session has no pending handoff",
+        status = StatusCode::CONFLICT
+    )]
+    HandoffNotPending,
+
+    /// `handoff/complete` declared an object that is not stored, or is
+    /// stored at another size.
+    #[error(
+        "the handoff {object} was not uploaded, or landed at another size",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    HandoffObjectMissing {
+        /// Which payload — `patch` or `transcript`.
+        object: &'static str,
+    },
+
+    /// `handoff/complete` declared checksums or sizes that disagree with
+    /// what the upload routes actually received.
+    #[error(
+        "the handoff {object} the manifest declares is not what was uploaded",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    HandoffChecksumMismatch {
+        /// Which payload — `patch` or `transcript`.
+        object: &'static str,
+    },
+
+    /// A `handoff` upload body is larger than the route accepts.
+    #[error(
+        "the handoff {object} is {bytes} bytes, past the {limit} this route accepts",
+        status = StatusCode::PAYLOAD_TOO_LARGE
+    )]
+    HandoffTooLarge {
+        /// Which payload — `patch` or `transcript`.
+        object: &'static str,
+        /// What the body measures, in bytes.
+        bytes: u64,
+        /// What the route accepts, in bytes.
+        limit: u64,
     },
 
     /// A create under this `Idempotency-Key` is already in flight.
@@ -815,6 +911,46 @@ pub enum ApiError {
         status = StatusCode::UNPROCESSABLE_ENTITY
     )]
     InvalidRepo(String),
+
+    /// The request named no repository at all.
+    ///
+    /// A session that checks out nothing has nothing to work in, so an
+    /// empty `repos` list is refused rather than defaulted — the picker
+    /// always sends at least the repository it opened on.
+    #[error(
+        "a session checks out at least one repository",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    NoRepositories,
+
+    /// The session already checks out the repository the caller named.
+    ///
+    /// A `409` rather than a `422`: the body is processable, it is the
+    /// state it lands on — a checkout of that repository already exists —
+    /// that refuses it. Deduping it into a no-op would report a success
+    /// that added nothing and hide a caller's own bookkeeping bug.
+    #[error(
+        "{repo} is already checked out in this session",
+        status = StatusCode::CONFLICT
+    )]
+    RepoAlreadyAttached {
+        /// The repository the session already carries.
+        repo: RepoSlug,
+    },
+
+    /// The session already carries every checkout it may.
+    ///
+    /// The cap is [`flyco_core::MAX_SESSION_REPOS`]: past it the workspace
+    /// the agent is asked to hold in its head stops being a workspace, and
+    /// the picker stops fitting on a screen.
+    #[error(
+        "a session checks out at most {cap} repositories",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    SessionRepoCapReached {
+        /// Most repositories a session may carry.
+        cap: usize,
+    },
 
     /// The submitted branch is not a name git would accept.
     #[error("`{name}` is not a branch name: {reason}", status = StatusCode::UNPROCESSABLE_ENTITY)]
@@ -1292,7 +1428,10 @@ impl ApiError {
             Self::Microsoft(_) => "microsoft-unavailable",
             Self::GoogleRejected { .. } => "google-rejected",
             Self::Google(_) => "google-unavailable",
+            Self::GithubRejected { .. } => "github-rejected",
             Self::MachineNotFound => "machine-not-found",
+            Self::CodespacesMachineUnknown => "codespaces-machine-unknown",
+            Self::CodespacesBootstrapDenied => "codespaces-bootstrap-denied",
             Self::MachineTypeNotOffered(_) => "machine-type-not-offered",
             Self::LicenseBoundResizeNeedsApproval { .. } => "license-bound-resize-needs-approval",
             Self::MachineNotReady => "machine-not-ready",
@@ -1324,6 +1463,7 @@ impl ApiError {
             Self::FileNotText { .. } => "file-not-text",
             Self::FileTooLarge { .. } => "file-too-large",
             Self::NoBaseBranch => "no-base-branch",
+            Self::UnknownCheckout { .. } => "unknown-checkout",
             Self::WorkdirUnreadable(_) => "workdir-unreadable",
             Self::DirtyArchive { .. } => "dirty-archive",
             Self::SessionNotActive { .. } => "session-not-active",
@@ -1331,6 +1471,10 @@ impl ApiError {
             Self::SessionCapReached { .. } => "session-cap-reached",
             Self::IdempotencyInFlight => "idempotency-in-flight",
             Self::InvalidIdempotencyKey { .. } => "invalid-idempotency-key",
+            Self::HandoffNotPending => "handoff-not-pending",
+            Self::HandoffObjectMissing { .. } => "handoff-object-missing",
+            Self::HandoffChecksumMismatch { .. } => "handoff-checksum-mismatch",
+            Self::HandoffTooLarge { .. } => "handoff-too-large",
             Self::CliSessionGone => "cli-session-gone",
             Self::CliSessionDenied => "cli-session-denied",
             Self::CliSessionPollDenied => "cli-session-poll-denied",
@@ -1340,6 +1484,9 @@ impl ApiError {
             Self::InvalidTransition { .. } => "invalid-session-transition",
             Self::ApprovalAlreadyDecided { .. } => "approval-already-decided",
             Self::InvalidRepo(_) => "invalid-repo",
+            Self::NoRepositories => "no-repositories",
+            Self::RepoAlreadyAttached { .. } => "repo-already-attached",
+            Self::SessionRepoCapReached { .. } => "session-repo-cap-reached",
             Self::InvalidBranch { .. } => "invalid-branch",
             Self::GithubTokenInsufficient { .. } => "github-token-insufficient",
             Self::InvalidEnvKey(_) => "invalid-env-key",

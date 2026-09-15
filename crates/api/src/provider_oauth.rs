@@ -36,9 +36,9 @@
 )]
 
 use flyco_core::{
-    CurrentUser, FinishAzureOauth, FinishGcpOauth, LinkProvider, ProviderAccountView,
-    ProviderCredentials, ProviderOauthAttemptId, ProviderOauthChoice, ProviderOauthProgress,
-    ProviderOauthStart, UserId,
+    CurrentUser, FinishAzureOauth, FinishCodespacesOauth, FinishGcpOauth, LinkProvider,
+    ProviderAccountView, ProviderCredentials, ProviderOauthAttemptId, ProviderOauthChoice,
+    ProviderOauthProgress, ProviderOauthStart, UserId,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::extract::Query;
@@ -48,11 +48,13 @@ use skyzen_services::{Db, Kv, Queue};
 use url::Url;
 
 use crate::clouds::Clouds;
+use crate::codespaces::{Codespaces, CodespacesLink as _};
 use crate::config::ApiConfig;
 use crate::crypto::random_token;
 use crate::error::ApiError;
 use crate::expiring;
 use crate::extract::path_id;
+use crate::github::{CODESPACE_SCOPE, CODESPACES_SCOPE, GithubClient, GithubOauth as _};
 use crate::google::{self, GoogleClient, GoogleOauth as _};
 use crate::microsoft::{self, AzureTokens, MicrosoftClient, MicrosoftOauth as _};
 use crate::problem::Outcome;
@@ -68,6 +70,13 @@ pub const AZURE_CALLBACK_PATH: &str = "/v1/providers/azure/oauth/callback";
 
 /// Where Google returns the browser.
 pub const GCP_CALLBACK_PATH: &str = "/v1/providers/gcp/oauth/callback";
+
+/// Where GitHub returns the browser for a Codespaces link.
+///
+/// A second callback on the same OAuth app as the sign-in's: the two flows
+/// ask for different scopes, and one path serving both would have to guess
+/// which a returning browser was in the middle of.
+pub const CODESPACES_CALLBACK_PATH: &str = "/v1/providers/codespaces/oauth/callback";
 
 /// Where the SPA takes over once the browser is back.
 const RETURN_PATH: &str = "/connect/return";
@@ -108,6 +117,8 @@ enum Provider {
     Azure,
     /// Google, for a GCP project.
     Gcp,
+    /// GitHub, for a Codespaces account.
+    Codespaces,
 }
 
 impl Provider {
@@ -116,6 +127,7 @@ impl Provider {
         match self {
             Self::Azure => "azure",
             Self::Gcp => "gcp",
+            Self::Codespaces => "codespaces",
         }
     }
 
@@ -124,6 +136,7 @@ impl Provider {
         match self {
             Self::Azure => ApiError::MicrosoftRejected { reason },
             Self::Gcp => ApiError::GoogleRejected { reason },
+            Self::Codespaces => ApiError::GithubRejected { reason },
         }
     }
 }
@@ -139,6 +152,26 @@ enum Secrets {
     Azure(AzureTokens),
     /// Google's single short-lived token.
     Gcp(String),
+    /// GitHub's OAuth grant, plus what `GET /user` answered beside it.
+    Codespaces {
+        /// The granted token — the account credential in full.
+        token: String,
+        /// What the grant is renewed with, when the OAuth app expires user
+        /// tokens — `None` for an attempt recorded before flyco kept it.
+        #[serde(default)]
+        refresh_token: Option<String>,
+        /// When `token` stops working, seconds since the Unix epoch.
+        #[serde(default)]
+        token_expires_at_unix: Option<u64>,
+        /// The account's immutable id, which `verify` re-checks on every
+        /// link so a renamed login cannot slip a credential onto the wrong
+        /// account.
+        owner_id: i64,
+        /// The plan's included core-hours, read at the callback rather
+        /// than at the finish so the stored grant is the one the user was
+        /// told they had.
+        included_core_hours: u32,
+    },
 }
 
 impl core::fmt::Debug for Secrets {
@@ -146,6 +179,7 @@ impl core::fmt::Debug for Secrets {
         match self {
             Self::Azure(_) => f.write_str("Secrets::Azure(..)"),
             Self::Gcp(_) => f.write_str("Secrets::Gcp(..)"),
+            Self::Codespaces { .. } => f.write_str("Secrets::Codespaces(..)"),
         }
     }
 }
@@ -314,6 +348,12 @@ async fn begin(
         Provider::Gcp => google::authorize_url(
             config.google_oauth_client_id(),
             config.gcp_oauth_redirect_uri().as_str(),
+            &state,
+        ),
+        Provider::Codespaces => crate::oauth::authorize_url(
+            config.github_client_id(),
+            config.codespaces_oauth_redirect_uri(),
+            CODESPACES_SCOPE,
             &state,
         ),
     };
@@ -796,7 +836,249 @@ async fn finish_gcp(
     Ok(view)
 }
 
-/// The two public callbacks.
+// ── Codespaces ──
+
+/// `POST /v1/providers/codespaces/oauth/start` — begins a GitHub sign-in
+/// for the `codespace` scope.
+#[skyzen::openapi]
+pub async fn codespaces_start(
+    State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
+    kv: Kv,
+) -> Outcome<Json<ProviderOauthStart>> {
+    begin(&config, &kv, user.id, Provider::Codespaces)
+        .await
+        .map(Json)
+        .into()
+}
+
+/// `GET /v1/providers/codespaces/oauth/callback` — records what GitHub
+/// said.
+///
+/// Public, for the reason [`azure_callback`] is. Same OAuth app as the
+/// sign-in, on its own registered URI.
+#[skyzen::openapi]
+pub async fn codespaces_callback(
+    Query(callback): Query<ProviderCallback>,
+    State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
+    kv: Kv,
+) -> Outcome<SeeOther> {
+    let outcome = record_codespaces(&config, &github, &kv, &callback).await;
+    Ok(returned(&config, Provider::Codespaces, outcome)).into()
+}
+
+/// Redeems what GitHub sent back: the token, the account it acts as, and
+/// the proof it carries the scopes a codespace needs.
+///
+/// The scope check happens here rather than at the finish because here is
+/// where the answer can still change something — a refusal fails the
+/// attempt, and the page polling it learns the sign-in is over instead of
+/// discovering it one click later.
+async fn sign_in_codespaces(
+    config: &ApiConfig,
+    github: &GithubClient,
+    callback: &ProviderCallback,
+) -> Result<CodespacesSignIn, ApiError> {
+    let grant = github
+        .exchange_code(
+            config.github_client_id(),
+            config.github_client_secret(),
+            callback.code(Provider::Codespaces)?,
+            config.codespaces_oauth_redirect_uri().as_str(),
+        )
+        .await?;
+    let identity = github.current_user(&grant.token).await?;
+    if !identity.grants_scope(CODESPACE_SCOPE) {
+        return Err(Provider::Codespaces.rejected(format!(
+            "the sign-in did not grant the `{CODESPACE_SCOPE}` scope — without it flyco \
+             cannot create or drive a codespace"
+        )));
+    }
+    if !identity.grants_repo_scope() {
+        return Err(Provider::Codespaces.rejected(
+            "the sign-in did not grant the `repo` scope — without it flyco cannot create \
+             or write the private repository a codespace is built from"
+                .to_owned(),
+        ));
+    }
+    Ok(CodespacesSignIn {
+        grant,
+        login: identity.user.login,
+        owner_id: identity.user.id,
+        included_core_hours: flyco_provider::codespaces::included_core_hours(
+            identity.user.plan.as_ref().map(|plan| plan.name.as_str()),
+        ),
+    })
+}
+
+/// What the callback keeps of a GitHub sign-in until the finish spends it.
+struct CodespacesSignIn {
+    /// The grant in full — the token is the credential, and the refresh
+    /// half is what renews it once the grant nears its end.
+    grant: crate::github::GithubGrant,
+    /// Who it acts as.
+    login: String,
+    /// The account's immutable id.
+    owner_id: i64,
+    /// Core-hours the account's plan includes monthly.
+    included_core_hours: u32,
+}
+
+async fn record_codespaces(
+    config: &ApiConfig,
+    github: &GithubClient,
+    kv: &Kv,
+    callback: &ProviderCallback,
+) -> Result<(), ApiError> {
+    let (key, mut attempt) = by_state(kv, Provider::Codespaces, &callback.state).await?;
+    let signed_in = match sign_in_codespaces(config, github, callback).await {
+        Ok(signed_in) => signed_in,
+        Err(error) => {
+            record_failure(kv, &key, attempt, &error).await?;
+            return Err(error);
+        }
+    };
+
+    // No choices — there is nothing a GitHub account has many of that a
+    // codespace provisions into; flyco creates the one repository it needs.
+    attempt.stage = Stage::Authorized {
+        account: signed_in.login,
+        choices: Vec::new(),
+        secrets: Secrets::Codespaces {
+            token: signed_in.grant.token.access_token,
+            refresh_token: signed_in.grant.refresh_token,
+            token_expires_at_unix: signed_in.grant.expires_at_unix,
+            owner_id: signed_in.owner_id,
+            included_core_hours: signed_in.included_core_hours,
+        },
+    };
+    expiring::put(kv, &key, &attempt, ATTEMPT_TTL_SECONDS).await?;
+    Ok(())
+}
+
+/// `GET /v1/providers/codespaces/oauth/{attempt_id}` — polls it once.
+#[skyzen::openapi]
+pub async fn codespaces_poll(
+    State(user): State<CurrentUser>,
+    params: Params,
+    kv: Kv,
+) -> Outcome<Json<ProviderOauthProgress>> {
+    let attempt_id = match path_id(&params, "attempt_id") {
+        Ok(id) => id,
+        Err(error) => return Err(error).into(),
+    };
+    progress(&kv, user.id, Provider::Codespaces, attempt_id)
+        .await
+        .map(Json)
+        .into()
+}
+
+/// `POST /v1/providers/codespaces/oauth/{attempt_id}/finish` — creates the
+/// environment repository and links the account.
+#[skyzen::openapi]
+pub async fn codespaces_finish(
+    State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
+    State(codespaces): State<Codespaces>,
+    State(clouds): State<Clouds>,
+    params: Params,
+    Json(_request): Json<FinishCodespacesOauth>,
+    kv: Kv,
+    db: Db,
+    queue: Queue,
+) -> Outcome<Created<Json<ProviderAccountView>>> {
+    let attempt_id = match path_id(&params, "attempt_id") {
+        Ok(id) => id,
+        Err(error) => return Err(error).into(),
+    };
+    finish_codespaces(
+        &config,
+        &codespaces,
+        &clouds,
+        &kv,
+        &db,
+        &queue,
+        user.id,
+        attempt_id,
+    )
+    .await
+    .map(|view| Created(Json(view)))
+    .into()
+}
+
+async fn finish_codespaces(
+    config: &ApiConfig,
+    codespaces: &Codespaces,
+    clouds: &Clouds,
+    kv: &Kv,
+    db: &Db,
+    queue: &Queue,
+    user: UserId,
+    attempt_id: ProviderOauthAttemptId,
+) -> Result<ProviderAccountView, ApiError> {
+    let attempt = authorized(kv, user, Provider::Codespaces, attempt_id).await?;
+    let Secrets::Codespaces {
+        token,
+        refresh_token,
+        token_expires_at_unix,
+        owner_id,
+        included_core_hours,
+    } = attempt.secrets
+    else {
+        return Err(ApiError::CorruptRecord(
+            "a Codespaces attempt is holding another vendor's tokens",
+        ));
+    };
+
+    // The environment repository is built before the account is linked:
+    // `link`'s own verify re-reads it, so creating it here is what makes
+    // the credential the finish records one that already provisions.
+    let environment = codespaces
+        .ensure_environment(
+            &crate::github::GithubToken {
+                access_token: token.clone(),
+            },
+            &attempt.account,
+            &flyco_provider::codespaces::devcontainer_json(&config.control_plane_url()),
+        )
+        .await
+        .map_err(crate::clouds::rejected)?;
+    tracing::info!(
+        account = %attempt.account,
+        repository = %environment.full_name,
+        "prepared a Codespaces environment repository"
+    );
+
+    let view = provider_accounts::link(
+        db,
+        config,
+        clouds,
+        kv,
+        queue,
+        user,
+        LinkProvider {
+            // The GitHub login is the name the user recognises: it is the
+            // one account this credential can ever act as.
+            label: attempt.account.clone(),
+            credentials: ProviderCredentials::Codespaces {
+                token,
+                refresh_token,
+                token_expires_at_unix,
+                env_repo: environment.full_name,
+                env_repo_id: environment.id,
+                owner_id,
+                included_core_hours,
+            },
+        },
+    )
+    .await?;
+
+    kv.delete(&attempt.key).await?;
+    Ok(view)
+}
+
+/// The three public callbacks.
 ///
 /// Public because they cannot be anything else: a browser returning from a
 /// cloud vendor carries no flyco credential. Each authenticates itself with
@@ -805,11 +1087,12 @@ pub fn public_routes() -> Vec<RouteNode> {
     Route::new((
         AZURE_CALLBACK_PATH.at(azure_callback),
         GCP_CALLBACK_PATH.at(gcp_callback),
+        CODESPACES_CALLBACK_PATH.at(codespaces_callback),
     ))
     .into_route_nodes()
 }
 
-/// The six authenticated routes of the two cloud sign-ins.
+/// The nine authenticated routes of the three cloud sign-ins.
 pub fn routes() -> Vec<RouteNode> {
     Route::new((
         "/v1/providers/azure/oauth/start".post(azure_start),
@@ -818,6 +1101,9 @@ pub fn routes() -> Vec<RouteNode> {
         "/v1/providers/gcp/oauth/start".post(gcp_start),
         "/v1/providers/gcp/oauth/{attempt_id}".at(gcp_poll),
         "/v1/providers/gcp/oauth/{attempt_id}/finish".post(gcp_finish),
+        "/v1/providers/codespaces/oauth/start".post(codespaces_start),
+        "/v1/providers/codespaces/oauth/{attempt_id}".at(codespaces_poll),
+        "/v1/providers/codespaces/oauth/{attempt_id}/finish".post(codespaces_finish),
     ))
     .into_route_nodes()
 }

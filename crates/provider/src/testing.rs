@@ -17,7 +17,7 @@ use core::cell::RefCell;
 
 use crate::clock::Timer;
 use crate::http::{HttpError, HttpRequest, HttpResponse, HttpTransport};
-use crate::{GitIdentity, RepoCheckout};
+use crate::{CheckoutSpec, GitAccess, GitIdentity};
 
 /// The GitHub token every fixture bootstrap carries.
 ///
@@ -27,21 +27,33 @@ use crate::{GitIdentity, RepoCheckout};
 /// machine reads.
 pub const GITHUB_TOKEN: &str = "gho_a-user-access-token";
 
-/// The repository every fixture bootstrap checks out.
+/// The repositories every fixture bootstrap checks out.
 ///
 /// One fixture rather than one per driver: the drivers all embed the same
 /// rendered configuration, and five copies of this would be five places to
-/// forget when a field is added to [`RepoCheckout`].
+/// forget when a field is added to [`CheckoutSpec`].
 ///
 /// # Panics
 ///
 /// Panics if the constants above stop being a valid slug and branch, which
 /// would be this fixture being wrong rather than anything under test.
 #[must_use]
-pub fn checkout() -> RepoCheckout {
-    RepoCheckout {
+pub fn checkouts() -> Vec<CheckoutSpec> {
+    vec![CheckoutSpec {
         slug: "lexoliu/flyco".parse().expect("a valid repository slug"),
         branch: "dev".parse().expect("a valid branch name"),
+        dir: "flyco".to_owned(),
+    }]
+}
+
+/// The GitHub authorization every fixture bootstrap carries.
+///
+/// Beside [`checkouts`] and for the same reason: the drivers all embed the
+/// same rendered configuration, and repeating the identity there would be
+/// a place to forget when a field is added to [`GitIdentity`].
+#[must_use]
+pub fn github() -> GitAccess {
+    GitAccess {
         token: GITHUB_TOKEN.to_owned(),
         identity: GitIdentity {
             name: "lexoliu".to_owned(),

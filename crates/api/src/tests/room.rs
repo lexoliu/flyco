@@ -1233,7 +1233,7 @@ async fn a_workdir_question_for_an_offline_daemon_is_refused_rather_than_held() 
             Some(
                 serde_json::to_vec(&ControlToDaemon::InspectWorkdir {
                     id: flyco_core::WorkdirRequestId::generate(),
-                    request: flyco_core::workdir::WorkdirRequest::Diff,
+                    request: flyco_core::workdir::WorkdirRequest::Diff { repo: None },
                 })
                 .expect("serialize"),
             ),
@@ -1376,12 +1376,24 @@ async fn a_watch_stream_replays_the_latest_gop() {
     );
 }
 
+/// Reads commands until `want` arrives, or the stream runs out of
+/// reasonable slack — a desktop state reaches the wire by the attach's
+/// aggregate replay or by the row a route queued, whichever got there.
+async fn next_command_matching(room: &mut Room, want: &ControlToDaemon) -> DaemonCommand {
+    for _ in 0..8 {
+        let command = room.next_command().await;
+        if &command.command == want {
+            return command;
+        }
+    }
+    panic!("{want:?} never arrived on the command stream")
+}
+
 #[skyzen::test]
 async fn a_takeover_is_recorded_and_handed_down() {
     let mut room = Room::open().await;
     room.greet().await;
     let (_stream, hello) = watch(&mut room).await;
-    room.next_command().await; // DesktopAudience
 
     let watcher = hello["watcher"].as_u64().expect("a watcher id");
     let (status, body) = room
@@ -1403,19 +1415,20 @@ async fn a_takeover_is_recorded_and_handed_down() {
         "a takeover: {}",
         String::from_utf8_lossy(&body)
     );
-    let emitted: Emitted = serde_json::from_slice(&body).expect("an emitted list");
-    assert_eq!(
-        events_of(emitted),
-        vec![ClientEvent::DesktopTakeover { active: true }],
+
+    let page = room.events(0).await;
+    let taken = serde_json::to_value(ClientEvent::DesktopTakeover { active: true })
+        .expect("an event serializes");
+    assert!(
+        page.events.iter().any(|entry| entry.event == taken),
         "a takeover is recorded for late joiners"
     );
 
-    let command = room.next_command().await;
-    assert_eq!(
-        command.command,
-        ControlToDaemon::DesktopTakeover { active: true },
-        "the daemon is told at once, not after a poll"
-    );
+    next_command_matching(
+        &mut room,
+        &ControlToDaemon::DesktopTakeover { active: true },
+    )
+    .await;
 }
 
 #[skyzen::test]
@@ -1455,8 +1468,11 @@ async fn input_needs_the_takeover_the_watcher_owns() {
         ),
     )
     .await;
-    room.next_command().await; // DesktopAudience
-    room.next_command().await; // DesktopTakeover
+    next_command_matching(
+        &mut room,
+        &ControlToDaemon::DesktopTakeover { active: true },
+    )
+    .await;
 
     let (status, body) = room
         .call(Method::POST, "/internal/desktop/input", Some(input()))
@@ -1468,14 +1484,13 @@ async fn input_needs_the_takeover_the_watcher_owns() {
         String::from_utf8_lossy(&body)
     );
 
-    let command = room.next_command().await;
-    assert_eq!(
-        command.command,
-        ControlToDaemon::DesktopInput {
+    next_command_matching(
+        &mut room,
+        &ControlToDaemon::DesktopInput {
             events: vec![flyco_core::DesktopInputEvent::Move { x: 10, y: 20 }],
         },
-        "the daemon receives the input batch"
-    );
+    )
+    .await;
 }
 
 #[skyzen::test]
@@ -1496,8 +1511,11 @@ async fn a_lapsed_watcher_releases_the_screen() {
         ),
     )
     .await;
-    room.next_command().await; // DesktopAudience
-    room.next_command().await; // DesktopTakeover
+    next_command_matching(
+        &mut room,
+        &ControlToDaemon::DesktopTakeover { active: true },
+    )
+    .await;
 
     expire_watchers(&room).await;
 

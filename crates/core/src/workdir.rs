@@ -153,18 +153,31 @@ pub struct WorkdirDiff {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "ask", rename_all = "snake_case")]
 pub enum WorkdirRequest {
-    /// List one directory. An empty path is the checkout root.
+    /// List one directory. An empty path is the workspace root — the
+    /// directory holding every checkout.
     Entries {
-        /// The directory, relative to the checkout root.
+        /// The directory, relative to the workspace root: `flyco/src` asks
+        /// for `src` of the checkout at `flyco/`.
         path: String,
     },
     /// Read one text file.
     File {
-        /// The file, relative to the checkout root.
+        /// The file, relative to the workspace root on the same terms.
         path: String,
     },
-    /// Diff the working tree against the session's base branch.
-    Diff,
+    /// Diff one checkout's working tree against the branch it started on.
+    Diff {
+        /// Which checkout, as [`SessionRepo::dir`](crate::repo::SessionRepo::dir)
+        /// names it.
+        ///
+        /// `None` asks for the workspace root itself — a session on a
+        /// developer's machine, where the workdir *is* the checkout. A
+        /// provisioned session has no root checkout, so `None` is refused
+        /// there rather than answered with a diff of the workspace
+        /// directory, which is not a repository at all.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repo: Option<String>,
+    },
 }
 
 /// Why the daemon would not answer a [`WorkdirRequest`].
@@ -216,6 +229,16 @@ pub enum WorkdirRefusal {
     /// developer-machine shape — has no branch the session began at, and a
     /// diff against nothing is not something to invent.
     NoBaseBranch,
+    /// The named checkout does not exist.
+    ///
+    /// A `Diff` that names a directory no repository is checked out into —
+    /// a stale picker row, a repository added after the page loaded — is
+    /// refused rather than answered with the workspace's own status, which
+    /// is not a checkout's diff at all.
+    UnknownCheckout {
+        /// The `repo` the request named.
+        repo: String,
+    },
     /// git could not be run, or refused.
     Unreadable {
         /// What git said, for the log and for the problem detail.

@@ -1,0 +1,23 @@
+{
+  "id": 1800431,
+  "name": "octocat-flyco-sessions-xr7g2p4k9",
+  "display_name": "flyco-m_01JDEXAMPLE",
+  "state": "Available",
+  "repository": {
+    "id": 1296269,
+    "full_name": "octocat/flyco-sessions"
+  },
+  "machine": {
+    "name": "standardLinux32gb",
+    "display_name": "4 cores, 16 GB RAM, 32 GB storage",
+    "operating_system": "linux",
+    "storage_in_bytes": 34359738368,
+    "memory_in_bytes": 17179869184,
+    "cpus": 4,
+    "prebuild_availability": null
+  },
+  "location": "EastUs",
+  "web_url": "https://github.com/codespaces/octocat-flyco-sessions-xr7g2p4k9",
+  "created_at": "2026-08-29T11:58:00Z",
+  "last_used_at": "2026-08-29T12:00:10Z"
+}

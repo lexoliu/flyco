@@ -520,12 +520,29 @@ async fn pending_jobs(db: &DurableDb) -> Result<u32, DurableObjectError> {
     Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
+/// The schema this build expects.
+///
+/// `user_version` is the durable answer to "is the schema already there":
+/// checking it costs one storage read where running every `CREATE` blind
+/// costs one per statement — and every hot path in the room calls this
+/// first. Bump it when the DDL below changes so a room built by an older
+/// build upgrades once, on its next call.
+const SCHEMA_VERSION: i64 = 1;
+
 /// Creates the mailbox if this is the room's first write.
 ///
 /// `AUTOINCREMENT` rather than a counter in the object: the order jobs
 /// were planned in has to survive the object being rebuilt around every
 /// event, and the database is the only thing here that guarantees it.
 async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
+    let version: i64 = db
+        .query("PRAGMA user_version")
+        .fetch_scalar()
+        .await
+        .map_err(|error| stored(&error))?;
+    if version >= SCHEMA_VERSION {
+        return Ok(());
+    }
     for statement in [
         // Every command owed to the host. `machine` names the container a
         // job acts on — the answer deletes by it — and is NULL for the
@@ -554,6 +571,10 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
             .await
             .map_err(|error| stored(&error))?;
     }
+    db.query(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+        .execute()
+        .await
+        .map_err(|error| stored(&error))?;
     Ok(())
 }
 

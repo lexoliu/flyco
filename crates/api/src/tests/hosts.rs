@@ -431,10 +431,13 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
         .post("/v1/sessions")
         .bearer(&caller.token)
         .json(&CreateSession {
+            source: None,
             prompt: "audit the relay for dropped frames".to_owned(),
             harness: HarnessKind::ClaudeCode,
-            repo: REPO.to_owned(),
-            branch: None,
+            repos: vec![flyco_core::RepoSelection {
+                repo: REPO.to_owned(),
+                branch: None,
+            }],
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,

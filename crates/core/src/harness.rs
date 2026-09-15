@@ -1,21 +1,63 @@
-//! Harness abstraction: the two supported coding agents and the
-//! normalized event stream flyco extracts from them.
+//! Harness abstraction: the supported coding agents and the normalized
+//! event stream flyco extracts from them.
 
 use serde::{Deserialize, Serialize};
 
 use crate::id::{ClaudeOauthAttemptId, CodexOauthAttemptId, HarnessAccountId};
 use crate::money::Usd;
 
-/// The coding harness driving a session. Flyco supports exactly these two
+/// The coding harness driving a session. Flyco supports exactly these
 /// and never builds its own.
+///
+/// This is the *product* vocabulary — what a session row names, what an
+/// account is linked to, what the picker offers. How each one is driven
+/// is [`DriverKind`]'s question: every harness but Claude Code reaches
+/// its agent over ACP, so a Codex session and a Devin session are the
+/// same daemon machinery pointed at a different program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum HarnessKind {
     /// Anthropic's Claude Code, driven through the Agent SDK sidecar.
     ClaudeCode,
-    /// `OpenAI`'s Codex, driven through `codex app-server` JSON-RPC.
+    /// `OpenAI`'s Codex, driven over ACP through the `codex-acp` adapter.
     Codex,
+    /// Cognition's Devin, driven over ACP through `devin acp`.
+    Devin,
+}
+
+impl HarnessKind {
+    /// Whether the harness folds the effort level into the model id
+    /// itself — Devin's `swe-2-max` shape.
+    ///
+    /// On such a harness a choice with no effort cannot be sent at all:
+    /// the id does not exist until a level is named, which is why the
+    /// composer-facing catalog is normalized and the daemon fuses the
+    /// level back in at `session/set_config_option`.
+    #[must_use]
+    pub const fn effort_is_fused(self) -> bool {
+        matches!(self, Self::Devin)
+    }
+}
+
+/// The daemon machinery a session's harness runs on.
+///
+/// This is the *driver* vocabulary — what `flycod`'s `harness = "…"`
+/// setting selects. It is deliberately narrower than [`HarnessKind`]:
+/// a provisioned Codex or Devin session stores its product harness on the
+/// session row and renders `harness = "acp"` plus an `[acp]` table onto
+/// the machine, because ACP is the whole interface the daemon needs.
+/// A hand-written `flycod` config can drive *any* ACP agent the same
+/// way — the daemon never learns which product harness it is standing
+/// in for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DriverKind {
+    /// The Claude Code driver: the Agent SDK sidecar.
+    ClaudeCode,
+    /// The generic ACP driver: any agent speaking the Agent Client
+    /// Protocol over stdio.
+    Acp,
 }
 
 /// The permission mode a session runs under.
@@ -33,7 +75,19 @@ pub enum HarnessKind {
 /// change to the running harness — `setPermissionMode` on Claude's live
 /// query, `approvalPolicy`/`sandboxPolicy` overrides on Codex's next
 /// `turn/start`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "sql", derive(skyzen::Column))]
 pub enum PermissionMode {
@@ -202,6 +256,8 @@ pub struct HarnessFeature {
     pub claude_code: Availability,
     /// Status on Codex.
     pub codex: Availability,
+    /// Status on Devin.
+    pub devin: Availability,
 }
 
 /// The verified availability of `feature` on `harness`.
@@ -209,19 +265,28 @@ pub struct HarnessFeature {
 pub const fn availability(harness: HarnessKind, feature: Feature) -> Availability {
     match (harness, feature) {
         (
-            _,
+            HarnessKind::ClaudeCode | HarnessKind::Codex,
             Feature::UsageDisplay
             | Feature::ContextWindowDisplay
             | Feature::GoalMode
-            | Feature::AutoMode
             | Feature::Compact
-            | Feature::BackgroundTasks
             | Feature::AutoContinueAtUsageLimit,
-        ) => Availability::Supported,
-        (_, Feature::SideChat) => Availability::HarnessLimitation,
-        (_, Feature::DynamicWorkflows | Feature::Settings)
+        )
+        | (_, Feature::AutoMode | Feature::BackgroundTasks) => Availability::Supported,
+        (
+            HarnessKind::Devin,
+            Feature::UsageDisplay
+            | Feature::ContextWindowDisplay
+            | Feature::GoalMode
+            | Feature::Compact
+            | Feature::AutoContinueAtUsageLimit,
+        )
+        | (_, Feature::DynamicWorkflows | Feature::Settings)
         | (HarnessKind::ClaudeCode, Feature::Advisor | Feature::Monitor) => Availability::Planned,
-        (HarnessKind::Codex, Feature::Advisor | Feature::Monitor) => Availability::NotApplicable,
+        (_, Feature::SideChat) => Availability::HarnessLimitation,
+        (HarnessKind::Codex | HarnessKind::Devin, Feature::Advisor | Feature::Monitor) => {
+            Availability::NotApplicable
+        }
         (_, Feature::RemoteControl | Feature::Resume) => Availability::Disabled,
         // Computer control joins the takeover set: one implementation
         // serves both harnesses, because the session's own flyco MCP
@@ -242,6 +307,7 @@ pub fn matrix() -> Vec<HarnessFeature> {
             feature,
             claude_code: availability(HarnessKind::ClaudeCode, feature),
             codex: availability(HarnessKind::Codex, feature),
+            devin: availability(HarnessKind::Devin, feature),
         })
         .collect()
 }
@@ -477,6 +543,24 @@ impl ModelChoice {
             effort: effort.clone(),
         })
     }
+
+    /// The choice with the model's stated default effort filled in.
+    ///
+    /// `None` effort means "the harness's own default" on agents whose
+    /// effort is a separate dial. On Devin the level is part of the model
+    /// id itself, so a session row that will be unfused at render time
+    /// needs the level written down — and the group rows name it, since
+    /// Devin's fused ids do (`swe-2-max` is the catalog's default).
+    #[must_use]
+    pub fn with_default_effort(mut self, models: &[ModelOption]) -> Self {
+        if self.effort.is_none()
+            && let Some(option) = models.iter().find(|model| model.id == self.model)
+            && let Some(default) = &option.default_effort
+        {
+            self.effort = Some(default.clone());
+        }
+        self
+    }
 }
 
 /// The models a harness offers before any session of the account has
@@ -498,8 +582,185 @@ pub fn builtin_models(harness: HarnessKind) -> Vec<ModelOption> {
     let document = match harness {
         HarnessKind::ClaudeCode => include_str!("../models/claude_code.json"),
         HarnessKind::Codex => include_str!("../models/codex.json"),
+        HarnessKind::Devin => include_str!("../models/devin.json"),
     };
     serde_json::from_str(document).expect("a built-in model list parses")
+}
+
+/// The effort levels a Devin model id can end in, in the order they scale.
+///
+/// Devin has no effort dial of its own — the level is spelled inside the
+/// model id (`claude-opus-5-high`) — so the catalog it serves lists one
+/// row per model–effort pair. [`normalize_models`] folds those rows back
+/// into one model with an effort list; this order is what the picker's
+/// slider runs on, not Devin's listing order, which interleaves.
+const DEVIN_EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// The suffixes Devin hangs *after* the effort word in a fused model id —
+/// `claude-opus-5-low-fast`, `gpt-5-6-sol-high-priority`, `glm-5-2-max-1m`.
+///
+/// The catalog folds them into the row id (`gpt-5-6-sol-priority`); the
+/// daemon's `[acp]` table gets them back as `fused_effort_tails` so a
+/// chosen level lands before the tail rather than after it.
+pub const DEVIN_ID_TAILS: [&str; 3] = ["-1m", "-fast", "-priority"];
+
+/// The display words those tails and the effort itself put on a label —
+/// `High Thinking Fast`, `No Thinking`, `Max 1M`.
+const DEVIN_LABEL_EFFORTS: [&str; 10] = [
+    "No", "Minimal", "None", "Low", "Medium", "High", "XHigh", "X-High", "Max", "Thinking",
+];
+
+/// Splits `claude-opus-5-low-fast` into `("claude-opus-5", "low", "-fast")`.
+///
+/// `None` for ids the folding must not touch: `fusion-*` composites put an
+/// effort word mid-id where it belongs to the sidekick, and `MODEL_*`
+/// enumerations are a legacy naming scheme whose suffixes are not levels.
+fn split_devin_id(id: &str) -> Option<(&str, &str, &str)> {
+    if id.starts_with("fusion-") || id.starts_with("MODEL_") {
+        return None;
+    }
+    let mut body = id;
+    let mut tail = 0;
+    for suffix in DEVIN_ID_TAILS {
+        if let Some(stem) = body.strip_suffix(suffix) {
+            body = stem;
+            tail += suffix.len();
+        }
+    }
+    let (stem, effort) = body.rsplit_once('-')?;
+    if stem.is_empty() || !DEVIN_EFFORTS.contains(&effort) {
+        return None;
+    }
+    Some((stem, effort, &id[id.len() - tail..]))
+}
+
+/// What a merged Devin row is called: the member's label with the effort
+/// phrase and the group's own tail words stripped.
+///
+/// `GPT-5.6 Sol High Thinking Fast` on the `-priority` group reads
+/// `GPT-5.6 Sol Fast`: Devin spells both `-fast` and `-priority` rows as
+/// `… Fast`, so the tail's own display word stays — it is the row's name —
+/// while `High Thinking` goes, because that is what the slider beside it
+/// now says.
+fn devin_group_label(label: &str, tail: &str) -> String {
+    let keep: &[&str] = match tail {
+        "-fast" | "-priority" => &["Fast"],
+        "-1m" => &["1M"],
+        _ => &[],
+    };
+    let mut words: Vec<&str> = label.split_whitespace().collect();
+    let mut kept = Vec::new();
+    while let Some(word) = words.last()
+        && keep.contains(word)
+    {
+        kept.push(words.pop().expect("last checked present"));
+    }
+    if words.last() == Some(&"Thinking") {
+        words.pop();
+    }
+    if let Some(word) = words.last()
+        && DEVIN_LABEL_EFFORTS.contains(word)
+    {
+        words.pop();
+        if words.last() == Some(&"No") || words.last() == Some(&"Thinking") {
+            words.pop();
+        }
+    }
+    let mut label = words.join(" ");
+    for word in kept.into_iter().rev() {
+        label.push(' ');
+        label.push_str(word);
+    }
+    label
+}
+
+/// The catalog as the picker should see it.
+///
+/// Every harness's own ids pass through untouched except Devin's, whose
+/// one-row-per-level listing is folded into one row per model with the
+/// levels on `efforts` — the shape the rest of flyco already speaks, and
+/// the shape the daemon unfuses again at `session/set_config_option`.
+/// Rows that do not parse — composites, legacy enumerations, bare models —
+/// stay listed exactly as served.
+///
+/// A group is left unfolded when its merged id would collide with a bare
+/// entry of the same name (`swe-1-7` exists beside `swe-1-7-medium` and
+/// means something different to Devin) or when it would hold a single
+/// member, which merges nothing.
+#[must_use]
+pub fn normalize_models(harness: HarnessKind, models: Vec<ModelOption>) -> Vec<ModelOption> {
+    use std::collections::{BTreeMap, BTreeSet};
+    if harness != HarnessKind::Devin {
+        return models;
+    }
+    let bare: BTreeSet<&str> = models.iter().map(|model| model.id.as_str()).collect();
+    let mut groups: BTreeMap<String, Vec<(usize, &str)>> = BTreeMap::new();
+    let mut member_of: Vec<Option<String>> = vec![None; models.len()];
+    for (index, model) in models.iter().enumerate() {
+        let Some((stem, effort, tail)) = split_devin_id(&model.id) else {
+            continue;
+        };
+        let key = format!("{stem}{tail}");
+        if bare.contains(key.as_str()) {
+            continue;
+        }
+        member_of[index] = Some(key.clone());
+        groups.entry(key).or_default().push((index, effort));
+    }
+    let merged_keys: BTreeSet<&String> = groups
+        .iter()
+        .filter(|(_, members)| members.len() >= 2)
+        .map(|(key, _)| key)
+        .collect();
+    // The merged row takes its first member's slot; replaying the document
+    // keeps the harness's own ordering.
+    let mut emitted: BTreeSet<&String> = BTreeSet::new();
+    let mut out = Vec::new();
+    for (index, model) in models.iter().enumerate() {
+        let Some(key) = &member_of[index] else {
+            out.push(model.clone());
+            continue;
+        };
+        if !merged_keys.contains(key) {
+            out.push(model.clone());
+            continue;
+        }
+        if !emitted.insert(key) {
+            continue;
+        }
+        let members = &groups[key];
+        let representative = &models[members[0].0];
+        let mut efforts: Vec<&str> = members.iter().map(|(_, effort)| *effort).collect();
+        efforts.sort_by_key(|effort| {
+            DEVIN_EFFORTS
+                .iter()
+                .position(|level| level == effort)
+                .unwrap_or(DEVIN_EFFORTS.len())
+        });
+        efforts.dedup();
+        let tail = split_devin_id(&representative.id).map_or("", |(_, _, tail)| tail);
+        let label = devin_group_label(&representative.label, tail);
+        let default_effort = members
+            .iter()
+            .find(|(member, _)| models[*member].is_default)
+            .map(|(_, effort)| (*effort).to_owned())
+            .or_else(|| {
+                efforts
+                    .iter()
+                    .find(|effort| **effort == "medium")
+                    .or_else(|| efforts.first())
+                    .map(|effort| (*effort).to_owned())
+            });
+        out.push(ModelOption {
+            id: key.clone(),
+            label: label.clone(),
+            description: format!("{label} · a model on Devin."),
+            is_default: members.iter().any(|(member, _)| models[*member].is_default),
+            efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
+            default_effort,
+        });
+    }
+    out
 }
 
 /// Request body of `PUT /v1/sessions/{id}/models`.
@@ -571,6 +832,12 @@ pub enum HarnessCredentialInput {
         /// epoch.
         expires_at_unix: u64,
     },
+    /// A Devin API key — the `windsurf_api_key` `devin auth login` writes
+    /// into `credentials.toml`.
+    DevinApiKey {
+        /// The `devi…` key Devin's API server issues.
+        key: String,
+    },
 }
 
 impl core::fmt::Debug for HarnessCredentialInput {
@@ -581,6 +848,7 @@ impl core::fmt::Debug for HarnessCredentialInput {
             Self::CodexApiKey { .. } => "codex_api_key",
             Self::ClaudeOauth { .. } => "claude_oauth",
             Self::CodexOauth { .. } => "codex_oauth",
+            Self::DevinApiKey { .. } => "devin_api_key",
         };
         f.debug_struct("HarnessCredentialInput")
             .field("kind", &kind)
@@ -597,6 +865,7 @@ impl HarnessCredentialInput {
             | Self::ClaudeApiKey { .. }
             | Self::ClaudeOauth { .. } => HarnessKind::ClaudeCode,
             Self::CodexApiKey { .. } | Self::CodexOauth { .. } => HarnessKind::Codex,
+            Self::DevinApiKey { .. } => HarnessKind::Devin,
         }
     }
 
@@ -605,7 +874,9 @@ impl HarnessCredentialInput {
     pub fn secret(&self) -> &str {
         match self {
             Self::ClaudeSetupToken { token } => token,
-            Self::ClaudeApiKey { key } | Self::CodexApiKey { key } => key,
+            Self::ClaudeApiKey { key } | Self::CodexApiKey { key } | Self::DevinApiKey { key } => {
+                key
+            }
             Self::ClaudeOauth { access_token, .. } | Self::CodexOauth { access_token, .. } => {
                 access_token
             }
@@ -900,6 +1171,7 @@ mod tests {
                 availability(HarnessKind::ClaudeCode, feature)
             );
             assert_eq!(row.codex, availability(HarnessKind::Codex, feature));
+            assert_eq!(row.devin, availability(HarnessKind::Devin, feature));
         }
     }
 
@@ -922,6 +1194,14 @@ mod tests {
                 availability(HarnessKind::Codex, feature),
                 Availability::Supported
             );
+            assert_eq!(
+                availability(HarnessKind::Devin, feature),
+                if feature == Feature::BackgroundTasks || feature == Feature::AutoMode {
+                    Availability::Supported
+                } else {
+                    Availability::Planned
+                }
+            );
         }
         assert_eq!(
             availability(HarnessKind::Codex, Feature::Advisor),
@@ -942,8 +1222,12 @@ mod tests {
     }
 
     #[test]
-    fn both_built_in_lists_parse_and_name_one_default() {
-        for harness in [HarnessKind::ClaudeCode, HarnessKind::Codex] {
+    fn every_built_in_list_parses_and_names_one_default() {
+        for harness in [
+            HarnessKind::ClaudeCode,
+            HarnessKind::Codex,
+            HarnessKind::Devin,
+        ] {
             let models = builtin_models(harness);
             assert!(!models.is_empty(), "{harness:?} lists no models");
             let defaults = models.iter().filter(|model| model.is_default).count();
@@ -1033,5 +1317,134 @@ mod tests {
         assert_eq!(json["default_effort"], "medium");
         let back: ModelOption = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, option);
+    }
+
+    fn devin_row(id: &str, label: &str) -> ModelOption {
+        ModelOption {
+            id: id.to_owned(),
+            label: label.to_owned(),
+            description: format!("{label} · a model on Devin."),
+            is_default: false,
+            efforts: Vec::new(),
+            default_effort: None,
+        }
+    }
+
+    #[test]
+    fn devin_effort_variants_fold_into_one_model_with_levels() {
+        let models = super::normalize_models(
+            HarnessKind::Devin,
+            vec![
+                devin_row("claude-opus-5-low", "Claude Opus 5 Low"),
+                devin_row("claude-opus-5-medium", "Claude Opus 5 Medium"),
+                devin_row("claude-opus-5-high", "Claude Opus 5 High"),
+                devin_row("claude-opus-5-xhigh", "Claude Opus 5 XHigh"),
+                devin_row("claude-opus-5-max", "Claude Opus 5 Max"),
+            ],
+        );
+        assert_eq!(models.len(), 1);
+        let opus = &models[0];
+        assert_eq!(opus.id, "claude-opus-5");
+        assert_eq!(opus.label, "Claude Opus 5");
+        assert_eq!(opus.efforts, vec!["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(opus.default_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn devin_speed_tails_make_their_own_model_row() {
+        let models = super::normalize_models(
+            HarnessKind::Devin,
+            vec![
+                devin_row("gpt-5-6-sol-low", "GPT-5.6 Sol Low Thinking"),
+                devin_row("gpt-5-6-sol-high", "GPT-5.6 Sol High Thinking"),
+                devin_row("gpt-5-6-sol-low-priority", "GPT-5.6 Sol Low Thinking Fast"),
+                devin_row(
+                    "gpt-5-6-sol-high-priority",
+                    "GPT-5.6 Sol High Thinking Fast",
+                ),
+            ],
+        );
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-5-6-sol");
+        assert_eq!(models[0].label, "GPT-5.6 Sol");
+        assert_eq!(models[1].id, "gpt-5-6-sol-priority");
+        assert_eq!(models[1].label, "GPT-5.6 Sol Fast");
+    }
+
+    #[test]
+    fn a_bare_devin_model_blocks_the_fold_it_would_collide_with() {
+        let models = super::normalize_models(
+            HarnessKind::Devin,
+            vec![
+                devin_row("swe-1-7", "SWE-1.7 Max"),
+                devin_row("swe-1-7-medium", "SWE-1.7 Medium"),
+                devin_row("swe-1-7-high", "SWE-1.7 High"),
+            ],
+        );
+        assert_eq!(models.len(), 3);
+        assert!(models.iter().all(|model| model.efforts.is_empty()));
+    }
+
+    #[test]
+    fn fusion_and_legacy_devin_ids_are_left_alone() {
+        let models = super::normalize_models(
+            HarnessKind::Devin,
+            vec![
+                devin_row(
+                    "fusion-claude-opus-5-low-sidekick-glm-5-2",
+                    "Fusion (Claude Opus 5 Low + GLM-5.2 High)",
+                ),
+                devin_row(
+                    "fusion-claude-opus-5-high-sidekick-glm-5-2",
+                    "Fusion (Claude Opus 5 High + GLM-5.2 High)",
+                ),
+                devin_row("MODEL_GPT_5_2_LOW", "GPT-5.2 Low Thinking"),
+                devin_row("MODEL_GPT_5_2_HIGH", "GPT-5.2 High Thinking"),
+            ],
+        );
+        assert_eq!(models.len(), 4);
+    }
+
+    #[test]
+    fn a_choice_fills_the_models_stated_default_effort() {
+        let models = vec![ModelOption {
+            id: "swe-2".to_owned(),
+            label: "SWE-2".to_owned(),
+            description: String::new(),
+            is_default: true,
+            efforts: vec!["medium".to_owned(), "high".to_owned(), "max".to_owned()],
+            default_effort: Some("max".to_owned()),
+        }];
+        let choice = ModelChoice {
+            model: "swe-2".to_owned(),
+            effort: None,
+        }
+        .with_default_effort(&models);
+        assert_eq!(choice.effort.as_deref(), Some("max"));
+        // A named effort is the caller's own and is never rewritten.
+        let named = ModelChoice {
+            model: "swe-2".to_owned(),
+            effort: Some("high".to_owned()),
+        }
+        .with_default_effort(&models);
+        assert_eq!(named.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn the_devin_builtin_list_normalizes() {
+        let models =
+            super::normalize_models(HarnessKind::Devin, builtin_models(HarnessKind::Devin));
+        let opus = models
+            .iter()
+            .find(|model| model.id == "claude-opus-5")
+            .expect("claude-opus-5 folds into a group");
+        assert_eq!(opus.efforts.len(), 5);
+        // The default survives the fold as a group with its level named.
+        let default = models
+            .iter()
+            .find(|model| model.is_default)
+            .expect("one default");
+        assert_eq!(default.id, "swe-2");
+        assert_eq!(default.default_effort.as_deref(), Some("max"));
     }
 }

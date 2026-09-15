@@ -30,6 +30,7 @@ use crate::clouds::{CloudLink as _, Clouds};
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::path_id;
+use crate::github::{GithubClient, GithubOauth};
 use crate::problem::Outcome;
 use crate::respond::{Created, NoContent};
 
@@ -187,6 +188,27 @@ struct SealedSecrets<'a> {
 pub(crate) struct StoredSecrets {
     pub(crate) credentials: ProviderCredentials,
     pub(crate) machine_login_key: LoginKey,
+}
+
+impl StoredSecrets {
+    /// The sealed document this value writes back as.
+    ///
+    /// The renewal path's half of `create`: a grant refreshed at load time
+    /// is resealed whole, so the row keeps carrying every field it was
+    /// written with rather than only the one that changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] if the credentials cannot be encoded or sealed.
+    pub(crate) fn seal(&self, config: &ApiConfig) -> Result<String, ApiError> {
+        Ok(config.token_cipher().seal(
+            &serde_json::to_string(&SealedSecrets {
+                credentials: &self.credentials,
+                machine_login_key: &self.machine_login_key,
+            })
+            .map_err(|_| ApiError::CorruptRecord("credentials could not be encoded"))?,
+        )?)
+    }
 }
 
 /// Writes the account row a set of credentials opens.
@@ -396,10 +418,11 @@ async fn provider_quickstart(
 async fn cloud_usage(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Query(filter): Query<CloudUsageFilter>,
     db: Db,
 ) -> Outcome<Json<Vec<CloudUsageView>>> {
-    usage(&db, &config, user.id, filter.provider)
+    usage(&db, &config, &github, user.id, filter.provider)
         .await
         .map(Json)
         .into()
@@ -413,10 +436,11 @@ async fn cloud_usage(
 async fn usage(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     user: UserId,
     provider: Option<CloudProviderKind>,
 ) -> Result<Vec<CloudUsageView>, ApiError> {
-    let accounts = crate::provisioning::accounts_for(db, config, user, provider).await?;
+    let accounts = crate::provisioning::accounts_for(db, config, github, user, provider).await?;
     let now = now_unix();
 
     let mut rows = Vec::new();

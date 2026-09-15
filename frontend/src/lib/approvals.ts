@@ -115,6 +115,14 @@ export function operation(payload: ApprovalPayload): AskedOperation {
         title: "Change AGENTS.md",
         detail: text(`Replace "${payload.find}" with "${payload.replace}"`),
       };
+    case "repo_add":
+      return {
+        title: "Add a repository",
+        detail: text(
+          `Clone ${payload.repo}${payload.branch === null || payload.branch === undefined ? "" : ` on ${payload.branch}`} into the session's workspace.`,
+          `The agent says: ${payload.reason}`,
+        ),
+      };
     case "machine_resize_license_bound":
       return {
         title: `Switch to ${payload.machine_type}`,

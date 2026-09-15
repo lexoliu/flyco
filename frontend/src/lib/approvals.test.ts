@@ -51,6 +51,23 @@ describe("approval cards", () => {
     });
   });
 
+  it("names the repository, branch and reason an agent wants to clone", () => {
+    const asked = operation({
+      kind: "repo_add",
+      repo: "lexoliu/aither",
+      branch: "main",
+      reason: "the fix needs the shared transport it defines",
+    });
+
+    // Fetching a repository the user never picked is the whole decision,
+    // so the card names it before the reason that argued for it.
+    expect(asked.title).toBe("Add a repository");
+    expect(asked.detail).toEqual({
+      kind: "text",
+      text: "Clone lexoliu/aither on main into the session's workspace.\nThe agent says: the fix needs the shared transport it defines",
+    });
+  });
+
   it("reads a tool call's input out as its arguments, not as JSON", () => {
     // The decision is about the command; braces around it make the reader
     // find it first (issue #136).

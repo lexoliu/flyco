@@ -45,6 +45,20 @@ pub fn month_to_date(now_unix: u64) -> Result<(u64, u64), ProviderError> {
     Ok((start, now_unix))
 }
 
+/// The calendar year and month an instant falls in, as `(year, month)`.
+///
+/// GitHub's billing usage endpoint asks for the period as two query
+/// parameters rather than as a range of dates, so this is what that
+/// request is written with.
+///
+/// # Errors
+///
+/// Returns [`ProviderError::Malformed`] if `unix_seconds` is not a time.
+pub fn year_month(unix_seconds: u64) -> Result<(i32, u8), ProviderError> {
+    let date = at(unix_seconds)?.date();
+    Ok((date.year(), u8::from(date.month())))
+}
+
 /// The calendar date of an instant, as `YYYY-MM-DD`.
 ///
 /// # Errors

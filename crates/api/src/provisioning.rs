@@ -17,6 +17,7 @@ use flyco_provider::aws::sigv4::AccessKey;
 use flyco_provider::aws::{AwsProvider, AwsWorkspace};
 use flyco_provider::azure::auth::ServicePrincipal;
 use flyco_provider::azure::{AzureProvider, Workspace};
+use flyco_provider::codespaces::CodespacesProvider;
 use flyco_provider::gcp::auth::ServiceAccountKey;
 use flyco_provider::gcp::{GcpProvider, GcpWorkspace};
 use flyco_provider::host::{ContainerJob, ControlToHost, Host};
@@ -26,8 +27,11 @@ use flyco_provider::{
 use skyzen::sql;
 use skyzen_services::Db;
 
+use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
+use crate::github::{GithubError, GithubOauth};
+use crate::harness_accounts::REFRESH_WINDOW_SECONDS;
 use crate::provider_accounts::StoredSecrets;
 use crate::rooms::HostRooms;
 
@@ -236,6 +240,90 @@ pub(crate) fn gcp_driver(service_account_json: &str) -> Result<GcpProvider, Prov
     ))
 }
 
+/// The Codespaces driver one GitHub account's token opens.
+///
+/// Infallible where GCP is not: the credential is already fields — the
+/// token, the environment repository it provisions on, and the grant the
+/// account's plan carries — and nothing here is a document to parse.
+pub(crate) fn codespaces_driver(
+    token: &str,
+    env_repo: &str,
+    env_repo_id: u64,
+    included_core_hours: u32,
+) -> CodespacesProvider {
+    CodespacesProvider::new(token, env_repo, env_repo_id, included_core_hours)
+}
+
+/// The Codespaces driver an account opens, when it is a Codespaces account.
+fn codespaces_driver_for(account: &LinkedAccount) -> Option<CodespacesProvider> {
+    let ProviderCredentials::Codespaces {
+        token,
+        env_repo,
+        env_repo_id,
+        included_core_hours,
+        ..
+    } = account.credentials()
+    else {
+        return None;
+    };
+    Some(codespaces_driver(
+        token,
+        env_repo,
+        *env_repo_id,
+        *included_core_hours,
+    ))
+}
+
+/// What GitHub reports for the codespace a machine's native id names, as a
+/// lifecycle state — `None` when GitHub no longer holds it at all.
+///
+/// The reconcile's whole read. `inspect` is the driver's own answer to "does
+/// this still exist", and the mapping is the driver's too, so a codespace
+/// that `Failed` reads as destroyed here the same way it does everywhere
+/// else.
+///
+/// # Errors
+///
+/// Returns [`ProviderError::Malformed`] when the account is not a Codespaces
+/// account — a row claiming otherwise is flyco's own bug — or
+/// [`ProviderError`] when GitHub cannot be asked.
+pub async fn codespace_state(
+    account: &LinkedAccount,
+    native_id: &str,
+) -> Result<Option<flyco_core::MachineState>, ProviderError> {
+    let Some(driver) = codespaces_driver_for(account) else {
+        return Err(ProviderError::Malformed(
+            "a codespaces machine is provisioned through a non-codespaces account",
+        ));
+    };
+    Ok(driver
+        .inspect(native_id)
+        .await?
+        .map(|codespace| flyco_provider::codespaces::machine_state(&codespace.state)))
+}
+
+/// Deletes a codespace GitHub still holds in a dead state.
+///
+/// What the reconcile does with a `Failed` codespace before it releases the
+/// row: `Failed` still bills storage until it is deleted, and the delete is
+/// flyco's to issue because nothing else will.
+///
+/// # Errors
+///
+/// Returns [`ProviderError::Malformed`] when the account is not a Codespaces
+/// account, or [`ProviderError`] when the delete is refused.
+pub async fn destroy_codespace(
+    account: &LinkedAccount,
+    machine: &flyco_provider::Machine,
+) -> Result<(), ProviderError> {
+    let Some(mut driver) = codespaces_driver_for(account) else {
+        return Err(ProviderError::Malformed(
+            "a codespaces machine is provisioned through a non-codespaces account",
+        ));
+    };
+    driver.destroy(machine).await
+}
+
 #[derive(Debug, skyzen::FromRow)]
 struct SealedRow {
     id: ProviderAccountId,
@@ -272,6 +360,7 @@ impl SealedRow {
 pub async fn accounts_for(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     user: UserId,
     kind: Option<CloudProviderKind>,
 ) -> Result<Vec<LinkedAccount>, ApiError> {
@@ -295,21 +384,27 @@ pub async fn accounts_for(
     .await?;
 
     let cipher = config.token_cipher();
-    rows.into_iter()
-        .map(|row| {
-            let StoredSecrets {
-                credentials,
-                machine_login_key,
-            } = unseal(&cipher.open(&row.credentials_enc)?)?;
-            Ok(LinkedAccount {
-                id: row.id,
-                credentials,
-                machine_login_key,
-                host: row.host(),
-                resource_group: row.resource_group,
-            })
-        })
-        .collect()
+    let mut accounts = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut secrets = unseal(&cipher.open(&row.credentials_enc)?)?;
+        renew_codespaces_grant(
+            db,
+            config,
+            github,
+            row.id,
+            &row.credentials_enc,
+            &mut secrets,
+        )
+        .await?;
+        accounts.push(LinkedAccount {
+            id: row.id,
+            credentials: secrets.credentials,
+            machine_login_key: secrets.machine_login_key,
+            host: row.host(),
+            resource_group: row.resource_group,
+        });
+    }
+    Ok(accounts)
 }
 
 /// Loads exactly one of the caller's accounts.
@@ -323,6 +418,7 @@ pub async fn accounts_for(
 pub async fn account(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     user: UserId,
     id: ProviderAccountId,
 ) -> Result<LinkedAccount, ApiError> {
@@ -342,18 +438,137 @@ pub async fn account(
     .await?
     .ok_or(ApiError::ProviderAccountNotFound)?;
 
-    let StoredSecrets {
-        credentials,
-        machine_login_key,
-    } = unseal(&config.token_cipher().open(&row.credentials_enc)?)?;
+    let mut secrets = unseal(&config.token_cipher().open(&row.credentials_enc)?)?;
+    renew_codespaces_grant(db, config, github, id, &row.credentials_enc, &mut secrets).await?;
 
     Ok(LinkedAccount {
         id,
-        credentials,
-        machine_login_key,
+        credentials: secrets.credentials,
+        machine_login_key: secrets.machine_login_key,
         host: row.host(),
         resource_group: row.resource_group,
     })
+}
+
+/// Renews a stored Codespaces grant that is close enough to its end.
+///
+/// Runs where the seal is broken rather than where the token is spent,
+/// because every driver-construction site would otherwise need the renewal
+/// itself. A credential with no expiry — one GitHub never kills, or one
+/// linked before flyco kept the renewal half — is used as stored.
+///
+/// GitHub rotates the pair on every redemption, so the resealed row is
+/// fenced on the exact ciphertext it was read from: a racing renewal that
+/// landed first is the grant GitHub honors next, and the row is re-read
+/// rather than overwritten. A refresh GitHub rejects on an unmoved row
+/// means the grant is dead — [`ApiError::GithubTokenRevoked`], which asks
+/// the user to link the account again.
+async fn renew_codespaces_grant(
+    db: &Db,
+    config: &ApiConfig,
+    github: &impl GithubOauth,
+    account: ProviderAccountId,
+    sealed_enc: &str,
+    secrets: &mut StoredSecrets,
+) -> Result<(), ApiError> {
+    let ProviderCredentials::Codespaces {
+        refresh_token: Some(refresh_token),
+        token_expires_at_unix: Some(expires_at),
+        ..
+    } = &secrets.credentials
+    else {
+        return Ok(());
+    };
+    if *expires_at > now_unix().saturating_add(REFRESH_WINDOW_SECONDS) {
+        return Ok(());
+    }
+
+    let grant = match github
+        .refresh(
+            config.github_client_id(),
+            config.github_client_secret(),
+            refresh_token,
+        )
+        .await
+    {
+        Ok(grant) => grant,
+        Err(GithubError::Rejected { .. }) => {
+            // The refresh token GitHub honors is whichever grant was
+            // renewed last: a refusal on a row that has since moved means
+            // a racing renewal already wrote its pair — read that instead.
+            let sealed: Option<String> = sql!(
+                db,
+                "SELECT credentials_enc FROM provider_accounts WHERE id = {account}"
+            )
+            .fetch_scalar_optional()
+            .await?;
+            return match sealed {
+                Some(sealed) if sealed != sealed_enc => {
+                    *secrets = unseal(&config.token_cipher().open(&sealed)?)?;
+                    Ok(())
+                }
+                _ => Err(ApiError::GithubTokenRevoked),
+            };
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    let ProviderCredentials::Codespaces {
+        token,
+        refresh_token: stored_refresh,
+        token_expires_at_unix: stored_expiry,
+        ..
+    } = &mut secrets.credentials
+    else {
+        return Ok(());
+    };
+    token.clone_from(&grant.token.access_token);
+    *stored_refresh = grant.refresh_token;
+    *stored_expiry = grant.expires_at_unix;
+
+    let resealed = secrets.seal(config)?;
+    let written = sql!(
+        db,
+        "UPDATE provider_accounts SET credentials_enc = {resealed} \
+         WHERE id = {account} AND credentials_enc = {sealed_enc}"
+    )
+    .execute()
+    .await?
+    .rows_written;
+    if written == 0 {
+        // The row moved under the renewal: another request refreshed the
+        // same grant first, and what it stored is the pair GitHub honors
+        // next — read that grant rather than trust ours to be the keeper.
+        reload_secrets(db, config, account, secrets).await?;
+        return Ok(());
+    }
+
+    tracing::info!(%account, "renewed a Codespaces grant before using it");
+    Ok(())
+}
+
+/// Re-reads an account's sealed credentials into `secrets`.
+///
+/// The row cannot be gone — [`unlink`](crate::provider_accounts::unlink)
+/// scrubs and marks rather than deleting — so a missing row is corrupt,
+/// and a present one always carries the grant a racing renewal wrote.
+async fn reload_secrets(
+    db: &Db,
+    config: &ApiConfig,
+    account: ProviderAccountId,
+    secrets: &mut StoredSecrets,
+) -> Result<(), ApiError> {
+    let sealed: Option<String> = sql!(
+        db,
+        "SELECT credentials_enc FROM provider_accounts WHERE id = {account}"
+    )
+    .fetch_scalar_optional()
+    .await?;
+    let sealed = sealed.ok_or(ApiError::CorruptRecord(
+        "a provider account's row vanished between its read and its renewal",
+    ))?;
+    *secrets = unseal(&config.token_cipher().open(&sealed)?)?;
+    Ok(())
 }
 
 /// Reads what an account can actually deploy today.
@@ -385,6 +600,7 @@ const fn provider_name(kind: CloudProviderKind) -> &'static str {
         CloudProviderKind::Azure => flyco_provider::azure::PROVIDER,
         CloudProviderKind::Aws => flyco_provider::aws::PROVIDER,
         CloudProviderKind::Gcp => flyco_provider::gcp::PROVIDER,
+        CloudProviderKind::Codespaces => flyco_provider::codespaces::PROVIDER,
         CloudProviderKind::Host => flyco_provider::host::PROVIDER,
     }
 }
@@ -436,9 +652,12 @@ pub async fn catalog_reads(account: &LinkedAccount) -> Result<CatalogReads, Prov
             .catalog_regions()
             .await?,
         )),
-        ProviderCredentials::Aws { .. } | ProviderCredentials::Gcp { .. } => {
-            Ok(CatalogReads::Whole)
-        }
+        // One read answers for the whole account: Codespaces' machine list
+        // is per environment repository, not per geography, so the four
+        // `geo` values share it.
+        ProviderCredentials::Aws { .. }
+        | ProviderCredentials::Gcp { .. }
+        | ProviderCredentials::Codespaces { .. } => Ok(CatalogReads::Whole),
         ProviderCredentials::Host { .. } => Err(ProviderError::Unsupported {
             provider: flyco_provider::host::PROVIDER,
             operation: "reading a catalog from the provider",
@@ -541,6 +760,17 @@ async fn catalog_of(account: &LinkedAccount) -> Result<Vec<MachineCatalogEntry>,
         ProviderCredentials::Gcp {
             service_account_json,
         } => gcp_driver(service_account_json)?.catalog().await,
+        ProviderCredentials::Codespaces {
+            token,
+            env_repo,
+            env_repo_id,
+            included_core_hours,
+            ..
+        } => {
+            codespaces_driver(token, env_repo, *env_repo_id, *included_core_hours)
+                .catalog()
+                .await
+        }
     }
 }
 
@@ -599,6 +829,17 @@ pub async fn cloud_usage(
         .billing_period_cost(now_unix)
         .await
         .map(Some),
+        ProviderCredentials::Codespaces {
+            token,
+            env_repo,
+            env_repo_id,
+            included_core_hours,
+            ..
+        } => {
+            codespaces_driver(token, env_repo, *env_repo_id, *included_core_hours)
+                .billing_period_cost(now_unix)
+                .await
+        }
         // Two providers contribute no row, for the two different reasons
         // this function's documentation gives: a machine the user owns has
         // nothing flyco meters, and a GCP project has plenty and no API that
@@ -672,6 +913,20 @@ pub async fn operate(
         } => {
             operation
                 .run(&mut gcp_driver(service_account_json)?, machine)
+                .await
+        }
+        ProviderCredentials::Codespaces {
+            token,
+            env_repo,
+            env_repo_id,
+            included_core_hours,
+            ..
+        } => {
+            operation
+                .run(
+                    &mut codespaces_driver(token, env_repo, *env_repo_id, *included_core_hours),
+                    machine,
+                )
                 .await
         }
     }
@@ -980,15 +1235,18 @@ impl Provisioner for CloudProvisioner {
         if let Some(mut azure) = azure_driver_for(account)? {
             return azure.provision(request).await;
         }
+        if let Some(mut codespaces) = codespaces_driver_for(account) {
+            return codespaces.provision(request).await;
+        }
 
         match account.credentials() {
             ProviderCredentials::Host { .. } => provision_on_host(&self.hosts, account, request)
                 .await
                 .map(Provisioning::Ready),
             // Unreachable: `azure_driver` answered for the Azure variant.
-            ProviderCredentials::Azure { .. } => Err(ProviderError::Malformed(
-                "an Azure account produced no Azure driver",
-            )),
+            ProviderCredentials::Azure { .. } | ProviderCredentials::Codespaces { .. } => Err(
+                ProviderError::Malformed("an answered account produced no driver"),
+            ),
             ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
                 provider: "AWS",
                 operation: "provision",
@@ -1011,15 +1269,18 @@ impl Provisioner for CloudProvisioner {
         if let Some(mut azure) = azure_driver_for(account)? {
             return azure.resume(machine, continuation).await;
         }
+        if let Some(mut codespaces) = codespaces_driver_for(account) {
+            return codespaces.resume(machine, continuation).await;
+        }
         match account.credentials() {
             // A machine the user owns takes the job or refuses it on the
             // spot: there is no build to come back to.
             ProviderCredentials::Host { .. } => Err(ProviderError::Malformed(
                 "a machine the user owns is provisioned in one call and has nothing to resume",
             )),
-            ProviderCredentials::Azure { .. } => Err(ProviderError::Malformed(
-                "an Azure account produced no Azure driver",
-            )),
+            ProviderCredentials::Azure { .. } | ProviderCredentials::Codespaces { .. } => Err(
+                ProviderError::Malformed("an answered account produced no driver"),
+            ),
             ProviderCredentials::Aws { .. } => Err(ProviderError::Unsupported {
                 provider: "AWS",
                 operation: "resume a provision",

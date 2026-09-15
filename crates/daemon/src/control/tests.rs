@@ -18,7 +18,7 @@ use crate::control::rest::{
 use crate::control::store::{RemoteTranscriptStore, stream_key};
 use crate::control::wire::{self, QUEUE_DEPTH, SessionRelay, WireError};
 use crate::desktop::FakeDesktop;
-use crate::git::FakeWorkdir;
+use crate::git::FakeRepos;
 use crate::harness::SessionOutput;
 use crate::harness::claude::protocol::SessionKey;
 use crate::harness::claude::store::{StoreError, TranscriptStore};
@@ -28,7 +28,7 @@ use crate::terminal::{FakeTerminal, TerminalCall};
 use crate::testing::{
     AttachAnswer, Call, ControlPlane, Directive, FakeDisk, FakeSession, Reply, Room, Seen,
 };
-use crate::workdir::Checkout;
+use crate::workdir::Workspace;
 use flyco_core::workdir::{WorkdirRefusal, WorkdirReply, WorkdirRequest};
 
 /// What `git diff --cached --binary` produces over the one uncommitted edit
@@ -48,6 +48,22 @@ index 3b18e512..8c7e5a61 100644\n\
 
 /// A daemon token shaped the way the control plane mints them.
 const TOKEN: &str = "fd_a-daemon-token";
+
+/// GitHub credentials for the relay to clone an `AddRepo` with.
+///
+/// The token is a shape, not a secret: `FakeRepos` never runs git, so it
+/// is never spent — but the field cannot be `None`, because a relay with
+/// none refuses the command and the tests that send one would be refused
+/// for the wrong reason.
+fn github_access() -> crate::config::GithubAccess {
+    crate::config::GithubAccess {
+        token: "gho_a-test-token".to_owned(),
+        identity: crate::config::GitIdentity {
+            name: "flyco".to_owned(),
+            email: "flyco@flyco.dev".to_owned(),
+        },
+    }
+}
 
 /// One turn announcement the daemon filed over REST.
 ///
@@ -267,16 +283,34 @@ impl ControlApi for RecordingApi {
 
     fn put_workdir_patch(
         &self,
+        dir: Option<&str>,
         patch: Vec<u8>,
     ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
         core::future::ready(
             self.calls
-                .send(Call::WorkdirPatchStored(patch.len()))
+                .send(Call::WorkdirPatchStored(
+                    dir.map(str::to_owned),
+                    patch.len(),
+                ))
                 .map_err(|error| ControlApiError::Transport(error.to_string())),
         )
     }
 
     fn get_workdir_patch(
+        &self,
+        _dir: Option<&str>,
+    ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send {
+        core::future::ready(Ok(None))
+    }
+
+    fn get_handoff(
+        &self,
+    ) -> impl core::future::Future<Output = Result<Option<flyco_core::HandoffView>, ControlApiError>>
+    + Send {
+        core::future::ready(Ok(None))
+    }
+
+    fn get_handoff_transcript(
         &self,
     ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send {
         core::future::ready(Ok(None))
@@ -319,7 +353,8 @@ struct Harness {
     desktop_reports: mpsc::Sender<crate::desktop::DesktopEvent>,
     /// The `!` commands the daemon asked its shell to run.
     shell_runs: mpsc::UnboundedReceiver<StartedRun>,
-    repo_inject: mpsc::UnboundedSender<String>,
+    /// Injects a checkout's `(dir, summary)` dirty report into the relay.
+    repo_inject: mpsc::UnboundedSender<(Option<String>, String)>,
     /// Makes the fake metadata endpoint announce a reclamation. Taken once:
     /// a provider announces one machine's reclamation exactly once.
     evict: Option<tokio::sync::oneshot::Sender<SpotNotice>>,
@@ -390,11 +425,42 @@ impl Harness {
 
     /// A harness whose agent has stopped reading its commands.
     async fn wedged(deadlines: wire::Deadlines) -> Self {
-        Self::assemble(AttachAnswer::Accept, 32, deadlines, FakeSession::wedged()).await
+        let (session, calls) = FakeSession::wedged();
+        Self::assemble(
+            AttachAnswer::Accept,
+            32,
+            deadlines,
+            (session, calls),
+            FakeRepos::with_snapshots([(None, Some(WORKDIR_PATCH.to_vec()))]),
+        )
+        .await
     }
 
     async fn build(answer: AttachAnswer, outputs: usize, deadlines: wire::Deadlines) -> Self {
-        Self::assemble(answer, outputs, deadlines, FakeSession::new()).await
+        Self::assemble(
+            answer,
+            outputs,
+            deadlines,
+            FakeSession::new(),
+            FakeRepos::with_snapshots([(None, Some(WORKDIR_PATCH.to_vec()))]),
+        )
+        .await
+    }
+
+    /// A harness with the checkout set the test describes — several named
+    /// checkouts, or one a `clone_repo` must refuse.
+    async fn with_repos(
+        answer: AttachAnswer,
+        repos: (FakeRepos, mpsc::UnboundedSender<(Option<String>, String)>),
+    ) -> Self {
+        Self::assemble(
+            answer,
+            32,
+            wire::Deadlines::default(),
+            FakeSession::new(),
+            repos,
+        )
+        .await
     }
 
     async fn assemble(
@@ -402,6 +468,7 @@ impl Harness {
         outputs: usize,
         deadlines: wire::Deadlines,
         harness: (FakeSession, mpsc::UnboundedReceiver<Call>),
+        (repos, repo_inject): (FakeRepos, mpsc::UnboundedSender<(Option<String>, String)>),
     ) -> Self {
         let room = Room::start(answer).await;
         let session = SessionId::generate();
@@ -432,8 +499,9 @@ impl Harness {
         let (terminal, terminal_writes, terminal_inject, terminal_out) = FakeTerminal::pair();
         let (desktop, desktop_calls, desktop_reports, desktop_out) = FakeDesktop::pair();
         let (shell, shell_runs) = FakeShell::pair();
-        let (workdir, repo_inject, repo_status) =
-            FakeWorkdir::with_snapshot(Some(WORKDIR_PATCH.to_vec()));
+        // The developer-machine shape by default: one checkout at the
+        // workspace root, which is the `None` dir both the wire and the
+        // patch store use.
         let checkout_dir = scratch_checkout();
         let run = tokio::spawn(wire::run(SessionRelay {
             session_id: session,
@@ -447,9 +515,9 @@ impl Harness {
             desktop_out,
             tui: crate::tui::HarnessTui::fixture(),
             shell,
-            workdir,
-            checkout: Checkout::new(checkout_dir.0.clone(), None),
-            repo_status,
+            repos,
+            workspace: Workspace::new(checkout_dir.0.clone(), None),
+            github: Some(github_access()),
             disk: FakeDisk::new(recorder),
             spot,
             stops,
@@ -1605,7 +1673,7 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
     let (terminal, _, _, terminal_out) = FakeTerminal::pair();
     let (desktop, _, _, desktop_out) = FakeDesktop::pair();
     let (shell, _shell_runs) = FakeShell::pair();
-    let (workdir, _, repo_status) = FakeWorkdir::pair();
+    let (repos, _) = FakeRepos::pair(&[None]);
     let stops = crate::stop::nothing_to_watch();
     let run = tokio::spawn(wire::run(SessionRelay {
         session_id: session,
@@ -1619,9 +1687,9 @@ async fn an_overflowing_queue_stops_the_daemon_rather_than_truncating_a_session(
         desktop_out,
         tui: crate::tui::HarnessTui::fixture(),
         shell,
-        workdir,
-        checkout: Checkout::new(std::env::temp_dir(), None),
-        repo_status,
+        repos,
+        workspace: Workspace::new(std::env::temp_dir(), None),
+        github: None,
         disk: FakeDisk::new(recorder),
         spot: crate::spot::nothing_to_watch(),
         stops,
@@ -1926,7 +1994,9 @@ async fn a_stopping_container_flushes_before_it_writes_the_patch_and_reports_las
     );
     assert_eq!(
         harness.next_call().await,
-        Call::WorkdirPatchStored(WORKDIR_PATCH.len()),
+        // The stored object is the snapshot's envelope: the base-commit
+        // line (40 hex + newline), then the patch.
+        Call::WorkdirPatchStored(None, WORKDIR_PATCH.len() + 41),
         "the working tree leaves the machine, because nothing here survives the stop"
     );
     assert_eq!(
@@ -1957,7 +2027,7 @@ async fn a_stop_ends_the_run_rather_than_holding_the_stream() {
     assert_eq!(harness.next_call().await, Call::Flush);
     assert_eq!(
         harness.next_call().await,
-        Call::WorkdirPatchStored(WORKDIR_PATCH.len())
+        Call::WorkdirPatchStored(None, WORKDIR_PATCH.len() + 41)
     );
     assert_eq!(
         harness.next_call().await,
@@ -2145,11 +2215,12 @@ async fn a_dirty_tree_is_reported_and_keeps_the_agent_awake() {
 
     harness
         .repo_inject
-        .send(" M src/lib.rs\n".to_owned())
+        .send((None, " M src/lib.rs\n".to_owned()))
         .expect("the watcher is live");
     assert_eq!(
         harness.room.next_frame().await,
         DaemonToControl::RepoDirty {
+            dir: None,
             summary: " M src/lib.rs\n".to_owned(),
         }
     );
@@ -2179,6 +2250,185 @@ async fn a_dirty_tree_is_reported_and_keeps_the_agent_awake() {
     ));
 
     harness.archive().await.expect("the run ended cleanly");
+}
+
+/// Which checkout went dirty is part of the report: a session working
+/// across two repositories owes the room — and the refusal a dirty tree
+/// causes — the name of the tree the work is in.
+#[tokio::test]
+async fn a_dirty_report_names_the_checkout_it_is_about() {
+    let mut harness = Harness::with_repos(
+        AttachAnswer::Accept,
+        FakeRepos::pair(&[Some("flyco".to_owned()), Some("api".to_owned())]),
+    )
+    .await;
+    harness.handshake().await;
+
+    harness
+        .repo_inject
+        .send((Some("api".to_owned()), " M src/lib.rs\n".to_owned()))
+        .expect("the watcher is live");
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::RepoDirty {
+            dir: Some("api".to_owned()),
+            summary: " M src/lib.rs\n".to_owned(),
+        }
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+/// An `AddRepo` the user approved clones the checkout, tells the room it
+/// arrived, and tells the agent where it landed — in that order, so the
+/// transcript never shows a notice about a repository the control plane
+/// was not told about.
+#[tokio::test]
+async fn an_approved_repository_is_cloned_announced_and_named_to_the_agent() {
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::AddRepo {
+        slug: "lexoliu/api".parse().expect("a valid slug"),
+        branch: "main".parse().expect("a valid branch"),
+        dir: "api".to_owned(),
+    });
+
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::RepoAdded {
+            slug: "lexoliu/api".parse().expect("a valid slug"),
+            branch: "main".parse().expect("a valid branch"),
+            dir: "api".to_owned(),
+        }
+    );
+    assert!(matches!(
+        harness.next_call().await,
+        Call::UserMessage(text)
+            if text.starts_with("[flyco repo notice]")
+                && text.contains("lexoliu/api")
+                && text.contains("`api/`")
+    ));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+/// The command is redelivered until applied, so a replay must not announce
+/// a second time: a directory the set already holds is adopted silently,
+/// and the proof is that a second command's announcement is the first the
+/// room sees.
+#[tokio::test]
+async fn a_replayed_add_repo_announces_nothing() {
+    let mut harness = Harness::with_repos(
+        AttachAnswer::Accept,
+        FakeRepos::pair(&[Some("api".to_owned())]),
+    )
+    .await;
+    harness.handshake().await;
+
+    // `api` is already checked out — this is the replayed command — while
+    // `web` is genuinely new, so its frame proves where the stream stood.
+    harness.command(ControlToDaemon::AddRepo {
+        slug: "lexoliu/api".parse().expect("a valid slug"),
+        branch: "main".parse().expect("a valid branch"),
+        dir: "api".to_owned(),
+    });
+    harness.command(ControlToDaemon::AddRepo {
+        slug: "lexoliu/web".parse().expect("a valid slug"),
+        branch: "main".parse().expect("a valid branch"),
+        dir: "web".to_owned(),
+    });
+
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::RepoAdded {
+            slug: "lexoliu/web".parse().expect("a valid slug"),
+            branch: "main".parse().expect("a valid branch"),
+            dir: "web".to_owned(),
+        },
+        "the replay produced no frame; the first announcement is `web`'s"
+    );
+    assert!(matches!(
+        harness.next_call().await,
+        Call::UserMessage(text) if text.contains("lexoliu/web")
+    ));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+/// A clone that fails tells the agent the repository did not arrive —
+/// it asked for one and deserves the answer — without ending a session
+/// that is otherwise healthy.
+#[tokio::test]
+async fn a_clone_that_fails_tells_the_agent_and_leaves_the_session_running() {
+    let (repos, inject) = FakeRepos::pair(&[Some("flyco".to_owned())]);
+    let mut harness =
+        Harness::with_repos(AttachAnswer::Accept, (repos.unclonable(&["gone"]), inject)).await;
+    harness.handshake().await;
+
+    harness.command(ControlToDaemon::AddRepo {
+        slug: "lexoliu/gone".parse().expect("a valid slug"),
+        branch: "main".parse().expect("a valid branch"),
+        dir: "gone".to_owned(),
+    });
+
+    assert!(matches!(
+        harness.next_call().await,
+        Call::UserMessage(text)
+            if text.starts_with("[flyco repo notice]")
+                && text.contains("could not clone")
+                && text.contains("lexoliu/gone")
+    ));
+
+    // The relay is alive: a command sent next is still answered.
+    harness.command(ControlToDaemon::AddRepo {
+        slug: "lexoliu/web".parse().expect("a valid slug"),
+        branch: "main".parse().expect("a valid branch"),
+        dir: "web".to_owned(),
+    });
+    assert_eq!(
+        harness.room.next_frame().await,
+        DaemonToControl::RepoAdded {
+            slug: "lexoliu/web".parse().expect("a valid slug"),
+            branch: "main".parse().expect("a valid branch"),
+            dir: "web".to_owned(),
+        }
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+/// Every checkout's work leaves a machine that is stopping, under its own
+/// name — the patch a resume applies is per checkout, so storing only the
+/// primary's would lose the rest.
+#[tokio::test]
+async fn a_stop_stores_each_checkouts_patch_under_its_own_dir() {
+    let mut harness = Harness::with_repos(
+        AttachAnswer::Accept,
+        FakeRepos::with_snapshots([
+            (Some("flyco".to_owned()), Some(WORKDIR_PATCH.to_vec())),
+            (Some("api".to_owned()), Some(WORKDIR_PATCH.to_vec())),
+        ]),
+    )
+    .await;
+    harness.handshake().await;
+
+    harness.stop().await;
+    assert_eq!(harness.next_call().await, Call::Interrupt);
+    assert_eq!(harness.next_call().await, Call::Flush);
+    for dir in ["api", "flyco"] {
+        assert_eq!(
+            harness.next_call().await,
+            Call::WorkdirPatchStored(Some(dir.to_owned()), WORKDIR_PATCH.len() + 41),
+            "the `{dir}` checkout's patch is stored under `{dir}`"
+        );
+    }
+    assert_eq!(
+        harness.next_call().await,
+        Call::StoppingReported(StopReason::Sigterm)
+    );
+    assert_eq!(harness.next_call().await, Call::Shutdown);
+    harness.ended().await.expect("the run ended cleanly");
 }
 
 /// A limit the harness can place in time is filed with the control plane,
@@ -2394,6 +2644,52 @@ mod rest_client {
         }
         plane.next().await.expect("the control plane was called");
     }
+
+    /// A checkout's patch travels under its directory: `?repo=<dir>` on the
+    /// same route the workspace root's patch uses bare, so the store keeps
+    /// one checkout's work apart from another's.
+    #[tokio::test]
+    async fn a_workdir_patch_is_addressed_to_its_checkout() {
+        let session = SessionId::generate();
+        let mut plane = ControlPlane::start(vec![
+            Reply::no_content(),
+            Reply::no_content(),
+            Reply::text("the patch"),
+            Reply::no_content(),
+        ])
+        .await;
+        let api = api(&plane.base, session);
+
+        api.put_workdir_patch(Some("api"), b"patch-bytes".to_vec())
+            .await
+            .expect("store a checkout's patch");
+        api.put_workdir_patch(None, b"patch-bytes".to_vec())
+            .await
+            .expect("store the root checkout's patch");
+        api.get_workdir_patch(Some("api"))
+            .await
+            .expect("read a checkout's patch back");
+        api.get_workdir_patch(None)
+            .await
+            .expect("read the root checkout's patch back");
+
+        for (method, target) in [
+            (
+                "PUT",
+                format!("/v1/sessions/{session}/workdir-patch?repo=api"),
+            ),
+            ("PUT", format!("/v1/sessions/{session}/workdir-patch")),
+            (
+                "GET",
+                format!("/v1/sessions/{session}/workdir-patch?repo=api"),
+            ),
+            ("GET", format!("/v1/sessions/{session}/workdir-patch")),
+        ] {
+            let request = plane.next().await.expect("the control plane was called");
+            assert_eq!(request.method, method);
+            assert_eq!(request.target, target);
+        }
+    }
 }
 
 // ── The remote transcript store ──
@@ -2569,6 +2865,7 @@ mod remote_store {
 
         fn put_workdir_patch(
             &self,
+            _dir: Option<&str>,
             _patch: Vec<u8>,
         ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
             core::future::ready(Err(ControlApiError::Transport(
@@ -2577,6 +2874,22 @@ mod remote_store {
         }
 
         fn get_workdir_patch(
+            &self,
+            _dir: Option<&str>,
+        ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send
+        {
+            core::future::ready(Ok(None))
+        }
+
+        fn get_handoff(
+            &self,
+        ) -> impl core::future::Future<
+            Output = Result<Option<flyco_core::HandoffView>, ControlApiError>,
+        > + Send {
+            core::future::ready(Ok(None))
+        }
+
+        fn get_handoff_transcript(
             &self,
         ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send
         {

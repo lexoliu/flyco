@@ -55,6 +55,7 @@
 //!
 //! [`flyco_api`]: https://github.com/lexoliu/flyco/tree/main/crates/api
 
+pub mod codespace;
 pub mod config;
 pub mod control;
 pub mod desktop;

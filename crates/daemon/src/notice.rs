@@ -263,12 +263,64 @@ pub struct ResizePending {
     pub current_type: String,
 }
 
-/// What `machine_resize` says when the working tree is dirty.
+/// What `machine_resize` says when a working tree is dirty.
 #[derive(Debug, Template)]
 #[template(path = "resize_refused_dirty.txt", escape = "none")]
 pub struct ResizeRefusedDirty {
-    /// `git status --short`, verbatim.
-    pub summary: String,
+    /// `(dir, git status --short)` for every checkout that is not clean,
+    /// the dir in the workspace's own naming.
+    pub checkouts: Vec<(String, String)>,
+}
+
+/// What `repo_add` says once its approval is raised.
+#[derive(Debug, Template)]
+#[template(path = "repo_pending.txt", escape = "none")]
+pub struct RepoPending {
+    /// The repository the user is being asked about, `owner/name`.
+    pub repo: String,
+}
+
+/// What the agent is told when a repository the user approved arrives —
+/// or fails to.
+///
+/// The clone is the daemon's part of an `AddRepo` the control plane
+/// already settled; this message is how the model learns the checkout
+/// exists at all, and where in the workspace it landed.
+#[derive(Debug, Template)]
+#[template(path = "repo_added.txt", escape = "none")]
+pub struct RepoAddedNotice {
+    /// The repository, `owner/name`.
+    pub slug: String,
+    /// The workspace directory it was cloned into.
+    pub dir: String,
+    /// Whether the clone failed rather than landed.
+    pub failed: bool,
+    /// Why, when it did — empty on success.
+    pub error: String,
+}
+
+impl RepoAddedNotice {
+    /// The checkout is in place.
+    #[must_use]
+    pub fn added(slug: &flyco_core::RepoSlug, dir: &str) -> Self {
+        Self {
+            slug: slug.to_string(),
+            dir: dir.to_owned(),
+            failed: false,
+            error: String::new(),
+        }
+    }
+
+    /// The clone could not complete.
+    #[must_use]
+    pub fn failed(slug: &flyco_core::RepoSlug, dir: &str, error: &crate::git::GitError) -> Self {
+        Self {
+            slug: slug.to_string(),
+            dir: dir.to_owned(),
+            failed: true,
+            error: error.to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -479,12 +531,12 @@ mod tests {
     #[test]
     fn a_dirty_refusal_shows_the_work_that_would_be_at_risk() {
         let rendered = ResizeRefusedDirty {
-            summary: " M crates/daemon/src/mcp.rs".to_owned(),
+            checkouts: vec![(".".to_owned(), " M crates/daemon/src/mcp.rs".to_owned())],
         }
         .render()
         .expect("render");
 
-        assert!(rendered.starts_with("Refused: the working tree has uncommitted changes."));
+        assert!(rendered.starts_with("Refused: a working tree has uncommitted changes."));
         assert!(rendered.contains("`force: true`"));
         assert!(rendered.contains(" M crates/daemon/src/mcp.rs"));
     }

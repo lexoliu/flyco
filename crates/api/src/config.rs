@@ -14,7 +14,7 @@ use url::Url;
 use web_push_native::p256::ecdsa::SigningKey;
 
 use crate::crypto::{KEY_LEN, TokenCipher};
-use crate::provider_oauth::{AZURE_CALLBACK_PATH, GCP_CALLBACK_PATH};
+use crate::provider_oauth::{AZURE_CALLBACK_PATH, CODESPACES_CALLBACK_PATH, GCP_CALLBACK_PATH};
 
 /// Names of the bindings the control plane reads.
 ///
@@ -135,6 +135,7 @@ pub struct ApiConfig {
     redirect_uri: Url,
     azure_oauth_redirect_uri: Url,
     gcp_oauth_redirect_uri: Url,
+    codespaces_oauth_redirect_uri: Url,
     encryption_key: [u8; KEY_LEN],
     vapid: VapidConfig,
     github_webhook_secret: String,
@@ -255,6 +256,7 @@ impl ApiConfig {
         // variable could say that this one does not.
         let azure_oauth_redirect_uri = callback_uri(&redirect_uri, AZURE_CALLBACK_PATH);
         let gcp_oauth_redirect_uri = callback_uri(&redirect_uri, GCP_CALLBACK_PATH);
+        let codespaces_oauth_redirect_uri = callback_uri(&redirect_uri, CODESPACES_CALLBACK_PATH);
 
         let mut encryption_key = [0_u8; KEY_LEN];
         hex::decode_to_slice(&settings.encryption_key_hex, &mut encryption_key)
@@ -290,6 +292,7 @@ impl ApiConfig {
             redirect_uri,
             azure_oauth_redirect_uri,
             gcp_oauth_redirect_uri,
+            codespaces_oauth_redirect_uri,
             encryption_key,
         })
     }
@@ -419,6 +422,16 @@ impl ApiConfig {
     #[must_use]
     pub const fn gcp_oauth_redirect_uri(&self) -> &Url {
         &self.gcp_oauth_redirect_uri
+    }
+
+    /// Absolute URL GitHub redirects a Codespaces link back to.
+    ///
+    /// The same OAuth app as the sign-in, on a second registered callback:
+    /// the two flows ask for different scopes and must not share a URI, or
+    /// a link callback would be read as a sign-in.
+    #[must_use]
+    pub const fn codespaces_oauth_redirect_uri(&self) -> &Url {
+        &self.codespaces_oauth_redirect_uri
     }
 
     /// Absolute URL GitHub redirects the browser back to.

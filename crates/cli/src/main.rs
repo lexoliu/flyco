@@ -9,7 +9,7 @@ use clap::Parser as _;
 use flyco_cli::cli::{AuthCommand, Cli, Command, SessionCommand};
 use flyco_cli::client::Api;
 use flyco_cli::out::Mode;
-use flyco_cli::{Exit, Failure, Outcome, auth, creds, discover, human, run, session};
+use flyco_cli::{Exit, Failure, Outcome, auth, creds, discover, handoff, human, run, session};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -81,6 +81,33 @@ async fn dispatch(cli: Cli) -> Outcome<Exit> {
         Some(Command::Codex { repo, spec }) => {
             human::launch(&api, flyco_core::HarnessKind::Codex, repo, &spec, mode).await
         }
+        Some(Command::Devin { repo, spec }) => {
+            human::launch(&api, flyco_core::HarnessKind::Devin, repo, &spec, mode).await
+        }
+        Some(Command::Handoff {
+            from,
+            session,
+            harness,
+            message,
+            no_summary,
+            include_untracked,
+            spec,
+        }) => {
+            handoff::handoff(
+                &api,
+                handoff::Args {
+                    from,
+                    session,
+                    harness,
+                    message,
+                    no_summary,
+                    include_untracked,
+                    spec,
+                },
+                mode,
+            )
+            .await
+        }
         Some(Command::Resume { id, last }) => human::resume(&api, id, last, mode).await,
     }
 }
@@ -116,6 +143,7 @@ async fn session_command(api: &Api, command: SessionCommand, mode: Mode) -> Outc
             model,
             effort,
             permission_mode,
+            computer_use,
         } => done('set: {
             let model = match (model, effort) {
                 (Some(model), effort) => Some(flyco_core::ModelChoice { model, effort }),
@@ -132,6 +160,7 @@ async fn session_command(api: &Api, command: SessionCommand, mode: Mode) -> Outc
                     budget_limit: budget,
                     model,
                     permission_mode,
+                    computer_use,
                 },
                 mode,
             )

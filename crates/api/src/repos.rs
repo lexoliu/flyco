@@ -73,7 +73,7 @@ async fn read(
     user: &CurrentUser,
     query: &RepoQuery,
 ) -> Result<Vec<RepoSummary>, ApiError> {
-    let token = users::github_token(db, config, user.id).await?;
+    let token = users::github_token(db, config, github, user.id).await?;
 
     let mut repos = github.list_repos(&token).await?;
     if let Some(needle) = query.q.as_ref().map(|q| q.trim().to_lowercase())
@@ -117,7 +117,7 @@ async fn branches(
 ) -> Result<BranchPage, ApiError> {
     let slug = slug_from(params)?;
     let page = page_from(query)?;
-    let token = users::github_token(db, config, user.id).await?;
+    let token = users::github_token(db, config, github, user.id).await?;
 
     // Asked for on every page rather than only the first: it is what marks
     // the default row, and a client paging forward must not have to remember

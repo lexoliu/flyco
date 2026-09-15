@@ -62,8 +62,8 @@
 use flyco_core::wire::{DaemonAttach, DaemonFrames, EventPage, StoredEvent};
 use flyco_core::workdir::WorkdirReply;
 use flyco_core::{
-    ClientEvent, ControlToDaemon, DaemonToControl, DesktopInputRequest, DesktopTakeoverRequest,
-    MessageOrigin, RepoStatus, ShellRunId, WorkdirRequestId,
+    CheckoutStatus, ClientEvent, ControlToDaemon, DaemonToControl, DesktopInputRequest,
+    DesktopTakeoverRequest, MessageOrigin, RepoStatus, ShellRunId, WorkdirRequestId,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::durable::{DurableObject, DurableObjectError};
@@ -430,38 +430,10 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
         feed.last_touch = now;
     }
 
-    // A stream serving a fresh attach owes the daemon the desktop
-    // aggregate outright: a restarted daemon powers its supervisor on
-    // clear, and a watcher still holding the screen across the gap is a
-    // fact nothing else re-sends — the reconcile below only fires on a
-    // change from `desktop_state`. Only the set halves need saying: a
-    // daemon boots assuming no audience and no takeover, so a false
-    // announces nothing it does not already believe — and emitting it
-    // would replay a phantom release into a live watcher's stream.
     let mut emitted = Vec::new();
     if feed.desktop_fresh {
         feed.desktop_fresh = false;
-        match desktop_aggregate(db, now).await {
-            Ok((watching, takeover)) => {
-                for command in [
-                    watching.then_some(ControlToDaemon::DesktopAudience { watching }),
-                    takeover.then_some(ControlToDaemon::DesktopTakeover { active: takeover }),
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    match command_value(&command) {
-                        Ok(value) => emitted.push(command_event(None, &value)),
-                        Err(error) => {
-                            tracing::warn!(%error, "a desktop state would not encode");
-                        }
-                    }
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "a command stream could not read the desktop leases");
-            }
-        }
+        emitted.extend(fresh_desktop_announce(db, now).await);
     }
 
     // Reconcile the desktop leases against what the daemon was last
@@ -527,6 +499,100 @@ async fn reconcile_desktop(db: &DurableDb, now: u64) -> Result<Vec<Event>, Durab
         append(db, &ClientEvent::DesktopTakeover { active: takeover }).await?;
     }
     Ok(events)
+}
+
+/// The desktop aggregate a stream serving a fresh attach owes its
+/// daemon, told outright.
+///
+/// A restarted daemon powers its supervisor on clear, and a watcher
+/// still holding the screen across the gap is a fact nothing else
+/// re-sends — `reconcile_desktop` only fires on a change from
+/// `desktop_state`. Only the set halves need saying: a daemon boots
+/// assuming no audience and no takeover, so a false announces nothing
+/// it does not already believe — and emitting it would replay a phantom
+/// release into a live watcher's stream.
+///
+/// The aggregate is then landed on `desktop_state` through the same
+/// CAS the routes and the reconcile claim, so a flip nobody announced
+/// is still recorded once, and the poll's own reconcile does not
+/// announce the same state a second time. Rows still queued from the
+/// daemon this attach replaces are stale in its hands and swept.
+async fn fresh_desktop_announce(db: &DurableDb, now: u64) -> Vec<Event> {
+    let mut emitted = Vec::new();
+    let (watching, takeover) = match desktop_aggregate(db, now).await {
+        Ok(aggregate) => aggregate,
+        Err(error) => {
+            tracing::warn!(%error, "a command stream could not read the desktop leases");
+            return emitted;
+        }
+    };
+    for command in [
+        watching.then_some(ControlToDaemon::DesktopAudience { watching }),
+        takeover.then_some(ControlToDaemon::DesktopTakeover { active: takeover }),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        match command_value(&command) {
+            Ok(value) => emitted.push(command_event(None, &value)),
+            Err(error) => {
+                tracing::warn!(%error, "a desktop state would not encode");
+            }
+        }
+    }
+    if let Err(error) = note_desktop_state(db, watching, takeover).await {
+        tracing::warn!(%error, "a command stream could not note the desktop state");
+    }
+    if let Err(error) = sweep_stale_desktop_commands(db).await {
+        tracing::warn!(%error, "a command stream could not sweep stale desktop commands");
+    }
+    emitted
+}
+
+/// Lands the desktop aggregate on `desktop_state` without emitting —
+/// the fresh attach that runs this was already told outright. Landing
+/// the takeover half is still the announce: a flip that reached the
+/// lease table but never a daemon (the caller that made it was cut off
+/// mid-write) is recorded here, under the same CAS the routes and the
+/// reconcile claim.
+async fn note_desktop_state(
+    db: &DurableDb,
+    watching: bool,
+    takeover: bool,
+) -> Result<(), DurableObjectError> {
+    note_audience(db, watching).await?;
+    if note_takeover(db, takeover).await? {
+        append(db, &ClientEvent::DesktopTakeover { active: takeover }).await?;
+    }
+    Ok(())
+}
+
+/// Drops the `daemon_commands` rows a fresh attach must not inherit.
+///
+/// State rows — an audience flip, a takeover — are covered by the
+/// aggregate the attach was just told; replaying the queue's copy after
+/// it would hand the daemon a state older than the announce. An input
+/// batch is staler still: it was only ever live for the daemon holding
+/// the screen when it was sent, and `survives_a_disconnect` names it
+/// ephemeral. Everything else keeps its place in the queue.
+async fn sweep_stale_desktop_commands(db: &DurableDb) -> Result<(), DurableObjectError> {
+    let rows: Vec<CommandRow> = sql!(db, "SELECT seq, json FROM daemon_commands")
+        .fetch_all()
+        .await?;
+    for row in rows {
+        let Ok(
+            ControlToDaemon::DesktopAudience { .. }
+            | ControlToDaemon::DesktopTakeover { .. }
+            | ControlToDaemon::DesktopInput { .. },
+        ) = serde_json::from_value::<ControlToDaemon>(row.json)
+        else {
+            continue;
+        };
+        sql!(db, "DELETE FROM daemon_commands WHERE seq = {row.seq}")
+            .execute()
+            .await?;
+    }
+    Ok(())
 }
 
 /// Who is on the session's screen right now: (anyone watching, anyone
@@ -1227,25 +1293,54 @@ async fn record(
         )
         .await
         .map(Some),
-        DaemonToControl::RepoDirty { summary } => {
-            // The daemon is the only thing that can see the working tree,
-            // and it reports the whole `git status --short` output rather
-            // than a flag, so an empty summary is the clean tree and the
-            // absence of any report is "nobody has looked" — which is what
-            // `GET /v1/sessions/{id}/repo-status` refuses to answer.
-            put_latest(
-                kv,
-                KEY_REPO_STATUS,
-                &RepoStatus {
-                    dirty: !summary.trim().is_empty(),
-                    summary: summary.clone(),
-                },
-            )
+        DaemonToControl::RepoDirty { dir, summary } => note_checkout(kv, dir.as_ref(), summary)
             .await
-            .map(|()| None)
-        }
+            .map(|()| None),
+        DaemonToControl::RepoAdded { slug, branch, dir } => append(
+            db,
+            &ClientEvent::RepoAdded {
+                slug: slug.clone(),
+                branch: branch.clone(),
+                dir: dir.clone(),
+            },
+        )
+        .await
+        .map(Some),
         _ => Ok(None),
     }
+}
+
+/// Records one checkout's last-reported `git status` in the room's KV.
+///
+/// The daemon is the only thing that can see the working trees, and it
+/// reports each checkout's whole `git status --short` output rather than a
+/// flag, so an empty summary is the clean tree and the absence of any
+/// report is "nobody has looked" — which is what
+/// `GET /v1/sessions/{id}/repo-status` refuses to answer.
+async fn note_checkout(
+    kv: &DurableKv,
+    dir: Option<&String>,
+    summary: &str,
+) -> Result<(), DurableObjectError> {
+    let mut status: RepoStatus = kv
+        .get_json(KEY_REPO_STATUS)
+        .await
+        .map_err(|error| DurableObjectError::Runtime(error.to_string()))?
+        .unwrap_or_default();
+    let checkout = CheckoutStatus {
+        dir: dir.cloned(),
+        dirty: !summary.trim().is_empty(),
+        summary: summary.to_owned(),
+    };
+    match status
+        .checkouts
+        .iter_mut()
+        .find(|entry| entry.dir == checkout.dir)
+    {
+        Some(entry) => *entry = checkout,
+        None => status.checkouts.push(checkout),
+    }
+    put_latest(kv, KEY_REPO_STATUS, &status).await
 }
 
 /// Appends one event to the room's replayable stream, and answers with
@@ -1321,12 +1416,30 @@ async fn put_latest<T: Serialize + Sync>(
         .map_err(|error| DurableObjectError::Runtime(error.to_string()))
 }
 
+/// The schema this build expects.
+///
+/// `user_version` is the durable answer to "is the schema already there":
+/// checking it costs one storage read where running every `CREATE` blind
+/// costs one per statement — and every hot path in the room (each event
+/// append, each page read, each attach) calls `ensure_schema` first. Bump
+/// it when the DDL below changes so a room built by an older build
+/// upgrades once, on its next call.
+const SCHEMA_VERSION: i64 = 2;
+
 /// Creates the room's tables if this is its first write.
 ///
 /// `AUTOINCREMENT` rather than a counter in the struct: the sequences
 /// have to be monotonic across the object being rebuilt around every
 /// event, and the database is the only thing here that guarantees it.
 async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
+    let version: i64 = db
+        .query("PRAGMA user_version")
+        .fetch_scalar()
+        .await
+        .map_err(|error| stored(&error))?;
+    if version >= SCHEMA_VERSION {
+        return Ok(());
+    }
     for statement in [
         "CREATE TABLE IF NOT EXISTS events (\
              seq     INTEGER PRIMARY KEY AUTOINCREMENT, \
@@ -1376,6 +1489,9 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
              id      TEXT    PRIMARY KEY, \
              json    TEXT    NOT NULL, \
              at_unix INTEGER NOT NULL)",
+        // The TTL sweep in `store_workdir_reply` deletes by `at_unix`;
+        // without this index every store scans the whole table.
+        "CREATE INDEX IF NOT EXISTS workdir_replies_at ON workdir_replies (at_unix)",
         // The desktop stream's GOP tail: the newest keyframe plus
         // everything encoded since. Not `events` — a replayed transcript
         // is not a screen recording — and bounded, so a live session
@@ -1419,6 +1535,10 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
     .execute()
     .await
     .map_err(|error| stored(&error))?;
+    db.query(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+        .execute()
+        .await
+        .map_err(|error| stored(&error))?;
     Ok(())
 }
 

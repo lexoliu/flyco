@@ -7,7 +7,7 @@
 
 use clap::{Args, Parser, Subcommand};
 
-/// `flyco` — run Claude Code and Codex sessions on flyco from a terminal.
+/// `flyco` — run Claude Code, Codex and Devin sessions on flyco from a terminal.
 #[derive(Debug, Parser)]
 #[command(name = "flyco", version, about)]
 pub struct Cli {
@@ -96,6 +96,48 @@ pub enum Command {
     Codex {
         /// `owner/name`; asked for when omitted on a TTY.
         repo: Option<String>,
+        /// The session's settings.
+        #[command(flatten)]
+        spec: SessionSpec,
+    },
+    /// Open a Devin TUI on a new session, bridged to this terminal.
+    Devin {
+        /// `owner/name`; asked for when omitted on a TTY.
+        repo: Option<String>,
+        /// The session's settings.
+        #[command(flatten)]
+        spec: SessionSpec,
+    },
+    /// Hand a local harness session off to a fresh cloud session: the
+    /// tracked working tree goes as a patch, the session's own summary as
+    /// the brief, and the full transcript as a file the cloud agent can
+    /// consult. Not a resume — the cloud session is a new conversation
+    /// that knows it moved machines.
+    Handoff {
+        /// Only look at this harness's local sessions; the default
+        /// considers all three.
+        #[arg(long, value_parser = parse_harness)]
+        from: Option<flyco_core::HarnessKind>,
+        /// The local session to send — Claude's session UUID, a Codex
+        /// thread id, a Devin session name. One candidate is taken
+        /// without asking; several on a TTY are picked, on a pipe this is
+        /// required.
+        #[arg(long)]
+        session: Option<String>,
+        /// Which harness drives the cloud session (default: the
+        /// source's own).
+        #[arg(long, value_parser = parse_harness)]
+        harness: Option<flyco_core::HarnessKind>,
+        /// An extra instruction appended to the handoff brief.
+        #[arg(long, short = 'm')]
+        message: Option<String>,
+        /// Skip asking the session to summarize itself; the transcript
+        /// alone carries the context.
+        #[arg(long)]
+        no_summary: bool,
+        /// Include untracked (but not ignored) files in the patch.
+        #[arg(long)]
+        include_untracked: bool,
         /// The session's settings.
         #[command(flatten)]
         spec: SessionSpec,
@@ -211,6 +253,10 @@ pub enum SessionCommand {
         /// `dont-ask`, `auto`, `bypass-permissions`.
         #[arg(long, value_parser = parse_permission_mode)]
         permission_mode: Option<flyco_core::PermissionMode>,
+        /// Give the session a desktop the agent can see and drive —
+        /// `--computer-use false` takes it away.
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        computer_use: Option<bool>,
     },
     /// Stop the session's machine; disk and session survive.
     Stop {
@@ -295,10 +341,11 @@ pub enum SessionCommand {
 /// naming the flag.
 #[derive(Debug, Clone, Default, Args)]
 pub struct SessionSpec {
-    /// `owner/name`.
+    /// `owner/name`; repeatable — each is checked out side by side.
     #[arg(long)]
-    pub repo: Option<String>,
-    /// Branch to check out (default: the repository's).
+    pub repo: Vec<String>,
+    /// Branch to check out on the first `--repo` (default: the
+    /// repository's).
     #[arg(long)]
     pub branch: Option<String>,
     /// The goal the session is born with. Required: a session with nothing
@@ -342,6 +389,9 @@ pub struct SessionSpec {
     /// `KEY=VALUE` environment variable (repeatable).
     #[arg(long, value_name = "KEY=VALUE")]
     pub env: Vec<String>,
+    /// Give the session a desktop the agent can see and drive.
+    #[arg(long)]
+    pub computer_use: bool,
     /// Reuse a prior attempt's outcome within its 24-hour window: a retried
     /// `run` or `create` names the same key and gets the same session back
     /// rather than provisioning a second machine.
@@ -363,10 +413,22 @@ impl SessionSpec {
         harness: flyco_core::HarnessKind,
         prompt: String,
     ) -> Result<flyco_core::CreateSession, crate::Failure> {
-        let repo = self
+        if self.repo.is_empty() {
+            return Err(crate::Failure::usage("a session needs --repo owner/name"));
+        }
+        let repos: Vec<flyco_core::RepoSelection> = self
             .repo
-            .clone()
-            .ok_or_else(|| crate::Failure::usage("a session needs --repo owner/name"))?;
+            .iter()
+            .enumerate()
+            .map(|(index, repo)| flyco_core::RepoSelection {
+                repo: repo.clone(),
+                branch: if index == 0 {
+                    self.branch.clone()
+                } else {
+                    None
+                },
+            })
+            .collect();
         let budget_limit = self
             .budget
             .ok_or_else(|| crate::Failure::usage("a session needs --budget, in dollars"))?;
@@ -388,8 +450,7 @@ impl SessionSpec {
         Ok(flyco_core::CreateSession {
             prompt,
             harness,
-            repo,
-            branch: self.branch.clone(),
+            repos,
             budget_limit,
             machine,
             spot: !self.on_demand,
@@ -398,16 +459,21 @@ impl SessionSpec {
                 effort: self.effort.clone(),
             }),
             permission_mode: self.permission_mode,
+            computer_use: self.computer_use,
+            source: None,
         })
     }
 }
 
-/// `claude`/`codex`/`claude_code` spellings of the two harnesses.
+/// `claude`/`codex`/`devin` spellings of the three harnesses.
 fn parse_harness(text: &str) -> Result<flyco_core::HarnessKind, String> {
     match text {
         "claude" | "claude_code" | "claude-code" => Ok(flyco_core::HarnessKind::ClaudeCode),
         "codex" => Ok(flyco_core::HarnessKind::Codex),
-        other => Err(format!("`{other}` is not a harness — `claude` or `codex`")),
+        "devin" => Ok(flyco_core::HarnessKind::Devin),
+        other => Err(format!(
+            "`{other}` is not a harness — `claude`, `codex` or `devin`"
+        )),
     }
 }
 

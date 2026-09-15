@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::budget::BudgetSignal;
 use crate::harness::{HarnessEvent, UsageReport};
 use crate::id::{ApprovalId, SessionId, ShellRunId, WorkdirRequestId};
+use crate::repo::{BranchName, RepoSlug};
 use crate::session::SessionState;
 use crate::workdir::{WorkdirReply, WorkdirRequest};
 
@@ -259,6 +260,22 @@ pub enum ApprovalPayload {
         /// What booting it costs before it does any work.
         minimum: crate::machine::BillingMinimum,
         /// Why the agent says the session needs this machine.
+        reason: String,
+    },
+    /// Add a repository to the session's workspace.
+    ///
+    /// Raised rather than performed, because cloning a repository the user
+    /// never picked onto the session's machine is a decision about which
+    /// code the agent may act on — the same reason a license-bound resize
+    /// is the user's call. Approving records the repository and sends the
+    /// daemon [`ControlToDaemon::AddRepo`]; denying is answered to the
+    /// agent as a refusal.
+    RepoAdd {
+        /// Repository in `owner/name` form.
+        repo: String,
+        /// Branch to check out. `None` asks for the repository's default.
+        branch: Option<String>,
+        /// Why the agent says the session needs it, as shown on the card.
         reason: String,
     },
     /// A harness tool call routed to the user for permission.
@@ -550,11 +567,30 @@ pub enum DaemonToControl {
         /// would be a lie about what the machine printed.
         truncated: bool,
     },
-    /// The repo has uncommitted changes; the agent is kept awake rather
+    /// A checkout has uncommitted changes; the agent is kept awake rather
     /// than allowed to complete.
     RepoDirty {
+        /// Which checkout — [`SessionRepo::dir`](crate::repo::SessionRepo::dir),
+        /// or `None` for a session whose workdir is itself the checkout
+        /// (the developer-machine shape).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dir: Option<String>,
         /// `git status --porcelain` summary shown to the user.
         summary: String,
+    },
+    /// A repository was added to the session's workspace.
+    ///
+    /// Reported rather than implied by [`ControlToDaemon::AddRepo`], so a
+    /// transcript records the checkout actually landing on the machine —
+    /// and a clone that failed reports nothing instead of claiming a
+    /// repository the disk does not hold.
+    RepoAdded {
+        /// The repository now checked out.
+        slug: RepoSlug,
+        /// The branch it is on.
+        branch: BranchName,
+        /// The directory under the workdir it was cloned into.
+        dir: String,
     },
     /// The provider announced imminent spot reclamation.
     SpotNotice {
@@ -987,6 +1023,29 @@ pub enum ControlToDaemon {
         /// The events, in the order the user produced them.
         events: Vec<DesktopInputEvent>,
     },
+    /// Add a repository to the session's workspace.
+    ///
+    /// Sent after the repository is recorded in the session's row set —
+    /// the user picked it mid-session, or approved the agent's
+    /// [`ApprovalPayload::RepoAdd`]. The daemon clones it under `dir`,
+    /// announces [`DaemonToControl::RepoAdded`] when the checkout exists,
+    /// and tells the harness about it in the conversation.
+    ///
+    /// Held for a daemon that is not connected, on the same reasoning as
+    /// [`Self::SetModel`]: the repository is already a fact of the session,
+    /// so a daemon that comes back an hour later is still owed it — and on
+    /// a fresh machine the boot clone covers every recorded repository,
+    /// which makes a held command reaching a new daemon a no-op to skip
+    /// rather than a second clone.
+    AddRepo {
+        /// The repository to clone.
+        slug: RepoSlug,
+        /// The branch to check out.
+        branch: BranchName,
+        /// The directory under the workdir to clone into, as the session's
+        /// row set recorded it.
+        dir: String,
+    },
     /// Archive the session: flush state, optionally snapshot the repo, shut
     /// down.
     Archive {
@@ -1035,6 +1094,7 @@ impl ControlToDaemon {
             Self::DesktopTakeover { .. } => "desktop_takeover",
             Self::DesktopInput { .. } => "desktop_input",
             Self::InspectWorkdir { .. } => "inspect_workdir",
+            Self::AddRepo { .. } => "add_repo",
             Self::Archive { .. } => "archive",
         }
     }
@@ -1074,19 +1134,22 @@ impl ControlToDaemon {
     /// reconnects an hour later would arrive as an instruction about a turn
     /// that no longer exists.
     ///
-    /// The two exceptions are the two commands that describe a *state*
-    /// rather than an instant, so redelivering one late still says
-    /// something true. [`MachineChanged`](Self::MachineChanged) is the
-    /// exception by construction: the change it reports *is* a restart, so
-    /// the daemon is guaranteed to be gone at the moment it is sent, and
-    /// the machine is still the new one whenever it comes back.
-    /// [`SetModel`](Self::SetModel) and
-    /// [`SetPermissionMode`](Self::SetPermissionMode) are the exceptions by
-    /// consequence: the control plane has already recorded what they carry,
-    /// and a daemon that missed either would run the session on a model or
-    /// under a mode its own row disagrees with.
+    /// The exceptions are the commands that describe a *state* rather than
+    /// an instant, so redelivering one late still says something true.
+    /// [`MachineChanged`](Self::MachineChanged) is the exception by
+    /// construction: the change it reports *is* a restart, so the daemon is
+    /// guaranteed to be gone at the moment it is sent, and the machine is
+    /// still the new one whenever it comes back. [`SetModel`](Self::SetModel)
+    /// and [`SetPermissionMode`](Self::SetPermissionMode) are the
+    /// exceptions by consequence: the control plane has already recorded
+    /// what they carry, and a daemon that missed either would run the
+    /// session on a model or under a mode its own row disagrees with.
     /// [`SetComputerUse`](Self::SetComputerUse) is the same shape: the
     /// flag on the session row is what the next machine comes up with.
+    /// [`AddRepo`](Self::AddRepo) is the same kind of fact: the repository
+    /// is on the session's row set the moment the command is queued, so the
+    /// daemon owes the workspace a checkout for it whenever it next
+    /// attaches.
     ///
     /// [`DesktopTakeover`](Self::DesktopTakeover) is a state too, but it
     /// is deliberately absent: who owns the screen is leased to a live
@@ -1107,6 +1170,7 @@ impl ControlToDaemon {
                 | Self::SetModel { .. }
                 | Self::SetPermissionMode { .. }
                 | Self::SetComputerUse { .. }
+                | Self::AddRepo { .. }
         )
     }
 }
@@ -1343,10 +1407,29 @@ pub enum ClientEvent {
         /// The process's exit code. `None` when a signal ended it.
         code: Option<i32>,
     },
-    /// The repo has uncommitted changes and the agent is kept awake.
+    /// A checkout has uncommitted changes and the agent is kept awake.
     RepoDirty {
+        /// Which checkout, as [`SessionRepo::dir`](crate::repo::SessionRepo::dir)
+        /// names it — `None` when the session's workdir is itself the
+        /// checkout.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dir: Option<String>,
         /// `git status --porcelain` summary shown to the user.
         summary: String,
+    },
+    /// A repository landed in the session's workspace.
+    ///
+    /// Rendered as one line in the transcript, like a machine change and
+    /// for the same reason: the code the agent can reach changed from here
+    /// on, and a transcript without the seam would show edits to a
+    /// repository nobody added.
+    RepoAdded {
+        /// The repository now checked out.
+        slug: RepoSlug,
+        /// The branch it is on.
+        branch: BranchName,
+        /// The directory under the workdir it was cloned into.
+        dir: String,
     },
     /// The provider announced imminent spot reclamation.
     SpotNotice {
@@ -1518,7 +1601,10 @@ impl ClientEvent {
                 outcome,
                 truncated,
             }),
-            DaemonToControl::RepoDirty { summary } => Some(Self::RepoDirty { summary }),
+            DaemonToControl::RepoDirty { dir, summary } => Some(Self::RepoDirty { dir, summary }),
+            DaemonToControl::RepoAdded { slug, branch, dir } => {
+                Some(Self::RepoAdded { slug, branch, dir })
+            }
             DaemonToControl::SpotNotice { seconds_remaining } => {
                 Some(Self::SpotNotice { seconds_remaining })
             }
@@ -1633,12 +1719,6 @@ mod tests {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one entry per variant, which is the point: the vector is the \
-                  protocol's whole vocabulary, so a variant added anywhere in \
-                  it exercises every test that iterates it"
-    )]
     fn every_daemon_frame() -> Vec<DaemonToControl> {
         vec![
             DaemonToControl::Started {
@@ -1674,7 +1754,17 @@ mod tests {
                 truncated: true,
             },
             DaemonToControl::RepoDirty {
+                dir: None,
                 summary: " M src/lib.rs".to_owned(),
+            },
+            DaemonToControl::RepoDirty {
+                dir: Some("flyco".to_owned()),
+                summary: " M src/lib.rs".to_owned(),
+            },
+            DaemonToControl::RepoAdded {
+                slug: "lexoliu/aither".parse().expect("valid"),
+                branch: "main".parse().expect("valid"),
+                dir: "aither".to_owned(),
             },
             DaemonToControl::SpotNotice {
                 seconds_remaining: 30,
@@ -1708,6 +1798,14 @@ mod tests {
                     },
                 },
             },
+        ]
+        .into_iter()
+        .chain(workdir_replies())
+        .collect()
+    }
+
+    fn workdir_replies() -> Vec<DaemonToControl> {
+        vec![
             DaemonToControl::WorkdirReply {
                 id: WorkdirRequestId::generate(),
                 reply: WorkdirReply::File {
@@ -1863,7 +1961,18 @@ mod tests {
             },
             ControlToDaemon::InspectWorkdir {
                 id: WorkdirRequestId::generate(),
-                request: WorkdirRequest::Diff,
+                request: WorkdirRequest::Diff { repo: None },
+            },
+            ControlToDaemon::InspectWorkdir {
+                id: WorkdirRequestId::generate(),
+                request: WorkdirRequest::Diff {
+                    repo: Some("flyco".to_owned()),
+                },
+            },
+            ControlToDaemon::AddRepo {
+                slug: "lexoliu/aither".parse().expect("valid"),
+                branch: "main".parse().expect("valid"),
+                dir: "aither".to_owned(),
             },
         ]
     }
@@ -1956,7 +2065,17 @@ mod tests {
                 false,
             ),
             ClientEvent::RepoDirty {
+                dir: None,
                 summary: " M src/lib.rs".to_owned(),
+            },
+            ClientEvent::RepoDirty {
+                dir: Some("flyco".to_owned()),
+                summary: " M src/lib.rs".to_owned(),
+            },
+            ClientEvent::RepoAdded {
+                slug: "lexoliu/aither".parse().expect("valid"),
+                branch: "main".parse().expect("valid"),
+                dir: "aither".to_owned(),
             },
             ClientEvent::SpotNotice {
                 seconds_remaining: 30,
@@ -1965,6 +2084,14 @@ mod tests {
                 stage: ProvisioningStage::Booting,
                 at_unix: 1_800_000_000,
             },
+        ]
+        .into_iter()
+        .chain(machine_events())
+        .collect()
+    }
+
+    fn machine_events() -> Vec<ClientEvent> {
+        vec![
             ClientEvent::MachineChanged {
                 machine_type: "Standard_D8s_v6".to_owned(),
                 hourly: Some(Usd::from_cents(38)),
@@ -2156,12 +2283,12 @@ mod tests {
     }
 
     #[test]
-    fn only_a_state_outlives_the_daemon_it_was_sent_to() {
-        // The commands that describe a state rather than an instant: the
-        // machine the session now runs on, the model and mode it runs
-        // under, whether it may have a screen, and who owns that screen.
-        // Everything else replayed into a later turn would be an
-        // instruction about something that is no longer happening.
+    fn only_the_state_commands_outlive_the_daemon_they_were_sent_to() {
+        // The commands that describe a state rather than an instant: a
+        // machine, a model, a permission mode, whether the session may
+        // have a screen, a repository owed to the workspace. Everything
+        // else replayed into a later turn would be an instruction about
+        // something that is no longer happening.
         for frame in every_control_frame() {
             let held = matches!(
                 frame,
@@ -2169,7 +2296,7 @@ mod tests {
                     | ControlToDaemon::SetModel { .. }
                     | ControlToDaemon::SetPermissionMode { .. }
                     | ControlToDaemon::SetComputerUse { .. }
-                    | ControlToDaemon::DesktopTakeover { .. }
+                    | ControlToDaemon::AddRepo { .. }
             );
             assert_eq!(frame.survives_a_disconnect(), held, "{frame:?}");
         }

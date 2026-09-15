@@ -10,6 +10,21 @@ import {
 } from "./client";
 import { dollarsToUsdMicros } from "../lib/money";
 
+/**
+ * One repository a session is asked to work in, as the repository chip
+ * records it. Order matters: the first is the session's primary
+ * repository — the one the header names.
+ */
+export interface NewSessionRepo {
+  repo: string;
+  /**
+   * Branch to work on. Omitted, the control plane records the repository's
+   * default branch, so a session always names the branch each checkout is
+   * on.
+   */
+  branch?: string;
+}
+
 export interface NewSessionInput {
   /**
    * What the agent should do first.
@@ -18,12 +33,11 @@ export interface NewSessionInput {
    * session's first user message and its title. The user types once.
    */
   prompt: string;
-  repo: string;
   /**
-   * Branch to work on. Omitted, the control plane records the repository's
-   * default branch, so a session always names the branch it is on.
+   * The repositories the session works across, first is primary. Never
+   * empty — a session with no repository has no workspace to work in.
    */
-  branch?: string;
+  repos: NewSessionRepo[];
   harness: HarnessKind;
   /**
    * The model the agent runs, and at what effort. Omitted, the session
@@ -68,8 +82,12 @@ export interface NewSessionInput {
 export function requestNewSession(input: NewSessionInput): Promise<SessionDetail> {
   return createSession({
     prompt: input.prompt,
-    repo: input.repo,
-    ...(input.branch === undefined ? {} : { branch: input.branch }),
+    // A branch is sent only when the user picked one: omitted, the control
+    // plane reads each repository's default from GitHub and records *that*,
+    // so the branch a session is on is never this browser's guess.
+    repos: input.repos.map(({ repo, branch }) =>
+      branch === undefined ? { repo } : { repo, branch },
+    ),
     harness: input.harness,
     ...(input.model === undefined ? {} : { model: input.model }),
     budget_limit: dollarsToUsdMicros(input.budgetLimitDollars),

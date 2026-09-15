@@ -51,6 +51,9 @@ export type ApiKeySummary = Schemas["ApiKeySummary"];
 export type CreatedApiKey = Schemas["CreatedApiKey"];
 export type AuthorizeUrl = Schemas["AuthorizeUrl"];
 export type RepoSummary = Schemas["RepoSummary"];
+export type SessionRepo = Schemas["SessionRepo"];
+export type RepoStatus = Schemas["RepoStatus"];
+export type CheckoutStatus = Schemas["CheckoutStatus"];
 export type BranchSummary = Schemas["BranchSummary"];
 export type BranchPage = Schemas["BranchPage"];
 export type HarnessKind = Schemas["HarnessKind"];
@@ -87,7 +90,6 @@ export type PushSubscriptionView = Schemas["PushSubscriptionView"];
 export type VapidPublicKey = Schemas["VapidPublicKey"];
 export type TurnSummary = Schemas["TurnSummary"];
 export type TurnPage = Schemas["TurnPage"];
-export type RepoStatus = Schemas["RepoStatus"];
 export type DirectoryListing = Schemas["DirectoryListing"];
 export type DirectoryEntry = Schemas["DirectoryEntry"];
 export type FileContent = Schemas["FileContent"];
@@ -389,11 +391,33 @@ export function readSessionFile(
   });
 }
 
-/** Diffs a session's working tree against the branch it started from. */
+/**
+ * Diffs one checkout's working tree against the branch it started from.
+ *
+ * `repo` is the checkout's directory under the workspace — a
+ * `SessionRepo.dir`. Omitted on a session whose workdir is itself the
+ * checkout (the developer-machine shape); on a provisioned session the
+ * workspace root is not a repository and the request is refused without it.
+ */
 export function getSessionDiff(
   id: string,
+  repo?: string,
 ): Promise<JsonResponse<"flyco_api::app::get_session_diff", 200>> {
-  return requestJson("GET", `/v1/sessions/${id}/diff`);
+  return requestJson("GET", `/v1/sessions/${id}/diff`, { query: { repo } });
+}
+
+/**
+ * Adds a repository to a running session's workspace.
+ *
+ * The row is written before the daemon is told, so the repository is a fact
+ * of the session whether or not a machine is listening — one provisioned
+ * later reads the whole set at boot.
+ */
+export function addSessionRepo(
+  id: string,
+  selection: JsonBody<"flyco_api::app::add_session_repo">,
+): Promise<JsonResponse<"flyco_api::app::add_session_repo", 201>> {
+  return requestJson("POST", `/v1/sessions/${id}/repos`, { json: selection });
 }
 
 /** Sends a message to a session's agent; see the module doc comment above. */
@@ -869,10 +893,10 @@ export async function pollCodexOauth(
   return { state: "pending" };
 }
 
-// --- /v1/providers/{azure,gcp}/oauth ---------------------------------------------
+// --- /v1/providers/{azure,gcp,codespaces}/oauth -----------------------------------
 
 /** The clouds whose own consent screen links an account. */
-export type ConsentCloudKind = "azure" | "gcp";
+export type ConsentCloudKind = "azure" | "gcp" | "codespaces";
 
 /** `POST /v1/providers/{cloud}/oauth/start`. */
 export type ProviderOauthStart = Schemas["ProviderOauthStart"];
@@ -914,6 +938,21 @@ export async function finishGcpOauth(
   return requestJson("POST", `/v1/providers/gcp/oauth/${attemptId}/finish`, {
     json: body,
   });
+}
+
+/**
+ * Links the GitHub account the consent came back with: the environment
+ * repository is created control-plane side, so there is nothing left to
+ * choose.
+ */
+export async function finishCodespacesOauth(
+  attemptId: string,
+): Promise<ProviderAccountView> {
+  return requestJson(
+    "POST",
+    `/v1/providers/codespaces/oauth/${attemptId}/finish`,
+    { json: {} },
+  );
 }
 
 // --- /v1/memory ----------------------------------------------------------------

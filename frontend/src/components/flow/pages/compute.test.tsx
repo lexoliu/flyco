@@ -124,13 +124,19 @@ async function useCloudShell(
 }
 
 describe("the choice", () => {
-  it("offers the four places docs/ux.md §7 names, as radios", async () => {
+  it("offers the five places docs/ux.md §7 names, as radios", async () => {
     const { findByRole, getByRole } = renderFlow(["compute"]);
     await findByRole("heading", {
       level: 1,
       name: "Where should sessions run?",
     });
-    for (const title of ["Azure", "AWS", "Google Cloud", "Your own machine"]) {
+    for (const title of [
+      "GitHub Codespaces",
+      "Azure",
+      "AWS",
+      "Google Cloud",
+      "Your own machine",
+    ]) {
       expect(
         getByRole("radio", { name: new RegExp(title) }),
       ).toBeInTheDocument();
@@ -568,7 +574,10 @@ describe("the consent road", () => {
   }
 
   /** Opens the vendor's page and answers the polls: pending once, then the consent. */
-  function consentComesBack(cloud: "azure" | "gcp", consent: unknown) {
+  function consentComesBack(
+    cloud: "azure" | "gcp" | "codespaces",
+    consent: unknown,
+  ) {
     noProgrammes();
     let polls = 0;
     route(
@@ -668,6 +677,48 @@ describe("the consent road", () => {
     expect(postedTo("/v1/providers/gcp/oauth/attempt-1/finish")).toEqual({
       project_id: "flyco-dev-1234",
     });
+  });
+
+  it("signs in with GitHub and links codespaces with no choice to make", async () => {
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    consentComesBack("codespaces", {
+      state: "authorized",
+      account: "lexoliu",
+      choices: [],
+    });
+    route(
+      (path, method) =>
+        method === "POST" &&
+        path === "/v1/providers/codespaces/oauth/attempt-1/finish",
+      () => json(linkedAccount("codespaces", "lexoliu"), 201),
+    );
+    const flow = await choosePlace(/GitHub Codespaces/);
+    const { container, findByRole, findByText, onDone } = flow;
+    await answerBonus(flow, "GitHub Codespaces", {
+      newcomer: false,
+      student: false,
+    });
+
+    await findByRole("heading", { level: 1, name: "Sign in with GitHub" });
+    expect(primary(container)).toHaveTextContent("Sign in with GitHub");
+    fireEvent.click(primary(container));
+    expect(
+      await findByText(/Waiting for you to finish in the other tab/),
+    ).toBeInTheDocument();
+    expect(opened).toHaveBeenCalledWith(
+      "https://consent.codespaces.invalid/authorize",
+      "_blank",
+      "noopener,noreferrer",
+    );
+
+    // No choice page exists: the consent's finish is the last call, and
+    // the flow ends on it.
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce(), {
+      timeout: 6000,
+    });
+    expect(
+      postedTo("/v1/providers/codespaces/oauth/attempt-1/finish"),
+    ).toEqual({});
   });
 
   it("turns a consent the control plane lost into Try again, on the same page", async () => {

@@ -1,0 +1,13 @@
+{
+  "message": "Validation Failed",
+  "errors": [
+    {
+      "resource": "Codespace",
+      "code": "invalid",
+      "field": "machine",
+      "message": "machine is not available for this repository"
+    }
+  ],
+  "documentation_url": "https://docs.github.com/rest/codespaces/codespaces#create-a-codespace-for-the-authenticated-user",
+  "status": "422"
+}

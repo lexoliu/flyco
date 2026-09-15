@@ -27,6 +27,7 @@ use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::path_id;
+use crate::github::{GithubClient, GithubOauth};
 use crate::problem::Outcome;
 use crate::provisioning;
 use crate::respond::Accepted;
@@ -208,6 +209,7 @@ impl MachineRow {
 async fn run(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     hosts: &HostRooms,
     user: UserId,
     session: SessionId,
@@ -215,7 +217,7 @@ async fn run(
 ) -> Result<flyco_provider::Machine, ApiError> {
     let row = load(db, user, session).await?;
     let machine = row.as_provider_machine()?;
-    let account = provisioning::account(db, config, user, row.provider_account_id).await?;
+    let account = provisioning::account(db, config, github, user, row.provider_account_id).await?;
 
     // A machine the user owns is acted on by asking the machine, so a host
     // that is not connected is a refusal the caller can act on — start the
@@ -283,6 +285,7 @@ fn resize_filter(row: &MachineRow) -> CatalogFilter {
 pub(crate) async fn resize_catalog(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     user: UserId,
     session: SessionId,
@@ -291,6 +294,7 @@ pub(crate) async fn resize_catalog(
     Ok(catalog(
         db,
         config,
+        github,
         kv,
         Refresh::ReadOnly,
         user,
@@ -304,17 +308,26 @@ pub(crate) async fn resize_catalog(
 async fn offered(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     user: UserId,
     row: &MachineRow,
     machine_type: &str,
 ) -> Result<MachineCatalogEntry, ApiError> {
-    catalog(db, config, kv, Refresh::ReadOnly, user, &resize_filter(row))
-        .await?
-        .entries
-        .into_iter()
-        .find(|entry| entry.machine_type == machine_type)
-        .ok_or_else(|| ApiError::MachineTypeNotOffered(machine_type.to_owned()))
+    catalog(
+        db,
+        config,
+        github,
+        kv,
+        Refresh::ReadOnly,
+        user,
+        &resize_filter(row),
+    )
+    .await?
+    .entries
+    .into_iter()
+    .find(|entry| entry.machine_type == machine_type)
+    .ok_or_else(|| ApiError::MachineTypeNotOffered(machine_type.to_owned()))
 }
 
 /// Moves a session's machine to another type and tells everyone watching.
@@ -335,6 +348,7 @@ async fn offered(
 pub(crate) async fn resize(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     rooms: &Rooms,
     hosts: &HostRooms,
@@ -343,8 +357,11 @@ pub(crate) async fn resize(
     machine_type: &str,
 ) -> Result<(), ApiError> {
     let row = load(db, user, session).await?;
-    let entry = offered(db, config, kv, user, &row, machine_type).await?;
-    apply(db, config, rooms, hosts, user, session, &row, &entry).await
+    let entry = offered(db, config, github, kv, user, &row, machine_type).await?;
+    apply(
+        db, config, github, rooms, hosts, user, session, &row, &entry,
+    )
+    .await
 }
 
 /// The agent's resize, refused when it would spend money on its own.
@@ -371,6 +388,7 @@ pub(crate) async fn resize(
 pub(crate) async fn resize_for_agent(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     rooms: &Rooms,
     hosts: &HostRooms,
@@ -379,9 +397,12 @@ pub(crate) async fn resize_for_agent(
     machine_type: &str,
 ) -> Result<(), ApiError> {
     let row = load(db, user, session).await?;
-    let entry = offered(db, config, kv, user, &row, machine_type).await?;
+    let entry = offered(db, config, github, kv, user, &row, machine_type).await?;
     on_the_agents_authority(&entry)?;
-    apply(db, config, rooms, hosts, user, session, &row, &entry).await
+    apply(
+        db, config, github, rooms, hosts, user, session, &row, &entry,
+    )
+    .await
 }
 
 /// Whether an agent may move onto this type without asking.
@@ -416,6 +437,7 @@ fn on_the_agents_authority(entry: &MachineCatalogEntry) -> Result<(), ApiError> 
 async fn apply(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     rooms: &Rooms,
     hosts: &HostRooms,
     user: UserId,
@@ -426,6 +448,7 @@ async fn apply(
     let updated = run(
         db,
         config,
+        github,
         hosts,
         user,
         session,
@@ -534,6 +557,7 @@ async fn announce_machine_change(
 pub async fn destroy_for_archive(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     hosts: &HostRooms,
     user: UserId,
     session: SessionId,
@@ -545,7 +569,8 @@ pub async fn destroy_for_archive(
 
     if row.native_id.is_some() {
         let machine = row.as_provider_machine()?;
-        let account = provisioning::account(db, config, user, row.provider_account_id).await?;
+        let account =
+            provisioning::account(db, config, github, user, row.provider_account_id).await?;
         provisioning::require_host_online(hosts, &account).await?;
         provisioning::operate(hosts, &account, &machine, provisioning::Operation::Destroy)
             .await
@@ -557,7 +582,7 @@ pub async fn destroy_for_archive(
         db,
         "UPDATE machines SET state = {destroyed}, hourly_micros = NULL, \
          storage_hourly_micros = NULL, native_id = NULL, \
-         address = NULL WHERE id = {row.id}"
+         address = NULL, bootstrap_enc = NULL WHERE id = {row.id}"
     )
     .execute()
     .await?;
@@ -581,7 +606,8 @@ pub async fn release_unbuilt(db: &Db, session: SessionId) -> Result<(), ApiError
     sql!(
         db,
         "UPDATE machines SET state = {destroyed}, hourly_micros = NULL, \
-         storage_hourly_micros = NULL WHERE session_id = {session} \
+         storage_hourly_micros = NULL, bootstrap_enc = NULL \
+         WHERE session_id = {session} \
          AND state = {provisioning} AND native_id IS NULL"
     )
     .execute()
@@ -659,15 +685,24 @@ pub struct CatalogFilter {
 async fn get_catalog(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Query(filter): Query<CatalogFilter>,
     db: Db,
     kv: Kv,
     queue: Queue,
 ) -> Outcome<Json<MachineCatalog>> {
-    catalog(&db, &config, &kv, Refresh::Ask(&queue), user.id, &filter)
-        .await
-        .map(Json)
-        .into()
+    catalog(
+        &db,
+        &config,
+        &github,
+        &kv,
+        Refresh::Ask(&queue),
+        user.id,
+        &filter,
+    )
+    .await
+    .map(Json)
+    .into()
 }
 
 /// Merges every linked account's catalog into one curated document.
@@ -690,12 +725,14 @@ async fn get_catalog(
 pub(crate) async fn catalog(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     refresh: Refresh<'_>,
     user: UserId,
     filter: &CatalogFilter,
 ) -> Result<MachineCatalog, ApiError> {
-    let mut accounts = provisioning::accounts_for(db, config, user, filter.provider).await?;
+    let mut accounts =
+        provisioning::accounts_for(db, config, github, user, filter.provider).await?;
     // Narrowed before the reads rather than after: reading the document of
     // an account nobody will look at is a round trip for nothing, and
     // asking for its refresh would put a message on the queue for nothing.
@@ -782,6 +819,7 @@ pub struct DefaultMachineQuery {
 async fn get_default_machine(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     Query(query): Query<DefaultMachineQuery>,
     db: Db,
     kv: Kv,
@@ -790,6 +828,7 @@ async fn get_default_machine(
     automatic(
         &db,
         &config,
+        &github,
         &kv,
         &queue,
         user.id,
@@ -811,9 +850,15 @@ async fn get_default_machine(
 /// and none offers a Linux type big enough for flyco to choose on its own.
 /// The two are deliberately different: the first ends by itself in seconds,
 /// and the second is a fact the user has to act on.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "choosing a machine reads the catalog, the queue, and the \
+              caller's accounts"
+)]
 pub(crate) async fn automatic(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     queue: &Queue,
     user: UserId,
@@ -826,6 +871,7 @@ pub(crate) async fn automatic(
     } = catalog(
         db,
         config,
+        github,
         kv,
         Refresh::Ask(queue),
         user,
@@ -897,6 +943,7 @@ pub(crate) async fn automatic(
 pub(crate) async fn deployable(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     user: UserId,
     choice: &MachineChoice,
@@ -907,6 +954,7 @@ pub(crate) async fn deployable(
     } = catalog(
         db,
         config,
+        github,
         kv,
         Refresh::ReadOnly,
         user,
@@ -981,6 +1029,7 @@ async fn read_machine(db: &Db, user: UserId, params: &Params) -> Result<MachineV
 async fn resize_session_machine(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     params: Params,
     Json(request): Json<ResizeMachine>,
     rooms: Rooms,
@@ -989,7 +1038,7 @@ async fn resize_session_machine(
     kv: Kv,
 ) -> Outcome<Accepted> {
     user_resize(
-        &db, &config, &kv, &rooms, &hosts, user.id, &params, &request,
+        &db, &config, &github, &kv, &rooms, &hosts, user.id, &params, &request,
     )
     .await
     .into()
@@ -1003,6 +1052,7 @@ async fn resize_session_machine(
 async fn user_resize(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     kv: &Kv,
     rooms: &Rooms,
     hosts: &HostRooms,
@@ -1014,6 +1064,7 @@ async fn user_resize(
     resize(
         db,
         config,
+        github,
         kv,
         rooms,
         hosts,
@@ -1033,6 +1084,7 @@ async fn user_resize(
 async fn stop_session_machine(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     params: Params,
     hosts: HostRooms,
     db: Db,
@@ -1040,6 +1092,7 @@ async fn stop_session_machine(
     lifecycle(
         &db,
         &config,
+        &github,
         &hosts,
         user.id,
         &params,
@@ -1070,6 +1123,7 @@ async fn stop_session_machine(
 pub(crate) async fn stop_for_flyco(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     hosts: &HostRooms,
     user: UserId,
     session: SessionId,
@@ -1083,6 +1137,7 @@ pub(crate) async fn stop_for_flyco(
     run(
         db,
         config,
+        github,
         hosts,
         user,
         session,
@@ -1096,13 +1151,14 @@ pub(crate) async fn stop_for_flyco(
 async fn lifecycle(
     db: &Db,
     config: &ApiConfig,
+    github: &impl GithubOauth,
     hosts: &HostRooms,
     user: UserId,
     params: &Params,
     operation: provisioning::Operation<'_>,
 ) -> Result<Accepted, ApiError> {
     let session: SessionId = path_id(params, "id")?;
-    run(db, config, hosts, user, session, operation).await?;
+    run(db, config, github, hosts, user, session, operation).await?;
     Ok(Accepted)
 }
 
@@ -1111,6 +1167,7 @@ async fn lifecycle(
 async fn start_session_machine(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(github): State<GithubClient>,
     params: Params,
     hosts: HostRooms,
     db: Db,
@@ -1118,6 +1175,7 @@ async fn start_session_machine(
     lifecycle(
         &db,
         &config,
+        &github,
         &hosts,
         user.id,
         &params,
@@ -1218,6 +1276,78 @@ pub async fn find(db: &Db, machine: MachineId) -> Result<Option<MachineRow>, Api
     )
     .fetch_optional()
     .await?)
+}
+
+/// The machine a codespace names, joined to the account it provisions
+/// through — the bootstrap endpoint's whole read.
+///
+/// There is deliberately no user scoping on this query: the caller is not
+/// a user, it is the codespace itself, and the join is what the endpoint's
+/// own credential check is made against rather than a scope it could be
+/// pre-applied.
+#[derive(Debug, skyzen::FromRow)]
+pub struct CodespaceRow {
+    /// The machine row's own id.
+    pub machine: MachineId,
+    /// Who owns the account — the unseal path is scoped by it.
+    pub user: UserId,
+    /// Which linked account the machine provisions through.
+    pub account: ProviderAccountId,
+    /// The sealed daemon configuration this codespace is asking for.
+    ///
+    /// `NULL` while the provision that writes it is still running — the
+    /// `409` the codespace's own retry is written for.
+    pub bootstrap_enc: Option<String>,
+}
+
+/// Finds the machine a codespace calls itself by.
+///
+/// `native_id` is the codespace's generated name, which is what
+/// `CODESPACE_NAME` reports inside it; the `provider` clause keeps the
+/// lookup honest — a codespace name can only ever name a codespaces
+/// machine, and matching another provider's row would serve one account's
+/// configuration to a token scoped to another's repository.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn codespace(db: &Db, name: &str) -> Result<Option<CodespaceRow>, ApiError> {
+    let provider = CloudProviderKind::Codespaces;
+    Ok(sql!(
+        db,
+        "SELECT machines.id AS machine, provider_accounts.user_id AS user, \
+         machines.provider_account_id AS account, machines.bootstrap_enc \
+         FROM machines JOIN provider_accounts \
+         ON provider_accounts.id = machines.provider_account_id \
+         WHERE machines.native_id = {name} AND machines.provider = {provider}"
+    )
+    .fetch_optional()
+    .await?)
+}
+
+/// Stores the configuration a codespace fetches on `postStart`, sealed
+/// exactly as the account credentials beside it are.
+///
+/// Written by the provision that created the codespace, before the
+/// provider call is even made: the machine may boot and ask before the
+/// provisioning leg has recorded its name, and both halves of that race
+/// are the codespace's own `404`/`409` retries.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn store_bootstrap(
+    db: &Db,
+    machine: MachineId,
+    bootstrap_enc: &str,
+) -> Result<(), ApiError> {
+    sql!(
+        db,
+        "UPDATE machines SET bootstrap_enc = {bootstrap_enc} WHERE id = {machine}"
+    )
+    .execute()
+    .await?;
+    Ok(())
 }
 
 /// Every machine still holding resources on one linked account.
@@ -1321,6 +1451,190 @@ pub async fn deallocate(db: &Db, machine: MachineId) -> Result<(), ApiError> {
         db,
         "UPDATE machines SET state = {deallocated}, compute_metered_at_unix = {now_unix()} \
          WHERE id = {machine}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
+// ── What the Codespaces reconcile writes ──
+//
+// GitHub suspends a codespace on its own idle clock and deletes it on its
+// own retention clock, and neither is delivered to anything flyco runs.
+// The only truth about whether one still exists is `GET
+// /user/codespaces/{name}`, so `crate::codespaces::reconcile` asks it of
+// every machine below and these are the writes its answers produce.
+
+/// A codespace flyco believes it is holding, joined to what the reconcile
+/// needs to know about the session on it.
+#[derive(Debug, skyzen::FromRow)]
+pub struct HeldCodespace {
+    /// The machine row's own id.
+    pub machine: MachineId,
+    /// The session it serves.
+    pub session: SessionId,
+    /// Who owns it — the linked account is unsealed under this id.
+    pub user_id: UserId,
+    /// Which linked account the machine provisions through.
+    pub account: ProviderAccountId,
+    /// The codespace's generated name — never `NULL` in this set, because a
+    /// machine GitHub has not yet named has nothing to reconcile.
+    pub native_id: String,
+    /// What flyco last recorded of the machine's lifecycle.
+    pub machine_state: MachineState,
+    /// What the session on it is doing.
+    pub session_state: flyco_core::SessionState,
+    /// The codespace's geography, which its create request named it by.
+    region: String,
+    /// Whether it was provisioned on interruptible capacity. Codespaces has
+    /// none, so this is always `false` — kept so the provider machine the
+    /// row rebuilds is honest rather than derived.
+    spot: bool,
+    /// The codespace's `github.com/codespaces/{name}` URL.
+    address: Option<String>,
+}
+
+impl HeldCodespace {
+    /// This codespace as a driver takes it, for the delete a reconcile
+    /// issues against one GitHub still holds in a dead state.
+    #[must_use]
+    pub fn as_provider_machine(&self) -> flyco_provider::Machine {
+        flyco_provider::Machine {
+            id: self.machine,
+            native_id: self.native_id.clone(),
+            runtime: Runtime::Vm,
+            region: self.region.clone(),
+            state: self.machine_state,
+            capacity_mode: if self.spot {
+                flyco_provider::CapacityMode::Spot
+            } else {
+                flyco_provider::CapacityMode::OnDemand
+            },
+            address: self.address.clone(),
+        }
+    }
+}
+
+/// Every codespace machine worth asking GitHub about, once per sweep.
+///
+/// Held means *exists and bills*: a machine still being built is the
+/// provisioning queue's concern, a destroyed one is already released, and
+/// a session in anything past `interrupted` has had its machine dealt with
+/// by the path that ended it. A `paused` session's machine is selected
+/// deliberately: its suspension changes the machine's billing either way.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn held_codespaces(db: &Db) -> Result<Vec<HeldCodespace>, ApiError> {
+    let provider = CloudProviderKind::Codespaces;
+    let running = MachineState::Running;
+    let deallocated = MachineState::Deallocated;
+    let active = flyco_core::SessionState::Active;
+    let paused = flyco_core::SessionState::Paused;
+    let interrupted = flyco_core::SessionState::Interrupted;
+    Ok(sql!(
+        db,
+        "SELECT machines.id AS machine, machines.session_id AS session, \
+         sessions.user_id, machines.provider_account_id AS account, \
+         machines.native_id, machines.state AS machine_state, \
+         sessions.state AS session_state, machines.region, machines.spot, \
+         machines.address \
+         FROM machines JOIN sessions ON sessions.id = machines.session_id \
+         WHERE machines.provider = {provider} AND machines.native_id IS NOT NULL \
+         AND (machines.state = {running} OR machines.state = {deallocated}) \
+         AND (sessions.state = {active} OR sessions.state = {paused} \
+              OR sessions.state = {interrupted})"
+    )
+    .fetch_all()
+    .await?)
+}
+
+/// Records that the provider suspended a machine it was holding.
+///
+/// The reconcile's write for a codespace GitHub stopped on its own: the
+/// compute meter ends here — GitHub stopped billing when it suspended, not
+/// when flyco noticed, so what little gap remains is the floor the
+/// one-minute windows already truncate — and the storage meter is left
+/// alone, because the disk is kept and billed either way. Guarded on
+/// `running` so a machine already off compute is not suspended a second
+/// time, and the boolean is how the caller tells "learned" from "already
+/// knew".
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn suspended(db: &Db, machine: MachineId) -> Result<bool, ApiError> {
+    let running = MachineState::Running;
+    let deallocated = MachineState::Deallocated;
+    let written = sql!(
+        db,
+        "UPDATE machines SET state = {deallocated}, \
+         compute_metered_at_unix = {now_unix()} \
+         WHERE id = {machine} AND state = {running}"
+    )
+    .execute()
+    .await?;
+    Ok(written.rows_written > 0)
+}
+
+/// Records that a machine off compute is running again.
+///
+/// The reconcile's write for a suspended codespace somebody started
+/// themselves — through github.com, say, where a session's codespace is one
+/// click. The compute meter restarts from the instant the run is learned,
+/// which under-bills by at most a sweep's worth of minutes, and the
+/// session's own state is *not* moved here: only the daemon's attach
+/// proves the machine is serving, so the session's move back is
+/// [`sessions::daemon_arrived`]'s.
+///
+/// Guarded on `deallocated` so a stale "running" answer cannot un-destroy
+/// a machine, and the boolean is how the caller tells whether anything
+/// changed.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn note_running(db: &Db, machine: MachineId) -> Result<bool, ApiError> {
+    let running = MachineState::Running;
+    let deallocated = MachineState::Deallocated;
+    let now = now_unix();
+    let written = sql!(
+        db,
+        "UPDATE machines SET state = {running}, \
+         compute_meter_started_at_unix = {now}, compute_metered_at_unix = {now} \
+         WHERE id = {machine} AND state = {deallocated}"
+    )
+    .execute()
+    .await?;
+    Ok(written.rows_written > 0)
+}
+
+/// Records that a machine's provider-side resource is gone for good.
+///
+/// [`destroy_for_archive`]'s write without its provider call, which is the
+/// whole of the difference: the resource this row named is already gone —
+/// deleted past its retention, failed past starting, or left behind on an
+/// account flyco can no longer unseal — and asking for it again is how that
+/// was learned. Everything billable is released with it, because nothing is
+/// left to bill against, and the provider-native names are cleared so a
+/// resume reads `native_id IS NULL` and provisions rather than starting a
+/// name that answers 404.
+///
+/// Guarded on not-`destroyed` so a redelivery cannot clear a machine that
+/// was rebuilt in the meantime.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn mark_lost(db: &Db, machine: MachineId) -> Result<(), ApiError> {
+    let destroyed = MachineState::Destroyed;
+    sql!(
+        db,
+        "UPDATE machines SET state = {destroyed}, hourly_micros = NULL, \
+         storage_hourly_micros = NULL, native_id = NULL, \
+         address = NULL, bootstrap_enc = NULL \
+         WHERE id = {machine} AND state != {destroyed}"
     )
     .execute()
     .await?;
@@ -1472,7 +1786,7 @@ pub async fn reset_for_resume(db: &Db, session: SessionId) -> Result<MachineId, 
 
     sql!(
         db,
-        "UPDATE machines SET state = {provisioning} WHERE id = {row.id}"
+        "UPDATE machines SET state = {provisioning}, bootstrap_enc = NULL WHERE id = {row.id}"
     )
     .execute()
     .await?;
