@@ -1149,12 +1149,30 @@ async fn put_latest<T: Serialize + Sync>(
         .map_err(|error| DurableObjectError::Runtime(error.to_string()))
 }
 
+/// The schema this build expects.
+///
+/// `user_version` is the durable answer to "is the schema already there":
+/// checking it costs one storage read where running every `CREATE` blind
+/// costs one per statement — and every hot path in the room (each event
+/// append, each page read, each attach) calls `ensure_schema` first. Bump
+/// it when the DDL below changes so a room built by an older build
+/// upgrades once, on its next call.
+const SCHEMA_VERSION: i64 = 1;
+
 /// Creates the room's tables if this is its first write.
 ///
 /// `AUTOINCREMENT` rather than a counter in the struct: the sequences
 /// have to be monotonic across the object being rebuilt around every
 /// event, and the database is the only thing here that guarantees it.
 async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
+    let version: i64 = db
+        .query("PRAGMA user_version")
+        .fetch_scalar()
+        .await
+        .map_err(|error| stored(&error))?;
+    if version >= SCHEMA_VERSION {
+        return Ok(());
+    }
     for statement in [
         "CREATE TABLE IF NOT EXISTS events (\
              seq     INTEGER PRIMARY KEY AUTOINCREMENT, \
@@ -1204,12 +1222,19 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
              id      TEXT    PRIMARY KEY, \
              json    TEXT    NOT NULL, \
              at_unix INTEGER NOT NULL)",
+        // The TTL sweep in `store_workdir_reply` deletes by `at_unix`;
+        // without this index every store scans the whole table.
+        "CREATE INDEX IF NOT EXISTS workdir_replies_at ON workdir_replies (at_unix)",
     ] {
         db.query(statement)
             .execute()
             .await
             .map_err(|error| stored(&error))?;
     }
+    db.query(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+        .execute()
+        .await
+        .map_err(|error| stored(&error))?;
     Ok(())
 }
 
