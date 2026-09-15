@@ -56,10 +56,11 @@ pub use handoff::{
 };
 pub use harness::{
     Availability, ClaudeOauthStart, CodexOauthPending, CodexOauthStart, CompleteClaudeOauth,
-    ContextCost, ContextUsage, ContextWindow, DriverKind, Feature, HarnessAccountView,
-    HarnessCredentialInput, HarnessEvent, HarnessFeature, HarnessKind, LinkHarnessAccount,
-    ModelChoice, ModelChoiceError, ModelOption, PermissionMode, ReportModels, ReportUsage,
-    UsageLimitHit, UsageReport, availability, builtin_models, matrix,
+    ContextCost, ContextUsage, ContextWindow, DEVIN_ID_TAILS, DriverKind, Feature,
+    HarnessAccountView, HarnessCredentialInput, HarnessEvent, HarnessFeature, HarnessKind,
+    LinkHarnessAccount, ModelChoice, ModelChoiceError, ModelOption, PermissionMode, ReportModels,
+    ReportUsage, UsageLimitHit, UsageReport, availability, builtin_models, matrix,
+    normalize_models,
 };
 pub use host::{
     ENROLLMENT_TOKEN_TTL_SECONDS, EnrollHost, EnrolledHost, Enrollment, EnrollmentToken,

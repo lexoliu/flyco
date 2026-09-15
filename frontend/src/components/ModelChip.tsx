@@ -12,7 +12,7 @@
  * the levels are the model's, so the two controls travel together, but a
  * list and a scale are different questions asked in different panels.
  */
-import { For, Show } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import { Check } from "lucide-solid";
 import Popover from "./Popover";
 import type { ModelChoice, ModelOption } from "../api/client";
@@ -20,6 +20,12 @@ import { cx } from "../lib/cx";
 import { modelLabel } from "../lib/models";
 import composer from "./Composer.module.css";
 import styles from "./ModelChip.module.css";
+
+/**
+ * Below this many rows a filter box is furniture, not help: every model
+ * fits on one screen, and reading them is faster than typing.
+ */
+const SEARCH_WORTH_IT = 8;
 
 export interface ModelChipProps {
   /** The models the agent offers. */
@@ -66,11 +72,42 @@ export default function ModelChip(props: ModelChipProps) {
         </button>
       )}
     >
-      {(close) => (
+      {(close) => {
+        // The query lives with the panel rather than the chip: a closed
+        // picker forgets it, so reopening always lands on the full list.
+        const [query, setQuery] = createSignal("");
+
+        /**
+         * The rows the box's query admits — every word has to appear
+         * somewhere in the row's own text, so `opus fast` finds
+         * `Claude Opus 5 Fast`.
+         */
+        const filtered = createMemo<readonly ModelOption[]>(() => {
+          const words = query().trim().toLowerCase().split(/\s+/).filter(Boolean);
+          if (words.length === 0) {
+            return props.models;
+          }
+          return props.models.filter((option) => {
+            const text = `${option.label} ${option.id} ${option.description}`.toLowerCase();
+            return words.every((word) => text.includes(word));
+          });
+        });
+
+        return (
         <div class={composer.popover}>
+          <Show when={props.models.length > SEARCH_WORTH_IT}>
+            <input
+              class={composer.search}
+              type="search"
+              placeholder="Search models"
+              aria-label="Search models"
+              value={query()}
+              onInput={(event) => setQuery(event.currentTarget.value)}
+            />
+          </Show>
           <p class={composer.popoverTitle}>Model</p>
           <ul class={composer.options} role="listbox" aria-label="Model">
-            <For each={props.models}>
+            <For each={filtered()}>
               {(option) => (
                 <li>
                   <button
@@ -99,8 +136,12 @@ export default function ModelChip(props: ModelChipProps) {
               )}
             </For>
           </ul>
+          <Show when={query().trim() !== "" && filtered().length === 0}>
+            <p class={composer.note}>No models match “{query().trim()}”.</p>
+          </Show>
         </div>
-      )}
+        );
+      }}
     </Popover>
   );
 }

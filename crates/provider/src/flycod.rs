@@ -22,8 +22,8 @@ use std::path::PathBuf;
 
 use flyco_core::machine::SessionMachine;
 use flyco_core::{
-    BranchName, CloudProviderKind, DriverKind, HarnessKind, MachineOrigin, McpServerConfig,
-    McpServerMount, PermissionMode, RepoSlug, Runtime, SessionId,
+    BranchName, CloudProviderKind, DEVIN_ID_TAILS, DriverKind, HarnessKind, MachineOrigin,
+    McpServerConfig, McpServerMount, PermissionMode, RepoSlug, Runtime, SessionId,
 };
 use serde::Serialize;
 
@@ -404,6 +404,10 @@ struct Acp<'a> {
     model_option: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     effort_option: Option<&'static str>,
+    /// Suffixes the agent hangs after the effort word inside a fused
+    /// model id — non-empty marks the ids as effort-fused.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    fused_effort_tails: &'a [&'static str],
     permission_mode: PermissionMode,
     modes: BTreeMap<PermissionMode, AcpMode>,
     methods: AcpMethods,
@@ -829,6 +833,7 @@ fn codex_acp<'a>(
         effort,
         model_option: "model",
         effort_option: Some("reasoning_effort"),
+        fused_effort_tails: &[],
         permission_mode,
         modes: codex_modes(),
         methods: codex_methods(),
@@ -848,6 +853,7 @@ fn codex_acp<'a>(
 fn devin_acp<'a>(
     credential: &DevinCredential,
     model: &'a str,
+    effort: Option<&'a str>,
     permission_mode: PermissionMode,
     mounts: &[McpServerMount],
 ) -> Acp<'a> {
@@ -872,10 +878,12 @@ fn devin_acp<'a>(
         env,
         files,
         model: Some(model),
-        // Devin has no effort dial: the level is part of the model id.
-        effort: None,
+        // Devin has no effort dial: the level is part of the model id,
+        // folded back in by the daemon through `fused_effort_tails`.
+        effort,
         model_option: "model",
         effort_option: None,
+        fused_effort_tails: &DEVIN_ID_TAILS,
         permission_mode,
         modes: devin_modes(),
         // No extension methods are configured: Devin's vendor surface is
@@ -964,6 +972,7 @@ pub fn render(bootstrap: &DaemonBootstrap) -> Result<String, RenderError> {
             Some(devin_acp(
                 credential,
                 model,
+                effort,
                 bootstrap.permission_mode,
                 &bootstrap.mcp_servers,
             )),

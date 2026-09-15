@@ -142,8 +142,9 @@ bun = "bun"
 # program = "devin"
 # args = ["acp"]
 # env = { XDG_DATA_HOME = "/var/lib/flyco/devin/data" }
-# model = "swe-2-max"
-# effort_option = "reasoning_effort"
+# model = "swe-2"
+# effort = "max"
+# fused_effort_tails = ["-1m", "-fast", "-priority"]
 # permission_mode = "default"
 #
 # [acp.methods.compact]

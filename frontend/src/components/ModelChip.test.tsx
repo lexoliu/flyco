@@ -61,4 +61,63 @@ describe("ModelChip", () => {
 
     expect(onChoose).toHaveBeenCalledWith({ model: "gpt-5.5" });
   });
+
+  it("offers no search box on a list that already fits on one screen", async () => {
+    const { getByRole, findByRole, queryByRole } = render(() => (
+      <ModelChip models={CODEX} choice={{ model: "gpt-5.5" }} onChoose={vi.fn()} />
+    ));
+
+    getByRole("button", { name: "GPT-5.5" }).click();
+
+    await findByRole("option", { name: /GPT-5.5/ });
+    expect(queryByRole("searchbox")).not.toBeInTheDocument();
+  });
+
+  it("filters a long list on every word of the query", async () => {
+    const devin = Array.from({ length: 12 }, (_, index) => ({
+      id: `model-${index}`,
+      label: `Model ${index}`,
+      description: index === 7 ? "A model on Devin, fast." : "A model on Devin.",
+      is_default: index === 0,
+      efforts: [],
+      default_effort: null,
+    }));
+    const { getByRole, findAllByRole, queryAllByRole } = render(() => (
+      <ModelChip models={devin} choice={{ model: "model-0" }} onChoose={vi.fn()} />
+    ));
+
+    getByRole("button", { name: "Model 0" }).click();
+    const box = getByRole("searchbox", { name: "Search models" });
+    expect(await findAllByRole("option")).toHaveLength(12);
+
+    box.value = "7 fast";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+
+    const options = await findAllByRole("option");
+    expect(options).toHaveLength(1);
+    expect(options[0]).toHaveTextContent("Model 7");
+    expect(queryAllByRole("option")).toHaveLength(1);
+  });
+
+  it("says so when nothing matches", async () => {
+    const devin = Array.from({ length: 9 }, (_, index) => ({
+      id: `model-${index}`,
+      label: `Model ${index}`,
+      description: "A model on Devin.",
+      is_default: index === 0,
+      efforts: [],
+      default_effort: null,
+    }));
+    const { getByRole, findByText, queryAllByRole } = render(() => (
+      <ModelChip models={devin} choice={{ model: "model-0" }} onChoose={vi.fn()} />
+    ));
+
+    getByRole("button", { name: "Model 0" }).click();
+    const box = getByRole("searchbox", { name: "Search models" });
+    box.value = "zephyr";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(await findByText("No models match “zephyr”.")).toBeInTheDocument();
+    expect(queryAllByRole("option")).toHaveLength(0);
+  });
 });
