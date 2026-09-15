@@ -546,7 +546,10 @@ user signed in with usually *is* the credential the link stores.
    says the sign-in predates the grant and falls back to the OAuth road
    (`…/codespaces/oauth/start`, the same poll-and-finish shape as the
    other clouds), which widens it. The finish runs the same link the
-   direct route does.
+   direct route does. That road shares the sign-in's callback —
+   `/v1/auth/github/callback` — because the GitHub OAuth app registers one
+   URI per hostname; the `state`, not the path, decides which flow is
+   coming back.
 
 Sessions then run inside the user's own codespaces — GitHub bills the
 account's monthly free hours first, and a codespace's own idle clock stops

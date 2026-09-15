@@ -108,7 +108,6 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::oauth::callback",
     "flyco_api::provider_accounts::unlink_provider",
     "flyco_api::provider_oauth::azure_callback",
-    "flyco_api::provider_oauth::codespaces_callback",
     "flyco_api::provider_oauth::gcp_callback",
     "flyco_api::push::unsubscribe_push",
     "flyco_api::skills::delete_skill",

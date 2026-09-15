@@ -140,11 +140,14 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * `GET /v1/auth/github/callback` — completes a GitHub sign-in.
-         * @description `GET /v1/auth/github/callback` — completes a GitHub sign-in.
+         * `GET /v1/auth/github/callback` — completes whichever GitHub flow is returning: a Codespaces link when the `state` names a provider attempt, a sign-in when it names one of this module's own.
+         * @description `GET /v1/auth/github/callback` — completes whichever GitHub flow is
+         *     returning: a Codespaces link when the `state` names a provider attempt,
+         *     a sign-in when it names one of this module's own.
          *
-         *     Consumes the `state`, exchanges the code, upserts the account, and sends
-         *     the browser to the SPA with the session token in the URL fragment.
+         *     For a sign-in: consumes the `state`, exchanges the code, upserts the
+         *     account, and sends the browser to the SPA with the session token in the
+         *     URL fragment.
          *
          *     Deliberately not annotated with `#[skyzen::openapi]`: the macro emits
          *     module-level items that mention every argument type, and this handler is
@@ -1100,30 +1103,6 @@ export interface paths {
          *     the OAuth flow instead.
          */
         post: operations["flyco_api::provider_oauth::codespaces_link"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/providers/codespaces/oauth/callback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * `GET /v1/providers/codespaces/oauth/callback` — records what GitHub said.
-         * @description `GET /v1/providers/codespaces/oauth/callback` — records what GitHub
-         *     said.
-         *
-         *     Public, for the reason [`azure_callback`] is. Same OAuth app as the
-         *     sign-in, on its own registered URI.
-         */
-        get: operations["flyco_api::provider_oauth::codespaces_callback"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3085,13 +3064,6 @@ export interface components {
             spent: components["schemas"]["Usd"];
             /** @description How far through the budget the session is. */
             stage: components["schemas"]["BudgetStage"];
-        };
-        /** @description Query string GitHub appends when it redirects back. */
-        Callback: {
-            /** @description The single-use authorization code. */
-            code: string;
-            /** @description The `state` this control plane minted in [`start`]. */
-            state: string;
         };
         /**
          * @description Narrows the machine catalog.
@@ -6650,7 +6622,9 @@ export interface operations {
     "flyco_api::oauth::callback": {
         parameters: {
             query: {
-                code: string;
+                code?: string | null;
+                error?: string | null;
+                error_description?: string | null;
                 state: string;
             };
             header?: never;
@@ -8615,29 +8589,6 @@ export interface operations {
                         linked_at_unix: number;
                     };
                 };
-            };
-        };
-    };
-    "flyco_api::provider_oauth::codespaces_callback": {
-        parameters: {
-            query: {
-                code?: string | null;
-                error?: string | null;
-                error_description?: string | null;
-                state: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The browser is sent on to the flyco web app. */
-            303: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };

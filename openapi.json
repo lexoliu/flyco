@@ -429,17 +429,44 @@
     },
     "/v1/auth/github/callback": {
       "get": {
-        "summary": "`GET /v1/auth/github/callback` — completes a GitHub sign-in.",
-        "description": "`GET /v1/auth/github/callback` — completes a GitHub sign-in.\n\nConsumes the `state`, exchanges the code, upserts the account, and sends\nthe browser to the SPA with the session token in the URL fragment.\n\nDeliberately not annotated with `#[skyzen::openapi]`: the macro emits\nmodule-level items that mention every argument type, and this handler is\ngeneric over [`GithubOauth`], whose parameter does not exist at module\nscope. The route still appears in the exported document, without its\nparameter schemas.",
+        "summary": "`GET /v1/auth/github/callback` — completes whichever GitHub flow is returning: a Codespaces link when the `state` names a provider attempt, a sign-in when it names one of this module's own.",
+        "description": "`GET /v1/auth/github/callback` — completes whichever GitHub flow is\nreturning: a Codespaces link when the `state` names a provider attempt,\na sign-in when it names one of this module's own.\n\nFor a sign-in: consumes the `state`, exchanges the code, upserts the\naccount, and sends the browser to the SPA with the session token in the\nURL fragment.\n\nDeliberately not annotated with `#[skyzen::openapi]`: the macro emits\nmodule-level items that mention every argument type, and this handler is\ngeneric over [`GithubOauth`], whose parameter does not exist at module\nscope. The route still appears in the exported document, without its\nparameter schemas.",
         "operationId": "flyco_api::oauth::callback",
         "parameters": [
           {
             "name": "code",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "string",
+              "type": [
+                "string",
+                "null"
+              ],
               "description": "The single-use authorization code."
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The vendor's machine-readable refusal, when it refused."
+            }
+          },
+          {
+            "name": "error_description",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Its explanation."
             }
           },
           {
@@ -448,7 +475,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "The `state` this control plane minted in [`start`]."
+              "description": "The `state` this control plane minted in the matching `start`."
             }
           }
         ],
@@ -3649,65 +3676,6 @@
                 }
               }
             }
-          }
-        }
-      }
-    },
-    "/v1/providers/codespaces/oauth/callback": {
-      "get": {
-        "summary": "`GET /v1/providers/codespaces/oauth/callback` — records what GitHub said.",
-        "description": "`GET /v1/providers/codespaces/oauth/callback` — records what GitHub\nsaid.\n\nPublic, for the reason [`azure_callback`] is. Same OAuth app as the\nsign-in, on its own registered URI.",
-        "operationId": "flyco_api::provider_oauth::codespaces_callback",
-        "parameters": [
-          {
-            "name": "code",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "description": "The single-use authorization code."
-            }
-          },
-          {
-            "name": "error",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "description": "The vendor's machine-readable refusal, when it refused."
-            }
-          },
-          {
-            "name": "error_description",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "description": "Its explanation."
-            }
-          },
-          {
-            "name": "state",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "description": "The `state` this control plane minted in the matching `start`."
-            }
-          }
-        ],
-        "responses": {
-          "303": {
-            "description": "The browser is sent on to the flyco web app."
           }
         }
       }
@@ -8617,24 +8585,6 @@
           "stage": {
             "$ref": "#/components/schemas/BudgetStage",
             "description": "How far through the budget the session is."
-          }
-        }
-      },
-      "Callback": {
-        "type": "object",
-        "description": "Query string GitHub appends when it redirects back.",
-        "required": [
-          "code",
-          "state"
-        ],
-        "properties": {
-          "code": {
-            "type": "string",
-            "description": "The single-use authorization code."
-          },
-          "state": {
-            "type": "string",
-            "description": "The `state` this control plane minted in [`start`]."
           }
         }
       },

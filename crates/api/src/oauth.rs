@@ -8,9 +8,13 @@
 //! The token rides the redirect's URL *fragment*, never its query string: a
 //! fragment is not sent to the server, so it stays out of access logs, out
 //! of `Referer` headers, and out of anything a proxy records.
+//!
+//! `callback` is also where a Codespaces link comes back: the OAuth app
+//! registers one URI per hostname, so the two GitHub flows share this path
+//! and the `state` — sign-in and provider-attempt states live in disjoint
+//! key-value spaces — decides which one a returning browser was in.
 
 use flyco_core::AuthorizeUrl;
-use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::utils::{Json, State};
 use skyzen_services::{Db, Kv};
@@ -21,6 +25,7 @@ use crate::crypto::random_token;
 use crate::error::ApiError;
 use crate::github::{GithubClient, GithubOauth, SCOPE};
 use crate::problem::Outcome;
+use crate::provider_oauth::{self, ProviderCallback};
 use crate::respond::SeeOther;
 use crate::{expiring, session, users};
 
@@ -37,15 +42,6 @@ const POST_LOGIN_PATH: &str = "/auth/complete";
 /// Fragment parameter the SPA reads the session token out of.
 const TOKEN_PARAM: &str = "token";
 
-/// Query string GitHub appends when it redirects back.
-#[derive(Debug, Deserialize, skyzen::ToSchema)]
-pub struct Callback {
-    /// The single-use authorization code.
-    code: String,
-    /// The `state` this control plane minted in [`start`].
-    state: String,
-}
-
 /// GitHub's authorize endpoint as a parsed URL.
 fn authorize_endpoint() -> Url {
     Url::parse(AUTHORIZE_URL).expect("the GitHub authorize URL is a valid absolute URL")
@@ -53,9 +49,9 @@ fn authorize_endpoint() -> Url {
 
 /// GitHub's authorize URL for one redirect URI and scope set.
 ///
-/// The sign-in and the Codespaces link both begin at the same endpoint;
-/// what differs between them is which callback the browser returns to and
-/// what the token is granted.
+/// The sign-in and the Codespaces link both begin at the same endpoint and
+/// return to the same callback; what differs between them is the `state`
+/// minted for each and what the token is granted.
 pub(crate) fn authorize_url(client_id: &str, redirect_uri: &Url, scope: &str, state: &str) -> Url {
     let mut authorize_url = authorize_endpoint();
     authorize_url
@@ -97,10 +93,13 @@ async fn begin(config: &ApiConfig, kv: &Kv) -> Result<Json<AuthorizeUrl>, ApiErr
     }))
 }
 
-/// `GET /v1/auth/github/callback` — completes a GitHub sign-in.
+/// `GET /v1/auth/github/callback` — completes whichever GitHub flow is
+/// returning: a Codespaces link when the `state` names a provider attempt,
+/// a sign-in when it names one of this module's own.
 ///
-/// Consumes the `state`, exchanges the code, upserts the account, and sends
-/// the browser to the SPA with the session token in the URL fragment.
+/// For a sign-in: consumes the `state`, exchanges the code, upserts the
+/// account, and sends the browser to the SPA with the session token in the
+/// URL fragment.
 ///
 /// Deliberately not annotated with `#[skyzen::openapi]`: the macro emits
 /// module-level items that mention every argument type, and this handler is
@@ -109,7 +108,7 @@ async fn begin(config: &ApiConfig, kv: &Kv) -> Result<Json<AuthorizeUrl>, ApiErr
 /// parameter schemas.
 #[skyzen::openapi]
 pub async fn callback(
-    Query(callback): Query<Callback>,
+    Query(callback): Query<ProviderCallback>,
     State(config): State<ApiConfig>,
     State(github): State<GithubClient>,
     kv: Kv,
@@ -119,12 +118,20 @@ pub async fn callback(
 }
 
 async fn complete(
-    callback: Callback,
+    callback: ProviderCallback,
     config: &ApiConfig,
     github: &GithubClient,
     kv: &Kv,
     db: &Db,
 ) -> Result<SeeOther, ApiError> {
+    // A provider-attempt state means the browser is coming back from a
+    // link road, not a sign-in — claim it before the sign-in store is
+    // asked, and let its own outcome decide the redirect.
+    if let Some(redirect) = provider_oauth::redeem_codespaces(config, github, kv, &callback).await?
+    {
+        return Ok(redirect);
+    }
+
     if expiring::take::<()>(kv, &state_key(&callback.state))
         .await?
         .is_none()
@@ -136,7 +143,7 @@ async fn complete(
         .exchange_code(
             config.github_client_id(),
             config.github_client_secret(),
-            &callback.code,
+            callback.github_code()?,
             config.redirect_uri().as_str(),
         )
         .await?;

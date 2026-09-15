@@ -74,13 +74,6 @@ pub const AZURE_CALLBACK_PATH: &str = "/v1/providers/azure/oauth/callback";
 /// Where Google returns the browser.
 pub const GCP_CALLBACK_PATH: &str = "/v1/providers/gcp/oauth/callback";
 
-/// Where GitHub returns the browser for a Codespaces link.
-///
-/// A second callback on the same OAuth app as the sign-in's: the two flows
-/// ask for different scopes, and one path serving both would have to guess
-/// which a returning browser was in the middle of.
-pub const CODESPACES_CALLBACK_PATH: &str = "/v1/providers/codespaces/oauth/callback";
-
 /// Where the SPA takes over once the browser is back.
 const RETURN_PATH: &str = "/connect/return";
 
@@ -264,7 +257,9 @@ pub struct ProviderCallback {
     #[serde(default)]
     code: Option<String>,
     /// The `state` this control plane minted in the matching `start`.
-    state: String,
+    // `pub(crate)` because `crate::oauth::complete` reads it for the
+    // sign-in half of the shared GitHub callback.
+    pub(crate) state: String,
     /// The vendor's machine-readable refusal, when it refused.
     #[serde(default)]
     error: Option<String>,
@@ -292,6 +287,15 @@ impl ProviderCallback {
         self.code.as_deref().ok_or_else(|| {
             provider.rejected("the sign-in came back with neither a code nor a reason".to_owned())
         })
+    }
+
+    /// The code, or GitHub's own reason there is none.
+    ///
+    /// [`code`](Self::code) without naming a provider, for the one caller
+    /// that is not a link road: the shared GitHub callback's sign-in half,
+    /// whose refusal is the same `GithubRejected`.
+    pub(crate) fn github_code(&self) -> Result<&str, ApiError> {
+        self.code(Provider::Codespaces)
     }
 }
 
@@ -355,7 +359,10 @@ async fn begin(
         ),
         Provider::Codespaces => crate::oauth::authorize_url(
             config.github_client_id(),
-            config.codespaces_oauth_redirect_uri(),
+            // The sign-in's own callback: the OAuth app registers one URI
+            // per hostname, and which flow a return belongs to is a
+            // question the `state` answers, not the path it lands on.
+            config.redirect_uri(),
             SCOPE,
             &state,
         ),
@@ -855,20 +862,28 @@ pub async fn codespaces_start(
         .into()
 }
 
-/// `GET /v1/providers/codespaces/oauth/callback` — records what GitHub
-/// said.
+/// Redeems a Codespaces return out of the shared GitHub callback.
 ///
-/// Public, for the reason [`azure_callback`] is. Same OAuth app as the
-/// sign-in, on its own registered URI.
-#[skyzen::openapi]
-pub async fn codespaces_callback(
-    Query(callback): Query<ProviderCallback>,
-    State(config): State<ApiConfig>,
-    State(github): State<GithubClient>,
-    kv: Kv,
-) -> Outcome<SeeOther> {
-    let outcome = record_codespaces(&config, &github, &kv, &callback).await;
-    Ok(returned(&config, Provider::Codespaces, outcome)).into()
+/// The OAuth app registers one callback URI per hostname, so a Codespaces
+/// consent comes back on the sign-in's own path and
+/// [`crate::oauth::callback`] asks this first: `Some` — the redirect the
+/// return page needs — when the `state` named a codespaces attempt, `None`
+/// when it did not, leaving the sign-in to claim it. A miss is
+/// `UnknownOauthState` from [`by_state`] and nothing else: the pointer is
+/// *taken* on a hit, so the state still redeems exactly once.
+pub(crate) async fn redeem_codespaces(
+    config: &ApiConfig,
+    github: &GithubClient,
+    kv: &Kv,
+    callback: &ProviderCallback,
+) -> Result<Option<SeeOther>, ApiError> {
+    let (key, attempt) = match by_state(kv, Provider::Codespaces, &callback.state).await {
+        Ok(found) => found,
+        Err(ApiError::UnknownOauthState) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let outcome = record_codespaces(config, github, kv, callback, &key, attempt).await;
+    Ok(Some(returned(config, Provider::Codespaces, outcome)))
 }
 
 /// Redeems what GitHub sent back: the token, the account it acts as, and
@@ -888,7 +903,7 @@ async fn sign_in_codespaces(
             config.github_client_id(),
             config.github_client_secret(),
             callback.code(Provider::Codespaces)?,
-            config.codespaces_oauth_redirect_uri().as_str(),
+            config.redirect_uri().as_str(),
         )
         .await?;
     let identity = github.current_user(&grant.token).await?;
@@ -928,17 +943,19 @@ struct CodespacesSignIn {
     included_core_hours: u32,
 }
 
+/// Writes what a returned consent proved onto the attempt it belongs to.
 async fn record_codespaces(
     config: &ApiConfig,
     github: &GithubClient,
     kv: &Kv,
     callback: &ProviderCallback,
+    key: &str,
+    mut attempt: Attempt,
 ) -> Result<(), ApiError> {
-    let (key, mut attempt) = by_state(kv, Provider::Codespaces, &callback.state).await?;
     let signed_in = match sign_in_codespaces(config, github, callback).await {
         Ok(signed_in) => signed_in,
         Err(error) => {
-            record_failure(kv, &key, attempt, &error).await?;
+            record_failure(kv, key, attempt, &error).await?;
             return Err(error);
         }
     };
@@ -956,7 +973,7 @@ async fn record_codespaces(
             included_core_hours: signed_in.included_core_hours,
         },
     };
-    expiring::put(kv, &key, &attempt, ATTEMPT_TTL_SECONDS).await?;
+    expiring::put(kv, key, &attempt, ATTEMPT_TTL_SECONDS).await?;
     Ok(())
 }
 
@@ -1186,16 +1203,17 @@ async fn link_codespaces_account(
     .await
 }
 
-/// The three public callbacks.
+/// The two public callbacks.
 ///
 /// Public because they cannot be anything else: a browser returning from a
 /// cloud vendor carries no flyco credential. Each authenticates itself with
-/// the single-use `state` it was minted.
+/// the single-use `state` it was minted. GitHub's Codespaces return is the
+/// exception: it shares the sign-in callback in [`crate::oauth`], which
+/// routes it back here by `state`.
 pub fn public_routes() -> Vec<RouteNode> {
     Route::new((
         AZURE_CALLBACK_PATH.at(azure_callback),
         GCP_CALLBACK_PATH.at(gcp_callback),
-        CODESPACES_CALLBACK_PATH.at(codespaces_callback),
     ))
     .into_route_nodes()
 }
