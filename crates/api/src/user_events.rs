@@ -114,18 +114,44 @@ fn internal(headers: &Headers) -> Result<(), ApiError> {
     }
 }
 
+/// The schema this build expects.
+///
+/// `user_version` is the durable answer to "is the schema already there":
+/// checking it costs one storage read where running every `CREATE` blind
+/// costs one per statement — and this object runs the check on every
+/// publish and every stream open. Bump it when the DDL below changes so a
+/// buffer built by an older build upgrades once, on its next call.
+const SCHEMA_VERSION: i64 = 1;
+
 /// Creates the buffer table if this is the object's first write.
 async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
-    db.query(
+    let version: i64 = db
+        .query("PRAGMA user_version")
+        .fetch_scalar()
+        .await
+        .map_err(|error| DurableObjectError::Runtime(error.to_string()))?;
+    if version >= SCHEMA_VERSION {
+        return Ok(());
+    }
+    for statement in [
         "CREATE TABLE IF NOT EXISTS user_events (\
              seq     INTEGER PRIMARY KEY AUTOINCREMENT, \
              session TEXT    NOT NULL, \
              json    TEXT    NOT NULL, \
              at_unix INTEGER NOT NULL)",
-    )
-    .execute()
-    .await
-    .map_err(|error| DurableObjectError::Runtime(error.to_string()))?;
+        // The TTL sweep in `publish` deletes by `at_unix`; without this
+        // index every publish scans the whole buffer.
+        "CREATE INDEX IF NOT EXISTS user_events_at ON user_events (at_unix)",
+    ] {
+        db.query(statement)
+            .execute()
+            .await
+            .map_err(|error| DurableObjectError::Runtime(error.to_string()))?;
+    }
+    db.query(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+        .execute()
+        .await
+        .map_err(|error| DurableObjectError::Runtime(error.to_string()))?;
     Ok(())
 }
 
