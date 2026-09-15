@@ -11,7 +11,7 @@ use flyco_core::{
     SessionId, SpendEvent, SpendEventId, SpendKind, Usd,
 };
 use skyzen::sql;
-use skyzen_services::Db;
+use skyzen_services::{BatchStatement, Db};
 
 use crate::clock::now_unix;
 use crate::error::ApiError;
@@ -86,7 +86,13 @@ pub async fn view(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
 
 /// Replays one budget, persists newly crossed thresholds in the delivery
 /// outbox, and refreshes its cache.
-async fn reconcile(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
+///
+/// `pub(crate)` for the metering sweep: it records a whole machine's
+/// backlog of window events in one batch and reconciles once at the end,
+/// because replaying the ledger per window is O(events) each and a busy
+/// budget once outspent the cron's CPU budget before the sweep's other
+/// legs could run.
+pub(crate) async fn reconcile(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
     let row: BudgetRow = sql!(
         db,
         "SELECT session_id, limit_micros, stage FROM budgets WHERE id = {budget}"
@@ -191,26 +197,38 @@ pub async fn record(
     record_at(db, budget, kind, amount, detail, now_unix(), None).await
 }
 
-/// Appends one uniquely keyed metering window.
+/// The spend event one meter window contributes, held for a batch write.
+///
+/// The metering sweep writes a machine's windows through
+/// [`Db::execute_batch`] — an atomic unit on every backend — rather than
+/// one statement per window, because a machine's backlog after an
+/// interruption is thousands of windows and each round trip is billed
+/// against the cron's CPU budget. Reconciliation is the caller's, run once
+/// after the batch rather than once per event, for the same reason.
 ///
 /// A repeated key is an at-least-once scheduled delivery of the same window
-/// and is ignored. Reconciliation still runs, so a failure after the ledger
-/// insert but before its threshold outbox write repairs itself on retry.
-///
-/// # Errors
-///
-/// Returns [`ApiError`] if the ledger, outbox, or budget cache cannot be
-/// read or written.
-pub async fn record_metered(
-    db: &Db,
+/// and is ignored, so a batch retried after a crash records nothing twice.
+#[must_use]
+pub(crate) fn metered_statement(
     budget: BudgetId,
     kind: SpendKind,
     amount: Usd,
     detail: &str,
     at_unix: u64,
     meter_key: &str,
-) -> Result<(), ApiError> {
-    record_at(db, budget, kind, amount, detail, at_unix, Some(meter_key)).await
+) -> BatchStatement {
+    BatchStatement::new(
+        "INSERT OR IGNORE INTO spend_events \
+         (id, budget_id, kind, amount_micros, at_unix, detail, meter_key) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(SpendEventId::generate())
+    .bind(budget)
+    .bind(kind)
+    .bind(amount)
+    .bind(at_unix)
+    .bind(detail)
+    .bind(Some(meter_key.to_owned()))
 }
 
 async fn record_at(
