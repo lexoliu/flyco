@@ -59,6 +59,7 @@ pub mod respond;
 pub mod responses;
 pub mod room;
 pub mod rooms;
+pub mod row_budget;
 pub mod session;
 pub mod session_repos;
 pub mod sessions;

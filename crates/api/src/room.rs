@@ -416,6 +416,14 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
     if rows.is_empty() {
         return Ok(crate::sse::Poll::Idle);
     }
+    // The poll just drained `rows` of backlog — bill them. An idle poll
+    // reads nothing and is billed nothing: a stream's keepalive cadence
+    // must not spend the budget a backlog could.
+    crate::row_budget::charge_reads(db, rows.len() as u64)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "a command stream hit the row budget");
+        })?;
     feed.cursor = rows.last().map_or(feed.cursor, |row| row.seq);
     Ok(crate::sse::Poll::Emit(
         rows.iter()
@@ -1157,7 +1165,7 @@ async fn put_latest<T: Serialize + Sync>(
 /// append, each page read, each attach) calls `ensure_schema` first. Bump
 /// it when the DDL below changes so a room built by an older build
 /// upgrades once, on its next call.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Creates the room's tables if this is its first write.
 ///
@@ -1225,6 +1233,10 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
         // The TTL sweep in `store_workdir_reply` deletes by `at_unix`;
         // without this index every store scans the whole table.
         "CREATE INDEX IF NOT EXISTS workdir_replies_at ON workdir_replies (at_unix)",
+        // The room's row-read ledger — one row per UTC day, debited by
+        // `row_budget::charge_reads`, and the circuit breaker that keeps a
+        // runaway reader here from spending the account's quota.
+        crate::row_budget::SCHEMA,
     ] {
         db.query(statement)
             .execute()
@@ -1310,6 +1322,10 @@ async fn page(headers: &Headers, after: u64, db: &DurableDb) -> Result<Json<Even
     // One row past the page tells the caller whether to come back,
     // without a second `COUNT(*)` over a table that only grows.
     let limit = EVENT_PAGE_LIMIT + 1;
+    // Bill the page's bound before reading: a room whose day is spent is
+    // refused for the ledger's one row rather than the `limit` it asked
+    // for — the case a runaway follower makes hot.
+    crate::row_budget::charge_reads(db, u64::from(limit)).await?;
     let rows: Vec<EventRow> = sql!(
         db,
         "SELECT seq, json, at_unix FROM events WHERE seq > {after} ORDER BY seq LIMIT {limit}"
