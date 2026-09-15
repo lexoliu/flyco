@@ -12,8 +12,8 @@ import type { HarnessCommand } from "../api/wire";
  * an argument, one that takes none, a plugin-qualified skill, the
  * harness's own `compact`, which flyco routes to its own request instead,
  * and the five the palette drops outright — `context` and `usage` are
- * the ring's panel, `model` the model chip's, `effort` the effort
- * chip's, `goal` its own chip.
+ * the ring's panel, `model` and `effort` the model chip's, `goal` its
+ * own chip.
  */
 const COMMANDS: HarnessCommand[] = [
   {

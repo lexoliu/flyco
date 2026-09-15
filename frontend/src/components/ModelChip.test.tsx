@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render } from "@solidjs/testing-library";
+import { fireEvent, render } from "@solidjs/testing-library";
 import ModelChip from "./ModelChip";
 import type { ModelOption } from "../api/client";
 
@@ -23,19 +23,39 @@ const CODEX: ModelOption[] = [
   },
 ];
 
+/** A list carrying a model that takes no effort. */
+const WITH_EFFORTLESS: ModelOption[] = [
+  ...CODEX,
+  {
+    id: "haiku",
+    label: "Haiku",
+    description: "Haiku 4.5 · Fastest for quick answers",
+    is_default: false,
+    efforts: [],
+    default_effort: null,
+  },
+];
+
 describe("ModelChip", () => {
-  it("reads the model's name, never the id — effort is the next chip's business", () => {
+  it("reads the model's name and chosen level as words, never the ids", () => {
     const { getByRole, queryByText } = render(() => (
-      <ModelChip models={CODEX} choice={{ model: "gpt-5.5", effort: "high" }} onChoose={vi.fn()} />
+      <ModelChip models={CODEX} choice={{ model: "gpt-5.5", effort: "xhigh" }} onChoose={vi.fn()} />
     ));
 
+    expect(getByRole("button", { name: "GPT-5.5 · Extra high" })).toBeInTheDocument();
+    expect(queryByText("xhigh")).not.toBeInTheDocument();
+  });
+
+  it("reads just the model while its own effort stands", () => {
+    const { getByRole } = render(() => (
+      <ModelChip models={CODEX} choice={{ model: "gpt-5.5" }} onChoose={vi.fn()} />
+    ));
     expect(getByRole("button", { name: "GPT-5.5" })).toBeInTheDocument();
-    expect(queryByText("gpt-5.5")).not.toBeInTheDocument();
   });
 
   it("lists every model with the harness's own description, and marks the chosen one", async () => {
     const { getByRole, findByRole } = render(() => (
-      <ModelChip models={CODEX} choice={{ model: "gpt-5.6-terra" }} onChoose={vi.fn()} />
+      <ModelChip models={WITH_EFFORTLESS} choice={{ model: "gpt-5.6-terra" }} onChoose={vi.fn()} />
     ));
 
     getByRole("button", { name: "GPT-5.6-Terra" }).click();
@@ -43,7 +63,7 @@ describe("ModelChip", () => {
     const chosen = await findByRole("option", { name: /GPT-5.6-Terra/ });
     expect(chosen).toHaveAttribute("aria-selected", "true");
     expect(chosen).toHaveTextContent("Balanced agentic coding model for everyday work.");
-    expect(getByRole("option", { name: /GPT-5.5/ })).toHaveAttribute("aria-selected", "false");
+    expect(getByRole("option", { name: /Haiku/ })).toHaveAttribute("aria-selected", "false");
   });
 
   it("starts a new model on its own default effort rather than carrying the old one", async () => {
@@ -56,15 +76,158 @@ describe("ModelChip", () => {
       />
     ));
 
-    getByRole("button", { name: "GPT-5.6-Terra" }).click();
+    getByRole("button", { name: "GPT-5.6-Terra · Ultra" }).click();
     (await findByRole("option", { name: /GPT-5.5/ })).click();
 
     expect(onChoose).toHaveBeenCalledWith({ model: "gpt-5.5" });
   });
 
+  it("drills into the effort slider for a model that takes it, rather than closing", async () => {
+    const onChoose = vi.fn();
+    const { getByRole, findByRole, queryByRole } = render(() => (
+      <ModelChip
+        models={CODEX}
+        choice={{ model: "gpt-5.6-terra", effort: "high" }}
+        onChoose={onChoose}
+      />
+    ));
+
+    getByRole("button", { name: "GPT-5.6-Terra · High" }).click();
+    (await findByRole("option", { name: /GPT-5.5/ })).click();
+
+    expect(onChoose).toHaveBeenCalledWith({ model: "gpt-5.5" });
+    // The panel is still open on the slider — `Default` and the picked
+    // model's own four levels — with the thumb back on `Default`, since
+    // the choice has not yet answered the pick.
+    const slider = await findByRole("slider", { name: "Effort" });
+    expect(slider).toHaveAttribute("max", "4");
+    expect(slider).toHaveValue("0");
+    expect(slider).toHaveAttribute("aria-valuetext", "Default");
+    expect(queryByRole("option")).not.toBeInTheDocument();
+  });
+
+  it("opens the chosen model's slider without resetting the effort it runs at", async () => {
+    const onChoose = vi.fn();
+    const { getByRole, findByRole } = render(() => (
+      <ModelChip
+        models={CODEX}
+        choice={{ model: "gpt-5.6-terra", effort: "high" }}
+        onChoose={onChoose}
+      />
+    ));
+
+    getByRole("button", { name: "GPT-5.6-Terra · High" }).click();
+    (await findByRole("option", { name: /GPT-5.6-Terra/ })).click();
+
+    expect(onChoose).not.toHaveBeenCalled();
+    const slider = await findByRole("slider", { name: "Effort" });
+    expect(slider).toHaveValue("3");
+    expect(slider).toHaveAttribute("aria-valuetext", "High");
+  });
+
+  it("closes on the pick for a model that takes no effort", async () => {
+    const onChoose = vi.fn();
+    const { getByRole, findByRole, queryByRole } = render(() => (
+      <ModelChip
+        models={WITH_EFFORTLESS}
+        choice={{ model: "gpt-5.6-terra" }}
+        onChoose={onChoose}
+      />
+    ));
+
+    getByRole("button", { name: "GPT-5.6-Terra" }).click();
+    (await findByRole("option", { name: /Haiku/ })).click();
+
+    expect(onChoose).toHaveBeenCalledWith({ model: "haiku" });
+    expect(queryByRole("slider")).not.toBeInTheDocument();
+    expect(queryByRole("option")).not.toBeInTheDocument();
+  });
+
+  it("names the model's default where the harness says it, under the `Default` reading", async () => {
+    const { getByRole, findByRole, findByText } = render(() => (
+      <ModelChip models={CODEX} choice={{ model: "gpt-5.6-terra" }} onChoose={vi.fn()} />
+    ));
+
+    getByRole("button", { name: "GPT-5.6-Terra" }).click();
+    (await findByRole("option", { name: /GPT-5.6-Terra/ })).click();
+
+    const slider = await findByRole("slider", { name: "Effort" });
+    expect(slider).toHaveValue("0");
+    expect(slider).toHaveAttribute("aria-valuetext", "Default");
+    expect(await findByText("GPT-5.6-Terra · Medium")).toBeInTheDocument();
+  });
+
+  it("chooses the level a stop lands on, and `Default` hands the choice back", async () => {
+    const onChoose = vi.fn();
+    const { getByRole, findByRole } = render(() => (
+      <ModelChip
+        models={CODEX}
+        choice={{ model: "gpt-5.6-terra", effort: "medium" }}
+        onChoose={onChoose}
+      />
+    ));
+
+    getByRole("button", { name: "GPT-5.6-Terra · Medium" }).click();
+    (await findByRole("option", { name: /GPT-5.6-Terra/ })).click();
+    const slider = await findByRole("slider", { name: "Effort" });
+
+    fireEvent.input(slider, { target: { value: "4" } });
+    expect(onChoose).toHaveBeenCalledWith({ model: "gpt-5.6-terra", effort: "xhigh" });
+
+    fireEvent.input(slider, { target: { value: "0" } });
+    expect(onChoose).toHaveBeenCalledWith({ model: "gpt-5.6-terra" });
+  });
+
+  it("steps by detent from the keyboard", async () => {
+    const onChoose = vi.fn();
+    const { getByRole, findByRole } = render(() => (
+      <ModelChip models={CODEX} choice={{ model: "gpt-5.6-terra" }} onChoose={onChoose} />
+    ));
+
+    getByRole("button", { name: "GPT-5.6-Terra" }).click();
+    (await findByRole("option", { name: /GPT-5.6-Terra/ })).click();
+    const slider = await findByRole("slider", { name: "Effort" });
+
+    fireEvent.keyDown(slider, { key: "ArrowRight" });
+    expect(onChoose).toHaveBeenCalledWith({ model: "gpt-5.6-terra", effort: "low" });
+  });
+
+  it("returns to the list from the level's back link", async () => {
+    const { getByRole, findByRole } = render(() => (
+      <ModelChip
+        models={CODEX}
+        choice={{ model: "gpt-5.6-terra", effort: "high" }}
+        onChoose={vi.fn()}
+      />
+    ));
+
+    getByRole("button", { name: "GPT-5.6-Terra · High" }).click();
+    (await findByRole("option", { name: /GPT-5.6-Terra/ })).click();
+    (await findByRole("button", { name: "Back to models" })).click();
+
+    expect(await findByRole("option", { name: /GPT-5.5/ })).toBeInTheDocument();
+  });
+
+  it("resets the effort to the model's default from the reset button", async () => {
+    const onChoose = vi.fn();
+    const { getByRole, findByRole } = render(() => (
+      <ModelChip
+        models={CODEX}
+        choice={{ model: "gpt-5.6-terra", effort: "high" }}
+        onChoose={onChoose}
+      />
+    ));
+
+    getByRole("button", { name: "GPT-5.6-Terra · High" }).click();
+    (await findByRole("option", { name: /GPT-5.6-Terra/ })).click();
+    (await findByRole("button", { name: "Reset effort" })).click();
+
+    expect(onChoose).toHaveBeenCalledWith({ model: "gpt-5.6-terra" });
+  });
+
   it("offers no search box on a list that already fits on one screen", async () => {
     const { getByRole, findByRole, queryByRole } = render(() => (
-      <ModelChip models={CODEX} choice={{ model: "gpt-5.5" }} onChoose={vi.fn()} />
+      <ModelChip models={WITH_EFFORTLESS} choice={{ model: "gpt-5.5" }} onChoose={vi.fn()} />
     ));
 
     getByRole("button", { name: "GPT-5.5" }).click();
