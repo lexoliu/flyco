@@ -477,6 +477,11 @@ export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNoti
             "The provider no longer has this machine. Resuming builds a new one and reopens the conversation where it stopped.",
             RESUME,
           );
+        case "spot_reclaimed":
+          return notice(
+            "The provider reclaimed the machine; flyco is already starting it again on its own disk, with the conversation where it stopped.",
+            RESUME,
+          );
         default:
           return notice(
             "The machine is gone and the session is waiting. Resuming puts it back on its own disk, with the conversation where it stopped.",

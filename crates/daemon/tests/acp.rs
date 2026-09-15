@@ -398,6 +398,66 @@ async fn a_turn_runs_from_user_message_to_completion() {
 }
 
 #[tokio::test]
+async fn a_message_sent_mid_turn_waits_and_opens_the_next_turn() {
+    // ACP refuses a second `session/prompt` while a turn runs, so the
+    // driver queues what arrives during one — a follow-up from the user,
+    // an injected notice — and opens it when the running turn closes. A
+    // refusal there used to be fatal: it killed the session.
+    let scratch = Scratch::new("queued");
+    let (session, mut outputs) = start(&scratch).await;
+    announcements(&mut outputs).await;
+
+    session
+        .send_user_message("first".to_owned())
+        .await
+        .expect("send the first message");
+    let SessionOutput::Event {
+        event: HarnessEvent::TurnStarted { turn_id: first },
+    } = next(&mut outputs, "the first turn").await
+    else {
+        panic!("the first message must open a turn");
+    };
+
+    // The approval request is the turn's still-open marker: the prompt has
+    // not resolved, so this message lands mid-turn.
+    let _ = next(&mut outputs, "assistant_delta").await;
+    let SessionOutput::ApprovalRequest { id, .. } = next(&mut outputs, "approval_request").await
+    else {
+        panic!("the first turn must be waiting on its approval");
+    };
+    session
+        .send_user_message("second".to_owned())
+        .await
+        .expect("a mid-turn message is accepted, not fatal");
+
+    session
+        .decide_approval(flyco_daemon::harness::ToolApproval::Allow {
+            id,
+            updated_input: None,
+        })
+        .await
+        .expect("decide the first turn's approval");
+
+    // The queued message opens a turn of its own once the first closes.
+    // Plan usage and the second TurnStarted are emitted from different
+    // tasks, so read past whichever lands first.
+    let mut second_turn = None;
+    for _ in 0..4 {
+        if let SessionOutput::Event {
+            event: HarnessEvent::TurnStarted { turn_id },
+        } = next(&mut outputs, "the queued message's turn").await
+        {
+            second_turn = Some(turn_id);
+            break;
+        }
+    }
+    let second = second_turn.expect("the queued message must open its own turn");
+    assert_ne!(first, second, "each message opens a distinct turn");
+
+    session.shutdown().await.expect("shut the session down");
+}
+
+#[tokio::test]
 async fn an_interrupted_turn_completes_as_cancelled() {
     // ACP's interrupt is `session/cancel` plus the prompt resolving with
     // `stopReason: "cancelled"` — a cancelled turn is a completed one in

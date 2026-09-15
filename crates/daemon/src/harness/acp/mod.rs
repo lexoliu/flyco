@@ -33,7 +33,7 @@
 
 pub mod normalize;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -278,6 +278,7 @@ impl Harness for AcpHarness {
                 events: events_tx,
                 turn_seq: 0,
                 active_turn: None,
+                queued_messages: VecDeque::new(),
                 pending_permissions: BTreeMap::new(),
                 pending_calls: BTreeMap::new(),
                 call_seq: 0,
@@ -1089,6 +1090,15 @@ struct Driver {
     turn_seq: u64,
     /// The turn in flight, if any.
     active_turn: Option<String>,
+    /// User messages accepted while a turn runs.
+    ///
+    /// ACP refuses a second `session/prompt` mid-turn, so what arrives
+    /// during one — the user's own follow-up, an injected notice — waits
+    /// here rather than erroring. The next `PromptFinished` drains one,
+    /// and each message's ack answers at enqueue: "accepted" is what the
+    /// wire layer needs to know, and the room log still holds the text if
+    /// the daemon dies before it is sent.
+    queued_messages: VecDeque<String>,
     pending_permissions: BTreeMap<ApprovalId, PendingPermission>,
     pending_calls: BTreeMap<u64, PendingCall>,
     /// Spawned-call counter.
@@ -1200,6 +1210,11 @@ impl Driver {
     async fn handle(&mut self, command: DriverCommand) -> bool {
         match command {
             DriverCommand::UserMessage { text, ack } => {
+                if self.active_turn.is_some() {
+                    let _ = ack.send(Ok(()));
+                    self.queued_messages.push_back(text);
+                    return true;
+                }
                 let result = self.start_turn(text).await;
                 let ok = result.is_ok();
                 let _ = ack.send(result);
@@ -1308,6 +1323,12 @@ impl Driver {
                 }
                 // A turn is the only thing that moves the plan's meters.
                 self.request_usage();
+                // What arrived mid-turn now opens the next one.
+                if let Some(text) = self.queued_messages.pop_front()
+                    && let Err(error) = self.start_turn(text).await
+                {
+                    tracing::warn!(%error, "a queued message could not open its turn");
+                }
                 true
             }
             AgentEvent::CallFinished { id, result } => self.on_call_finished(id, result).await,
@@ -1569,6 +1590,7 @@ impl Driver {
             return Ok(());
         }
         self.stopped = true;
+        self.queued_messages.clear();
         // `session/close` where the agent advertised it — a courtesy, so a
         // refusal is logged rather than fatal.
         if self.close_supported
