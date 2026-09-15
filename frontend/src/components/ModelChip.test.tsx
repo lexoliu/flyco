@@ -87,7 +87,7 @@ describe("ModelChip", () => {
     ));
 
     getByRole("button", { name: "Model 0" }).click();
-    const box = getByRole("searchbox", { name: "Search models" });
+    const box = getByRole("searchbox", { name: "Search models" }) as HTMLInputElement;
     expect(await findAllByRole("option")).toHaveLength(12);
 
     box.value = "7 fast";
@@ -113,7 +113,7 @@ describe("ModelChip", () => {
     ));
 
     getByRole("button", { name: "Model 0" }).click();
-    const box = getByRole("searchbox", { name: "Search models" });
+    const box = getByRole("searchbox", { name: "Search models" }) as HTMLInputElement;
     box.value = "zephyr";
     box.dispatchEvent(new Event("input", { bubbles: true }));
 

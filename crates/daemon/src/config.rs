@@ -44,6 +44,9 @@ pub enum ConfigError {
          `POST /v1/sessions/{{id}}/daemon-token`, not a session token or an API key"
     )]
     NotADaemonToken,
+    /// `[[repos]]` and `[github]` disagree, or a `dir` cannot name a checkout.
+    #[error("{0}")]
+    WrongRepos(String),
     /// The tables in the file do not match `harness`.
     #[error("{0}")]
     WrongHarness(&'static str),
@@ -505,39 +508,58 @@ pub struct GitIdentity {
     pub email: String,
 }
 
-/// The repository this session works in, and what authenticates it.
+/// The GitHub access every `[[repos]]` clone shares.
 ///
-/// Present on a provisioned session VM; omitted on a developer machine,
-/// where [`DaemonConfig::workdir`] is a directory the developer already
-/// has. A daemon with no `[repo]` clones nothing and works in the directory
-/// it was pointed at.
+/// One table rather than a field per `[[repos]]` element, because the
+/// authorization is the workspace's, not the repository's: every clone and
+/// every later push is the same user's, and a per-repo copy could only
+/// disagree with itself.
+///
+/// The token is fed to git through a credential helper that reads it from
+/// the environment of one child process, so it is never written into a
+/// remote URL, into `.git/config`, or into a log line. The hand-written
+/// [`fmt::Debug`] is the other half of that: this structure is exactly what
+/// a `?config` in a trace would print.
 #[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GithubAccess {
+    /// The user's GitHub token.
+    pub token: String,
+    /// Who the checkouts' commits are authored as.
+    pub identity: GitIdentity,
+}
+
+impl core::fmt::Debug for GithubAccess {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GithubAccess")
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One repository the session checks out.
+///
+/// Present on a provisioned session VM, once per repository it works
+/// across; omitted entirely on a developer machine, where
+/// [`DaemonConfig::workdir`] is a directory the developer already has. A
+/// daemon with no `[[repos]]` clones nothing and works in the directory it
+/// was pointed at.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepoConfig {
     /// The repository, `owner/name`.
     pub slug: RepoSlug,
     /// The branch to check out.
     pub branch: BranchName,
-    /// The user's GitHub token.
+    /// The directory under [`DaemonConfig::workdir`] the clone lands in.
     ///
-    /// Fed to git through a credential helper that reads it from the
-    /// environment of one child process, so it is never written into a
-    /// remote URL, into `.git/config`, or into a log line. The hand-written
-    /// [`fmt::Debug`] is the other half of that: this structure is exactly
-    /// what a `?config` in a trace would print.
-    pub token: String,
-    /// Who the checkout's commits are authored as.
-    pub identity: GitIdentity,
-}
-
-impl core::fmt::Debug for RepoConfig {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("RepoConfig")
-            .field("slug", &self.slug)
-            .field("branch", &self.branch)
-            .field("identity", &self.identity)
-            .finish_non_exhaustive()
-    }
+    /// Chosen by the control plane ([`flyco_core::checkout_dir`]) and
+    /// recorded on the session's row, so the daemon, the browser and the
+    /// stored workdir patch all name the same directory. Checked at load
+    /// for the same reason `deny_unknown_fields` exists: a `dir` that is
+    /// not a single in-workspace component is a provisioning bug, and the
+    /// daemon says so before it writes anywhere.
+    pub dir: String,
 }
 
 impl RepoConfig {
@@ -552,6 +574,32 @@ impl RepoConfig {
     pub fn remote_url(&self) -> String {
         format!("https://github.com/{}.git", self.slug)
     }
+
+    /// The absolute path the clone lands in, under `workdir`.
+    ///
+    /// Safe by construction: [`DaemonConfig::load`] has already refused a
+    /// `dir` that is not one in-workspace component.
+    #[must_use]
+    pub fn checkout_path(&self, workdir: &Path) -> PathBuf {
+        workdir.join(&self.dir)
+    }
+}
+
+/// Whether `dir` is a single path component that stays inside the workdir.
+///
+/// The rule the control plane's [`flyco_core::checkout_dir`] already
+/// writes by, restated here so a hand-written or tampered config cannot
+/// step outside the workspace: one segment, no separators, never `.` or
+/// `..`, and not `.git` — the checkout's own metadata directory is
+/// machinery a clone must not be pointed at.
+pub(crate) fn valid_repo_dir(dir: &str) -> bool {
+    !dir.is_empty()
+        && dir != "."
+        && dir != ".."
+        && dir != ".git"
+        && !dir.contains('/')
+        && !dir.contains('\\')
+        && !dir.contains('\0')
 }
 
 /// Everything `flycod run` needs.
@@ -620,11 +668,25 @@ pub struct DaemonConfig {
     /// [REPL](crate::repl) instead.
     #[serde(default)]
     pub control_plane: Option<ControlPlaneConfig>,
-    /// The repository to clone into [`workdir`](Self::workdir) before the
-    /// harness starts. Omitted works in whatever is already there, which is
-    /// the developer-machine shape.
+    /// The repositories to clone into [`workdir`](Self::workdir) before the
+    /// harness starts, one `[[repos]]` table each. The clone for `dir`
+    /// lands in `workdir/<dir>/` while the harness's working directory
+    /// stays the shared `workdir`, so the session's prompt files and the
+    /// checkouts all sit beneath the one path the harness is sandboxed to.
+    /// Empty works in whatever is already there — the developer-machine
+    /// shape. A provisioned machine may still grow entries after boot: an
+    /// approved `AddRepo` clones into the next directory without
+    /// rewriting this file.
     #[serde(default)]
-    pub repo: Option<RepoConfig>,
+    pub repos: Vec<RepoConfig>,
+    /// The GitHub access the `[[repos]]` clones share.
+    ///
+    /// `Some` exactly when `repos` is non-empty — a provisioned machine
+    /// brings both, a developer machine neither. [`load`](Self::load)
+    /// refuses a config that names repositories without the access to
+    /// clone them.
+    #[serde(default)]
+    pub github: Option<GithubAccess>,
     /// Claude Code settings. Required when [`harness`](Self::harness) is
     /// [`DriverKind::ClaudeCode`].
     #[serde(default)]
@@ -675,6 +737,7 @@ impl DaemonConfig {
         if let Some(control_plane) = &config.control_plane {
             control_plane.validate()?;
         }
+        config.validate_repos()?;
         config.validate_harness()?;
         Ok(config)
     }
@@ -716,6 +779,42 @@ impl DaemonConfig {
         self.acp
             .as_ref()
             .expect("a loaded ACP config has an [acp] table")
+    }
+
+    /// Checks `[[repos]]` and `[github]` agree, and that every `dir` names
+    /// a distinct directory the workdir may hold.
+    ///
+    /// The repos-without-access half is the one a provisioner could write:
+    /// a config listing repositories but no token produces a daemon that
+    /// cannot clone them, and saying so at load beats a clone that fails
+    /// with a credential error after the harness has been promised them.
+    /// The access-without-repos half is only waste, so it is permitted:
+    /// an approved `AddRepo` may need the token before the file gained a
+    /// row for it.
+    fn validate_repos(&self) -> Result<(), ConfigError> {
+        if !self.repos.is_empty() && self.github.is_none() {
+            return Err(ConfigError::WrongRepos(
+                "a config that lists [[repos]] needs a [github] table to clone them with"
+                    .to_owned(),
+            ));
+        }
+        let mut dirs = std::collections::BTreeSet::new();
+        for repo in &self.repos {
+            if !valid_repo_dir(&repo.dir) {
+                return Err(ConfigError::WrongRepos(format!(
+                    "`{}` cannot name a checkout directory: it must be one plain \
+                     directory name inside the workdir",
+                    repo.dir,
+                )));
+            }
+            if !dirs.insert(repo.dir.as_str()) {
+                return Err(ConfigError::WrongRepos(format!(
+                    "two repositories claim the checkout directory `{}`",
+                    repo.dir,
+                )));
+            }
+        }
+        Ok(())
     }
 
     const fn validate_harness(&self) -> Result<(), ConfigError> {

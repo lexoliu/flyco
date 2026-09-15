@@ -85,7 +85,11 @@ pub async fn handoff(api: &Api, args: Args, mode: out::Mode) -> Outcome<Exit> {
         ));
     }
 
-    let repo = local_repo(args.spec.repo.as_deref(), args.spec.branch.as_deref()).await?;
+    let repo = local_repo(
+        args.spec.repo.first().map(String::as_str),
+        args.spec.branch.as_deref(),
+    )
+    .await?;
     let session = pick_session(args.from, args.session.as_deref(), &repo.root).await?;
     note(
         mode,
@@ -115,15 +119,20 @@ pub async fn handoff(api: &Api, args: Args, mode: out::Mode) -> Outcome<Exit> {
     .render();
     let mut spec = args.spec;
     let env = std::mem::take(&mut spec.env);
-    if spec.repo.is_none() {
-        spec.repo = Some(repo.slug.clone());
+    if spec.repo.is_empty() {
+        spec.repo.push(repo.slug.clone());
     }
     if interactive() {
         fill_spec(api, &mut spec).await?;
     }
     let mut request = spec.to_request(args.harness.unwrap_or(session.harness), brief)?;
-    request.repo = repo.slug.clone();
-    request.branch = Some(repo.branch.clone());
+    // The handoff's patch diffs against the local tree's merge-base, so the
+    // session's first checkout — where the patch lands — is the local
+    // repository at the resolved branch, whatever `to_request` left.
+    request.repos[0] = flyco_core::RepoSelection {
+        repo: repo.slug.clone(),
+        branch: Some(repo.branch.clone()),
+    };
     request.source = Some(SessionSource::LocalHandoff(LocalHandoff {
         harness: session.harness,
         session_id: session.session_id.clone(),

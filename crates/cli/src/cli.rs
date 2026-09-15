@@ -337,10 +337,11 @@ pub enum SessionCommand {
 /// naming the flag.
 #[derive(Debug, Clone, Default, Args)]
 pub struct SessionSpec {
-    /// `owner/name`.
+    /// `owner/name`; repeatable — each is checked out side by side.
     #[arg(long)]
-    pub repo: Option<String>,
-    /// Branch to check out (default: the repository's).
+    pub repo: Vec<String>,
+    /// Branch to check out on the first `--repo` (default: the
+    /// repository's).
     #[arg(long)]
     pub branch: Option<String>,
     /// The goal the session is born with. Required: a session with nothing
@@ -405,10 +406,22 @@ impl SessionSpec {
         harness: flyco_core::HarnessKind,
         prompt: String,
     ) -> Result<flyco_core::CreateSession, crate::Failure> {
-        let repo = self
+        if self.repo.is_empty() {
+            return Err(crate::Failure::usage("a session needs --repo owner/name"));
+        }
+        let repos: Vec<flyco_core::RepoSelection> = self
             .repo
-            .clone()
-            .ok_or_else(|| crate::Failure::usage("a session needs --repo owner/name"))?;
+            .iter()
+            .enumerate()
+            .map(|(index, repo)| flyco_core::RepoSelection {
+                repo: repo.clone(),
+                branch: if index == 0 {
+                    self.branch.clone()
+                } else {
+                    None
+                },
+            })
+            .collect();
         let budget_limit = self
             .budget
             .ok_or_else(|| crate::Failure::usage("a session needs --budget, in dollars"))?;
@@ -430,8 +443,7 @@ impl SessionSpec {
         Ok(flyco_core::CreateSession {
             prompt,
             harness,
-            repo,
-            branch: self.branch.clone(),
+            repos,
             budget_limit,
             machine,
             spot: !self.on_demand,

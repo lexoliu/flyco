@@ -62,8 +62,8 @@
 use flyco_core::wire::{DaemonAttach, DaemonFrames, EventPage, StoredEvent};
 use flyco_core::workdir::WorkdirReply;
 use flyco_core::{
-    ClientEvent, ControlToDaemon, DaemonToControl, MessageOrigin, RepoStatus, ShellRunId,
-    WorkdirRequestId,
+    CheckoutStatus, ClientEvent, ControlToDaemon, DaemonToControl, MessageOrigin, RepoStatus,
+    ShellRunId, WorkdirRequestId,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::durable::{DurableObject, DurableObjectError};
@@ -1026,25 +1026,54 @@ async fn record(
         )
         .await
         .map(Some),
-        DaemonToControl::RepoDirty { summary } => {
-            // The daemon is the only thing that can see the working tree,
-            // and it reports the whole `git status --short` output rather
-            // than a flag, so an empty summary is the clean tree and the
-            // absence of any report is "nobody has looked" — which is what
-            // `GET /v1/sessions/{id}/repo-status` refuses to answer.
-            put_latest(
-                kv,
-                KEY_REPO_STATUS,
-                &RepoStatus {
-                    dirty: !summary.trim().is_empty(),
-                    summary: summary.clone(),
-                },
-            )
+        DaemonToControl::RepoDirty { dir, summary } => note_checkout(kv, dir.as_ref(), summary)
             .await
-            .map(|()| None)
-        }
+            .map(|()| None),
+        DaemonToControl::RepoAdded { slug, branch, dir } => append(
+            db,
+            &ClientEvent::RepoAdded {
+                slug: slug.clone(),
+                branch: branch.clone(),
+                dir: dir.clone(),
+            },
+        )
+        .await
+        .map(Some),
         _ => Ok(None),
     }
+}
+
+/// Records one checkout's last-reported `git status` in the room's KV.
+///
+/// The daemon is the only thing that can see the working trees, and it
+/// reports each checkout's whole `git status --short` output rather than a
+/// flag, so an empty summary is the clean tree and the absence of any
+/// report is "nobody has looked" — which is what
+/// `GET /v1/sessions/{id}/repo-status` refuses to answer.
+async fn note_checkout(
+    kv: &DurableKv,
+    dir: Option<&String>,
+    summary: &str,
+) -> Result<(), DurableObjectError> {
+    let mut status: RepoStatus = kv
+        .get_json(KEY_REPO_STATUS)
+        .await
+        .map_err(|error| DurableObjectError::Runtime(error.to_string()))?
+        .unwrap_or_default();
+    let checkout = CheckoutStatus {
+        dir: dir.cloned(),
+        dirty: !summary.trim().is_empty(),
+        summary: summary.to_owned(),
+    };
+    match status
+        .checkouts
+        .iter_mut()
+        .find(|entry| entry.dir == checkout.dir)
+    {
+        Some(entry) => *entry = checkout,
+        None => status.checkouts.push(checkout),
+    }
+    put_latest(kv, KEY_REPO_STATUS, &status).await
 }
 
 /// Appends one event to the room's replayable stream, and answers with

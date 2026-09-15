@@ -29,24 +29,28 @@ function mount() {
 }
 
 describe("Composer", () => {
-  it("shows no Branch chip until a repository is chosen", async () => {
+  it("asks for repositories while none is chosen", async () => {
     const { findByRole, queryByText } = mount();
 
-    expect(await findByRole("button", { name: /Select repository/ })).toBeInTheDocument();
-    // Not a disabled chip, nothing: a branch is a fact about one repository,
+    expect(
+      await findByRole("button", { name: /Select repositories/ }),
+    ).toBeInTheDocument();
+    // No branch picker anywhere: a branch is a fact about one repository,
     // and there is no repository yet to have one.
-    expect(queryByText("Branch")).not.toBeInTheDocument();
+    expect(queryByText("Selected — first is primary")).not.toBeInTheDocument();
     expect(queryByText("Default branch")).not.toBeInTheDocument();
   });
 
-  it("shows the Branch chip beside a chosen repository", async () => {
+  it("names the chosen repository, and its branch inside the picker", async () => {
     // The most recent repository is preselected, which is how a returning
     // user lands on the page with one already chosen.
     rememberRepo("octocat/hello-world");
     const { findByRole } = mount();
 
-    expect(await findByRole("button", { name: /octocat\/hello-world/ })).toBeInTheDocument();
-    // The branch is read as soon as the repository is known, so the chip
+    const chip = await findByRole("button", { name: /octocat\/hello-world/ });
+    chip.click();
+
+    // The picked row's branch is read as soon as it is known, so the picker
     // names it rather than saying "Default branch".
     expect(await findByRole("button", { name: "main" })).toBeInTheDocument();
   });

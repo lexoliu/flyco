@@ -27,6 +27,7 @@ import EnvEditor from "./EnvEditor";
 import FilesPanel from "./FilesPanel";
 import TerminalPanel from "./terminal/TerminalPanel";
 import type { SessionRelay } from "../api/relay";
+import type { SessionRepo } from "../api/client";
 import { cx } from "../lib/cx";
 import styles from "./SessionDrawer.module.css";
 
@@ -60,8 +61,17 @@ export interface SessionDrawerProps {
    * would be a shell that looked alive and was not.
    */
   machineUp: boolean;
-  /** Latest `repo_dirty` summary from the relay, when one has arrived. */
-  liveRepoSummary: string | null;
+  /**
+   * The session's checkouts, for the diff tab's selector.
+   *
+   * A provisioned session names one `dir` per checkout and the diff request
+   * has to say which it means; a developer machine's workdir is itself the
+   * checkout — `devMachine` — and the request names nothing.
+   */
+  repos: readonly SessionRepo[];
+  devMachine: boolean;
+  /** Latest `repo_dirty` summary per checkout `dir`, from the relay. */
+  liveRepoSummaries: ReadonlyMap<string, string>;
   /**
    * A request to open the drawer on the `.env` tab, from the header's `⋯`
    * menu.
@@ -182,7 +192,9 @@ export default function SessionDrawer(props: SessionDrawerProps) {
               <Match when={tab() === "diff"}>
                 <DiffPanel
                   sessionId={props.sessionId}
-                  liveRepoSummary={props.liveRepoSummary}
+                  repos={props.repos}
+                  devMachine={props.devMachine}
+                  liveRepoSummaries={props.liveRepoSummaries}
                 />
               </Match>
               <Match when={tab() === "env"}>

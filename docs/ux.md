@@ -327,7 +327,7 @@ Every chip is both a status readout and the entry point to change it.
 | Model | `Fable 5.1`: the model's name. The name is the head of the harness's description where it has one (`Fable 5.1 · Most capable…` → `Fable 5.1`; Claude's rows are menu labels like `Default (recommended)`) and the row's label otherwise (`GPT-5.5`). The chip sits at the right of the row beside send, where both official apps keep theirs. The popover lists the agent's own models (`GET /v1/harness-accounts` carries each account's list, as its last session's agent reported it, or flyco's built-in one until then), each with the harness's one-line description. Choosing a model resets the effort to the model's own default. Switching agents drops the choice, because a Claude id means nothing to Codex | absent until an agent is linked, since there is no list to show |
 | Effort | `High` once chosen, `Effort` while the model's own default stands. The chip sits beside the model's, because the levels are the model's — not every one accepts effort, and the levels differ. The popover is the detented slider the machine picker already teaches (§7.7): the chosen level's name over the rail, the model's name under it, and `Default` as the leftmost stop — the model keeps the choice, the same position `Auto` holds on the machine picker's form row, since not every harness says which level it starts on. Where the harness does say (`default_effort`), the subline names it: `GPT-5.6-Terra · Medium` | absent for a model that names no effort levels |
 | Compute | provider logomark + `B2s · $0.04/hr`; the logomark names the provider, and region, spot, the account and whether flyco or the user chose the type live in the popover — the chip does not say `Auto` or `Chosen`, which is a word about how the choice was made on a row that is for what was chosen. A **managed container** reads `Container · 4 vCPU · 8 GiB · $0.21/hr` instead: `aca-4x8` is flyco's key for a size billed by the second, not a name anybody picked, so the size is what identifies the row — and where the provider covers it out of a monthly allowance the chip ends ` · Free this month`. A machine the user enrolled is a container too and keeps its own hostname, which is the name they gave it. While an account is still being read the chip says `Reading Azure…` and the popover carries the whole sentence | `+ Add compute` → `/connect/compute` |
-| Repository | `owner/name`; popover with a search box, recent repositories first | `Select repository` opens the same popover |
+| Repositories | `owner/name`, or `owner/name +N` past the first; popover with a search box, recent repositories first, and the picked set pinned on top — first picked is the session's primary repository, each picked row carries its own branch picker (defaulting to the repository's default branch) and `↑`/× controls to promote or drop it. A session can work across up to sixteen repositories | `Select repositories` opens the same popover |
 | Budget | `$10`; popover with a slider (1–200) and the sentence "Covers the machine and its disk. Model tokens are billed by your Claude or Codex plan." | always shown, default `$10` |
 
 The compute chip shows the machine flyco will actually choose
@@ -628,7 +628,10 @@ after linking.
 ### 9.1 Header
 
 Title (editable inline; defaults to the first prompt's excerpt),
-`repo · branch`, the drawer's toggle (§9.4), and one `⋯` menu: rename,
+`repo · branch` (`+N` past the first, a popover that lists every checkout
+and offers `Add a repository` — slug plus its own branch picker, answered
+by `POST /v1/sessions/{id}/repos` and cloned live by the daemon), the
+drawer's toggle (§9.4), and one `⋯` menu: rename,
 archive, then start machine, stop machine, resize, edit `.env`, copy
 session id, with the machine's provider, region and state as the menu's
 footer. Nothing else. The header
@@ -686,7 +689,8 @@ stays open and reads `Sent when the machine is back`.
 - A completed turn ends with `Worked for 8m 23s`.
 - Provisioning renders **inside** the transcript as a timeline: `Reserving
   a machine on Azure` → `Booting and installing flycod` → `Cloning
-  owner/repo` → `Agent ready`, each with elapsed time, driven by
+  owner/repo` (`owner/repo +N` when the session spans several) → `Agent
+  ready`, each with elapsed time, driven by
   `session_state_changed` and daemon events. Every row on it has a real
   interval behind it, which is why boot and install are one: nothing can see
   where one ends and the other begins — the control plane hears nothing
@@ -899,6 +903,10 @@ the working tree — committed, uncommitted and untracked — diffed against
 `origin/<branch>`, one collapsible section per file, each headed by the
 path, what happened to it, and `+n −m`. A file whose diff runs past ~900
 lines opens as `Large diff · N lines · Load diff` instead of rendering.
+A session across several repositories diffs one checkout at a time — the
+workspace root is not a repository — so a row of checkout tabs heads the
+panel, primary first, and the status list above it is one line per
+checkout rather than one per session.
 
 Both are answered live by the session's machine, over the relay: there is
 no copy of a working tree in the control plane, so a session with no daemon
@@ -909,6 +917,8 @@ connected says exactly that rather than showing an empty tree.
 When the agent resizes, the transcript shows a notice: `Switched to Standard_D8s_v6 · restarted the machine · disk kept`. When the agent asks to move to a license-bound type, the request is an approval card, not a silent resize, and the card quotes the minimum charge. The agent is told whether the machine was chosen by the user and to be conservative about switching it.
 
 What the agent sees of all this is `flycod`'s local MCP server (§11): `machine_status` reports the machine and who chose it, `budget_status` reports what is left, and `machine_resize` moves the session. The resize tool's description states that resizing restarts the machine, lists only the curated catalog of §7.6 with each entry's hourly price and — for a license-bound type — the minimum charge in dollars, and refuses while the working tree is dirty unless it is called again with `force` and a reason. A resize to a license-bound type is never performed on the agent's own authority: the daemon raises the approval, the tool answers that the request is pending the user's decision, and the control plane performs the resize if the user approves. When the machine was the user's choice, every one of those places says so in the same words: "The user chose this machine themselves; do not switch it unless the task cannot proceed on it, and say why when you do."
+
+The same machinery covers a repository the agent wants but the user never picked: `repo_add` raises an approval card that names the repository, the branch and the directory it would clone into, with the agent's reason underneath — cloning a repository is fetching code the user did not choose, so it is never performed on the agent's authority. Approving sends the daemon an `AddRepo`, and the clone's arrival is a transcript notice (`Added owner/name to the workspace as dir/`); denying lands as an ordinary message telling the agent so. A repository the *user* adds mid-session — the header's `Add a repository` — skips the card entirely, because the asker is the approver.
 
 ### 9.6 When the machine stops answering
 
@@ -1073,6 +1083,24 @@ Pre-1.0, the API changes to fit the product; no compatibility shims.
 - `ApprovalPayload` gains `machine_resize_license_bound { machine_type,
   minimum, reason }`. Approving it *is* the resize — the control plane
   performs it, because nothing is waiting on the daemon's side.
+- A session's repositories are a list, not a field. `POST /v1/sessions`
+  takes `repos: [{ repo, branch? }]` — one to sixteen, deduped, first is
+  primary — instead of `repo`/`branch`; `SessionSummary` carries
+  `repos: SessionRepo[]` (`slug`, resolved `branch`, checkout `dir`,
+  `added_by: user | agent`), and `session_repos` is the table. The user's
+  mid-session add is `POST /v1/sessions/{id}/repos` (`{ repo, branch? }`,
+  answered with the updated detail); the agent's is
+  `ApprovalPayload::RepoAdd { repo, branch?, reason }`, whose approval
+  writes the row and sends `ControlToDaemon::AddRepo { slug, branch, dir }`
+  — held for a detached daemon like every command — and whose denial is a
+  flyco-origin user message. The daemon's `DaemonToControl::RepoAdded
+  { slug, branch, dir }` becomes `ClientEvent::RepoAdded`, the notice of
+  §9.5. `RepoDirty` gains `dir` (absent on a developer machine, whose
+  workdir is itself the checkout), `WorkdirRequest::Diff` and
+  `GET /v1/sessions/{id}/diff` gain `?repo=<dir>` selecting the checkout,
+  `GET /v1/sessions/{id}/repo-status` answers `checkouts[]`, and the
+  workdir patch routes are per-checkout — `?repo=` again, absent for the
+  developer-machine shape.
 - `ClientEvent` gains `machine_changed { machine_type, hourly, spot,
   restarted }`, which the transcript renders as the notice in §9.5.
   `ControlToDaemon` gains the same variant, and it is the one command a

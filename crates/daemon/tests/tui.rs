@@ -13,8 +13,8 @@ use flyco_daemon::config::DaemonConfig;
 use flyco_daemon::tui::HarnessTui;
 use flyco_provider::flycod::{self, CLAUDE_CONFIG_DIR, CODEX_HOME};
 use flyco_provider::{
-    ClaudeCredential, CodexCredential, DaemonBootstrap, GitIdentity, HarnessCredential,
-    RepoCheckout,
+    CheckoutSpec, ClaudeCredential, CodexCredential, DaemonBootstrap, GitAccess, GitIdentity,
+    HarnessCredential,
 };
 use portable_pty::CommandBuilder;
 
@@ -36,9 +36,12 @@ fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
         daemon_token: DAEMON_TOKEN.to_owned(),
         permission_mode: PermissionMode::Auto,
         auth,
-        repo: RepoCheckout {
+        repos: vec![CheckoutSpec {
             slug: REPO.parse().expect("a valid repository slug"),
             branch: BRANCH.parse().expect("a valid branch name"),
+            dir: "flyco".to_owned(),
+        }],
+        github: GitAccess {
             token: GITHUB_TOKEN.to_owned(),
             identity: GitIdentity {
                 name: "lexoliu".to_owned(),

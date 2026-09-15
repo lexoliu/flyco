@@ -47,9 +47,13 @@ export function groupByRepo(
 ): RepoGroup[] {
   const byRepo = new Map<string, RepoGroup>();
   for (const row of rows) {
-    const held = byRepo.get(row.session.repo);
+    // The group is the primary repository — `repos[0]` — because that is
+    // what the session's own header names, and a rail that grouped by
+    // anything else would disagree with the page it opens.
+    const repo = row.session.repos[0]?.slug ?? "";
+    const held = byRepo.get(repo);
     if (held === undefined) {
-      byRepo.set(row.session.repo, { repo: row.session.repo, rows: [row] });
+      byRepo.set(repo, { repo, rows: [row] });
     } else {
       held.rows.push(row);
     }
@@ -88,7 +92,7 @@ export default function SessionNav(props: SessionNavProps) {
         (session) =>
           needle === "" ||
           session.title.toLowerCase().includes(needle) ||
-          session.repo.toLowerCase().includes(needle),
+          session.repos.some((repo) => repo.slug.toLowerCase().includes(needle)),
       )
       .map((session) => ({
         session,

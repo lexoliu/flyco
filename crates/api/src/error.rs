@@ -45,6 +45,7 @@ impl From<WorkdirRefusal> for ApiError {
                 limit: FILE_BYTES_MAX,
             },
             WorkdirRefusal::NoBaseBranch => Self::NoBaseBranch,
+            WorkdirRefusal::UnknownCheckout { repo } => Self::UnknownCheckout { repo },
             WorkdirRefusal::Unreadable { detail } => Self::WorkdirUnreadable(detail),
         }
     }
@@ -647,6 +648,20 @@ pub enum ApiError {
     )]
     NoBaseBranch,
 
+    /// The checkout the request named is not one the session carries.
+    ///
+    /// A `404`: the picker row that named it is stale — the directory is
+    /// not a bug in the request's shape, it is a name for something that
+    /// does not exist.
+    #[error(
+        "this session checks out no repository under `{repo}`",
+        status = StatusCode::NOT_FOUND
+    )]
+    UnknownCheckout {
+        /// The directory the request named.
+        repo: String,
+    },
+
     /// git could not read the session's checkout.
     #[error("the session's checkout could not be read: {0}", status = StatusCode::BAD_GATEWAY)]
     WorkdirUnreadable(String),
@@ -872,6 +887,46 @@ pub enum ApiError {
         status = StatusCode::UNPROCESSABLE_ENTITY
     )]
     InvalidRepo(String),
+
+    /// The request named no repository at all.
+    ///
+    /// A session that checks out nothing has nothing to work in, so an
+    /// empty `repos` list is refused rather than defaulted — the picker
+    /// always sends at least the repository it opened on.
+    #[error(
+        "a session checks out at least one repository",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    NoRepositories,
+
+    /// The session already checks out the repository the caller named.
+    ///
+    /// A `409` rather than a `422`: the body is processable, it is the
+    /// state it lands on — a checkout of that repository already exists —
+    /// that refuses it. Deduping it into a no-op would report a success
+    /// that added nothing and hide a caller's own bookkeeping bug.
+    #[error(
+        "{repo} is already checked out in this session",
+        status = StatusCode::CONFLICT
+    )]
+    RepoAlreadyAttached {
+        /// The repository the session already carries.
+        repo: RepoSlug,
+    },
+
+    /// The session already carries every checkout it may.
+    ///
+    /// The cap is [`flyco_core::MAX_SESSION_REPOS`]: past it the workspace
+    /// the agent is asked to hold in its head stops being a workspace, and
+    /// the picker stops fitting on a screen.
+    #[error(
+        "a session checks out at most {cap} repositories",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    SessionRepoCapReached {
+        /// Most repositories a session may carry.
+        cap: usize,
+    },
 
     /// The submitted branch is not a name git would accept.
     #[error("`{name}` is not a branch name: {reason}", status = StatusCode::UNPROCESSABLE_ENTITY)]
@@ -1382,6 +1437,7 @@ impl ApiError {
             Self::FileNotText { .. } => "file-not-text",
             Self::FileTooLarge { .. } => "file-too-large",
             Self::NoBaseBranch => "no-base-branch",
+            Self::UnknownCheckout { .. } => "unknown-checkout",
             Self::WorkdirUnreadable(_) => "workdir-unreadable",
             Self::DirtyArchive { .. } => "dirty-archive",
             Self::SessionNotActive { .. } => "session-not-active",
@@ -1402,6 +1458,9 @@ impl ApiError {
             Self::InvalidTransition { .. } => "invalid-session-transition",
             Self::ApprovalAlreadyDecided { .. } => "approval-already-decided",
             Self::InvalidRepo(_) => "invalid-repo",
+            Self::NoRepositories => "no-repositories",
+            Self::RepoAlreadyAttached { .. } => "repo-already-attached",
+            Self::SessionRepoCapReached { .. } => "session-repo-cap-reached",
             Self::InvalidBranch { .. } => "invalid-branch",
             Self::GithubTokenInsufficient { .. } => "github-token-insufficient",
             Self::InvalidEnvKey(_) => "invalid-env-key",

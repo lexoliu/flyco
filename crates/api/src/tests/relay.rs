@@ -47,8 +47,10 @@ async fn open_session(client: &TestClient<Router>, caller: &Caller, repo: &str) 
             source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
-            repo: repo.to_owned(),
-            branch: None,
+            repos: vec![flyco_core::RepoSelection {
+                repo: repo.to_owned(),
+                branch: None,
+            }],
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,

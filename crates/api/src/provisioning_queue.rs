@@ -46,13 +46,13 @@ use core::time::Duration;
 
 use askama::Template;
 use flyco_core::{
-    BranchName, ClientEvent, CloudProviderKind, ControlToDaemon, HarnessKind, InterruptedReason,
-    MachineId, MachineOrigin, ModelChoice, PermissionMode, ProviderAccountId, ProvisioningStage,
-    RepoSlug, SessionId, SessionState, UserId,
+    ClientEvent, CloudProviderKind, ControlToDaemon, HarnessKind, InterruptedReason, MachineId,
+    MachineOrigin, ModelChoice, PermissionMode, ProviderAccountId, ProvisioningStage, SessionId,
+    SessionRepo, SessionState, UserId,
 };
 use flyco_provider::{
-    Continuation, DaemonBootstrap, GitIdentity, ProviderError, ProvisionRequest, Provisioning,
-    RepoCheckout,
+    CheckoutSpec, Continuation, DaemonBootstrap, GitAccess, GitIdentity, ProviderError,
+    ProvisionRequest, Provisioning,
 };
 use serde::{Deserialize, Serialize};
 use skyzen_services::queue::{
@@ -69,7 +69,8 @@ use crate::provisioning::Provisioner;
 use crate::rooms::Rooms;
 use crate::vendors::Vendors;
 use crate::{
-    budgets, catalog, daemon_tokens, harness_accounts, machines, mcp, provisioning, sessions, users,
+    budgets, catalog, daemon_tokens, harness_accounts, machines, mcp, provisioning, session_repos,
+    sessions, users,
 };
 
 /// How many times one machine is asked for before the session is failed.
@@ -793,11 +794,12 @@ struct Claim {
     session: SessionId,
     user: UserId,
     harness: HarnessKind,
-    repo: RepoSlug,
-    /// The branch, when the session already records one. `None` is a
-    /// session opened before flyco recorded branches; [`checkout`] resolves
-    /// the repository's default and writes it back.
-    branch: Option<BranchName>,
+    /// The repositories the machine checks out, in the session's order.
+    ///
+    /// A row whose branch is still unset is one the session was created
+    /// with unresolved; [`checkouts`] resolves the repository's default and
+    /// writes it back, so it is `None` at most once per repository.
+    repos: Vec<SessionRepo>,
     machine_origin: MachineOrigin,
     machine: MachineRow,
     /// What the session runs on, as the control plane records it.
@@ -892,12 +894,18 @@ async fn claim(db: &Db, rooms: &Rooms, job: ProvisioningJob) -> Result<Option<Cl
 
     let model = target.model_choice();
     let permission_mode = target.permission_mode();
+    // A session whose repository set reads back empty is corrupt — nothing
+    // creates one without at least one row — and a machine built for it
+    // would boot a harness over an empty workspace.
+    let repos = session_repos::of_session(db, session).await?;
+    if repos.is_empty() {
+        return Err(ApiError::CorruptRecord("a session records no repositories"));
+    }
     Ok(Some(Claim {
         session,
         user: target.user_id,
         harness: target.harness,
-        repo: target.repo,
-        branch: target.branch,
+        repos,
         machine_origin: target.machine_origin,
         machine,
         model,
@@ -1590,7 +1598,7 @@ async fn bootstrap(
     let auth = harness_accounts::credential(db, config, clients.vendors, claim.user, claim.harness)
         .await
         .map_err(Provisioned::from)?;
-    let repo = checkout(db, config, clients.github, claim).await?;
+    let (github, repos) = checkouts(db, config, clients.github, claim).await?;
 
     Ok(DaemonBootstrap {
         session: claim.session,
@@ -1609,7 +1617,8 @@ async fn bootstrap(
         // the same claim-carried fact `model` is.
         permission_mode: claim.permission_mode,
         auth,
-        repo,
+        repos,
+        github,
         machine_origin: claim.machine_origin,
         // The capacity mode asked for, because the document is written
         // *into* the provision call and nothing has answered it yet. A
@@ -1635,7 +1644,8 @@ async fn bootstrap(
     })
 }
 
-/// Builds the checkout the machine comes up holding.
+/// Builds the checkouts the machine comes up holding, and the GitHub
+/// access they — and every clone and push after them — authenticate with.
 ///
 /// Flyco's GitHub integration behaves *as the user* (docs/proposal.md), so
 /// this is the user's own OAuth token and the user's own commit identity —
@@ -1650,15 +1660,17 @@ async fn bootstrap(
 ///   later on a machine, with a git error about authentication.
 /// * The commit identity is read from the same response, so a machine's
 ///   commits carry the user's name rather than `flyco@<hostname>`.
-/// * A session that records no branch — one opened before flyco recorded
-///   any — has the repository's default resolved and *written back*, so the
-///   answer is stable for every later provision of that session.
-async fn checkout(
+/// * A checkout that records no branch — one added before flyco resolved
+///   any, which a direct `POST /v1/sessions/{id}/repos` leaves until the
+///   next provision — has the repository's default resolved and *written
+///   back*, so the answer is stable for every later provision of that
+///   session.
+async fn checkouts(
     db: &Db,
     config: &ApiConfig,
     github: &impl GithubOauth,
     claim: &Claim,
-) -> Result<RepoCheckout, Provisioned> {
+) -> Result<(GitAccess, Vec<CheckoutSpec>), Provisioned> {
     let token = users::github_token(db, config, github, claim.user)
         .await
         .map_err(Provisioned::from)?;
@@ -1669,39 +1681,53 @@ async fn checkout(
     if !identity.grants_repo_scope() {
         return Err(Provisioned::from(ApiError::GithubTokenInsufficient {
             scope: REPO_SCOPE,
-            repo: claim.repo.clone(),
+            // The refusal names the session's primary: which repository
+            // specifically would have failed is a question the token cannot
+            // yet answer, because answering it is exactly what the missing
+            // scope is needed for.
+            repo: claim.repos[0].slug.clone(),
         }));
     }
 
-    let branch = if let Some(branch) = claim.branch.clone() {
-        branch
-    } else {
-        let default_branch = github
-            .get_repo(&token, &claim.repo)
-            .await
-            .map_err(|error| Provisioned::from(ApiError::from(error)))?
-            .default_branch;
-        sessions::record_branch(db, claim.session, &default_branch)
-            .await
-            .map_err(Provisioned::from)?;
-        tracing::info!(
-            session = %claim.session,
-            repo = %claim.repo,
-            branch = %default_branch,
-            "recorded the default branch for a session opened before flyco tracked one"
-        );
-        default_branch
-    };
+    let mut specs = Vec::with_capacity(claim.repos.len());
+    for repo in &claim.repos {
+        let branch = if let Some(branch) = repo.branch.clone() {
+            branch
+        } else {
+            let default_branch = github
+                .get_repo(&token, &repo.slug)
+                .await
+                .map_err(|error| Provisioned::from(ApiError::from(error)))?
+                .default_branch;
+            session_repos::record_branch(db, claim.session, &repo.dir, &default_branch)
+                .await
+                .map_err(Provisioned::from)?;
+            tracing::info!(
+                session = %claim.session,
+                repo = %repo.slug,
+                dir = %repo.dir,
+                branch = %default_branch,
+                "recorded the default branch for a checkout whose session had none"
+            );
+            default_branch
+        };
+        specs.push(CheckoutSpec {
+            slug: repo.slug.clone(),
+            branch,
+            dir: repo.dir.clone(),
+        });
+    }
 
-    Ok(RepoCheckout {
-        slug: claim.repo.clone(),
-        branch,
-        token: token.access_token,
-        identity: GitIdentity {
-            name: identity.user.commit_name().to_owned(),
-            email: identity.user.commit_email(),
+    Ok((
+        GitAccess {
+            token: token.access_token,
+            identity: GitIdentity {
+                name: identity.user.commit_name().to_owned(),
+                email: identity.user.commit_email(),
+            },
         },
-    })
+        specs,
+    ))
 }
 
 /// Tells the session's watchers how far its machine has got.

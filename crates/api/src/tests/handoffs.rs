@@ -62,8 +62,10 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
             source: Some(source()),
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::Codex,
-            repo: REPO.to_owned(),
-            branch: None,
+            repos: vec![flyco_core::RepoSelection {
+                repo: REPO.to_owned(),
+                branch: None,
+            }],
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
@@ -178,10 +180,12 @@ async fn complete_frees_provisioning_and_the_daemon_reads_the_result(
 
     upload_and_complete(&client, &caller, session).await;
 
-    // The patch rode the workdir object; the transcript has its own key.
+    // The patch rode the primary checkout's workdir object — `flyco` is
+    // `lexoliu/flyco`'s checkout directory — and the transcript has its own
+    // key.
     assert!(
         storage
-            .get(&format!("workdirs/{session}/uncommitted.patch"))
+            .get(&format!("workdirs/{session}/flyco/uncommitted.patch"))
             .await
             .expect("read the patch object")
             .is_some(),
@@ -514,8 +518,10 @@ async fn an_ordinary_session_answers_no_handoff(ctx: TestContext, kv: Kv, db: Db
             source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
-            repo: REPO.to_owned(),
-            branch: None,
+            repos: vec![flyco_core::RepoSelection {
+                repo: REPO.to_owned(),
+                branch: None,
+            }],
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,

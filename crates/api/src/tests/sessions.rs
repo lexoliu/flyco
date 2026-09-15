@@ -76,8 +76,10 @@ fn open(caller: &Caller, repo: &str, dollars: u64) -> CreateSession {
         source: None,
         prompt: PROMPT.to_owned(),
         harness: HarnessKind::ClaudeCode,
-        repo: repo.to_owned(),
-        branch: None,
+        repos: vec![flyco_core::RepoSelection {
+            repo: repo.to_owned(),
+            branch: None,
+        }],
         budget_limit: Usd::from_dollars(dollars),
         machine: Some(machine_choice(caller.account)),
         spot: true,
@@ -175,7 +177,7 @@ async fn creating_a_session_returns_it_provisioning_with_its_budget(
 
     let session = create(&ctx.client(router), &caller, &open(&caller, REPO, 10)).await;
 
-    assert_eq!(session.summary.repo.to_string(), REPO);
+    assert_eq!(session.summary.repos[0].slug.to_string(), REPO);
     assert_eq!(session.summary.harness, HarnessKind::ClaudeCode);
     assert_eq!(session.summary.state, SessionState::Provisioning);
     assert_eq!(
@@ -206,8 +208,10 @@ async fn omitting_the_machine_lets_flyco_pick_one(ctx: TestContext, kv: Kv, db: 
             source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
-            repo: REPO.to_owned(),
-            branch: None,
+            repos: vec![flyco_core::RepoSelection {
+                repo: REPO.to_owned(),
+                branch: None,
+            }],
             budget_limit: Usd::from_dollars(10),
             machine: None,
             spot: true,
@@ -469,8 +473,10 @@ async fn flyco_cannot_choose_a_machine_without_a_deployable_linux_type(
             source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
-            repo: REPO.to_owned(),
-            branch: None,
+            repos: vec![flyco_core::RepoSelection {
+                repo: REPO.to_owned(),
+                branch: None,
+            }],
             budget_limit: Usd::from_dollars(10),
             machine: None,
             spot: true,
@@ -614,6 +620,255 @@ async fn a_session_cap_outside_the_allowed_range_is_unprocessable(
             problem_kind("invalid-session-cap")
         );
     }
+}
+
+// ── The repositories a session works in ──
+
+#[skyzen::test]
+async fn a_session_can_work_across_several_repositories(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let mut body = open(&caller, REPO, 10);
+    body.repos = vec![
+        flyco_core::RepoSelection {
+            repo: REPO.to_owned(),
+            branch: None,
+        },
+        flyco_core::RepoSelection {
+            repo: "zen-rs/skyzen".to_owned(),
+            branch: Some("main".to_owned()),
+        },
+    ];
+    let session = create(&client, &caller, &body).await;
+
+    let repos = &session.summary.repos;
+    assert_eq!(repos.len(), 2);
+    // The first selection is the primary checkout, and the branch each
+    // repository works on is resolved at creation — flyco's default is
+    // `dev`, skyzen's named `main` (testing.rs's fixtures).
+    assert_eq!(repos[0].slug.as_str(), REPO);
+    assert_eq!(
+        repos[0].branch.as_ref().map(flyco_core::BranchName::as_str),
+        Some("dev")
+    );
+    assert_eq!(repos[0].dir, "flyco");
+    assert_eq!(repos[0].added_by, flyco_core::RepoAddedBy::User);
+    assert_eq!(repos[1].slug.as_str(), "zen-rs/skyzen");
+    assert_eq!(
+        repos[1].branch.as_ref().map(flyco_core::BranchName::as_str),
+        Some("main")
+    );
+    assert_eq!(repos[1].dir, "skyzen");
+}
+
+#[skyzen::test]
+async fn two_repositories_sharing_a_name_get_their_own_directories(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let mut body = open(&caller, REPO, 10);
+    body.repos = vec![
+        flyco_core::RepoSelection {
+            repo: REPO.to_owned(),
+            branch: None,
+        },
+        flyco_core::RepoSelection {
+            repo: "zen-rs/flyco".to_owned(),
+            branch: None,
+        },
+    ];
+    let session = create(&client, &caller, &body).await;
+
+    // The repository's own name is taken first; the second checkout of a
+    // `flyco` qualifies with its owner rather than shadowing the first.
+    let dirs: Vec<&str> = session
+        .summary
+        .repos
+        .iter()
+        .map(|repo| repo.dir.as_str())
+        .collect();
+    assert_eq!(dirs, ["flyco", "zen-rs--flyco"]);
+}
+
+#[skyzen::test]
+async fn a_session_naming_no_repository_or_too_many_is_refused(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+
+    let mut body = open(&caller, REPO, 10);
+    body.repos.clear();
+    let none = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .json(&body)
+        .send()
+        .await;
+    none.assert_status(422);
+    assert_eq!(none.json::<Problem>().kind, problem_kind("no-repositories"));
+
+    body.repos = (0..=flyco_core::MAX_SESSION_REPOS)
+        .map(|n| flyco_core::RepoSelection {
+            repo: format!("owner-{n}/repo-{n}"),
+            branch: None,
+        })
+        .collect();
+    let over = client
+        .post("/v1/sessions")
+        .bearer(&caller.token)
+        .json(&body)
+        .send()
+        .await;
+    over.assert_status(422);
+    assert_eq!(
+        over.json::<Problem>().kind,
+        problem_kind("session-repo-cap-reached")
+    );
+}
+
+#[skyzen::test]
+async fn a_repository_can_be_added_to_a_running_session(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+    let path = format!("/v1/sessions/{}/repos", session.summary.id);
+
+    let added = client
+        .post(&path)
+        .bearer(&caller.token)
+        .json(&flyco_core::RepoSelection {
+            repo: "zen-rs/skyzen".to_owned(),
+            branch: None,
+        })
+        .send()
+        .await;
+    added.assert_status(201);
+    let detail: SessionDetail = added.json();
+    assert_eq!(detail.summary.repos.len(), 2);
+    let skyzen = &detail.summary.repos[1];
+    assert_eq!(skyzen.slug.as_str(), "zen-rs/skyzen");
+    assert_eq!(skyzen.dir, "skyzen");
+    assert_eq!(
+        skyzen.branch.as_ref().map(flyco_core::BranchName::as_str),
+        Some("main")
+    );
+    assert_eq!(skyzen.added_by, flyco_core::RepoAddedBy::User);
+
+    // The repository the session already carries cannot be attached twice.
+    let again = client
+        .post(&path)
+        .bearer(&caller.token)
+        .json(&flyco_core::RepoSelection {
+            repo: "zen-rs/skyzen".to_owned(),
+            branch: None,
+        })
+        .send()
+        .await;
+    again.assert_status(409);
+    assert_eq!(
+        again.json::<Problem>().kind,
+        problem_kind("repo-already-attached")
+    );
+
+    // A slug that is not `owner/name` is refused before GitHub is asked.
+    let malformed = client
+        .post(&path)
+        .bearer(&caller.token)
+        .json(&flyco_core::RepoSelection {
+            repo: "skyzen".to_owned(),
+            branch: None,
+        })
+        .send()
+        .await;
+    malformed.assert_status(422);
+    assert_eq!(
+        malformed.json::<Problem>().kind,
+        problem_kind("invalid-repo")
+    );
+}
+
+#[skyzen::test]
+async fn a_repo_add_the_agent_raised_waits_on_the_users_decision(ctx: TestContext, kv: Kv, db: Db) {
+    let router = migrated_router(&db).await;
+    let caller = sign_in(&kv, &db, seed_user(&db).await).await;
+    let client = ctx.client(router);
+    let session = create(&client, &caller, &open(&caller, REPO, 10)).await;
+
+    let token: flyco_core::DaemonToken = client
+        .post(&format!("/v1/sessions/{}/daemon-token", session.summary.id))
+        .bearer(&caller.token)
+        .send()
+        .await
+        .json();
+
+    // A repository the session already carries is refused at raise — a card
+    // asking the user to decide on a checkout that exists would be noise.
+    let already = client
+        .post(&format!("/v1/sessions/{}/approvals", session.summary.id))
+        .bearer(&token.token)
+        .json(&ApprovalPayload::RepoAdd {
+            repo: REPO.to_owned(),
+            branch: None,
+            reason: "it is right there".to_owned(),
+        })
+        .send()
+        .await;
+    already.assert_status(409);
+    assert_eq!(
+        already.json::<Problem>().kind,
+        problem_kind("repo-already-attached")
+    );
+
+    let raised = client
+        .post(&format!("/v1/sessions/{}/approvals", session.summary.id))
+        .bearer(&token.token)
+        .json(&ApprovalPayload::RepoAdd {
+            repo: "zen-rs/skyzen".to_owned(),
+            branch: None,
+            reason: "need the router crate".to_owned(),
+        })
+        .send()
+        .await;
+    raised.assert_status(201);
+    let raised: ApprovalView = raised.json();
+    assert_eq!(raised.state, ApprovalState::Pending);
+    // The branch the agent left unnamed is resolved at raise, so approving
+    // later performs the clone the card described without asking GitHub.
+    let ApprovalPayload::RepoAdd { branch, .. } = &raised.payload else {
+        panic!("the raise kept its RepoAdd payload");
+    };
+    assert_eq!(branch.as_deref(), Some("main"));
+
+    let decided = client
+        .post(&format!("/v1/approvals/{}/decision", raised.id))
+        .bearer(&caller.token)
+        .json(&DecideApproval {
+            decision: ApprovalDecision::Approved,
+        })
+        .send()
+        .await;
+    decided.assert_status(200);
+
+    let detail = client
+        .get(&format!("/v1/sessions/{}", session.summary.id))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    detail.assert_status(200);
+    let repos = detail.json::<SessionDetail>().summary.repos;
+    assert_eq!(repos.len(), 2);
+    let skyzen = &repos[1];
+    assert_eq!(skyzen.slug.as_str(), "zen-rs/skyzen");
+    assert_eq!(skyzen.dir, "skyzen");
+    assert_eq!(skyzen.added_by, flyco_core::RepoAddedBy::Agent);
 }
 
 // ── Lifecycle ──
@@ -1716,8 +1971,10 @@ async fn ownership_is_answered_per_user(db: Db) {
             user: owner.id,
             title: "check ownership",
             harness: HarnessKind::Codex,
-            repo: &REPO.parse().expect("valid repo"),
-            branch: &BRANCH.parse().expect("valid branch"),
+            repos: &[sessions::RepoOpening {
+                slug: REPO.parse().expect("valid repo"),
+                branch: BRANCH.parse().expect("valid branch"),
+            }],
             machine_origin: flyco_core::MachineOrigin::Auto,
             budget: flyco_core::BudgetConfig::new(Usd::from_dollars(1)).expect("non-zero"),
             model: &flyco_core::ModelChoice::default_of(&flyco_core::builtin_models(

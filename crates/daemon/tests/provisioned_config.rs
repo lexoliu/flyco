@@ -21,8 +21,8 @@ use flyco_provider::flycod::{
     self, CLAUDE_CONFIG_DIR, CLAUDE_MANAGED_DIR, CLAUDE_PROJECT_DIR_NAME, CODEX_HOME, WORKDIR,
 };
 use flyco_provider::{
-    ClaudeCredential, CodexCredential, DaemonBootstrap, DevinCredential, GitIdentity,
-    HarnessCredential, RepoCheckout,
+    CheckoutSpec, ClaudeCredential, CodexCredential, DaemonBootstrap, DevinCredential, GitAccess,
+    GitIdentity, HarnessCredential,
 };
 
 const CONTROL_PLANE: &str = "https://flyco.dev/";
@@ -41,9 +41,12 @@ fn bootstrap(auth: HarnessCredential) -> DaemonBootstrap {
         daemon_token: DAEMON_TOKEN.to_owned(),
         permission_mode: PermissionMode::Auto,
         auth,
-        repo: RepoCheckout {
+        repos: vec![CheckoutSpec {
             slug: REPO.parse().expect("a valid repository slug"),
             branch: BRANCH.parse().expect("a valid branch name"),
+            dir: "flyco".to_owned(),
+        }],
+        github: GitAccess {
             token: GITHUB_TOKEN.to_owned(),
             identity: GitIdentity {
                 name: "lexoliu".to_owned(),
@@ -200,19 +203,26 @@ fn it_carries_the_repository_the_machine_has_to_check_out() {
     let config = parse(&claude(ClaudeCredential::Inherit));
 
     let repo = config
-        .repo
+        .repos
+        .first()
         .expect("a provisioned machine always knows what to check out");
     assert_eq!(repo.slug.to_string(), REPO);
     assert_eq!(repo.branch.to_string(), BRANCH);
-    assert_eq!(repo.token, GITHUB_TOKEN);
-    assert_eq!(repo.identity.email, COMMIT_EMAIL);
+    assert_eq!(repo.dir, "flyco");
     assert_eq!(repo.remote_url(), "https://github.com/lexoliu/flyco.git");
+
+    let github = config
+        .github
+        .as_ref()
+        .expect("a provisioned machine always carries the clone's access");
+    assert_eq!(github.token, GITHUB_TOKEN);
+    assert_eq!(github.identity.email, COMMIT_EMAIL);
     assert!(
         !repo.remote_url().contains(GITHUB_TOKEN),
         "the token must never be written into a URL git records on disk"
     );
     assert!(
-        !format!("{repo:?}").contains(GITHUB_TOKEN),
+        !format!("{github:?}").contains(GITHUB_TOKEN),
         "the token must never survive a Debug rendering"
     );
 }

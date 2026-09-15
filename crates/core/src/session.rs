@@ -10,7 +10,7 @@ use crate::budget::BudgetView;
 use crate::harness::{HarnessKind, ModelChoice, UsageReport};
 use crate::id::{ProviderAccountId, SessionId};
 use crate::money::Usd;
-use crate::repo::{BranchName, RepoSlug};
+use crate::repo::{RepoSelection, SessionRepo};
 
 /// Lifecycle state of a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
@@ -522,20 +522,15 @@ pub struct CreateSession {
     pub prompt: String,
     /// Which coding harness drives the session.
     pub harness: HarnessKind,
-    /// Repository to work in, `owner/name`. Untyped here because it is
-    /// untrusted input; the control plane parses it into a
-    /// [`RepoSlug`](crate::repo::RepoSlug) and rejects anything else.
-    pub repo: String,
-    /// Branch to check out. Untyped for the same reason as
-    /// [`repo`](Self::repo): the control plane parses it into a
-    /// [`BranchName`](crate::repo::BranchName) and refuses anything git
-    /// would.
+    /// Repositories the session works across, primary first.
     ///
-    /// Omitted, the control plane asks GitHub for the repository's default
-    /// branch and records *that*, so a session always names the branch it
-    /// works on rather than leaving every later reader to guess.
-    #[serde(default)]
-    pub branch: Option<String>,
+    /// A session always has at least one: the workdir is laid out as a
+    /// workspace holding every checkout, and the first entry is the
+    /// repository the header names. Untrusted input — the control plane
+    /// parses each `repo` into a [`RepoSlug`](crate::repo::RepoSlug) and
+    /// each `branch` into a [`BranchName`](crate::repo::BranchName), and
+    /// refuses anything else.
+    pub repos: Vec<RepoSelection>,
     /// Spending limit for the whole session.
     pub budget_limit: Usd,
     /// The machine to provision for it.
@@ -594,16 +589,13 @@ pub struct SessionSummary {
     pub machine_origin: MachineOrigin,
     /// Which coding harness drives it.
     pub harness: HarnessKind,
-    /// Repository it works in.
-    pub repo: RepoSlug,
-    /// Branch it works on, which the header renders as `repo · branch`
-    /// (docs/ux.md §9.1).
+    /// Repositories it works across, in `session_repos` order.
     ///
-    /// `None` only for a session opened before flyco recorded a branch at
-    /// all. A placeholder would be a claim about somebody's checkout that
-    /// flyco cannot support, so the header shows the repository alone for
-    /// those and every session opened since names its branch.
-    pub branch: Option<BranchName>,
+    /// The first entry is the session's primary repository — the one the
+    /// header renders as `repo · branch` (docs/ux.md §9.1), with `+N` for
+    /// the rest. Never empty: a session is created with at least one
+    /// repository and the list only grows when one is added later.
+    pub repos: Vec<SessionRepo>,
     /// Where it is in its lifecycle.
     pub state: SessionState,
     /// What it is doing, for an [`Active`](SessionState::Active) session.
@@ -864,7 +856,8 @@ mod tests {
     fn spot_defaults_to_on_when_the_client_omits_it() {
         let account = ProviderAccountId::generate();
         let request: CreateSession = serde_json::from_str(&format!(
-            r#"{{"prompt":"add a test","harness":"claude_code","repo":"lexoliu/flyco",
+            r#"{{"prompt":"add a test","harness":"claude_code",
+                "repos":[{{"repo":"lexoliu/flyco"}}],
                 "budget_limit":10000000,
                 "machine":{{"provider_account":"{account}","machine_type":"Standard_B2ats_v2",
                             "region":"northcentralus"}}}}"#
@@ -879,14 +872,15 @@ mod tests {
     #[test]
     fn omitting_the_machine_lets_flyco_choose() {
         let request: CreateSession = serde_json::from_str(
-            r#"{"prompt":"add a test","harness":"claude_code","repo":"lexoliu/flyco",
+            r#"{"prompt":"add a test","harness":"claude_code",
+                "repos":[{"repo":"lexoliu/flyco"}],
                 "budget_limit":10000000}"#,
         )
         .expect("deserialize");
         assert!(request.machine.is_none());
         assert!(request.spot);
         assert!(
-            request.branch.is_none(),
+            request.repos[0].branch.is_none(),
             "a request that names no branch takes the repository's default"
         );
     }
@@ -894,18 +888,32 @@ mod tests {
     #[test]
     fn a_named_branch_survives_deserialization() {
         let request: CreateSession = serde_json::from_str(
-            r#"{"prompt":"add a test","harness":"claude_code","repo":"lexoliu/flyco",
-                "branch":"dev","budget_limit":10000000}"#,
+            r#"{"prompt":"add a test","harness":"claude_code",
+                "repos":[{"repo":"lexoliu/flyco","branch":"dev"}],
+                "budget_limit":10000000}"#,
         )
         .expect("deserialize");
-        assert_eq!(request.branch.as_deref(), Some("dev"));
+        assert_eq!(request.repos[0].branch.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn several_repositories_keep_their_order() {
+        let request: CreateSession = serde_json::from_str(
+            r#"{"prompt":"add a test","harness":"claude_code",
+                "repos":[{"repo":"lexoliu/flyco"},{"repo":"lexoliu/aither","branch":"main"}],
+                "budget_limit":10000000}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(request.repos.len(), 2);
+        assert_eq!(request.repos[0].repo, "lexoliu/flyco");
+        assert_eq!(request.repos[1].branch.as_deref(), Some("main"));
     }
 
     #[test]
     fn a_session_cannot_be_opened_without_a_prompt() {
         assert!(
             serde_json::from_str::<CreateSession>(
-                r#"{"harness":"claude_code","repo":"lexoliu/flyco","budget_limit":10000000}"#,
+                r#"{"harness":"claude_code","repos":[{"repo":"lexoliu/flyco"}],"budget_limit":10000000}"#,
             )
             .is_err(),
             "a session with nothing to do is a machine nobody asked for"
@@ -960,8 +968,12 @@ mod tests {
             title: "add a test".to_owned(),
             machine_origin: MachineOrigin::Auto,
             harness: HarnessKind::ClaudeCode,
-            repo: "lexoliu/flyco".parse().expect("a repository"),
-            branch: None,
+            repos: vec![SessionRepo {
+                slug: "lexoliu/flyco".parse().expect("a repository"),
+                branch: None,
+                dir: "flyco".to_owned(),
+                added_by: crate::repo::RepoAddedBy::User,
+            }],
             state: SessionState::Active,
             activity: SessionActivity::Idle,
             interrupted_reason: None,

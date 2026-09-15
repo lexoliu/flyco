@@ -60,6 +60,7 @@ pub mod responses;
 pub mod room;
 pub mod rooms;
 pub mod session;
+pub mod session_repos;
 pub mod sessions;
 pub mod skills;
 pub mod sse;

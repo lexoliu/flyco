@@ -136,7 +136,12 @@ async fn find_session(api: &Api, id: Option<String>, last: bool) -> Outcome<Sess
         return Ok(resumable.into_iter().next().expect("non-empty"));
     }
     let chosen = pick::pick("Resume which session", &resumable, |session| {
-        format!("{}  {}  {}", state_of(session), session.repo, session.title)
+        format!(
+            "{}  {}  {}",
+            state_of(session),
+            crate::session::repos_label(&session.repos),
+            session.title
+        )
     })?;
     Ok(resumable.into_iter().nth(chosen).expect("picked in range"))
 }
@@ -160,14 +165,25 @@ async fn resolve(
     repo_arg: Option<String>,
     spec: &SessionSpec,
 ) -> Outcome<(CreateSession, Vec<String>)> {
-    let repo = match repo_arg.or_else(|| spec.repo.clone()) {
-        Some(repo) => repo,
-        None => pick_repo(api).await?,
-    };
+    let mut slugs = spec.repo.clone();
+    if let Some(repo) = repo_arg {
+        slugs.insert(0, repo);
+    }
+    if slugs.is_empty() {
+        slugs.push(pick_repo(api).await?);
+    }
     let branch = match &spec.branch {
         Some(branch) => Some(branch.clone()),
-        None => pick_branch(api, &repo).await?,
+        None => pick_branch(api, &slugs[0]).await?,
     };
+    let repos = slugs
+        .into_iter()
+        .enumerate()
+        .map(|(index, repo)| flyco_core::RepoSelection {
+            repo,
+            branch: if index == 0 { branch.clone() } else { None },
+        })
+        .collect();
     let machine = match spec_machine(spec)? {
         Some(machine) => Some(machine),
         None => Some(pick_machine(api, spec).await?),
@@ -196,8 +212,7 @@ async fn resolve(
         CreateSession {
             prompt,
             harness,
-            repo,
-            branch,
+            repos,
             budget_limit,
             machine,
             spot: !spec.on_demand,

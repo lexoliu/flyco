@@ -9,7 +9,6 @@ use flyco_daemon::config::{ControlPlaneConfig, DaemonConfig, EXAMPLE};
 use flyco_daemon::control::{
     ControlApi, HttpControlApi, RemoteTranscriptStore, SessionRelay, wire,
 };
-use flyco_daemon::git::GitWorkdir;
 use flyco_daemon::harness::acp::AcpHarness;
 use flyco_daemon::harness::claude::ClaudeCodeHarness;
 use flyco_daemon::harness::claude::store::{JsonlTranscriptStore, TranscriptStore};
@@ -326,46 +325,45 @@ async fn conversation_to_continue(config: &mut DaemonConfig, api: &HttpControlAp
     }
 }
 
-/// Puts the session's repository in the workdir, before anything is started
-/// in it.
+/// Puts the session's repositories in the workdir, before anything is
+/// started in it.
 ///
 /// Three steps in this order, and the order is the feature:
 ///
 /// 1. The [`Cloning`](ProvisioningStage::Cloning) stage is announced, so the
 ///    timeline says what the minute before the agent appears is being spent
 ///    on (docs/ux.md §9.2).
-/// 2. The repository is cloned at the branch the session names.
-/// 3. Any work a previous machine stored — committed or not — is applied
-///    back on top. A session resuming onto a new machine is a fresh clone
-///    plus that patch — which is why the patch is applied *after* the
-///    clone and *before* the harness, rather than onto whatever the last
-///    machine left. On a [`Runtime::Container`](flyco_core::Runtime::Container)
-///    this is every start, not only the ones that follow an archive: the
-///    filesystem went with the last execution, so the clone is always fresh
-///    and the patch is always where the work is.
+/// 2. Each `[[repos]]` entry is cloned at the branch the session names,
+///    into `workdir/<dir>` — or adopted, when the disk already holds the
+///    checkout: a machine booting a disk it already worked on keeps every
+///    tree exactly as it was, uncommitted work included, and clones
+///    nothing.
+/// 3. Any work a previous machine stored for a checkout — committed or
+///    not — is applied back on top of it. A session resuming onto a new
+///    machine is a fresh clone plus that patch — which is why the patch is
+///    applied *after* the clone and *before* the harness, rather than onto
+///    whatever the last machine left. On a
+///    [`Runtime::Container`](flyco_core::Runtime::Container) this is every
+///    start, not only the ones that follow an archive: the filesystem went
+///    with the last execution, so the clone is always fresh and the patch
+///    is always where the work is.
 ///
-/// A daemon with no `[repo]` is a developer machine pointed at a checkout
-/// that already exists, and clones nothing.
+/// A daemon with no `[[repos]]` is a developer machine pointed at a
+/// checkout that already exists, and clones nothing.
 async fn check_out(config: &DaemonConfig, api: Option<&HttpControlApi>) -> Result<(), Failure> {
-    let Some(repo) = &config.repo else {
+    if config.repos.is_empty() {
         tracing::info!(
             workdir = %config.workdir.display(),
-            "no [repo] in the config: working in the directory this daemon was pointed at"
-        );
-        return Ok(());
-    };
-
-    if flyco_daemon::git::has_checkout(&config.workdir).await {
-        // The machine is booting a disk it already worked on: its compute
-        // was reclaimed and given back, and the checkout — with whatever
-        // the agent had not committed — survived exactly as it was. There
-        // is nothing to clone and nothing to replay onto it.
-        tracing::info!(
-            workdir = %config.workdir.display(),
-            "the session's checkout is already on this disk; keeping it as it is"
+            "no [[repos]] in the config: working in the directory this daemon was pointed at"
         );
         return Ok(());
     }
+    let Some(github) = &config.github else {
+        // `validate_repos` refuses this shape at load; reaching it here is
+        // a config written by a build that did not.
+        tracing::warn!("[[repos]] configured without [github]; nothing can be cloned");
+        return Ok(());
+    };
 
     if let Some(api) = api {
         // A stage that does not reach the room costs the user a line of the
@@ -374,19 +372,47 @@ async fn check_out(config: &DaemonConfig, api: Option<&HttpControlApi>) -> Resul
             tracing::warn!(%error, "the cloning stage did not reach the session room");
         }
     }
-    flyco_daemon::git::clone_into(repo, &config.workdir).await?;
 
-    if let Some(api) = api {
-        let handoff = api
-            .get_handoff()
+    // Asked once, before the loop: a handoff's provenance describes the
+    // session's first checkout — the local repository it was taken from —
+    // and every other checkout's patch lookup is the ordinary kind.
+    let handoff = if let Some(api) = api {
+        api.get_handoff()
             .await
-            .map_err(flyco_daemon::control::WireError::from)?;
-        apply_stored_patch(api, &config.workdir, handoff.as_ref()).await?;
-        if let Some(view) = &handoff
-            && view.has_transcript
-        {
-            materialize_transcript(api).await?;
+            .map_err(flyco_daemon::control::WireError::from)?
+    } else {
+        None
+    };
+
+    for (index, repo) in config.repos.iter().enumerate() {
+        let checkout = repo.checkout_path(&config.workdir);
+        if flyco_daemon::git::has_checkout(&checkout).await {
+            // The machine is booting a disk it already worked on: this
+            // checkout — with whatever the agent had not committed —
+            // survived exactly as it was. Replaying a stored patch onto it
+            // would apply the same work twice.
+            tracing::info!(
+                dir = %repo.dir,
+                "the checkout is already on this disk; keeping it as it is"
+            );
+            continue;
         }
+        flyco_daemon::git::clone_into(repo, github, &checkout).await?;
+        if let Some(api) = api {
+            apply_stored_patch(
+                api,
+                Some(&repo.dir),
+                &checkout,
+                if index == 0 { handoff.as_ref() } else { None },
+            )
+            .await?;
+        }
+    }
+    if let Some(api) = api
+        && let Some(view) = &handoff
+        && view.has_transcript
+    {
+        materialize_transcript(api).await?;
     }
     Ok(())
 }
@@ -436,7 +462,7 @@ async fn serve_mcp(config: DaemonConfig) -> Result<(), Failure> {
     );
     let tools = FlycoTools::new(
         api,
-        GitWorkdir::new(config.workdir.clone()),
+        flyco_daemon::mcp::RepoTrees::over(&config.workdir, &config.repos),
         config.machine_origin,
     );
 
@@ -478,7 +504,6 @@ async fn drive_claude_code(config: DaemonConfig, mount: Mount) -> Result<(), Fai
     let started = start(&config, mount, RemoteTranscriptStore::new(api.clone())).await?;
     let (terminal, terminal_out) =
         flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
-    let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
     Box::pin(wire::run(SessionRelay {
         session_id: config.session,
         deadlines: wire::Deadlines::default(),
@@ -488,12 +513,12 @@ async fn drive_claude_code(config: DaemonConfig, mount: Mount) -> Result<(), Fai
         terminal,
         terminal_out,
         tui: flyco_daemon::tui::HarnessTui::resolve(&config).await,
-        // The composer's `!` commands run in the same checkout the agent
+        // The composer's `!` commands run in the same workspace the agent
         // works in, as the same user this daemon runs as.
         shell: config.shell.runner(config.workdir.clone()),
-        workdir,
-        checkout: checkout_of(&config),
-        repo_status,
+        repos: repos_of(&config).await,
+        workspace: workspace_of(&config),
+        github: config.github.clone(),
         disk: flyco_daemon::spot::HostDisk,
         // Watched from here rather than from inside the relay: which
         // endpoint carries a notice is a fact about the machine, and the
@@ -546,7 +571,6 @@ async fn report<S: HarnessSession + 'static>(
     let api = HttpControlApi::new(url, config.session, daemon_token);
     let (terminal, terminal_out) =
         flyco_daemon::terminal::Terminal::spawn(&config.terminal.shell, &config.workdir)?;
-    let (workdir, repo_status) = flyco_daemon::git::GitWorkdir::spawn(config.workdir.clone());
     Box::pin(wire::run(SessionRelay {
         session_id: config.session,
         deadlines: wire::Deadlines::default(),
@@ -556,12 +580,12 @@ async fn report<S: HarnessSession + 'static>(
         terminal,
         terminal_out,
         tui: flyco_daemon::tui::HarnessTui::resolve(&config).await,
-        // The composer's `!` commands run in the same checkout the agent
+        // The composer's `!` commands run in the same workspace the agent
         // works in, as the same user this daemon runs as.
         shell: config.shell.runner(config.workdir.clone()),
-        workdir,
-        checkout: checkout_of(&config),
-        repo_status,
+        repos: repos_of(&config).await,
+        workspace: workspace_of(&config),
+        github: config.github.clone(),
         disk: flyco_daemon::spot::HostDisk,
         // Watched from here rather than from inside the relay: which
         // endpoint carries a notice is a fact about the machine, and the
@@ -578,26 +602,51 @@ async fn report<S: HarnessSession + 'static>(
     Ok(())
 }
 
-/// The read-only view of the checkout the `Files` and `Diff` tabs read.
+/// The read-only view of the workspace the `Files` and `Diff` tabs read.
 ///
-/// The base a diff is taken against is the *remote-tracking* ref of the
-/// branch the session was opened on, not the local branch: the agent
-/// commits onto the local one, and a diff against it would go empty the
-/// moment the agent committed — which is precisely when the user wants to
-/// see what it did. A daemon with no `[repo]` was pointed at a directory
-/// rather than given a clone, so it has no branch the session began at and
-/// says so rather than inventing one.
-fn checkout_of(config: &DaemonConfig) -> flyco_daemon::workdir::Checkout {
-    flyco_daemon::workdir::Checkout::new(
-        config.workdir.clone(),
-        config
-            .repo
-            .as_ref()
-            .map(|repo| format!("origin/{}", repo.branch)),
-    )
+/// The base a checkout's diff is taken against is the *remote-tracking*
+/// ref of the branch the session opened it on, not the local branch: the
+/// agent commits onto the local one, and a diff against it would go empty
+/// the moment the agent committed — which is precisely when the user wants
+/// to see what it did. A daemon with no `[[repos]]` was pointed at a
+/// directory rather than given clones, so it has no branches the session
+/// began at and says so rather than inventing one.
+fn workspace_of(config: &DaemonConfig) -> flyco_daemon::workdir::Workspace {
+    if config.repos.is_empty() {
+        flyco_daemon::workdir::Workspace::new(config.workdir.clone(), None)
+    } else {
+        flyco_daemon::workdir::Workspace::provisioned(
+            config.workdir.clone(),
+            config
+                .repos
+                .iter()
+                .map(|repo| (repo.dir.clone(), repo.branch.to_string())),
+        )
+    }
 }
 
-/// Replays the work a previous machine stored, if any.
+/// The session's checkouts as the relay's working set.
+///
+/// One watched `GitWorkdir` per `[[repos]]` directory under the workspace — or,
+/// on a developer machine whose root is itself the checkout, the root
+/// under the `None` key the wire uses for it. A developer machine pointed
+/// at a directory that is not a checkout watches nothing: `git status`
+/// would only say so forever.
+async fn repos_of(config: &DaemonConfig) -> flyco_daemon::git::GitRepos {
+    let mut repos = flyco_daemon::git::GitRepos::new(config.workdir.clone());
+    if config.repos.is_empty() {
+        if flyco_daemon::git::has_checkout(&config.workdir).await {
+            repos.watch(None, config.workdir.clone());
+        }
+    } else {
+        for repo in &config.repos {
+            repos.watch(Some(repo.dir.clone()), repo.checkout_path(&config.workdir));
+        }
+    }
+    repos
+}
+
+/// Replays the work a previous machine stored for one checkout, if any.
 ///
 /// Two things store a patch, and from this side they are the same fact —
 /// this checkout is fresh and the session's work is not in it. An
@@ -605,7 +654,10 @@ fn checkout_of(config: &DaemonConfig) -> flyco_daemon::workdir::Checkout {
 /// does every stop of a [`Runtime::Container`](flyco_core::Runtime::Container)
 /// session, whose filesystem goes with its execution
 /// ([`flyco_daemon::stop`]). A `flyco handoff` uploads one for the local
-/// tree it is moving here.
+/// tree it is moving here — always the session's first checkout, which is
+/// what `handoff` is `Some` for. `dir` is the checkout's workspace
+/// directory — the key the patch was stored under — and `workdir` where it
+/// lives on this machine.
 ///
 /// A patch is not necessarily diffed against the tip this clone landed
 /// on, so the checkout is rewound first: a handoff names its sender's
@@ -619,12 +671,13 @@ fn checkout_of(config: &DaemonConfig) -> flyco_daemon::workdir::Checkout {
 /// they read the diff.
 async fn apply_stored_patch(
     api: &HttpControlApi,
+    dir: Option<&str>,
     workdir: &std::path::Path,
     handoff: Option<&flyco_core::HandoffView>,
 ) -> Result<(), flyco_daemon::control::WireError> {
     use flyco_daemon::git::WorkingTree as _;
 
-    let Some(stored) = api.get_workdir_patch().await? else {
+    let Some(stored) = api.get_workdir_patch(dir).await? else {
         tracing::info!("no stored patch: this session's work is all in the clone");
         return Ok(());
     };

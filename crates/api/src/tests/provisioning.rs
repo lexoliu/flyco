@@ -288,8 +288,10 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
             source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
-            repo: REPO.to_owned(),
-            branch: None,
+            repos: vec![flyco_core::RepoSelection {
+                repo: REPO.to_owned(),
+                branch: None,
+            }],
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
@@ -478,8 +480,10 @@ async fn a_machine_the_account_cannot_deploy_is_refused_where_it_was_chosen(
             source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
-            repo: REPO.to_owned(),
-            branch: None,
+            repos: vec![flyco_core::RepoSelection {
+                repo: REPO.to_owned(),
+                branch: None,
+            }],
             budget_limit: Usd::from_dollars(10),
             machine: Some(choice),
             spot: true,
@@ -1308,10 +1312,8 @@ async fn a_machine_boots_knowing_what_to_check_out_and_who_to_commit_as(
     let mut host = RecordedHost::healthy();
     run_queue(&db, &kv, &queue, &mut host).await;
 
-    let repo = host
-        .bootstrap
-        .expect("the driver was handed a bootstrap")
-        .repo;
+    let bootstrap = host.bootstrap.expect("the driver was handed a bootstrap");
+    let repo = &bootstrap.repos[0];
     assert_eq!(repo.slug.to_string(), REPO);
     assert_eq!(
         repo.branch.to_string(),
@@ -1321,9 +1323,9 @@ async fn a_machine_boots_knowing_what_to_check_out_and_who_to_commit_as(
     // Behaving as the user, not as a bot: the machine holds the caller's own
     // GitHub token, unsealed on the way through, and commits under the
     // caller's own identity.
-    assert_eq!(repo.token, GITHUB_ACCESS_TOKEN);
-    assert_eq!(repo.identity.name, GITHUB_NAME);
-    assert_eq!(repo.identity.email, GITHUB_COMMIT_EMAIL);
+    assert_eq!(bootstrap.github.token, GITHUB_ACCESS_TOKEN);
+    assert_eq!(bootstrap.github.identity.name, GITHUB_NAME);
+    assert_eq!(bootstrap.github.identity.email, GITHUB_COMMIT_EMAIL);
 }
 
 #[skyzen::test]
@@ -1344,8 +1346,10 @@ async fn a_session_carries_the_branch_it_was_opened_on(
             source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
-            repo: REPO.to_owned(),
-            branch: Some(NAMED_BRANCH.to_owned()),
+            repos: vec![flyco_core::RepoSelection {
+                repo: REPO.to_owned(),
+                branch: Some(NAMED_BRANCH.to_owned()),
+            }],
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
@@ -1357,8 +1361,7 @@ async fn a_session_carries_the_branch_it_was_opened_on(
     response.assert_status(201);
     let session: SessionDetail = response.json();
     assert_eq!(
-        session
-            .summary
+        session.summary.repos[0]
             .branch
             .as_ref()
             .map(ToString::to_string)
@@ -1372,7 +1375,7 @@ async fn a_session_carries_the_branch_it_was_opened_on(
     assert_eq!(
         host.bootstrap
             .expect("the driver was handed a bootstrap")
-            .repo
+            .repos[0]
             .branch
             .to_string(),
         NAMED_BRANCH,
@@ -1398,8 +1401,10 @@ async fn a_branch_git_would_refuse_is_refused_where_it_was_typed(
             source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
-            repo: REPO.to_owned(),
-            branch: Some("not a branch".to_owned()),
+            repos: vec![flyco_core::RepoSelection {
+                repo: REPO.to_owned(),
+                branch: Some("not a branch".to_owned()),
+            }],
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
@@ -1446,8 +1451,10 @@ async fn a_token_without_the_repo_scope_cannot_open_a_session(
             source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
-            repo: REPO.to_owned(),
-            branch: None,
+            repos: vec![flyco_core::RepoSelection {
+                repo: REPO.to_owned(),
+                branch: None,
+            }],
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
@@ -1525,10 +1532,13 @@ async fn a_session_opened_before_flyco_tracked_branches_resolves_one_once(
     let client = ctx.client(router);
 
     let session = open(&client, &caller).await.summary.id;
-    sql!(db, "UPDATE sessions SET branch = NULL WHERE id = {session}")
-        .execute()
-        .await
-        .expect("age the row back to before branches were recorded");
+    sql!(
+        db,
+        "UPDATE session_repos SET branch = NULL WHERE session_id = {session}"
+    )
+    .execute()
+    .await
+    .expect("age the row back to before branches were recorded");
 
     let mut host = RecordedHost::healthy();
     run_queue(&db, &kv, &queue, &mut host).await;
@@ -1536,15 +1546,18 @@ async fn a_session_opened_before_flyco_tracked_branches_resolves_one_once(
     assert_eq!(
         host.bootstrap
             .expect("the driver was handed a bootstrap")
-            .repo
+            .repos[0]
             .branch
             .to_string(),
         TEST_DEFAULT_BRANCH
     );
-    let stored: Option<String> = sql!(db, "SELECT branch FROM sessions WHERE id = {session}")
-        .fetch_scalar_optional()
-        .await
-        .expect("read the row back");
+    let stored: Option<String> = sql!(
+        db,
+        "SELECT branch FROM session_repos WHERE session_id = {session}"
+    )
+    .fetch_scalar_optional()
+    .await
+    .expect("read the row back");
     assert_eq!(
         stored.as_deref(),
         Some(TEST_DEFAULT_BRANCH),
@@ -1692,8 +1705,10 @@ async fn open_azure(
             source: None,
             prompt: PROMPT.to_owned(),
             harness: HarnessKind::ClaudeCode,
-            repo: REPO.to_owned(),
-            branch: None,
+            repos: vec![flyco_core::RepoSelection {
+                repo: REPO.to_owned(),
+                branch: None,
+            }],
             budget_limit: Usd::from_dollars(10),
             machine: Some(MachineChoice {
                 provider_account: account,
