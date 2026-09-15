@@ -1145,6 +1145,21 @@ pub enum ApiError {
     #[error("the room refused: {0:?}", status = StatusCode::BAD_GATEWAY)]
     RoomRefused(Box<Problem>),
 
+    /// The object's ledger for the UTC day is spent, so it is refusing
+    /// reads until midnight.
+    ///
+    /// Raised inside a durable object by
+    /// [`crate::row_budget::charge_reads`]: the circuit breaker that keeps
+    /// one runaway caller from spending the account's whole Durable Object
+    /// row-read quota, which is what once took every room down for the
+    /// rest of a day. `429`, because the object is refusing the caller's
+    /// rate rather than failing at its own work.
+    #[error(
+        "this object exhausted its durable-object read budget for today; it resets at UTC midnight",
+        status = StatusCode::TOO_MANY_REQUESTS
+    )]
+    RowBudgetExceeded,
+
     /// Object storage failed.
     #[error("object storage failed: {0}")]
     Storage(#[from] StorageError),
@@ -1482,6 +1497,7 @@ impl ApiError {
             Self::RelayFramesGap { .. } => "relay-frames-gap",
             Self::RelayUnavailable(_) => "relay-unavailable",
             Self::Room(_) | Self::RoomRefused(_) => "session-room-unavailable",
+            Self::RowBudgetExceeded => "row-budget-exhausted",
             Self::GithubCodeRejected(_) => "github-code-rejected",
             Self::GithubTokenRevoked => "github-token-revoked",
             Self::GithubStatus(_) => "github-status",

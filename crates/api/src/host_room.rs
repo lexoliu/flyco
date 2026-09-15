@@ -308,6 +308,14 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
     if rows.is_empty() {
         return Ok(crate::sse::Poll::Idle);
     }
+    // The poll just drained `rows` of backlog — bill them. An idle poll
+    // reads nothing and is billed nothing: a stream's keepalive cadence
+    // must not spend the budget a backlog could.
+    crate::row_budget::charge_reads(db, rows.len() as u64)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "a host command stream hit the row budget");
+        })?;
     feed.cursor = rows.last().map_or(feed.cursor, |row| row.seq);
     Ok(crate::sse::Poll::Emit(
         rows.iter()
@@ -527,7 +535,7 @@ async fn pending_jobs(db: &DurableDb) -> Result<u32, DurableObjectError> {
 /// costs one per statement — and every hot path in the room calls this
 /// first. Bump it when the DDL below changes so a room built by an older
 /// build upgrades once, on its next call.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Creates the mailbox if this is the room's first write.
 ///
@@ -565,6 +573,10 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
         "CREATE TABLE IF NOT EXISTS host_frames (\
              epoch   INTEGER PRIMARY KEY, \
              through INTEGER NOT NULL)",
+        // The room's row-read ledger — one row per UTC day, debited by
+        // `row_budget::charge_reads`, and the circuit breaker that keeps a
+        // runaway reader here from spending the account's quota.
+        crate::row_budget::SCHEMA,
     ] {
         db.query(statement)
             .execute()
