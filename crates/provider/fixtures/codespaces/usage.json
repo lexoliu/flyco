@@ -1,0 +1,28 @@
+{
+  "usageItems": [
+    {
+      "product": "codespaces",
+      "sku": "Compute usage",
+      "unitType": "hours",
+      "pricePerUnit": 0.18,
+      "grossQuantity": 12.5,
+      "grossAmount": 2.25,
+      "discountQuantity": 10.0,
+      "discountAmount": 1.8,
+      "netQuantity": 2.5,
+      "netAmount": 0.45
+    },
+    {
+      "product": "actions",
+      "sku": "Compute usage",
+      "unitType": "minutes",
+      "pricePerUnit": 0.008,
+      "grossQuantity": 100.0,
+      "grossAmount": 0.8,
+      "discountQuantity": 0.0,
+      "discountAmount": 0.0,
+      "netQuantity": 100.0,
+      "netAmount": 0.8
+    }
+  ]
+}

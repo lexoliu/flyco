@@ -1,0 +1,3082 @@
+[
+  {
+    "id": "claude-opus-5-medium",
+    "label": "Claude Opus 5 Medium",
+    "description": "Claude Opus 5 Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-5-low",
+    "label": "Claude Opus 5 Low",
+    "description": "Claude Opus 5 Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-5-high",
+    "label": "Claude Opus 5 High",
+    "description": "Claude Opus 5 High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-5-xhigh",
+    "label": "Claude Opus 5 XHigh",
+    "description": "Claude Opus 5 XHigh · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-5-max",
+    "label": "Claude Opus 5 Max",
+    "description": "Claude Opus 5 Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-5-low-fast",
+    "label": "Claude Opus 5 Low Fast",
+    "description": "Claude Opus 5 Low Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-5-medium-fast",
+    "label": "Claude Opus 5 Medium Fast",
+    "description": "Claude Opus 5 Medium Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-5-high-fast",
+    "label": "Claude Opus 5 High Fast",
+    "description": "Claude Opus 5 High Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-5-xhigh-fast",
+    "label": "Claude Opus 5 XHigh Fast",
+    "description": "Claude Opus 5 XHigh Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-5-max-fast",
+    "label": "Claude Opus 5 Max Fast",
+    "description": "Claude Opus 5 Max Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-fable-5-1-medium",
+    "label": "Claude Fable 5.1 Medium",
+    "description": "Claude Fable 5.1 Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-fable-5-1-low",
+    "label": "Claude Fable 5.1 Low",
+    "description": "Claude Fable 5.1 Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-fable-5-1-high",
+    "label": "Claude Fable 5.1 High",
+    "description": "Claude Fable 5.1 High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-fable-5-1-xhigh",
+    "label": "Claude Fable 5.1 XHigh",
+    "description": "Claude Fable 5.1 XHigh · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-fable-5-1-max",
+    "label": "Claude Fable 5.1 Max",
+    "description": "Claude Fable 5.1 Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-sonnet-5-medium",
+    "label": "Claude Sonnet 5 Medium",
+    "description": "Claude Sonnet 5 Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-sonnet-5-low",
+    "label": "Claude Sonnet 5 Low",
+    "description": "Claude Sonnet 5 Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-sonnet-5-high",
+    "label": "Claude Sonnet 5 High",
+    "description": "Claude Sonnet 5 High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-sonnet-5-xhigh",
+    "label": "Claude Sonnet 5 XHigh",
+    "description": "Claude Sonnet 5 XHigh · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-sonnet-5-max",
+    "label": "Claude Sonnet 5 Max",
+    "description": "Claude Sonnet 5 Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-8-flash-medium",
+    "label": "Gemini 3.8 Flash Medium",
+    "description": "Gemini 3.8 Flash Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-8-flash-low",
+    "label": "Gemini 3.8 Flash Low",
+    "description": "Gemini 3.8 Flash Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-8-flash-high",
+    "label": "Gemini 3.8 Flash High",
+    "description": "Gemini 3.8 Flash High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-sol-medium",
+    "label": "GPT-5.6 Sol Medium Thinking",
+    "description": "GPT-5.6 Sol Medium Thinking · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-sol-none",
+    "label": "GPT-5.6 Sol No Thinking",
+    "description": "GPT-5.6 Sol No Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-sol-low",
+    "label": "GPT-5.6 Sol Low Thinking",
+    "description": "GPT-5.6 Sol Low Thinking · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-sol-high",
+    "label": "GPT-5.6 Sol High Thinking",
+    "description": "GPT-5.6 Sol High Thinking · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-sol-xhigh",
+    "label": "GPT-5.6 Sol XHigh Thinking",
+    "description": "GPT-5.6 Sol XHigh Thinking · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-sol-max",
+    "label": "GPT-5.6 Sol Max Thinking",
+    "description": "GPT-5.6 Sol Max Thinking · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-sol-none-priority",
+    "label": "GPT-5.6 Sol No Thinking Fast",
+    "description": "GPT-5.6 Sol No Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-sol-low-priority",
+    "label": "GPT-5.6 Sol Low Thinking Fast",
+    "description": "GPT-5.6 Sol Low Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-sol-medium-priority",
+    "label": "GPT-5.6 Sol Medium Thinking Fast",
+    "description": "GPT-5.6 Sol Medium Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-sol-high-priority",
+    "label": "GPT-5.6 Sol High Thinking Fast",
+    "description": "GPT-5.6 Sol High Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-sol-xhigh-priority",
+    "label": "GPT-5.6 Sol XHigh Thinking Fast",
+    "description": "GPT-5.6 Sol XHigh Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-sol-max-priority",
+    "label": "GPT-5.6 Sol Max Thinking Fast",
+    "description": "GPT-5.6 Sol Max Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-luna-medium",
+    "label": "GPT-5.6 Luna Medium Thinking",
+    "description": "GPT-5.6 Luna Medium Thinking · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-luna-none",
+    "label": "GPT-5.6 Luna No Thinking",
+    "description": "GPT-5.6 Luna No Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-luna-low",
+    "label": "GPT-5.6 Luna Low Thinking",
+    "description": "GPT-5.6 Luna Low Thinking · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-luna-high",
+    "label": "GPT-5.6 Luna High Thinking",
+    "description": "GPT-5.6 Luna High Thinking · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-luna-xhigh",
+    "label": "GPT-5.6 Luna XHigh Thinking",
+    "description": "GPT-5.6 Luna XHigh Thinking · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-luna-max",
+    "label": "GPT-5.6 Luna Max Thinking",
+    "description": "GPT-5.6 Luna Max Thinking · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-luna-none-priority",
+    "label": "GPT-5.6 Luna No Thinking Fast",
+    "description": "GPT-5.6 Luna No Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-luna-low-priority",
+    "label": "GPT-5.6 Luna Low Thinking Fast",
+    "description": "GPT-5.6 Luna Low Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-luna-medium-priority",
+    "label": "GPT-5.6 Luna Medium Thinking Fast",
+    "description": "GPT-5.6 Luna Medium Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-luna-high-priority",
+    "label": "GPT-5.6 Luna High Thinking Fast",
+    "description": "GPT-5.6 Luna High Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-luna-xhigh-priority",
+    "label": "GPT-5.6 Luna XHigh Thinking Fast",
+    "description": "GPT-5.6 Luna XHigh Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-luna-max-priority",
+    "label": "GPT-5.6 Luna Max Thinking Fast",
+    "description": "GPT-5.6 Luna Max Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-6-astra-medium",
+    "label": "GPT-6 Astra Medium Thinking",
+    "description": "GPT-6 Astra Medium Thinking · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-6-astra-low",
+    "label": "GPT-6 Astra Low Thinking",
+    "description": "GPT-6 Astra Low Thinking · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-6-astra-high",
+    "label": "GPT-6 Astra High Thinking",
+    "description": "GPT-6 Astra High Thinking · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-6-astra-xhigh",
+    "label": "GPT-6 Astra XHigh Thinking",
+    "description": "GPT-6 Astra XHigh Thinking · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-6-astra-max",
+    "label": "GPT-6 Astra Max Thinking",
+    "description": "GPT-6 Astra Max Thinking · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-6-astra-low-priority",
+    "label": "GPT-6 Astra Low Thinking Fast",
+    "description": "GPT-6 Astra Low Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-6-astra-medium-priority",
+    "label": "GPT-6 Astra Medium Thinking Fast",
+    "description": "GPT-6 Astra Medium Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-6-astra-high-priority",
+    "label": "GPT-6 Astra High Thinking Fast",
+    "description": "GPT-6 Astra High Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-6-astra-xhigh-priority",
+    "label": "GPT-6 Astra XHigh Thinking Fast",
+    "description": "GPT-6 Astra XHigh Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-6-astra-max-priority",
+    "label": "GPT-6 Astra Max Thinking Fast",
+    "description": "GPT-6 Astra Max Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "glm-5-2",
+    "label": "GLM-5.2 High",
+    "description": "GLM-5.2 High · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "glm-5-2-max",
+    "label": "GLM-5.2 Max",
+    "description": "GLM-5.2 Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "glm-5-2-1m",
+    "label": "GLM-5.2 High 1M",
+    "description": "GLM-5.2 High 1M · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "glm-5-2-max-1m",
+    "label": "GLM-5.2 Max 1M",
+    "description": "GLM-5.2 Max 1M · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "glm-5-2-none",
+    "label": "GLM-5.2 No Thinking",
+    "description": "GLM-5.2 No Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "glm-5-2-none-1m",
+    "label": "GLM-5.2 No Thinking 1M",
+    "description": "GLM-5.2 No Thinking 1M · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "kimi-k3-high",
+    "label": "Kimi K3 High",
+    "description": "Kimi K3 High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "kimi-k3-low",
+    "label": "Kimi K3 Low",
+    "description": "Kimi K3 Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "kimi-k3-max",
+    "label": "Kimi K3 Max",
+    "description": "Kimi K3 Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "glm-5-3-low",
+    "label": "GLM-5.3 Low",
+    "description": "GLM-5.3 Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "glm-5-3-high",
+    "label": "GLM-5.3 High",
+    "description": "GLM-5.3 High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "glm-5-3-max",
+    "label": "GLM-5.3 Max",
+    "description": "GLM-5.3 Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "swe-1-7-lightning",
+    "label": "SWE-1.7 Lightning Max",
+    "description": "SWE-1.7 Lightning Max · runs at lightning effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "swe-1-7-lightning-medium",
+    "label": "SWE-1.7 Lightning Medium",
+    "description": "SWE-1.7 Lightning Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "swe-2-high",
+    "label": "SWE-2 High",
+    "description": "SWE-2 High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "swe-2-medium",
+    "label": "SWE-2 Medium",
+    "description": "SWE-2 Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "swe-2-max",
+    "label": "SWE-2 Max",
+    "description": "SWE-2 Max · runs at maximum effort.",
+    "is_default": true,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "adaptive",
+    "label": "Adaptive",
+    "description": "Adaptive · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-7-medium",
+    "label": "Claude Opus 4.7 Medium",
+    "description": "Claude Opus 4.7 Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-7-low",
+    "label": "Claude Opus 4.7 Low",
+    "description": "Claude Opus 4.7 Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-7-high",
+    "label": "Claude Opus 4.7 High",
+    "description": "Claude Opus 4.7 High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-7-xhigh",
+    "label": "Claude Opus 4.7 XHigh",
+    "description": "Claude Opus 4.7 XHigh · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-7-max",
+    "label": "Claude Opus 4.7 Max",
+    "description": "Claude Opus 4.7 Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-8-medium",
+    "label": "Claude Opus 4.8 Medium",
+    "description": "Claude Opus 4.8 Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-8-low",
+    "label": "Claude Opus 4.8 Low",
+    "description": "Claude Opus 4.8 Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-8-high",
+    "label": "Claude Opus 4.8 High",
+    "description": "Claude Opus 4.8 High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-8-xhigh",
+    "label": "Claude Opus 4.8 XHigh",
+    "description": "Claude Opus 4.8 XHigh · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-8-max",
+    "label": "Claude Opus 4.8 Max",
+    "description": "Claude Opus 4.8 Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-8-low-fast",
+    "label": "Claude Opus 4.8 Low Fast",
+    "description": "Claude Opus 4.8 Low Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-8-medium-fast",
+    "label": "Claude Opus 4.8 Medium Fast",
+    "description": "Claude Opus 4.8 Medium Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-8-high-fast",
+    "label": "Claude Opus 4.8 High Fast",
+    "description": "Claude Opus 4.8 High Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-8-xhigh-fast",
+    "label": "Claude Opus 4.8 XHigh Fast",
+    "description": "Claude Opus 4.8 XHigh Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-8-max-fast",
+    "label": "Claude Opus 4.8 Max Fast",
+    "description": "Claude Opus 4.8 Max Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-5-fable-low",
+    "label": "Claude Fable 5 Low",
+    "description": "Claude Fable 5 Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-5-fable-medium",
+    "label": "Claude Fable 5 Medium",
+    "description": "Claude Fable 5 Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-5-fable-high",
+    "label": "Claude Fable 5 High",
+    "description": "Claude Fable 5 High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-5-fable-xhigh",
+    "label": "Claude Fable 5 XHigh",
+    "description": "Claude Fable 5 XHigh · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-5-fable-max",
+    "label": "Claude Fable 5 Max",
+    "description": "Claude Fable 5 Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-5-flash-minimal",
+    "label": "Gemini 3.5 Flash Minimal",
+    "description": "Gemini 3.5 Flash Minimal · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-5-flash-low",
+    "label": "Gemini 3.5 Flash Low",
+    "description": "Gemini 3.5 Flash Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-5-flash-medium",
+    "label": "Gemini 3.5 Flash Medium",
+    "description": "Gemini 3.5 Flash Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-5-flash-high",
+    "label": "Gemini 3.5 Flash High",
+    "description": "Gemini 3.5 Flash High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-6-flash-minimal",
+    "label": "Gemini 3.6 Flash Minimal",
+    "description": "Gemini 3.6 Flash Minimal · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-6-flash-low",
+    "label": "Gemini 3.6 Flash Low",
+    "description": "Gemini 3.6 Flash Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-6-flash-medium",
+    "label": "Gemini 3.6 Flash Medium",
+    "description": "Gemini 3.6 Flash Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-6-flash-high",
+    "label": "Gemini 3.6 Flash High",
+    "description": "Gemini 3.6 Flash High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-7-flash-low",
+    "label": "Gemini 3.7 Flash Low",
+    "description": "Gemini 3.7 Flash Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-7-flash-medium",
+    "label": "Gemini 3.7 Flash Medium",
+    "description": "Gemini 3.7 Flash Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-7-flash-high",
+    "label": "Gemini 3.7 Flash High",
+    "description": "Gemini 3.7 Flash High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-terra-none",
+    "label": "GPT-5.6 Terra No Thinking",
+    "description": "GPT-5.6 Terra No Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-terra-low",
+    "label": "GPT-5.6 Terra Low Thinking",
+    "description": "GPT-5.6 Terra Low Thinking · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-terra-medium",
+    "label": "GPT-5.6 Terra Medium Thinking",
+    "description": "GPT-5.6 Terra Medium Thinking · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-terra-high",
+    "label": "GPT-5.6 Terra High Thinking",
+    "description": "GPT-5.6 Terra High Thinking · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-terra-xhigh",
+    "label": "GPT-5.6 Terra XHigh Thinking",
+    "description": "GPT-5.6 Terra XHigh Thinking · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-terra-max",
+    "label": "GPT-5.6 Terra Max Thinking",
+    "description": "GPT-5.6 Terra Max Thinking · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-terra-none-priority",
+    "label": "GPT-5.6 Terra No Thinking Fast",
+    "description": "GPT-5.6 Terra No Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-terra-low-priority",
+    "label": "GPT-5.6 Terra Low Thinking Fast",
+    "description": "GPT-5.6 Terra Low Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-terra-medium-priority",
+    "label": "GPT-5.6 Terra Medium Thinking Fast",
+    "description": "GPT-5.6 Terra Medium Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-terra-high-priority",
+    "label": "GPT-5.6 Terra High Thinking Fast",
+    "description": "GPT-5.6 Terra High Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-terra-xhigh-priority",
+    "label": "GPT-5.6 Terra XHigh Thinking Fast",
+    "description": "GPT-5.6 Terra XHigh Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-6-terra-max-priority",
+    "label": "GPT-5.6 Terra Max Thinking Fast",
+    "description": "GPT-5.6 Terra Max Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "grok-4-5-low",
+    "label": "Grok 4.5 Low",
+    "description": "Grok 4.5 Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "grok-4-5-medium",
+    "label": "Grok 4.5 Medium",
+    "description": "Grok 4.5 Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "grok-4-5-high",
+    "label": "Grok 4.5 High",
+    "description": "Grok 4.5 High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "grok-4-6-low",
+    "label": "Grok 4.6 Low",
+    "description": "Grok 4.6 Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "grok-4-6-medium",
+    "label": "Grok 4.6 Medium",
+    "description": "Grok 4.6 Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "grok-4-6-high",
+    "label": "Grok 4.6 High",
+    "description": "Grok 4.6 High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "grok-4-6-xhigh",
+    "label": "Grok 4.6 XHigh",
+    "description": "Grok 4.6 XHigh · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "inkling-none",
+    "label": "Inkling None",
+    "description": "Inkling None · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "inkling-low",
+    "label": "Inkling Low",
+    "description": "Inkling Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "inkling-medium",
+    "label": "Inkling Medium",
+    "description": "Inkling Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "inkling-high",
+    "label": "Inkling High",
+    "description": "Inkling High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "inkling-xhigh",
+    "label": "Inkling X-High",
+    "description": "Inkling X-High · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "inkling-max",
+    "label": "Inkling Max",
+    "description": "Inkling Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "glm-5-3-flash-low",
+    "label": "GLM-5.3 Flash Low",
+    "description": "GLM-5.3 Flash Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "glm-5-3-flash-high",
+    "label": "GLM-5.3 Flash High",
+    "description": "GLM-5.3 Flash High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "glm-5-3-flash-max",
+    "label": "GLM-5.3 Flash Max",
+    "description": "GLM-5.3 Flash Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "deepseek-v4-flash-high",
+    "label": "DeepSeek V4 Flash High",
+    "description": "DeepSeek V4 Flash High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "deepseek-v4-flash-max",
+    "label": "DeepSeek V4 Flash Max",
+    "description": "DeepSeek V4 Flash Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "deepseek-v4-1-flash-high",
+    "label": "DeepSeek V4.1 Flash High",
+    "description": "DeepSeek V4.1 Flash High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "deepseek-v4-1-flash-max",
+    "label": "DeepSeek V4.1 Flash Max",
+    "description": "DeepSeek V4.1 Flash Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "swe-1-7",
+    "label": "SWE-1.7 Max",
+    "description": "SWE-1.7 Max · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "swe-1-7-medium",
+    "label": "SWE-1.7 Medium",
+    "description": "SWE-1.7 Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-medium-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Fable 5.1 Medium + SWE-2 Medium)",
+    "description": "Fusion (Claude Fable 5.1 Medium + SWE-2 Medium) · a fusion pair on Devin: claude fable 5 1 medium driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-high-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Fable 5.1 High + SWE-2 Medium)",
+    "description": "Fusion (Claude Fable 5.1 High + SWE-2 Medium) · a fusion pair on Devin: claude fable 5 1 high driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-high-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-5.6 Sol High Thinking + SWE-2 Medium)",
+    "description": "Fusion (GPT-5.6 Sol High Thinking + SWE-2 Medium) · a fusion pair on Devin: gpt 5 6 sol high driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-high-fast-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-5.6 Sol High Thinking Fast + SWE-2 Medium)",
+    "description": "Fusion (GPT-5.6 Sol High Thinking Fast + SWE-2 Medium) · a fusion pair on Devin: gpt 5 6 sol high fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-high-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Opus 5 High + SWE-2 Medium)",
+    "description": "Fusion (Claude Opus 5 High + SWE-2 Medium) · a fusion pair on Devin: claude opus 5 high driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-high-fast-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Opus 5 High Fast + SWE-2 Medium)",
+    "description": "Fusion (Claude Opus 5 High Fast + SWE-2 Medium) · a fusion pair on Devin: claude opus 5 high fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-high-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-6 Astra High Thinking + SWE-2 Medium)",
+    "description": "Fusion (GPT-6 Astra High Thinking + SWE-2 Medium) · a fusion pair on Devin: gpt 6 astra high driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-high-fast-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-6 Astra High Thinking Fast + SWE-2 Medium)",
+    "description": "Fusion (GPT-6 Astra High Thinking Fast + SWE-2 Medium) · a fusion pair on Devin: gpt 6 astra high fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-medium-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-5.6 Sol Medium Thinking + SWE-2 Medium)",
+    "description": "Fusion (GPT-5.6 Sol Medium Thinking + SWE-2 Medium) · a fusion pair on Devin: gpt 5 6 sol medium driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-medium-fast-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-5.6 Sol Medium Thinking Fast + SWE-2 Medium)",
+    "description": "Fusion (GPT-5.6 Sol Medium Thinking Fast + SWE-2 Medium) · a fusion pair on Devin: gpt 5 6 sol medium fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-medium-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Opus 5 Medium + SWE-2 Medium)",
+    "description": "Fusion (Claude Opus 5 Medium + SWE-2 Medium) · a fusion pair on Devin: claude opus 5 medium driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-medium-fast-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Opus 5 Medium Fast + SWE-2 Medium)",
+    "description": "Fusion (Claude Opus 5 Medium Fast + SWE-2 Medium) · a fusion pair on Devin: claude opus 5 medium fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-medium-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-6 Astra Medium Thinking + SWE-2 Medium)",
+    "description": "Fusion (GPT-6 Astra Medium Thinking + SWE-2 Medium) · a fusion pair on Devin: gpt 6 astra medium driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-medium-fast-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-6 Astra Medium Thinking Fast + SWE-2 Medium)",
+    "description": "Fusion (GPT-6 Astra Medium Thinking Fast + SWE-2 Medium) · a fusion pair on Devin: gpt 6 astra medium fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-xhigh-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Opus 5 XHigh + SWE-2 Medium)",
+    "description": "Fusion (Claude Opus 5 XHigh + SWE-2 Medium) · a fusion pair on Devin: claude opus 5 xhigh driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-xhigh-fast-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Opus 5 XHigh Fast + SWE-2 Medium)",
+    "description": "Fusion (Claude Opus 5 XHigh Fast + SWE-2 Medium) · a fusion pair on Devin: claude opus 5 xhigh fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-xhigh-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Fable 5.1 XHigh + SWE-2 Medium)",
+    "description": "Fusion (Claude Fable 5.1 XHigh + SWE-2 Medium) · a fusion pair on Devin: claude fable 5 1 xhigh driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-xhigh-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-5.6 Sol XHigh Thinking + SWE-2 Medium)",
+    "description": "Fusion (GPT-5.6 Sol XHigh Thinking + SWE-2 Medium) · a fusion pair on Devin: gpt 5 6 sol xhigh driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-xhigh-fast-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-5.6 Sol XHigh Thinking Fast + SWE-2 Medium)",
+    "description": "Fusion (GPT-5.6 Sol XHigh Thinking Fast + SWE-2 Medium) · a fusion pair on Devin: gpt 5 6 sol xhigh fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-xhigh-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-6 Astra XHigh Thinking + SWE-2 Medium)",
+    "description": "Fusion (GPT-6 Astra XHigh Thinking + SWE-2 Medium) · a fusion pair on Devin: gpt 6 astra xhigh driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-xhigh-fast-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-6 Astra XHigh Thinking Fast + SWE-2 Medium)",
+    "description": "Fusion (GPT-6 Astra XHigh Thinking Fast + SWE-2 Medium) · a fusion pair on Devin: gpt 6 astra xhigh fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-low-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-5.6 Sol Low Thinking + SWE-2 Medium)",
+    "description": "Fusion (GPT-5.6 Sol Low Thinking + SWE-2 Medium) · a fusion pair on Devin: gpt 5 6 sol low driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-low-fast-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-5.6 Sol Low Thinking Fast + SWE-2 Medium)",
+    "description": "Fusion (GPT-5.6 Sol Low Thinking Fast + SWE-2 Medium) · a fusion pair on Devin: gpt 5 6 sol low fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-low-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Opus 5 Low + SWE-2 Medium)",
+    "description": "Fusion (Claude Opus 5 Low + SWE-2 Medium) · a fusion pair on Devin: claude opus 5 low driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-low-fast-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Opus 5 Low Fast + SWE-2 Medium)",
+    "description": "Fusion (Claude Opus 5 Low Fast + SWE-2 Medium) · a fusion pair on Devin: claude opus 5 low fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-low-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Fable 5.1 Low + SWE-2 Medium)",
+    "description": "Fusion (Claude Fable 5.1 Low + SWE-2 Medium) · a fusion pair on Devin: claude fable 5 1 low driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-low-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-6 Astra Low Thinking + SWE-2 Medium)",
+    "description": "Fusion (GPT-6 Astra Low Thinking + SWE-2 Medium) · a fusion pair on Devin: gpt 6 astra low driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-low-fast-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-6 Astra Low Thinking Fast + SWE-2 Medium)",
+    "description": "Fusion (GPT-6 Astra Low Thinking Fast + SWE-2 Medium) · a fusion pair on Devin: gpt 6 astra low fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-max-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Fable 5.1 Max + SWE-2 Medium)",
+    "description": "Fusion (Claude Fable 5.1 Max + SWE-2 Medium) · a fusion pair on Devin: claude fable 5 1 max driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-max-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-6 Astra Max Thinking + SWE-2 Medium)",
+    "description": "Fusion (GPT-6 Astra Max Thinking + SWE-2 Medium) · a fusion pair on Devin: gpt 6 astra max driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-max-fast-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-6 Astra Max Thinking Fast + SWE-2 Medium)",
+    "description": "Fusion (GPT-6 Astra Max Thinking Fast + SWE-2 Medium) · a fusion pair on Devin: gpt 6 astra max fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-max-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-5.6 Sol Max Thinking + SWE-2 Medium)",
+    "description": "Fusion (GPT-5.6 Sol Max Thinking + SWE-2 Medium) · a fusion pair on Devin: gpt 5 6 sol max driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-max-fast-sidekick-swe-2-medium",
+    "label": "Fusion (GPT-5.6 Sol Max Thinking Fast + SWE-2 Medium)",
+    "description": "Fusion (GPT-5.6 Sol Max Thinking Fast + SWE-2 Medium) · a fusion pair on Devin: gpt 5 6 sol max fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-max-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Opus 5 Max + SWE-2 Medium)",
+    "description": "Fusion (Claude Opus 5 Max + SWE-2 Medium) · a fusion pair on Devin: claude opus 5 max driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-max-fast-sidekick-swe-2-medium",
+    "label": "Fusion (Claude Opus 5 Max Fast + SWE-2 Medium)",
+    "description": "Fusion (Claude Opus 5 Max Fast + SWE-2 Medium) · a fusion pair on Devin: claude opus 5 max fast driven by a swe 2 medium sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-medium-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (Claude Fable 5.1 Medium + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (Claude Fable 5.1 Medium + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: claude fable 5 1 medium driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-medium-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (Claude Fable 5.1 Medium + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (Claude Fable 5.1 Medium + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: claude fable 5 1 medium fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-high-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (Claude Fable 5.1 High + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (Claude Fable 5.1 High + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: claude fable 5 1 high driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-high-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (Claude Fable 5.1 High + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (Claude Fable 5.1 High + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: claude fable 5 1 high fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-high-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (GPT-5.6 Sol High Thinking + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (GPT-5.6 Sol High Thinking + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: gpt 5 6 sol high driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-high-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (GPT-5.6 Sol High Thinking Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (GPT-5.6 Sol High Thinking Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: gpt 5 6 sol high fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-high-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (Claude Opus 5 High + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (Claude Opus 5 High + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: claude opus 5 high driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-high-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (Claude Opus 5 High Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (Claude Opus 5 High Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: claude opus 5 high fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-high-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (GPT-6 Astra High Thinking + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (GPT-6 Astra High Thinking + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: gpt 6 astra high driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-high-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (GPT-6 Astra High Thinking Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (GPT-6 Astra High Thinking Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: gpt 6 astra high fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-medium-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (GPT-5.6 Sol Medium Thinking + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (GPT-5.6 Sol Medium Thinking + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: gpt 5 6 sol medium driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-medium-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (GPT-5.6 Sol Medium Thinking Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (GPT-5.6 Sol Medium Thinking Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: gpt 5 6 sol medium fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-medium-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (Claude Opus 5 Medium + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (Claude Opus 5 Medium + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: claude opus 5 medium driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-medium-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (Claude Opus 5 Medium Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (Claude Opus 5 Medium Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: claude opus 5 medium fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-medium-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (GPT-6 Astra Medium Thinking + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (GPT-6 Astra Medium Thinking + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: gpt 6 astra medium driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-medium-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (GPT-6 Astra Medium Thinking Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (GPT-6 Astra Medium Thinking Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: gpt 6 astra medium fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-xhigh-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (Claude Opus 5 XHigh + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (Claude Opus 5 XHigh + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: claude opus 5 xhigh driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-xhigh-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (Claude Opus 5 XHigh Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (Claude Opus 5 XHigh Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: claude opus 5 xhigh fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-xhigh-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (Claude Fable 5.1 XHigh + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (Claude Fable 5.1 XHigh + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: claude fable 5 1 xhigh driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-xhigh-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (Claude Fable 5.1 XHigh + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (Claude Fable 5.1 XHigh + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: claude fable 5 1 xhigh fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-xhigh-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (GPT-5.6 Sol XHigh Thinking + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (GPT-5.6 Sol XHigh Thinking + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: gpt 5 6 sol xhigh driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-xhigh-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (GPT-5.6 Sol XHigh Thinking Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (GPT-5.6 Sol XHigh Thinking Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: gpt 5 6 sol xhigh fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-xhigh-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (GPT-6 Astra XHigh Thinking + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (GPT-6 Astra XHigh Thinking + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: gpt 6 astra xhigh driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-xhigh-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (GPT-6 Astra XHigh Thinking Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (GPT-6 Astra XHigh Thinking Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: gpt 6 astra xhigh fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-low-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (GPT-5.6 Sol Low Thinking + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (GPT-5.6 Sol Low Thinking + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: gpt 5 6 sol low driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-low-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (GPT-5.6 Sol Low Thinking Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (GPT-5.6 Sol Low Thinking Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: gpt 5 6 sol low fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-low-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (Claude Opus 5 Low + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (Claude Opus 5 Low + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: claude opus 5 low driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-low-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (Claude Opus 5 Low Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (Claude Opus 5 Low Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: claude opus 5 low fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-low-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (Claude Fable 5.1 Low + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (Claude Fable 5.1 Low + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: claude fable 5 1 low driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-low-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (Claude Fable 5.1 Low + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (Claude Fable 5.1 Low + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: claude fable 5 1 low fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-low-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (GPT-6 Astra Low Thinking + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (GPT-6 Astra Low Thinking + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: gpt 6 astra low driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-low-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (GPT-6 Astra Low Thinking Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (GPT-6 Astra Low Thinking Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: gpt 6 astra low fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-max-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (Claude Fable 5.1 Max + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (Claude Fable 5.1 Max + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: claude fable 5 1 max driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-max-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (Claude Fable 5.1 Max + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (Claude Fable 5.1 Max + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: claude fable 5 1 max fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-max-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (GPT-6 Astra Max Thinking + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (GPT-6 Astra Max Thinking + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: gpt 6 astra max driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-max-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (GPT-6 Astra Max Thinking Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (GPT-6 Astra Max Thinking Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: gpt 6 astra max fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-max-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (GPT-5.6 Sol Max Thinking + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (GPT-5.6 Sol Max Thinking + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: gpt 5 6 sol max driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-max-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (GPT-5.6 Sol Max Thinking Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (GPT-5.6 Sol Max Thinking Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: gpt 5 6 sol max fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-max-sidekick-gpt-5-6-luna-high",
+    "label": "Fusion (Claude Opus 5 Max + GPT-5.6 Luna High Thinking)",
+    "description": "Fusion (Claude Opus 5 Max + GPT-5.6 Luna High Thinking) · a fusion pair on Devin: claude opus 5 max driven by a gpt 5 6 luna high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-max-fast-sidekick-gpt-5-6-luna-high-priority",
+    "label": "Fusion (Claude Opus 5 Max Fast + GPT-5.6 Luna High Thinking Fast)",
+    "description": "Fusion (Claude Opus 5 Max Fast + GPT-5.6 Luna High Thinking Fast) · a fusion pair on Devin: claude opus 5 max fast driven by a gpt 5 6 luna high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-medium-sidekick-glm-5-2",
+    "label": "Fusion (Claude Fable 5.1 Medium + GLM-5.2 High)",
+    "description": "Fusion (Claude Fable 5.1 Medium + GLM-5.2 High) · a fusion pair on Devin: claude fable 5 1 medium driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-high-sidekick-glm-5-2",
+    "label": "Fusion (Claude Fable 5.1 High + GLM-5.2 High)",
+    "description": "Fusion (Claude Fable 5.1 High + GLM-5.2 High) · a fusion pair on Devin: claude fable 5 1 high driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-high-sidekick-glm-5-2",
+    "label": "Fusion (GPT-5.6 Sol High Thinking + GLM-5.2 High)",
+    "description": "Fusion (GPT-5.6 Sol High Thinking + GLM-5.2 High) · a fusion pair on Devin: gpt 5 6 sol high driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-high-fast-sidekick-glm-5-2",
+    "label": "Fusion (GPT-5.6 Sol High Thinking Fast + GLM-5.2 High)",
+    "description": "Fusion (GPT-5.6 Sol High Thinking Fast + GLM-5.2 High) · a fusion pair on Devin: gpt 5 6 sol high fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-high-sidekick-glm-5-2",
+    "label": "Fusion (Claude Opus 5 High + GLM-5.2 High)",
+    "description": "Fusion (Claude Opus 5 High + GLM-5.2 High) · a fusion pair on Devin: claude opus 5 high driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-high-fast-sidekick-glm-5-2",
+    "label": "Fusion (Claude Opus 5 High Fast + GLM-5.2 High)",
+    "description": "Fusion (Claude Opus 5 High Fast + GLM-5.2 High) · a fusion pair on Devin: claude opus 5 high fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-high-sidekick-glm-5-2",
+    "label": "Fusion (GPT-6 Astra High Thinking + GLM-5.2 High)",
+    "description": "Fusion (GPT-6 Astra High Thinking + GLM-5.2 High) · a fusion pair on Devin: gpt 6 astra high driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-high-fast-sidekick-glm-5-2",
+    "label": "Fusion (GPT-6 Astra High Thinking Fast + GLM-5.2 High)",
+    "description": "Fusion (GPT-6 Astra High Thinking Fast + GLM-5.2 High) · a fusion pair on Devin: gpt 6 astra high fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-medium-sidekick-glm-5-2",
+    "label": "Fusion (GPT-5.6 Sol Medium Thinking + GLM-5.2 High)",
+    "description": "Fusion (GPT-5.6 Sol Medium Thinking + GLM-5.2 High) · a fusion pair on Devin: gpt 5 6 sol medium driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-medium-fast-sidekick-glm-5-2",
+    "label": "Fusion (GPT-5.6 Sol Medium Thinking Fast + GLM-5.2 High)",
+    "description": "Fusion (GPT-5.6 Sol Medium Thinking Fast + GLM-5.2 High) · a fusion pair on Devin: gpt 5 6 sol medium fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-medium-sidekick-glm-5-2",
+    "label": "Fusion (Claude Opus 5 Medium + GLM-5.2 High)",
+    "description": "Fusion (Claude Opus 5 Medium + GLM-5.2 High) · a fusion pair on Devin: claude opus 5 medium driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-medium-fast-sidekick-glm-5-2",
+    "label": "Fusion (Claude Opus 5 Medium Fast + GLM-5.2 High)",
+    "description": "Fusion (Claude Opus 5 Medium Fast + GLM-5.2 High) · a fusion pair on Devin: claude opus 5 medium fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-medium-sidekick-glm-5-2",
+    "label": "Fusion (GPT-6 Astra Medium Thinking + GLM-5.2 High)",
+    "description": "Fusion (GPT-6 Astra Medium Thinking + GLM-5.2 High) · a fusion pair on Devin: gpt 6 astra medium driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-medium-fast-sidekick-glm-5-2",
+    "label": "Fusion (GPT-6 Astra Medium Thinking Fast + GLM-5.2 High)",
+    "description": "Fusion (GPT-6 Astra Medium Thinking Fast + GLM-5.2 High) · a fusion pair on Devin: gpt 6 astra medium fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-xhigh-sidekick-glm-5-2",
+    "label": "Fusion (Claude Opus 5 XHigh + GLM-5.2 High)",
+    "description": "Fusion (Claude Opus 5 XHigh + GLM-5.2 High) · a fusion pair on Devin: claude opus 5 xhigh driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-xhigh-fast-sidekick-glm-5-2",
+    "label": "Fusion (Claude Opus 5 XHigh Fast + GLM-5.2 High)",
+    "description": "Fusion (Claude Opus 5 XHigh Fast + GLM-5.2 High) · a fusion pair on Devin: claude opus 5 xhigh fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-xhigh-sidekick-glm-5-2",
+    "label": "Fusion (Claude Fable 5.1 XHigh + GLM-5.2 High)",
+    "description": "Fusion (Claude Fable 5.1 XHigh + GLM-5.2 High) · a fusion pair on Devin: claude fable 5 1 xhigh driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-xhigh-sidekick-glm-5-2",
+    "label": "Fusion (GPT-5.6 Sol XHigh Thinking + GLM-5.2 High)",
+    "description": "Fusion (GPT-5.6 Sol XHigh Thinking + GLM-5.2 High) · a fusion pair on Devin: gpt 5 6 sol xhigh driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-xhigh-fast-sidekick-glm-5-2",
+    "label": "Fusion (GPT-5.6 Sol XHigh Thinking Fast + GLM-5.2 High)",
+    "description": "Fusion (GPT-5.6 Sol XHigh Thinking Fast + GLM-5.2 High) · a fusion pair on Devin: gpt 5 6 sol xhigh fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-xhigh-sidekick-glm-5-2",
+    "label": "Fusion (GPT-6 Astra XHigh Thinking + GLM-5.2 High)",
+    "description": "Fusion (GPT-6 Astra XHigh Thinking + GLM-5.2 High) · a fusion pair on Devin: gpt 6 astra xhigh driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-xhigh-fast-sidekick-glm-5-2",
+    "label": "Fusion (GPT-6 Astra XHigh Thinking Fast + GLM-5.2 High)",
+    "description": "Fusion (GPT-6 Astra XHigh Thinking Fast + GLM-5.2 High) · a fusion pair on Devin: gpt 6 astra xhigh fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-low-sidekick-glm-5-2",
+    "label": "Fusion (GPT-5.6 Sol Low Thinking + GLM-5.2 High)",
+    "description": "Fusion (GPT-5.6 Sol Low Thinking + GLM-5.2 High) · a fusion pair on Devin: gpt 5 6 sol low driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-low-fast-sidekick-glm-5-2",
+    "label": "Fusion (GPT-5.6 Sol Low Thinking Fast + GLM-5.2 High)",
+    "description": "Fusion (GPT-5.6 Sol Low Thinking Fast + GLM-5.2 High) · a fusion pair on Devin: gpt 5 6 sol low fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-low-sidekick-glm-5-2",
+    "label": "Fusion (Claude Opus 5 Low + GLM-5.2 High)",
+    "description": "Fusion (Claude Opus 5 Low + GLM-5.2 High) · a fusion pair on Devin: claude opus 5 low driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-low-fast-sidekick-glm-5-2",
+    "label": "Fusion (Claude Opus 5 Low Fast + GLM-5.2 High)",
+    "description": "Fusion (Claude Opus 5 Low Fast + GLM-5.2 High) · a fusion pair on Devin: claude opus 5 low fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-low-sidekick-glm-5-2",
+    "label": "Fusion (Claude Fable 5.1 Low + GLM-5.2 High)",
+    "description": "Fusion (Claude Fable 5.1 Low + GLM-5.2 High) · a fusion pair on Devin: claude fable 5 1 low driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-low-sidekick-glm-5-2",
+    "label": "Fusion (GPT-6 Astra Low Thinking + GLM-5.2 High)",
+    "description": "Fusion (GPT-6 Astra Low Thinking + GLM-5.2 High) · a fusion pair on Devin: gpt 6 astra low driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-low-fast-sidekick-glm-5-2",
+    "label": "Fusion (GPT-6 Astra Low Thinking Fast + GLM-5.2 High)",
+    "description": "Fusion (GPT-6 Astra Low Thinking Fast + GLM-5.2 High) · a fusion pair on Devin: gpt 6 astra low fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-max-sidekick-glm-5-2",
+    "label": "Fusion (Claude Fable 5.1 Max + GLM-5.2 High)",
+    "description": "Fusion (Claude Fable 5.1 Max + GLM-5.2 High) · a fusion pair on Devin: claude fable 5 1 max driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-max-sidekick-glm-5-2",
+    "label": "Fusion (GPT-6 Astra Max Thinking + GLM-5.2 High)",
+    "description": "Fusion (GPT-6 Astra Max Thinking + GLM-5.2 High) · a fusion pair on Devin: gpt 6 astra max driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-max-fast-sidekick-glm-5-2",
+    "label": "Fusion (GPT-6 Astra Max Thinking Fast + GLM-5.2 High)",
+    "description": "Fusion (GPT-6 Astra Max Thinking Fast + GLM-5.2 High) · a fusion pair on Devin: gpt 6 astra max fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-max-sidekick-glm-5-2",
+    "label": "Fusion (GPT-5.6 Sol Max Thinking + GLM-5.2 High)",
+    "description": "Fusion (GPT-5.6 Sol Max Thinking + GLM-5.2 High) · a fusion pair on Devin: gpt 5 6 sol max driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-max-fast-sidekick-glm-5-2",
+    "label": "Fusion (GPT-5.6 Sol Max Thinking Fast + GLM-5.2 High)",
+    "description": "Fusion (GPT-5.6 Sol Max Thinking Fast + GLM-5.2 High) · a fusion pair on Devin: gpt 5 6 sol max fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-max-sidekick-glm-5-2",
+    "label": "Fusion (Claude Opus 5 Max + GLM-5.2 High)",
+    "description": "Fusion (Claude Opus 5 Max + GLM-5.2 High) · a fusion pair on Devin: claude opus 5 max driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-max-fast-sidekick-glm-5-2",
+    "label": "Fusion (Claude Opus 5 Max Fast + GLM-5.2 High)",
+    "description": "Fusion (Claude Opus 5 Max Fast + GLM-5.2 High) · a fusion pair on Devin: claude opus 5 max fast driven by a glm 5 2 sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-medium-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (Claude Fable 5.1 Medium + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (Claude Fable 5.1 Medium + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: claude fable 5 1 medium driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-medium-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (Claude Fable 5.1 Medium + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (Claude Fable 5.1 Medium + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: claude fable 5 1 medium fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-high-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (Claude Fable 5.1 High + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (Claude Fable 5.1 High + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: claude fable 5 1 high driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-high-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (Claude Fable 5.1 High + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (Claude Fable 5.1 High + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: claude fable 5 1 high fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-high-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (Claude Opus 5 High + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (Claude Opus 5 High + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: claude opus 5 high driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-high-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (Claude Opus 5 High Fast + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (Claude Opus 5 High Fast + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: claude opus 5 high fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-high-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (GPT-6 Astra High Thinking + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (GPT-6 Astra High Thinking + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: gpt 6 astra high driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-high-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (GPT-6 Astra High Thinking Fast + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (GPT-6 Astra High Thinking Fast + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: gpt 6 astra high fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-medium-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (Claude Opus 5 Medium + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (Claude Opus 5 Medium + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: claude opus 5 medium driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-medium-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (Claude Opus 5 Medium Fast + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (Claude Opus 5 Medium Fast + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: claude opus 5 medium fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-medium-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (GPT-6 Astra Medium Thinking + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (GPT-6 Astra Medium Thinking + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: gpt 6 astra medium driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-medium-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (GPT-6 Astra Medium Thinking Fast + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (GPT-6 Astra Medium Thinking Fast + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: gpt 6 astra medium fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-xhigh-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (Claude Opus 5 XHigh + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (Claude Opus 5 XHigh + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: claude opus 5 xhigh driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-xhigh-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (Claude Opus 5 XHigh Fast + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (Claude Opus 5 XHigh Fast + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: claude opus 5 xhigh fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-xhigh-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (Claude Fable 5.1 XHigh + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (Claude Fable 5.1 XHigh + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: claude fable 5 1 xhigh driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-xhigh-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (Claude Fable 5.1 XHigh + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (Claude Fable 5.1 XHigh + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: claude fable 5 1 xhigh fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-xhigh-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (GPT-6 Astra XHigh Thinking + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (GPT-6 Astra XHigh Thinking + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: gpt 6 astra xhigh driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-xhigh-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (GPT-6 Astra XHigh Thinking Fast + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (GPT-6 Astra XHigh Thinking Fast + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: gpt 6 astra xhigh fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-low-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (Claude Opus 5 Low + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (Claude Opus 5 Low + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: claude opus 5 low driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-low-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (Claude Opus 5 Low Fast + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (Claude Opus 5 Low Fast + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: claude opus 5 low fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-low-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (Claude Fable 5.1 Low + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (Claude Fable 5.1 Low + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: claude fable 5 1 low driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-low-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (Claude Fable 5.1 Low + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (Claude Fable 5.1 Low + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: claude fable 5 1 low fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-low-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (GPT-6 Astra Low Thinking + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (GPT-6 Astra Low Thinking + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: gpt 6 astra low driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-low-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (GPT-6 Astra Low Thinking Fast + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (GPT-6 Astra Low Thinking Fast + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: gpt 6 astra low fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-max-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (Claude Fable 5.1 Max + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (Claude Fable 5.1 Max + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: claude fable 5 1 max driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-max-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (Claude Fable 5.1 Max + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (Claude Fable 5.1 Max + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: claude fable 5 1 max fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-max-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (GPT-6 Astra Max Thinking + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (GPT-6 Astra Max Thinking + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: gpt 6 astra max driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-max-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (GPT-6 Astra Max Thinking Fast + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (GPT-6 Astra Max Thinking Fast + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: gpt 6 astra max fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-max-sidekick-gpt-5-6-sol-high",
+    "label": "Fusion (Claude Opus 5 Max + GPT-5.6 Sol High Thinking)",
+    "description": "Fusion (Claude Opus 5 Max + GPT-5.6 Sol High Thinking) · a fusion pair on Devin: claude opus 5 max driven by a gpt 5 6 sol high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-max-fast-sidekick-gpt-5-6-sol-high-priority",
+    "label": "Fusion (Claude Opus 5 Max Fast + GPT-5.6 Sol High Thinking Fast)",
+    "description": "Fusion (Claude Opus 5 Max Fast + GPT-5.6 Sol High Thinking Fast) · a fusion pair on Devin: claude opus 5 max fast driven by a gpt 5 6 sol high priority sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-medium-sidekick-swe-2-high",
+    "label": "Fusion (Claude Fable 5.1 Medium + SWE-2 High)",
+    "description": "Fusion (Claude Fable 5.1 Medium + SWE-2 High) · a fusion pair on Devin: claude fable 5 1 medium driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-high-sidekick-swe-2-high",
+    "label": "Fusion (Claude Fable 5.1 High + SWE-2 High)",
+    "description": "Fusion (Claude Fable 5.1 High + SWE-2 High) · a fusion pair on Devin: claude fable 5 1 high driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-high-sidekick-swe-2-high",
+    "label": "Fusion (GPT-5.6 Sol High Thinking + SWE-2 High)",
+    "description": "Fusion (GPT-5.6 Sol High Thinking + SWE-2 High) · a fusion pair on Devin: gpt 5 6 sol high driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-high-fast-sidekick-swe-2-high",
+    "label": "Fusion (GPT-5.6 Sol High Thinking Fast + SWE-2 High)",
+    "description": "Fusion (GPT-5.6 Sol High Thinking Fast + SWE-2 High) · a fusion pair on Devin: gpt 5 6 sol high fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-high-sidekick-swe-2-high",
+    "label": "Fusion (Claude Opus 5 High + SWE-2 High)",
+    "description": "Fusion (Claude Opus 5 High + SWE-2 High) · a fusion pair on Devin: claude opus 5 high driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-high-fast-sidekick-swe-2-high",
+    "label": "Fusion (Claude Opus 5 High Fast + SWE-2 High)",
+    "description": "Fusion (Claude Opus 5 High Fast + SWE-2 High) · a fusion pair on Devin: claude opus 5 high fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-high-sidekick-swe-2-high",
+    "label": "Fusion (GPT-6 Astra High Thinking + SWE-2 High)",
+    "description": "Fusion (GPT-6 Astra High Thinking + SWE-2 High) · a fusion pair on Devin: gpt 6 astra high driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-high-fast-sidekick-swe-2-high",
+    "label": "Fusion (GPT-6 Astra High Thinking Fast + SWE-2 High)",
+    "description": "Fusion (GPT-6 Astra High Thinking Fast + SWE-2 High) · a fusion pair on Devin: gpt 6 astra high fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-medium-sidekick-swe-2-high",
+    "label": "Fusion (GPT-5.6 Sol Medium Thinking + SWE-2 High)",
+    "description": "Fusion (GPT-5.6 Sol Medium Thinking + SWE-2 High) · a fusion pair on Devin: gpt 5 6 sol medium driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-medium-fast-sidekick-swe-2-high",
+    "label": "Fusion (GPT-5.6 Sol Medium Thinking Fast + SWE-2 High)",
+    "description": "Fusion (GPT-5.6 Sol Medium Thinking Fast + SWE-2 High) · a fusion pair on Devin: gpt 5 6 sol medium fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-medium-sidekick-swe-2-high",
+    "label": "Fusion (Claude Opus 5 Medium + SWE-2 High)",
+    "description": "Fusion (Claude Opus 5 Medium + SWE-2 High) · a fusion pair on Devin: claude opus 5 medium driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-medium-fast-sidekick-swe-2-high",
+    "label": "Fusion (Claude Opus 5 Medium Fast + SWE-2 High)",
+    "description": "Fusion (Claude Opus 5 Medium Fast + SWE-2 High) · a fusion pair on Devin: claude opus 5 medium fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-medium-sidekick-swe-2-high",
+    "label": "Fusion (GPT-6 Astra Medium Thinking + SWE-2 High)",
+    "description": "Fusion (GPT-6 Astra Medium Thinking + SWE-2 High) · a fusion pair on Devin: gpt 6 astra medium driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-medium-fast-sidekick-swe-2-high",
+    "label": "Fusion (GPT-6 Astra Medium Thinking Fast + SWE-2 High)",
+    "description": "Fusion (GPT-6 Astra Medium Thinking Fast + SWE-2 High) · a fusion pair on Devin: gpt 6 astra medium fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-xhigh-sidekick-swe-2-high",
+    "label": "Fusion (Claude Opus 5 XHigh + SWE-2 High)",
+    "description": "Fusion (Claude Opus 5 XHigh + SWE-2 High) · a fusion pair on Devin: claude opus 5 xhigh driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-xhigh-fast-sidekick-swe-2-high",
+    "label": "Fusion (Claude Opus 5 XHigh Fast + SWE-2 High)",
+    "description": "Fusion (Claude Opus 5 XHigh Fast + SWE-2 High) · a fusion pair on Devin: claude opus 5 xhigh fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-xhigh-sidekick-swe-2-high",
+    "label": "Fusion (Claude Fable 5.1 XHigh + SWE-2 High)",
+    "description": "Fusion (Claude Fable 5.1 XHigh + SWE-2 High) · a fusion pair on Devin: claude fable 5 1 xhigh driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-xhigh-sidekick-swe-2-high",
+    "label": "Fusion (GPT-5.6 Sol XHigh Thinking + SWE-2 High)",
+    "description": "Fusion (GPT-5.6 Sol XHigh Thinking + SWE-2 High) · a fusion pair on Devin: gpt 5 6 sol xhigh driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-xhigh-fast-sidekick-swe-2-high",
+    "label": "Fusion (GPT-5.6 Sol XHigh Thinking Fast + SWE-2 High)",
+    "description": "Fusion (GPT-5.6 Sol XHigh Thinking Fast + SWE-2 High) · a fusion pair on Devin: gpt 5 6 sol xhigh fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-xhigh-sidekick-swe-2-high",
+    "label": "Fusion (GPT-6 Astra XHigh Thinking + SWE-2 High)",
+    "description": "Fusion (GPT-6 Astra XHigh Thinking + SWE-2 High) · a fusion pair on Devin: gpt 6 astra xhigh driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-xhigh-fast-sidekick-swe-2-high",
+    "label": "Fusion (GPT-6 Astra XHigh Thinking Fast + SWE-2 High)",
+    "description": "Fusion (GPT-6 Astra XHigh Thinking Fast + SWE-2 High) · a fusion pair on Devin: gpt 6 astra xhigh fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-low-sidekick-swe-2-high",
+    "label": "Fusion (GPT-5.6 Sol Low Thinking + SWE-2 High)",
+    "description": "Fusion (GPT-5.6 Sol Low Thinking + SWE-2 High) · a fusion pair on Devin: gpt 5 6 sol low driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-low-fast-sidekick-swe-2-high",
+    "label": "Fusion (GPT-5.6 Sol Low Thinking Fast + SWE-2 High)",
+    "description": "Fusion (GPT-5.6 Sol Low Thinking Fast + SWE-2 High) · a fusion pair on Devin: gpt 5 6 sol low fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-low-sidekick-swe-2-high",
+    "label": "Fusion (Claude Opus 5 Low + SWE-2 High)",
+    "description": "Fusion (Claude Opus 5 Low + SWE-2 High) · a fusion pair on Devin: claude opus 5 low driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-low-fast-sidekick-swe-2-high",
+    "label": "Fusion (Claude Opus 5 Low Fast + SWE-2 High)",
+    "description": "Fusion (Claude Opus 5 Low Fast + SWE-2 High) · a fusion pair on Devin: claude opus 5 low fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-low-sidekick-swe-2-high",
+    "label": "Fusion (Claude Fable 5.1 Low + SWE-2 High)",
+    "description": "Fusion (Claude Fable 5.1 Low + SWE-2 High) · a fusion pair on Devin: claude fable 5 1 low driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-low-sidekick-swe-2-high",
+    "label": "Fusion (GPT-6 Astra Low Thinking + SWE-2 High)",
+    "description": "Fusion (GPT-6 Astra Low Thinking + SWE-2 High) · a fusion pair on Devin: gpt 6 astra low driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-low-fast-sidekick-swe-2-high",
+    "label": "Fusion (GPT-6 Astra Low Thinking Fast + SWE-2 High)",
+    "description": "Fusion (GPT-6 Astra Low Thinking Fast + SWE-2 High) · a fusion pair on Devin: gpt 6 astra low fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-fable-5-1-max-sidekick-swe-2-high",
+    "label": "Fusion (Claude Fable 5.1 Max + SWE-2 High)",
+    "description": "Fusion (Claude Fable 5.1 Max + SWE-2 High) · a fusion pair on Devin: claude fable 5 1 max driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-max-sidekick-swe-2-high",
+    "label": "Fusion (GPT-6 Astra Max Thinking + SWE-2 High)",
+    "description": "Fusion (GPT-6 Astra Max Thinking + SWE-2 High) · a fusion pair on Devin: gpt 6 astra max driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-6-astra-max-fast-sidekick-swe-2-high",
+    "label": "Fusion (GPT-6 Astra Max Thinking Fast + SWE-2 High)",
+    "description": "Fusion (GPT-6 Astra Max Thinking Fast + SWE-2 High) · a fusion pair on Devin: gpt 6 astra max fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-max-sidekick-swe-2-high",
+    "label": "Fusion (GPT-5.6 Sol Max Thinking + SWE-2 High)",
+    "description": "Fusion (GPT-5.6 Sol Max Thinking + SWE-2 High) · a fusion pair on Devin: gpt 5 6 sol max driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-gpt-5-6-sol-max-fast-sidekick-swe-2-high",
+    "label": "Fusion (GPT-5.6 Sol Max Thinking Fast + SWE-2 High)",
+    "description": "Fusion (GPT-5.6 Sol Max Thinking Fast + SWE-2 High) · a fusion pair on Devin: gpt 5 6 sol max fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-max-sidekick-swe-2-high",
+    "label": "Fusion (Claude Opus 5 Max + SWE-2 High)",
+    "description": "Fusion (Claude Opus 5 Max + SWE-2 High) · a fusion pair on Devin: claude opus 5 max driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "fusion-claude-opus-5-max-fast-sidekick-swe-2-high",
+    "label": "Fusion (Claude Opus 5 Max Fast + SWE-2 High)",
+    "description": "Fusion (Claude Opus 5 Max Fast + SWE-2 High) · a fusion pair on Devin: claude opus 5 max fast driven by a swe 2 high sidekick.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-6",
+    "label": "Claude Opus 4.6",
+    "description": "Claude Opus 4.6 · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-6-thinking",
+    "label": "Claude Opus 4.6 Thinking",
+    "description": "Claude Opus 4.6 Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-6-1m",
+    "label": "Claude Opus 4.6 1M",
+    "description": "Claude Opus 4.6 1M · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-opus-4-6-thinking-1m",
+    "label": "Claude Opus 4.6 Thinking 1M",
+    "description": "Claude Opus 4.6 Thinking 1M · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-none",
+    "label": "GPT-5.4 No Thinking",
+    "description": "GPT-5.4 No Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-low",
+    "label": "GPT-5.4 Low Thinking",
+    "description": "GPT-5.4 Low Thinking · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-medium",
+    "label": "GPT-5.4 Medium Thinking",
+    "description": "GPT-5.4 Medium Thinking · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-high",
+    "label": "GPT-5.4 High Thinking",
+    "description": "GPT-5.4 High Thinking · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-xhigh",
+    "label": "GPT-5.4 XHigh Thinking",
+    "description": "GPT-5.4 XHigh Thinking · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-none-priority",
+    "label": "GPT-5.4 No Thinking Fast",
+    "description": "GPT-5.4 No Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-low-priority",
+    "label": "GPT-5.4 Low Thinking Fast",
+    "description": "GPT-5.4 Low Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-medium-priority",
+    "label": "GPT-5.4 Medium Thinking Fast",
+    "description": "GPT-5.4 Medium Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-high-priority",
+    "label": "GPT-5.4 High Thinking Fast",
+    "description": "GPT-5.4 High Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-xhigh-priority",
+    "label": "GPT-5.4 XHigh Thinking Fast",
+    "description": "GPT-5.4 XHigh Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-5-none",
+    "label": "GPT-5.5 No Thinking",
+    "description": "GPT-5.5 No Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-5-low",
+    "label": "GPT-5.5 Low Thinking",
+    "description": "GPT-5.5 Low Thinking · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-5-medium",
+    "label": "GPT-5.5 Medium Thinking",
+    "description": "GPT-5.5 Medium Thinking · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-5-high",
+    "label": "GPT-5.5 High Thinking",
+    "description": "GPT-5.5 High Thinking · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-5-xhigh",
+    "label": "GPT-5.5 XHigh Thinking",
+    "description": "GPT-5.5 XHigh Thinking · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-5-none-priority",
+    "label": "GPT-5.5 No Thinking Fast",
+    "description": "GPT-5.5 No Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-5-low-priority",
+    "label": "GPT-5.5 Low Thinking Fast",
+    "description": "GPT-5.5 Low Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-5-medium-priority",
+    "label": "GPT-5.5 Medium Thinking Fast",
+    "description": "GPT-5.5 Medium Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-5-high-priority",
+    "label": "GPT-5.5 High Thinking Fast",
+    "description": "GPT-5.5 High Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-5-xhigh-priority",
+    "label": "GPT-5.5 XHigh Thinking Fast",
+    "description": "GPT-5.5 XHigh Thinking Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-mini-low",
+    "label": "GPT-5.4 Mini Low Thinking",
+    "description": "GPT-5.4 Mini Low Thinking · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-mini-medium",
+    "label": "GPT-5.4 Mini Medium Thinking",
+    "description": "GPT-5.4 Mini Medium Thinking · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-mini-high",
+    "label": "GPT-5.4 Mini High Thinking",
+    "description": "GPT-5.4 Mini High Thinking · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-4-mini-xhigh",
+    "label": "GPT-5.4 Mini XHigh Thinking",
+    "description": "GPT-5.4 Mini XHigh Thinking · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-sonnet-4-6",
+    "label": "Claude Sonnet 4.6",
+    "description": "Claude Sonnet 4.6 · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-sonnet-4-6-thinking",
+    "label": "Claude Sonnet 4.6 Thinking",
+    "description": "Claude Sonnet 4.6 Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-sonnet-4-6-1m",
+    "label": "Claude Sonnet 4.6 1M",
+    "description": "Claude Sonnet 4.6 1M · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "claude-sonnet-4-6-thinking-1m",
+    "label": "Claude Sonnet 4.6 Thinking 1M",
+    "description": "Claude Sonnet 4.6 Thinking 1M · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_GPT_5_2_LOW",
+    "label": "GPT-5.2 Low Thinking",
+    "description": "GPT-5.2 Low Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_GPT_5_2_MEDIUM",
+    "label": "GPT-5.2 Medium Thinking",
+    "description": "GPT-5.2 Medium Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_GPT_5_2_NONE",
+    "label": "GPT-5.2 No Thinking",
+    "description": "GPT-5.2 No Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_GPT_5_2_HIGH",
+    "label": "GPT-5.2 High Thinking",
+    "description": "GPT-5.2 High Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_GPT_5_2_XHIGH",
+    "label": "GPT-5.2 XHigh Thinking",
+    "description": "GPT-5.2 XHigh Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_CLAUDE_4_5_OPUS",
+    "label": "Claude Opus 4.5",
+    "description": "Claude Opus 4.5 · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_CLAUDE_4_5_OPUS_THINKING",
+    "label": "Claude Opus 4.5 Thinking",
+    "description": "Claude Opus 4.5 Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_PRIVATE_11",
+    "label": "Claude Haiku 4.5",
+    "description": "Claude Haiku 4.5 · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_PRIVATE_2",
+    "label": "Claude Sonnet 4.5",
+    "description": "Claude Sonnet 4.5 · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_PRIVATE_3",
+    "label": "Claude Sonnet 4.5 Thinking",
+    "description": "Claude Sonnet 4.5 Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_CHAT_GPT_4_1_2025_04_14",
+    "label": "GPT-4.1",
+    "description": "GPT-4.1 · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_PRIVATE_12",
+    "label": "GPT-5.1 No Thinking",
+    "description": "GPT-5.1 No Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_PRIVATE_13",
+    "label": "GPT-5.1 Low Thinking",
+    "description": "GPT-5.1 Low Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_PRIVATE_14",
+    "label": "GPT-5.1 Medium Thinking",
+    "description": "GPT-5.1 Medium Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_PRIVATE_15",
+    "label": "GPT-5.1 High Thinking",
+    "description": "GPT-5.1 High Thinking · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-3-codex-low",
+    "label": "GPT-5.3-Codex Low",
+    "description": "GPT-5.3-Codex Low · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-3-codex-medium",
+    "label": "GPT-5.3-Codex Medium",
+    "description": "GPT-5.3-Codex Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-3-codex-high",
+    "label": "GPT-5.3-Codex High",
+    "description": "GPT-5.3-Codex High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-3-codex-xhigh",
+    "label": "GPT-5.3-Codex X-High",
+    "description": "GPT-5.3-Codex X-High · runs at extra-high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-3-codex-low-priority",
+    "label": "GPT-5.3-Codex Low Fast",
+    "description": "GPT-5.3-Codex Low Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-3-codex-medium-priority",
+    "label": "GPT-5.3-Codex Medium Fast",
+    "description": "GPT-5.3-Codex Medium Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-3-codex-high-priority",
+    "label": "GPT-5.3-Codex High Fast",
+    "description": "GPT-5.3-Codex High Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gpt-5-3-codex-xhigh-priority",
+    "label": "GPT-5.3-Codex XHigh Fast",
+    "description": "GPT-5.3-Codex XHigh Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "kimi-k2-6",
+    "label": "Kimi K2.6",
+    "description": "Kimi K2.6 · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "kimi-k2-7",
+    "label": "Kimi K2.7",
+    "description": "Kimi K2.7 · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "nemotron-3-ultra-none",
+    "label": "Nemotron 3 Ultra None",
+    "description": "Nemotron 3 Ultra None · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "nemotron-3-ultra-medium",
+    "label": "Nemotron 3 Ultra Medium",
+    "description": "Nemotron 3 Ultra Medium · runs at medium effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "nemotron-3-ultra-high",
+    "label": "Nemotron 3 Ultra High",
+    "description": "Nemotron 3 Ultra High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "swe-1-6",
+    "label": "SWE-1.6",
+    "description": "SWE-1.6 · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "swe-1-6-fast",
+    "label": "SWE-1.6 Fast",
+    "description": "SWE-1.6 Fast · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-1-pro-low",
+    "label": "Gemini 3.1 Pro Low Thinking",
+    "description": "Gemini 3.1 Pro Low Thinking · runs at low effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "gemini-3-1-pro-high",
+    "label": "Gemini 3.1 Pro High Thinking",
+    "description": "Gemini 3.1 Pro High Thinking · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_GOOGLE_GEMINI_3_0_FLASH_MINIMAL",
+    "label": "Gemini 3 Flash Minimal",
+    "description": "Gemini 3 Flash Minimal · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_GOOGLE_GEMINI_3_0_FLASH_LOW",
+    "label": "Gemini 3 Flash Low",
+    "description": "Gemini 3 Flash Low · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_GOOGLE_GEMINI_3_0_FLASH_MEDIUM",
+    "label": "Gemini 3 Flash Medium",
+    "description": "Gemini 3 Flash Medium · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "MODEL_GOOGLE_GEMINI_3_0_FLASH_HIGH",
+    "label": "Gemini 3 Flash High",
+    "description": "Gemini 3 Flash High · a model on Devin.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "deepseek-v4-pro-high",
+    "label": "DeepSeek V4 Pro High",
+    "description": "DeepSeek V4 Pro High · runs at high effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  },
+  {
+    "id": "deepseek-v4-pro-max",
+    "label": "DeepSeek V4 Pro Max",
+    "description": "DeepSeek V4 Pro Max · runs at maximum effort.",
+    "is_default": false,
+    "efforts": [],
+    "default_effort": null
+  }
+]

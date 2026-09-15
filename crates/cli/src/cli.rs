@@ -7,7 +7,7 @@
 
 use clap::{Args, Parser, Subcommand};
 
-/// `flyco` — run Claude Code and Codex sessions on flyco from a terminal.
+/// `flyco` — run Claude Code, Codex and Devin sessions on flyco from a terminal.
 #[derive(Debug, Parser)]
 #[command(name = "flyco", version, about)]
 pub struct Cli {
@@ -94,6 +94,14 @@ pub enum Command {
     },
     /// Open a Codex TUI on a new session, bridged to this terminal.
     Codex {
+        /// `owner/name`; asked for when omitted on a TTY.
+        repo: Option<String>,
+        /// The session's settings.
+        #[command(flatten)]
+        spec: SessionSpec,
+    },
+    /// Open a Devin TUI on a new session, bridged to this terminal.
+    Devin {
         /// `owner/name`; asked for when omitted on a TTY.
         repo: Option<String>,
         /// The session's settings.
@@ -402,12 +410,15 @@ impl SessionSpec {
     }
 }
 
-/// `claude`/`codex`/`claude_code` spellings of the two harnesses.
+/// `claude`/`codex`/`devin` spellings of the three harnesses.
 fn parse_harness(text: &str) -> Result<flyco_core::HarnessKind, String> {
     match text {
         "claude" | "claude_code" | "claude-code" => Ok(flyco_core::HarnessKind::ClaudeCode),
         "codex" => Ok(flyco_core::HarnessKind::Codex),
-        other => Err(format!("`{other}` is not a harness — `claude` or `codex`")),
+        "devin" => Ok(flyco_core::HarnessKind::Devin),
+        other => Err(format!(
+            "`{other}` is not a harness — `claude`, `codex` or `devin`"
+        )),
     }
 }
 

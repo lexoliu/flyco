@@ -32,7 +32,7 @@ use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 25] = [
+pub const MIGRATIONS: [&str; 27] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -58,6 +58,8 @@ pub const MIGRATIONS: [&str; 25] = [
     include_str!("../../../migrations/0024_usage_limit_pause.sql"),
     include_str!("../../../migrations/0025_session_permission_mode.sql"),
     include_str!("../../../migrations/0026_session_idempotency.sql"),
+    include_str!("../../../migrations/0027_codespaces.sql"),
+    include_str!("../../../migrations/0028_devin_harness.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -195,6 +197,13 @@ pub struct TestGithub {
     /// What GitHub says this token was granted, as `X-OAuth-Scopes` would
     /// report it. `None` stands in for a response with no such header.
     pub scopes: Option<&'static [&'static str]>,
+    /// The plan name `GET /user` reports, which is what a Codespaces link's
+    /// included core-hours are counted from.
+    pub plan: Option<&'static str>,
+    /// A repository slug `get_repo` answers `404` for — the shape GitHub
+    /// gives a token that cannot read it, which is what the codespaces
+    /// bootstrap check denies on.
+    pub unreadable: Option<&'static str>,
 }
 
 impl Default for TestGithub {
@@ -202,6 +211,8 @@ impl Default for TestGithub {
     fn default() -> Self {
         Self {
             scopes: Some(&["repo"]),
+            plan: Some("pro"),
+            unreadable: None,
         }
     }
 }
@@ -212,6 +223,18 @@ impl TestGithub {
     pub const fn without_repo_scope() -> Self {
         Self {
             scopes: Some(&["read:user"]),
+            plan: Some("pro"),
+            unreadable: None,
+        }
+    }
+
+    /// A token authorized the way a Codespaces link asks for.
+    #[must_use]
+    pub const fn codespaces_authorized() -> Self {
+        Self {
+            scopes: Some(&["repo", "codespace", "read:packages"]),
+            plan: Some("pro"),
+            unreadable: None,
         }
     }
 
@@ -247,7 +270,11 @@ impl GithubOauth for TestGithub {
     ) -> impl Future<Output = Result<GithubToken, GithubError>> + Send {
         assert_eq!(client_id, CLIENT_ID);
         assert_eq!(client_secret, CLIENT_SECRET);
-        assert_eq!(redirect_uri, REDIRECT_URI);
+        assert!(
+            redirect_uri == REDIRECT_URI
+                || redirect_uri == test_config().codespaces_oauth_redirect_uri().as_str(),
+            "an exchange happens on a redirect URI this deployment registered: {redirect_uri}"
+        );
         ready(Ok(GithubToken {
             access_token: GITHUB_ACCESS_TOKEN.to_owned(),
         }))
@@ -271,6 +298,13 @@ impl GithubOauth for TestGithub {
         _token: &GithubToken,
         slug: &flyco_core::RepoSlug,
     ) -> impl Future<Output = Result<flyco_core::RepoSummary, GithubError>> + Send {
+        if self.unreadable == Some(slug.as_str()) {
+            return ready(Err(GithubError::Status {
+                call: crate::github::GithubCall::Repository,
+                status: 404,
+                reason: "Not Found".to_owned(),
+            }));
+        }
         ready(Ok(Self::repos()
             .into_iter()
             .find(|repo| &repo.slug == slug)
@@ -312,6 +346,9 @@ impl GithubOauth for TestGithub {
                 id: GITHUB_ID,
                 login: GITHUB_LOGIN.to_owned(),
                 name: Some(GITHUB_NAME.to_owned()),
+                plan: self.plan.map(|name| crate::github::GithubPlan {
+                    name: name.to_owned(),
+                }),
             },
             scopes: self
                 .scopes
@@ -862,9 +899,99 @@ impl CloudLink for TestClouds {
                 Ok(Some(flyco_provider::azure::RESOURCE_GROUP.to_owned()))
             }
             ProviderCredentials::Host { .. } => Err(ApiError::HostNotLinkable),
-            ProviderCredentials::Aws { .. } | ProviderCredentials::Gcp { .. } => Ok(None),
+            ProviderCredentials::Aws { .. }
+            | ProviderCredentials::Gcp { .. }
+            | ProviderCredentials::Codespaces { .. } => Ok(None),
         })
     }
+}
+
+// ── Codespaces ──
+
+/// The repository id [`TestCodespaces`] reports for the environment it
+/// ensured, and what lands in the linked credential.
+pub const CODESPACES_ENV_REPO_ID: u64 = 770_001;
+
+/// The slug [`TestCodespaces`] reports — the test user's own
+/// `flyco-sessions`.
+pub const CODESPACES_ENV_REPO: &str = "lexoliu/flyco-sessions";
+
+/// A [`CodespacesLink`] that answers without a network.
+///
+/// It asserts what it was given rather than recording it: the token is the
+/// one the OAuth callback exchanged, the owner the sign-in resolved to, and
+/// the devcontainer names the control plane sessions on it boot against.
+/// Whether a real repository can be ensured is pinned where it can be —
+/// against recorded exchanges, in `flyco_provider`'s codespaces tests.
+///
+/// The same fake also answers the reconcile's reads: `reported_state` is
+/// what GitHub would name for the codespace a machine's native id names —
+/// `None` is "no codespace by this name" — and `destroyed` counts the
+/// deletes a reconcile issues against codespaces it reported dead.
+#[derive(Debug, Clone, Default)]
+pub struct TestCodespaces {
+    /// Which answer this client gives.
+    pub behaviour: CloudBehaviour,
+    /// The state the reconcile reads back, as GitHub names it.
+    pub reported_state: Option<&'static str>,
+    /// How many codespaces this client has been asked to delete.
+    pub destroyed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl TestCodespaces {
+    /// A GitHub that prepares the environment repository, and reports its
+    /// codespaces `Available`.
+    #[must_use]
+    pub fn succeeding() -> Self {
+        Self {
+            behaviour: CloudBehaviour::Succeeds,
+            reported_state: Some("Available"),
+            ..Self::default()
+        }
+    }
+
+    /// A GitHub that refuses — the answer an existing *public*
+    /// `flyco-sessions` produces.
+    #[must_use]
+    pub fn refusing() -> Self {
+        Self {
+            behaviour: CloudBehaviour::Refused,
+            ..Self::default()
+        }
+    }
+}
+
+impl crate::codespaces::CodespacesLink for TestCodespaces {
+    fn ensure_environment(
+        &self,
+        token: &GithubToken,
+        owner: &str,
+        devcontainer_json: &str,
+    ) -> impl Future<Output = Result<flyco_provider::codespaces::EnvRepo, flyco_provider::ProviderError>>
+    {
+        assert_eq!(token.access_token, GITHUB_ACCESS_TOKEN);
+        assert_eq!(owner, GITHUB_LOGIN);
+        assert!(
+            devcontainer_json.contains("https://flyco.test"),
+            "the devcontainer is rendered against this control plane: {devcontainer_json}"
+        );
+        ready(if self.behaviour == CloudBehaviour::Succeeds {
+            Ok(flyco_provider::codespaces::EnvRepo {
+                id: CODESPACES_ENV_REPO_ID,
+                full_name: CODESPACES_ENV_REPO.to_owned(),
+            })
+        } else {
+            Err(flyco_provider::ProviderError::Rejected(format!(
+                "{CODESPACES_ENV_REPO} exists and is public"
+            )))
+        })
+    }
+}
+
+/// The Codespaces link seam every test router carries.
+#[must_use]
+pub fn test_codespaces() -> crate::codespaces::Codespaces {
+    crate::codespaces::Codespaces::Fake(TestCodespaces::succeeding())
 }
 
 /// The cloud side of linking, as every test router carries it.
@@ -898,11 +1025,23 @@ pub fn test_router_with_github(db: Db, queue: Queue, github: TestGithub) -> Rout
 
 /// The same router, with the GitHub and vendor clients the caller chose.
 pub fn test_router_with(db: Db, queue: Queue, github: TestGithub, vendors: Vendors) -> Router {
+    test_router_full(db, queue, github, vendors, TestCodespaces::succeeding())
+}
+
+/// The same router, with the Codespaces link seam the caller chose as well.
+pub fn test_router_full(
+    db: Db,
+    queue: Queue,
+    github: TestGithub,
+    vendors: Vendors,
+    codespaces: TestCodespaces,
+) -> Router {
     router(
         test_config(),
         GithubClient::Fake(github),
         vendors,
         test_clouds(),
+        crate::codespaces::Codespaces::Fake(codespaces),
         db,
         queue,
     )
@@ -1010,6 +1149,7 @@ async fn seed_account(db: &Db, github_id: i64, login: &str) -> CurrentUser {
             id: github_id,
             login: login.to_owned(),
             name: Some(GITHUB_NAME.to_owned()),
+            plan: None,
         },
         &sealed,
     )
@@ -1118,6 +1258,28 @@ pub async fn seed_azure_account(db: &Db, user: UserId) -> ProviderAccountId {
     .id
 }
 
+/// Links a Codespaces account the way the OAuth finish does, without
+/// GitHub.
+pub async fn seed_codespaces_account(db: &Db, user: UserId) -> ProviderAccountId {
+    crate::provider_accounts::create(
+        db,
+        &test_config(),
+        user,
+        GITHUB_LOGIN.to_owned(),
+        &ProviderCredentials::Codespaces {
+            token: GITHUB_ACCESS_TOKEN.to_owned(),
+            env_repo: CODESPACES_ENV_REPO.to_owned(),
+            env_repo_id: CODESPACES_ENV_REPO_ID,
+            owner_id: GITHUB_ID,
+            included_core_hours: 180,
+        },
+        None,
+    )
+    .await
+    .expect("link a Codespaces account")
+    .id
+}
+
 /// The machine a test session asks for: the enrolled machine itself.
 #[must_use]
 pub fn machine_choice(account: ProviderAccountId) -> MachineChoice {
@@ -1146,7 +1308,7 @@ pub async fn seed_harness_account(db: &Db, user: UserId, harness: HarnessKind) -
         HarnessKind::ClaudeCode => StoredCredential::OauthToken {
             token: HARNESS_TOKEN.to_owned(),
         },
-        HarnessKind::Codex => StoredCredential::ApiKey {
+        HarnessKind::Codex | HarnessKind::Devin => StoredCredential::ApiKey {
             key: HARNESS_TOKEN.to_owned(),
         },
     };

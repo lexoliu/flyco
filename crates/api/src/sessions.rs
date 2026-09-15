@@ -9,8 +9,8 @@ use flyco_core::{
     ARCHIVE_AFTER_IDLE_SECS, ApprovalState, BranchName, BudgetConfig, BudgetId, BudgetStage,
     ClientEvent, HarnessKind, HarnessSessionView, InterruptedReason, MAX_SESSION_TITLE_CHARS,
     MachineOrigin, ModelChoice, PROVISION_DEADLINE_SECS, PausedReason, PermissionMode, RepoSlug,
-    SessionActivity, SessionDetail, SessionId, SessionState, SessionSummary, UsageLimitPause, Usd,
-    UserId, builtin_models,
+    SUSPEND_AFTER_IDLE_SECS, SessionActivity, SessionDetail, SessionId, SessionState,
+    SessionSummary, UsageLimitPause, Usd, UserId, builtin_models,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -817,17 +817,22 @@ pub async fn fail(db: &Db, rooms: &Rooms, id: SessionId, reason: &str) -> Result
     Ok(())
 }
 
-/// Records that a session's machine is being reclaimed by its provider.
+/// Records that a session lost the machine it was running on, and why.
 ///
-/// Called from the session's own daemon, in the seconds between the
-/// provider's notice and the machine going, and it is idempotent for the
-/// same reason [`pause_for_budget`] is: nothing about a reclamation is
-/// delivered exactly once, and a second report must not be an error.
+/// Called from the session's own daemon in the seconds between a
+/// provider's reclaim notice and the machine going, and from the
+/// reconcile that learns a codespace suspended itself — and it is
+/// idempotent for the same reason [`pause_for_budget`] is: nothing about
+/// either is delivered exactly once, and a second report must not be an
+/// error.
 ///
-/// A session that is already off its machine — interrupted by an earlier
-/// notice, or provisioning because the recovery has already started — keeps
-/// the reason it has and is left alone. Only an [`Active`](SessionState::Active)
-/// session actually moves.
+/// A session already interrupted keeps its state and has only the reason
+/// refreshed — the reconcile's answer can change under it, `suspended`
+/// when written and `machine_lost` once the codespace is actually gone —
+/// and its activity clock is left alone, so an abandoned session still
+/// archives on the idleness it was already accumulating. A session still
+/// provisioning is interrupted mid-flight — the recovery running is the
+/// call that learned the machine is gone — and that *is* activity.
 ///
 /// # Errors
 ///
@@ -835,19 +840,32 @@ pub async fn fail(db: &Db, rooms: &Rooms, id: SessionId, reason: &str) -> Result
 /// [`ApiError::InvalidTransition`] if it is in a state that cannot be
 /// interrupted — a session being archived, say, whose machine is going
 /// anyway.
-pub async fn interrupt_for_spot(db: &Db, id: SessionId) -> Result<(), ApiError> {
+pub async fn interrupted(
+    db: &Db,
+    id: SessionId,
+    reason: InterruptedReason,
+) -> Result<(), ApiError> {
     let state: SessionState = sql!(db, "SELECT state FROM sessions WHERE id = {id}")
         .fetch_scalar_optional()
         .await?
         .ok_or(ApiError::SessionNotFound)?;
-    let reason = InterruptedReason::SpotReclaimed;
-    if matches!(
-        state,
-        SessionState::Interrupted | SessionState::Provisioning
-    ) {
-        // Already off its machine, or already being put back on one. The
-        // reason is written anyway: a reclamation during a provision is
-        // still what the UI has to render, and the column is what tells a
+    if state == SessionState::Interrupted {
+        // Already off its machine. The reason is rewritten — it is what the
+        // UI has to render and what the next resume reads — but the clock
+        // is not: a reconcile confirming a suspension every minute would
+        // otherwise keep an abandoned session from ever going idle.
+        sql!(
+            db,
+            "UPDATE sessions SET interrupted_reason = {reason} WHERE id = {id}"
+        )
+        .execute()
+        .await?;
+        return Ok(());
+    }
+    if state == SessionState::Provisioning {
+        // Being put back on a machine already. The reason is written
+        // anyway: a suspension or a reclaim during a provision is still
+        // what the UI has to render, and the column is what tells a
         // recovery apart from a first provision.
         sql!(
             db,
@@ -872,8 +890,90 @@ pub async fn interrupt_for_spot(db: &Db, id: SessionId) -> Result<(), ApiError> 
     )
     .execute()
     .await?;
-    tracing::warn!(session = %id, "a session's spot capacity is being reclaimed");
+    tracing::warn!(session = %id, ?reason, "a session lost its machine");
     Ok(())
+}
+
+/// Records that a session's machine ceased to exist — deleted, not stopped.
+///
+/// The write for a codespace GitHub deleted outright, or failed past
+/// starting, or whose start answered 404: there is no disk to come back
+/// to, so [`InterruptedReason::MachineLost`] is what tells the next resume
+/// to *provision* rather than start.
+///
+/// Unlike [`interrupted`], a `provisioning` session *moves* here rather
+/// than keeping only the reason — nothing is in flight that could still
+/// deliver a machine, so the session waits interrupted until it is spoken
+/// to again. A session already interrupted has the reason rewritten —
+/// `suspended` was true when it was written and is not true now — and a
+/// paused session is deliberately left paused: its pause reason is still
+/// true, the machine row records the loss, and its wake reads the row and
+/// provisions around the gap on its own.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is gone, or
+/// [`ApiError::InvalidTransition`] if it is in a state that cannot be
+/// interrupted — a session that already ended, whose machine the caller
+/// should not have been reconciling.
+pub async fn machine_lost(db: &Db, id: SessionId) -> Result<(), ApiError> {
+    let state: SessionState = sql!(db, "SELECT state FROM sessions WHERE id = {id}")
+        .fetch_scalar_optional()
+        .await?
+        .ok_or(ApiError::SessionNotFound)?;
+    let reason = InterruptedReason::MachineLost;
+    match state {
+        SessionState::Paused => return Ok(()),
+        SessionState::Interrupted => {
+            sql!(
+                db,
+                "UPDATE sessions SET interrupted_reason = {reason} WHERE id = {id}"
+            )
+            .execute()
+            .await?;
+            return Ok(());
+        }
+        _ => {}
+    }
+    let next = state
+        .transition(SessionState::Interrupted)
+        .map_err(|error| ApiError::InvalidTransition {
+            from: error.from,
+            to: error.to,
+        })?;
+    sql!(
+        db,
+        "UPDATE sessions SET state = {next}, interrupted_reason = {reason}, \
+         last_active_unix = {now_unix()} WHERE id = {id}"
+    )
+    .execute()
+    .await?;
+    tracing::warn!(session = %id, "a session's machine ceased to exist");
+    Ok(())
+}
+
+/// Why a session is interrupted, when it is.
+///
+/// The reason is written with the state and cleared when the session is
+/// put back, so its presence and the `interrupted` state are one fact.
+/// Callers that resume a session read it *first*, because the resume's own
+/// write is what clears it.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is gone, or
+/// [`ApiError`] if the database fails.
+pub async fn interruption_reason(
+    db: &Db,
+    id: SessionId,
+) -> Result<Option<InterruptedReason>, ApiError> {
+    sql!(
+        db,
+        "SELECT interrupted_reason FROM sessions WHERE id = {id}"
+    )
+    .fetch_scalar_optional()
+    .await?
+    .ok_or(ApiError::SessionNotFound)
 }
 
 /// Puts a session that lost its machine back into
@@ -1048,6 +1148,27 @@ pub async fn record_activity(
     Ok(())
 }
 
+/// Stamps the activity clock without moving the conversation's position.
+///
+/// What a client command that is not a message means for idleness: the
+/// session is being *used* — a terminal keystroke, a shell run, a decided
+/// approval — which says nothing about `activity` and everything about
+/// `last_active_unix`. [`suspendable`] reads that column, so a machine its
+/// user is typing into is never the one the sweep stops.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the write fails.
+pub async fn touch(db: &Db, id: SessionId) -> Result<(), ApiError> {
+    sql!(
+        db,
+        "UPDATE sessions SET last_active_unix = {now_unix()} WHERE id = {id}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
 /// The conversation and the model a daemon starting on this session must
 /// continue it on.
 ///
@@ -1102,16 +1223,26 @@ pub async fn harness_session(db: &Db, id: SessionId) -> Result<HarnessSessionVie
 /// Returns [`ApiError`] if the database fails.
 pub async fn daemon_arrived(db: &Db, rooms: &Rooms, id: SessionId) -> Result<(), ApiError> {
     let provisioning = SessionState::Provisioning;
+    let interrupted = SessionState::Interrupted;
+    let suspended = InterruptedReason::Suspended;
     let active = SessionState::Active;
     // The reason the session lost its machine is cleared with the same
     // write that says it has one again: it is what the UI renders
     // `Migrating` from, and a session whose daemon is back is not
     // migrating any more.
+    //
+    // The interrupted arm is the codespace somebody started by hand:
+    // nothing queued a recovery for it — a suspension waits to be spoken
+    // to — but the user opened it on github.com, `postStart` ran, and its
+    // daemon attached. Only `suspended` is taken this way: a machine flyco
+    // recorded as *lost* has nothing to arrive from, and one that does is
+    // the row being wrong rather than the session being back.
     let written = sql!(
         db,
         "UPDATE sessions SET state = {active}, interrupted_reason = NULL, \
          last_active_unix = {now_unix()} \
-         WHERE id = {id} AND state = {provisioning}"
+         WHERE id = {id} AND (state = {provisioning} \
+         OR (state = {interrupted} AND interrupted_reason = {suspended}))"
     )
     .execute()
     .await?;
@@ -1287,6 +1418,47 @@ pub async fn idle_since(db: &Db, at_unix: u64) -> Result<Vec<IdleSession>, ApiEr
         "SELECT id, user_id FROM sessions \
          WHERE last_active_unix <= {cutoff} \
          AND (state = {active} OR state = {paused} OR state = {interrupted})"
+    )
+    .fetch_all()
+    .await?)
+}
+
+/// Sessions whose machine [`crate::app::suspend_idle`] should stop for
+/// idleness, once a sweep.
+///
+/// Three conditions, each guarding a different cost. `active` means nothing
+/// else has already ended the machine's life — a paused session's machine
+/// is the usage-limit sweep's decision, an interrupted one's is already
+/// gone. `activity != working` means no turn is in flight: a suspension
+/// that killed the agent mid-answer would lose the work the machine was
+/// running to produce, and a session merely waiting for a decision is what
+/// suspension is *for*. And `last_active_unix` past the cutoff is the
+/// idleness itself — [`SUSPEND_AFTER_IDLE_SECS`], not the archive week,
+/// because compute bills by the minute and a disk does not.
+///
+/// The machine join admits `deallocated` as well as `running`: a machine
+/// already off needs no provider call, but the session write that goes
+/// with the stop is still owed — either a previous pass was cut short
+/// between them, or the user stopped the machine by hand and the session
+/// should read interrupted for it.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn suspendable(db: &Db, at_unix: u64) -> Result<Vec<IdleSession>, ApiError> {
+    let cutoff = at_unix.saturating_sub(SUSPEND_AFTER_IDLE_SECS);
+    let active = SessionState::Active;
+    let working = SessionActivity::Working;
+    let running = flyco_core::machine::MachineState::Running;
+    let deallocated = flyco_core::machine::MachineState::Deallocated;
+    Ok(sql!(
+        db,
+        "SELECT sessions.id AS id, sessions.user_id AS user_id FROM sessions \
+         JOIN machines ON machines.session_id = sessions.id \
+         WHERE sessions.state = {active} \
+         AND sessions.activity != {working} \
+         AND sessions.last_active_unix <= {cutoff} \
+         AND (machines.state = {running} OR machines.state = {deallocated})"
     )
     .fetch_all()
     .await?)

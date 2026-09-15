@@ -72,6 +72,10 @@ enum Answer {
     /// call's budget ran out: the build is handed back, and the next call
     /// finds it running.
     Slow,
+    /// The provider no longer holds the machine at all — a codespace that
+    /// was deleted between the reconcile that last saw it and the start the
+    /// recovery asked for.
+    Gone,
 }
 
 /// The real planner, over a room that answers instead of holding an
@@ -173,10 +177,19 @@ impl Provisioner for RecordedHost {
         _account: &LinkedAccount,
         machine: &Machine,
     ) -> impl Future<Output = Result<Machine, ProviderError>> {
-        if self.answer == Answer::Unreachable {
-            return core::future::ready(Err(ProviderError::Transport(HttpError::Transport(
-                "the machine's room did not answer".to_owned(),
-            ))));
+        match self.answer {
+            Answer::Unreachable => {
+                return core::future::ready(Err(ProviderError::Transport(HttpError::Transport(
+                    "the machine's room did not answer".to_owned(),
+                ))));
+            }
+            Answer::Gone => {
+                return core::future::ready(Err(ProviderError::Gone(format!(
+                    "the provider holds nothing named {}",
+                    machine.native_id
+                ))));
+            }
+            _ => {}
         }
         self.restarts.push(machine.clone());
         core::future::ready(Ok(Machine {
@@ -240,6 +253,9 @@ impl RecordedHost {
             Answer::Unreachable => Err(ProviderError::Transport(HttpError::Transport(
                 "the machine's room did not answer".to_owned(),
             ))),
+            Answer::Gone => Err(ProviderError::Gone(
+                "the provider holds nothing under that name".to_owned(),
+            )),
         }
     }
 }
@@ -2511,5 +2527,338 @@ async fn the_conversation_a_restarted_daemon_continues_comes_from_the_control_pl
             .json::<flyco_core::HarnessSessionView>()
             .harness_session_id,
         Some("harness-native-thread".to_owned())
+    );
+}
+
+// ── A machine the provider let go of ──
+//
+// Codespaces is the provider that suspends and deletes machines out from
+// under flyco, which is why the interruptions that are not a reclaim take
+// their tests here: every one of them ends at a `Recover` job — the same
+// job a reclaim takes — and the only thing that differs is what the row's
+// `native_id` decides when it gets there. The host provisioner stands in
+// for the codespaces driver: the row's native name is a container name,
+// which is the same kind of string either way.
+
+/// Marks the session's machine lost the way the reconcile sweep would: the
+/// row destroyed and unnamed, the session interrupted as `MachineLost`.
+async fn machine_lost(db: &Db, session: SessionId) {
+    let row = machines::for_session(db, session)
+        .await
+        .expect("read the machine row")
+        .expect("the session has a machine");
+    machines::mark_lost(db, row.id)
+        .await
+        .expect("the row is released");
+    sessions::machine_lost(db, session)
+        .await
+        .expect("the session is interrupted");
+}
+
+/// Interrupts a live session the way a suspension does, so the test that
+/// follows is about what wakes it.
+async fn suspended(db: &Db, session: SessionId) {
+    sessions::interrupted(db, session, flyco_core::InterruptedReason::Suspended)
+        .await
+        .expect("the session is interrupted");
+}
+
+#[skyzen::test]
+async fn a_suspended_session_is_woken_by_its_next_message(ctx: TestContext, kv: Kv, db: Db) {
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, _daemon) = provisioned(&client, &caller, &db, &kv, &queue).await;
+    let rooms = test_rooms();
+    sessions::daemon_arrived(&db, &rooms, session)
+        .await
+        .expect("the daemon arrived");
+    suspended(&db, session).await;
+
+    let response = client
+        .post(&format!("/v1/sessions/{session}/messages"))
+        .bearer(&caller.token)
+        .json(&flyco_core::SendMessage {
+            text: "are you still there?".to_owned(),
+        })
+        .send()
+        .await;
+    response.assert_status(202);
+
+    let jobs = queued(&backend);
+    let recovery = jobs
+        .iter()
+        .find(|job| matches!(job, ProvisioningJob::Recover { .. }))
+        .expect("the message enqueued the machine's start");
+    let ProvisioningJob::Recover { cause, .. } = recovery else {
+        unreachable!()
+    };
+    assert_eq!(*cause, provisioning_queue::RecoveryCause::Suspended);
+
+    let mut host = RecordedHost::healthy();
+    let disposition =
+        run_queue_watching(&db, &kv, &queue, &rooms, &mut host, batch(recovery.clone())).await;
+    assert!(matches!(
+        disposition,
+        QueueBatchDisposition::PerMessage(ref decisions)
+            if decisions == &[QueueMessageDisposition::Ack]
+    ));
+
+    assert_eq!(
+        host.restarts.len(),
+        1,
+        "the held machine is started by name"
+    );
+    assert_eq!(host.provisions, 0, "nothing new is provisioned for it");
+    assert!(
+        recorded(&rooms, session)
+            .await
+            .iter()
+            .any(|e| matches!(e, flyco_core::ClientEvent::UserMessage { text, .. } if text.contains("suspended for inactivity"))),
+        "the agent is told its machine was suspended and restarted"
+    );
+}
+
+#[skyzen::test]
+async fn a_machine_lost_session_provisions_around_its_next_message(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, _daemon) = provisioned(&client, &caller, &db, &kv, &queue).await;
+    let rooms = test_rooms();
+    sessions::daemon_arrived(&db, &rooms, session)
+        .await
+        .expect("the daemon arrived");
+    machine_lost(&db, session).await;
+
+    let response = client
+        .post(&format!("/v1/sessions/{session}/messages"))
+        .bearer(&caller.token)
+        .json(&flyco_core::SendMessage {
+            text: "are you still there?".to_owned(),
+        })
+        .send()
+        .await;
+    response.assert_status(202);
+
+    let jobs = queued(&backend);
+    assert!(
+        jobs.iter()
+            .any(|job| matches!(job, ProvisioningJob::Provision { .. })),
+        "a machine that is gone is provisioned around, not started: {jobs:?}"
+    );
+    assert!(
+        !jobs
+            .iter()
+            .any(|job| matches!(job, ProvisioningJob::Recover { .. })),
+        "there is nothing to recover: {jobs:?}"
+    );
+
+    let mut host = RecordedHost::healthy();
+    run_queue_watching(&db, &kv, &queue, &rooms, &mut host, drain(&queue).await).await;
+    assert_eq!(
+        host.provisions, 1,
+        "the fresh machine is built on the freed row"
+    );
+}
+
+#[skyzen::test]
+async fn a_resume_starts_the_machine_the_provider_still_holds(ctx: TestContext, kv: Kv, db: Db) {
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, _daemon) = provisioned(&client, &caller, &db, &kv, &queue).await;
+    let rooms = test_rooms();
+    sessions::daemon_arrived(&db, &rooms, session)
+        .await
+        .expect("the daemon arrived");
+    suspended(&db, session).await;
+
+    let response = client
+        .post(&format!("/v1/sessions/{session}/resume"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    response.assert_status(200);
+
+    let jobs = queued(&backend);
+    let recovery = jobs
+        .iter()
+        .find(|job| matches!(job, ProvisioningJob::Recover { .. }))
+        .expect("a suspended machine resumes into its own start");
+    let ProvisioningJob::Recover { cause, .. } = recovery else {
+        unreachable!()
+    };
+    assert_eq!(*cause, provisioning_queue::RecoveryCause::Resumed);
+
+    let mut host = RecordedHost::healthy();
+    run_queue_watching(&db, &kv, &queue, &rooms, &mut host, batch(recovery.clone())).await;
+    assert_eq!(host.restarts.len(), 1);
+    assert_eq!(host.provisions, 0);
+}
+
+#[skyzen::test]
+async fn a_resume_provisions_around_a_machine_that_is_gone(ctx: TestContext, kv: Kv, db: Db) {
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, _daemon) = provisioned(&client, &caller, &db, &kv, &queue).await;
+    let rooms = test_rooms();
+    sessions::daemon_arrived(&db, &rooms, session)
+        .await
+        .expect("the daemon arrived");
+    machine_lost(&db, session).await;
+
+    let response = client
+        .post(&format!("/v1/sessions/{session}/resume"))
+        .bearer(&caller.token)
+        .send()
+        .await;
+    response.assert_status(200);
+
+    let jobs = queued(&backend);
+    assert!(
+        jobs.iter()
+            .any(|job| matches!(job, ProvisioningJob::Provision { .. })),
+        "a resume with no machine to start provisions: {jobs:?}"
+    );
+
+    let mut host = RecordedHost::healthy();
+    run_queue_watching(&db, &kv, &queue, &rooms, &mut host, drain(&queue).await).await;
+    assert_eq!(host.provisions, 1);
+}
+
+#[skyzen::test]
+async fn a_recovery_that_finds_the_machine_gone_provisions_a_fresh_one(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let session = open(&client, &caller).await.summary.id;
+    let mut host = RecordedHost::healthy();
+    let rooms = test_rooms();
+    run_queue_watching(&db, &kv, &queue, &rooms, &mut host, drain(&queue).await).await;
+    let daemon = pair(&client, &caller, session).await;
+    report_reclaim(&client, &db, session, &daemon, 30).await;
+    let recovery = queued_recovery(&backend);
+
+    // Between the reclaim and its recovery the provider deleted the
+    // machine — a codespace removed on github.com, a container pruned on
+    // the host. `Gone` is the answer a start gets for that.
+    host.answer = Answer::Gone;
+    let disposition =
+        run_queue_watching(&db, &kv, &queue, &rooms, &mut host, batch(recovery)).await;
+    assert!(matches!(
+        disposition,
+        QueueBatchDisposition::PerMessage(ref decisions)
+            if decisions == &[QueueMessageDisposition::Ack]
+    ));
+
+    let row = machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("the session still has a machine");
+    assert_eq!(row.native_id, None, "the dead name is cleared");
+    assert_eq!(
+        row.state,
+        MachineState::Provisioning,
+        "the same row is provisioned again, not replaced"
+    );
+    assert_eq!(
+        host.restarts.len(),
+        0,
+        "the start that answered `gone` is the last thing tried on that name"
+    );
+    let jobs = queued(&backend);
+    assert!(
+        jobs.iter().any(
+            |job| matches!(job, ProvisioningJob::Provision { session: s, .. } if *s == session)
+        ),
+        "the recovery queues the provision it could not do itself: {jobs:?}"
+    );
+
+    host.answer = Answer::Takes;
+    run_queue_watching(&db, &kv, &queue, &rooms, &mut host, drain(&queue).await).await;
+    assert_eq!(
+        host.provisions, 2,
+        "the fresh machine is built on the freed row — the same host's second provision, \
+         after the one the session opened with"
+    );
+}
+
+#[skyzen::test]
+async fn a_recovery_for_a_machine_already_released_does_not_ask_the_provider(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+    let (session, _daemon) = provisioned(&client, &caller, &db, &kv, &queue).await;
+    let rooms = test_rooms();
+    sessions::daemon_arrived(&db, &rooms, session)
+        .await
+        .expect("the daemon arrived");
+    suspended(&db, session).await;
+    machine_lost(&db, session).await;
+
+    // A recovery that was already in the queue when the sweep released the
+    // row arrives to find no native name on it: there is nothing to start,
+    // and asking the provider would 404. The job's answer is to leave the
+    // session's own wake — a message, a resume — to provision.
+    let row = machines::for_session(&db, session)
+        .await
+        .expect("read the machine row")
+        .expect("the session still has a machine");
+    let mut host = RecordedHost::healthy();
+    let disposition = run_queue_watching(
+        &db,
+        &kv,
+        &queue,
+        &rooms,
+        &mut host,
+        batch(ProvisioningJob::resuming(
+            session,
+            row.id,
+            crate::clock::now_unix(),
+        )),
+    )
+    .await;
+    assert!(matches!(
+        disposition,
+        QueueBatchDisposition::PerMessage(ref decisions)
+            if decisions == &[QueueMessageDisposition::Ack]
+    ));
+    assert_eq!(host.restarts.len(), 0, "no name, no start");
+    assert_eq!(
+        host.provisions, 0,
+        "the job does not provision over a wake's job"
+    );
+
+    let detail = read(&client, &caller, session).await;
+    assert_eq!(
+        detail.summary.state,
+        SessionState::Interrupted,
+        "the session stays interrupted until somebody speaks to it"
     );
 }

@@ -66,8 +66,13 @@ fn state_label(session: &SessionSummary) -> String {
             flyco_core::PausedReason::UsageLimit => format!("{state} · plan window"),
         };
     }
-    if session.interrupted_reason.is_some() {
-        return format!("{state} · spot reclaimed");
+    if let Some(reason) = session.interrupted_reason {
+        let label = match reason {
+            flyco_core::InterruptedReason::SpotReclaimed => "spot reclaimed",
+            flyco_core::InterruptedReason::Suspended => "suspended",
+            flyco_core::InterruptedReason::MachineLost => "machine lost",
+        };
+        return format!("{state} · {label}");
     }
     state
 }

@@ -9,7 +9,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use flyco_core::HarnessKind;
+use flyco_core::DriverKind;
 use portable_pty::CommandBuilder;
 
 use crate::config::{ClaudeAuth, DaemonConfig};
@@ -23,6 +23,9 @@ pub enum TuiError {
     /// The sidecar's `node_modules` could not be listed at all.
     #[error("could not list {0}")]
     ClaudeUnreadable(PathBuf),
+    /// The agent's `[acp]` table declares no TUI to bridge to.
+    #[error("{0} has no TUI: its [acp.tui] table is empty, so there is nothing to launch")]
+    NoTui(String),
 }
 
 /// How the session's harness TUI is launched.
@@ -55,8 +58,10 @@ impl core::fmt::Debug for HarnessTui {
 
 /// The executable half of a [`HarnessTui`].
 enum Program {
-    /// An executable the configuration names — Codex's `bin`.
+    /// An executable the configuration names — an `[acp.tui]` program.
     Bin(PathBuf),
+    /// The agent has no TUI; the error is answered at launch instead.
+    None(String),
     /// The Agent SDK's bundled `claude`, resolved inside the sidecar's
     /// `node_modules` at startup. A session whose sidecar lacks it still
     /// runs headless; the error is answered at launch instead.
@@ -66,13 +71,14 @@ enum Program {
 impl HarnessTui {
     /// Builds the launch description from the daemon's configuration.
     ///
-    /// The harness the session runs decides which configuration speaks:
+    /// The driver the session runs decides which configuration speaks:
     /// for Claude Code the SDK's bundled `claude` binary under the
-    /// sidecar's `node_modules`, for Codex the configured `bin`.
+    /// sidecar's `node_modules`, for ACP the `[acp.tui]` table — which an
+    /// agent without a TUI simply does not have, and says so at launch.
     pub async fn resolve(config: &DaemonConfig) -> Self {
         match config.harness {
-            HarnessKind::ClaudeCode => Self::claude(config).await,
-            HarnessKind::Codex => Self::codex(config),
+            DriverKind::ClaudeCode => Self::claude(config).await,
+            DriverKind::Acp => Self::acp(config),
         }
     }
 
@@ -81,10 +87,12 @@ impl HarnessTui {
     /// # Errors
     ///
     /// Returns [`TuiError`] when the program itself could not be resolved —
-    /// the claude binary missing from the sidecar tree.
+    /// the claude binary missing from the sidecar tree, or an agent with
+    /// no TUI at all.
     pub fn command(&self, resume: bool) -> Result<CommandBuilder, TuiError> {
         let program = match &self.program {
             Program::Bin(bin) => bin.clone(),
+            Program::None(agent) => return Err(TuiError::NoTui(agent.clone())),
             Program::Claude(resolved) => resolved.clone()?,
         };
         let mut command = CommandBuilder::new(program);
@@ -165,48 +173,52 @@ impl HarnessTui {
         }
     }
 
-    /// The Codex TUI: the configured binary under the session's isolated
-    /// `CODEX_HOME`, with the session's model, effort and permission mode
-    /// as `-c` overrides — Codex's own spelling of the same facts.
-    fn codex(config: &DaemonConfig) -> Self {
-        let codex = config.codex();
-
-        let env = codex.auth.home().map_or_else(Vec::new, |home| {
-            vec![(
-                OsStr::new("CODEX_HOME").to_owned(),
-                home.as_os_str().to_owned(),
-            )]
-        });
-
-        // `-c` takes TOML, so string values are quoted.
-        let mut args: Vec<OsString> = Vec::new();
-        let mut set = |key: &str, value: &str| {
-            args.push("-c".into());
-            args.push(format!("{key}=\"{value}\"").into());
+    /// The ACP agent's TUI: the program `[acp.tui]` names, under the same
+    /// environment the driver spawns the agent with plus the TUI's own —
+    /// a `CODEX_HOME` or `XDG_DATA_HOME` the agent's credentials live
+    /// under reaches its TUI the same way it reaches the agent.
+    ///
+    /// Resume arguments are spelled by the provisioner rather than built
+    /// here: each agent re-enters a conversation its own way, and a
+    /// `{session}` placeholder in `resume_args` is filled with the
+    /// harness-native session id when one is recorded.
+    fn acp(config: &DaemonConfig) -> Self {
+        let acp = config.acp();
+        let Some(tui) = &acp.tui else {
+            return Self {
+                program: Program::None(acp.agent.clone()),
+                args: Vec::new(),
+                resume_args: Vec::new(),
+                env: Vec::new(),
+            };
         };
-        if let Some(model) = &codex.model {
-            set("model", model);
-        }
-        if let Some(effort) = &codex.effort {
-            set("model_reasoning_effort", effort);
-        }
-        set(
-            "approval_policy",
-            codex.permission_mode.codex_approval_policy(),
-        );
-        set("sandbox_mode", codex.permission_mode.codex_sandbox());
 
-        let mut resume_args = vec![OsString::from("resume")];
-        match &config.resume_session_id {
-            Some(id) => resume_args.push(id.into()),
-            None => resume_args.push("--last".into()),
-        }
-        resume_args.extend(args.iter().cloned());
+        let env = acp
+            .env
+            .iter()
+            .chain(tui.env.iter())
+            .map(|(name, value)| (name.clone().into(), value.clone().into()))
+            .collect();
+
+        let fill = |args: &[String]| -> Vec<OsString> {
+            args.iter()
+                .filter_map(|arg| {
+                    config.resume_session_id.as_ref().map_or_else(
+                        // With nothing recorded the placeholder has no
+                        // value: `codex resume` and `devin --resume`
+                        // without it land on the agent's own picker, which
+                        // is the resume the session can offer.
+                        || (!arg.contains("{session}")).then(|| OsString::from(arg)),
+                        |id| Some(OsString::from(arg.replace("{session}", id))),
+                    )
+                })
+                .collect()
+        };
 
         Self {
-            program: Program::Bin(codex.bin.clone()),
-            args,
-            resume_args,
+            program: Program::Bin(tui.program.clone()),
+            args: fill(&tui.args),
+            resume_args: fill(&tui.resume_args),
             env,
         }
     }

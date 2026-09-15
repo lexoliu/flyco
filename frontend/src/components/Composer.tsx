@@ -48,6 +48,7 @@ import {
 import { beginGithubLogin, githubTokenRevoked } from "../api/auth";
 import type { NewSessionInput } from "../api/sessions";
 import { cx } from "../lib/cx";
+import { HARNESS_LABEL } from "../lib/harnesses";
 import { defaultChoice, optionOf } from "../lib/models";
 import {
   MAX_RECENT_REPOS,
@@ -78,11 +79,6 @@ function reconnectGithub(error: unknown): { label: string; onClick: () => void }
     ? { label: "Reconnect GitHub", onClick: () => void beginGithubLogin() }
     : undefined;
 }
-
-const HARNESS_LABEL: Record<HarnessKind, string> = {
-  claude_code: "Claude Code",
-  codex: "Codex",
-};
 
 export interface ComposerProps {
   /** Starts the session. Rejections surface as a notice under the chips. */

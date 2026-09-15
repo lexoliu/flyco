@@ -1336,7 +1336,8 @@
                     "required": [
                       "feature",
                       "claude_code",
-                      "codex"
+                      "codex",
+                      "devin"
                     ],
                     "properties": {
                       "claude_code": {
@@ -1346,6 +1347,10 @@
                       "codex": {
                         "$ref": "#/components/schemas/Availability",
                         "description": "Status on Codex."
+                      },
+                      "devin": {
+                        "$ref": "#/components/schemas/Availability",
+                        "description": "Status on Devin."
                       },
                       "feature": {
                         "$ref": "#/components/schemas/Feature",
@@ -3484,6 +3489,327 @@
                     "description": "Which of the authorized subscriptions to provision into."
                   }
                 }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One row of `GET /v1/providers`.",
+                  "required": [
+                    "id",
+                    "kind",
+                    "label",
+                    "linked_at_unix"
+                  ],
+                  "properties": {
+                    "host_id": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/Uuid",
+                          "description": "The enrolled machine this account *is*, when it is one.\n\n`None` for every cloud account. A host is a provider account\n(docs/host-enrollment.md), which is what keeps the catalog, session\ncreation and the usage panel free of a special case for it — but a\nclient holding both `GET /v1/hosts` and `GET /v1/providers` still has\nto know which account is which machine, and an id is the only honest\nway to say so. Inferring it from [`CloudProviderKind::Host`] would\nname the kind and not the machine."
+                        }
+                      ]
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier used to unlink the account."
+                    },
+                    "kind": {
+                      "$ref": "#/components/schemas/CloudProviderKind",
+                      "description": "Which provider it is."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "Label supplied when it was linked.\n\nFor a machine the user owns this is the host's own label, kept in\nstep by `PATCH /v1/hosts/{id}`: the two rows name the same thing, so\na rename that moved only one of them would leave the compute chip\ncalling a machine something its card no longer does."
+                    },
+                    "linked_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was linked, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers/codespaces/bootstrap": {
+      "post": {
+        "summary": "`POST /v1/providers/codespaces/bootstrap` — a running codespace asks for its session's daemon configuration.",
+        "description": "`POST /v1/providers/codespaces/bootstrap` — a running codespace asks for\nits session's daemon configuration.\n\nPublic because it cannot be anything else: the caller is a machine\nGitHub just built, which holds no flyco credential. What it presents is\nthe `GITHUB_TOKEN` injected into it, and that is checked against the\nenvironment repository rather than against a flyco store — a token that\ncan read `owner/flyco-sessions` is one GitHub minted for a codespace on\nit.",
+        "operationId": "flyco_api::codespaces::bootstrap",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/providers/codespaces/bootstrap`.\n\nCalled by `flycod codespace` — the `postStart` of a running codespace,\nauthenticated by the `GITHUB_TOKEN` the codespace is injected with rather\nthan by a flyco credential: the token proves the caller is the account's\nown compute, and `codespace_name` names which session's configuration it\nis entitled to fetch.",
+                "required": [
+                  "codespace_name"
+                ],
+                "properties": {
+                  "codespace_name": {
+                    "type": "string",
+                    "description": "The codespace's own name, from its `CODESPACE_NAME` environment\nvariable — which is also the machine's provider-native id."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Answer of `POST /v1/providers/codespaces/bootstrap`.\n\nThe rendered `flycod` configuration document for the session this\ncodespace serves — credentials included, which is why it travels sealed\nat rest and only ever leaves the control plane to the codespace that\nproves it is that machine.",
+                  "required": [
+                    "config_toml"
+                  ],
+                  "properties": {
+                    "config_toml": {
+                      "type": "string",
+                      "description": "The daemon's `config.toml`, ready to write."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers/codespaces/oauth/callback": {
+      "get": {
+        "summary": "`GET /v1/providers/codespaces/oauth/callback` — records what GitHub said.",
+        "description": "`GET /v1/providers/codespaces/oauth/callback` — records what GitHub\nsaid.\n\nPublic, for the reason [`azure_callback`] is. Same OAuth app as the\nsign-in, on its own registered URI.",
+        "operationId": "flyco_api::provider_oauth::codespaces_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The single-use authorization code."
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The vendor's machine-readable refusal, when it refused."
+            }
+          },
+          {
+            "name": "error_description",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Its explanation."
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The `state` this control plane minted in the matching `start`."
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "The browser is sent on to the flyco web app."
+          }
+        }
+      }
+    },
+    "/v1/providers/codespaces/oauth/start": {
+      "post": {
+        "summary": "`POST /v1/providers/codespaces/oauth/start` — begins a GitHub sign-in for the `codespace` scope.",
+        "description": "`POST /v1/providers/codespaces/oauth/start` — begins a GitHub sign-in\nfor the `codespace` scope.",
+        "operationId": "flyco_api::provider_oauth::codespaces_start",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Answer of `POST /v1/providers/{azure|gcp}/oauth/start`.\n\nThe browser is sent to [`authorize_url`](Self::authorize_url) and the\npage keeps [`attempt_id`](Self::attempt_id) to poll with: the sign-in\nfinishes at the vendor and comes back through a public callback that\ncarries no flyco credential, so the attempt id is the only thing tying\nthe two halves together.",
+                  "required": [
+                    "attempt_id",
+                    "authorize_url"
+                  ],
+                  "properties": {
+                    "attempt_id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Names this sign-in for the poll and the finish that end it."
+                    },
+                    "authorize_url": {
+                      "type": "string",
+                      "description": "Where the browser approves the grant."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers/codespaces/oauth/{attempt_id}": {
+      "get": {
+        "summary": "`GET /v1/providers/codespaces/oauth/{attempt_id}` — polls it once.",
+        "description": "`GET /v1/providers/codespaces/oauth/{attempt_id}` — polls it once.",
+        "operationId": "flyco_api::provider_oauth::codespaces_poll",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "description": "The browser has not come back from the vendor yet.",
+                      "required": [
+                        "state"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "pending"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "description": "The vendor said who signed in and what they may link.",
+                      "required": [
+                        "account",
+                        "choices",
+                        "state"
+                      ],
+                      "properties": {
+                        "account": {
+                          "type": "string",
+                          "description": "The account that signed in, as the vendor names it."
+                        },
+                        "choices": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ProviderOauthChoice"
+                          },
+                          "description": "What that account may link, in the vendor's own order."
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "authorized"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "description": "The browser came back, but without a sign-in: the user declined,\ntheir organization wants an administrator to approve the app first,\nor the vendor refused the exchange. The page that is polling is the\none place the user is still looking, so it is told rather than left\nwaiting for a callback that has already happened.",
+                      "required": [
+                        "problem",
+                        "reason",
+                        "state"
+                      ],
+                      "properties": {
+                        "problem": {
+                          "type": "string",
+                          "description": "The problem slug the return page was sent, e.g. `microsoft-rejected`."
+                        },
+                        "reason": {
+                          "type": "string",
+                          "description": "What the vendor said, in its own words."
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "failed"
+                          ]
+                        }
+                      }
+                    }
+                  ],
+                  "description": "Answer of `GET /v1/providers/{azure|gcp}/oauth/{attempt_id}`.\n\nTwo states rather than one nullable body, for the reason\n[`CodexOauthPending`](crate::CodexOauthPending) is its own answer: a poll\nthat found nothing is a perfectly good `200` that says so, and the page\nasks again."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/providers/codespaces/oauth/{attempt_id}/finish": {
+      "post": {
+        "summary": "`POST /v1/providers/codespaces/oauth/{attempt_id}/finish` — creates the environment repository and links the account.",
+        "description": "`POST /v1/providers/codespaces/oauth/{attempt_id}/finish` — creates the\nenvironment repository and links the account.",
+        "operationId": "flyco_api::provider_oauth::codespaces_finish",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/providers/codespaces/oauth/{attempt_id}/finish`.\n\nEmpty where Azure's and Google's are not: a subscription and a project\nare things an account holds many of and the user must pick between,\nwhile a Codespaces link has nothing to choose — flyco creates the one\nprivate repository it provisions on, `flyco-sessions`, inside whichever\nGitHub account signed in."
               }
             }
           },
@@ -8011,6 +8337,7 @@
           "azure",
           "aws",
           "gcp",
+          "codespaces",
           "host"
         ]
       },
@@ -8076,6 +8403,32 @@
           "spent": {
             "$ref": "#/components/schemas/Usd",
             "description": "Spend the provider has metered so far this period."
+          }
+        }
+      },
+      "CodespacesBootstrap": {
+        "type": "object",
+        "description": "Answer of `POST /v1/providers/codespaces/bootstrap`.\n\nThe rendered `flycod` configuration document for the session this\ncodespace serves — credentials included, which is why it travels sealed\nat rest and only ever leaves the control plane to the codespace that\nproves it is that machine.",
+        "required": [
+          "config_toml"
+        ],
+        "properties": {
+          "config_toml": {
+            "type": "string",
+            "description": "The daemon's `config.toml`, ready to write."
+          }
+        }
+      },
+      "CodespacesBootstrapRequest": {
+        "type": "object",
+        "description": "Request body of `POST /v1/providers/codespaces/bootstrap`.\n\nCalled by `flycod codespace` — the `postStart` of a running codespace,\nauthenticated by the `GITHUB_TOKEN` the codespace is injected with rather\nthan by a flyco credential: the token proves the caller is the account's\nown compute, and `codespace_name` names which session's configuration it\nis entitled to fetch.",
+        "required": [
+          "codespace_name"
+        ],
+        "properties": {
+          "codespace_name": {
+            "type": "string",
+            "description": "The codespace's own name, from its `CODESPACE_NAME` environment\nvariable — which is also the machine's provider-native id."
           }
         }
       },
@@ -9307,6 +9660,10 @@
           }
         }
       },
+      "FinishCodespacesOauth": {
+        "type": "object",
+        "description": "Request body of `POST /v1/providers/codespaces/oauth/{attempt_id}/finish`.\n\nEmpty where Azure's and Google's are not: a subscription and a project\nare things an account holds many of and the user must pick between,\nwhile a Codespaces link has nothing to choose — flyco creates the one\nprivate repository it provisions on, `flyco-sessions`, inside whichever\nGitHub account signed in."
+      },
       "FinishGcpOauth": {
         "type": "object",
         "description": "Request body of `POST /v1/providers/gcp/oauth/{attempt_id}/finish`.",
@@ -9555,6 +9912,26 @@
               "refresh_token": {
                 "type": "string",
                 "description": "Redeemed for a new set once the access token is near its end."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A Devin API key — the `windsurf_api_key` `devin auth login` writes\ninto `credentials.toml`.",
+            "required": [
+              "key",
+              "kind"
+            ],
+            "properties": {
+              "key": {
+                "type": "string",
+                "description": "The `devi…` key Devin's API server issues."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "devin_api_key"
+                ]
               }
             }
           }
@@ -9826,7 +10203,8 @@
         "required": [
           "feature",
           "claude_code",
-          "codex"
+          "codex",
+          "devin"
         ],
         "properties": {
           "claude_code": {
@@ -9837,6 +10215,10 @@
             "$ref": "#/components/schemas/Availability",
             "description": "Status on Codex."
           },
+          "devin": {
+            "$ref": "#/components/schemas/Availability",
+            "description": "Status on Devin."
+          },
           "feature": {
             "$ref": "#/components/schemas/Feature",
             "description": "The capability."
@@ -9845,10 +10227,11 @@
       },
       "HarnessKind": {
         "type": "string",
-        "description": "The coding harness driving a session. Flyco supports exactly these two\nand never builds its own.",
+        "description": "The coding harness driving a session. Flyco supports exactly these\nand never builds its own.\n\nThis is the *product* vocabulary — what a session row names, what an\naccount is linked to, what the picker offers. How each one is driven\nis [`DriverKind`]'s question: every harness but Claude Code reaches\nits agent over ACP, so a Codex session and a Devin session are the\nsame daemon machinery pointed at a different program.",
         "enum": [
           "claude_code",
-          "codex"
+          "codex",
+          "devin"
         ]
       },
       "HarnessObservation": {
@@ -10162,7 +10545,9 @@
         "type": "string",
         "description": "Why a session lost the machine it was running on.\n\nRecorded beside [`SessionState::Interrupted`] rather than folded into\nit, because the state says the session is off its compute and this says\nwhat the user is looking at: `Interrupted · spot reclaimed` is a status\nflyco is already recovering from, and a status with no reason would read\nas a session somebody has to rescue by hand (docs/ux.md §6).\n\nKept while flyco puts the session back — the recovery runs through\n[`SessionState::Provisioning`], and the reason is what tells that\nprovisioning apart from a first one, which is the whole of `Migrating` —\nand cleared when the session's daemon reaches the control plane again.",
         "enum": [
-          "spot_reclaimed"
+          "spot_reclaimed",
+          "suspended",
+          "machine_lost"
         ]
       },
       "JobOutcome": {
@@ -11278,6 +11663,51 @@
               "service_account_json": {
                 "type": "string",
                 "description": "The whole service-account key document."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A GitHub account, for Codespaces.\n\nThe token is the user's own OAuth access token, granted `repo` and\n`codespace` by the link sign-in — the same credential flyco stores\nagainst the user record, kept here as well because a linked account\nmust carry everything its driver needs and the user's own token is\nwhat the Codespaces API is called with.",
+            "required": [
+              "token",
+              "env_repo",
+              "env_repo_id",
+              "owner_id",
+              "included_core_hours",
+              "kind"
+            ],
+            "properties": {
+              "env_repo": {
+                "type": "string",
+                "description": "The private environment repository every codespace is created\non, `owner/name`.\n\nCreated by flyco at link time, holding only the devcontainer\nthat boots a session machine. A codespace must belong to a\nrepository, and this one being private is what keeps the\nsessions inside it the user's own."
+              },
+              "env_repo_id": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The environment repository's immutable numeric id, which is what\nthe create call names it by.",
+                "minimum": 0
+              },
+              "included_core_hours": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Core-hours of compute the account's plan does not bill for per\nmonth: 120 on GitHub Free, 180 on Pro.\n\nRecorded at link time from the plan `GET /user` reported. A plan\nchange between links is seen on the next one; the grant is per\naccount and per month, so every entry of this catalog shares it.",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "codespaces"
+                ]
+              },
+              "owner_id": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The account's immutable numeric user id — the join key, because\nlogins are renameable."
+              },
+              "token": {
+                "type": "string",
+                "description": "The account's OAuth access token."
               }
             }
           },

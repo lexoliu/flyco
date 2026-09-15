@@ -19,6 +19,70 @@
   gap: var(--space-3);
 }
 
+/* ── The product form, chosen before the size ────────────────────────── */
+
+/* A segmented row on the sunken surface: the chosen segment is raised off
+   it, the way a card's border names the choice on the flow's pages. */
+.forms {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+
+.form {
+  border: 0;
+  border-radius: calc(var(--radius-md) - 3px);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--line-normal);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+  white-space: nowrap;
+}
+
+.form:hover {
+  color: var(--color-text);
+}
+
+.form[aria-checked="true"] {
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── `Auto`: no track, only what flyco would pick ────────────────────── */
+
+/* The same inset the control keeps, so the pick lines up where a machine
+   label would sit once a form is chosen. */
+.auto {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-inline: 10px;
+}
+
+.autoName {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+
+/* The machine `Auto` resolved to — the concrete answer under the word. */
+.autoPick {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── The control ─────────────────────────────────────────────────────── */
 
 .control {
@@ -31,6 +95,13 @@
   flex-direction: column;
   gap: var(--space-2);
   padding-inline: calc(var(--thumb) / 2);
+  /* The reading's and the thumb's travel rows are `translateX`ed off the
+     rail by the travelled share, and a transform counts toward scrollable
+     overflow: past the cheapest detent they would stretch the popover's
+     sheet sideways to hold a row with nothing drawn in it. Clip at this
+     box's edge — the padding above is exactly the thumb's overhang, so the
+     clip never touches ink. */
+  overflow-x: clip;
 }
 
 /* ── The reading, which rides above the thumb ────────────────────────── */

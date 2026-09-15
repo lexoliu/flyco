@@ -43,6 +43,20 @@ const SCOPES_HEADER: &str = "x-oauth-scopes";
 /// OAuth scopes flyco needs: session VMs clone and push the user's repos.
 pub const SCOPE: &str = "repo";
 
+/// OAuth scopes a Codespaces link needs.
+///
+/// `repo` creates the private environment repository and writes its
+/// devcontainer, `codespace` creates and drives the codespaces on it, and
+/// `read:packages` is what lets GitHub pull the private session image into
+/// them — a codespace is created by the account's token before its own
+/// `GITHUB_TOKEN` exists, so the image grant has to ride on this one.
+pub const CODESPACES_SCOPE: &str = "repo codespace read:packages";
+
+/// The one scope of [`CODESPACES_SCOPE`] nothing else in flyco ever asks
+/// for — its presence is what distinguishes a link token from the sign-in
+/// token, so it is checked by name.
+pub const CODESPACE_SCOPE: &str = "codespace";
+
 /// The single scope a session's machine cannot work without.
 ///
 /// `repo` is what lets a clone reach a *private* repository and what lets a
@@ -66,6 +80,20 @@ pub struct GithubUser {
     /// the stale one the day somebody renames themselves.
     #[serde(default)]
     pub name: Option<String>,
+    /// The billing plan the account is on, when GitHub reports one.
+    ///
+    /// Read rather than stored, for the same reason `name` is: the
+    /// Codespaces link translates it into the included core-hours the
+    /// account's provision catalog is priced from, at link time.
+    #[serde(default)]
+    pub plan: Option<GithubPlan>,
+}
+
+/// An account's billing plan, as `GET /user` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct GithubPlan {
+    /// GitHub's plan name — `free`, `pro`, a team tier.
+    pub name: String,
 }
 
 impl GithubUser {
@@ -112,15 +140,25 @@ pub struct GithubIdentity {
 }
 
 impl GithubIdentity {
+    /// Whether GitHub reported this token carrying `scope`.
+    ///
+    /// Scope names are not case-sensitive, and `None` scopes — a credential
+    /// that is not an OAuth token — answer false rather than being guessed
+    /// permissive.
+    #[must_use]
+    pub fn grants_scope(&self, scope: &str) -> bool {
+        self.scopes.as_ref().is_some_and(|scopes| {
+            scopes
+                .iter()
+                .any(|granted| granted.trim().eq_ignore_ascii_case(scope))
+        })
+    }
+
     /// Whether this token can read and push the user's private
     /// repositories.
     #[must_use]
     pub fn grants_repo_scope(&self) -> bool {
-        self.scopes.as_ref().is_some_and(|scopes| {
-            scopes
-                .iter()
-                .any(|scope| scope.trim().eq_ignore_ascii_case(REPO_SCOPE))
-        })
+        self.grants_scope(REPO_SCOPE)
     }
 }
 
@@ -907,6 +945,7 @@ mod tests {
                 id: 4_242,
                 login: "lexoliu".to_owned(),
                 name: Some("Lexo Liu".to_owned()),
+                plan: None,
             },
             scopes,
         }

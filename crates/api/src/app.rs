@@ -7,12 +7,13 @@ use flyco_core::{
     AgentMachineView, ApiKeyId, ApiKeySummary, ApprovalDecision, ApprovalId, ApprovalState,
     ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, EnvDocument,
-    HarnessFeature, HarnessObservation, HarnessSessionView, HarnessTui, MAX_SESSION_TITLE_CHARS,
-    MachineCatalogEntry, MachineOrigin, MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage,
-    RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
-    ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, RunShell, SendMessage,
-    SessionActivity, SessionDetail, SessionId, SessionState, SessionSummary, TerminalInput,
-    TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UsageLimitHit, UserId,
+    HarnessFeature, HarnessObservation, HarnessSessionView, HarnessTui, InterruptedReason,
+    MAX_SESSION_TITLE_CHARS, MachineCatalogEntry, MachineOrigin, MachineSpec, MessageOrigin,
+    ModelChoice, ProvisioningStage, RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage,
+    ReportSpotNotice, ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, RunShell,
+    SendMessage, SessionActivity, SessionDetail, SessionId, SessionState, SessionSummary,
+    TerminalInput, TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UsageLimitHit,
+    UserId,
     wire::{ApprovalPayload, DaemonAttach, DaemonAttached, DaemonFrames},
 };
 use flyco_provider::host::{HostAttach, HostFrames};
@@ -27,6 +28,7 @@ use skyzen_services::{Db, Kv, Queue, Storage};
 
 use crate::authenticator::FlycoAuthenticator;
 use crate::clouds::Clouds;
+use crate::codespaces::Codespaces;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::extract::{Headers, path_id, path_segment};
@@ -39,7 +41,7 @@ use crate::respond::{Accepted, Created, NoContent};
 use crate::rooms::{HostRooms, Rooms, UserStreams};
 use crate::vendors::Vendors;
 use crate::{
-    agents_md, api_keys, approvals, claude_oauth, cli, codex_oauth, daemon_tokens, env,
+    agents_md, api_keys, approvals, claude_oauth, cli, codespaces, codex_oauth, daemon_tokens, env,
     harness_accounts, hosts, idempotency, machines, mcp, memory, oauth, observations, problem,
     provider_accounts, provider_oauth, provisioning, push, relay, releases, repos, responses,
     sessions, skills, transcripts, turns, usage_limits, users, webhooks, workdirs,
@@ -777,6 +779,69 @@ pub async fn archive_idle(
     Ok(())
 }
 
+/// Suspends the machine of every session idle past
+/// [`SUSPEND_AFTER_IDLE_SECS`].
+///
+/// A codespace gets this from GitHub's own idle clock; every other machine
+/// runs — and bills, or holds a user's host resources — until flyco stops
+/// it, so this sweep is that stop. The interruption is the same
+/// [`InterruptedReason::Suspended`] a reconcile writes: the disk is kept,
+/// the next message or resume starts the machine again by name, and the
+/// daemon's own attach returns the session to `active`. One failure does
+/// not stop the rest — a session whose stop was refused is left active and
+/// billing until the next pass, which is the honest answer to a provider
+/// that could not be asked.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the list itself fails.
+pub async fn suspend_idle(
+    db: &Db,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    hosts: &HostRooms,
+    at_unix: u64,
+) -> Result<(), ApiError> {
+    for idle in sessions::suspendable(db, at_unix).await? {
+        if let Err(error) = suspend(db, config, rooms, hosts, &idle).await {
+            tracing::warn!(
+                session = %idle.id,
+                %error,
+                "an idle session's machine was not suspended"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Stops one idle session's machine and marks the session suspended.
+///
+/// The provider call comes first: a refusal leaves everything as it was —
+/// still active, still running — and the next pass asks again. A machine
+/// already deallocated is the gap a pass cut short leaves, or a Stop
+/// button the user pressed themselves: [`machines::stop_for_flyco`]
+/// answers `false` for it and the session write is still owed, so this is
+/// where the interruption is recorded either way.
+async fn suspend(
+    db: &Db,
+    config: &ApiConfig,
+    rooms: &Rooms,
+    hosts: &HostRooms,
+    idle: &sessions::IdleSession,
+) -> Result<(), ApiError> {
+    machines::stop_for_flyco(db, config, hosts, idle.user_id, idle.id).await?;
+    sessions::interrupted(db, idle.id, InterruptedReason::Suspended).await?;
+    rooms
+        .broadcast(
+            db,
+            idle.id,
+            &ClientEvent::SessionStateChanged {
+                state: SessionState::Interrupted,
+            },
+        )
+        .await
+}
+
 /// Reports a session's budget, recomputed from its spend ledger.
 #[skyzen::openapi]
 async fn get_session_budget(
@@ -834,16 +899,19 @@ async fn decide_approval(
     hosts: HostRooms,
     db: Db,
     kv: Kv,
+    queue: Queue,
 ) -> Outcome<Json<ApprovalView>> {
-    settle_approval(&user, &params, request, &config, &rooms, &hosts, &db, &kv)
-        .await
-        .into()
+    settle_approval(
+        &user, &params, request, &config, &rooms, &hosts, &db, &kv, &queue,
+    )
+    .await
+    .into()
 }
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "an approved license-bound resize is a decision and a machine \
-              change in one request"
+    reason = "an approved license-bound resize is a decision, a machine \
+              change and possibly a wake in one request"
 )]
 async fn settle_approval(
     user: &CurrentUser,
@@ -854,6 +922,7 @@ async fn settle_approval(
     hosts: &HostRooms,
     db: &Db,
     kv: &Kv,
+    queue: &Queue,
 ) -> Result<Json<ApprovalView>, ApiError> {
     let id = path_id::<ApprovalId>(params, "id")?;
 
@@ -880,6 +949,12 @@ async fn settle_approval(
         // asleep or evicted costs a round trip, not the answer.
         tracing::warn!(%error, session = %decided.session, "a decided approval did not reach its room");
     }
+
+    // Deciding is activity, and on a suspended session it is also the wake:
+    // the daemon re-reads pending approvals on attach, so the machine has
+    // to be coming back for the answer to reach it.
+    sessions::touch(db, decided.session).await?;
+    wake_interrupted(db, queue, decided.session).await;
 
     perform_approved(
         &decided,
@@ -1239,9 +1314,12 @@ async fn send_message(
     params: Params,
     Json(message): Json<SendMessage>,
     rooms: Rooms,
+    queue: Queue,
     db: Db,
 ) -> Outcome<Accepted> {
-    say(&user, &params, message, &rooms, &db).await.into()
+    say(&user, &params, message, &rooms, &queue, &db)
+        .await
+        .into()
 }
 
 async fn say(
@@ -1249,6 +1327,7 @@ async fn say(
     params: &Params,
     message: SendMessage,
     rooms: &Rooms,
+    queue: &Queue,
     db: &Db,
 ) -> Result<Accepted, ApiError> {
     if message.text.trim().is_empty() {
@@ -1270,7 +1349,8 @@ async fn say(
     // from reclamation, the room's command log carries it to the next
     // attach — which is what the composer means by not gating prompts on
     // a live machine. Everything else a session can be in refuses.
-    match sessions::state_of(db, user.id, id).await? {
+    let state = sessions::state_of(db, user.id, id).await?;
+    match state {
         SessionState::Provisioning | SessionState::Active | SessionState::Interrupted => {}
         state => return Err(ApiError::SessionNotActive { state }),
     }
@@ -1290,7 +1370,82 @@ async fn say(
     // session whose command was refused is never recorded as having heard
     // one — and `drive` has already proved the session is the caller's.
     sessions::record_activity(db, id, SessionActivity::Idle).await?;
+
+    // A message to an interrupted session is also what wakes its machine:
+    // a codespace GitHub suspended starts again, one that was deleted is
+    // provisioned around. Best-effort by place — the message is already
+    // the room's, and every message after this one asks again.
+    if state == SessionState::Interrupted {
+        wake_interrupted(db, queue, id).await;
+    }
     Ok(Accepted)
+}
+
+/// Wakes the machine of a session somebody just spoke to, when it still
+/// can be woken.
+///
+/// [`InterruptedReason::Suspended`] and [`InterruptedReason::MachineLost`]
+/// are the interruptions a message answers: the first starts the codespace
+/// GitHub stopped, the second provisions around one that is not coming
+/// back. A spot reclamation needs nothing here — its recovery was enqueued
+/// where the reclaim was reported — and any other reason is not one speech
+/// fixes. Nothing returns an error: `say` has already accepted the message,
+/// and a failure here is retried by the next one.
+async fn wake_interrupted(db: &Db, queue: &Queue, session: SessionId) {
+    match wake_interrupted_job(db, session).await {
+        Ok(Some(job)) => {
+            if let Err(error) = provisioning_queue::enqueue(queue, job).await {
+                tracing::warn!(%session, %error, "a wake for an interrupted session would not queue");
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(%session, %error, "an interrupted session's wake could not be read");
+        }
+    }
+}
+
+/// The job a message to an interrupted session enqueues, or `None` when the
+/// interruption is not one a message answers.
+async fn wake_interrupted_job(
+    db: &Db,
+    session: SessionId,
+) -> Result<Option<ProvisioningJob>, ApiError> {
+    match sessions::interruption_reason(db, session).await? {
+        Some(InterruptedReason::Suspended) => {
+            match machines::for_session(db, session).await? {
+                // The ordinary case: the codespace is suspended, not gone —
+                // start it.
+                Some(row) if row.native_id.is_some() => Ok(Some(ProvisioningJob::resuming(
+                    session,
+                    row.id,
+                    crate::clock::now_unix(),
+                ))),
+                // The reconcile deleted the codespace between the
+                // interruption and this message: suspend became loss, and
+                // what answers the message is a fresh machine.
+                Some(_) => lost_machine_job(db, session).await.map(Some),
+                None => Ok(None),
+            }
+        }
+        Some(InterruptedReason::MachineLost) => lost_machine_job(db, session).await.map(Some),
+        // A reclamation's recovery was enqueued where it was reported, and
+        // a bare `interrupted` has nothing to wake.
+        _ => Ok(None),
+    }
+}
+
+/// The job that provisions around a machine that is gone for good.
+///
+/// The reason is rewritten to `machine_lost` first — a suspended machine
+/// whose codespace was deleted under it is not suspended any more — then
+/// the session goes back to `provisioning` keeping it, so a watching page
+/// reads `Migrating` rather than claiming a suspend it can wake from.
+async fn lost_machine_job(db: &Db, session: SessionId) -> Result<ProvisioningJob, ApiError> {
+    sessions::machine_lost(db, session).await?;
+    sessions::recovering(db, session).await?;
+    let machine = machines::reset_for_resume(db, session).await?;
+    Ok(ProvisioningJob::first(session, machine))
 }
 
 /// Holds a message against a session that is waiting out a plan window.
@@ -1506,6 +1661,10 @@ async fn drive(
     sessions::require_active(db, user.id, id).await?;
 
     rooms.command(db, id, &command).await?;
+    // The room took the command, so the session was provably in use — a
+    // terminal keystroke is what keeps an interactive machine off the
+    // idle-suspension sweep's list.
+    sessions::touch(db, id).await?;
     tracing::info!(session = %id, command = ?core::mem::discriminant(&command), "drove a session");
     Ok(id)
 }
@@ -1543,11 +1702,23 @@ async fn restart_session(
 ) -> Result<Json<SessionDetail>, ApiError> {
     let id = path_id::<SessionId>(params, "id")?;
     let session = sessions::resume(db, user.id, id).await?;
-    let machine = machines::reset_for_resume(db, id).await?;
+    let row = machines::for_session(db, id)
+        .await?
+        .ok_or(ApiError::MachineNotFound)?;
 
-    if let Err(error) =
-        provisioning_queue::enqueue(queue, ProvisioningJob::first(id, machine)).await
-    {
+    // What a resume asks for depends on whether the provider still holds
+    // the machine the row names. With a native id it may — a suspended
+    // codespace, a deallocated spot instance — and starting it keeps the
+    // disk the session left behind; without one it cannot, and the row is
+    // reset for a fresh provision instead.
+    let job = if row.native_id.is_some() {
+        ProvisioningJob::resumed(id, row.id, crate::clock::now_unix())
+    } else {
+        machines::reset_for_resume(db, id).await?;
+        ProvisioningJob::first(id, row.id)
+    };
+
+    if let Err(error) = provisioning_queue::enqueue(queue, job).await {
         sessions::fail(
             db,
             rooms,
@@ -1558,7 +1729,7 @@ async fn restart_session(
         return Err(error);
     }
 
-    tracing::info!(session = %id, machine = %machine, "resumed a session onto its machine");
+    tracing::info!(session = %id, machine = %row.id, "resumed a session onto its machine");
     Ok(Json(session))
 }
 
@@ -2080,7 +2251,7 @@ async fn reclaim(
     queue: &Queue,
     db: &Db,
 ) -> Result<Accepted, ApiError> {
-    sessions::interrupt_for_spot(db, session).await?;
+    sessions::interrupted(db, session, InterruptedReason::SpotReclaimed).await?;
 
     let machine = machines::for_session(db, session)
         .await?
@@ -2668,6 +2839,7 @@ fn public_routes() -> Vec<RouteNode> {
     nodes.extend(webhooks::routes());
     nodes.extend(hosts::public_routes());
     nodes.extend(provider_oauth::public_routes());
+    nodes.extend(codespaces::public_routes());
     nodes.extend(cli::public_routes());
     nodes
 }
@@ -2936,10 +3108,11 @@ pub fn router(
     github: GithubClient,
     vendors: Vendors,
     clouds: Clouds,
+    codespaces: Codespaces,
     db: Db,
     queue: Queue,
 ) -> Router {
-    configured(config, github, vendors, clouds)
+    configured(config, github, vendors, clouds, codespaces)
         .with(db)
         .with(queue)
         .build()
@@ -2953,12 +3126,19 @@ pub fn router(
 /// [`ClaudeClient`], the Codex routes ask for [`CodexClient`], and the one
 /// place that may renew either — the provisioning consumer — asks for
 /// [`Vendors`].
-fn configured(config: ApiConfig, github: GithubClient, vendors: Vendors, clouds: Clouds) -> Route {
+fn configured(
+    config: ApiConfig,
+    github: GithubClient,
+    vendors: Vendors,
+    clouds: Clouds,
+    codespaces: Codespaces,
+) -> Route {
     with_error_handling(
         with_rooms(Route::new((routes(), frontend())))
             .with(State(config))
             .with(State(github))
             .with(State(clouds))
+            .with(State(codespaces))
             .with(State(vendors.claude.clone()))
             .with(State(vendors.codex.clone()))
             .with(State(vendors.microsoft.clone()))
@@ -2970,12 +3150,18 @@ fn configured(config: ApiConfig, github: GithubClient, vendors: Vendors, clouds:
 /// Worker path: configuration is read from the request's `env`, not at
 /// isolate startup. See [`crate::middleware::LoadApiConfig`].
 #[cfg(target_arch = "wasm32")]
-fn configured_from_request(github: GithubClient, vendors: Vendors, clouds: Clouds) -> Route {
+fn configured_from_request(
+    github: GithubClient,
+    vendors: Vendors,
+    clouds: Clouds,
+    codespaces: Codespaces,
+) -> Route {
     with_error_handling(
         with_rooms(Route::new((routes(), frontend())))
             .with(crate::middleware::LoadApiConfig)
             .with(State(github))
             .with(State(clouds))
+            .with(State(codespaces))
             .with(State(vendors.claude.clone()))
             .with(State(vendors.codex.clone()))
             .with(State(vendors.microsoft.clone()))
@@ -3026,6 +3212,7 @@ pub fn router_from_environment() -> Router {
             GithubClient::default(),
             Vendors::default(),
             Clouds::default(),
+            Codespaces::default(),
         )
         .build()
     }
@@ -3035,6 +3222,7 @@ pub fn router_from_environment() -> Router {
             GithubClient::default(),
             Vendors::default(),
             Clouds::default(),
+            Codespaces::default(),
         )
         .build()
     }

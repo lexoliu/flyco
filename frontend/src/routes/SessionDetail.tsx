@@ -458,6 +458,7 @@ export default function SessionDetail() {
       ? null
       : sessionNotice(view, {
           failure: session()?.failure,
+          interruptedReason: session()?.interrupted_reason,
           budgetLimit: session()?.budget.limit,
           usageLimit: session()?.usage_limit,
           now: now(),
@@ -467,14 +468,21 @@ export default function SessionDetail() {
   /**
    * What the composer says about a message it will not deliver yet.
    *
-   * Only the plan wait has anything to say: every other state that holds a
-   * message — a machine still being built, a daemon reconnecting — delivers
-   * it within the minute, and a line about it would be chrome that appears
-   * and disappears. This wait is measured in hours, so the field says where
-   * the message goes before it is typed rather than after it is sent.
+   * Two states have something to say. The plan wait is measured in hours,
+   * so the field says where the message goes before it is typed rather
+   * than after it is sent. An interrupted session's machine is off until
+   * something wakes it — and the message itself is the wake (docs/ux.md
+   * §9.9), which a reader cannot guess from a field that looks ordinary.
+   * Every other state that holds a message — a machine still being built,
+   * a daemon reconnecting — delivers within the minute, and a line about
+   * it would be chrome that appears and disappears.
    */
   const deferredNote = createMemo(() => {
-    if (status()?.status !== "usage_limit") {
+    const view = status();
+    if (view?.status === "interrupted") {
+      return "Sent when the machine is back";
+    }
+    if (view?.status !== "usage_limit") {
       return undefined;
     }
     const resets = session()?.usage_limit?.resets_at_unix;

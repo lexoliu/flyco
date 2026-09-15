@@ -84,6 +84,14 @@ impl SessionState {
     /// to [`Active`](Self::Active) is the ordinary one every provisioning
     /// session makes when its daemon reaches the control plane.
     ///
+    /// `Provisioning -> Interrupted` is the same fact arriving from the
+    /// other side: a *recovery* runs through `Provisioning`, and the start
+    /// it issued can be the call that learns the machine is gone — a
+    /// codespace deleted while the start was in flight. The session is not
+    /// failed: [`InterruptedReason::MachineLost`] is written beside it, and
+    /// that reason is what tells the next resume to build a fresh machine
+    /// rather than start the one it just lost.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionTransitionError`] when the move is not part of the
@@ -93,7 +101,7 @@ impl SessionState {
             (self, to),
             (
                 Self::Provisioning,
-                Self::Active | Self::Archived | Self::Failed
+                Self::Active | Self::Archived | Self::Failed | Self::Interrupted
             ) | (
                 Self::Paused,
                 Self::Active | Self::Archived | Self::Provisioning
@@ -148,6 +156,20 @@ pub enum InterruptedReason {
     /// configured to stop the machine rather than delete it — so the
     /// session is put back on the same disk rather than rebuilt.
     SpotReclaimed,
+    /// The provider stopped the machine for inactivity.
+    ///
+    /// A Codespace stops itself once its idle timeout passes — no notice
+    /// reaches the daemon, because nothing on the machine is asked. The
+    /// disk is kept exactly as a reclamation's is, so the recovery is the
+    /// same `start` — but nothing automatic asks for one, because a machine
+    /// stopped for being unused should stay stopped until somebody uses it.
+    Suspended,
+    /// The provider no longer holds the machine at all.
+    ///
+    /// A Codespace past its retention period is *deleted*, disk included —
+    /// there is nothing to start, so a resume builds the session a fresh
+    /// machine rather than starting the one it had.
+    MachineLost,
 }
 
 /// Why a session is [`SessionState::Paused`].
@@ -399,6 +421,18 @@ const fn default_spot() -> bool {
 /// A week is long enough that a paused thought is not destroyed overnight,
 /// and short enough that forgotten machines do not sit on a disk forever.
 pub const ARCHIVE_AFTER_IDLE_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// How long an idle session keeps its machine's compute before flyco
+/// suspends it.
+///
+/// A codespace is suspended by GitHub on roughly this clock already; every
+/// other machine — an Azure VM, an AWS spot instance, a container on a
+/// user's own host — bills or holds resources for as long as it runs, so
+/// flyco stops it itself. Thirty minutes is the same allowance GitHub
+/// gives, long enough that reading what a turn produced and thinking about
+/// the next message never loses the machine, and the disk is always kept:
+/// suspension interrupts the session, it does not end it.
+pub const SUSPEND_AFTER_IDLE_SECS: u64 = 30 * 60;
 
 /// How long a session may be built for before flyco calls it failed.
 ///

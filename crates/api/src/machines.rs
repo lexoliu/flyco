@@ -557,7 +557,7 @@ pub async fn destroy_for_archive(
         db,
         "UPDATE machines SET state = {destroyed}, hourly_micros = NULL, \
          storage_hourly_micros = NULL, native_id = NULL, \
-         address = NULL WHERE id = {row.id}"
+         address = NULL, bootstrap_enc = NULL WHERE id = {row.id}"
     )
     .execute()
     .await?;
@@ -581,7 +581,8 @@ pub async fn release_unbuilt(db: &Db, session: SessionId) -> Result<(), ApiError
     sql!(
         db,
         "UPDATE machines SET state = {destroyed}, hourly_micros = NULL, \
-         storage_hourly_micros = NULL WHERE session_id = {session} \
+         storage_hourly_micros = NULL, bootstrap_enc = NULL \
+         WHERE session_id = {session} \
          AND state = {provisioning} AND native_id IS NULL"
     )
     .execute()
@@ -1220,6 +1221,78 @@ pub async fn find(db: &Db, machine: MachineId) -> Result<Option<MachineRow>, Api
     .await?)
 }
 
+/// The machine a codespace names, joined to the account it provisions
+/// through — the bootstrap endpoint's whole read.
+///
+/// There is deliberately no user scoping on this query: the caller is not
+/// a user, it is the codespace itself, and the join is what the endpoint's
+/// own credential check is made against rather than a scope it could be
+/// pre-applied.
+#[derive(Debug, skyzen::FromRow)]
+pub struct CodespaceRow {
+    /// The machine row's own id.
+    pub machine: MachineId,
+    /// Who owns the account — the unseal path is scoped by it.
+    pub user: UserId,
+    /// Which linked account the machine provisions through.
+    pub account: ProviderAccountId,
+    /// The sealed daemon configuration this codespace is asking for.
+    ///
+    /// `NULL` while the provision that writes it is still running — the
+    /// `409` the codespace's own retry is written for.
+    pub bootstrap_enc: Option<String>,
+}
+
+/// Finds the machine a codespace calls itself by.
+///
+/// `native_id` is the codespace's generated name, which is what
+/// `CODESPACE_NAME` reports inside it; the `provider` clause keeps the
+/// lookup honest — a codespace name can only ever name a codespaces
+/// machine, and matching another provider's row would serve one account's
+/// configuration to a token scoped to another's repository.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn codespace(db: &Db, name: &str) -> Result<Option<CodespaceRow>, ApiError> {
+    let provider = CloudProviderKind::Codespaces;
+    Ok(sql!(
+        db,
+        "SELECT machines.id AS machine, provider_accounts.user_id AS user, \
+         machines.provider_account_id AS account, machines.bootstrap_enc \
+         FROM machines JOIN provider_accounts \
+         ON provider_accounts.id = machines.provider_account_id \
+         WHERE machines.native_id = {name} AND machines.provider = {provider}"
+    )
+    .fetch_optional()
+    .await?)
+}
+
+/// Stores the configuration a codespace fetches on `postStart`, sealed
+/// exactly as the account credentials beside it are.
+///
+/// Written by the provision that created the codespace, before the
+/// provider call is even made: the machine may boot and ask before the
+/// provisioning leg has recorded its name, and both halves of that race
+/// are the codespace's own `404`/`409` retries.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn store_bootstrap(
+    db: &Db,
+    machine: MachineId,
+    bootstrap_enc: &str,
+) -> Result<(), ApiError> {
+    sql!(
+        db,
+        "UPDATE machines SET bootstrap_enc = {bootstrap_enc} WHERE id = {machine}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
 /// Every machine still holding resources on one linked account.
 ///
 /// What a host removal counts before it refuses, and what it stops when the
@@ -1321,6 +1394,190 @@ pub async fn deallocate(db: &Db, machine: MachineId) -> Result<(), ApiError> {
         db,
         "UPDATE machines SET state = {deallocated}, compute_metered_at_unix = {now_unix()} \
          WHERE id = {machine}"
+    )
+    .execute()
+    .await?;
+    Ok(())
+}
+
+// ── What the Codespaces reconcile writes ──
+//
+// GitHub suspends a codespace on its own idle clock and deletes it on its
+// own retention clock, and neither is delivered to anything flyco runs.
+// The only truth about whether one still exists is `GET
+// /user/codespaces/{name}`, so `crate::codespaces::reconcile` asks it of
+// every machine below and these are the writes its answers produce.
+
+/// A codespace flyco believes it is holding, joined to what the reconcile
+/// needs to know about the session on it.
+#[derive(Debug, skyzen::FromRow)]
+pub struct HeldCodespace {
+    /// The machine row's own id.
+    pub machine: MachineId,
+    /// The session it serves.
+    pub session: SessionId,
+    /// Who owns it — the linked account is unsealed under this id.
+    pub user_id: UserId,
+    /// Which linked account the machine provisions through.
+    pub account: ProviderAccountId,
+    /// The codespace's generated name — never `NULL` in this set, because a
+    /// machine GitHub has not yet named has nothing to reconcile.
+    pub native_id: String,
+    /// What flyco last recorded of the machine's lifecycle.
+    pub machine_state: MachineState,
+    /// What the session on it is doing.
+    pub session_state: flyco_core::SessionState,
+    /// The codespace's geography, which its create request named it by.
+    region: String,
+    /// Whether it was provisioned on interruptible capacity. Codespaces has
+    /// none, so this is always `false` — kept so the provider machine the
+    /// row rebuilds is honest rather than derived.
+    spot: bool,
+    /// The codespace's `github.com/codespaces/{name}` URL.
+    address: Option<String>,
+}
+
+impl HeldCodespace {
+    /// This codespace as a driver takes it, for the delete a reconcile
+    /// issues against one GitHub still holds in a dead state.
+    #[must_use]
+    pub fn as_provider_machine(&self) -> flyco_provider::Machine {
+        flyco_provider::Machine {
+            id: self.machine,
+            native_id: self.native_id.clone(),
+            runtime: Runtime::Vm,
+            region: self.region.clone(),
+            state: self.machine_state,
+            capacity_mode: if self.spot {
+                flyco_provider::CapacityMode::Spot
+            } else {
+                flyco_provider::CapacityMode::OnDemand
+            },
+            address: self.address.clone(),
+        }
+    }
+}
+
+/// Every codespace machine worth asking GitHub about, once per sweep.
+///
+/// Held means *exists and bills*: a machine still being built is the
+/// provisioning queue's concern, a destroyed one is already released, and
+/// a session in anything past `interrupted` has had its machine dealt with
+/// by the path that ended it. A `paused` session's machine is selected
+/// deliberately: its suspension changes the machine's billing either way.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn held_codespaces(db: &Db) -> Result<Vec<HeldCodespace>, ApiError> {
+    let provider = CloudProviderKind::Codespaces;
+    let running = MachineState::Running;
+    let deallocated = MachineState::Deallocated;
+    let active = flyco_core::SessionState::Active;
+    let paused = flyco_core::SessionState::Paused;
+    let interrupted = flyco_core::SessionState::Interrupted;
+    Ok(sql!(
+        db,
+        "SELECT machines.id AS machine, machines.session_id AS session, \
+         sessions.user_id, machines.provider_account_id AS account, \
+         machines.native_id, machines.state AS machine_state, \
+         sessions.state AS session_state, machines.region, machines.spot, \
+         machines.address \
+         FROM machines JOIN sessions ON sessions.id = machines.session_id \
+         WHERE machines.provider = {provider} AND machines.native_id IS NOT NULL \
+         AND (machines.state = {running} OR machines.state = {deallocated}) \
+         AND (sessions.state = {active} OR sessions.state = {paused} \
+              OR sessions.state = {interrupted})"
+    )
+    .fetch_all()
+    .await?)
+}
+
+/// Records that the provider suspended a machine it was holding.
+///
+/// The reconcile's write for a codespace GitHub stopped on its own: the
+/// compute meter ends here — GitHub stopped billing when it suspended, not
+/// when flyco noticed, so what little gap remains is the floor the
+/// one-minute windows already truncate — and the storage meter is left
+/// alone, because the disk is kept and billed either way. Guarded on
+/// `running` so a machine already off compute is not suspended a second
+/// time, and the boolean is how the caller tells "learned" from "already
+/// knew".
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn suspended(db: &Db, machine: MachineId) -> Result<bool, ApiError> {
+    let running = MachineState::Running;
+    let deallocated = MachineState::Deallocated;
+    let written = sql!(
+        db,
+        "UPDATE machines SET state = {deallocated}, \
+         compute_metered_at_unix = {now_unix()} \
+         WHERE id = {machine} AND state = {running}"
+    )
+    .execute()
+    .await?;
+    Ok(written.rows_written > 0)
+}
+
+/// Records that a machine off compute is running again.
+///
+/// The reconcile's write for a suspended codespace somebody started
+/// themselves — through github.com, say, where a session's codespace is one
+/// click. The compute meter restarts from the instant the run is learned,
+/// which under-bills by at most a sweep's worth of minutes, and the
+/// session's own state is *not* moved here: only the daemon's attach
+/// proves the machine is serving, so the session's move back is
+/// [`sessions::daemon_arrived`]'s.
+///
+/// Guarded on `deallocated` so a stale "running" answer cannot un-destroy
+/// a machine, and the boolean is how the caller tells whether anything
+/// changed.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn note_running(db: &Db, machine: MachineId) -> Result<bool, ApiError> {
+    let running = MachineState::Running;
+    let deallocated = MachineState::Deallocated;
+    let now = now_unix();
+    let written = sql!(
+        db,
+        "UPDATE machines SET state = {running}, \
+         compute_meter_started_at_unix = {now}, compute_metered_at_unix = {now} \
+         WHERE id = {machine} AND state = {deallocated}"
+    )
+    .execute()
+    .await?;
+    Ok(written.rows_written > 0)
+}
+
+/// Records that a machine's provider-side resource is gone for good.
+///
+/// [`destroy_for_archive`]'s write without its provider call, which is the
+/// whole of the difference: the resource this row named is already gone —
+/// deleted past its retention, failed past starting, or left behind on an
+/// account flyco can no longer unseal — and asking for it again is how that
+/// was learned. Everything billable is released with it, because nothing is
+/// left to bill against, and the provider-native names are cleared so a
+/// resume reads `native_id IS NULL` and provisions rather than starting a
+/// name that answers 404.
+///
+/// Guarded on not-`destroyed` so a redelivery cannot clear a machine that
+/// was rebuilt in the meantime.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn mark_lost(db: &Db, machine: MachineId) -> Result<(), ApiError> {
+    let destroyed = MachineState::Destroyed;
+    sql!(
+        db,
+        "UPDATE machines SET state = {destroyed}, hourly_micros = NULL, \
+         storage_hourly_micros = NULL, native_id = NULL, \
+         address = NULL, bootstrap_enc = NULL \
+         WHERE id = {machine} AND state != {destroyed}"
     )
     .execute()
     .await?;
@@ -1472,7 +1729,7 @@ pub async fn reset_for_resume(db: &Db, session: SessionId) -> Result<MachineId, 
 
     sql!(
         db,
-        "UPDATE machines SET state = {provisioning} WHERE id = {row.id}"
+        "UPDATE machines SET state = {provisioning}, bootstrap_enc = NULL WHERE id = {row.id}"
     )
     .execute()
     .await?;

@@ -40,9 +40,9 @@ const COLLECTION_PLACEHOLDER: &str = "Vec";
 /// * `204` and `202` answers — a revocation, a delete, a command handed to a
 ///   session's daemon — carry a status and nothing else.
 /// * `oauth::callback` answers `303`: the body of a redirect is not what the
-///   caller reads. So do `provider_oauth::azure_callback` and
-///   `provider_oauth::gcp_callback`, which additionally answer `303` when
-///   they *fail* — their caller is a browser mid-navigation, and a problem
+///   caller reads. So do `provider_oauth`'s three callbacks — `azure`,
+///   `gcp`, and `codespaces` — which additionally answer `303` when they
+///   *fail*: their caller is a browser mid-navigation, and a problem
 ///   document rendered into a tab is a dead end.
 /// * `app::open_daemon_commands`, `app::open_host_commands` and
 ///   `app::open_event_stream` answer `200` with a `text/event-stream` body
@@ -102,6 +102,7 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::oauth::callback",
     "flyco_api::provider_accounts::unlink_provider",
     "flyco_api::provider_oauth::azure_callback",
+    "flyco_api::provider_oauth::codespaces_callback",
     "flyco_api::provider_oauth::gcp_callback",
     "flyco_api::push::unsubscribe_push",
     "flyco_api::skills::delete_skill",

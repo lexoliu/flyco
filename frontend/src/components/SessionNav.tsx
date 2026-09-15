@@ -145,7 +145,7 @@ export default function SessionNav(props: SessionNavProps) {
                             current()?.params.id === session.id && styles.rowCurrent,
                           )}
                           onClick={() => props.onNavigate?.()}
-                          title={`${session.title} — ${status.label}`}
+                          title={`${session.title} — ${status.detail === undefined ? status.label : `${status.label} · ${status.detail}`}`}
                         >
                           {/*
                             A colour, and no motion. The rail sits in the

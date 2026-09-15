@@ -17,7 +17,10 @@ use crate::rooms::{NativeRooms, Rooms};
 use crate::testing::{
     SSH_HOST, machine_choice, migrated_router, seed_other_user, seed_provider_account, seed_user,
 };
-use crate::{app, approvals, budgets, harness_accounts, metering, session, sessions, testing};
+use crate::{
+    app, approvals, budgets, harness_accounts, machines, metering, session, sessions, testing,
+    usage_limits,
+};
 
 const REPO: &str = "lexoliu/flyco";
 
@@ -685,6 +688,405 @@ async fn an_idle_session_is_archived_automatically(ctx: TestContext, kv: Kv, db:
         .await
         .json();
     assert_eq!(archived.summary.state, SessionState::Archived);
+}
+
+// ── The idle suspension sweep ──
+//
+// `archive_idle` gives a session a week; `suspend_idle` gives its machine
+// thirty minutes. A codespace is suspended by GitHub on roughly that clock
+// already — every other machine is suspended by flyco, here, through the
+// same lifecycle operation the Stop button performs.
+
+/// A live session on a machine the provider already built, the shape
+/// [`sessions::suspendable`] selects.
+async fn on_a_machine(
+    db: &Db,
+    hosts: &crate::rooms::HostRooms,
+    rooms: &Rooms,
+    state: MachineState,
+) -> (CurrentUser, SessionId) {
+    testing::migrate(db).await;
+    let user = seed_user(db).await;
+    let session = testing::seed_session(db, &user).await;
+    let (host, account) = testing::seed_host_account(db, user.id).await;
+    let choice = machine_choice(account);
+    let machine = machines::reserve(
+        db,
+        session,
+        account,
+        &flyco_core::MachineSpec {
+            provider: flyco_core::CloudProviderKind::Host,
+            machine_type: choice.machine_type,
+            runtime: choice.runtime,
+            region: choice.region,
+            spot: choice.spot,
+            disk_gib: choice.disk_gib,
+        },
+    )
+    .await
+    .expect("reserve the machine");
+    let native = format!("flyco-{machine}");
+    sql!(
+        db,
+        "UPDATE machines SET state = {state}, native_id = {native} WHERE id = {machine}"
+    )
+    .execute()
+    .await
+    .expect("record what the provider built");
+    sessions::daemon_arrived(db, rooms, session)
+        .await
+        .expect("the daemon is live");
+    // The stop is a job posted to the host's room, which has to be
+    // connected to take it — the attach is what `require_host_online`
+    // sees.
+    hosts
+        .attach(
+            host,
+            &flyco_provider::host::HostAttach {
+                facts: Box::new(testing::host_facts()),
+            },
+        )
+        .await
+        .expect("the host is attached to its room");
+    (user, session)
+}
+
+/// Backdates a session's activity clock past the suspend threshold.
+async fn idle(db: &Db, session: SessionId) {
+    let cutoff = crate::clock::now_unix() - flyco_core::SUSPEND_AFTER_IDLE_SECS - 1;
+    sql!(
+        db,
+        "UPDATE sessions SET last_active_unix = {cutoff} WHERE id = {session}"
+    )
+    .execute()
+    .await
+    .expect("backdate idle time");
+}
+
+#[skyzen::test]
+async fn an_idle_sessions_machine_is_suspended_with_its_disk_kept(_ctx: TestContext, db: Db) {
+    let hosts = testing::test_host_rooms();
+    let rooms = crate::testing::test_rooms();
+    let (user, session) = on_a_machine(&db, &hosts, &rooms, MachineState::Running).await;
+    idle(&db, session).await;
+
+    let config = testing::test_config();
+    app::suspend_idle(&db, &config, &rooms, &hosts, crate::clock::now_unix())
+        .await
+        .expect("the sweep runs");
+
+    let machine = machines::for_session(&db, session)
+        .await
+        .expect("read the machine")
+        .expect("the session has one");
+    assert_eq!(machine.state, MachineState::Deallocated, "compute released");
+    assert!(
+        machine.native_id.is_some(),
+        "the disk — and the name that starts it again — is kept"
+    );
+
+    let detail = sessions::find(&db, user.id, session)
+        .await
+        .expect("read the session");
+    assert_eq!(detail.summary.state, SessionState::Interrupted);
+    assert_eq!(
+        detail.summary.interrupted_reason,
+        Some(flyco_core::InterruptedReason::Suspended),
+        "the reason is what a message or a resume reads to wake it"
+    );
+
+    let events = rooms
+        .events(session, 0)
+        .await
+        .expect("read the room's stream")
+        .events;
+    assert!(
+        events.iter().any(|stored| matches!(
+            serde_json::from_value::<flyco_core::ClientEvent>(stored.event.clone()),
+            Ok(flyco_core::ClientEvent::SessionStateChanged {
+                state: SessionState::Interrupted
+            })
+        )),
+        "the session's watchers are told: {events:?}"
+    );
+
+    // And a second pass — Cloudflare overlaps crons — finds nothing to do:
+    // an interrupted session is not in the set.
+    app::suspend_idle(&db, &config, &rooms, &hosts, crate::clock::now_unix())
+        .await
+        .expect("the sweep runs again");
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Interrupted
+    );
+}
+
+#[skyzen::test]
+async fn a_session_mid_turn_keeps_its_machine(_ctx: TestContext, db: Db) {
+    let hosts = testing::test_host_rooms();
+    let rooms = crate::testing::test_rooms();
+    let (user, session) = on_a_machine(&db, &hosts, &rooms, MachineState::Running).await;
+    sessions::record_activity(&db, session, flyco_core::SessionActivity::Working)
+        .await
+        .expect("a turn is in flight");
+    idle(&db, session).await;
+
+    app::suspend_idle(
+        &db,
+        &testing::test_config(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs");
+
+    let detail = sessions::find(&db, user.id, session)
+        .await
+        .expect("read the session");
+    assert_eq!(
+        detail.summary.state,
+        SessionState::Active,
+        "a suspension that killed the agent mid-answer would lose the work"
+    );
+    assert_eq!(
+        machines::for_session(&db, session)
+            .await
+            .expect("read the machine")
+            .expect("the session has one")
+            .state,
+        MachineState::Running
+    );
+}
+
+#[skyzen::test]
+async fn a_session_still_in_conversation_keeps_its_machine(_ctx: TestContext, db: Db) {
+    let hosts = testing::test_host_rooms();
+    let rooms = crate::testing::test_rooms();
+    let (user, session) = on_a_machine(&db, &hosts, &rooms, MachineState::Running).await;
+
+    app::suspend_idle(
+        &db,
+        &testing::test_config(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs");
+
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Active,
+        "thirty minutes has not passed"
+    );
+    assert_eq!(
+        machines::for_session(&db, session)
+            .await
+            .expect("read the machine")
+            .expect("the session has one")
+            .state,
+        MachineState::Running
+    );
+}
+
+/// The crash gap and the Stop button are the same shape — an active
+/// session on a machine already off — and the sweep owes it the session
+/// write the stop never made.
+#[skyzen::test]
+async fn a_machine_stopped_underneath_an_idle_session_is_recorded_suspended(
+    _ctx: TestContext,
+    db: Db,
+) {
+    let hosts = testing::test_host_rooms();
+    let rooms = crate::testing::test_rooms();
+    let (user, session) = on_a_machine(&db, &hosts, &rooms, MachineState::Deallocated).await;
+    idle(&db, session).await;
+
+    app::suspend_idle(
+        &db,
+        &testing::test_config(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs");
+
+    let detail = sessions::find(&db, user.id, session)
+        .await
+        .expect("read the session");
+    assert_eq!(detail.summary.state, SessionState::Interrupted);
+    assert_eq!(
+        detail.summary.interrupted_reason,
+        Some(flyco_core::InterruptedReason::Suspended)
+    );
+}
+
+/// A pause is its own mechanism with its own machine decision — a kept
+/// machine is kept because the reset is near, and the suspend sweep is
+/// not a second opinion about it.
+#[skyzen::test]
+async fn a_paused_sessions_machine_is_the_usage_limit_sweeps_call(_ctx: TestContext, db: Db) {
+    let hosts = testing::test_host_rooms();
+    let rooms = crate::testing::test_rooms();
+    let (user, session) = on_a_machine(&db, &hosts, &rooms, MachineState::Running).await;
+    let config = testing::test_config();
+    let resets_at = crate::clock::now_unix() + 12 * 60;
+    usage_limits::pause(
+        &db,
+        &config,
+        &rooms,
+        session,
+        &flyco_core::UsageWindow::new(
+            Some(300),
+            None,
+            100,
+            Some(i64::try_from(resets_at).expect("a reset time fits")),
+        ),
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the limit is recorded");
+    idle(&db, session).await;
+
+    app::suspend_idle(&db, &config, &rooms, &hosts, crate::clock::now_unix())
+        .await
+        .expect("the sweep runs");
+
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Paused
+    );
+    assert_eq!(
+        machines::for_session(&db, session)
+            .await
+            .expect("read the machine")
+            .expect("the session has one")
+            .state,
+        MachineState::Running,
+        "its reset is twelve minutes out — stopping it buys nothing"
+    );
+}
+
+/// A machine that cannot be asked — its host is not connected — leaves
+/// the session alone, and the next pass asks again.
+#[skyzen::test]
+async fn an_offline_hosts_machine_is_left_for_the_next_pass(_ctx: TestContext, db: Db) {
+    let rooms = crate::testing::test_rooms();
+    // The host is seeded and the machine built on one rooms instance, then
+    // the sweep runs against one that never saw the attach — what a room
+    // holding no connection reports.
+    let attached = testing::test_host_rooms();
+    let (user, session) = on_a_machine(&db, &attached, &rooms, MachineState::Running).await;
+    idle(&db, session).await;
+
+    app::suspend_idle(
+        &db,
+        &testing::test_config(),
+        &rooms,
+        &testing::test_host_rooms(),
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("one unreachable host does not stop the sweep");
+
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Active
+    );
+    assert_eq!(
+        machines::for_session(&db, session)
+            .await
+            .expect("read the machine")
+            .expect("the session has one")
+            .state,
+        MachineState::Running
+    );
+}
+
+/// An approval answered on a suspended session is a wake, because the
+/// daemon that re-reads it has no machine until one is started.
+#[skyzen::test]
+async fn a_decision_on_a_suspended_sessions_approval_wakes_its_machine(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    let hosts = testing::test_host_rooms();
+    let rooms = crate::testing::test_rooms();
+    let (user, session) = on_a_machine(&db, &hosts, &rooms, MachineState::Running).await;
+    idle(&db, session).await;
+    app::suspend_idle(
+        &db,
+        &testing::test_config(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep suspends it");
+
+    let approval = approvals::raise(
+        &db,
+        session,
+        &flyco_core::wire::ApprovalPayload::HistoryRewrite {
+            repo: REPO.to_owned(),
+            branch: BRANCH.to_owned(),
+            description: "rebase the three commits".to_owned(),
+        },
+    )
+    .await
+    .expect("raise an approval");
+
+    let backend = skyzen_test::mock::InMemoryQueue::new();
+    let client = ctx.client(testing::test_router(
+        db.clone(),
+        skyzen_services::Queue::new(backend.clone()),
+    ));
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+    client
+        .post(&format!("/v1/approvals/{approval}/decision"))
+        .bearer(&token)
+        .json(&flyco_core::DecideApproval {
+            decision: flyco_core::wire::ApprovalDecision::Approved,
+        })
+        .send()
+        .await
+        .assert_status(200);
+
+    let jobs: Vec<crate::provisioning_queue::ProvisioningJob> = backend
+        .messages()
+        .iter()
+        .map(|body| serde_json::from_slice(body).expect("a queued provisioning job"))
+        .collect();
+    assert!(
+        jobs.iter().any(|job| matches!(
+            job,
+            crate::provisioning_queue::ProvisioningJob::Recover {
+                session: queued,
+                cause: crate::provisioning_queue::RecoveryCause::Suspended,
+                ..
+            } if *queued == session
+        )),
+        "the decision started the machine back: {jobs:?}"
+    );
 }
 
 #[skyzen::test]

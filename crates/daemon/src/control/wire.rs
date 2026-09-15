@@ -1190,27 +1190,7 @@ impl<
 
     async fn dispatch(&mut self, command: ControlToDaemon) -> Result<Ended, WireError> {
         match command {
-            ControlToDaemon::UserMessage { text, .. } => {
-                if self.refuse_while_paused("a user message")
-                    || self.refuse_while_reclaiming("a user message")
-                {
-                    return Ok(Ended::Disconnected);
-                }
-                // The opening notice rides on the first message rather than
-                // arriving as one of its own: the agent must know what
-                // machine it is on before it starts working, and a message
-                // carrying only that would open a turn about nothing.
-                let text = match self.opening.take() {
-                    Some(notice) => OpeningMessage { notice, text }
-                        .render()
-                        .map_err(|error| notice_failed(&error))?,
-                    None => text,
-                };
-                self.session
-                    .send_user_message(text)
-                    .await
-                    .map_err(harness)?;
-            }
+            ControlToDaemon::UserMessage { text, .. } => self.user_message(text).await?,
             ControlToDaemon::ShellCommand { .. } => {
                 // The room reissues a browser's request as `RunShell` with
                 // the identity it assigned; an unidentified one reaching a
@@ -1310,25 +1290,7 @@ impl<
                 spot,
                 restarted,
             } => {
-                // Told rather than discovered: a resize restarts the machine
-                // and kills this process, so the daemon reading this is a
-                // new one whose configuration still describes the machine
-                // the session booted on. The size and any licence minimum
-                // are deliberately not on the wire — the notice says what
-                // the machine is now and what the restart cost, and
-                // `machine_status` is where the full description is read
-                // from, live.
-                let notice = MachineChanged {
-                    line: MachineLine::of(&SessionMachine {
-                        machine_type,
-                        hourly,
-                        spot,
-                        capacity: None,
-                        minimum: None,
-                    }),
-                    restarted,
-                };
-                self.tell_the_agent(&notice.render().map_err(|error| notice_failed(&error))?)
+                self.machine_changed(machine_type, hourly, spot, restarted)
                     .await?;
             }
             ControlToDaemon::InspectWorkdir { id, request } => self.answer_workdir(id, request),
@@ -1342,6 +1304,57 @@ impl<
             }
         }
         Ok(Ended::Disconnected)
+    }
+
+    /// Sends one user message into the harness.
+    ///
+    /// The opening notice rides on the first message rather than arriving
+    /// as one of its own: the agent must know what machine it is on before
+    /// it starts working, and a message carrying only that would open a
+    /// turn about nothing.
+    async fn user_message(&mut self, text: String) -> Result<(), WireError> {
+        if self.refuse_while_paused("a user message")
+            || self.refuse_while_reclaiming("a user message")
+        {
+            return Ok(());
+        }
+        let text = match self.opening.take() {
+            Some(notice) => OpeningMessage { notice, text }
+                .render()
+                .map_err(|error| notice_failed(&error))?,
+            None => text,
+        };
+        self.session.send_user_message(text).await.map_err(harness)
+    }
+
+    /// Tells the agent its machine changed.
+    ///
+    /// Told rather than discovered: a resize restarts the machine and
+    /// kills this process, so the daemon reading this is a new one whose
+    /// configuration still describes the machine the session booted on.
+    /// The size and any licence minimum are deliberately not on the wire —
+    /// the notice says what the machine is now and what the restart cost,
+    /// and `machine_status` is where the full description is read from,
+    /// live.
+    async fn machine_changed(
+        &self,
+        machine_type: String,
+        hourly: Option<Usd>,
+        spot: bool,
+        restarted: bool,
+    ) -> Result<(), WireError> {
+        let notice = MachineChanged {
+            line: MachineLine::of(&SessionMachine {
+                machine_type,
+                hourly,
+                spot,
+                capacity: None,
+                minimum: None,
+            }),
+            restarted,
+        };
+        self.tell_the_agent(&notice.render().map_err(|error| notice_failed(&error))?)
+            .await
     }
 
     /// Reads the checkout for a browser, on a task of its own.

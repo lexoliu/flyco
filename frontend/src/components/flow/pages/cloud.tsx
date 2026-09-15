@@ -17,6 +17,7 @@ import ProblemNotice from "../../ProblemNotice";
 import { useReadiness } from "../../Readiness";
 import {
   finishAzureOauth,
+  finishCodespacesOauth,
   finishGcpOauth,
   pollProviderOauth,
   startProviderOauth,
@@ -62,12 +63,21 @@ const VENDOR: Record<
     choiceLede:
       "Flyco creates its service account here and builds machines in it.",
   },
+  codespaces: {
+    name: "GitHub",
+    signIn: "Sign in with GitHub",
+    lede: "GitHub's own sign-in page opens in a new tab — the same account flyco signs you in with, asked this time for its Codespaces. Flyco creates one private repository, flyco-sessions, to carry the session image; sessions run inside your account's own codespaces and spend its monthly free hours first.",
+    // Codespaces' finish takes no choice; these fields go unread.
+    choice: "",
+    choiceLede: "",
+  },
 };
 
 export const CloudSignIn: PageComponent<{
   id: "cloud-sign-in";
   provider: ConsentCloud;
 }> = (props) => {
+  const readiness = useReadiness();
   const vendor = VENDOR[props.page.provider];
   const [attempt, setAttempt] = createSignal<string | null>(null);
   const [failure, setFailure] = createSignal<unknown>(null);
@@ -89,6 +99,14 @@ export const CloudSignIn: PageComponent<{
         return;
       }
       if (progress.state === "authorized") {
+        if (props.page.provider === "codespaces") {
+          // Nothing to choose: the finish creates the environment
+          // repository and links the account in one call.
+          await finishCodespacesOauth(attemptId);
+          await readiness.refresh();
+          props.advance({});
+          return;
+        }
         const consent: CloudConsent = {
           attemptId,
           account: progress.account,
@@ -155,24 +173,28 @@ export const CloudSignIn: PageComponent<{
               <p class={styles.error} role="alert">
                 {vendor.name} did not grant the sign-in: {reason()}
               </p>
-              <p class={styles.hint}>
-                If your organization needs an administrator to approve apps like
-                flyco, Cloud Shell needs no approval.
-              </p>
+              <Show when={props.page.provider !== "codespaces"}>
+                <p class={styles.hint}>
+                  If your organization needs an administrator to approve apps
+                  like flyco, Cloud Shell needs no approval.
+                </p>
+              </Show>
             </>
           )}
         </Show>
-        <QuietLink
-          onClick={() =>
-            props.advance({
-              cloudRoute: "cloud-shell",
-              cloudConsent: null,
-              cloudChoice: null,
-            })
-          }
-        >
-          Use Cloud Shell instead
-        </QuietLink>
+        <Show when={props.page.provider !== "codespaces"}>
+          <QuietLink
+            onClick={() =>
+              props.advance({
+                cloudRoute: "cloud-shell",
+                cloudConsent: null,
+                cloudChoice: null,
+              })
+            }
+          >
+            Use Cloud Shell instead
+          </QuietLink>
+        </Show>
       </>
     ),
     primary,

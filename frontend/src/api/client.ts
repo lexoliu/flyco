@@ -840,10 +840,10 @@ export async function pollCodexOauth(
   return { state: "pending" };
 }
 
-// --- /v1/providers/{azure,gcp}/oauth ---------------------------------------------
+// --- /v1/providers/{azure,gcp,codespaces}/oauth -----------------------------------
 
 /** The clouds whose own consent screen links an account. */
-export type ConsentCloudKind = "azure" | "gcp";
+export type ConsentCloudKind = "azure" | "gcp" | "codespaces";
 
 /** `POST /v1/providers/{cloud}/oauth/start`. */
 export type ProviderOauthStart = Schemas["ProviderOauthStart"];
@@ -885,6 +885,21 @@ export async function finishGcpOauth(
   return requestJson("POST", `/v1/providers/gcp/oauth/${attemptId}/finish`, {
     json: body,
   });
+}
+
+/**
+ * Links the GitHub account the consent came back with: the environment
+ * repository is created control-plane side, so there is nothing left to
+ * choose.
+ */
+export async function finishCodespacesOauth(
+  attemptId: string,
+): Promise<ProviderAccountView> {
+  return requestJson(
+    "POST",
+    `/v1/providers/codespaces/oauth/${attemptId}/finish`,
+    { json: {} },
+  );
 }
 
 // --- /v1/memory ----------------------------------------------------------------

@@ -23,7 +23,7 @@ import InstructionsSection from "../routes/settings/InstructionsSection";
 import AccountSection from "../routes/settings/AccountSection";
 import NotFound from "../routes/NotFound";
 import { HOST_ENROLL_COMMAND } from "./setup";
-import { command, route } from "../components/flow/testSupport";
+import { command, route, type } from "../components/flow/testSupport";
 import { consumePostLoginPath } from "../lib/postLoginPath";
 import { clearSessionToken, setSessionToken } from "../lib/session";
 import { dismissWelcome } from "../lib/localPreferences";
@@ -728,6 +728,109 @@ describe("route smoke tests", () => {
     expect(queryByLabelText("Message the agent")).not.toBeInTheDocument();
   });
 
+  it("keeps a suspended session's composer open, because the message is the wake", async () => {
+    // docs/ux.md §9.9: an interrupted session is the one stopped state
+    // that still takes a message — sending is what starts the machine.
+    const base = vi.mocked(fetch).getMockImplementation();
+    const sent: string[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && url.pathname === "/v1/sessions/abc-123/messages") {
+        sent.push(String(init?.body ?? ""));
+        return new Response(null, { status: 204 });
+      }
+      if (method !== "GET") {
+        return base!(input, init);
+      }
+      if (/^\/v1\/sessions\/[^/]+$/.test(url.pathname)) {
+        const response = await base!(input, init);
+        const session = (await response.json()) as Record<string, unknown>;
+        return new Response(
+          JSON.stringify({
+            ...session,
+            state: "interrupted",
+            activity: "idle",
+            interrupted_reason: "suspended",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (/^\/v1\/sessions\/[^/]+\/machine$/.test(url.pathname)) {
+        const response = await base!(input, init);
+        const machine = (await response.json()) as Record<string, unknown>;
+        return new Response(JSON.stringify({ ...machine, state: "deallocated" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return base!(input, init);
+    });
+
+    const { findByRole, findByText, getByLabelText } = renderAt("/sessions/abc-123");
+
+    const state = await findByRole("region", { name: "Session state" });
+    expect(state.textContent).toContain("Interrupted · suspended");
+    expect(state.textContent).toContain("the disk is kept");
+
+    // The composer stays open under the notice and says where the message
+    // goes before it is typed.
+    const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
+    expect(await findByText("Sent when the machine is back")).toBeInTheDocument();
+
+    type(field, "pick up where you left off");
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(JSON.parse(sent[0] ?? "{}")).toEqual({
+      text: "pick up where you left off",
+    });
+  });
+
+  it("refuses a shell command while the suspended session's machine is off", async () => {
+    // A `!` is delivered or nothing — it cannot be held the way a prompt
+    // is, so the composer says so rather than sending it to die (§9.9).
+    const base = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method !== "GET") {
+        return base!(input, init);
+      }
+      if (/^\/v1\/sessions\/[^/]+$/.test(url.pathname)) {
+        const response = await base!(input, init);
+        const session = (await response.json()) as Record<string, unknown>;
+        return new Response(
+          JSON.stringify({
+            ...session,
+            state: "interrupted",
+            activity: "idle",
+            interrupted_reason: "suspended",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (/^\/v1\/sessions\/[^/]+\/machine$/.test(url.pathname)) {
+        const response = await base!(input, init);
+        const machine = (await response.json()) as Record<string, unknown>;
+        return new Response(JSON.stringify({ ...machine, state: "deallocated" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return base!(input, init);
+    });
+
+    const { findByRole, findByText, getByLabelText } = renderAt("/sessions/abc-123");
+    await findByRole("region", { name: "Session state" });
+
+    const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
+    type(field, "!cargo test");
+    expect(
+      await findByText("The machine is not connected — there is no bash to run it."),
+    ).toBeInTheDocument();
+  });
+
   it("keeps the session's side panels behind the collapsed drawer", async () => {
     const { findByText, queryByLabelText, getByLabelText } =
       renderAt("/sessions/abc-123");
@@ -853,7 +956,7 @@ describe("route smoke tests", () => {
     expect(getAllByText("Claude Code").length).toBeGreaterThan(0);
     expect(getAllByText("Codex").length).toBeGreaterThan(0);
     expect(getByText("What works on each harness")).toBeInTheDocument();
-    expect(getAllByText("Not linked")).toHaveLength(2);
+    expect(getAllByText("Not linked")).toHaveLength(3);
   });
 
   it("renders /settings/compute as an empty state with its one action", async () => {

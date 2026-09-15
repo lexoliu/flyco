@@ -37,8 +37,15 @@ export type AgentRoute =
 /** How a cloud with a consent screen is being linked. */
 export type CloudRoute = "sign-in" | "cloud-shell";
 
-/** The clouds whose own sign-in flyco can hand a link to. */
-export type ConsentCloud = "azure" | "gcp";
+/**
+ * The clouds whose own sign-in flyco can hand a link to.
+ *
+ * Codespaces signs in with GitHub — the same vendor flyco itself signs in
+ * with — asking for the `codespace` scope the account's own sign-in did
+ * not need. Unlike the other two there is nothing to choose afterwards:
+ * the environment repository is created control-plane side at finish.
+ */
+export type ConsentCloud = "azure" | "gcp" | "codespaces";
 
 /** What a vendor's consent screen handed back. */
 export interface CloudConsent {
@@ -102,7 +109,7 @@ export interface FlowAnswers {
 export const NO_ANSWERS: FlowAnswers = {
   agents: {},
   linking: null,
-  routes: { claude_code: "sign-in", codex: "sign-in" },
+  routes: { claude_code: "sign-in", codex: "sign-in", devin: "api-key" },
   claudeAttempt: null,
   compute: null,
   cloudRoute: "sign-in",
@@ -126,7 +133,11 @@ export function linkedAgents(
 }
 
 /** The agents flyco runs, in the order the agent stage links them. */
-export const EVERY_AGENT: readonly HarnessKind[] = ["claude_code", "codex"];
+export const EVERY_AGENT: readonly HarnessKind[] = [
+  "claude_code",
+  "codex",
+  "devin",
+];
 
 /** Which stages this flow walks, where it is, and what it has been told. */
 export interface FlowState {
@@ -208,6 +219,12 @@ export function stageOf(page: Page): Stage {
  * is open, the key page behind *Use an API key instead*.
  */
 function agentPages(answers: FlowAnswers, agent: HarnessKind): Page[] {
+  // Devin has no vendor sign-in flow the browser can walk — a token is
+  // created in its settings and pasted — so its whole route is the key
+  // page.
+  if (agent === "devin") {
+    return [{ id: "api-key", agent }];
+  }
   const signIn: Page =
     agent === "claude_code"
       ? { id: "claude-sign-in" }
@@ -254,6 +271,10 @@ export function matchingProgrammes(
  * The consent road for Azure or Google Cloud: the vendor's sign-in, then
  * the choice of what to link once the consent is back. Azure's key page
  * follows separately, because it belongs to both roads.
+ *
+ * Codespaces walks the sign-in alone: its finish takes no choice, and the
+ * sign-in page calls it the moment GitHub sends the browser back, so a
+ * `cloudConsent` is never set for it and the choice page never appears.
  */
 function consentPages(answers: FlowAnswers, provider: ConsentCloud): Page[] {
   const pages: Page[] = [{ id: "cloud-sign-in", provider }];
@@ -287,6 +308,8 @@ function providerPages(answers: FlowAnswers, provider: CloudKind): Page[] {
       return answers.cloudRoute === "sign-in"
         ? consentPages(answers, "gcp")
         : [{ id: "gcp-commands" }, { id: "gcp-key-file" }];
+    case "codespaces":
+      return consentPages(answers, "codespaces");
   }
 }
 

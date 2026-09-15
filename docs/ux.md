@@ -325,7 +325,7 @@ Every chip is both a status readout and the entry point to change it.
 |---|---|---|
 | Harness | logomark + `Claude Code` (or `Codex`); popover lists the linked agents with the chosen one marked, ending in `Connect another agent` → `/connect/harness` | `+ Connect an agent` → `/connect/harness` |
 | Model | `Fable 5.1`: the model's name. The name is the head of the harness's description where it has one (`Fable 5.1 · Most capable…` → `Fable 5.1`; Claude's rows are menu labels like `Default (recommended)`) and the row's label otherwise (`GPT-5.5`). The chip sits at the right of the row beside send, where both official apps keep theirs. The popover lists the agent's own models (`GET /v1/harness-accounts` carries each account's list, as its last session's agent reported it, or flyco's built-in one until then), each with the harness's one-line description. Choosing a model resets the effort to the model's own default. Switching agents drops the choice, because a Claude id means nothing to Codex | absent until an agent is linked, since there is no list to show |
-| Effort | `High` once chosen, `Effort` while the model's own default stands. The chip sits beside the model's, because the levels are the model's — not every one accepts effort, and the levels differ. The popover is the detented slider the machine picker already teaches (§7.7): the chosen level's name over the rail, the model's name under it, and `Default` as the leftmost stop — the model keeps the choice, the same shape `Auto` has on the machine slider, since not every harness says which level it starts on. Where the harness does say (`default_effort`), the subline names it: `GPT-5.6-Terra · Medium` | absent for a model that names no effort levels |
+| Effort | `High` once chosen, `Effort` while the model's own default stands. The chip sits beside the model's, because the levels are the model's — not every one accepts effort, and the levels differ. The popover is the detented slider the machine picker already teaches (§7.7): the chosen level's name over the rail, the model's name under it, and `Default` as the leftmost stop — the model keeps the choice, the same position `Auto` holds on the machine picker's form row, since not every harness says which level it starts on. Where the harness does say (`default_effort`), the subline names it: `GPT-5.6-Terra · Medium` | absent for a model that names no effort levels |
 | Compute | provider logomark + `B2s · $0.04/hr`; the logomark names the provider, and region, spot, the account and whether flyco or the user chose the type live in the popover — the chip does not say `Auto` or `Chosen`, which is a word about how the choice was made on a row that is for what was chosen. A **managed container** reads `Container · 4 vCPU · 8 GiB · $0.21/hr` instead: `aca-4x8` is flyco's key for a size billed by the second, not a name anybody picked, so the size is what identifies the row — and where the provider covers it out of a monthly allowance the chip ends ` · Free this month`. A machine the user enrolled is a container too and keeps its own hostname, which is the name they gave it. While an account is still being read the chip says `Reading Azure…` and the popover carries the whole sentence | `+ Add compute` → `/connect/compute` |
 | Repository | `owner/name`; popover with a search box, recent repositories first | `Select repository` opens the same popover |
 | Budget | `$10`; popover with a slider (1–200) and the sentence "Covers the machine and its disk. Model tokens are billed by your Claude or Codex plan." | always shown, default `$10` |
@@ -388,8 +388,8 @@ archived, and the UI ignores it there.
 | Idle | `active`, no turn in flight, last event is a user message or nothing yet |
 | Paused · budget exhausted | `paused` and `paused_reason` is `budget` |
 | Waiting on the plan | `paused` and `paused_reason` is `usage_limit`: a harness usage limit is spent and flyco is waiting the window out (§9.8) |
-| Interrupted · spot reclaimed | `interrupted`; the clause is `interrupted_reason` |
-| Migrating · 40s | `provisioning` **and** an `interrupted_reason`: flyco is putting the session back on the disk it never lost. Elapsed since the machine went |
+| Interrupted · suspended | `interrupted`; the clause is `interrupted_reason`: `suspended`, `machine lost` or `spot reclaimed` |
+| Migrating · 40s | `provisioning` **and** an `interrupted_reason`: flyco is putting the session back. Elapsed since the machine went |
 | Failed | `failed`; the row shows the failure reason |
 | Archived | `archived` |
 
@@ -414,7 +414,8 @@ happens, and only there:
 | Needs input | the approval card and the amber banner when a decision is pending; otherwise nothing — the agent's last message is the page, and the composer has focus |
 | Idle | nothing |
 | Disconnected · machine not reachable | a notice above the composer: the machine dropped off the network, it reconnects on its own, anything sent waits for it |
-| Paused, Interrupted, Failed, Archived | the state notice in the composer's place (§9.1) |
+| Paused, Failed, Archived | the state notice in the composer's place (§9.1) |
+| Interrupted | the state notice **above** a composer that still works, because a message sent to it is what starts the machine again (§9.9) |
 | Waiting on the plan | the state notice **above** a composer that still works, because a message typed now is worth sending (§9.8) |
 | Reconnecting…, Connecting… | one amber word at the right of the header, only while the browser's own socket is not carrying events |
 
@@ -581,7 +582,9 @@ to avoid the one machine the user is not paying for. The agent's
 
 ### 7.7 Choosing a machine by hand
 
-The compute chip's popover is a **tiered slider**, not a table. Its detents are the curated catalog of the selected account and region ordered by price; the thumb snaps to a detent and the label above it reads `Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr`, or for a managed container `Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month`. The leftmost position is `Auto`. `Auto` is the cheapest curated Linux type with at least 4 vCPU and 16 GiB, unless the account's catalog offers a container covered by a monthly grant, in which case that is what it picks (§7.6); the label says which rule decided. An `Advanced ›` disclosure above the slider reveals account, region, architecture (x86-64 / arm64), OS family, and spot. Choosing any detent other than `Auto` sets `machine_origin: user`; the popover's label then reads `Chosen by you`.
+The compute chip's popover is two choices, in order: the **product form** as a row of segments — `Container`, `VM`, `Codespace`, whichever the linked accounts offer — and then a **tiered slider** of that form's machines, not a table. The three are different products rather than different prices of one: a container's filesystem ends when the run does, a VM's disk survives a stop, and a codespace is bought from GitHub in core-hours — so the choice between them is never a detent among machine types. `Auto` leads the segment row: the cheapest curated Linux type with at least 4 vCPU and 16 GiB, unless the account's catalog offers a container covered by a monthly grant, in which case that is what it picks (§7.6). Under `Auto` there is no track — flyco is keeping the size as well as the form — only the machine it would pick and the rule it picked by.
+
+Choosing a segment lands the thumb on the cheapest entry of that form the current scope reaches, moving the scope onto it when the account and region on screen hold none — a segment that opened an empty track would be a control that lies. The slider's detents are the chosen account, region and form, ordered by price; the thumb snaps to a detent and the label above it reads `Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr`, or for a managed container `Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month`. Its left end reads `Cheapest`. An `Advanced ›` disclosure above the slider reveals account, region, architecture (x86-64 / arm64), OS family, and spot — each scoped to what the chosen form offers, and spot only where some detent can quote a spot price. Choosing any segment other than `Auto` sets `machine_origin: user`; the popover's label then reads `Chosen by you`.
 
 On a phone the popover is a **bottom sheet** rather than a panel hanging off the chip: fixed to the bottom of the viewport, edge to edge, at most 70% of its height. A panel anchored to a chip near the bottom of a phone screen had nowhere to open into.
 
@@ -647,11 +650,13 @@ its action, because the composer is gone while the session is paused.
 
 That notice takes the composer's place rather than sitting above the
 transcript, and the composer is not rendered at all while it shows. A
-session that is `failed`, `interrupted`, `paused` or `archived` will not
-take a message, so a field to type one in is an offer the page cannot keep;
-what belongs in that space is the one action that will change the state.
-The same rule covers every refusing state, which is why the composer no
-longer carries a `refusal` of its own.
+session that is `failed`, `paused` or `archived` will not take a message,
+so a field to type one in is an offer the page cannot keep; what belongs
+in that space is the one action that will change the state. The same rule
+covers every refusing state, which is why the composer no longer carries a
+`refusal` of its own. An `interrupted` session is the one exception: a
+message sent to it is what starts its machine again (§9.9), so its composer
+stays open and reads `Sent when the machine is back`.
 
 ### 9.2 Transcript
 
@@ -875,8 +880,11 @@ scroll to, with a terminal too short to type in.
 `Resize` is the tiered slider of §7.7, on the machine the session is
 already on: the same detents, prices and license-bound badge, opened on the
 current type, with no `Auto` — flyco choosing again is not one of the
-outcomes — and without the account, region and capacity filters, because
-the resize carries a machine type and nothing else. The commit reads
+outcomes — and the form row naming the one form the machine can move
+within, because a resize keeps the provider, account, region and runtime:
+a move between forms is a different machine, not a different size. The
+account, region and capacity filters are absent for the same reason — the
+resize carries a machine type and nothing else. The commit reads
 `Resize to <type>` over the line `Restarts the machine; the disk is kept.`
 `/resize` in the composer and `Resize` in the header's `⋯` menu both open
 the chip's panel on that control, not merely beside it.
@@ -942,6 +950,16 @@ Ten minutes before the reset flyco starts the machine again, so that the agent i
 The composer stays open the whole time and says where a message goes: `Sent when the window resets, at 7:35 PM`. What is typed there is held against the pause and sent **instead of** flyco's canned continuation, because a user who has said what to do next has said something better than "please continue". A `!` command is not held — it runs on the machine there and then, whatever the plan's limits are doing — and while the machine is stopped the composer refuses it, as in §9.6.
 
 Both ends of the wait are a web push, because the whole point is that the user does not have to sit there: one when the session pauses, saying which window and when it resets, and one when it starts working again.
+
+### 9.9 When the session sits idle
+
+A session with nothing to do still has a machine running, and a machine running is money or the user's own hardware held open. So thirty minutes after the last thing anybody did — the last message, turn, terminal keystroke or approval — flyco suspends the machine: compute is released, the disk is kept, and the session reads `Interrupted · suspended`. A turn in flight is never suspended — the agent mid-answer is the one thing on the machine worth paying for — and a session that is `paused` already has its machine decided by the mechanism that paused it.
+
+The same rule covers every provider. A codespace gets it from GitHub's own idle clock; everything else — an Azure VM, an AWS spot instance, a container on the user's own machine — is suspended by flyco on the same threshold, because a session should not cost differently for being idle on one cloud than another.
+
+Coming back is one word. A message sent to a suspended session starts the machine on its own disk and is delivered when the daemon attaches — the composer stays open for exactly this — and deciding a pending approval does the same, because the answer has to reach somebody. The timeline gains a `Migrating` row (`Starting the machine`, then `Agent ready`) where the gap happened, and the agent is told the machine was suspended and started again, so a process it left running is not mistaken for one still alive. Thirty seconds of cold start is the whole cost of the thirty minutes that were not billed.
+
+A session nobody ever speaks to again is still archived at a week — suspension changed what it costs to wait, not how long flyco waits.
 
 ## 10. Settings
 

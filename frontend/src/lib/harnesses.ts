@@ -4,4 +4,5 @@ import type { HarnessKind } from "../api/client";
 export const HARNESS_LABEL: Record<HarnessKind, string> = {
   claude_code: "Claude Code",
   codex: "Codex",
+  devin: "Devin",
 };

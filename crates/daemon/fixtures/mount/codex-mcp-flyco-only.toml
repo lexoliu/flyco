@@ -1,9 +1,0 @@
-[mcp_servers.flyco]
-command = "/usr/local/bin/flycod"
-args = [
-    "mcp",
-    "--config",
-    "/etc/flyco/flycod.toml",
-]
-enabled = true
-required = true

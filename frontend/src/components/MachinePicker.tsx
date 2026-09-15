@@ -23,7 +23,7 @@ import type {
   MachineView,
   ProviderAccountView,
 } from "../api/client";
-import { entryKey } from "../lib/machines";
+import { entryKey, formOf } from "../lib/machines";
 import styles from "./MachinePicker.module.css";
 
 export interface MachinePickerProps {
@@ -124,6 +124,21 @@ export interface MachineResizeProps {
  */
 export function MachineResize(props: MachineResizeProps) {
   /**
+   * The entries this machine may move between: its own product form only.
+   *
+   * `resize_filter` keeps the provider, the account, the region and the
+   * runtime — a codespace becomes another codespace size, a VM another VM
+   * — because a move between forms is not a change of size but a different
+   * machine with a different bargain about what survives a stop. Scoping
+   * the catalog here means the form row lists the one form a resize can
+   * express, rather than offering detents the route would refuse.
+   */
+  const resizable = createMemo(() => {
+    const form = formOf(props.current.spec);
+    return props.catalog.filter((entry) => formOf(entry) === form);
+  });
+
+  /**
    * The catalog entry the session's machine is, so the detents open on its
    * account and region.
    *
@@ -134,7 +149,7 @@ export function MachineResize(props: MachineResizeProps) {
    */
   const current = createMemo(() => {
     const spec = props.current.spec;
-    const here = props.catalog.filter(
+    const here = resizable().filter(
       (entry) => entry.provider === spec.provider && entry.region === props.current.region,
     );
     return here.find((entry) => entry.machine_type === spec.machine_type) ?? here[0];
@@ -152,7 +167,7 @@ export function MachineResize(props: MachineResizeProps) {
 
   /** The machine the button would move to, once the thumb has landed. */
   const chosen = createMemo(() =>
-    props.catalog.find((entry) => entryKey(entry) === chosenKey()),
+    resizable().find((entry) => entryKey(entry) === chosenKey()),
   );
 
   /** Whether the thumb is back where it started, which is not a resize. */
@@ -177,7 +192,7 @@ export function MachineResize(props: MachineResizeProps) {
 
   return (
     <MachinePicker
-      catalog={props.catalog}
+      catalog={resizable()}
       accounts={props.accounts}
       anchor={current()}
       allowAuto={false}

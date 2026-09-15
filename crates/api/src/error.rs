@@ -295,6 +295,18 @@ pub enum ApiError {
         reason: String,
     },
 
+    /// GitHub refused a Codespaces link sign-in, and said why.
+    ///
+    /// The same refusal [`MicrosoftRejected`](Self::MicrosoftRejected) is,
+    /// on the one provider whose sign-in is OAuth rather than an issued
+    /// credential: consent declined, the code expired, or the granted
+    /// scopes do not cover what a codespace needs.
+    #[error("GitHub refused this sign-in: {reason}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    GithubRejected {
+        /// GitHub's own reason, or which required scope was not granted.
+        reason: String,
+    },
+
     /// The machine exists but the provider has not named it yet.
     ///
     /// It is still being created, so there is nothing to act on. Distinct
@@ -354,6 +366,30 @@ pub enum ApiError {
     /// Distinct from a destroyed one: nothing was ever provisioned.
     #[error("this session has no machine", status = StatusCode::NOT_FOUND)]
     MachineNotFound,
+
+    /// A codespace asked for a daemon configuration, and no flyco machine
+    /// goes by the name it presented.
+    ///
+    /// `404` rather than a refusal: the provisioning leg writes the codespace's
+    /// name to the row after GitHub starts the machine, so a bootstrap that
+    /// arrives in that window is told the truth — nothing answers to this
+    /// name *yet* — and the entrypoint retries until the row lands.
+    #[error("no flyco machine is a codespace of this name", status = StatusCode::NOT_FOUND)]
+    CodespacesMachineUnknown,
+
+    /// A codespace asked for a daemon configuration with a `GITHUB_TOKEN`
+    /// that cannot read the private environment repository the session's
+    /// account provisions on.
+    ///
+    /// That read is the whole authentication of the bootstrap endpoint: a
+    /// codespace's injected token is scoped to exactly that repository, so
+    /// a token GitHub turns away from it is not a credential flyco answers
+    /// to — whatever else it may open.
+    #[error(
+        "this codespace's token cannot read the environment repository its session's account provisions on",
+        status = StatusCode::FORBIDDEN
+    )]
+    CodespacesBootstrapDenied,
 
     /// The named type is not in the curated catalog this session can move to.
     ///
@@ -1268,7 +1304,10 @@ impl ApiError {
             Self::Microsoft(_) => "microsoft-unavailable",
             Self::GoogleRejected { .. } => "google-rejected",
             Self::Google(_) => "google-unavailable",
+            Self::GithubRejected { .. } => "github-rejected",
             Self::MachineNotFound => "machine-not-found",
+            Self::CodespacesMachineUnknown => "codespaces-machine-unknown",
+            Self::CodespacesBootstrapDenied => "codespaces-bootstrap-denied",
             Self::MachineTypeNotOffered(_) => "machine-type-not-offered",
             Self::LicenseBoundResizeNeedsApproval { .. } => "license-bound-resize-needs-approval",
             Self::MachineNotReady => "machine-not-ready",

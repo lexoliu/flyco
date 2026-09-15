@@ -21,6 +21,7 @@ import styles from "./pages.module.css";
 const RUNS_ON: Record<HarnessKind, string> = {
   claude_code: "Not linked · a Claude subscription or an Anthropic API key",
   codex: "Not linked · a ChatGPT subscription or an OpenAI API key",
+  devin: "Not linked · a Devin token",
 };
 
 export const Agents: PageComponent<{ id: "agents" }> = (props) => {

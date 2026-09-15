@@ -57,6 +57,7 @@ export default function HarnessMatrix() {
             <th>Feature</th>
             <th>Claude Code</th>
             <th>Codex</th>
+            <th>Devin</th>
           </tr>
         </thead>
         <tbody>
@@ -66,6 +67,7 @@ export default function HarnessMatrix() {
                 <th scope="row">{FEATURE_LABEL[row.feature]}</th>
                 <td data-availability={row.claude_code}>{AVAILABILITY_LABEL[row.claude_code]}</td>
                 <td data-availability={row.codex}>{AVAILABILITY_LABEL[row.codex]}</td>
+                <td data-availability={row.devin}>{AVAILABILITY_LABEL[row.devin]}</td>
               </tr>
             )}
           </For>

@@ -1,0 +1,3 @@
+[flyco machine notice] The machine suspended for inactivity and was started again on {{ machine_type }}; continue.
+
+The disk is exactly as you left it — the checkout and its caches — but everything you had *running* stopped with the machine, so start whatever you still need before you carry on.

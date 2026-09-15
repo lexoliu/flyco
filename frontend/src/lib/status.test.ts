@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { SessionActivity, SessionState, UsageLimitPause } from "../api/client";
+import type {
+  InterruptedReason,
+  SessionActivity,
+  SessionState,
+  UsageLimitPause,
+} from "../api/client";
 import { formatTimeOfDay } from "./dates";
 import { REFUSING, type SessionStatus, deriveStatus, sessionNotice } from "./status";
 
@@ -22,6 +27,16 @@ function reclaimed(state: SessionState, sinceAgo = 0) {
     created_at_unix: NOW_UNIX - 3600,
     last_active_unix: NOW_UNIX - sinceAgo,
     interrupted_reason: "spot_reclaimed" as const,
+  };
+}
+
+/** The same session, interrupted for the reason flyco recorded. */
+function interrupted(reason: InterruptedReason, sinceAgo = 0) {
+  return {
+    state: "interrupted" as const,
+    created_at_unix: NOW_UNIX - 3600,
+    last_active_unix: NOW_UNIX - sinceAgo,
+    interrupted_reason: reason,
   };
 }
 
@@ -69,6 +84,8 @@ describe("deriveStatus", () => {
   it("explains why a session stopped", () => {
     expect(deriveStatus(session("paused"), NOW).detail).toBe("budget exhausted");
     expect(deriveStatus(reclaimed("interrupted"), NOW).detail).toBe("spot reclaimed");
+    expect(deriveStatus(interrupted("suspended"), NOW).detail).toBe("suspended");
+    expect(deriveStatus(interrupted("machine_lost"), NOW).detail).toBe("machine lost");
   });
 
   it("says nothing it cannot support about why a session was interrupted", () => {
@@ -139,6 +156,7 @@ describe("a session waiting out a spent plan window", () => {
   function notice(pause: UsageLimitPause) {
     return sessionNotice(deriveStatus(waiting(), NOW), {
       failure: null,
+      interruptedReason: null,
       budgetLimit: undefined,
       usageLimit: pause,
       now: NOW,
@@ -168,7 +186,7 @@ describe("a session waiting out a spent plan window", () => {
     expect(view.status).toBe("paused");
   });
 
-  it("still takes messages, unlike every other stopped state", () => {
+  it("still takes messages, unlike a spent-budget pause", () => {
     // The control plane holds what is typed against the pause and sends it
     // when the window turns over, so the composer stays open.
     expect(REFUSING.has("usage_limit")).toBe(false);
@@ -207,6 +225,47 @@ describe("a session waiting out a spent plan window", () => {
     expect(view?.body).toContain("Your message is waiting and is sent then");
     expect(view?.body).toContain("then run the migration and open the pull request");
     expect(view?.body).not.toContain("on your behalf");
+  });
+});
+
+describe("an interrupted session", () => {
+  /** The notice an interrupted session shows, for one reason. */
+  function interruptedNotice(reason: InterruptedReason) {
+    return sessionNotice(deriveStatus(interrupted(reason), NOW), {
+      failure: null,
+      interruptedReason: reason,
+      budgetLimit: undefined,
+      usageLimit: null,
+      now: NOW,
+    });
+  }
+
+  it("keeps its composer open, because the message is the wake", () => {
+    // What is typed starts the machine again and is delivered when the
+    // daemon attaches (docs/ux.md §9.9) — the one stopped state where the
+    // composer is itself the way out.
+    expect(REFUSING.has("interrupted")).toBe(false);
+  });
+
+  it("says a suspended one kept its disk and that a message starts it", () => {
+    const view = interruptedNotice("suspended");
+    expect(view?.title).toBe("Interrupted · suspended");
+    expect(view?.body).toContain("the disk is kept");
+    expect(view?.body).toContain("Send a message");
+    expect(view?.action).toEqual({ kind: "resume", label: "Resume" });
+  });
+
+  it("says a lost one is rebuilt, not restarted", () => {
+    const view = interruptedNotice("machine_lost");
+    expect(view?.title).toBe("Interrupted · machine lost");
+    expect(view?.body).toContain("builds a new one");
+    expect(view?.body).not.toContain("its own disk");
+  });
+
+  it("says a reclaimed one is already on its way back", () => {
+    const view = interruptedNotice("spot_reclaimed");
+    expect(view?.title).toBe("Interrupted · spot reclaimed");
+    expect(view?.body).toContain("already starting it again");
   });
 });
 

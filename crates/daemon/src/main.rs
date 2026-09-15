@@ -4,15 +4,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use flyco_core::{HarnessKind, ProvisioningStage};
+use flyco_core::{DriverKind, ProvisioningStage};
 use flyco_daemon::config::{ControlPlaneConfig, DaemonConfig, EXAMPLE};
 use flyco_daemon::control::{
     ControlApi, HttpControlApi, RemoteTranscriptStore, SessionRelay, wire,
 };
 use flyco_daemon::git::GitWorkdir;
+use flyco_daemon::harness::acp::AcpHarness;
 use flyco_daemon::harness::claude::ClaudeCodeHarness;
 use flyco_daemon::harness::claude::store::{JsonlTranscriptStore, TranscriptStore};
-use flyco_daemon::harness::codex::CodexHarness;
 use flyco_daemon::harness::{Harness as _, HarnessSession, StartRequest, Started};
 use flyco_daemon::host;
 use flyco_daemon::mcp::FlycoTools;
@@ -56,6 +56,13 @@ enum Command {
     },
     /// Print a complete, valid configuration to stdout.
     ExampleConfig,
+    /// Boot a GitHub codespace as a flyco session machine.
+    ///
+    /// The `postStartCommand` of the environment repository's devcontainer:
+    /// fetches this session's daemon configuration from the control plane —
+    /// authenticated by the `CODESPACE_NAME`/`GITHUB_TOKEN` pair GitHub
+    /// injects — writes it, and starts `flycod run` detached.
+    Codespace,
     /// Act as a machine the user owns, rather than as a session VM.
     ///
     /// The same binary in its other role: `flycod host run` holds the
@@ -107,7 +114,7 @@ enum Failure {
     #[error(transparent)]
     Claude(#[from] flyco_daemon::harness::claude::ClaudeError),
     #[error(transparent)]
-    Codex(#[from] flyco_daemon::harness::codex::CodexError),
+    Acp(#[from] flyco_daemon::harness::acp::AcpError),
     #[error(transparent)]
     Repl(#[from] repl::ReplError),
     #[error(transparent)]
@@ -117,9 +124,13 @@ enum Failure {
     #[error(transparent)]
     Git(#[from] flyco_daemon::git::GitError),
     #[error(transparent)]
-    Mount(#[from] flyco_daemon::mount::MountError),
+    Codespace(#[from] flyco_daemon::codespace::CodespaceError),
     #[error(transparent)]
-    Host(#[from] host::HostError),
+    Mount(#[from] flyco_daemon::mount::MountError),
+    /// Boxed: `HostError` is wide enough that carrying it inline would make
+    /// every `Result` in this binary a hundred-plus bytes.
+    #[error(transparent)]
+    Host(Box<host::HostError>),
     #[error("could not write to stdout")]
     Stdout(#[source] std::io::Error),
     /// `flycod mcp` was pointed at a configuration with no control plane.
@@ -138,6 +149,12 @@ enum Failure {
     /// The MCP server stopped on an error rather than on a closed pipe.
     #[error("flyco's MCP server stopped")]
     McpStopped(#[source] tokio::task::JoinError),
+}
+
+impl From<host::HostError> for Failure {
+    fn from(error: host::HostError) -> Self {
+        Self::Host(Box::new(error))
+    }
 }
 
 #[tokio::main]
@@ -175,6 +192,7 @@ async fn run(cli: Cli) -> Result<(), Failure> {
                 .map_err(Failure::Stdout)?;
             stdout.flush().await.map_err(Failure::Stdout)
         }
+        Command::Codespace => Ok(flyco_daemon::codespace::bootstrap().await?),
         Command::Host { command } => run_host(command).await,
         Command::Mcp { config } => serve_mcp(DaemonConfig::load(&config)?).await,
         Command::Run { config: path } => {
@@ -213,8 +231,8 @@ async fn run(cli: Cli) -> Result<(), Failure> {
                 core::mem::take(&mut config.mcp_servers),
             );
             let driven = match config.harness {
-                HarnessKind::ClaudeCode => Box::pin(drive_claude_code(config, mount)).await,
-                HarnessKind::Codex => Box::pin(drive_codex(config, mount)).await,
+                DriverKind::ClaudeCode => Box::pin(drive_claude_code(config, mount)).await,
+                DriverKind::Acp => Box::pin(drive_acp(config, mount)).await,
             };
             report_failure_to(api.as_ref(), driven).await
         }
@@ -286,10 +304,10 @@ async fn conversation_to_continue(config: &mut DaemonConfig, api: &HttpControlAp
         claude.effort.clone_from(&view.model.effort);
         claude.permission_mode = view.permission_mode;
     }
-    if let Some(codex) = config.codex.as_mut() {
-        codex.model = Some(view.model.model.clone());
-        codex.effort.clone_from(&view.model.effort);
-        codex.permission_mode = view.permission_mode;
+    if let Some(acp) = config.acp.as_mut() {
+        acp.model = Some(view.model.model.clone());
+        acp.effort.clone_from(&view.model.effort);
+        acp.permission_mode = view.permission_mode;
     }
 
     match view.harness_session_id {
@@ -483,10 +501,11 @@ async fn drive_claude_code(config: DaemonConfig, mount: Mount) -> Result<(), Fai
     Ok(())
 }
 
-/// Drives a Codex session, reporting to a control plane if the
-/// configuration names one and to the terminal otherwise.
-async fn drive_codex(config: DaemonConfig, mount: Mount) -> Result<(), Failure> {
-    let harness = CodexHarness::new(config.codex().clone(), mount);
+/// Drives an ACP session — Codex, Devin, or any other agent the `[acp]`
+/// table names — reporting to a control plane if the configuration names
+/// one and to the terminal otherwise.
+async fn drive_acp(config: DaemonConfig, mount: Mount) -> Result<(), Failure> {
+    let harness = AcpHarness::new(config.acp().clone(), mount);
     let started = harness
         .start(StartRequest {
             workdir: config.workdir.clone(),
