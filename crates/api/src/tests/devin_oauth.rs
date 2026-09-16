@@ -18,8 +18,8 @@ use crate::devin::REDIRECT_URI;
 use crate::harness_accounts::{self, StoredCredential};
 use crate::session;
 use crate::testing::{
-    DEVIN_ACCOUNT_NAME, DEVIN_API_KEY, DEVIN_CODE, migrated_router, seed_other_user, seed_user,
-    test_config,
+    DEVIN_ACCOUNT_NAME, DEVIN_CODE, DEVIN_SESSION_TOKEN, migrated_router, seed_other_user,
+    seed_user, test_config,
 };
 
 const START: &str = "/v1/harness-accounts/devin/oauth/start";
@@ -115,7 +115,7 @@ async fn a_pasted_redirect_url_links_the_account(ctx: TestContext, kv: Kv, db: D
     let view: HarnessAccountView = response.json();
     assert_eq!(view.harness, HarnessKind::Devin);
     assert_eq!(view.label, DEVIN_ACCOUNT_NAME);
-    // A `devi…` key states no lifetime, the way a pasted one does not.
+    // A session token states no lifetime, the way a pasted key does not.
     assert_eq!(view.expires_at_unix, None);
 
     // The account is listed, and nothing about it carries the token.
@@ -127,7 +127,7 @@ async fn a_pasted_redirect_url_links_the_account(ctx: TestContext, kv: Kv, db: D
     listed.assert_status(200);
     let body = serde_json::to_string(&listed.json::<Vec<HarnessAccountView>>())
         .expect("encode the account list");
-    assert!(!body.contains(DEVIN_API_KEY));
+    assert!(!body.contains(DEVIN_SESSION_TOKEN));
 }
 
 #[skyzen::test]
@@ -156,7 +156,7 @@ async fn the_token_is_sealed_before_it_is_stored(ctx: TestContext, kv: Kv, db: D
     .fetch_scalar()
     .await
     .expect("read the sealed credential");
-    assert!(!sealed.contains(DEVIN_API_KEY));
+    assert!(!sealed.contains(DEVIN_SESSION_TOKEN));
 
     let stored = harness_accounts::stored(&db, &test_config(), user.id, HarnessKind::Devin)
         .await
@@ -164,7 +164,7 @@ async fn the_token_is_sealed_before_it_is_stored(ctx: TestContext, kv: Kv, db: D
         .expect("the account is linked");
     assert!(matches!(
         stored,
-        StoredCredential::ApiKey { ref key } if key == DEVIN_API_KEY
+        StoredCredential::ApiKey { ref key } if key == DEVIN_SESSION_TOKEN
     ));
 }
 

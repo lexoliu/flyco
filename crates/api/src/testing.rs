@@ -686,8 +686,12 @@ impl ClaudeOauth for TestClaude {
     }
 }
 
-/// The only key [`TestDevin`] resolves an identity for.
+/// The only pasted key [`TestDevin`] resolves an identity for.
 pub const DEVIN_API_KEY: &str = "devi-flyco-test-key";
+
+/// The credential [`TestDevin`] redeems a code for — the
+/// `devin-session-token$…` shape the live exchange mints.
+pub const DEVIN_SESSION_TOKEN: &str = "devin-session-token$flyco-test-session-jwt";
 
 /// The name [`TestDevin`] reports, which becomes the account's label.
 pub const DEVIN_ACCOUNT_NAME: &str = "Test Devin";
@@ -697,8 +701,9 @@ pub const DEVIN_CODE: &str = "a-pasted-devin-authorization-code";
 
 /// A [`DevinApi`] that answers without a network.
 ///
-/// The only key it knows is [`DEVIN_API_KEY`] and the only code it
-/// redeems is [`DEVIN_CODE`]; anything else is Devin's refusal, so a test
+/// The credentials it knows are [`DEVIN_API_KEY`] and
+/// [`DEVIN_SESSION_TOKEN`] and the only code it redeems is
+/// [`DEVIN_CODE`]; anything else is Devin's refusal, so a test
 /// exercises the same accept-or-reject split the live exchange and
 /// `/v3/self` reads make.
 #[derive(Debug, Clone, Copy, Default)]
@@ -709,7 +714,7 @@ impl DevinApi for TestDevin {
         &self,
         key: &str,
     ) -> impl Future<Output = Result<DevinSelf, DevinError>> + Send {
-        ready(if key == DEVIN_API_KEY {
+        ready(if key == DEVIN_API_KEY || key == DEVIN_SESSION_TOKEN {
             Ok(DevinSelf::WindsurfSession {
                 user_name: Some(DEVIN_ACCOUNT_NAME.to_owned()),
             })
@@ -728,7 +733,7 @@ impl DevinApi for TestDevin {
                 !verifier.is_empty(),
                 "the exchange carries the PKCE verifier the challenge was made from"
             );
-            Ok(DEVIN_API_KEY.to_owned())
+            Ok(DEVIN_SESSION_TOKEN.to_owned())
         } else {
             Err(DevinError::GrantRejected(
                 "invalid_grant: The authorization code is invalid or has expired.".to_owned(),

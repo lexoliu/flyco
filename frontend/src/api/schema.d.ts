@@ -4420,7 +4420,10 @@ export interface components {
             /** @description Redeemed for a new set once the access token is near its end. */
             refresh_token: string;
         } | {
-            /** @description The `devi…` key Devin's API server issues. */
+            /**
+             * @description The credential Devin's API server accepts: a `devi…` key or a
+             *     `devin-session-token$…` session token.
+             */
             key: string;
             /** @enum {string} */
             kind: "devin_api_key";

@@ -11103,7 +11103,7 @@
             "properties": {
               "key": {
                 "type": "string",
-                "description": "The `devi…` key Devin's API server issues."
+                "description": "The credential Devin's API server accepts: a `devi…` key or a\n`devin-session-token$…` session token."
               },
               "kind": {
                 "type": "string",

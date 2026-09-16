@@ -10,13 +10,16 @@
 //! The paste-a-key route stays beside it for a token minted in Devin's
 //! settings.
 //!
-//! Either way the credential is the same `devi…` key, and its label is
-//! not the caller's to choose: `GET /v3/self` accepts the key and names
-//! the principal it opens, so linking asks Devin who the key belongs to
-//! rather than trusting a string in the request. The call doubles as the
-//! key's validation: a key Devin refuses is refused here, at link time,
-//! instead of being stored and discovered by the first session that tries
-//! to run on it.
+//! The two routes mint different strings — a pasted token is already a
+//! `devi…` key, while the exchange answers a bare session JWT that opens
+//! `/v3/self` only wrapped as `devin-session-token$<jwt>`, the shape
+//! `devin auth login` itself stores — but the credential's label is
+//! not the caller's to choose either way: `GET /v3/self` names
+//! the principal it opens, so linking asks Devin who the credential
+//! belongs to rather than trusting a string in the request. The call
+//! doubles as validation: a credential Devin refuses is refused here, at
+//! link time, instead of being stored and discovered by the first session
+//! that tries to run on it.
 //!
 //! Everything that leaves the control plane for Devin goes through an
 //! [`HttpTransport`](flyco_provider::HttpTransport), which is zenwave in
@@ -38,8 +41,17 @@ const SELF_URL: &str = "https://api.devin.ai/v3/self";
 /// Where the browser approves the grant.
 const AUTHORIZE_URL: &str = "https://app.devin.ai/auth/cli/continue";
 
-/// Where an authorization code is redeemed for the `devi…` key.
+/// Where an authorization code is redeemed for the session JWT.
 const TOKEN_URL: &str = "https://api.devin.ai/auth/cli/token";
+
+/// The wrapper that makes the exchange's answer a usable credential.
+///
+/// `/auth/cli/token` answers a bare session JWT, which `/v3/self`
+/// refuses; the credential `devin auth login` writes into
+/// `credentials.toml`'s `windsurf_api_key` wraps it as
+/// `devin-session-token$<jwt>`, so the exchange mints the wrapped form
+/// directly.
+const SESSION_TOKEN_PREFIX: &str = "devin-session-token$";
 
 /// The redirect URI the grant is bound to.
 ///
@@ -50,10 +62,11 @@ const TOKEN_URL: &str = "https://api.devin.ai/auth/cli/token";
 /// bar, which is what the user copies back.
 pub const REDIRECT_URI: &str = "http://127.0.0.1:59653/callback";
 
-/// The principal a `devi…` key authenticates as.
+/// The principal a credential authenticates as.
 ///
 /// `/v3/self` answers one of four shapes, tagged by `principal_type`: the
-/// key `devin auth login` issues is a `windsurf_session`, a PAT is a
+/// `devin-session-token$…` credential `devin auth login` writes is a
+/// `windsurf_session`, a PAT is a
 /// `pat_user`, and a `cog_…` service-user key is a `service_user`.
 /// `devin_brain` is included for completeness — flyco never issues one,
 /// but a key that resolves to it is still a valid credential and links
@@ -76,7 +89,7 @@ pub enum DevinSelf {
         /// The brain's own identifier.
         devin_id: String,
     },
-    /// The `devi…` key `devin auth login` writes.
+    /// The `devin-session-token$…` credential `devin auth login` writes.
     WindsurfSession {
         /// The user's display name, when the principal states one.
         user_name: Option<String>,
@@ -254,7 +267,8 @@ pub fn split_pasted_code(pasted: &str) -> PastedCode<'_> {
 /// What the token endpoint answers a redeemed code with.
 #[derive(Debug, Clone, Deserialize)]
 struct GrantResponse {
-    /// The `devi…` key — the same kind a pasted token carries.
+    /// The bare session JWT — not yet a usable credential; see
+    /// [`SESSION_TOKEN_PREFIX`].
     token: String,
 }
 
@@ -270,7 +284,8 @@ struct OauthError {
 /// A `4xx` is the caller's grant being refused — the code was mistyped,
 /// spent, or stale — so the reason is surfaced as
 /// [`DevinError::GrantRejected`]; anything else is an answer flyco cannot
-/// interpret and keeps its status.
+/// interpret and keeps its status. A successful answer is wrapped into
+/// the `devin-session-token$…` credential shape `/v3/self` opens.
 fn grant_token(response: &HttpResponse) -> Result<String, DevinError> {
     if response.is_success() {
         let body = response
@@ -283,7 +298,7 @@ fn grant_token(response: &HttpResponse) -> Result<String, DevinError> {
                 "the grant redeemed to an empty token".to_owned(),
             ));
         }
-        return Ok(body.token);
+        return Ok(format!("{SESSION_TOKEN_PREFIX}{}", body.token));
     }
     if (400..500).contains(&response.status) {
         let reason = response.json::<OauthError>().ok().map_or_else(
@@ -324,7 +339,8 @@ pub fn token_request(code: &str, verifier: &str) -> Result<HttpRequest, HttpErro
         })
 }
 
-/// Redeems an authorization code over any transport.
+/// Redeems an authorization code over any transport, returning the
+/// `devin-session-token$…` credential the session JWT wraps into.
 ///
 /// # Errors
 ///
@@ -358,7 +374,8 @@ pub trait DevinApi: Send + Sync + Clone + 'static {
         key: &str,
     ) -> impl Future<Output = Result<DevinSelf, DevinError>> + Send;
 
-    /// Redeems the pasted authorization code for the `devi…` key.
+    /// Redeems the pasted authorization code for the
+    /// `devin-session-token$…` session credential.
     ///
     /// # Errors
     ///
@@ -476,7 +493,7 @@ mod tests {
     };
     use crate::crypto::pkce;
 
-    /// An identity as Devin returns one for a `devi…` key.
+    /// An identity as Devin returns one for a session credential.
     const SELF_BODY: &str = include_str!("../fixtures/devin/self.json");
 
     fn query(url: &url::Url, name: &str) -> String {
@@ -564,14 +581,19 @@ mod tests {
 
     #[skyzen::test]
     async fn a_code_exchange_posts_exactly_what_devin_expects() {
+        // The answer is a bare session JWT; the credential is the wrapped
+        // `devin-session-token$…` form `devin auth login` stores.
         let transport = RecordedTransport::new(vec![HttpResponse::new(
             200,
-            r#"{"token":"devi-exchanged"}"#,
+            r#"{"token":"eyJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoid2luZHN1cmYtc2Vzc2lvbi0xIn0.sig"}"#,
         )]);
         let token = redeem_grant_over(&transport, "the-code", "the-verifier")
             .await
             .expect("redeem the code");
-        assert_eq!(token, "devi-exchanged");
+        assert_eq!(
+            token,
+            "devin-session-token$eyJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoid2luZHN1cmYtc2Vzc2lvbi0xIn0.sig"
+        );
 
         let request = transport.request(0);
         assert_eq!(request.method.as_str(), "POST");
