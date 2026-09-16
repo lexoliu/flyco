@@ -819,14 +819,24 @@ session still has a say over, as the official composers do, left to right:
   disclosures, each with its deferred weight, and the model that reported
   it. Asked once, the breakdown stays rendered and the action becomes
   `Refresh the breakdown`. Nothing is added to the transcript: the answer
-  is a reading, not something that happened.
+  is a reading, not something that happened. The ask is delivered or it
+  is nothing, so the control says what it is doing rather than greying in
+  silence: `Asking the machine…` while the answer is in flight, `No
+  answer — try again` when the machine stays silent past the wait, and
+  where no machine is connected the click either becomes `Wake the
+  machine for the breakdown` on a session that can be resumed — the
+  question goes the moment the daemon is back — or is refused with the
+  reason written in the panel, `The machine is not connected — it
+  answers the breakdown`. The plan section is always named, `Plan
+  usage`: where the harness or the account has reported nothing it says
+  `No plan limits reported`, which is the truth for a key-backed account
+  too — there is no plan to spend down.
   The session's own accounting lives here too, as `This session` between
   the window and the plan — tokens in and out, the harness's reported
   cost, and how long its turns have run: what a `/usage` command used to
   spell out as text, stated as figures because that is what they are.
   Nothing is drawn until a harness has answered: a ring at zero over a
-  plan flyco has never asked about is an invention, and a session running
-  on an API key has no plan at all and shows no ring ever. Until a context
+  plan flyco has never asked about is an invention. Until a context
   window has been reported at all, the fullest plan window stands in for
   the ring's reading, labelled for what it is. On a row too narrow for
   every control the readout is what gives way first — the arc still says

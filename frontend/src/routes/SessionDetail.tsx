@@ -803,17 +803,19 @@ export default function SessionDetail() {
    * refetch needed, and no window where the notice still offers a resume
    * that has already happened.
    */
-  async function onResume(): Promise<void> {
+  async function onResume(): Promise<boolean> {
     if (resuming()) {
-      return;
+      return false;
     }
     setError(null);
     setResuming(true);
     try {
       mutateSession(await resumeSession(params.id));
       await refetchMachine();
+      return true;
     } catch (failure) {
       setError(failure);
+      return false;
     } finally {
       setResuming(false);
     }
@@ -1254,6 +1256,9 @@ export default function SessionDetail() {
                         session={sessionTotals()}
                         now={now()}
                         machineUp={machineUp()}
+                        onResume={
+                          notice()?.action?.kind === "resume" ? onResume : undefined
+                        }
                         onBreakdown={requestContextBreakdown}
                       />
                     </Show>
