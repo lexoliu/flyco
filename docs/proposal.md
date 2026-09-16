@@ -1,6 +1,6 @@
 # Flyco proposal
 
-Flyco.dev is an open-sourced project under MIT OR Apache 2.0 license, aiming to provide agentic coding on the web experience for users, with flexible cloud computing.
+Flyco.dev is an open-sourced project under the MIT license, aiming to provide agentic coding on the web experience for users, with flexible cloud computing.
 
 ## Techstack
 
