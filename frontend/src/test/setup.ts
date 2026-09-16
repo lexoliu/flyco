@@ -89,6 +89,12 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
   const path = url.pathname;
 
+  if (method === "GET" && path === "/v1/config") {
+    // The testing sitekey, matching what a `skyzen dev` deployment serves.
+    return Promise.resolve(
+      jsonResponse({ turnstile_sitekey: "1x00000000000000000000AA" }),
+    );
+  }
   if (method === "GET" && path === "/v1/me") {
     return Promise.resolve(jsonResponse({ id: "user-1", login: "octocat", session_cap: 5 }));
   }

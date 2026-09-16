@@ -44,6 +44,23 @@
   background: var(--color-primary-hover);
 }
 
+.githubButton:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.githubButton:disabled:hover {
+  background: var(--color-primary);
+}
+
+/* The Turnstile widget renders into this box; reserving its height keeps
+   the card from shifting when the iframe lands. */
+.challenge {
+  display: flex;
+  justify-content: center;
+  min-height: 65px;
+  margin-top: var(--space-3);
+}
 
 .error {
   color: var(--color-danger);

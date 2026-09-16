@@ -41,6 +41,7 @@ use crate::problem::Outcome;
 use crate::provisioning_queue::{self, ProvisioningJob};
 use crate::respond::{Accepted, Created, NoContent};
 use crate::rooms::{HostRooms, Rooms, UserStreams};
+use crate::turnstile::TurnstileClient;
 use crate::vendors::Vendors;
 use crate::{
     agents_md, api_keys, approvals, claude_oauth, cli, codespaces, codex_oauth, daemon_tokens, env,
@@ -58,12 +59,34 @@ struct Health {
     wire_protocol_version: u32,
 }
 
+/// Public deployment facts the SPA needs before it can offer sign-in.
+///
+/// Everything here is safe to show anyone — the Turnstile sitekey ships to
+/// the browser in the widget markup by design, so it is served rather than
+/// baked into the frontend build.
+#[derive(Debug, Serialize, skyzen::ToSchema)]
+struct PublicConfig {
+    /// The sitekey the login page renders its Turnstile widget with.
+    turnstile_sitekey: String,
+}
+
 /// Reports that the control plane is up, and which wire protocol version it
 /// speaks to session daemons.
 #[skyzen::openapi]
 async fn healthz() -> Json<Health> {
     Json(Health {
         wire_protocol_version: flyco_core::WIRE_PROTOCOL_VERSION,
+    })
+}
+
+/// The public half of this deployment's configuration.
+///
+/// Unauthenticated because its only consumer is the login page, which by
+/// definition has no credential yet.
+#[skyzen::openapi]
+async fn public_config(State(config): State<ApiConfig>) -> Json<PublicConfig> {
+    Json(PublicConfig {
+        turnstile_sitekey: config.turnstile_sitekey().to_owned(),
     })
 }
 
@@ -3514,6 +3537,7 @@ async fn read_agent_budget(session: SessionId, db: &Db) -> Result<BudgetView, Ap
 fn public_routes() -> Vec<RouteNode> {
     let mut nodes = Route::new((
         "/v1/healthz".at(healthz),
+        "/v1/config".at(public_config),
         "/install/{artifact}".at(get_release_artifact),
         "/v1/auth/github".route(("/start".post(oauth::start), "/callback".at(oauth::callback))),
     ))
@@ -3803,16 +3827,19 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
 /// `flyco` Pages project rather than from inside the wasm.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
+// A wiring seam: one parameter per dependency the assembled routes inject.
+#[allow(clippy::too_many_arguments)]
 pub fn router(
     config: ApiConfig,
     github: GithubClient,
+    turnstile: TurnstileClient,
     vendors: Vendors,
     clouds: Clouds,
     codespaces: Codespaces,
     db: Db,
     queue: Queue,
 ) -> Router {
-    configured(config, github, vendors, clouds, codespaces)
+    configured(config, github, turnstile, vendors, clouds, codespaces)
         .with(db)
         .with(queue)
         .build()
@@ -3830,6 +3857,7 @@ pub fn router(
 fn configured(
     config: ApiConfig,
     github: GithubClient,
+    turnstile: TurnstileClient,
     vendors: Vendors,
     clouds: Clouds,
     codespaces: Codespaces,
@@ -3838,6 +3866,7 @@ fn configured(
         with_rooms(Route::new((routes(), frontend())))
             .with(State(config))
             .with(State(github))
+            .with(State(turnstile))
             .with(State(clouds))
             .with(State(codespaces))
             .with(State(vendors.claude.clone()))
@@ -3853,6 +3882,7 @@ fn configured(
 #[cfg(target_arch = "wasm32")]
 fn configured_from_request(
     github: GithubClient,
+    turnstile: TurnstileClient,
     vendors: Vendors,
     clouds: Clouds,
     codespaces: Codespaces,
@@ -3861,6 +3891,7 @@ fn configured_from_request(
         with_rooms(Route::new(routes()))
             .with(crate::middleware::LoadApiConfig)
             .with(State(github))
+            .with(State(turnstile))
             .with(State(clouds))
             .with(State(codespaces))
             .with(State(vendors.claude.clone()))
@@ -3911,6 +3942,7 @@ pub fn router_from_environment() -> Router {
         configured(
             config,
             GithubClient::default(),
+            TurnstileClient::default(),
             Vendors::default(),
             Clouds::default(),
             Codespaces::default(),
@@ -3921,6 +3953,7 @@ pub fn router_from_environment() -> Router {
     {
         configured_from_request(
             GithubClient::default(),
+            TurnstileClient::default(),
             Vendors::default(),
             Clouds::default(),
             Codespaces::default(),

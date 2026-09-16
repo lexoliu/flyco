@@ -308,6 +308,29 @@ pub enum ApiError {
         reason: String,
     },
 
+    /// The human check guarding sign-in did not pass.
+    ///
+    /// `403` rather than a `4xx` about the request's shape: the token was
+    /// well-formed, and what failed is that Cloudflare did not believe the
+    /// visitor — or believed them on a different site — so the sign-in is
+    /// refused, not malformed. The reason is safe to show: it is either
+    /// Cloudflare's own error code or which of flyco's checks the verdict
+    /// failed, both of which tell a real user to simply try again.
+    #[error("the sign-in could not be verified as human: {reason}", status = StatusCode::FORBIDDEN)]
+    TurnstileRefused {
+        /// Why the check did not pass.
+        reason: String,
+    },
+
+    /// Cloudflare's siteverify could not be reached, or answered with
+    /// something flyco cannot interpret.
+    ///
+    /// Opaque like [`Github`](Self::Github): its message is the HTTP
+    /// client's or the deserializer's, which is flyco's own plumbing.
+    /// [`problem`](Self::problem) logs it in full.
+    #[error("Turnstile call failed: {0}", status = StatusCode::BAD_GATEWAY)]
+    Turnstile(crate::turnstile::TurnstileError),
+
     /// The machine exists but the provider has not named it yet.
     ///
     /// It is still being created, so there is nothing to act on. Distinct
@@ -1356,6 +1379,15 @@ impl From<GithubError> for ApiError {
     }
 }
 
+impl From<crate::turnstile::TurnstileError> for ApiError {
+    fn from(error: crate::turnstile::TurnstileError) -> Self {
+        // Both variants are flyco-side plumbing — a transport failure or a
+        // status siteverify does not normally send — so there is nothing
+        // here the caller can act on the way they can a refusal.
+        Self::Turnstile(error)
+    }
+}
+
 /// Sorts an `OpenAI` failure into what the user can fix and what they can
 /// only wait out.
 ///
@@ -1458,6 +1490,8 @@ impl ApiError {
             Self::GoogleRejected { .. } => "google-rejected",
             Self::Google(_) => "google-unavailable",
             Self::GithubRejected { .. } => "github-rejected",
+            Self::TurnstileRefused { .. } => "turnstile-refused",
+            Self::Turnstile(_) => "turnstile-unavailable",
             Self::MachineNotFound => "machine-not-found",
             Self::CodespacesMachineUnknown => "codespaces-machine-unknown",
             Self::CodespacesBootstrapDenied => "codespaces-bootstrap-denied",

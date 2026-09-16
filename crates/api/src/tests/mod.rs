@@ -29,6 +29,7 @@ mod row_budget;
 mod schema;
 mod sessions;
 mod skills;
+mod turnstile;
 mod usage;
 mod usage_limits;
 mod user_events;

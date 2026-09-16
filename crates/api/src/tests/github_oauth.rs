@@ -57,7 +57,11 @@ async fn a_sign_in_stores_the_renewal_halves_sealed(ctx: TestContext, _kv: Kv, d
         TestGithub::expiring(),
     ));
 
-    let response = client.post("/v1/auth/github/start").send().await;
+    let response = client
+        .post("/v1/auth/github/start")
+        .json(&serde_json::json!({"turnstile_token": "test-token"}))
+        .send()
+        .await;
     response.assert_status(200);
     let body: flyco_core::AuthorizeUrl = response.json();
     let state = Url::parse(&body.authorize_url)

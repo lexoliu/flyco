@@ -26,6 +26,11 @@
 # FLYCO_GITHUB_WEBHOOK_SECRET is the secret GitHub signs webhook deliveries
 # with. It is required because a deployment without it cannot authenticate
 # this public endpoint and must not start in a partially functional state.
+#
+# Turnstile gates sign-in the same way:
+#   skyzen secret set FLYCO_TURNSTILE_SECRET
+# The sitekey is a var — it is public by design — and so is the comma-
+# separated hostname allowlist a verified token may have been minted on.
 
 # The KV namespace is a portable service, so `#[skyzen::main]` wires it.
 [[service]]
@@ -126,6 +131,12 @@ FLYCO_AZURE_OAUTH_CLIENT_ID = "${FLYCO_AZURE_OAUTH_CLIENT_ID}"
 # The client "Sign in with Google" presents, with its callback at
 # `<FLYCO_REDIRECT_URI origin>/v1/providers/gcp/oauth/callback`.
 FLYCO_GOOGLE_OAUTH_CLIENT_ID = "${FLYCO_GOOGLE_OAUTH_CLIENT_ID}"
+
+# The Turnstile sitekey the login page renders — public by design, so a
+# var — and the hostnames a verified token may have been minted on. The
+# secret half is `skyzen secret set FLYCO_TURNSTILE_SECRET`, above.
+FLYCO_TURNSTILE_SITEKEY = "${FLYCO_TURNSTILE_SITEKEY}"
+FLYCO_TURNSTILE_HOSTNAMES = "${FLYCO_TURNSTILE_HOSTNAMES}"
 
 # `dev.flyco.dev` belongs to the `flyco` Pages project, which serves the PWA
 # and proxies `/v1/*` and `/install/*` here — the Worker keeps no hostname of

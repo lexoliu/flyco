@@ -1029,10 +1029,29 @@ export function unsubscribePush(id: string): Promise<void> {
 
 // --- Auth and repo picker ---------------------------------------------------------
 
-export function startGithubLogin(): Promise<
-  JsonResponse<"flyco_api::oauth::start", 200>
+/**
+ * The public half of this deployment's configuration — the Turnstile
+ * sitekey the login page renders its widget with. Unauthenticated by
+ * definition: its only consumer is the page shown before anyone signs in.
+ */
+export function getPublicConfig(): Promise<
+  JsonResponse<"flyco_api::app::public_config", 200>
 > {
-  return requestJson("POST", "/v1/auth/github/start");
+  return requestJson("GET", "/v1/config");
+}
+
+/**
+ * Begins a GitHub sign-in. `turnstileToken` is the widget's proof a human
+ * asked — the control plane verifies it with `siteverify` before minting
+ * any OAuth state, so a missing or stale token is refused.
+ */
+export function startGithubLogin(
+  turnstileToken: string,
+): Promise<JsonResponse<"flyco_api::oauth::start", 200>> {
+  const body: JsonBody<"flyco_api::oauth::start"> = {
+    turnstile_token: turnstileToken,
+  };
+  return requestJson("POST", "/v1/auth/github/start", { json: body });
 }
 
 export function listRepos(
