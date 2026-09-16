@@ -227,11 +227,18 @@ export default function Popover(props: PopoverProps) {
     <div
       class={cx(styles.anchor, props.anchorClass)}
       ref={anchor}
-      onFocusOut={(event) => {
-        const next = event.relatedTarget;
-        if (next === null || (anchor !== undefined && !anchor.contains(next as Node))) {
-          close();
-        }
+      onFocusOut={() => {
+        // A blur can mean focus left the popover — or that the element
+        // holding it was removed mid-render, when a view inside the
+        // panel swaps (the model picker's rail trading places with its
+        // list under a click). The distinction only settles once the
+        // arriving view has had its chance to take focus, so the check
+        // runs a frame later against where focus actually ended up.
+        requestAnimationFrame(() => {
+          if (anchor !== undefined && !anchor.contains(document.activeElement)) {
+            close();
+          }
+        });
       }}
     >
       {props.trigger({
