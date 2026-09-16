@@ -14,6 +14,16 @@ the PWA alone:
   the web UI; the `flyco` CLI and `flycod` are agent/daemon surfaces, not
   user prerequisites.
 
+## Operating flyco: public interfaces only
+
+Mutating flyco state goes through the same public surfaces a user has —
+the web GUI (via the host's dedicated browser tool, never computer-use) or
+the `flyco` CLI. Never call API endpoints directly (`curl POST /v1/...`),
+and never write the database directly (`wrangler d1 execute` with
+INSERT/UPDATE/DELETE). Direct calls bypass the product's own invariants —
+a mislabelled harness-account row came from a raw
+`POST /v1/harness-accounts`.
+
 ## Deployment: CI only
 
 Production deploys run in GitHub Actions (`.github/workflows/deploy.yml`),
