@@ -130,6 +130,10 @@ install_session_runtime() {
   # on every start, so it exists before the unit does and belongs to the
   # user the unit runs as.
   install -d -o "$runtime_user" -g "$runtime_group" /etc/claude-code
+  # A codespace's postStart writes the configuration it fetched here, as
+  # the runtime user — the VM path writes it from cloud-init as root and
+  # never needed the directory to exist ahead of time.
+  install -d -o "$runtime_user" -g "$runtime_group" /etc/flycod
 
   download https://github.com/oven-sh/bun/releases/latest/download/SHASUMS256.txt "$scratch/bun-sha256"
   case "$artifact" in
