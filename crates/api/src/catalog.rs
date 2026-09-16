@@ -82,9 +82,26 @@ fn claim_key(account: ProviderAccountId) -> String {
     format!("catalog-refresh:{account}")
 }
 
+/// The document layout a reader serves.
+///
+/// Bumped when a field is added that an older document cannot honestly
+/// default — `MachineCatalogEntry::location` is the first: a document
+/// written without it deserializes every entry's location as `None`,
+/// which reads as "the provider cannot say where the region is" about
+/// regions it can. A document under another version is served as absent
+/// rather than as answers it never wrote, and the account goes down the
+/// same refresh path a freshly linked one takes.
+pub const DOCUMENT_VERSION: u8 = 1;
+
 /// What one linked account can deploy, as the last read left it.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogDocument {
+    /// The [`DOCUMENT_VERSION`] this document was written under —
+    /// `#[serde(default)]` so a document from before the field existed
+    /// reads as version zero and is served as absent rather than parsed
+    /// into answers it cannot contain.
+    #[serde(default)]
+    pub version: u8,
     /// When any part of this document was last written, in seconds since
     /// the Unix epoch.
     ///
@@ -102,6 +119,21 @@ pub struct CatalogDocument {
     /// about the account rather than about a place in it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
+}
+
+impl Default for CatalogDocument {
+    /// An empty document claims the current layout: `record_region` builds
+    /// one with `unwrap_or_default` to write into, and a default that
+    /// claimed an older version would be served as absent on the next
+    /// read and never land.
+    fn default() -> Self {
+        Self {
+            version: DOCUMENT_VERSION,
+            read_at_unix: 0,
+            regions: Vec::new(),
+            failure: None,
+        }
+    }
 }
 
 /// One region of an account's catalog, and when it was read.
@@ -174,7 +206,13 @@ pub async fn read(
     kv: &Kv,
     account: ProviderAccountId,
 ) -> Result<Option<CatalogDocument>, ApiError> {
-    Ok(expiring::get(kv, &document_key(account)).await?)
+    let document: Option<CatalogDocument> = expiring::get(kv, &document_key(account)).await?;
+    // A document under another layout is absent, whatever it says: the
+    // fields it never recorded deserialize as defaults, and a defaulted
+    // answer is still an answer — every entry of a pre-location document
+    // reads as unplaced, which is the geography-blind ordering the field
+    // exists to replace.
+    Ok(document.filter(|document| document.version == DOCUMENT_VERSION))
 }
 
 /// Writes one account's document back, with its life renewed.
@@ -256,6 +294,7 @@ pub async fn record_account(
         kv,
         account,
         &CatalogDocument {
+            version: DOCUMENT_VERSION,
             read_at_unix,
             regions,
             failure: None,
@@ -284,6 +323,7 @@ pub async fn record_failure(
         kv,
         account,
         &CatalogDocument {
+            version: DOCUMENT_VERSION,
             read_at_unix,
             regions: Vec::new(),
             failure: Some(error),
@@ -376,8 +416,8 @@ mod tests {
     use skyzen_test::mock::InMemoryKv;
 
     use super::{
-        CatalogDocument, FAILURE_TTL_SECONDS, RegionCatalog, RegionOutcome, TTL_SECONDS, read,
-        record_account, record_failure, record_region,
+        CatalogDocument, DOCUMENT_VERSION, FAILURE_TTL_SECONDS, RegionCatalog, RegionOutcome,
+        TTL_SECONDS, document_key, read, record_account, record_failure, record_region,
     };
 
     fn entry(region: &str, machine_type: &str) -> MachineCatalogEntry {
@@ -538,6 +578,7 @@ mod tests {
     #[test]
     fn a_failure_is_retried_far_sooner_than_an_answer() {
         let answered = CatalogDocument {
+            version: DOCUMENT_VERSION,
             read_at_unix: 0,
             regions: vec![offered("eastus", "Standard_D2als_v6", 0)],
             failure: None,
@@ -546,6 +587,7 @@ mod tests {
         assert!(answered.is_stale(TTL_SECONDS));
 
         let refused = CatalogDocument {
+            version: DOCUMENT_VERSION,
             read_at_unix: 0,
             regions: Vec::new(),
             failure: Some("the credential was refused".to_owned()),
@@ -557,6 +599,7 @@ mod tests {
     #[test]
     fn a_documents_age_is_its_oldest_region() {
         let document = CatalogDocument {
+            version: DOCUMENT_VERSION,
             read_at_unix: TTL_SECONDS,
             regions: vec![
                 offered("eastus", "Standard_D2als_v6", 0),
@@ -569,5 +612,30 @@ mod tests {
             "one region read six hours ago makes the document due, however \
              recently its neighbour was written"
         );
+    }
+
+    #[skyzen::test]
+    async fn a_document_from_before_this_layout_is_served_as_absent() {
+        // What every account's row looks like until the first refresh
+        // after a layout change: the same regions, written without the
+        // field that version was added for. Served as written, each of
+        // its entries would answer `location: None` — the ordering the
+        // field exists to replace — so the reader serves absent instead
+        // and the account refreshes.
+        let kv = store();
+        let account = ProviderAccountId::generate();
+        let before = serde_json::json!({
+            "read_at_unix": crate::clock::now_unix(),
+            "regions": [{
+                "region": "UsEast",
+                "read_at_unix": crate::clock::now_unix(),
+                "outcome": {"outcome": "offered", "entries": []},
+            }],
+        });
+        crate::expiring::put(&kv, &document_key(account), &before, TTL_SECONDS)
+            .await
+            .expect("a pre-version document stores");
+
+        assert!(read(&kv, account).await.expect("read").is_none());
     }
 }
