@@ -836,7 +836,8 @@ pub enum HarnessCredentialInput {
     /// A Devin API key — the `windsurf_api_key` `devin auth login` writes
     /// into `credentials.toml`.
     DevinApiKey {
-        /// The `devi…` key Devin's API server issues.
+        /// The credential Devin's API server accepts: a `devi…` key or a
+        /// `devin-session-token$…` session token.
         key: String,
     },
 }
