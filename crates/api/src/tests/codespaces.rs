@@ -58,6 +58,7 @@ async fn signed_in_with(
         db.clone(),
         Queue::new(InMemoryQueue::new()),
         github,
+        crate::testing::TestTurnstile::passing(),
         Vendors::new(
             ClaudeClient::Fake(TestClaude),
             CodexClient::Fake(TestCodex::approved()),
@@ -553,6 +554,7 @@ async fn a_token_that_cannot_read_the_environment_repository_is_denied(
             unreadable: Some(CODESPACES_ENV_REPO),
             ..TestGithub::codespaces_authorized()
         },
+        crate::testing::TestTurnstile::passing(),
         crate::testing::test_vendors(),
         TestCodespaces::succeeding(),
     ));

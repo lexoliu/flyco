@@ -15,6 +15,7 @@
 //! key-value spaces — decides which one a returning browser was in.
 
 use flyco_core::AuthorizeUrl;
+use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::utils::{Json, State};
 use skyzen_services::{Db, Kv};
@@ -23,10 +24,12 @@ use url::Url;
 use crate::config::ApiConfig;
 use crate::crypto::random_token;
 use crate::error::ApiError;
+use crate::extract::Headers;
 use crate::github::{GithubClient, GithubOauth, SCOPE};
 use crate::problem::Outcome;
 use crate::provider_oauth::{self, ProviderCallback};
 use crate::respond::SeeOther;
+use crate::turnstile::{SiteVerify as _, TurnstileClient};
 use crate::{expiring, session, users};
 
 /// Where the browser is sent to approve the OAuth app.
@@ -70,13 +73,51 @@ fn state_key(state: &str) -> String {
     key
 }
 
-/// Begins a GitHub sign-in, returning the URL to send the browser to.
-#[skyzen::openapi]
-pub async fn start(State(config): State<ApiConfig>, kv: Kv) -> Outcome<Json<AuthorizeUrl>> {
-    begin(&config, &kv).await.into()
+/// What `POST /v1/auth/github/start` must carry.
+///
+/// This is the one public route whose whole job is minting account state,
+/// which makes it the one a registration bot wants — so the request is not
+/// the sign-in itself but proof a human, not a script, asked for it.
+#[derive(Debug, Deserialize, skyzen::ToSchema)]
+pub struct StartGithubLogin {
+    /// The `cf-turnstile-response` token the login page's widget produced.
+    turnstile_token: String,
 }
 
-async fn begin(config: &ApiConfig, kv: &Kv) -> Result<Json<AuthorizeUrl>, ApiError> {
+/// Begins a GitHub sign-in, returning the URL to send the browser to.
+///
+/// The Turnstile token is verified *before* any state is minted: a bot that
+/// cannot produce one gets no OAuth `state`, no KV write, and no path to
+/// the callback at all.
+#[skyzen::openapi]
+pub async fn start(
+    State(config): State<ApiConfig>,
+    State(verifier): State<TurnstileClient>,
+    headers: Headers,
+    kv: Kv,
+    Json(request): Json<StartGithubLogin>,
+) -> Outcome<Json<AuthorizeUrl>> {
+    begin(&config, &verifier, &headers, &kv, &request)
+        .await
+        .into()
+}
+
+async fn begin(
+    config: &ApiConfig,
+    verifier: &TurnstileClient,
+    headers: &Headers,
+    kv: &Kv,
+    request: &StartGithubLogin,
+) -> Result<Json<AuthorizeUrl>, ApiError> {
+    let verification = verifier
+        .verify(
+            config.turnstile_secret(),
+            &request.turnstile_token,
+            crate::turnstile::remote_ip(headers),
+        )
+        .await?;
+    verification.evaluate(config.turnstile_hostnames())?;
+
     let state = random_token()?;
     expiring::put(kv, &state_key(&state), &(), STATE_TTL_SECONDS).await?;
 
@@ -190,7 +231,11 @@ mod tests {
     use crate::{expiring, session, users};
 
     async fn begin(client: &skyzen_test::TestClient<skyzen::routing::Router>) -> String {
-        let response = client.post("/v1/auth/github/start").send().await;
+        let response = client
+            .post("/v1/auth/github/start")
+            .json(&serde_json::json!({"turnstile_token": "test-token"}))
+            .send()
+            .await;
         response.assert_status(200);
         let body: AuthorizeUrl = response.json();
 

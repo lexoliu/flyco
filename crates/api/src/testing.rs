@@ -88,6 +88,18 @@ pub const VAPID_SUBJECT: &str = "mailto:me@lexo.cool";
 /// Shared secret used to sign GitHub webhook fixtures.
 pub const GITHUB_WEBHOOK_SECRET: &str = "a-shared-webhook-secret";
 
+/// Turnstile sitekey the test configuration serves the login page.
+///
+/// Cloudflare's own always-passes testing sitekey — this one only ever
+/// travels as far as an assertion.
+pub const TURNSTILE_SITEKEY: &str = "1x00000000000000000000AA";
+
+/// Turnstile secret the test configuration verifies tokens against.
+pub const TURNSTILE_SECRET: &str = "flyco-test-turnstile-secret";
+
+/// Hostnames the test configuration accepts a Turnstile token for.
+pub const TURNSTILE_HOSTNAMES: &str = "flyco.test";
+
 /// The GitHub access token [`TestGithub`] hands back.
 pub const GITHUB_ACCESS_TOKEN: &str = "gho_test_access_token";
 
@@ -149,6 +161,9 @@ pub fn test_settings() -> ApiSettings {
         vapid_private_key: VAPID_PRIVATE_KEY.to_owned(),
         vapid_subject: VAPID_SUBJECT.to_owned(),
         github_webhook_secret: GITHUB_WEBHOOK_SECRET.to_owned(),
+        turnstile_sitekey: TURNSTILE_SITEKEY.to_owned(),
+        turnstile_secret: TURNSTILE_SECRET.to_owned(),
+        turnstile_hostnames: TURNSTILE_HOSTNAMES.to_owned(),
     }
 }
 
@@ -507,6 +522,82 @@ pub const CLAUDE_TOKEN_LIFETIME: u64 = 8 * 60 * 60;
 
 /// The address [`TestClaude`] reports, which becomes the account's label.
 pub const CLAUDE_ACCOUNT_EMAIL: &str = "me@lexo.cool";
+
+/// A [`crate::turnstile::SiteVerify`] that answers without a network.
+///
+/// [`TestGithub`] stands in for `github.com`; this stands in for
+/// `challenges.cloudflare.com` — the verdict the sign-in gate consults.
+/// The canned answer is constructed once, so a test's router is declared
+/// with the verdict it wants rather than scripting a sequence.
+#[derive(Debug, Clone)]
+pub struct TestTurnstile {
+    verdict: Result<crate::turnstile::Verification, crate::turnstile::TurnstileError>,
+}
+
+impl TestTurnstile {
+    /// A verdict for a token Cloudflare passed on the test deployment.
+    #[must_use]
+    pub fn passing() -> Self {
+        Self {
+            verdict: Ok(crate::turnstile::Verification {
+                success: true,
+                action: Some(crate::turnstile::EXPECTED_ACTION.to_owned()),
+                hostname: Some(TURNSTILE_HOSTNAMES.to_owned()),
+                error_codes: Vec::new(),
+            }),
+        }
+    }
+
+    /// A verdict for a token Cloudflare examined and refused, carrying its
+    /// own error codes.
+    #[must_use]
+    pub fn refusing(codes: &[&str]) -> Self {
+        Self {
+            verdict: Ok(crate::turnstile::Verification {
+                success: false,
+                action: None,
+                hostname: None,
+                error_codes: codes.iter().map(ToString::to_string).collect(),
+            }),
+        }
+    }
+
+    /// A pass Cloudflare issued for a different site — the hostname check
+    /// is flyco's to make, and this is what it exists to refuse.
+    #[must_use]
+    pub fn elsewhere() -> Self {
+        Self {
+            verdict: Ok(crate::turnstile::Verification {
+                success: true,
+                action: Some(crate::turnstile::EXPECTED_ACTION.to_owned()),
+                hostname: Some("turnstile.elsewhere.test".to_owned()),
+                error_codes: Vec::new(),
+            }),
+        }
+    }
+
+    /// A siteverify call that failed before a verdict could be read.
+    #[must_use]
+    pub fn unreachable() -> Self {
+        Self {
+            verdict: Err(crate::turnstile::TurnstileError::Transport(
+                "connection refused".to_owned(),
+            )),
+        }
+    }
+}
+
+impl crate::turnstile::SiteVerify for TestTurnstile {
+    fn verify(
+        &self,
+        _secret: &str,
+        _token: &str,
+        _remote_ip: Option<&str>,
+    ) -> impl Future<Output = Result<crate::turnstile::Verification, crate::turnstile::TurnstileError>>
+           + Send {
+        std::future::ready(self.verdict.clone())
+    }
+}
 
 /// A [`ClaudeOauth`] that answers without a network.
 ///
@@ -1155,20 +1246,30 @@ pub fn test_router_with_github(db: Db, queue: Queue, github: TestGithub) -> Rout
 
 /// The same router, with the GitHub and vendor clients the caller chose.
 pub fn test_router_with(db: Db, queue: Queue, github: TestGithub, vendors: Vendors) -> Router {
-    test_router_full(db, queue, github, vendors, TestCodespaces::succeeding())
+    test_router_full(
+        db,
+        queue,
+        github,
+        TestTurnstile::passing(),
+        vendors,
+        TestCodespaces::succeeding(),
+    )
 }
 
-/// The same router, with the Codespaces link seam the caller chose as well.
+/// The same router, with the Turnstile and Codespaces link seams the
+/// caller chose as well.
 pub fn test_router_full(
     db: Db,
     queue: Queue,
     github: TestGithub,
+    turnstile: TestTurnstile,
     vendors: Vendors,
     codespaces: TestCodespaces,
 ) -> Router {
     router(
         test_config(),
         GithubClient::Fake(github),
+        crate::turnstile::TurnstileClient::Fake(turnstile),
         vendors,
         test_clouds(),
         crate::codespaces::Codespaces::Fake(codespaces),

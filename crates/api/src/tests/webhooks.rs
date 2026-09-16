@@ -18,8 +18,10 @@ use skyzen_test::{TestClient, TestContext};
 use crate::app::router;
 use crate::github::GithubClient;
 use crate::testing::{
-    GITHUB_WEBHOOK_SECRET, TestGithub, migrate, seed_user, test_clouds, test_config, test_vendors,
+    GITHUB_WEBHOOK_SECRET, TestGithub, TestTurnstile, migrate, seed_user, test_clouds, test_config,
+    test_vendors,
 };
+use crate::turnstile::TurnstileClient;
 use crate::webhooks::{EVENT_HEADER, SIGNATURE_HEADER};
 use flyco_core::wire::EventPage;
 
@@ -45,6 +47,7 @@ async fn configured_router(db: &Db) -> Router {
     router(
         test_config(),
         GithubClient::Fake(TestGithub::default()),
+        TurnstileClient::Fake(TestTurnstile::passing()),
         test_vendors(),
         test_clouds(),
         crate::testing::test_codespaces(),

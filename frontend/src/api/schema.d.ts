@@ -176,6 +176,10 @@ export interface paths {
         /**
          * Begins a GitHub sign-in, returning the URL to send the browser to.
          * @description Begins a GitHub sign-in, returning the URL to send the browser to.
+         *
+         *     The Turnstile token is verified *before* any state is minted: a bot that
+         *     cannot produce one gets no OAuth `state`, no KV write, and no path to
+         *     the callback at all.
          */
         post: operations["flyco_api::oauth::start"];
         delete?: never;
@@ -276,6 +280,29 @@ export interface paths {
          *     instead of running the attempt's ten minutes out.
          */
         post: operations["flyco_api::cli::deny_cli_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The public half of this deployment's configuration.
+         * @description The public half of this deployment's configuration.
+         *
+         *     Unauthenticated because its only consumer is the login page, which by
+         *     definition has no credential yet.
+         */
+        get: operations["flyco_api::app::public_config"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -5532,6 +5559,17 @@ export interface components {
          */
         ProvisioningStage: "reserving" | "booting" | "cloning" | "ready";
         /**
+         * @description Public deployment facts the SPA needs before it can offer sign-in.
+         *
+         *     Everything here is safe to show anyone — the Turnstile sitekey ships to
+         *     the browser in the widget markup by design, so it is served rather than
+         *     baked into the frontend build.
+         */
+        PublicConfig: {
+            /** @description The sitekey the login page renders its Turnstile widget with. */
+            turnstile_sitekey: string;
+        };
+        /**
          * @description The two keys a browser derives for message encryption ([RFC 8291]).
          *
          *     [RFC 8291]: https://www.rfc-editor.org/rfc/rfc8291
@@ -6112,6 +6150,17 @@ export interface components {
              * @description When it was last uploaded, seconds since the Unix epoch.
              */
             uploaded_at_unix: number;
+        };
+        /**
+         * @description What `POST /v1/auth/github/start` must carry.
+         *
+         *     This is the one public route whose whole job is minting account state,
+         *     which makes it the one a registration bot wants — so the request is not
+         *     the sign-in itself but proof a human, not a script, asked for it.
+         */
+        StartGithubLogin: {
+            /** @description The `cf-turnstile-response` token the login page's widget produced. */
+            turnstile_token: string;
         };
         /**
          * @description Why a machine's own daemon says it is going away.
@@ -6902,7 +6951,15 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The `cf-turnstile-response` token the login page's widget produced. */
+                    turnstile_token: string;
+                };
+            };
+        };
         responses: {
             /** @description Response */
             200: {
@@ -7049,6 +7106,29 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    "flyco_api::app::public_config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The sitekey the login page renders its Turnstile widget with. */
+                        turnstile_sitekey: string;
+                    };
+                };
             };
         };
     };

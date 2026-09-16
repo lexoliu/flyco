@@ -89,7 +89,11 @@ describe("route smoke tests", () => {
     expect(queryByRole("heading", { level: 1 })?.textContent).not.toContain(
       "What should we build",
     );
-    expect(fetch).not.toHaveBeenCalled();
+    // The one call allowed before anyone signs in is the public config
+    // read that hands the login page its Turnstile sitekey.
+    expect(vi.mocked(fetch).mock.calls.map(([input]) => String(input))).toEqual(
+      [expect.stringContaining("/v1/config")],
+    );
   });
 
   it("restores the protected destination after sign-in", async () => {
@@ -136,7 +140,10 @@ describe("route smoke tests", () => {
     expect(await findByText("Sign in with GitHub")).toBeInTheDocument();
     // Approving a terminal belongs to an account, so the attempt id rides
     // the returnTo the shell builds, and sign-in lands back on the ask.
-    expect(fetch).not.toHaveBeenCalled();
+    // The one call the sign-in page makes is the public config read.
+    expect(vi.mocked(fetch).mock.calls.map(([input]) => String(input))).toEqual(
+      [expect.stringContaining("/v1/config")],
+    );
     expect(consumePostLoginPath()).toBe("/cli/authorize?id=attempt-1");
   });
 
@@ -270,8 +277,11 @@ describe("route smoke tests", () => {
     const { findByText } = renderAt("/welcome", false);
     expect(await findByText("Sign in with GitHub")).toBeInTheDocument();
     // The first run belongs to an account: nothing of it was drawn, no
-    // protected call went out, and sign-in returns here.
-    expect(fetch).not.toHaveBeenCalled();
+    // protected call went out — the sign-in page's public config read is
+    // the one exception — and sign-in returns here.
+    expect(vi.mocked(fetch).mock.calls.map(([input]) => String(input))).toEqual(
+      [expect.stringContaining("/v1/config")],
+    );
     expect(consumePostLoginPath()).toBe("/welcome");
   });
 

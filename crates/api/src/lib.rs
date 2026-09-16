@@ -67,6 +67,7 @@ pub mod skills;
 pub mod sse;
 pub mod transcripts;
 pub mod turns;
+pub mod turnstile;
 pub mod usage_limits;
 pub mod user_events;
 pub mod users;

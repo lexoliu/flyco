@@ -69,6 +69,24 @@ pub mod var {
     /// against, so it must fail during startup rather than leave a product
     /// route running in an unusable state.
     pub const GITHUB_WEBHOOK_SECRET: &str = "FLYCO_GITHUB_WEBHOOK_SECRET";
+    /// Cloudflare Turnstile sitekey the login page renders its widget with.
+    ///
+    /// Public by design — it is embedded in the page — so it lives in
+    /// `[cloudflare.vars]` and is served back to the SPA by `GET /v1/config`.
+    pub const TURNSTILE_SITEKEY: &str = "FLYCO_TURNSTILE_SITEKEY";
+    /// Cloudflare Turnstile secret `siteverify` is called with. Secret;
+    /// `wrangler secret put`.
+    ///
+    /// Required for the same reason the webhook secret is: a deployment
+    /// without it cannot verify the check the sign-in gate runs on.
+    pub const TURNSTILE_SECRET: &str = "FLYCO_TURNSTILE_SECRET";
+    /// Comma-separated hostnames a verified token may have been minted on.
+    /// Public; lives in `[cloudflare.vars]`.
+    ///
+    /// The sitekey is public, so a token solved on any page that embeds it
+    /// passes `success` — the hostname check is what confines acceptance to
+    /// this deployment.
+    pub const TURNSTILE_HOSTNAMES: &str = "FLYCO_TURNSTILE_HOSTNAMES";
 }
 
 /// Cloudflare binding names the queue consumer resolves for itself.
@@ -138,6 +156,9 @@ pub struct ApiConfig {
     encryption_key: [u8; KEY_LEN],
     vapid: VapidConfig,
     github_webhook_secret: String,
+    turnstile_sitekey: String,
+    turnstile_secret: String,
+    turnstile_hostnames: Vec<String>,
 }
 
 /// The application-server identity used to encrypt and sign Web Push.
@@ -202,6 +223,12 @@ pub struct ApiSettings {
     pub vapid_subject: String,
     /// [`var::GITHUB_WEBHOOK_SECRET`].
     pub github_webhook_secret: String,
+    /// [`var::TURNSTILE_SITEKEY`].
+    pub turnstile_sitekey: String,
+    /// [`var::TURNSTILE_SECRET`].
+    pub turnstile_secret: String,
+    /// [`var::TURNSTILE_HOSTNAMES`], comma-separated.
+    pub turnstile_hostnames: String,
 }
 
 impl core::fmt::Debug for ApiSettings {
@@ -228,6 +255,18 @@ impl ApiConfig {
     pub fn new(settings: ApiSettings) -> Result<Self, ConfigError> {
         let github_webhook_secret =
             reject_empty(var::GITHUB_WEBHOOK_SECRET, settings.github_webhook_secret)?;
+        let turnstile_sitekey = reject_empty(var::TURNSTILE_SITEKEY, settings.turnstile_sitekey)?;
+        let turnstile_secret = reject_empty(var::TURNSTILE_SECRET, settings.turnstile_secret)?;
+        let turnstile_hostnames =
+            reject_empty(var::TURNSTILE_HOSTNAMES, settings.turnstile_hostnames)?
+                .split(',')
+                .map(str::trim)
+                .filter(|hostname| !hostname.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+        if turnstile_hostnames.is_empty() {
+            return Err(ConfigError::Missing(var::TURNSTILE_HOSTNAMES));
+        }
         let claude_oauth_client_id =
             reject_empty(var::CLAUDE_OAUTH_CLIENT_ID, settings.claude_oauth_client_id)?;
         let codex_oauth_client_id =
@@ -279,6 +318,9 @@ impl ApiConfig {
                 subject,
             },
             github_webhook_secret,
+            turnstile_sitekey,
+            turnstile_secret,
+            turnstile_hostnames,
             github_client_id: settings.github_client_id,
             github_client_secret: settings.github_client_secret,
             claude_oauth_client_id,
@@ -345,6 +387,9 @@ impl ApiConfig {
             vapid_private_key: read(var::VAPID_PRIVATE_KEY)?,
             vapid_subject: read(var::VAPID_SUBJECT)?,
             github_webhook_secret: read(var::GITHUB_WEBHOOK_SECRET)?,
+            turnstile_sitekey: read(var::TURNSTILE_SITEKEY)?,
+            turnstile_secret: read(var::TURNSTILE_SECRET)?,
+            turnstile_hostnames: read(var::TURNSTILE_HOSTNAMES)?,
         })
     }
 
@@ -359,6 +404,27 @@ impl ApiConfig {
     #[must_use]
     pub fn github_webhook_secret(&self) -> &str {
         &self.github_webhook_secret
+    }
+
+    /// The Turnstile sitekey the login page's widget is rendered with.
+    ///
+    /// Public by design — it ships to the browser — so this is served to
+    /// the SPA rather than baked into the deploy.
+    #[must_use]
+    pub fn turnstile_sitekey(&self) -> &str {
+        &self.turnstile_sitekey
+    }
+
+    /// The secret `siteverify` calls are made with.
+    #[must_use]
+    pub fn turnstile_secret(&self) -> &str {
+        &self.turnstile_secret
+    }
+
+    /// The hostnames a verified Turnstile token may have been minted on.
+    #[must_use]
+    pub fn turnstile_hostnames(&self) -> &[String] {
+        &self.turnstile_hostnames
     }
 
     /// GitHub OAuth app client id.

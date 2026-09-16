@@ -489,8 +489,29 @@
     "/v1/auth/github/start": {
       "post": {
         "summary": "Begins a GitHub sign-in, returning the URL to send the browser to.",
-        "description": "Begins a GitHub sign-in, returning the URL to send the browser to.",
+        "description": "Begins a GitHub sign-in, returning the URL to send the browser to.\n\nThe Turnstile token is verified *before* any state is minted: a bot that\ncannot produce one gets no OAuth `state`, no KV write, and no path to\nthe callback at all.",
         "operationId": "flyco_api::oauth::start",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "What `POST /v1/auth/github/start` must carry.\n\nThis is the one public route whose whole job is minting account state,\nwhich makes it the one a registration bot wants — so the request is not\nthe sign-in itself but proof a human, not a script, asked for it.",
+                "required": [
+                  "turnstile_token"
+                ],
+                "properties": {
+                  "turnstile_token": {
+                    "type": "string",
+                    "description": "The `cf-turnstile-response` token the login page's widget produced."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Response",
@@ -681,6 +702,35 @@
         "responses": {
           "204": {
             "description": "Done. There is nothing to return."
+          }
+        }
+      }
+    },
+    "/v1/config": {
+      "get": {
+        "summary": "The public half of this deployment's configuration.",
+        "description": "The public half of this deployment's configuration.\n\nUnauthenticated because its only consumer is the login page, which by\ndefinition has no credential yet.",
+        "operationId": "flyco_api::app::public_config",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Public deployment facts the SPA needs before it can offer sign-in.\n\nEverything here is safe to show anyone — the Turnstile sitekey ships to\nthe browser in the widget markup by design, so it is served rather than\nbaked into the frontend build.",
+                  "required": [
+                    "turnstile_sitekey"
+                  ],
+                  "properties": {
+                    "turnstile_sitekey": {
+                      "type": "string",
+                      "description": "The sitekey the login page renders its Turnstile widget with."
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -12866,6 +12916,19 @@
           "ready"
         ]
       },
+      "PublicConfig": {
+        "type": "object",
+        "description": "Public deployment facts the SPA needs before it can offer sign-in.\n\nEverything here is safe to show anyone — the Turnstile sitekey ships to\nthe browser in the widget markup by design, so it is served rather than\nbaked into the frontend build.",
+        "required": [
+          "turnstile_sitekey"
+        ],
+        "properties": {
+          "turnstile_sitekey": {
+            "type": "string",
+            "description": "The sitekey the login page renders its Turnstile widget with."
+          }
+        }
+      },
       "PushKeys": {
         "type": "object",
         "description": "The two keys a browser derives for message encryption ([RFC 8291]).\n\n[RFC 8291]: https://www.rfc-editor.org/rfc/rfc8291",
@@ -13693,6 +13756,19 @@
             "format": "int64",
             "description": "When it was last uploaded, seconds since the Unix epoch.",
             "minimum": 0
+          }
+        }
+      },
+      "StartGithubLogin": {
+        "type": "object",
+        "description": "What `POST /v1/auth/github/start` must carry.\n\nThis is the one public route whose whole job is minting account state,\nwhich makes it the one a registration bot wants — so the request is not\nthe sign-in itself but proof a human, not a script, asked for it.",
+        "required": [
+          "turnstile_token"
+        ],
+        "properties": {
+          "turnstile_token": {
+            "type": "string",
+            "description": "The `cf-turnstile-response` token the login page's widget produced."
           }
         }
       },
