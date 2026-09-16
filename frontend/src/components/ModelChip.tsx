@@ -227,7 +227,19 @@ export default function ModelChip(props: ModelChipProps) {
           <Show
             when={effortFor() !== null && efforts().length > 0}
             fallback={
-              <div class={composer.popover}>
+              <div
+                class={composer.popover}
+                tabindex="-1"
+                ref={(el) =>
+                  // The arriving view takes focus — the search box where
+                  // there is one: the control that led here went away
+                  // with the view that held it, and focus dropped to
+                  // <body> reads to the popover as leaving.
+                  (el.querySelector<HTMLElement>("input[type=search]") ?? el).focus({
+                    preventScroll: true,
+                  })
+                }
+              >
                 <Show when={props.models.length > SEARCH_WORTH_IT}>
                   <input
                     class={composer.search}
@@ -272,7 +284,17 @@ export default function ModelChip(props: ModelChipProps) {
               </div>
             }
           >
-            <div class={composer.popover}>
+            <div
+              class={composer.popover}
+              tabindex="-1"
+              ref={(el) =>
+                // The rail's own input takes focus, so the arrow keys
+                // reach the detents without a stop on the way.
+                (el.querySelector<HTMLElement>("input[type=range]") ?? el).focus({
+                  preventScroll: true,
+                })
+              }
+            >
               <div class={styles.head}>
                 <button
                   type="button"
