@@ -10864,7 +10864,7 @@
             "properties": {
               "access_token": {
                 "type": "string",
-                "description": "Value for `CLAUDE_CODE_OAUTH_TOKEN`, until it expires."
+                "description": "The bearer token a session's machine provisions as\n`.credentials.json`, until it expires."
               },
               "expires_at_unix": {
                 "type": "integer",

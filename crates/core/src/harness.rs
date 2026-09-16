@@ -805,7 +805,8 @@ pub enum HarnessCredentialInput {
     /// refresh token is what keeps a linked account working past the
     /// access token's lifetime without the user pasting anything again.
     ClaudeOauth {
-        /// Value for `CLAUDE_CODE_OAUTH_TOKEN`, until it expires.
+        /// The bearer token a session's machine provisions as
+        /// `.credentials.json`, until it expires.
         access_token: String,
         /// Redeemed for a new pair once the access token is near its end.
         refresh_token: String,

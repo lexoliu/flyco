@@ -28,6 +28,7 @@
  * status — on anything it cannot honour. flycod never signals it: a turn
  * ends through the SDK's own `interrupt()`.
  */
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import {
@@ -381,13 +382,63 @@ export function environment(command: StartCommand): NonNullable<Options["env"]> 
     case "inherit":
       break;
     case "oauth_token":
-      env.CLAUDE_CODE_OAUTH_TOKEN = command.auth.token;
+      // The token lives in `.credentials.json` (provisionCredential), not
+      // CLAUDE_CODE_OAUTH_TOKEN: the CLI classifies an env-injected token as
+      // an env-quad credential, which is ineligible for plan rate limits, so
+      // `usage()` would always report `rate_limits_available: false`.
       break;
     case "api_key":
       env.ANTHROPIC_API_KEY = command.auth.key;
       break;
   }
   return env;
+}
+
+/**
+ * The OAuth grant scopes a `claude setup-token` is minted with.
+ *
+ * The CLI's own OAuth client requests this set at login; the token itself
+ * carries them server-side, and the credentials file repeats them so the
+ * resolved credential's `scopes` satisfies the rate-limit gate.
+ */
+const SETUP_TOKEN_SCOPES = [
+  "org:create_api_key",
+  "user:profile",
+  "user:inference",
+  "user:sessions:claude_code",
+  "user:mcp_servers",
+  "user:file_upload",
+];
+
+/**
+ * Writes the OAuth credential the supervised CLI resolves.
+ *
+ * The Agent SDK only treats a credential as a real subscription login when
+ * it comes from the credentials store — `CLAUDE_CONFIG_DIR/.credentials.json`
+ * in isolated mode — because env injection carries no scopes, profile, or
+ * subscription metadata. Without this file `rate_limits_available` is false
+ * and the plan usage windows flyco reports are empty. The access token alone
+ * is all flyco holds: `claude setup-token` mints a long-lived grant with no
+ * refresh token, so the entry cannot expire or refresh from the CLI's side.
+ */
+export function provisionCredential(command: StartCommand): void {
+  if (command.auth.mode !== "oauth_token") {
+    return;
+  }
+  if (command.config_dir === null) {
+    throw new Error("an injected OAuth credential requires an isolated config directory");
+  }
+  mkdirSync(command.config_dir, { recursive: true });
+  writeFileSync(
+    join(command.config_dir, ".credentials.json"),
+    JSON.stringify({
+      claudeAiOauth: {
+        accessToken: command.auth.token,
+        scopes: SETUP_TOKEN_SCOPES,
+      },
+    }),
+    { mode: 0o600 },
+  );
 }
 
 /**
@@ -524,6 +575,8 @@ class Session {
 
   constructor(command: StartCommand) {
     this.sessionId = sessionIdFor(command);
+    // The credentials file must exist before the CLI spawns and resolves it.
+    provisionCredential(command);
     this.session = query({
       prompt: this.messages.stream(),
       options: sessionOptions(command, this.sessionId, {

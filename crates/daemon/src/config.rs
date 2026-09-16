@@ -85,7 +85,10 @@ pub enum ClaudeAuth {
     Inherit,
     /// A Claude subscription OAuth token in an isolated config tree.
     OauthToken {
-        /// Value for `CLAUDE_CODE_OAUTH_TOKEN`.
+        /// The access token the sidecar writes as `.credentials.json` —
+        /// a credentials-store entry, not `CLAUDE_CODE_OAUTH_TOKEN`,
+        /// because env injection resolves as env-quad auth and is
+        /// ineligible for plan rate limits.
         token: String,
         /// The config tree it applies to.
         isolation: Isolation,

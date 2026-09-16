@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use flyco_core::{DriverKind, MachineOrigin, PermissionMode, SessionId};
 use flyco_daemon::config::DaemonConfig;
 use flyco_daemon::tui::HarnessTui;
-use flyco_provider::flycod::{self, CLAUDE_CONFIG_DIR, CODEX_HOME};
+use flyco_provider::flycod::{self, CODEX_HOME};
 use flyco_provider::{
     CheckoutSpec, ClaudeCredential, CodexCredential, DaemonBootstrap, GitAccess, GitIdentity,
     HarnessCredential,
@@ -84,12 +84,21 @@ fn args_of(command: &CommandBuilder) -> Vec<String> {
 #[tokio::test]
 async fn a_claude_launch_names_the_sdk_binary_the_model_and_the_mode() {
     let root = std::env::temp_dir().join(format!("flycod-tui-{}", std::process::id()));
+    let config_dir = root.join("claude-config");
     let mut config = parse(&bootstrap(HarnessCredential::ClaudeCode(
         ClaudeCredential::OauthToken {
             token: OAUTH_TOKEN.to_owned(),
         },
     )));
     config.sidecar.as_mut().expect("sidecar").dir = sidecar_with_claude(&root);
+    // The provisioned path is the machine's, not this host's — point the
+    // credential's isolated tree at the scratch dir instead.
+    match &mut config.claude.as_mut().expect("claude").auth {
+        flyco_daemon::config::ClaudeAuth::OauthToken { isolation, .. } => {
+            isolation.config_dir = config_dir.clone();
+        }
+        other => panic!("the OAuth bootstrap parses to an OAuth auth: {other:?}"),
+    }
 
     let tui = HarnessTui::resolve(&config).await;
     let command = tui.command(false).expect("the launch resolves");
@@ -111,14 +120,51 @@ async fn a_claude_launch_names_the_sdk_binary_the_model_and_the_mode() {
     );
     assert_eq!(
         command.get_env("CLAUDE_CONFIG_DIR"),
-        Some(OsStr::new(CLAUDE_CONFIG_DIR)),
+        Some(config_dir.as_os_str()),
         "the isolated config tree the credential belongs to"
     );
     assert_eq!(
         command.get_env("CLAUDE_CODE_OAUTH_TOKEN"),
-        Some(OsStr::new(OAUTH_TOKEN)),
-        "the credential reaches the TUI through the environment"
+        None,
+        "env injection resolves as env-quad auth — ineligible for plan limits"
     );
+    assert!(
+        !argv.iter().any(|arg| arg.contains(OAUTH_TOKEN)),
+        "no credential on argv: {argv:?}"
+    );
+
+    // The credential reaches the CLI as `.credentials.json` in its
+    // isolated config tree, carrying the setup-token grant's scopes — the
+    // shape the rate-limit gate resolves as a real OAuth login.
+    let written = config_dir.join(".credentials.json");
+    let stored: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&written).expect("the credential file is written"),
+    )
+    .expect("the credential file parses");
+    assert_eq!(
+        stored["claudeAiOauth"]["accessToken"], OAUTH_TOKEN,
+        "{stored}"
+    );
+    assert!(
+        stored["claudeAiOauth"]["scopes"]
+            .as_array()
+            .is_some_and(|scopes| scopes.iter().any(|s| s == "user:profile")
+                && scopes.iter().any(|s| s == "user:inference")),
+        "the rate-limit gate's scopes are recorded: {stored}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&written)
+                .expect("the credential file")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "the credential is owner-only"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&root);
 }

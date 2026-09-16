@@ -94,7 +94,8 @@ pub enum ClaudeCredential {
     Inherit,
     /// A Claude subscription OAuth token.
     OauthToken {
-        /// Value for `CLAUDE_CODE_OAUTH_TOKEN`.
+        /// The access token provisioned as `.credentials.json` — the
+        /// credential-store entry the CLI resolves as a real OAuth login.
         token: String,
     },
     /// An Anthropic API key.

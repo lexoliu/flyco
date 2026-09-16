@@ -63,7 +63,7 @@ pub const REFRESH_WINDOW_SECONDS: u64 = 30 * 60;
 pub enum StoredCredential {
     /// A long-lived Claude subscription token from `claude setup-token`.
     OauthToken {
-        /// Value for `CLAUDE_CODE_OAUTH_TOKEN`.
+        /// The access token the daemon provisions as `.credentials.json`.
         token: String,
     },
     /// An Anthropic or `OpenAI` API key.
@@ -73,7 +73,8 @@ pub enum StoredCredential {
     },
     /// A Claude subscription grant from the browser OAuth flow.
     ClaudeOauth {
-        /// Value for `CLAUDE_CODE_OAUTH_TOKEN`, until it expires.
+        /// The bearer token a machine provisions as `.credentials.json`,
+        /// until it expires.
         access_token: String,
         /// Redeemed for the next pair.
         refresh_token: String,
