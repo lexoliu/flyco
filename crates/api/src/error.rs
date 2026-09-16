@@ -13,6 +13,7 @@ use skyzen_services::{DbError, KvError, StorageError};
 
 use crate::anthropic::AnthropicError;
 use crate::crypto::CryptoError;
+use crate::devin::DevinError;
 use crate::github::{GithubCall, GithubError};
 use crate::google::GoogleError;
 use crate::microsoft::MicrosoftError;
@@ -1311,6 +1312,16 @@ pub enum ApiError {
     #[error("Google call failed: {0}", status = StatusCode::BAD_GATEWAY)]
     Google(GoogleError),
 
+    /// Devin could not be reached, or answered with something flyco cannot
+    /// interpret.
+    ///
+    /// A key Devin refuses is not one of these — that is
+    /// [`InvalidHarnessCredential`](Self::InvalidHarnessCredential), which
+    /// the caller fixes by pasting a working key. See
+    /// [`From<DevinError>`](Self::from).
+    #[error("Devin call failed: {0}", status = StatusCode::BAD_GATEWAY)]
+    Devin(DevinError),
+
     /// The key-value store failed.
     #[error("key-value store failed: {0}")]
     Kv(#[from] KvError),
@@ -1437,6 +1448,24 @@ impl From<GoogleError> for ApiError {
     }
 }
 
+/// Sorts a Devin failure into what the caller fixes and what they can only
+/// wait out.
+///
+/// The refusal is not a vendor problem: Devin looked at the key and said
+/// no, which is the same class of fact as an empty one, so it lands on the
+/// same `422` [`InvalidHarnessCredential`](Self::InvalidHarnessCredential)
+/// rather than on a `502` that suggests retrying would help.
+impl From<DevinError> for ApiError {
+    fn from(error: DevinError) -> Self {
+        match error {
+            DevinError::Rejected => {
+                Self::InvalidHarnessCredential("Devin does not accept this key")
+            }
+            unavailable => Self::Devin(unavailable),
+        }
+    }
+}
+
 impl ApiError {
     /// The slug this failure is documented under, below
     /// [`TYPE_BASE`](flyco_core::problem::TYPE_BASE).
@@ -1489,6 +1518,7 @@ impl ApiError {
             Self::Microsoft(_) => "microsoft-unavailable",
             Self::GoogleRejected { .. } => "google-rejected",
             Self::Google(_) => "google-unavailable",
+            Self::Devin(_) => "devin-unavailable",
             Self::GithubRejected { .. } => "github-rejected",
             Self::TurnstileRefused { .. } => "turnstile-refused",
             Self::Turnstile(_) => "turnstile-unavailable",

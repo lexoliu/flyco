@@ -4717,12 +4717,21 @@ export interface components {
             /** @enum {string} */
             outcome: "failed";
         };
-        /** @description Request to link a Claude Code or Codex account. */
+        /** @description Request to link a Claude Code, Codex, or Devin account. */
         LinkHarnessAccount: {
             /** @description Authentication material, tagged with the mode that consumes it. */
             credential: components["schemas"]["HarnessCredentialInput"];
-            /** @description User-facing name that distinguishes this credential from another. */
-            label: string;
+            /**
+             * @description User-facing name that distinguishes this credential from another.
+             *
+             *     Required for credential kinds that carry no identity — an
+             *     Anthropic or `OpenAI` key opens no account lookup, so the caller
+             *     names it. Ignored for `devin_api_key`: linking asks Devin's
+             *     `/v3/self` who the key belongs to and labels the account with the
+             *     vendor's own answer, so a Devin label is never the caller's to
+             *     choose.
+             */
+            label?: string | null;
         };
         /** @description Request body of `POST /v1/providers`. */
         LinkProvider: {
@@ -7285,8 +7294,17 @@ export interface operations {
                 "application/json": {
                     /** @description Authentication material, tagged with the mode that consumes it. */
                     credential: components["schemas"]["HarnessCredentialInput"];
-                    /** @description User-facing name that distinguishes this credential from another. */
-                    label: string;
+                    /**
+                     * @description User-facing name that distinguishes this credential from another.
+                     *
+                     *     Required for credential kinds that carry no identity — an
+                     *     Anthropic or `OpenAI` key opens no account lookup, so the caller
+                     *     names it. Ignored for `devin_api_key`: linking asks Devin's
+                     *     `/v3/self` who the key belongs to and labels the account with the
+                     *     vendor's own answer, so a Devin label is never the caller's to
+                     *     choose.
+                     */
+                    label?: string | null;
                 };
             };
         };

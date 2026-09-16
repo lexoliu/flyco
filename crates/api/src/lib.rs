@@ -25,6 +25,7 @@ pub mod codex_oauth;
 pub mod config;
 pub mod crypto;
 pub mod daemon_tokens;
+pub mod devin;
 pub mod env;
 pub mod error;
 pub mod expiring;

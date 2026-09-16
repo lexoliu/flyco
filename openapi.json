@@ -1003,9 +1003,8 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "description": "Request to link a Claude Code or Codex account.",
+                "description": "Request to link a Claude Code, Codex, or Devin account.",
                 "required": [
-                  "label",
                   "credential"
                 ],
                 "properties": {
@@ -1014,8 +1013,11 @@
                     "description": "Authentication material, tagged with the mode that consumes it."
                   },
                   "label": {
-                    "type": "string",
-                    "description": "User-facing name that distinguishes this credential from another."
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "User-facing name that distinguishes this credential from another.\n\nRequired for credential kinds that carry no identity — an\nAnthropic or `OpenAI` key opens no account lookup, so the caller\nnames it. Ignored for `devin_api_key`: linking asks Devin's\n`/v3/self` who the key belongs to and labels the account with the\nvendor's own answer, so a Devin label is never the caller's to\nchoose."
                   }
                 }
               }
@@ -11615,9 +11617,8 @@
       },
       "LinkHarnessAccount": {
         "type": "object",
-        "description": "Request to link a Claude Code or Codex account.",
+        "description": "Request to link a Claude Code, Codex, or Devin account.",
         "required": [
-          "label",
           "credential"
         ],
         "properties": {
@@ -11626,8 +11627,11 @@
             "description": "Authentication material, tagged with the mode that consumes it."
           },
           "label": {
-            "type": "string",
-            "description": "User-facing name that distinguishes this credential from another."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "User-facing name that distinguishes this credential from another.\n\nRequired for credential kinds that carry no identity — an\nAnthropic or `OpenAI` key opens no account lookup, so the caller\nnames it. Ignored for `devin_api_key`: linking asks Devin's\n`/v3/self` who the key belongs to and labels the account with the\nvendor's own answer, so a Devin label is never the caller's to\nchoose."
           }
         }
       },

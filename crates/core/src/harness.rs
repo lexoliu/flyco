@@ -884,11 +884,18 @@ impl HarnessCredentialInput {
     }
 }
 
-/// Request to link a Claude Code or Codex account.
+/// Request to link a Claude Code, Codex, or Devin account.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct LinkHarnessAccount {
     /// User-facing name that distinguishes this credential from another.
-    pub label: String,
+    ///
+    /// Required for credential kinds that carry no identity — an
+    /// Anthropic or `OpenAI` key opens no account lookup, so the caller
+    /// names it. Ignored for `devin_api_key`: linking asks Devin's
+    /// `/v3/self` who the key belongs to and labels the account with the
+    /// vendor's own answer, so a Devin label is never the caller's to
+    /// choose.
+    pub label: Option<String>,
     /// Authentication material, tagged with the mode that consumes it.
     pub credential: HarnessCredentialInput,
 }

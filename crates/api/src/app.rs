@@ -3869,6 +3869,7 @@ fn configured(
             .with(State(vendors.codex.clone()))
             .with(State(vendors.microsoft.clone()))
             .with(State(vendors.google.clone()))
+            .with(State(vendors.devin.clone()))
             .with(State(vendors)),
     )
 }
@@ -3894,6 +3895,7 @@ fn configured_from_request(
             .with(State(vendors.codex.clone()))
             .with(State(vendors.microsoft.clone()))
             .with(State(vendors.google.clone()))
+            .with(State(vendors.devin.clone()))
             .with(State(vendors)),
     )
 }
