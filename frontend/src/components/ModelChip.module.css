@@ -1,8 +1,7 @@
 /*
- * The model picker: a list of the agent's models, each with the harness's
- * own one-line description, drilling into the chosen model's effort —
- * the level the thumb names, the model it belongs to, and the detented
- * rail of stops the choice can take, `Default` first.
+ * The model picker: the chosen model's detented effort rail first, the
+ * level the thumb names as the way into the list, and the agent's models
+ * behind that link, each with the harness's own one-line description.
  */
 
 .panel {
@@ -43,15 +42,16 @@
   color: var(--color-text);
 }
 
-/* The effort view's head: the level the thumb sits on as the way back to
-   the list, and the reset that hands the choice back to the model. */
+/* The effort view's head: the level the thumb sits on as the way into
+   the model list, and the reset that hands the choice back to the
+   model. */
 .head {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 
-.back {
+.models {
   display: inline-flex;
   align-items: center;
   gap: 2px;
