@@ -4,6 +4,9 @@
  * guards its entry point on `import.meta.main` so these can be imported.
  */
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type {
   McpServerStatus,
@@ -16,6 +19,7 @@ import {
   environment,
   lines,
   offeredCommands,
+  provisionCredential,
   sessionIdFor,
   toModelOption,
   sessionOptions,
@@ -126,7 +130,7 @@ describe("the supervised CLI's environment", () => {
     expect(env.CLAUDE_AGENT_SDK_CLIENT_APP).toBe("flycod-sidecar/0.1.0");
   });
 
-  test("an OAuth token comes with its isolated config tree", () => {
+  test("an OAuth token is provisioned as a credentials file, never env-injected", () => {
     const env = environment(
       start({
         auth: { mode: "oauth_token", token: "sk-ant-oat01-example" },
@@ -134,7 +138,9 @@ describe("the supervised CLI's environment", () => {
         project_dir_name: "flyco-session",
       }),
     );
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-example");
+    // An env-injected token resolves as env-quad auth, which the CLI's
+    // rate-limit gate treats as ineligible for plan limits.
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     expect(env.CLAUDE_CONFIG_DIR).toBe("/var/lib/flyco/claude");
     expect(env.CLAUDE_CODE_PROJECT_DIR_NAME).toBe("flyco-session");
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
@@ -150,6 +156,40 @@ describe("the supervised CLI's environment", () => {
     );
     expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-api03-example");
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+});
+
+describe("credential provisioning", () => {
+  test("an OAuth token lands in .credentials.json with its grant scopes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "flyco-creds-"));
+    provisionCredential(
+      start({
+        auth: { mode: "oauth_token", token: "sk-ant-oat01-example" },
+        config_dir: dir,
+      }),
+    );
+
+    const file = join(dir, ".credentials.json");
+    const written = JSON.parse(readFileSync(file, "utf8"));
+    expect(written.claudeAiOauth.accessToken).toBe("sk-ant-oat01-example");
+    expect(written.claudeAiOauth.scopes).toContain("user:profile");
+    expect(written.claudeAiOauth.scopes).toContain("user:inference");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  test("non-OAuth modes and a missing config tree write nothing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "flyco-creds-"));
+    provisionCredential(start({ auth: { mode: "inherit" }, config_dir: dir }));
+    provisionCredential(
+      start({ auth: { mode: "api_key", key: "sk-ant-api03-example" }, config_dir: dir }),
+    );
+    expect(() => statSync(join(dir, ".credentials.json"))).toThrow();
+
+    expect(() =>
+      provisionCredential(
+        start({ auth: { mode: "oauth_token", token: "sk-ant-oat01-example" }, config_dir: null }),
+      ),
+    ).toThrow();
   });
 });
 
