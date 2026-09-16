@@ -14,7 +14,6 @@
 const RECENT_REPOS_KEY = "flyco.recent_repos";
 const WELCOME_KEY = "flyco.welcome_dismissed";
 const SPOT_KEY = "flyco.spot";
-const COMPUTER_USE_KEY = "flyco.computer_use";
 
 /** How many repositories the picker offers before the search results. */
 export const MAX_RECENT_REPOS = 5;
@@ -84,23 +83,6 @@ export function spotPreference(): boolean {
 /** Records whether new sessions should ask for spot capacity. */
 export function setSpotPreference(spot: boolean): void {
   write(SPOT_KEY, spot ? "on" : "off");
-}
-
-/**
- * Whether new sessions give the agent a desktop to drive.
- *
- * Off unless this browser has been told otherwise — the opposite of spot:
- * a screen is a display server, an encoder and a permission grant the
- * session did not ask for until it did, so the unspoken default is the
- * one that provisions less.
- */
-export function computerUsePreference(): boolean {
-  return read(COMPUTER_USE_KEY) === "on";
-}
-
-/** Records whether new sessions should come up with a desktop. */
-export function setComputerUsePreference(computerUse: boolean): void {
-  write(COMPUTER_USE_KEY, computerUse ? "on" : "off");
 }
 
 /** Whether the user has already dismissed or finished the welcome. */

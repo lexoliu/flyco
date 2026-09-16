@@ -4491,7 +4491,7 @@
                       },
                       "computer_use": {
                         "type": "boolean",
-                        "description": "Whether the session may have a desktop.\n\nOn the summary rather than only on [`SessionDetail`] because the\n`Screen` drawer entry is drawn from it: a session without the flag\nhas no panel to open, and the chip the composer shows reads this\nrather than asking the machine."
+                        "description": "Whether the session may have a desktop.\n\nOn the summary rather than only on [`SessionDetail`] because the\n`Screen` drawer entry is drawn from it: a session without the flag\nhas no panel to open. Every session created today carries it — the\nstack ships in the image and is not a choice at create — but rows\nfrom before that change record 0, and a live session can still\ntoggle it through [`UpdateSession::computer_use`]."
                       },
                       "created_at_unix": {
                         "type": "integer",
@@ -4591,10 +4591,6 @@
                   "budget_limit": {
                     "$ref": "#/components/schemas/Usd",
                     "description": "Spending limit for the whole session."
-                  },
-                  "computer_use": {
-                    "type": "boolean",
-                    "description": "Whether the session gets a screen: a desktop the model can see and\ndrive, and a live video of it the user can watch and take over.\n\nNamed at creation because the machine provisions differently for it\n— the display stack is part of what boots, not something bolted on\nafter. A live session can still gain it through\n[`UpdateSession::computer_use`], which has the daemon install and\nstart the stack in the background."
                   },
                   "harness": {
                     "$ref": "#/components/schemas/HarnessKind",
@@ -9326,10 +9322,6 @@
             "$ref": "#/components/schemas/Usd",
             "description": "Spending limit for the whole session."
           },
-          "computer_use": {
-            "type": "boolean",
-            "description": "Whether the session gets a screen: a desktop the model can see and\ndrive, and a live video of it the user can watch and take over.\n\nNamed at creation because the machine provisions differently for it\n— the display stack is part of what boots, not something bolted on\nafter. A live session can still gain it through\n[`UpdateSession::computer_use`], which has the daemon install and\nstart the stack in the background."
-          },
           "harness": {
             "$ref": "#/components/schemas/HarnessKind",
             "description": "Which coding harness drives the session."
@@ -13490,7 +13482,7 @@
           },
           "computer_use": {
             "type": "boolean",
-            "description": "Whether the session may have a desktop.\n\nOn the summary rather than only on [`SessionDetail`] because the\n`Screen` drawer entry is drawn from it: a session without the flag\nhas no panel to open, and the chip the composer shows reads this\nrather than asking the machine."
+            "description": "Whether the session may have a desktop.\n\nOn the summary rather than only on [`SessionDetail`] because the\n`Screen` drawer entry is drawn from it: a session without the flag\nhas no panel to open. Every session created today carries it — the\nstack ships in the image and is not a choice at create — but rows\nfrom before that change record 0, and a live session can still\ntoggle it through [`UpdateSession::computer_use`]."
           },
           "created_at_unix": {
             "type": "integer",

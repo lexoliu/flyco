@@ -270,7 +270,6 @@ async fn start_session(
             budget: resolved.budget,
             model: &resolved.model,
             permission_mode: resolved.permission_mode,
-            computer_use: resolved.computer_use,
         },
     )
     .await
@@ -375,8 +374,6 @@ struct ResolvedSession {
     budget: BudgetConfig,
     /// The model the session opens on, off the account's own list.
     model: ModelChoice,
-    /// Whether the session gets a screen.
-    computer_use: bool,
     /// The provider account the machine bills to.
     account: provisioning::LinkedAccount,
     /// What the machine is.
@@ -465,7 +462,6 @@ async fn resolve_request(
         machine_origin,
         budget: BudgetConfig::new(request.budget_limit).map_err(|_| ApiError::InvalidBudget)?,
         model,
-        computer_use: request.computer_use,
         account,
         spec,
     })

@@ -3502,17 +3502,6 @@ export interface components {
         CreateSession: {
             /** @description Spending limit for the whole session. */
             budget_limit: components["schemas"]["Usd"];
-            /**
-             * @description Whether the session gets a screen: a desktop the model can see and
-             *     drive, and a live video of it the user can watch and take over.
-             *
-             *     Named at creation because the machine provisions differently for it
-             *     — the display stack is part of what boots, not something bolted on
-             *     after. A live session can still gain it through
-             *     [`UpdateSession::computer_use`], which has the daemon install and
-             *     start the stack in the background.
-             */
-            computer_use?: boolean;
             /** @description Which coding harness drives the session. */
             harness: components["schemas"]["HarnessKind"];
             machine?: null | components["schemas"]["MachineChoice"];
@@ -6007,8 +5996,10 @@ export interface components {
              *
              *     On the summary rather than only on [`SessionDetail`] because the
              *     `Screen` drawer entry is drawn from it: a session without the flag
-             *     has no panel to open, and the chip the composer shows reads this
-             *     rather than asking the machine.
+             *     has no panel to open. Every session created today carries it — the
+             *     stack ships in the image and is not a choice at create — but rows
+             *     from before that change record 0, and a live session can still
+             *     toggle it through [`UpdateSession::computer_use`].
              */
             computer_use: boolean;
             /**
@@ -9361,8 +9352,10 @@ export interface operations {
                          *
                          *     On the summary rather than only on [`SessionDetail`] because the
                          *     `Screen` drawer entry is drawn from it: a session without the flag
-                         *     has no panel to open, and the chip the composer shows reads this
-                         *     rather than asking the machine.
+                         *     has no panel to open. Every session created today carries it — the
+                         *     stack ships in the image and is not a choice at create — but rows
+                         *     from before that change record 0, and a live session can still
+                         *     toggle it through [`UpdateSession::computer_use`].
                          */
                         computer_use: boolean;
                         /**
@@ -9439,17 +9432,6 @@ export interface operations {
                 "application/json": {
                     /** @description Spending limit for the whole session. */
                     budget_limit: components["schemas"]["Usd"];
-                    /**
-                     * @description Whether the session gets a screen: a desktop the model can see and
-                     *     drive, and a live video of it the user can watch and take over.
-                     *
-                     *     Named at creation because the machine provisions differently for it
-                     *     — the display stack is part of what boots, not something bolted on
-                     *     after. A live session can still gain it through
-                     *     [`UpdateSession::computer_use`], which has the daemon install and
-                     *     start the stack in the background.
-                     */
-                    computer_use?: boolean;
                     /** @description Which coding harness drives the session. */
                     harness: components["schemas"]["HarnessKind"];
                     machine?: null | components["schemas"]["MachineChoice"];

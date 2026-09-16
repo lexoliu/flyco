@@ -221,7 +221,6 @@ async fn resolve(
                 effort: spec.effort.clone(),
             }),
             permission_mode: spec.permission_mode,
-            computer_use: spec.computer_use,
             source: None,
         },
         env,

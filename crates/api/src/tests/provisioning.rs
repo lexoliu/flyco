@@ -297,7 +297,6 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
             spot: true,
             model: None,
             permission_mode: None,
-            computer_use: false,
         })
         .send()
         .await;
@@ -490,7 +489,6 @@ async fn a_machine_the_account_cannot_deploy_is_refused_where_it_was_chosen(
             spot: true,
             model: None,
             permission_mode: None,
-            computer_use: false,
         })
         .send()
         .await;
@@ -1357,7 +1355,6 @@ async fn a_session_carries_the_branch_it_was_opened_on(
             spot: true,
             model: None,
             permission_mode: None,
-            computer_use: false,
         })
         .send()
         .await;
@@ -1413,7 +1410,6 @@ async fn a_branch_git_would_refuse_is_refused_where_it_was_typed(
             spot: true,
             model: None,
             permission_mode: None,
-            computer_use: false,
         })
         .send()
         .await;
@@ -1464,7 +1460,6 @@ async fn a_token_without_the_repo_scope_cannot_open_a_session(
             spot: true,
             model: None,
             permission_mode: None,
-            computer_use: false,
         })
         .send()
         .await;
@@ -1726,7 +1721,6 @@ async fn open_azure(
             spot: true,
             model: None,
             permission_mode: None,
-            computer_use: false,
         })
         .send()
         .await;

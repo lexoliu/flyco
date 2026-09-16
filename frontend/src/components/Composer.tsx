@@ -20,7 +20,6 @@ import {
   ArrowUpToLine,
   Check,
   FolderGit2,
-  Monitor,
   Plus,
   Server,
   Wallet,
@@ -54,10 +53,8 @@ import { HARNESS_LABEL } from "../lib/harnesses";
 import { defaultChoice, optionOf } from "../lib/models";
 import {
   MAX_RECENT_REPOS,
-  computerUsePreference,
   recentRepos,
   rememberRepo,
-  setComputerUsePreference,
   setSpotPreference,
   spotPreference,
 } from "../lib/localPreferences";
@@ -108,7 +105,6 @@ export default function Composer(props: ComposerProps) {
   );
   const [budget, setBudget] = createSignal(DEFAULT_BUDGET);
   const [spot, setSpot] = createSignal(spotPreference());
-  const [computerUse, setComputerUse] = createSignal(computerUsePreference());
   const [chosenKey, setChosenKey] = createSignal<string | null>(null);
   const [harnessChoice, setHarnessChoice] = createSignal<HarnessKind | null>(null);
   // `null` is "whatever the agent runs by default", resolved against the
@@ -311,12 +307,6 @@ export default function Composer(props: ComposerProps) {
     setSpotPreference(next);
   }
 
-  /** Same for the desktop — the chip is a switch, not a picker. */
-  function chooseComputerUse(next: boolean): void {
-    setComputerUse(next);
-    setComputerUsePreference(next);
-  }
-
   async function send(): Promise<void> {
     const picked = repos();
     if (blocker() !== null || picked.length === 0) {
@@ -334,9 +324,6 @@ export default function Composer(props: ComposerProps) {
         ...(chosenModel === null ? {} : { model: chosenModel }),
         harness: harness(),
         budgetLimitDollars: budget(),
-        // Sent only when on: a desktop is provisioned for the sessions
-        // that asked, and `false` on the wire is the same answer as unset.
-        ...(computerUse() ? { computerUse: true } : {}),
         // An explicit machine is only sent when the user picked one: that
         // is what makes the session's `machine_origin` say `user`.
         ...(chosenKey() !== null && entry !== undefined && account !== null && account !== undefined
@@ -397,7 +384,6 @@ export default function Composer(props: ComposerProps) {
             onBranch={setRepoBranch}
           />
           <BudgetChip dollars={budget()} onChange={setBudget} />
-          <ScreenChip on={computerUse()} onChange={chooseComputerUse} />
         </div>
       }
       trailing={
@@ -621,35 +607,6 @@ function ComputeChip(props: {
         )}
       </Popover>
     </Show>
-  );
-}
-
-/**
- * Whether the session's machine gets a screen the agent can drive.
- *
- * A switch wearing a chip rather than a popover of one option: nothing
- * about a desktop is picked, only granted — the display server, the
- * encoder and the `computer_*` tools all come with it or none do. The
- * choice is remembered, like spot, so the next session's chip reads the
- * preference rather than asking again.
- */
-function ScreenChip(props: { on: boolean; onChange: (on: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={props.on}
-      title={
-        props.on
-          ? "The agent gets a desktop it can see and drive"
-          : "Give the agent a desktop it can see and drive"
-      }
-      class={cx(styles.chip, props.on && styles.chipOn)}
-      onClick={() => props.onChange(!props.on)}
-    >
-      <Monitor size={13} aria-hidden="true" />
-      <span class={styles.chipLabel}>Screen</span>
-    </button>
   );
 }
 
