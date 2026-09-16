@@ -63,7 +63,7 @@ use flyco_core::wire::{DaemonAttach, DaemonFrames, EventPage, StoredEvent};
 use flyco_core::workdir::WorkdirReply;
 use flyco_core::{
     CheckoutStatus, ClientEvent, ControlToDaemon, DaemonToControl, DesktopInputRequest,
-    DesktopTakeoverRequest, MessageOrigin, RepoStatus, ShellRunId, WorkdirRequestId,
+    DesktopTakeoverRequest, MessageOrigin, Problem, RepoStatus, ShellRunId, WorkdirRequestId,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::durable::{DurableObject, DurableObjectError};
@@ -354,6 +354,7 @@ async fn open_command_stream(
         cursor: 0,
         sent_resize: false,
         desktop_fresh: true,
+        superseded_announced: false,
         last_touch: 0,
     };
     Ok(crate::sse::serve(
@@ -409,9 +410,21 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
     })?;
     if let Some(row) = presence {
         // The attach this stream serves was superseded; the newer
-        // epoch's stream is the one the room answers now.
+        // epoch's stream is the one the room answers now. The superseded
+        // daemon is told outright before the stream ends — a bare EOF is
+        // indistinguishable from a dropped connection, and an uninformed
+        // loser re-attaches into the epoch that replaced it, ending the
+        // winner's stream in turn. The poll cannot emit and end in one
+        // step, so the command goes out this tick and `Poll::End` the next.
         if row.epoch != feed.epoch {
-            return Ok(crate::sse::Poll::End);
+            if feed.superseded_announced {
+                return Ok(crate::sse::Poll::End);
+            }
+            feed.superseded_announced = true;
+            let command = command_value(&ControlToDaemon::Superseded).map_err(|error| {
+                tracing::warn!(%error, "a command stream could not encode its supersession");
+            })?;
+            return Ok(crate::sse::Poll::Emit(vec![command_event(None, &command)]));
         }
     }
     if now.saturating_sub(feed.last_touch) >= PRESENCE_REFRESH_SECONDS {
@@ -704,6 +717,9 @@ struct CommandFeed {
     /// Whether this stream still owes its daemon the desktop aggregate —
     /// set only for the attach it opens on, cleared by the first poll.
     desktop_fresh: bool,
+    /// Whether the supersession notice has already been emitted — the next
+    /// poll ends the body.
+    superseded_announced: bool,
     /// When presence was last renewed, seconds.
     last_touch: u64,
 }
@@ -911,6 +927,16 @@ async fn dispatch_command(
                     .await
                     .map_err(|error| room_failed(&error))?;
             }
+        }
+        // Composed by the room itself as it ends a superseded stream —
+        // the one command nobody may send it.
+        ControlToDaemon::Superseded => {
+            return Err(ApiError::RoomRefused(Box::new(Problem::of_type(
+                "superseded-is-room-composed",
+                400,
+                "Bad Request",
+                "superseded is the room's own last word on a superseded stream, not a command it accepts",
+            ))));
         }
         _ => {
             // Everything else queues only while a daemon is attached. The

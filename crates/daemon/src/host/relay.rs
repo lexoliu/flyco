@@ -81,6 +81,10 @@ pub enum Stopped {
     /// The control plane revoked this machine's token. The unit exits and
     /// stays exited; the configuration records it.
     Revoked,
+    /// A newer attach owns this machine's room. The unit exits and stays
+    /// exited — re-attaching would end the winner's stream in turn, which
+    /// is the ping-pong the room ended this stream over (issue #336).
+    Superseded,
 }
 
 /// Everything the relay needs to run one machine.
@@ -185,6 +189,8 @@ struct Pump<J, A> {
 enum Ended {
     /// The stream dropped; re-attach.
     Disconnected,
+    /// A newer attach superseded this one; stop.
+    Superseded,
     /// The control plane revoked this machine; stop.
     Revoked,
 }
@@ -236,13 +242,37 @@ where
             }
         };
 
-        attempt = 0;
+        let attached_at = tokio::time::Instant::now();
         match pump
             .pump(&mut attachment, &mut finished, &mut applied)
             .await?
         {
             Ended::Disconnected => {
-                tracing::warn!("this machine's room disconnected; re-attaching");
+                // As on the session relay: a stream dead within moments
+                // of its attach is counted with the failed attaches — an
+                // instant death is the signature of a peer superseding
+                // it, and re-attaching uncounted is the ping-pong that
+                // spends the account's request budget. A stream that
+                // held resets the ladder instead.
+                if attached_at.elapsed() < crate::control::wire::ATTACH_STABLE {
+                    attempt = attempt.saturating_add(1);
+                } else {
+                    attempt = 0;
+                }
+                let wait = backoff(attempt);
+                tracing::warn!(
+                    ?wait,
+                    attempt,
+                    "this machine's room disconnected; re-attaching"
+                );
+                tokio::time::sleep(wait).await;
+            }
+            Ended::Superseded => {
+                tracing::warn!(
+                    "a newer attach owns this machine's room; \
+                     flycod host is stopping and will not reconnect"
+                );
+                return Ok(Stopped::Superseded);
             }
             Ended::Revoked => {
                 tracing::warn!(
@@ -316,24 +346,37 @@ impl<J: Jobs, A: JobResults + HostTransport> Pump<J, A> {
                             return Ok(Ended::Disconnected);
                         }
                     };
-                    *applied = (*applied).max(command.seq);
+                    if let Some(seq) = command.seq {
+                        *applied = (*applied).max(seq);
+                    }
                     match command.command {
                         ControlToHost::Run { job } => {
+                            // A job is always a row — the one command the
+                            // room composes without one is `Superseded`,
+                            // and a `Run` that cannot name its position can
+                            // neither be deduplicated nor answered.
+                            let Some(seq) = command.seq else {
+                                return Err(WireError::Undecodable(
+                                    "a container job arrived without its log position"
+                                        .to_owned(),
+                                ));
+                            };
                             // A redelivery means the row is still held —
                             // the answer never landed. `handled` holds
                             // exactly the sequences whose job is running
                             // or whose answer is in flight, so a re-seen
                             // row is skipped rather than run again.
-                            if self.handled.insert(command.seq) {
-                                self.start(command.seq, job);
+                            if self.handled.insert(seq) {
+                                self.start(seq, job);
                             } else {
                                 tracing::debug!(
-                                    seq = command.seq,
+                                    seq,
                                     "a redelivered job is already handled; skipping it"
                                 );
                             }
                         }
                         ControlToHost::Revoked => return Ok(Ended::Revoked),
+                        ControlToHost::Superseded => return Ok(Ended::Superseded),
                     }
                 }
                 Some((seq, report)) = finished.recv() => {
@@ -594,6 +637,9 @@ mod tests {
     /// Everything a host relay test drives.
     struct Harness {
         room: Room,
+        /// The machine the relay under test enrolled as — a second attach
+        /// for the same one is how a test supersedes it.
+        host: HostId,
         performed: mpsc::UnboundedReceiver<ContainerJob>,
         filed: mpsc::UnboundedReceiver<ReportJobResult>,
         /// Releases a job's `perform` — the job is running until it fires.
@@ -637,6 +683,7 @@ mod tests {
             }));
             Self {
                 room,
+                host,
                 performed,
                 filed,
                 job_gate,
@@ -856,6 +903,38 @@ mod tests {
         assert_eq!(
             stopped.expect("a revocation is not an error"),
             Stopped::Revoked
+        );
+    }
+
+    #[tokio::test]
+    async fn a_superseded_machine_stops_rather_than_reconnecting() {
+        let mut harness = Harness::start().await;
+        harness.attached().await;
+
+        // A second `flycod host` attached as this machine — the unit
+        // started twice, or a spare launched beside it — and the room
+        // bumped its epoch. The superseded stream is told why before it
+        // ends, and the answer to losing is to stop: re-attaching would
+        // end the winner's stream in turn (issue #336).
+        let spare = HttpHostApi::new(harness.room.base.clone(), harness.host, TOKEN.to_owned());
+        spare.attach(&facts()).await.expect("the spare's attach");
+        assert!(
+            matches!(harness.room.next().await, Some(Seen::Attached { .. })),
+            "the room saw the spare attach"
+        );
+        assert_eq!(
+            harness.room.next().await,
+            Some(Seen::StreamClosed),
+            "and the superseded stream ending"
+        );
+
+        let stopped = tokio::time::timeout(core::time::Duration::from_secs(5), harness.run)
+            .await
+            .expect("the run ended")
+            .expect("the run did not panic");
+        assert_eq!(
+            stopped.expect("a supersession is not an error"),
+            Stopped::Superseded
         );
     }
 

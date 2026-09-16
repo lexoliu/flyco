@@ -534,7 +534,49 @@ async fn a_superseded_attach_ends_its_command_stream() {
 
     room.attach().await;
 
+    // The superseded daemon is told why its stream is over before it
+    // ends — a bare EOF reads as a dropped connection, and an uninformed
+    // loser re-attaches into the epoch that replaced it (issue #336).
+    let told = room.next_command().await;
+    assert_eq!(
+        told,
+        DaemonCommand {
+            seq: None,
+            command: ControlToDaemon::Superseded,
+        },
+        "the last word on a superseded stream is why it is over"
+    );
     room.expect_end().await;
+}
+
+#[skyzen::test]
+async fn a_superseded_command_is_not_one_the_room_accepts() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    // It is the room's own last word on a superseded stream — composed,
+    // never a log row. Sent to the room it is refused rather than queued:
+    // a daemon must only ever be told it lost by the room itself.
+    let (status, body) = room
+        .call(
+            Method::POST,
+            "/internal/command",
+            Some(serde_json::to_vec(&ControlToDaemon::Superseded).expect("serialize")),
+        )
+        .await;
+    assert_eq!(status, 400);
+    let problem: flyco_core::Problem = serde_json::from_slice(&body).expect("a problem");
+    assert_eq!(
+        problem.kind,
+        "https://flyco.dev/problems/superseded-is-room-composed"
+    );
+    assert!(
+        room.command_log()
+            .await
+            .iter()
+            .all(|command| *command != ControlToDaemon::Superseded),
+        "nothing was queued"
+    );
 }
 
 #[skyzen::test]

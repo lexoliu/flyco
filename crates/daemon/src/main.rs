@@ -148,6 +148,13 @@ enum Failure {
     /// The MCP server stopped on an error rather than on a closed pipe.
     #[error("flyco's MCP server stopped")]
     McpStopped(#[source] tokio::task::JoinError),
+    /// The daemon's singleton lock could not be taken or made.
+    ///
+    /// A failure here is fatal rather than a stand-down: contention is
+    /// `Ok(None)`, and what reaches this variant is a filesystem that
+    /// could not say so — running anyway would run unlocked.
+    #[error("the daemon lock could not be taken")]
+    Lock(#[source] std::io::Error),
 }
 
 impl From<host::HostError> for Failure {
@@ -196,6 +203,22 @@ async fn run(cli: Cli) -> Result<(), Failure> {
         Command::Mcp { config } => serve_mcp(DaemonConfig::load(&config)?).await,
         Command::Run { config: path } => {
             let mut config = DaemonConfig::load(&path)?;
+            // One daemon per session per machine — every spawn path
+            // included. `postStart` fires on each codespace start and a
+            // unit restarts on failure, and two daemons for one session
+            // ping-pong the room's attach epoch until the request budget
+            // is gone (issue #336). The losing process stands down
+            // cleanly rather than racing its own relay.
+            let Some(_daemon_lock) =
+                flyco_daemon::lock::acquire(&flyco_daemon::lock::session(&config))
+                    .map_err(Failure::Lock)?
+            else {
+                tracing::warn!(
+                    session = %config.session,
+                    "another flycod already holds this session's lock; standing down"
+                );
+                return Ok(());
+            };
             tracing::info!(
                 session = %config.session,
                 harness = ?config.harness,

@@ -62,6 +62,7 @@ pub mod desktop;
 pub mod git;
 pub mod harness;
 pub mod host;
+pub mod lock;
 pub mod mcp;
 pub mod mount;
 pub mod notice;

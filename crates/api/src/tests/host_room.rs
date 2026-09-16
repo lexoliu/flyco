@@ -158,7 +158,9 @@ impl Room {
             .expect("a decodable SSE frame");
         assert_eq!(item.event(), Some("command"));
         let command: HostCommand = item.data().expect("a command envelope");
-        self.applied = self.applied.max(command.seq);
+        if let Some(seq) = command.seq {
+            self.applied = self.applied.max(seq);
+        }
         command
     }
 
@@ -288,7 +290,33 @@ async fn a_superseded_attach_ends_its_command_stream() {
 
     room.attach().await;
 
+    // As in the session room: the superseded host is told why before the
+    // stream ends (issue #336).
+    let told = room.next_command().await;
+    assert_eq!(
+        told,
+        HostCommand {
+            seq: None,
+            command: ControlToHost::Superseded,
+        },
+        "the last word on a superseded stream is why it is over"
+    );
     room.expect_end().await;
+}
+
+#[skyzen::test]
+async fn a_superseded_command_is_not_one_the_room_accepts() {
+    let mut room = Room::open().await;
+    room.greet().await;
+
+    // As in the session room: composed by the room, refused to it.
+    let status = room.command(&ControlToHost::Superseded).await;
+    assert_eq!(status, 400);
+    assert_eq!(
+        room.status().await.pending_jobs,
+        0,
+        "nothing was queued"
+    );
 }
 
 #[skyzen::test]

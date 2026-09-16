@@ -91,10 +91,11 @@ pub struct HostFrames {
 pub struct HostCommand {
     /// Position in the room's command log.
     ///
-    /// Every command a host receives is a row — a container job is durable
-    /// work — so the cursor is never absent the way
-    /// [`DaemonCommand::seq`](flyco_core::wire::DaemonCommand)'s can be.
-    pub seq: u64,
+    /// Almost every command a host receives is a row — a container job is
+    /// durable work — so the cursor is absent only for the commands the
+    /// stream composes itself: [`ControlToHost::Superseded`], the one thing
+    /// a superseded attach's stream can still be told, carries no position.
+    pub seq: Option<u64>,
     /// The command.
     pub command: ControlToHost,
 }
@@ -119,6 +120,14 @@ pub enum ControlToHost {
     /// Sent as a host is removed, so its unit exits rather than reconnecting
     /// every few seconds against a credential that will never work again.
     Revoked,
+    /// A newer attach owns this machine's room; this daemon is a spare.
+    ///
+    /// Composed by the room itself, delivered only down a stream serving a
+    /// superseded epoch — exactly as
+    /// [`Superseded`](flyco_core::wire::ControlToDaemon::Superseded) ends a
+    /// session daemon's stream. A host that reads it stops rather than
+    /// re-attaching into the epoch that replaced it.
+    Superseded,
 }
 
 impl ControlToHost {
@@ -180,6 +189,7 @@ mod tests {
                 job: host().plan(&provision(HOSTNAME)).expect("plan a create"),
             },
             ControlToHost::Revoked,
+            ControlToHost::Superseded,
         ]
     }
 
@@ -232,6 +242,10 @@ mod tests {
         assert!(
             !ControlToHost::Revoked.survives_a_disconnect(),
             "a revoked host's token no longer authenticates, so it never attaches to be told twice"
+        );
+        assert!(
+            !ControlToHost::Superseded.survives_a_disconnect(),
+            "the room composes it for a stream that is already ending — never a row to keep"
         );
     }
 }

@@ -115,6 +115,18 @@ pub const BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// all day, so the budget is misses rather than one late ping.
 pub const STREAM_SILENCE_LIMIT: Duration = Duration::from_secs(90);
 
+/// How long an attachment must hold before the reconnect ladder resets.
+///
+/// A stream ended moments after its attach is not a dropped connection —
+/// it is one the room never really had, most often because a peer
+/// daemon's attach superseded it on the way in. Counting those deaths
+/// with the failed attaches is what makes the backoff ladder reach the
+/// ping-pong at all: without it a stream killed the instant it opened
+/// re-attaches at line rate for ever (issue #336). An attachment that
+/// outlived this was established, and its loss resets the ladder rather
+/// than climbing it — a real drop deserves a prompt reconnect.
+pub(crate) const ATTACH_STABLE: Duration = Duration::from_secs(10);
+
 /// How long one command may spend inside the harness before the session is
 /// treated as wedged.
 ///
@@ -632,6 +644,14 @@ struct Connection<S, T, A, W, D, H, X> {
 enum Ended {
     /// The stream dropped; re-attach.
     Disconnected,
+    /// A newer attach superseded this one; stop.
+    ///
+    /// Distinct from [`Ended::Disconnected`] because of what the stream's
+    /// end means: another daemon holds this session's room, and
+    /// re-attaching would end *its* stream in turn — which is exactly the
+    /// ping-pong the room ended this stream over (issue #336). The unit
+    /// exits `0` so `Restart=on-failure` leaves the spare stopped.
+    Superseded,
     /// The control plane archived the session; stop.
     Archived,
     /// The queue ended because the harness stopped.
@@ -793,8 +813,9 @@ impl<
                         }
                         *applied = seq;
                     }
-                    if matches!(self.dispatch_before(command.command).await?, Ended::Archived) {
-                        return Ok(Ended::Archived);
+                    match self.dispatch_before(command.command).await? {
+                        Ended::Disconnected => {}
+                        ended => return Ok(ended),
                     }
                 }
                 output = self.terminal_out.recv() => {
@@ -1395,8 +1416,24 @@ impl<
                 self.terminal.shutdown()?;
                 return Ok(Ended::Archived);
             }
+            ControlToDaemon::Superseded => return self.superseded(),
         }
         Ok(Ended::Disconnected)
+    }
+
+    /// The room's last word to a stream serving a superseded epoch.
+    ///
+    /// Composed by the room itself as it ends the stream — never a log
+    /// row, never redelivered. What it means is decided here rather than
+    /// inferred: another daemon holds the room, and this one standing
+    /// down is the whole point of the signal.
+    fn superseded(&mut self) -> Result<Ended, WireError> {
+        tracing::warn!(
+            session = %self.session_id,
+            "a newer attach owns this session's room; this daemon is a spare"
+        );
+        self.terminal.shutdown()?;
+        Ok(Ended::Superseded)
     }
 
     /// Snapshots every checkout's work to the control plane.
@@ -1924,6 +1961,12 @@ impl<S, A, T, W, D, H, X> core::fmt::Debug for SessionRelay<S, A, T, W, D, H, X>
 /// Returns [`WireError`] if the relay queue overflows, the control plane
 /// speaks a protocol this daemon cannot read, or the harness stops
 /// accepting commands. A dropped stream is not an error: it is re-attached.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one loop owns the whole attachment lifecycle — attach, pump, \
+              reconnect — and splitting it would scatter the state the loop \
+              threads through itself"
+)]
 pub async fn run<S, A, T, W, D, H, X>(
     relay: SessionRelay<S, A, T, W, D, H, X>,
 ) -> Result<(), WireError>
@@ -2030,7 +2073,7 @@ where
             }
         };
 
-        attempt = 0;
+        let attached_at = tokio::time::Instant::now();
         if !ready_announced {
             // A failed flush here is a dropped attachment, which the loop
             // is already built to survive: the announcement keeps the
@@ -2047,7 +2090,24 @@ where
             .await
         {
             Ok(Ended::Disconnected) => {
-                tracing::warn!("the session room's stream ended; re-attaching");
+                // The ladder counts an attachment that never became
+                // established: a stream dead within moments of opening is
+                // the signature of a peer superseding it, and re-attaching
+                // uncounted is the ping-pong that spends the account's
+                // request budget. A stream that held resets instead — its
+                // drop is the ordinary kind and earns a prompt retry.
+                if attached_at.elapsed() < ATTACH_STABLE {
+                    attempt = attempt.saturating_add(1);
+                } else {
+                    attempt = 0;
+                }
+                let wait = backoff(attempt);
+                tracing::warn!(
+                    ?wait,
+                    attempt,
+                    "the session room's stream ended; re-attaching"
+                );
+                tokio::time::sleep(wait).await;
             }
             Ok(ending) => break Ok(ending),
             Err(error) => break Err(error),
@@ -2073,6 +2133,9 @@ where
 fn say_goodbye(ending: &Ended) {
     match ending {
         Ended::Archived => tracing::info!("session archived; flycod is done"),
+        Ended::Superseded => {
+            tracing::warn!("another daemon owns this session's room; flycod is done");
+        }
         Ended::HarnessStopped => tracing::info!("the harness stopped; flycod is done"),
         Ended::Stopped => tracing::info!("the platform stopped this machine; flycod is done"),
         Ended::Disconnected => unreachable!("a disconnect reconnects rather than ending the run"),
