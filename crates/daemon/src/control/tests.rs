@@ -338,6 +338,9 @@ impl ControlApi for RecordingApi {
 /// Everything a relay test drives.
 struct Harness {
     room: Room,
+    /// The session the daemon under test is running — a second attach for
+    /// the same one is how a test supersedes it.
+    session: SessionId,
     outputs: mpsc::Sender<SessionOutput>,
     calls: mpsc::UnboundedReceiver<Call>,
     approvals: mpsc::UnboundedReceiver<ApprovalPayload>,
@@ -527,6 +530,7 @@ impl Harness {
 
         Self {
             room,
+            session,
             outputs: sender,
             calls,
             approvals,
@@ -1371,6 +1375,37 @@ async fn the_agent_ready_stage_is_announced_once_and_not_on_every_reconnect() {
     );
 
     harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_superseded_attach_stops_the_daemon_rather_than_reconnecting() {
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
+    harness.handshake().await;
+
+    // A second flycod for this session attached — `postStart` firing
+    // twice on one codespace, a `flycod run` started beside the unit's —
+    // and the room bumped its epoch. The superseded stream is told why
+    // before it ends, and the answer to losing is to stop: re-attaching
+    // would end the winner's stream in turn, which is the ping-pong the
+    // room ended this one over (issue #336).
+    let spare = HttpControlApi::new(harness.room.base.clone(), harness.session, TOKEN.to_owned());
+    spare.attach().await.expect("the spare's attach");
+    assert!(
+        matches!(harness.room.next().await, Some(Seen::Attached { .. })),
+        "the room saw the spare attach"
+    );
+    assert_eq!(
+        harness.room.next().await,
+        Some(Seen::StreamClosed),
+        "and the superseded stream ending"
+    );
+
+    // The run ends by itself: a superseded daemon stands down rather than
+    // re-attaching into the epoch that replaced it.
+    harness
+        .ended()
+        .await
+        .expect("a superseded daemon stands down cleanly");
 }
 
 // ── The desktop ──

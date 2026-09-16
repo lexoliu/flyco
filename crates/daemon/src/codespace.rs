@@ -228,6 +228,13 @@ fn write_config(path: &Path, contents: &str) -> Result<(), CodespaceError> {
 /// The executable is this same binary — `flycod codespace` is `flycod` —
 /// resolved through `/proc/self/exe` rather than `PATH`, so the entrypoint
 /// always launches the exact build it shipped as.
+///
+/// Unconditional on purpose: `postStart` can run again while a daemon
+/// from an earlier start is still alive — including one still inside
+/// `fetch`'s retry window — and deciding "is one already running" here
+/// would duplicate the answer badly. `flycod run` takes the session's
+/// lock itself and stands down when it is already held, so the cheap
+/// thing is to spawn and let the child say so in the log it shares.
 fn launch() -> Result<(), CodespaceError> {
     use std::os::unix::process::CommandExt as _;
     let log = std::fs::OpenOptions::new()

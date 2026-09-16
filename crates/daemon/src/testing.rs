@@ -300,10 +300,12 @@ pub enum Directive<Down = ControlToDaemon> {
     /// Queue a command for the peer — emitted on the open stream now, or
     /// replayed on the next one, as the real room's mailbox does.
     Send(Down),
-    /// End the open command stream, so the peer has to re-attach.
+    /// End the open command stream bare, so the peer has to re-attach.
     ///
-    /// The real room does this when an attach is superseded, and it is
-    /// what a redeployed or restarted room looks like from the peer's end.
+    /// The transient case: what a redeployed or restarted room looks like
+    /// from the peer's end. A superseding attach is the other way a
+    /// stream ends — the room emits `superseded` first — and needs no
+    /// directive: a second attach does it.
     Close,
     /// Stop heartbeating the open stream, so the peer's byte-level idle
     /// watch fires — the dead path a dropped NAT flow looks like.
@@ -615,12 +617,11 @@ async fn handle<Up>(
         }
         let epoch = {
             let mut state = state.lock().expect("the room state");
-            state.epoch += 1;
             // A newer attach supersedes the stream before it, as the real
-            // room's presence epoch does.
-            if let Some(close) = state.close_stream.take() {
-                let _ = close.send(());
-            }
+            // room's presence epoch does — noticed on the open stream's
+            // next check, which is what emits the `superseded` command
+            // before ending it.
+            state.epoch += 1;
             state.epoch
         };
         let _ = write_reply(
@@ -769,12 +770,13 @@ async fn serve_commands<Up>(
         // A silenced stream is a dead path: no bytes move in either
         // direction, commands included — a NAT that reclaimed the flow
         // drops the command events with the heartbeat.
+        let mut superseded_by = false;
         let rows: Vec<(u64, serde_json::Value)> = {
             let state = state.lock().expect("the room state");
             if state.epoch != epoch {
-                break;
-            }
-            if state.silenced {
+                superseded_by = true;
+                Vec::new()
+            } else if state.silenced {
                 Vec::new()
             } else {
                 state
@@ -785,6 +787,18 @@ async fn serve_commands<Up>(
                     .collect()
             }
         };
+        if superseded_by {
+            // The real room's answer to a superseded attach: the losing
+            // stream is told why before it ends — a bare EOF reads as a
+            // dropped connection, and an uninformed loser re-attaches
+            // into the epoch that replaced it (issue #336).
+            let _ = writer
+                .write_all(
+                    b"event: command\ndata: {\"seq\":null,\"command\":{\"type\":\"superseded\"}}\n\n",
+                )
+                .await;
+            break;
+        }
         let mut gone = false;
         for (seq, command) in rows {
             let event = format!(

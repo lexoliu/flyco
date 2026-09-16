@@ -1055,6 +1055,15 @@ pub enum ControlToDaemon {
         #[serde(default, skip_serializing_if = "crate::wire::is_false")]
         preserve_workdir: bool,
     },
+    /// A newer attach owns this session's room; this daemon is a spare.
+    ///
+    /// Composed by the room itself and only ever delivered down a stream
+    /// serving a superseded epoch — the one thing that stream can still be
+    /// told. A daemon that reads it stops rather than re-attaching into the
+    /// epoch that replaced it: two daemons racing one room is how the relay
+    /// burns the account's request budget (issue #336). Never a log row and
+    /// never held — there is no daemon left to tell twice.
+    Superseded,
 }
 
 #[expect(
@@ -1096,6 +1105,7 @@ impl ControlToDaemon {
             Self::InspectWorkdir { .. } => "inspect_workdir",
             Self::AddRepo { .. } => "add_repo",
             Self::Archive { .. } => "archive",
+            Self::Superseded => "superseded",
         }
     }
 
@@ -1227,7 +1237,7 @@ pub struct DaemonCommand {
     /// Position in the room's command log, when the command came from it.
     ///
     /// `None` for the commands the stream composes itself — a replayed
-    /// terminal size is the one such case — which carry no ordering
+    /// terminal size, the supersession notice — which carry no ordering
     /// obligation: a daemon applies them whenever they arrive and
     /// acknowledges nothing for them.
     pub seq: Option<u64>,
@@ -1974,6 +1984,7 @@ mod tests {
                 branch: "main".parse().expect("valid"),
                 dir: "aither".to_owned(),
             },
+            ControlToDaemon::Superseded,
         ]
     }
 

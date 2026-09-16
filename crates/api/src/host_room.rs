@@ -41,8 +41,11 @@
 //! its `seq`, so a machine can tell a job it is already running from one
 //! it has never seen.
 
+use flyco_core::Problem;
 use flyco_core::host::HostFacts;
-use flyco_provider::host::{ControlToHost, HostAttach, HostFrames, HostToControl, container_name};
+use flyco_provider::host::{
+    ControlToHost, HostAttach, HostCommand, HostFrames, HostToControl, container_name,
+};
 use serde::{Deserialize, Serialize};
 use skyzen::durable::{DurableObject, DurableObjectError};
 use skyzen::extract::Query;
@@ -235,6 +238,7 @@ async fn open_command_stream(
             db,
             epoch,
             cursor: 0,
+            superseded_announced: false,
             last_touch: 0,
         },
         poll_command_feed,
@@ -253,6 +257,9 @@ struct CommandFeed {
     /// by having been delivered, so a fresh stream replays whatever the
     /// host has not yet answered — the mailbox semantic the room owes.
     cursor: u64,
+    /// Whether the supersession notice has already been emitted — the next
+    /// poll ends the body.
+    superseded_announced: bool,
     /// When presence was last renewed, seconds.
     last_touch: u64,
 }
@@ -277,7 +284,26 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
     if let Some(row) = presence
         && row.epoch != feed.epoch
     {
-        return Ok(crate::sse::Poll::End);
+        // The attach this stream serves was superseded. As in the session
+        // room the losing host is told outright before the stream ends —
+        // a bare EOF is indistinguishable from a dropped connection, and
+        // an uninformed loser re-attaches into the epoch that replaced it.
+        // The poll cannot emit and end in one step, so the command goes
+        // out this tick and `Poll::End` the next.
+        if feed.superseded_announced {
+            return Ok(crate::sse::Poll::End);
+        }
+        feed.superseded_announced = true;
+        let envelope = serde_json::to_string(&HostCommand {
+            seq: None,
+            command: ControlToHost::Superseded,
+        })
+        .map_err(|error| {
+            tracing::warn!(%error, "a host command stream could not encode its supersession");
+        })?;
+        return Ok(crate::sse::Poll::Emit(vec![
+            Event::data(envelope).event("command"),
+        ]));
     }
     if now.saturating_sub(feed.last_touch) >= PRESENCE_REFRESH_SECONDS {
         let live_until = now.saturating_add(PRESENCE_TTL_SECONDS);
@@ -667,6 +693,16 @@ async fn dispatch_command(
             hold(db, Some(job.container()), command)
                 .await
                 .map_err(|error| room_failed(&error))?;
+        }
+        // Composed by the room itself as it ends a superseded stream —
+        // the one command nobody may send it.
+        ControlToHost::Superseded => {
+            return Err(ApiError::RoomRefused(Box::new(Problem::of_type(
+                "superseded-is-room-composed",
+                400,
+                "Bad Request",
+                "superseded is the room's own last word on a superseded stream, not a command it accepts",
+            ))));
         }
         _ if live => {
             hold(db, None, command)

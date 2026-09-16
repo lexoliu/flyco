@@ -87,6 +87,13 @@ pub enum HostError {
         /// The configuration that says so.
         path: PathBuf,
     },
+    /// The daemon's singleton lock could not be taken or made.
+    ///
+    /// As with the session daemon: contention is `Ok(None)`, and what
+    /// reaches this variant is a filesystem that could not say so —
+    /// running anyway would run unlocked.
+    #[error("the host daemon lock could not be taken")]
+    Lock(#[source] std::io::Error),
 }
 
 /// What `flycod host enroll` was asked to do.
@@ -169,6 +176,18 @@ pub async fn run(path: &Path) -> Result<(), HostError> {
             path: path.to_path_buf(),
         });
     }
+    // One host daemon per machine — every spawn path included. Two
+    // attached daemons ping-pong the room's epoch the way the session
+    // relay's did (issue #336), so the spare stands down cleanly.
+    let Some(_daemon_lock) =
+        crate::lock::acquire(&crate::lock::host(path)).map_err(HostError::Lock)?
+    else {
+        tracing::warn!(
+            path = %path.display(),
+            "another flycod host already holds this machine's lock; standing down"
+        );
+        return Ok(());
+    };
 
     let rootless = Rootless::resolve(&config.podman, &ProcessRunner).await?;
     let facts = facts::gather(&config.podman.volume_root).await?;
@@ -200,6 +219,9 @@ pub async fn run(path: &Path) -> Result<(), HostError> {
                 "this machine's enrollment is revoked; enrol it again to put it back in service"
             );
         }
+        // A spare standing down: the enrollment is still good — the newer
+        // attach holding the room is using it — so nothing is recorded.
+        Stopped::Superseded => {}
     }
     Ok(())
 }
