@@ -530,11 +530,12 @@ async fn pending_jobs(db: &DurableDb) -> Result<u32, DurableObjectError> {
 
 /// The schema this build expects.
 ///
-/// `user_version` is the durable answer to "is the schema already there":
-/// checking it costs one storage read where running every `CREATE` blind
-/// costs one per statement — and every hot path in the room calls this
-/// first. Bump it when the DDL below changes so a room built by an older
-/// build upgrades once, on its next call.
+/// The durable answer to "is the schema already there" lives in the
+/// `schema_meta` table [`crate::schema_version`] keeps: checking it costs
+/// one storage read where running every `CREATE` blind costs one per
+/// statement — and every hot path in the room calls this first. Bump it
+/// when the DDL below changes so a room built by an older build upgrades
+/// once, on its next call.
 const SCHEMA_VERSION: i64 = 2;
 
 /// Creates the mailbox if this is the room's first write.
@@ -543,51 +544,38 @@ const SCHEMA_VERSION: i64 = 2;
 /// were planned in has to survive the object being rebuilt around every
 /// event, and the database is the only thing here that guarantees it.
 async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
-    let version: i64 = db
-        .query("PRAGMA user_version")
-        .fetch_scalar()
-        .await
-        .map_err(|error| stored(&error))?;
-    if version >= SCHEMA_VERSION {
-        return Ok(());
-    }
-    for statement in [
-        // Every command owed to the host. `machine` names the container a
-        // job acts on — the answer deletes by it — and is NULL for the
-        // commands that are not container work, which acknowledgement
-        // deletes instead.
-        "CREATE TABLE IF NOT EXISTS host_commands (\
+    crate::schema_version::ensure(
+        db,
+        SCHEMA_VERSION,
+        &[
+            // Every command owed to the host. `machine` names the container a
+            // job acts on — the answer deletes by it — and is NULL for the
+            // commands that are not container work, which acknowledgement
+            // deletes instead.
+            "CREATE TABLE IF NOT EXISTS host_commands (\
              seq     INTEGER PRIMARY KEY AUTOINCREMENT, \
              machine TEXT, \
              json    TEXT    NOT NULL, \
              at_unix INTEGER NOT NULL)",
-        // One row, because a room has exactly one host. The epoch names
-        // the current attach; `live_until` is the deadline its contact
-        // renews.
-        "CREATE TABLE IF NOT EXISTS host_presence (\
+            // One row, because a room has exactly one host. The epoch names
+            // the current attach; `live_until` is the deadline its contact
+            // renews.
+            "CREATE TABLE IF NOT EXISTS host_presence (\
              id         INTEGER PRIMARY KEY CHECK (id = 0), \
              epoch      INTEGER NOT NULL, \
              live_until INTEGER NOT NULL)",
-        // One row per attach, recording how far into that epoch's frame
-        // numbering the room has stored.
-        "CREATE TABLE IF NOT EXISTS host_frames (\
+            // One row per attach, recording how far into that epoch's frame
+            // numbering the room has stored.
+            "CREATE TABLE IF NOT EXISTS host_frames (\
              epoch   INTEGER PRIMARY KEY, \
              through INTEGER NOT NULL)",
-        // The room's row-read ledger — one row per UTC day, debited by
-        // `row_budget::charge_reads`, and the circuit breaker that keeps a
-        // runaway reader here from spending the account's quota.
-        crate::row_budget::SCHEMA,
-    ] {
-        db.query(statement)
-            .execute()
-            .await
-            .map_err(|error| stored(&error))?;
-    }
-    db.query(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
-        .execute()
-        .await
-        .map_err(|error| stored(&error))?;
-    Ok(())
+            // The room's row-read ledger — one row per UTC day, debited by
+            // `row_budget::charge_reads`, and the circuit breaker that keeps a
+            // runaway reader here from spending the account's quota.
+            crate::row_budget::SCHEMA,
+        ],
+    )
+    .await
 }
 
 /// The room's own database failed, which is a runtime fault rather than
