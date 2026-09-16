@@ -7,19 +7,21 @@
  * the running agent — because the official apps put it in exactly that
  * spot and a person who has used either looks there for it.
  *
- * The panel asks the question in two views the way ChatGPT's own picker
- * nests them: the model's list first, and picking a model that takes
- * effort lands on its detented slider rather than closing on the pick —
- * the levels are the model's, so the scale follows the choice. A model
- * that takes none still closes on the pick. The chip reads the whole
- * choice: `Fable`, then `· High` when a level is chosen.
+ * The panel asks the question in two views the way Codex's own picker
+ * nests them: the effort slider first — the level the thumb sits on as
+ * the way into the model list, the model's name under it — and the
+ * agent's models behind that link, each with the harness's one-line
+ * description. Picking a model that takes effort returns to its rail
+ * rather than closing on the pick — the levels are the model's, so the
+ * scale follows the choice — and one that takes none closes. The chip
+ * reads the whole choice: `Fable`, then `· High` when a level is chosen.
  *
  * The list is the harness's own, served per linked account, and the chip
  * shows the model's display name rather than its id: `Fable`, not
  * `claude-fable-5-1[1m]`.
  */
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
-import { Check, ChevronLeft, RotateCcw } from "lucide-solid";
+import { Check, ChevronRight, RotateCcw } from "lucide-solid";
 import Popover from "./Popover";
 import Detents from "./Detents";
 import type { ModelChoice, ModelOption } from "../api/client";
@@ -85,17 +87,27 @@ export default function ModelChip(props: ModelChipProps) {
       {(close) => {
         // The query and the view live with the panel rather than the
         // chip: a closed picker forgets both, so reopening always lands
-        // on the full list.
+        // on the chosen model's slider or, when it takes none, the list.
         const [query, setQuery] = createSignal("");
         /**
-         * The model the effort view configures — the row that was picked.
+         * The model the effort view configures — the chosen one where it
+         * takes effort, else the row that was picked.
          *
-         * Tracked separately from {@link ModelChipProps.choice} because a
-         * session composer's pick is a PATCH the choice answers a round
-         * trip later: the slider has to show the picked model's levels
-         * now, not the stale choice's.
+         * The panel opens where Codex's does: on the chosen model's rail
+         * when it has one — the level is what a person adjusting effort
+         * came for, and the list is the view behind it — and on the list
+         * when the choice's own model takes none, since there is nothing
+         * to slide. Tracked separately from
+         * {@link ModelChipProps.choice} because a session composer's pick
+         * is a PATCH the choice answers a round trip later: the slider
+         * has to show the picked model's levels now, not the stale
+         * choice's.
          */
-        const [effortFor, setEffortFor] = createSignal<ModelOption | null>(null);
+        const [effortFor, setEffortFor] = createSignal<ModelOption | null>(
+          props.models.find(
+            (option) => option.id === props.choice.model && (option.efforts?.length ?? 0) > 0,
+          ) ?? null,
+        );
 
         /**
          * The effort the drilled-in model runs at: the choice's own level
@@ -181,13 +193,13 @@ export default function ModelChip(props: ModelChipProps) {
 
         /**
          * The pick a row stands for: the model becomes the choice, and a
-         * model that takes effort opens its slider — the pick is not done
-         * until the level is seen — while one that takes none is done
-         * already and closes.
+         * model that takes effort lands on its slider — the pick is not
+         * done until the level is seen — while one that takes none is
+         * done already and closes.
          *
          * Picking the model already chosen asks for nothing: it is the
-         * way into its slider, and re-sending `{model}` would drop the
-         * effort it already runs at.
+         * way back to its slider, and re-sending `{model}` would drop
+         * the effort it already runs at.
          */
         function pick(option: ModelOption): void {
           if (option.id !== props.choice.model) {
@@ -264,12 +276,12 @@ export default function ModelChip(props: ModelChipProps) {
               <div class={styles.head}>
                 <button
                   type="button"
-                  class={styles.back}
-                  aria-label="Back to models"
+                  class={styles.models}
+                  aria-label="Choose a model"
                   onClick={() => setEffortFor(null)}
                 >
-                  <ChevronLeft size={14} aria-hidden="true" />
                   {reading()}
+                  <ChevronRight size={14} aria-hidden="true" />
                 </button>
                 <button
                   type="button"
