@@ -565,16 +565,6 @@ pub struct CreateSession {
     /// one.
     #[serde(default)]
     pub permission_mode: Option<crate::harness::PermissionMode>,
-    /// Whether the session gets a screen: a desktop the model can see and
-    /// drive, and a live video of it the user can watch and take over.
-    ///
-    /// Named at creation because the machine provisions differently for it
-    /// — the display stack is part of what boots, not something bolted on
-    /// after. A live session can still gain it through
-    /// [`UpdateSession::computer_use`], which has the daemon install and
-    /// start the stack in the background.
-    #[serde(default, skip_serializing_if = "crate::wire::is_false")]
-    pub computer_use: bool,
     /// Where the session's context comes from — absent for a fresh
     /// session, [`SessionSource::LocalHandoff`](crate::handoff::SessionSource)
     /// when `flyco handoff` is importing a local session's state. A
@@ -664,8 +654,10 @@ pub struct SessionSummary {
     ///
     /// On the summary rather than only on [`SessionDetail`] because the
     /// `Screen` drawer entry is drawn from it: a session without the flag
-    /// has no panel to open, and the chip the composer shows reads this
-    /// rather than asking the machine.
+    /// has no panel to open. Every session created today carries it — the
+    /// stack ships in the image and is not a choice at create — but rows
+    /// from before that change record 0, and a live session can still
+    /// toggle it through [`UpdateSession::computer_use`].
     pub computer_use: bool,
 }
 

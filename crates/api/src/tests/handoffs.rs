@@ -69,7 +69,6 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
-            computer_use: false,
             model: None,
             permission_mode: None,
         })
@@ -526,7 +525,6 @@ async fn an_ordinary_session_answers_no_handoff(ctx: TestContext, kv: Kv, db: Db
             budget_limit: Usd::from_dollars(10),
             machine: Some(machine_choice(caller.account)),
             spot: true,
-            computer_use: false,
             model: None,
             permission_mode: None,
         })

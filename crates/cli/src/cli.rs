@@ -389,9 +389,6 @@ pub struct SessionSpec {
     /// `KEY=VALUE` environment variable (repeatable).
     #[arg(long, value_name = "KEY=VALUE")]
     pub env: Vec<String>,
-    /// Give the session a desktop the agent can see and drive.
-    #[arg(long)]
-    pub computer_use: bool,
     /// Reuse a prior attempt's outcome within its 24-hour window: a retried
     /// `run` or `create` names the same key and gets the same session back
     /// rather than provisioning a second machine.
@@ -459,7 +456,6 @@ impl SessionSpec {
                 effort: self.effort.clone(),
             }),
             permission_mode: self.permission_mode,
-            computer_use: self.computer_use,
             source: None,
         })
     }

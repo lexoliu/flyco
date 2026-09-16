@@ -443,7 +443,6 @@ async fn open(client: &TestClient<Router>, caller: &Caller) -> SessionDetail {
             spot: true,
             model: None,
             permission_mode: None,
-            computer_use: false,
         })
         .send()
         .await;

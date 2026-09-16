@@ -71,12 +71,6 @@ export interface NewSessionInput {
    * names a type.
    */
   spot?: boolean;
-  /**
-   * Whether the session's machine gets a desktop the agent can drive —
-   * display server, encoder, the `computer_*` tools. Omitted is off: a
-   * desktop is provisioned only for a session that asked.
-   */
-  computerUse?: boolean;
 }
 
 export function requestNewSession(input: NewSessionInput): Promise<SessionDetail> {
@@ -91,9 +85,6 @@ export function requestNewSession(input: NewSessionInput): Promise<SessionDetail
     harness: input.harness,
     ...(input.model === undefined ? {} : { model: input.model }),
     budget_limit: dollarsToUsdMicros(input.budgetLimitDollars),
-    ...(input.computerUse === undefined
-      ? {}
-      : { computer_use: input.computerUse }),
     ...(input.machine === undefined
       ? { spot: input.spot ?? true }
       : {

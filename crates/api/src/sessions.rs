@@ -286,10 +286,6 @@ pub struct Opening<'a> {
     /// `NULL`, which [`mode_of`] reads as the product default, so an
     /// unopinionated create stores no opinion.
     pub permission_mode: Option<PermissionMode>,
-    /// Whether it gets a screen. Carried into the provisioned `flycod`
-    /// configuration's `[computer]` table, and into `SetComputerUse` if it
-    /// changes while the session is live.
-    pub computer_use: bool,
 }
 
 /// Creates a session and the budget it accounts against.
@@ -325,11 +321,14 @@ pub async fn create(db: &Db, cap: u32, opening: Opening<'_>) -> Result<SessionDe
         machine_origin,
         model,
         permission_mode,
-        computer_use,
         ..
     } = opening;
     let effort = model.effort.as_deref();
     let model = model.model.as_str();
+    // Every machine carries the display stack — the image ships it and a
+    // screen is not a create-time choice. `UpdateSession::computer_use`
+    // flips the row for a session that wants it gone.
+    let computer_use = true;
 
     sql!(
         db,

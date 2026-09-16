@@ -1360,7 +1360,6 @@ pub async fn seed_session(db: &Db, user: &CurrentUser) -> flyco_core::SessionId 
                 flyco_core::HarnessKind::ClaudeCode,
             )),
             permission_mode: None,
-            computer_use: false,
         },
     )
     .await
