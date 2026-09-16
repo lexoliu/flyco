@@ -110,8 +110,12 @@ export default function Popover(props: PopoverProps) {
       return;
     }
     // Focus lands inside the panel so the keyboard can reach its contents
-    // and so blurring out of it is a meaningful "done here".
-    panel?.focus();
+    // and so blurring out of it is a meaningful "done here". `preventScroll`
+    // because the panel is not yet clamped: a focused element that overhangs
+    // the viewport is scrolled into view by the browser, and that scroll
+    // moves the anchor the fit below is about to measure — the page jumps
+    // and the side the panel then picks is the wrong one.
+    panel?.focus({ preventScroll: true });
 
     // What the panel may not do is hang off the viewport: a picker whose
     // bottom half is off screen, on a page that does not scroll, is a
@@ -206,8 +210,8 @@ export default function Popover(props: PopoverProps) {
       if (event.key === "Escape") {
         close();
         // Escape returns the user to where they were, not to the top of
-        // the document.
-        anchor?.querySelector("button")?.focus();
+        // the document — and never scrolls there either.
+        anchor?.querySelector("button")?.focus({ preventScroll: true });
       }
     }
 
