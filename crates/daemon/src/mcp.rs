@@ -1169,6 +1169,7 @@ mod tests {
             provider: CloudProviderKind::Aws,
             account: None,
             region: "us-east-1".to_owned(),
+            location: None,
             machine_type: machine_type.to_owned(),
             runtime: Runtime::Vm,
             free_grant: None,

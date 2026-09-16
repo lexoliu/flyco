@@ -461,6 +461,7 @@ pub fn catalog(region: &str, prices: &FargatePrices) -> Vec<MachineCatalogEntry>
                 // A region, not an availability zone: ECS places the task
                 // itself, across every subnet the request names.
                 region: region.to_owned(),
+                location: super::locations::of(region),
                 machine_type: shape.machine_type(),
                 runtime: Runtime::Container,
                 // Fargate gives nothing away: the free tier covers ECS's own

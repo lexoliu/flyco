@@ -4853,6 +4853,7 @@ export interface components {
             capacity?: null | components["schemas"]["MachineCapacity"];
             free_grant?: null | components["schemas"]["FreeGrant"];
             lineage?: null | components["schemas"]["MachineLineage"];
+            location?: null | components["schemas"]["RegionLocation"];
             /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
             machine_type: string;
             /** @description Operating system family. */
@@ -5641,6 +5642,26 @@ export interface components {
              * @description When the harness said the limit resets, when it named a time.
              */
             resets_at_unix?: number | null;
+        };
+        /**
+         * @description Where on Earth a catalog region sits.
+         *
+         *     The provider stamps it: it knows the geography its region names stand
+         *     for, and nothing downstream has to keep a parallel gazetteer. The pair
+         *     is the region's nominal datacenter position, not a measurement — two
+         *     decimal places is more precision than the answer is used with.
+         */
+        RegionLocation: {
+            /**
+             * Format: double
+             * @description Degrees north of the equator.
+             */
+            latitude: number;
+            /**
+             * Format: double
+             * @description Degrees east of the prime meridian.
+             */
+            longitude: number;
         };
         /** @description Narrows a host removal. */
         RemoveQuery: {
@@ -9689,6 +9710,7 @@ export interface operations {
                         capacity?: null | components["schemas"]["MachineCapacity"];
                         free_grant?: null | components["schemas"]["FreeGrant"];
                         lineage?: null | components["schemas"]["MachineLineage"];
+                        location?: null | components["schemas"]["RegionLocation"];
                         /** @description Provider-native machine type name (e.g. `Standard_B2ats_v2`). */
                         machine_type: string;
                         /** @description Operating system family. */

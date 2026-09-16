@@ -342,6 +342,7 @@ pub fn catalog(region: &str, tier: Tier) -> Vec<MachineCatalogEntry> {
             // A region, not a zone: Cloud Run places the execution itself
             // and a job has no zone to name.
             region: region.to_owned(),
+            location: super::locations::of(region),
             machine_type: size.machine_type(),
             runtime: Runtime::Container,
             free_grant: Some(CLOUD_RUN_FREE_GRANT),

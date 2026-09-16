@@ -176,6 +176,17 @@ async fn the_catalog_lists_every_machine_type_in_every_geography() {
     // Memory is part of the core-hour, not a second meter.
     assert_eq!(grant.gib_seconds_per_month, u64::MAX);
 
+    // Every geography the catalog can emit is a place `Auto` can rank
+    // against the caller's — an unlocated codespace region would silently
+    // stop following the user's geography.
+    for entry in &catalog {
+        assert!(
+            entry.location.is_some(),
+            "{} stamps no location",
+            entry.region
+        );
+    }
+
     let request = provider.transport().request(0);
     assert_eq!(request.method, Method::Get);
     assert_eq!(

@@ -5,6 +5,7 @@ use core::convert::Infallible;
 use core::future::{Future, ready};
 use core::str::FromStr;
 
+use flyco_core::RegionLocation;
 use skyzen::Request;
 use skyzen::extract::Extractor;
 use skyzen::header::{AUTHORIZATION, HeaderMap};
@@ -91,6 +92,70 @@ impl Extractor for Headers {
 
     fn extract(request: &mut Request) -> impl Future<Output = Result<Self, Self::Error>> + Send {
         ready(Ok(Self::new(request.headers().clone())))
+    }
+}
+
+/// Where the caller is, as Cloudflare's edge saw it.
+///
+/// `request.cf` is a Cloudflare value with no native counterpart — skyzen
+/// deliberately types it `wasm32`-only rather than lie about the caller's
+/// location on another host — so this extractor's two halves are compiled
+/// apart. On the Worker it decodes what the runtime put into request
+/// extensions during conversion: a city-centroid position rather than a
+/// GPS fix, which is exactly the resolution a region ranking needs. Off
+/// the edge it answers `None`, which asks `auto_linux_choice` for the
+/// geography-blind ordering it has always produced rather than guessing at
+/// a place.
+#[derive(Debug, Clone, Copy)]
+pub struct CallerLocation(pub Option<RegionLocation>);
+
+impl Extractor for CallerLocation {
+    type Error = Infallible;
+
+    #[cfg(target_arch = "wasm32")]
+    fn extract(request: &mut Request) -> impl Future<Output = Result<Self, Self::Error>> + Send {
+        use skyzen::runtime::CfPropertiesSlot;
+
+        // An undecodable `cf` reads the same as an absent one: either way
+        // there is no position to rank by, and the runtime already logged
+        // why. The slot itself is absent off Cloudflare and on requests the
+        // Durable Object glue did not decorate.
+        let location = match request.extensions().get::<CfPropertiesSlot>() {
+            Some(CfPropertiesSlot(Ok(cf))) => cf.location(),
+            _ => None,
+        };
+        ready(Ok(Self(location)))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn extract(_request: &mut Request) -> impl Future<Output = Result<Self, Self::Error>> + Send {
+        ready(Ok(Self(None)))
+    }
+}
+
+/// What flyco asks of a `request.cf` position. A private trait because
+/// `CfProperties` exists only on the Worker and an impl on a foreign type
+/// cannot be cfg-gated alone.
+#[cfg(target_arch = "wasm32")]
+trait CfPropertiesExt {
+    /// The caller's position parsed out of the edge metadata, or `None`
+    /// when the platform did not place the request.
+    ///
+    /// A coordinate that does not parse to a finite number makes the whole
+    /// position `None` rather than half a place — and keeps every
+    /// [`RegionLocation`] the API produces finite, which is what the type's
+    /// `Eq` stands on.
+    fn location(&self) -> Option<RegionLocation>;
+}
+
+#[cfg(target_arch = "wasm32")]
+impl CfPropertiesExt for skyzen::runtime::CfProperties {
+    fn location(&self) -> Option<RegionLocation> {
+        let location = RegionLocation {
+            latitude: self.latitude.as_deref()?.parse().ok()?,
+            longitude: self.longitude.as_deref()?.parse().ok()?,
+        };
+        (location.latitude.is_finite() && location.longitude.is_finite()).then_some(location)
     }
 }
 

@@ -309,6 +309,10 @@ impl Host {
             account: None,
             provider: CloudProviderKind::Host,
             region: self.facts.hostname.clone(),
+            // Where the machine physically sits is a fact about the user's
+            // own hardware flyco has never read; `Auto` treats the unknown
+            // as already here rather than demoting it for our ignorance.
+            location: None,
             machine_type: self.facts.hostname.clone(),
             runtime: Runtime::Container,
             free_grant: None,

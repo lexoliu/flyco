@@ -73,6 +73,7 @@
 
 pub mod auth;
 pub mod compute;
+pub mod locations;
 pub mod pricing;
 pub mod quotas;
 pub mod run;
@@ -794,6 +795,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> GcpProvider<T,
             // entry that named only the region would not say where the
             // machine it describes can be created.
             region: zone.to_owned(),
+            location: locations::of(zone),
             machine_type: machine_type.name.clone(),
             runtime: Runtime::Vm,
             free_grant: None,

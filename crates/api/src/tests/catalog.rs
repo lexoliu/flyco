@@ -55,6 +55,7 @@ fn entry(account: ProviderAccountId) -> MachineCatalogEntry {
         account: Some(account),
         provider: CloudProviderKind::Azure,
         region: REGION.to_owned(),
+        location: None,
         machine_type: MACHINE_TYPE.to_owned(),
         runtime: Runtime::Vm,
         free_grant: None,

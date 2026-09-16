@@ -73,6 +73,7 @@ pub mod fargate;
 pub mod iam;
 pub mod identity;
 pub mod image;
+pub mod locations;
 pub mod pricing;
 pub mod query;
 pub mod quotas;
@@ -1229,6 +1230,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer, W: WallClock> AwsProvider<T,
             account: None,
             provider: CloudProviderKind::Aws,
             region: region.to_owned(),
+            location: locations::of(region),
             machine_type: name.to_owned(),
             runtime: Runtime::Vm,
             free_grant: None,
