@@ -8,25 +8,53 @@ import Composer from "./Composer";
  * Readiness with one linked agent, so the harness chip is in its linked
  * form: the one docs/ux.md §5 says opens a picker rather than a page.
  */
+const singleAccount: Readiness = {
+  harness: () => [
+    {
+      id: "harness-1",
+      harness: "claude_code",
+      label: "lexo@flyco.dev",
+      linked_at_unix: 1_787_000_000,
+      expires_at_unix: null,
+      models: [],
+      usage: [],
+    },
+  ],
+  compute: () => [],
+  ready: () => false,
+  loading: () => false,
+  error: () => undefined,
+  refresh: () => Promise.resolve(),
+};
+
+const duplicateHarness: Readiness = {
+  ...singleAccount,
+  harness: () => [
+    {
+      id: "harness-1",
+      harness: "claude_code",
+      label: "lexo@flyco.dev",
+      linked_at_unix: 1_787_000_000,
+      expires_at_unix: null,
+      models: [],
+      usage: [],
+    },
+    {
+      id: "harness-2",
+      harness: "claude_code",
+      label: "team@flyco.dev",
+      linked_at_unix: 1_787_000_001,
+      expires_at_unix: null,
+      models: [],
+      usage: [],
+    },
+  ],
+};
+
+let readiness: Readiness = singleAccount;
+
 vi.mock("./Readiness", () => ({
-  useReadiness: (): Readiness => ({
-    harness: () => [
-      {
-        id: "harness-1",
-        harness: "claude_code",
-        label: "lexo@flyco.dev",
-        linked_at_unix: 1_787_000_000,
-        expires_at_unix: null,
-        models: [],
-        usage: [],
-      },
-    ],
-    compute: () => [],
-    ready: () => false,
-    loading: () => false,
-    error: () => undefined,
-    refresh: () => Promise.resolve(),
-  }),
+  useReadiness: (): Readiness => readiness,
 }));
 
 function mount() {
@@ -43,18 +71,31 @@ function mount() {
 
 describe("the composer's agent chip", () => {
   it("opens a picker of the linked agents instead of leaving the page", async () => {
+    readiness = singleAccount;
     const { findByRole, getByRole, queryByText, history } = mount();
 
     const chip = await findByRole("button", { name: /Claude Code/ });
     chip.click();
 
     const picker = getByRole("dialog", { name: /Claude Code/ });
-    expect(picker.textContent).toContain("Your agents");
-    expect(picker.textContent).toContain("lexo@flyco.dev");
+    expect(picker.textContent).not.toContain("Your agents");
+    expect(picker.textContent).not.toContain("lexo@flyco.dev");
     expect(getByRole("link", { name: /Connect another agent/ }).getAttribute("href")).toBe(
       "/connect/harness",
     );
     expect(queryByText("Connect flow")).toBeNull();
     expect(history.get()).toBe("/");
+  });
+
+  it("names accounts only when two share a harness", async () => {
+    readiness = duplicateHarness;
+    const { findByRole, getByRole } = mount();
+
+    const chip = await findByRole("button", { name: /Claude Code/ });
+    chip.click();
+
+    const picker = getByRole("dialog", { name: /Claude Code/ });
+    expect(picker.textContent).toContain("lexo@flyco.dev");
+    expect(picker.textContent).toContain("team@flyco.dev");
   });
 });

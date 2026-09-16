@@ -464,7 +464,6 @@ function HarnessChip(props: {
       >
         {(close) => (
           <div class={styles.popover}>
-            <p class={styles.popoverTitle}>Your agents</p>
             <ul class={styles.options}>
               <For each={props.accounts}>
                 {(account) => (
@@ -482,7 +481,14 @@ function HarnessChip(props: {
                     >
                       <Logomark mark={HARNESS_MARK[account.harness]} size={13} />
                       {HARNESS_LABEL[account.harness]}
-                      <span class={styles.optionMeta}>{account.label}</span>
+                      <Show
+                        when={
+                          props.accounts.filter((a) => a.harness === account.harness)
+                            .length > 1
+                        }
+                      >
+                        <span class={styles.optionMeta}>{account.label}</span>
+                      </Show>
                     </button>
                   </li>
                 )}
