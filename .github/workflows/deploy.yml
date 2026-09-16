@@ -67,13 +67,19 @@ jobs:
           cd frontend
           bun install --frozen-lockfile
           bun run build
-      # The deploy driver. rust-cache restores ~/.cargo/bin from the
-      # previous run, so a matching version skips a ~20-minute source
-      # compile; bump the version string to upgrade.
+      # The deploy driver. zen-rs/skyzen ships cargo-dist binaries on its
+      # releases, so `cargo binstall` downloads a prebuilt `skyzen` in seconds;
+      # it falls back to `cargo install` semantics when a release has no
+      # artifacts, so a version predating binaries still works. The rust-cache
+      # binary check ahead skips even the download on warm runs.
+      - name: Install cargo-binstall
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
       - name: Install skyzen-cli
         run: >-
           skyzen --version 2>/dev/null | grep -q '0\.3\.0'
-          || cargo install skyzen-cli --locked --version 0.3.0
+          || cargo binstall --no-confirm --locked skyzen-cli@0.3.0
       # wrangler is what `skyzen deploy` invokes under the hood and what the
       # Pages step calls directly.
       - run: npm install --global wrangler@4
