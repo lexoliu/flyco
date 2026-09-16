@@ -197,10 +197,21 @@ which now reads `Linked` beside the agent.
    expired code turns the primary into `Get a new code`; until then the
    primary is `Next`, disabled with "Approve the code in the browser to
    continue". The quiet link *Use an API key instead* leads to page 4.
-4. *Paste your API key* (either agent, reached only by the link). One
-   field that accepts an API key or a `claude setup-token`, told apart by
-   prefix. Primary `Link Claude Code` / `Link Codex`; success returns to
-   the list as the sign-in path does.
+2′′. *Link Devin.* Devin's OAuth client admits only localhost redirect
+   addresses — nothing on the user's machine can receive the redirect, so
+   it is meant to fail: after approval the browser lands on a dead
+   `127.0.0.1` page, and the code stays in its address bar. `Sign in with
+   Devin` opens the authorize page and advances to the paste page, which
+   explains the dead address and takes the whole pasted URL or the bare
+   code. A refused code is an inline `ProblemNotice` under the field; the
+   quiet link *Start the sign-in again* mints a fresh attempt in place.
+   The *Use an API key instead* link leads to page 4, where Devin's field
+   takes a token from its settings.
+4. *Paste your API key* (whichever agent the link came from, reached only
+   by the link). One field that accepts an API key or a `claude
+   setup-token`, told apart by prefix. Primary `Link Claude Code` / `Link
+   Codex` / `Link Devin`; success returns to the list as the sign-in path
+   does.
 
 Settings › Agents › `Connect …` names one agent, and a flow opened for
 one agent has nothing to list: it walks that agent's pages (2–4) alone

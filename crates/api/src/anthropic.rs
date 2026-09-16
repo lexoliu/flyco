@@ -17,15 +17,10 @@
 
 use core::future::Future;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64URL;
 use flyco_provider::http::{HttpRequest, HttpResponse, Method};
 use flyco_provider::{HttpError, HttpTransport, LiveTransport};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 use url::Url;
-
-use crate::crypto::{CryptoError, random_token};
 
 /// Where the browser approves the grant.
 const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
@@ -46,41 +41,6 @@ pub const SCOPE: &str = "org:create_api_key user:profile user:inference";
 
 /// Separator Anthropic puts between the code and the state it echoes.
 const CODE_STATE_SEPARATOR: char = '#';
-
-/// The PKCE pair one sign-in attempt is bound to.
-///
-/// The verifier is the secret: it stays in the control plane's key-value
-/// store, and only its SHA-256 challenge is published in the authorize URL.
-#[derive(Clone)]
-pub struct Pkce {
-    /// Held until the code is redeemed.
-    pub verifier: String,
-    /// `code_challenge`, base64url of the verifier's SHA-256.
-    pub challenge: String,
-}
-
-impl core::fmt::Debug for Pkce {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Pkce")
-            .field("challenge", &self.challenge)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Mints a fresh verifier and its S256 challenge.
-///
-/// # Errors
-///
-/// Returns [`CryptoError::Entropy`] if the host has no usable entropy
-/// source.
-pub fn pkce() -> Result<Pkce, CryptoError> {
-    let verifier = random_token()?;
-    let challenge = BASE64URL.encode(Sha256::digest(verifier.as_bytes()));
-    Ok(Pkce {
-        verifier,
-        challenge,
-    })
-}
 
 /// The URL the browser opens to approve the grant.
 ///
@@ -356,9 +316,10 @@ mod tests {
     use flyco_provider::testing::RecordedTransport;
 
     use super::{
-        AnthropicError, REDIRECT_URI, SCOPE, TokenRequest, authorize_url, exchange_over, pkce,
+        AnthropicError, REDIRECT_URI, SCOPE, TokenRequest, authorize_url, exchange_over,
         split_pasted_code,
     };
+    use crate::crypto::pkce;
 
     /// A token response as Anthropic returns one.
     const TOKEN_BODY: &str = include_str!("../fixtures/anthropic/token.json");
@@ -387,23 +348,6 @@ mod tests {
         assert_eq!(query(&url, "code_challenge"), pkce.challenge);
         assert_eq!(query(&url, "code_challenge_method"), "S256");
         assert_eq!(query(&url, "state"), "the-state");
-    }
-
-    #[test]
-    fn a_challenge_is_the_verifiers_sha256_and_never_the_verifier() {
-        let pkce = pkce().expect("mint a verifier");
-        assert_ne!(pkce.challenge, pkce.verifier);
-        // base64url of 32 bytes, unpadded.
-        assert_eq!(pkce.challenge.len(), 43);
-        assert!(!format!("{pkce:?}").contains(&pkce.verifier));
-    }
-
-    #[test]
-    fn two_attempts_never_share_a_verifier() {
-        assert_ne!(
-            pkce().expect("mint").verifier,
-            pkce().expect("mint").verifier
-        );
     }
 
     #[test]

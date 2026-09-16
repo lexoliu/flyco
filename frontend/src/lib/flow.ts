@@ -17,6 +17,7 @@
 import type {
   ClaudeOauthStart,
   CloudProviderKind,
+  DevinOauthStart,
   HarnessAccountView,
   HarnessKind,
   ProviderBonusHint,
@@ -29,7 +30,10 @@ export type Stage = "meet" | "agent" | "compute";
 
 /** How an agent is being linked, until it is. */
 export type AgentRoute =
-  /** The vendor's own sign-in: Anthropic's code, or OpenAI's device flow. */
+  /**
+   * The vendor's own sign-in: Anthropic's code, OpenAI's device flow, or
+   * Devin's pasted redirect.
+   */
   | "sign-in"
   /** The one-field page behind *Use an API key instead*. */
   | "api-key";
@@ -79,6 +83,11 @@ export interface FlowAnswers {
    * against; the paste page exists only while there is one.
    */
   readonly claudeAttempt: ClaudeOauthStart | null;
+  /**
+   * The Devin sign-in that was opened, which the paste page redeems
+   * against; the paste page exists only while there is one.
+   */
+  readonly devinAttempt: DevinOauthStart | null;
   readonly compute: CloudProviderKind | null;
   /**
    * How Azure or Google Cloud is being linked: the vendor's own consent
@@ -109,8 +118,9 @@ export interface FlowAnswers {
 export const NO_ANSWERS: FlowAnswers = {
   agents: {},
   linking: null,
-  routes: { claude_code: "sign-in", codex: "sign-in", devin: "api-key" },
+  routes: { claude_code: "sign-in", codex: "sign-in", devin: "sign-in" },
   claudeAttempt: null,
+  devinAttempt: null,
   compute: null,
   cloudRoute: "sign-in",
   cloudConsent: null,
@@ -162,6 +172,8 @@ export type Page =
   | { readonly id: "claude-sign-in" }
   | { readonly id: "claude-paste" }
   | { readonly id: "codex-sign-in" }
+  | { readonly id: "devin-sign-in" }
+  | { readonly id: "devin-paste" }
   | { readonly id: "api-key"; readonly agent: HarnessKind }
   | { readonly id: "compute-choice" }
   | { readonly id: "new-to-provider"; readonly provider: CloudKind }
@@ -193,6 +205,8 @@ export function stageOf(page: Page): Stage {
     case "claude-sign-in":
     case "claude-paste":
     case "codex-sign-in":
+    case "devin-sign-in":
+    case "devin-paste":
     case "api-key":
       return "agent";
     case "compute-choice":
@@ -215,25 +229,25 @@ export function stageOf(page: Page): Stage {
 
 /**
  * One agent's sign-in pages: the vendor's own sign-in, and behind it
- * whatever its route still needs — the paste page while a Claude sign-in
- * is open, the key page behind *Use an API key instead*.
+ * whatever its route still needs — the paste page while a Claude or Devin
+ * sign-in is open, the key page behind *Use an API key instead*.
  */
 function agentPages(answers: FlowAnswers, agent: HarnessKind): Page[] {
-  // Devin has no vendor sign-in flow the browser can walk — a token is
-  // created in its settings and pasted — so its whole route is the key
-  // page.
-  if (agent === "devin") {
-    return [{ id: "api-key", agent }];
-  }
   const signIn: Page =
     agent === "claude_code"
       ? { id: "claude-sign-in" }
-      : { id: "codex-sign-in" };
+      : agent === "devin"
+        ? { id: "devin-sign-in" }
+        : { id: "codex-sign-in" };
   switch (answers.routes[agent]) {
     case "sign-in":
-      return agent === "claude_code" && answers.claudeAttempt !== null
-        ? [signIn, { id: "claude-paste" }]
-        : [signIn];
+      if (agent === "claude_code" && answers.claudeAttempt !== null) {
+        return [signIn, { id: "claude-paste" }];
+      }
+      if (agent === "devin" && answers.devinAttempt !== null) {
+        return [signIn, { id: "devin-paste" }];
+      }
+      return [signIn];
     case "api-key":
       return [signIn, { id: "api-key", agent }];
   }
@@ -474,6 +488,7 @@ export function finishLink(
     agents: { ...state.answers.agents, [agent]: account },
     linking: null,
     claudeAttempt: null,
+    devinAttempt: null,
     routes: { ...state.answers.routes, [agent]: "sign-in" },
   };
   const next: FlowState = {

@@ -255,6 +255,38 @@ pub enum ApiError {
         reason: String,
     },
 
+    /// The Devin sign-in attempt this code names is unknown, already
+    /// redeemed, past its ten-minute lifetime, or another user's.
+    ///
+    /// One variant for all four, for the same reason
+    /// [`ClaudeOauthAttemptExpired`](Self::ClaudeOauthAttemptExpired) is
+    /// one: the attempt id is the only thing that names an attempt, and
+    /// telling a caller which of the four theirs is would be a free oracle
+    /// over somebody else's sign-in.
+    #[error(
+        "this Devin sign-in has expired or was already completed; start it again",
+        status = StatusCode::BAD_REQUEST
+    )]
+    DevinOauthAttemptExpired,
+
+    /// The `state` in the pasted redirect URL is not the one this attempt
+    /// was started with.
+    #[error(
+        "this code belongs to a different Devin sign-in than the one it was pasted into",
+        status = StatusCode::BAD_REQUEST
+    )]
+    DevinOauthStateMismatch,
+
+    /// Devin refused the grant, and said why when it would.
+    ///
+    /// A caller error rather than an outage: the code was mistyped,
+    /// already used, or stale, and the answer is to run the flow again.
+    #[error("Devin refused this sign-in: {reason}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    DevinOauthRejected {
+        /// Devin's own reason, when it stated one.
+        reason: String,
+    },
+
     /// The cloud sign-in this call names is unknown, already finished, past
     /// its ten-minute lifetime, another vendor's, or another user's.
     ///
@@ -1317,8 +1349,9 @@ pub enum ApiError {
     ///
     /// A key Devin refuses is not one of these — that is
     /// [`InvalidHarnessCredential`](Self::InvalidHarnessCredential), which
-    /// the caller fixes by pasting a working key. See
-    /// [`From<DevinError>`](Self::from).
+    /// the caller fixes by pasting a working key — and neither is a grant
+    /// Devin refuses, which is [`DevinOauthRejected`](Self::DevinOauthRejected).
+    /// See [`From<DevinError>`](Self::from).
     #[error("Devin call failed: {0}", status = StatusCode::BAD_GATEWAY)]
     Devin(DevinError),
 
@@ -1454,13 +1487,17 @@ impl From<GoogleError> for ApiError {
 /// The refusal is not a vendor problem: Devin looked at the key and said
 /// no, which is the same class of fact as an empty one, so it lands on the
 /// same `422` [`InvalidHarnessCredential`](Self::InvalidHarnessCredential)
-/// rather than on a `502` that suggests retrying would help.
+/// rather than on a `502` that suggests retrying would help. A refused
+/// grant is the OAuth flow's version of that answer, and the caller's fix
+/// is the paste again — so it keeps Devin's own reason the way
+/// [`ClaudeOauthRejected`](Self::ClaudeOauthRejected) keeps Anthropic's.
 impl From<DevinError> for ApiError {
     fn from(error: DevinError) -> Self {
         match error {
             DevinError::Rejected => {
                 Self::InvalidHarnessCredential("Devin does not accept this key")
             }
+            DevinError::GrantRejected(reason) => Self::DevinOauthRejected { reason },
             unavailable => Self::Devin(unavailable),
         }
     }
@@ -1512,6 +1549,9 @@ impl ApiError {
             Self::CodexDeviceAuthDisabled { .. } => "codex-device-auth-disabled",
             Self::CodexOauthRejected { .. } => "codex-oauth-rejected",
             Self::OpenAi(_) => "openai-unavailable",
+            Self::DevinOauthAttemptExpired => "devin-oauth-attempt-expired",
+            Self::DevinOauthStateMismatch => "devin-oauth-state-mismatch",
+            Self::DevinOauthRejected { .. } => "devin-oauth-rejected",
             Self::ProviderOauthAttemptExpired => "provider-oauth-attempt-expired",
             Self::ProviderOauthNotAuthorized => "provider-oauth-not-authorized",
             Self::MicrosoftRejected { .. } => "microsoft-rejected",

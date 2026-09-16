@@ -1375,6 +1375,137 @@
         }
       }
     },
+    "/v1/harness-accounts/devin/oauth/complete": {
+      "post": {
+        "summary": "`POST /v1/harness-accounts/devin/oauth/complete` — links the account.",
+        "description": "`POST /v1/harness-accounts/devin/oauth/complete` — links the account.",
+        "operationId": "flyco_api::devin_oauth::complete",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/harness-accounts/devin/oauth/complete`.",
+                "required": [
+                  "attempt_id",
+                  "code"
+                ],
+                "properties": {
+                  "attempt_id": {
+                    "$ref": "#/components/schemas/Uuid",
+                    "description": "The attempt this code belongs to, from [`DevinOauthStart`]."
+                  },
+                  "code": {
+                    "type": "string",
+                    "description": "The URL Devin's redirect left in the address bar —\n`http://127.0.0.1:59653/callback?code=…&state=…` — or the bare code\nalone, for a user who copied only the parameter out of it."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "A Claude or Codex account the user has linked, as `GET\n/v1/harness-accounts` lists it.\n\nNo representation of an account carries its credential; the sealed value\nleaves the control plane only when it is provisioned onto a session machine.",
+                  "required": [
+                    "id",
+                    "harness",
+                    "label",
+                    "linked_at_unix",
+                    "models",
+                    "usage"
+                  ],
+                  "properties": {
+                    "expires_at_unix": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "format": "int64",
+                      "description": "When the stored credential expires, when the vendor states a\nlifetime.",
+                      "minimum": 0
+                    },
+                    "harness": {
+                      "$ref": "#/components/schemas/HarnessKind",
+                      "description": "Which harness this account drives."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "Account name as the vendor reports it, so the user can tell two\nlinked accounts apart."
+                    },
+                    "linked_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was linked, seconds since the Unix epoch.",
+                      "minimum": 0
+                    },
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ModelOption"
+                      },
+                      "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
+                    },
+                    "usage": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/UsageWindow"
+                      },
+                      "description": "How much of this account's plan is spent, per rolling window.\n\nThe last snapshot a session on this account filed, and empty until\none has. Carried on the account for the same reason\n[`Self::models`] is — Settings reads the account and nothing else —\nand it is what the settings row draws its bars from."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/harness-accounts/devin/oauth/start": {
+      "post": {
+        "summary": "`POST /v1/harness-accounts/devin/oauth/start` — begins a Devin sign-in.",
+        "description": "`POST /v1/harness-accounts/devin/oauth/start` — begins a Devin sign-in.",
+        "operationId": "flyco_api::devin_oauth::start",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Response of `POST /v1/harness-accounts/devin/oauth/start`.\n\nThe PKCE verifier never appears here: it stays in the control plane's\nkey-value store for the ten minutes the attempt lives, and the browser\ncarries only the opaque attempt id that names it.",
+                  "required": [
+                    "attempt_id",
+                    "authorize_url"
+                  ],
+                  "properties": {
+                    "attempt_id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Names the verifier and `state` the completion must be redeemed\nagainst."
+                    },
+                    "authorize_url": {
+                      "type": "string",
+                      "description": "Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/harness-accounts/{id}": {
       "delete": {
         "summary": "Unlinks one account owned by the caller.",
@@ -9133,6 +9264,24 @@
           }
         }
       },
+      "CompleteDevinOauth": {
+        "type": "object",
+        "description": "Request body of `POST /v1/harness-accounts/devin/oauth/complete`.",
+        "required": [
+          "attempt_id",
+          "code"
+        ],
+        "properties": {
+          "attempt_id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "The attempt this code belongs to, from [`DevinOauthStart`]."
+          },
+          "code": {
+            "type": "string",
+            "description": "The URL Devin's redirect left in the address bar —\n`http://127.0.0.1:59653/callback?code=…&state=…` — or the bare code\nalone, for a user who copied only the parameter out of it."
+          }
+        }
+      },
       "ContextCost": {
         "type": "object",
         "description": "One thing occupying the context window, as a [`ContextUsage`] lists it.\n\nOne shape for every section the harness reports — a usage category, an\nMCP tool's schema, a memory file, an agent definition, a skill's\nfrontmatter — because each answers the same question (what is this, and\nwhat does it cost) and the panel rows differ only in which list they\ncame from.",
@@ -10224,6 +10373,24 @@
             "format": "int64",
             "description": "The watcher id the desktop stream's `hello` event named.",
             "minimum": 0
+          }
+        }
+      },
+      "DevinOauthStart": {
+        "type": "object",
+        "description": "Response of `POST /v1/harness-accounts/devin/oauth/start`.\n\nThe PKCE verifier never appears here: it stays in the control plane's\nkey-value store for the ten minutes the attempt lives, and the browser\ncarries only the opaque attempt id that names it.",
+        "required": [
+          "attempt_id",
+          "authorize_url"
+        ],
+        "properties": {
+          "attempt_id": {
+            "$ref": "#/components/schemas/Uuid",
+            "description": "Names the verifier and `state` the completion must be redeemed\nagainst."
+          },
+          "authorize_url": {
+            "type": "string",
+            "description": "Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open."
           }
         }
       },

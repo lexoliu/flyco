@@ -171,6 +171,9 @@ pub struct ClaudeOauthAttemptEntity(());
 /// Marker for in-flight Codex device-code sign-in identifiers.
 #[derive(Debug)]
 pub struct CodexOauthAttemptEntity(());
+/// Marker for in-flight Devin OAuth sign-in identifiers.
+#[derive(Debug)]
+pub struct DevinOauthAttemptEntity(());
 /// Marker for in-flight cloud-provider sign-in identifiers.
 #[derive(Debug)]
 pub struct ProviderOauthAttemptEntity(());
@@ -224,6 +227,8 @@ pub type HarnessObservationId = Id<HarnessObservationEntity>;
 pub type ClaudeOauthAttemptId = Id<ClaudeOauthAttemptEntity>;
 /// Identifies one browser's in-flight Codex device-code sign-in.
 pub type CodexOauthAttemptId = Id<CodexOauthAttemptEntity>;
+/// Identifies one browser's in-flight Devin OAuth sign-in.
+pub type DevinOauthAttemptId = Id<DevinOauthAttemptEntity>;
 /// Identifies one browser's in-flight Microsoft or Google sign-in, from the
 /// authorize URL through to the account it links.
 pub type ProviderOauthAttemptId = Id<ProviderOauthAttemptEntity>;

@@ -692,11 +692,15 @@ pub const DEVIN_API_KEY: &str = "devi-flyco-test-key";
 /// The name [`TestDevin`] reports, which becomes the account's label.
 pub const DEVIN_ACCOUNT_NAME: &str = "Test Devin";
 
+/// The only authorization code [`TestDevin`] will redeem.
+pub const DEVIN_CODE: &str = "a-pasted-devin-authorization-code";
+
 /// A [`DevinApi`] that answers without a network.
 ///
-/// The only key it knows is [`DEVIN_API_KEY`]; anything else is Devin's
-/// refusal, so a test exercises the same accept-or-reject split the live
-/// `/v3/self` read makes.
+/// The only key it knows is [`DEVIN_API_KEY`] and the only code it
+/// redeems is [`DEVIN_CODE`]; anything else is Devin's refusal, so a test
+/// exercises the same accept-or-reject split the live exchange and
+/// `/v3/self` reads make.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TestDevin;
 
@@ -711,6 +715,24 @@ impl DevinApi for TestDevin {
             })
         } else {
             Err(DevinError::Rejected)
+        })
+    }
+
+    fn redeem_grant(
+        &self,
+        code: &str,
+        verifier: &str,
+    ) -> impl Future<Output = Result<String, DevinError>> + Send {
+        ready(if code == DEVIN_CODE {
+            assert!(
+                !verifier.is_empty(),
+                "the exchange carries the PKCE verifier the challenge was made from"
+            );
+            Ok(DEVIN_API_KEY.to_owned())
+        } else {
+            Err(DevinError::GrantRejected(
+                "invalid_grant: The authorization code is invalid or has expired.".to_owned(),
+            ))
         })
     }
 }

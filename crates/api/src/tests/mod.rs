@@ -10,6 +10,7 @@ mod cli;
 mod codespaces;
 mod codex_oauth;
 mod contract;
+mod devin_oauth;
 mod github_oauth;
 mod handoffs;
 mod harness_accounts;

@@ -44,11 +44,11 @@ use crate::rooms::{HostRooms, Rooms, UserStreams};
 use crate::turnstile::TurnstileClient;
 use crate::vendors::Vendors;
 use crate::{
-    agents_md, api_keys, approvals, claude_oauth, cli, codespaces, codex_oauth, daemon_tokens, env,
-    handoffs, harness_accounts, hosts, idempotency, machines, mcp, memory, oauth, observations,
-    problem, provider_accounts, provider_oauth, provisioning, push, relay, releases, repos,
-    responses, session_repos, sessions, skills, transcripts, turns, usage_limits, users, webhooks,
-    workdirs,
+    agents_md, api_keys, approvals, claude_oauth, cli, codespaces, codex_oauth, daemon_tokens,
+    devin_oauth, env, handoffs, harness_accounts, hosts, idempotency, machines, mcp, memory, oauth,
+    observations, problem, provider_accounts, provider_oauth, provisioning, push, relay, releases,
+    repos, responses, session_repos, sessions, skills, transcripts, turns, usage_limits, users,
+    webhooks, workdirs,
 };
 use flyco_core::wire::EventPage;
 
@@ -3736,6 +3736,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
     nodes.extend(claude_oauth::routes());
     nodes.extend(cli::routes());
     nodes.extend(codex_oauth::routes());
+    nodes.extend(devin_oauth::routes());
     nodes.extend(harness_accounts::routes());
     nodes.extend(hosts::routes());
     nodes.extend(machines::routes());

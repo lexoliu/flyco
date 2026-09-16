@@ -27,6 +27,9 @@ import {
 const AUTHORIZE_URL =
   "https://claude.ai/oauth/authorize?code=true&client_id=test&state=the-state";
 const ATTEMPT = "11111111-2222-4333-8444-555555555555";
+const DEVIN_AUTHORIZE_URL =
+  "https://app.devin.ai/auth/cli/continue?redirect_uri=http%3A%2F%2F127.0.0.1%3A59653%2Fcallback&state=the-state";
+const DEVIN_ATTEMPT = "77777777-6666-4555-8444-333333333333";
 const DEVICE_URL = "https://auth.openai.com/codex/device";
 const CODEX_ATTEMPT = "99999999-8888-4777-8666-555555555555";
 const SETTINGS_URL = "https://chatgpt.com/#settings/Security";
@@ -363,6 +366,191 @@ describe("Claude Code, opened for it alone", () => {
         kind: "claude_setup_token",
         token: "sk-ant-oat01-a-setup-token",
       },
+    });
+  });
+});
+
+describe("Devin, opened for it alone", () => {
+  it("opens on its sign-in page and finishes when the pasted redirect links", async () => {
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    const { container, findByRole, findByLabelText, getAllByText, getByText, onDone } =
+      renderFlow(["agent"], { agents: ["devin"] });
+    await findByRole("heading", { level: 1, name: "Link Devin" });
+    expect(
+      getByText("Runs on your Devin account.", { exact: false }),
+    ).toBeInTheDocument();
+    expect(primary(container)).toHaveTextContent("Sign in with Devin");
+    expectEveryButtonNamed(container);
+    // The paste page is not reachable before there is an attempt to redeem into.
+    expect(document.querySelector("#devin-oauth-code")).toBeNull();
+
+    fireEvent.click(primary(container));
+    const field = await findByLabelText("Address or code from Devin");
+    expect(opened).toHaveBeenCalledWith(
+      DEVIN_AUTHORIZE_URL,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    await findByRole("heading", {
+      level: 1,
+      name: "Paste the address Devin sent you to",
+    });
+    // The dead redirect is explained, not hidden.
+    expect(getAllByText(/127\.0\.0\.1/).length).toBeGreaterThan(0);
+
+    expect(primary(container)).toHaveTextContent("Link Devin");
+    expect(primary(container)).toBeDisabled();
+    expect(primary(container)).toHaveAttribute(
+      "title",
+      "Paste the address Devin left in the address bar to continue",
+    );
+
+    type(
+      field,
+      "http://127.0.0.1:59653/callback?code=the-code&state=the-state",
+    );
+    await waitFor(() => expect(primary(container)).toBeEnabled());
+    fireEvent.click(primary(container));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    // The paste is sent whole: the control plane reads the code out of it.
+    expect(postedTo("/v1/harness-accounts/devin/oauth/complete")).toEqual({
+      attempt_id: DEVIN_ATTEMPT,
+      code: "http://127.0.0.1:59653/callback?code=the-code&state=the-state",
+    });
+  });
+
+  it("redeems a bare code the same way", async () => {
+    const { container, findByRole, findByLabelText, onDone } = renderFlow(
+      ["agent"],
+      { agents: ["devin"] },
+    );
+    await findByRole("heading", { level: 1, name: "Link Devin" });
+    fireEvent.click(primary(container));
+
+    type(await findByLabelText("Address or code from Devin"), "  the-code  ");
+    await waitFor(() => expect(primary(container)).toBeEnabled());
+    fireEvent.click(primary(container));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(postedTo("/v1/harness-accounts/devin/oauth/complete")).toEqual({
+      attempt_id: DEVIN_ATTEMPT,
+      code: "the-code",
+    });
+  });
+
+  it("keeps the button off for the dead address alone, and for a paste with no code", async () => {
+    const { container, findByRole, findByLabelText } = renderFlow(["agent"], {
+      agents: ["devin"],
+    });
+    await findByRole("heading", { level: 1, name: "Link Devin" });
+    fireEvent.click(primary(container));
+    const field = await findByLabelText("Address or code from Devin");
+
+    type(field, "http://127.0.0.1:59653/callback");
+    expect(primary(container)).toBeDisabled();
+    type(field, "http://127.0.0.1:59653/callback?state=the-state");
+    expect(primary(container)).toBeDisabled();
+  });
+
+  it("puts a refused grant under the field and keeps the page", async () => {
+    route(
+      (path, method) =>
+        method === "POST" &&
+        path === "/v1/harness-accounts/devin/oauth/complete",
+      () =>
+        problem(
+          422,
+          "devin-oauth-rejected",
+          "Devin refused this sign-in: invalid_grant: The code has expired.",
+        ),
+    );
+    const { container, findByRole, findByLabelText, getByRole } = renderFlow(
+      ["agent"],
+      { agents: ["devin"] },
+    );
+    await findByRole("heading", { level: 1, name: "Link Devin" });
+    fireEvent.click(primary(container));
+
+    type(
+      await findByLabelText("Address or code from Devin"),
+      "http://127.0.0.1:59653/callback?code=stale&state=the-state",
+    );
+    await waitFor(() => expect(primary(container)).toBeEnabled());
+    fireEvent.click(primary(container));
+
+    expect(await findByRole("alert")).toHaveTextContent(
+      "Devin refused this sign-in: invalid_grant: The code has expired.",
+    );
+    expect(
+      getByRole("heading", {
+        level: 1,
+        name: "Paste the address Devin sent you to",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("starts a fresh sign-in by the quiet link after a refusal, on the same page", async () => {
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    route(
+      (path, method) =>
+        method === "POST" &&
+        path === "/v1/harness-accounts/devin/oauth/complete",
+      () => problem(500, "internal", "The control plane failed."),
+    );
+    const { container, findByRole, findByLabelText, getByRole, queryByRole } =
+      renderFlow(["agent"], { agents: ["devin"] });
+    await findByRole("heading", { level: 1, name: "Link Devin" });
+    fireEvent.click(primary(container));
+    const field = await findByLabelText("Address or code from Devin");
+    type(field, "the-code");
+    await waitFor(() => expect(primary(container)).toBeEnabled());
+    fireEvent.click(primary(container));
+    await findByRole("alert");
+
+    fireEvent.click(getByRole("button", { name: "Start the sign-in again" }));
+    await waitFor(() => expect(opened).toHaveBeenCalledTimes(2));
+    const starts = vi
+      .mocked(fetch)
+      .mock.calls.filter(
+        ([input, init]) =>
+          String(input).endsWith("/v1/harness-accounts/devin/oauth/start") &&
+          init?.method === "POST",
+      );
+    expect(starts).toHaveLength(2);
+    expect(field).toHaveValue("");
+    expect(queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      getByRole("heading", {
+        level: 1,
+        name: "Paste the address Devin sent you to",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("leads by link to the API-key page, which links with a Devin token", async () => {
+    const { container, findByRole, findByLabelText, getByRole, onDone } =
+      renderFlow(["agent"], { agents: ["devin"] });
+    await findByRole("heading", { level: 1, name: "Link Devin" });
+
+    fireEvent.click(getByRole("button", { name: "Use an API key instead" }));
+    await findByRole("heading", { level: 1, name: "Paste your Devin token" });
+    expect(
+      getByRole("link", { name: /Create a key on Devin settings/ }),
+    ).toHaveAttribute(
+      "href",
+      "https://app.devin.ai/settings/environment?tab=outposts",
+    );
+    expect(primary(container)).toHaveTextContent("Link Devin");
+    expect(primary(container)).toBeDisabled();
+
+    type(await findByLabelText("Devin token"), "devi-a-real-looking-token");
+    await waitFor(() => expect(primary(container)).toBeEnabled());
+    fireEvent.click(primary(container));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(postedTo("/v1/harness-accounts")).toEqual({
+      credential: { kind: "devin_api_key", key: "devi-a-real-looking-token" },
     });
   });
 });

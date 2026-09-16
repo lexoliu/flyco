@@ -484,6 +484,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/harness-accounts/devin/oauth/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/harness-accounts/devin/oauth/complete` — links the account.
+         * @description `POST /v1/harness-accounts/devin/oauth/complete` — links the account.
+         */
+        post: operations["flyco_api::devin_oauth::complete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/harness-accounts/devin/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/harness-accounts/devin/oauth/start` — begins a Devin sign-in.
+         * @description `POST /v1/harness-accounts/devin/oauth/start` — begins a Devin sign-in.
+         */
+        post: operations["flyco_api::devin_oauth::start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/harness-accounts/{id}": {
         parameters: {
             query?: never;
@@ -3377,6 +3417,17 @@ export interface components {
              */
             code: string;
         };
+        /** @description Request body of `POST /v1/harness-accounts/devin/oauth/complete`. */
+        CompleteDevinOauth: {
+            /** @description The attempt this code belongs to, from [`DevinOauthStart`]. */
+            attempt_id: components["schemas"]["Uuid"];
+            /**
+             * @description The URL Devin's redirect left in the address bar —
+             *     `http://127.0.0.1:59653/callback?code=…&state=…` — or the bare code
+             *     alone, for a user who copied only the parameter out of it.
+             */
+            code: string;
+        };
         /**
          * @description One thing occupying the context window, as a [`ContextUsage`] lists it.
          *
@@ -3922,6 +3973,22 @@ export interface components {
              * @description The watcher id the desktop stream's `hello` event named.
              */
             watcher: number;
+        };
+        /**
+         * @description Response of `POST /v1/harness-accounts/devin/oauth/start`.
+         *
+         *     The PKCE verifier never appears here: it stays in the control plane's
+         *     key-value store for the ten minutes the attempt lives, and the browser
+         *     carries only the opaque attempt id that names it.
+         */
+        DevinOauthStart: {
+            /**
+             * @description Names the verifier and `state` the completion must be redeemed
+             *     against.
+             */
+            attempt_id: components["schemas"]["Uuid"];
+            /** @description Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open. */
+            authorize_url: string;
         };
         /** @description Which checkout a `diff` asks about. */
         DiffQuery: {
@@ -7596,6 +7663,109 @@ export interface operations {
                          *     and it is what the settings row draws its bars from.
                          */
                         usage: components["schemas"]["UsageWindow"][];
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::devin_oauth::complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The attempt this code belongs to, from [`DevinOauthStart`]. */
+                    attempt_id: components["schemas"]["Uuid"];
+                    /**
+                     * @description The URL Devin's redirect left in the address bar —
+                     *     `http://127.0.0.1:59653/callback?code=…&state=…` — or the bare code
+                     *     alone, for a user who copied only the parameter out of it.
+                     */
+                    code: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When the stored credential expires, when the vendor states a
+                         *     lifetime.
+                         */
+                        expires_at_unix?: number | null;
+                        /** @description Which harness this account drives. */
+                        harness: components["schemas"]["HarnessKind"];
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /**
+                         * @description Account name as the vendor reports it, so the user can tell two
+                         *     linked accounts apart.
+                         */
+                        label: string;
+                        /**
+                         * Format: int64
+                         * @description When it was linked, seconds since the Unix epoch.
+                         */
+                        linked_at_unix: number;
+                        /**
+                         * @description The models a session on this account may run on.
+                         *
+                         *     What the account's last session reported its harness offers, and
+                         *     [`builtin_models`] until one has. Carried on the account rather than
+                         *     asked for separately because the composer picks a model *while*
+                         *     choosing which account to open the session on, and a second request
+                         *     per account would be a picker that renders after the form it belongs
+                         *     to.
+                         */
+                        models: components["schemas"]["ModelOption"][];
+                        /**
+                         * @description How much of this account's plan is spent, per rolling window.
+                         *
+                         *     The last snapshot a session on this account filed, and empty until
+                         *     one has. Carried on the account for the same reason
+                         *     [`Self::models`] is — Settings reads the account and nothing else —
+                         *     and it is what the settings row draws its bars from.
+                         */
+                        usage: components["schemas"]["UsageWindow"][];
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::devin_oauth::start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * @description Names the verifier and `state` the completion must be redeemed
+                         *     against.
+                         */
+                        attempt_id: components["schemas"]["Uuid"];
+                        /** @description Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open. */
+                        authorize_url: string;
                     };
                 };
             };

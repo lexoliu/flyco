@@ -137,7 +137,7 @@ describe("Flow", () => {
       {
         agents: ["codex"],
         answers: {
-          routes: { claude_code: "sign-in", codex: "api-key", devin: "api-key" },
+          routes: { claude_code: "sign-in", codex: "api-key", devin: "sign-in" },
         },
         position: 1,
       },

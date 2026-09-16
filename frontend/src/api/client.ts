@@ -84,6 +84,7 @@ export type HarnessAccountView = Schemas["HarnessAccountView"];
 export type HarnessCredentialInput = Schemas["HarnessCredentialInput"];
 export type ClaudeOauthStart = Schemas["ClaudeOauthStart"];
 export type CodexOauthStart = Schemas["CodexOauthStart"];
+export type DevinOauthStart = Schemas["DevinOauthStart"];
 export type MemoryNode = Schemas["MemoryNode"];
 export type AgentsDocument = Schemas["AgentsDocument"];
 export type PushSubscriptionView = Schemas["PushSubscriptionView"];
@@ -891,6 +892,35 @@ export async function pollCodexOauth(
     return { state: "linked", account };
   }
   return { state: "pending" };
+}
+
+/**
+ * Begins the Devin sign-in (docs/ux.md §8.1).
+ *
+ * The PKCE verifier stays in the control plane; what comes back is the URL
+ * to open and the opaque attempt id the pasted redirect is redeemed
+ * against.
+ */
+export function startDevinOauth(): Promise<
+  JsonResponse<"flyco_api::devin_oauth::start", 200>
+> {
+  return requestJson("POST", "/v1/harness-accounts/devin/oauth/start");
+}
+
+/**
+ * Redeems what Devin's redirect left in the address bar, linking the
+ * account.
+ *
+ * The field takes the whole address of the page that could not load —
+ * `http://127.0.0.1:59653/callback?code=…&state=…` — or the bare code;
+ * the control plane reads either.
+ */
+export function completeDevinOauth(
+  input: JsonBody<"flyco_api::devin_oauth::complete">,
+): Promise<JsonResponse<"flyco_api::devin_oauth::complete", 201>> {
+  return requestJson("POST", "/v1/harness-accounts/devin/oauth/complete", {
+    json: input,
+  });
 }
 
 // --- /v1/providers/{azure,gcp,codespaces}/oauth -----------------------------------
