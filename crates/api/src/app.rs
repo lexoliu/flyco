@@ -9,8 +9,8 @@ use flyco_core::{
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, DesktopInputRequest,
     DesktopTakeoverRequest, EnvDocument, HarnessFeature, HarnessObservation, HarnessSessionView,
     HarnessTui, InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineCatalogEntry, MachineOrigin,
-    MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage, RepoAddedBy, RepoSelection,
-    RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
+    MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage, RegionLocation, RepoAddedBy,
+    RepoSelection, RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
     ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, RunShell, SendMessage,
     SessionActivity, SessionDetail, SessionId, SessionRepo, SessionState, SessionSummary,
     TerminalInput, TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UsageLimitHit,
@@ -33,7 +33,7 @@ use crate::clouds::Clouds;
 use crate::codespaces::Codespaces;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
-use crate::extract::{Headers, path_id, path_segment};
+use crate::extract::{CallerLocation, Headers, path_id, path_segment};
 use crate::github::{GithubClient, GithubOauth};
 use crate::host_room::HostAttachResponse;
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
@@ -201,6 +201,7 @@ async fn create_session(
     State(github): State<GithubClient>,
     headers: Headers,
     Json(request): Json<CreateSession>,
+    caller: CallerLocation,
     rooms: Rooms,
     queue: Queue,
     db: Db,
@@ -210,6 +211,7 @@ async fn create_session(
         &user,
         request,
         headers.get("idempotency-key"),
+        caller.0,
         &config,
         &github,
         &rooms,
@@ -229,6 +231,7 @@ async fn start_session(
     user: &CurrentUser,
     request: CreateSession,
     idempotency_key: Option<&str>,
+    near: Option<RegionLocation>,
     config: &ApiConfig,
     github: &GithubClient,
     rooms: &Rooms,
@@ -240,7 +243,7 @@ async fn start_session(
     // what creation commits the session to, so it travels alongside the
     // resolution rather than through it.
     let source = request.source.clone();
-    let resolved = resolve_request(user, request, config, github, db, kv, queue).await?;
+    let resolved = resolve_request(user, request, near, config, github, db, kv, queue).await?;
 
     // Claimed only once everything that could refuse the request has
     // refused it: a key bound to a request that was never going to be
@@ -386,9 +389,15 @@ struct ResolvedSession {
 /// Consumes the request: `machine` and `model` are the caller's *claims*,
 /// replaced by what the resolution produced — a machine picked when none
 /// was named, a model defaulted off the account's list.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "resolving a create request needs every service the checks run \
+              against, plus where the caller is"
+)]
 async fn resolve_request(
     user: &CurrentUser,
     request: CreateSession,
+    near: Option<RegionLocation>,
     config: &ApiConfig,
     github: &GithubClient,
     db: &Db,
@@ -409,9 +418,19 @@ async fn resolve_request(
     let choice = match request.machine {
         Some(choice) => choice,
         None => {
-            machines::automatic(db, config, github, kv, queue, user.id, request.spot, None)
-                .await?
-                .choice
+            machines::automatic(
+                db,
+                config,
+                github,
+                kv,
+                queue,
+                user.id,
+                request.spot,
+                None,
+                near,
+            )
+            .await?
+            .choice
         }
     };
     // Resolved against the account's own model list before anything is

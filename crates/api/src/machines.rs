@@ -12,8 +12,8 @@ use flyco_core::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, ClientEvent,
     CloudProviderKind, ControlToDaemon, CurrentUser, DEFAULT_DISK_GIB, MachineCapacity,
     MachineCatalog, MachineCatalogEntry, MachineChoice, MachineDefault, MachineId, MachineSpec,
-    MachineState, MachineView, OsFamily, ProviderAccountId, ResizeMachine, Runtime, SessionId,
-    SessionMachine, StopReason, Usd, UserId, auto_linux_choice, curate,
+    MachineState, MachineView, OsFamily, ProviderAccountId, RegionLocation, ResizeMachine, Runtime,
+    SessionId, SessionMachine, StopReason, Usd, UserId, auto_linux_choice, curate,
 };
 use serde::Deserialize;
 use skyzen::extract::Query;
@@ -26,7 +26,7 @@ use crate::catalog;
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
-use crate::extract::path_id;
+use crate::extract::{CallerLocation, path_id};
 use crate::github::{GithubClient, GithubOauth};
 use crate::problem::Outcome;
 use crate::provisioning;
@@ -816,11 +816,17 @@ pub struct DefaultMachineQuery {
 /// with the catalog entry behind it so the price and the size come from the
 /// choice rather than from a second lookup that could disagree with it.
 #[skyzen::openapi]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "previewing the default machine needs the catalog services, the \
+              caller, and where the caller is"
+)]
 async fn get_default_machine(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
     State(github): State<GithubClient>,
     Query(query): Query<DefaultMachineQuery>,
+    caller: CallerLocation,
     db: Db,
     kv: Kv,
     queue: Queue,
@@ -834,6 +840,7 @@ async fn get_default_machine(
         user.id,
         query.spot.unwrap_or(true),
         query.account,
+        caller.0,
     )
     .await
     .map(Json)
@@ -864,6 +871,7 @@ pub(crate) async fn automatic(
     user: UserId,
     spot: bool,
     account: Option<ProviderAccountId>,
+    near: Option<RegionLocation>,
 ) -> Result<MachineDefault, ApiError> {
     let MachineCatalog {
         entries,
@@ -896,7 +904,7 @@ pub(crate) async fn automatic(
             }
         }
     };
-    let entry = auto_linux_choice(&entries, spot).ok_or_else(nothing_yet)?;
+    let entry = auto_linux_choice(&entries, spot, near).ok_or_else(nothing_yet)?;
     // `auto_linux_choice` only ever returns an entry with an account; the
     // read is written as a refusal rather than an unwrap so the invariant
     // is enforced here too, where it is used.
@@ -1822,6 +1830,7 @@ mod tests {
             provider: CloudProviderKind::Aws,
             account: None,
             region: "us-east-1".to_owned(),
+            location: None,
             machine_type: machine_type.to_owned(),
             runtime: Runtime::Vm,
             free_grant: None,

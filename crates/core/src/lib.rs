@@ -77,8 +77,8 @@ pub use machine::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, CloudProviderKind,
     CpuArchitecture, FreeGrant, MachineCapacity, MachineCatalog, MachineCatalogEntry,
     MachineDefault, MachineLineage, MachinePricing, MachineSpec, MachineState, MachineView,
-    OsFamily, ResizeMachine, Runtime, SessionMachine, StoragePriceTier, StoragePricing,
-    auto_linux_choice,
+    OsFamily, RegionLocation, ResizeMachine, Runtime, SessionMachine, StoragePriceTier,
+    StoragePricing, auto_linux_choice,
 };
 pub use mcp::{HeaderEntry, McpServerConfig, McpServerMount, McpServerView, UpsertMcpServer};
 pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};

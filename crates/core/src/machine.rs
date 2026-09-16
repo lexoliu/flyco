@@ -317,6 +317,51 @@ impl MachinePricing {
     }
 }
 
+/// Where on Earth a catalog region sits.
+///
+/// The provider stamps it: it knows the geography its region names stand
+/// for, and nothing downstream has to keep a parallel gazetteer. The pair
+/// is the region's nominal datacenter position, not a measurement — two
+/// decimal places is more precision than the answer is used with.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RegionLocation {
+    /// Degrees north of the equator.
+    pub latitude: f64,
+    /// Degrees east of the prime meridian.
+    pub longitude: f64,
+}
+
+// `f64` carries NaN, which no honest `Eq` tolerates — but no value this
+// type can hold is one: the providers' tables are finite constants, the
+// caller-side parser refuses non-finite input, and JSON cannot spell NaN
+// for a decoded catalog document to carry.
+impl Eq for RegionLocation {}
+
+impl RegionLocation {
+    /// Great-circle distance to another point, in whole kilometres.
+    ///
+    /// A ranking number, not a route: `auto_linux_choice` compares two
+    /// entries by it, so haversine's kilometre is resolution enough and a
+    /// real distance along a cable would only buy false precision.
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a great-circle distance is at most 20,000 km and never \
+                  negative; truncating its fraction is the point"
+    )]
+    pub fn kilometers_to(self, other: Self) -> u64 {
+        const EARTH_RADIUS_KM: f64 = 6_371.0;
+        let d_lat = (other.latitude - self.latitude).to_radians();
+        let d_lon = (other.longitude - self.longitude).to_radians();
+        let chord = (self.latitude.to_radians().cos()
+            * other.latitude.to_radians().cos()
+            * (d_lon / 2.0).sin().powi(2))
+        .mul_add(1.0, (d_lat / 2.0).sin().powi(2));
+        (EARTH_RADIUS_KM * 2.0 * chord.sqrt().asin()) as u64
+    }
+}
+
 /// One entry in the machine catalog the agent sees when deciding whether
 /// to keep, upgrade, or downgrade its machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -338,6 +383,17 @@ pub struct MachineCatalogEntry {
     /// created. A registered SSH host names itself here: it is its own
     /// region, and there is nowhere else to put it.
     pub region: String,
+    /// Where the region sits, when the provider can say.
+    ///
+    /// `Auto` prefers machines near the caller, which takes a place rather
+    /// than a name — `UsEast` and `EuropeWest` sort the same alphabetically
+    /// no matter where the user is. Absent for the same reason
+    /// [`Self::capacity`] is — a catalog is cached as JSON and a document
+    /// written before this field existed has none — and for hardware the
+    /// user enrolled: its `region` is already its own name, and flyco has
+    /// not looked at where the machine physically is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<RegionLocation>,
     /// Provider-native machine type name (e.g. `Standard_B2ats_v2`).
     pub machine_type: String,
     /// Whether this entry is a virtual machine or a managed container.
@@ -457,7 +513,7 @@ impl MachineCatalogEntry {
 
 /// The machine flyco picks when the caller names none.
 ///
-/// Two rules, in this order:
+/// Three rules, in this order:
 ///
 /// 1. **A container the provider does not bill for wins.** Where the
 ///    account's catalog offers an entry with a
@@ -466,16 +522,24 @@ impl MachineCatalogEntry {
 ///    the end of the month — so spending it is strictly better than
 ///    spending money, and better than spending nothing on hardware the user
 ///    owns, which is still there in November.
-/// 2. **Otherwise, the cheapest
+/// 2. **Within a billing class, the nearest entry wins.** A session
+///    machine is an interactive box: when `near` says where the caller is,
+///    the entry an ocean away is a worse session than the one across town
+///    at the same price, and `Auto` follows the user's geography rather
+///    than the alphabet. Entries that do not say where they are — a host
+///    the user enrolled, a catalog document from before providers stamped
+///    locations — are treated as already here rather than demoted for our
+///    ignorance.
+/// 3. **Otherwise, the cheapest
 ///    [auto-eligible](MachineCatalogEntry::is_auto_eligible) entry**:
 ///    user-owned hardware wins (flyco meters nothing on it), and metered
 ///    entries are ordered by the hourly rate the session actually asked for
 ///    — spot when the caller wants it and the type has a spot price,
 ///    otherwise on-demand.
 ///
-/// The second rule also orders *within* the first, because two free-granted
-/// containers draw on the same subscription pool and the cheaper one leaves
-/// more of it.
+/// The later rules also order *within* the earlier ones, because two
+/// free-granted containers draw on the same subscription pool and the
+/// nearer, cheaper one leaves more of it.
 ///
 /// There is deliberately no fallback to something smaller. A machine below
 /// the floor is not a cheaper version of the same session, it is a session
@@ -485,6 +549,7 @@ impl MachineCatalogEntry {
 pub fn auto_linux_choice(
     entries: &[MachineCatalogEntry],
     spot: bool,
+    near: Option<RegionLocation>,
 ) -> Option<&MachineCatalogEntry> {
     entries
         .iter()
@@ -492,6 +557,8 @@ pub fn auto_linux_choice(
         .min_by_key(|entry| {
             (
                 u8::from(!entry.has_free_grant()),
+                near.and_then(|here| entry.location.map(|there| here.kilometers_to(there)))
+                    .unwrap_or(0),
                 entry
                     .pricing
                     .hourly(spot)
@@ -719,7 +786,7 @@ mod tests {
     use super::{
         AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, BillingMinimum, CloudProviderKind, CpuArchitecture,
         FreeGrant, MachineCapacity, MachineCatalogEntry, MachineLineage, MachinePricing,
-        MachineSpec, OsFamily, Runtime, StoragePricing, auto_linux_choice,
+        MachineSpec, OsFamily, RegionLocation, Runtime, StoragePricing, auto_linux_choice,
     };
     use crate::id::ProviderAccountId;
     use crate::money::Usd;
@@ -767,6 +834,7 @@ mod tests {
         let entry = MachineCatalogEntry {
             account: None,
             region: "northcentralus".to_owned(),
+            location: None,
             provider: CloudProviderKind::Azure,
             machine_type: "Standard_B2pts_v2".to_owned(),
             runtime: Runtime::Vm,
@@ -804,6 +872,7 @@ mod tests {
         MachineCatalogEntry {
             account: Some(ProviderAccountId::from_uuid(Uuid::from_u128(1))),
             region: "us-east-1".to_owned(),
+            location: None,
             provider: CloudProviderKind::Aws,
             machine_type: machine_type.to_owned(),
             runtime: Runtime::Vm,
@@ -848,21 +917,21 @@ mod tests {
         let catalog = [mac, expensive, cheap, owned];
 
         assert_eq!(
-            auto_linux_choice(&catalog, true).map(|entry| entry.machine_type.as_str()),
+            auto_linux_choice(&catalog, true, None).map(|entry| entry.machine_type.as_str()),
             Some("home")
         );
         assert_eq!(
-            auto_linux_choice(&catalog[..3], true).map(|entry| entry.machine_type.as_str()),
+            auto_linux_choice(&catalog[..3], true, None).map(|entry| entry.machine_type.as_str()),
             Some("right-sized")
         );
-        assert!(auto_linux_choice(&catalog[..1], true).is_none());
+        assert!(auto_linux_choice(&catalog[..1], true, None).is_none());
     }
 
     #[test]
     fn an_entry_without_an_account_cannot_be_chosen() {
         let mut orphan = linux("right-sized", Some(Usd::from_cents(1)));
         orphan.account = None;
-        assert!(auto_linux_choice(&[orphan], true).is_none());
+        assert!(auto_linux_choice(&[orphan], true, None).is_none());
     }
 
     #[test]
@@ -908,11 +977,11 @@ mod tests {
         };
         assert!(!granted_small.is_auto_eligible());
         assert_eq!(
-            auto_linux_choice(&[tiny.clone(), starved.clone(), eligible], true)
+            auto_linux_choice(&[tiny.clone(), starved.clone(), eligible], true, None)
                 .map(|entry| entry.machine_type.as_str()),
             Some("m7g.xlarge")
         );
-        assert!(auto_linux_choice(&[tiny, starved], true).is_none());
+        assert!(auto_linux_choice(&[tiny, starved], true, None).is_none());
     }
 
     /// The Azure Container Apps grant, as the driver PR will state it.
@@ -940,7 +1009,7 @@ mod tests {
         let cheap = linux("right-sized", Some(Usd::from_cents(2)));
 
         assert_eq!(
-            auto_linux_choice(&[owned.clone(), cheap.clone(), granted.clone()], true)
+            auto_linux_choice(&[owned.clone(), cheap.clone(), granted.clone()], true, None)
                 .map(|entry| entry.machine_type.as_str()),
             Some("aca-4x8")
         );
@@ -951,7 +1020,7 @@ mod tests {
             ..granted
         };
         assert_eq!(
-            auto_linux_choice(&[owned, cheap, ungranted], true)
+            auto_linux_choice(&[owned, cheap, ungranted], true, None)
                 .map(|entry| entry.machine_type.as_str()),
             Some("home")
         );
@@ -971,8 +1040,180 @@ mod tests {
         };
 
         assert_eq!(
-            auto_linux_choice(&[dear, cheap], true).map(|entry| entry.machine_type.as_str()),
+            auto_linux_choice(&[dear, cheap], true, None).map(|entry| entry.machine_type.as_str()),
             Some("aca-4x8")
+        );
+    }
+
+    #[test]
+    fn kilometers_to_orders_places_by_distance() {
+        let new_york = RegionLocation {
+            latitude: 40.71,
+            longitude: -74.01,
+        };
+        let virginia = RegionLocation {
+            latitude: 39.04,
+            longitude: -77.49,
+        };
+        let amsterdam = RegionLocation {
+            latitude: 52.37,
+            longitude: 4.90,
+        };
+        let singapore = RegionLocation {
+            latitude: 1.35,
+            longitude: 103.82,
+        };
+
+        assert!(new_york.kilometers_to(virginia) < new_york.kilometers_to(amsterdam));
+        assert!(new_york.kilometers_to(amsterdam) < new_york.kilometers_to(singapore));
+        // And a real distance, not only an ordering: New York sits about
+        // 400 km from Virginia and about 5,900 from Amsterdam.
+        assert!(new_york.kilometers_to(virginia) < 1_000);
+        assert!(new_york.kilometers_to(amsterdam) > 4_000);
+    }
+
+    /// The two geos of the reported case, stamped the way the Codespaces
+    /// driver stamps them.
+    fn geo_pair(machine_type: &str) -> [MachineCatalogEntry; 2] {
+        let east = MachineCatalogEntry {
+            region: "UsEast".to_owned(),
+            location: Some(RegionLocation {
+                latitude: 39.04,
+                longitude: -77.49,
+            }),
+            ..linux(machine_type, Some(Usd::from_cents(36)))
+        };
+        let europe = MachineCatalogEntry {
+            region: "EuropeWest".to_owned(),
+            location: Some(RegionLocation {
+                latitude: 52.37,
+                longitude: 4.90,
+            }),
+            ..east.clone()
+        };
+        // Europe first in the slice — the alphabetical order the curated
+        // catalog lists them in, which is how the wrong one won before.
+        [europe, east]
+    }
+
+    #[test]
+    fn automatic_choice_follows_the_callers_geography() {
+        // Every geo of a Codespaces machine type is the same machine at
+        // the same price under the same monthly grant, so nothing but
+        // distance is left to choose between them — and Europe was what a
+        // caller on the US East Coast was offered.
+        let catalog = geo_pair("standardLinux32gb");
+
+        // A caller in New York.
+        let new_york = Some(RegionLocation {
+            latitude: 40.71,
+            longitude: -74.01,
+        });
+        assert_eq!(
+            auto_linux_choice(&catalog, true, new_york).map(|entry| entry.region.as_str()),
+            Some("UsEast")
+        );
+
+        // The identical catalog answers the other way for a caller in
+        // London: the geography followed is the caller's, not a
+        // hard-coded continent.
+        let london = Some(RegionLocation {
+            latitude: 51.51,
+            longitude: -0.13,
+        });
+        assert_eq!(
+            auto_linux_choice(&catalog, true, london).map(|entry| entry.region.as_str()),
+            Some("EuropeWest")
+        );
+    }
+
+    #[test]
+    fn a_nearer_machine_outranks_a_cheaper_one_an_ocean_away() {
+        // Geography is the axis before price inside a billing class: a
+        // cheaper machine an ocean away is the recommendation the rule
+        // exists to prevent.
+        let far_cheaper = MachineCatalogEntry {
+            location: Some(RegionLocation {
+                latitude: 50.11,
+                longitude: 8.68,
+            }),
+            ..linux("d4s", Some(Usd::from_cents(8)))
+        };
+        let near_pricier = MachineCatalogEntry {
+            location: Some(RegionLocation {
+                latitude: 39.04,
+                longitude: -77.49,
+            }),
+            ..linux("m7i.xlarge", Some(Usd::from_cents(10)))
+        };
+        let new_york = Some(RegionLocation {
+            latitude: 40.71,
+            longitude: -74.01,
+        });
+
+        assert_eq!(
+            auto_linux_choice(&[far_cheaper, near_pricier], true, new_york)
+                .map(|entry| entry.machine_type.as_str()),
+            Some("m7i.xlarge")
+        );
+    }
+
+    #[test]
+    fn a_monthly_grant_still_outranks_geography() {
+        // Free is the stronger claim than near: an allowance the user is
+        // already entitled to beats spending money on a machine across
+        // town — the geo it is offered in is the only complaint, not the
+        // price.
+        let far_granted = MachineCatalogEntry {
+            runtime: Runtime::Container,
+            free_grant: Some(aca_grant()),
+            location: Some(RegionLocation {
+                latitude: 1.35,
+                longitude: 103.82,
+            }),
+            ..linux("aca-4x8", Some(Usd::from_cents(21)))
+        };
+        let near_paid = MachineCatalogEntry {
+            location: Some(RegionLocation {
+                latitude: 39.04,
+                longitude: -77.49,
+            }),
+            ..linux("m7i.xlarge", Some(Usd::from_cents(10)))
+        };
+        let new_york = Some(RegionLocation {
+            latitude: 40.71,
+            longitude: -74.01,
+        });
+
+        assert_eq!(
+            auto_linux_choice(&[near_paid, far_granted], true, new_york)
+                .map(|entry| entry.machine_type.as_str()),
+            Some("aca-4x8")
+        );
+    }
+
+    #[test]
+    fn an_entry_that_does_not_say_where_it_is_is_not_demoted() {
+        // A host the user enrolled reports no position; treating the
+        // unknown as far would put the machine the user chose to register
+        // behind every cloud entry that can name a datacentre.
+        let unlocated = linux("home", None);
+        let located = MachineCatalogEntry {
+            location: Some(RegionLocation {
+                latitude: 39.04,
+                longitude: -77.49,
+            }),
+            ..linux("m7i.xlarge", Some(Usd::from_cents(10)))
+        };
+        let new_york = Some(RegionLocation {
+            latitude: 40.71,
+            longitude: -74.01,
+        });
+
+        assert_eq!(
+            auto_linux_choice(&[located, unlocated], true, new_york)
+                .map(|entry| entry.machine_type.as_str()),
+            Some("home")
         );
     }
 

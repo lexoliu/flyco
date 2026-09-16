@@ -1672,6 +1672,7 @@ fn azure_entry(account: ProviderAccountId) -> MachineCatalogEntry {
         account: Some(account),
         provider: CloudProviderKind::Azure,
         region: AZURE_REGION.to_owned(),
+        location: None,
         machine_type: AZURE_MACHINE_TYPE.to_owned(),
         runtime: Runtime::Vm,
         free_grant: None,

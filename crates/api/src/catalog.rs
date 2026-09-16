@@ -385,6 +385,7 @@ mod tests {
             account: None,
             provider: CloudProviderKind::Azure,
             region: region.to_owned(),
+            location: None,
             machine_type: machine_type.to_owned(),
             runtime: Runtime::Vm,
             free_grant: None,

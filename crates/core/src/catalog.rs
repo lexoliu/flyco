@@ -265,6 +265,7 @@ mod tests {
             provider: CloudProviderKind::Azure,
             account: Some(account(1)),
             region: "eastus".to_owned(),
+            location: None,
             machine_type: machine_type.to_owned(),
             runtime: Runtime::Vm,
             free_grant: None,
@@ -412,6 +413,7 @@ mod tests {
     fn regions_are_curated_independently_of_each_other() {
         let elsewhere = MachineCatalogEntry {
             region: "westeurope".to_owned(),
+            location: None,
             ..entry("D4s_v6", "ds", Some(6), 4, 16, 25)
         };
         let catalog = vec![entry("D4s_v6", "ds", Some(6), 4, 16, 19), elsewhere];
@@ -490,6 +492,7 @@ mod tests {
             provider: CloudProviderKind::Host,
             account: Some(account(3)),
             region: "build.lexo.cool".to_owned(),
+            location: None,
             machine_type: "build.lexo.cool".to_owned(),
             // A session on hardware the user owns is a Podman container, as
             // `flyco_provider::host` plans it.

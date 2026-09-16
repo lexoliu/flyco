@@ -5087,6 +5087,17 @@
                           }
                         ]
                       },
+                      "location": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/RegionLocation",
+                            "description": "Where the region sits, when the provider can say.\n\n`Auto` prefers machines near the caller, which takes a place rather\nthan a name — `UsEast` and `EuropeWest` sort the same alphabetically\nno matter where the user is. Absent for the same reason\n[`Self::capacity`] is — a catalog is cached as JSON and a document\nwritten before this field existed has none — and for hardware the\nuser enrolled: its `region` is already its own name, and flyco has\nnot looked at where the machine physically is."
+                          }
+                        ]
+                      },
                       "machine_type": {
                         "type": "string",
                         "description": "Provider-native machine type name (e.g. `Standard_B2ats_v2`)."
@@ -11841,6 +11852,17 @@
               }
             ]
           },
+          "location": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RegionLocation",
+                "description": "Where the region sits, when the provider can say.\n\n`Auto` prefers machines near the caller, which takes a place rather\nthan a name — `UsEast` and `EuropeWest` sort the same alphabetically\nno matter where the user is. Absent for the same reason\n[`Self::capacity`] is — a catalog is cached as JSON and a document\nwritten before this field existed has none — and for hardware the\nuser enrolled: its `region` is already its own name, and flyco has\nnot looked at where the machine physically is."
+              }
+            ]
+          },
           "machine_type": {
             "type": "string",
             "description": "Provider-native machine type name (e.g. `Standard_B2ats_v2`)."
@@ -13025,6 +13047,26 @@
             "format": "int64",
             "description": "When the harness said the limit resets, when it named a time.",
             "minimum": 0
+          }
+        }
+      },
+      "RegionLocation": {
+        "type": "object",
+        "description": "Where on Earth a catalog region sits.\n\nThe provider stamps it: it knows the geography its region names stand\nfor, and nothing downstream has to keep a parallel gazetteer. The pair\nis the region's nominal datacenter position, not a measurement — two\ndecimal places is more precision than the answer is used with.",
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Degrees north of the equator."
+          },
+          "longitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Degrees east of the prime meridian."
           }
         }
       },

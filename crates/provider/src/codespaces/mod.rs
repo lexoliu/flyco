@@ -30,7 +30,8 @@ mod tests;
 
 use flyco_core::machine::{
     CloudProviderKind, CpuArchitecture, FreeGrant, MachineCapacity, MachineCatalogEntry,
-    MachineLineage, MachinePricing, MachineState, OsFamily, Runtime, StoragePricing,
+    MachineLineage, MachinePricing, MachineState, OsFamily, RegionLocation, Runtime,
+    StoragePricing,
 };
 use flyco_core::{CloudSpend, MachineId, Usd};
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,31 @@ pub const ENV_REPO_NAME: &str = "flyco-sessions";
 /// GitHub's own four. `location`, the older request field, is closing down
 /// and is not written.
 pub const GEOS: [&str; 4] = ["UsEast", "UsWest", "EuropeWest", "SoutheastAsia"];
+
+/// Where each `geo` stands, as the catalog entry's
+/// [`location`](flyco_core::machine::MachineCatalogEntry::location).
+///
+/// GitHub publishes the names but not the datacentres behind them; the
+/// coordinates are the obvious reading of each name — the eastern and
+/// western United States, western Europe and Singapore — close enough for
+/// the nearest-region ranking the value feeds.
+fn geo_location(geo: &str) -> Option<RegionLocation> {
+    let (latitude, longitude) = match geo {
+        // Ashburn, Virginia.
+        "UsEast" => (39.04, -77.49),
+        // The San Francisco Bay area.
+        "UsWest" => (37.44, -122.14),
+        // Amsterdam.
+        "EuropeWest" => (52.37, 4.90),
+        // Singapore.
+        "SoutheastAsia" => (1.35, 103.82),
+        _ => return None,
+    };
+    Some(RegionLocation {
+        latitude,
+        longitude,
+    })
+}
 
 /// `api.github.com`.
 const API: &str = "https://api.github.com";
@@ -804,6 +830,7 @@ impl<T: HttpTransport, K: Timer> CloudProvider for CodespacesProvider<T, K> {
                     provider: CloudProviderKind::Codespaces,
                     account: None,
                     region: geo.to_owned(),
+                    location: geo_location(geo),
                     machine_type: machine.name.clone(),
                     runtime: Runtime::Vm,
                     free_grant: Some(grant),

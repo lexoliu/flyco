@@ -84,6 +84,7 @@ pub mod auth;
 pub mod bodies;
 pub mod containers;
 pub mod costs;
+pub mod locations;
 pub mod policy;
 pub mod pricing;
 pub mod skus;
@@ -2136,6 +2137,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             account: None,
             provider: CloudProviderKind::Azure,
             region: region.to_owned(),
+            location: locations::of(region),
             machine_type: sku.name.clone(),
             runtime: Runtime::Vm,
             free_grant: None,
@@ -2217,6 +2219,7 @@ fn container_entry(
         account: None,
         provider: CloudProviderKind::Azure,
         region: region.to_owned(),
+        location: locations::of(region),
         machine_type: size.machine_type(),
         runtime: Runtime::Container,
         // Per subscription and per calendar month, drawn on by every

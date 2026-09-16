@@ -600,18 +600,23 @@ provider catalog:
 - order by price.
 
 The default machine is the cheapest Linux entry of the curated catalog,
-except that a **container the provider gives away this month** wins over
-everything, hardware the user owns included: that allowance expires unspent
-at the end of the month and the machine at home does not. The floor for
-`Auto` is 4 vCPU and 16 GiB, and a granted container clears it at 4 vCPU
-alone: a container's memory is sized with its cores, and a rule that let
-a 4×16 VM through while turning down the free 4×8 container spent money
-to avoid the one machine the user is not paying for. The agent's
-`machine_resize` tool sees the same curated list.
+with two preferences ahead of price. A **container the provider gives away
+this month** wins over everything, hardware the user owns included: that
+allowance expires unspent at the end of the month and the machine at home
+does not. And within a billing class the **nearest** entry wins: a session
+machine is an interactive box, and `Auto` follows the caller's geography —
+read off `request.cf` at the edge — rather than the alphabet, which once
+sorted `EuropeWest` ahead of `UsEast` for a user in Virginia. An entry
+whose region the provider cannot place is not demoted for our ignorance.
+The floor for `Auto` is 4 vCPU and 16 GiB, and a granted container clears
+it at 4 vCPU alone: a container's memory is sized with its cores, and a
+rule that let a 4×16 VM through while turning down the free 4×8 container
+spent money to avoid the one machine the user is not paying for. The
+agent's `machine_resize` tool sees the same curated list.
 
 ### 7.8 Choosing a machine by hand
 
-The compute chip's popover is two choices, in order: the **product form** as a row of segments — `Container`, `VM`, `Codespace`, whichever the linked accounts offer — and then a **tiered slider** of that form's machines, not a table. The three are different products rather than different prices of one: a container's filesystem ends when the run does, a VM's disk survives a stop, and a codespace is bought from GitHub in core-hours — so the choice between them is never a detent among machine types. `Auto` leads the segment row: the cheapest curated Linux type with at least 4 vCPU and 16 GiB, unless the account's catalog offers a container covered by a monthly grant, in which case that is what it picks (§7.7). Under `Auto` there is no track — flyco is keeping the size as well as the form — only the machine it would pick and the rule it picked by. A `Codespace` segment exists only once a Codespaces account is linked, so where a session is being chosen and none is, a quiet line under the slider says "GitHub Codespaces give free hours every month" and links to `/connect/compute` — a suggestion where the catalog would otherwise be silent, never a segment that opens an empty track.
+The compute chip's popover is two choices, in order: the **product form** as a row of segments — `Container`, `VM`, `Codespace`, whichever the linked accounts offer — and then a **tiered slider** of that form's machines, not a table. The three are different products rather than different prices of one: a container's filesystem ends when the run does, a VM's disk survives a stop, and a codespace is bought from GitHub in core-hours — so the choice between them is never a detent among machine types. `Auto` leads the segment row: the curated Linux type with at least 4 vCPU and 16 GiB nearest the caller, unless the account's catalog offers a container covered by a monthly grant, in which case that is what it picks (§7.7). Under `Auto` there is no track — flyco is keeping the size as well as the form — only the machine it would pick and the rule it picked by. A `Codespace` segment exists only once a Codespaces account is linked, so where a session is being chosen and none is, a quiet line under the slider says "GitHub Codespaces give free hours every month" and links to `/connect/compute` — a suggestion where the catalog would otherwise be silent, never a segment that opens an empty track.
 
 Choosing a segment lands the thumb on the cheapest entry of that form the current scope reaches, moving the scope onto it when the account and region on screen hold none — a segment that opened an empty track would be a control that lies. The slider's detents are the chosen account, region and form, ordered by price; the thumb snaps to a detent and the label above it reads `Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr`, or for a managed container `Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month`. Its left end reads `Cheapest`. An `Advanced ›` disclosure above the slider reveals account, region, architecture (x86-64 / arm64), OS family, and spot — each scoped to what the chosen form offers, and spot only where some detent can quote a spot price. Choosing any segment other than `Auto` sets `machine_origin: user`; the popover's label then reads `Chosen by you`.
 
