@@ -125,7 +125,10 @@ install_session_runtime() {
 
   create_runtime_user /usr/bin/fish
 
-  install -d -o "$runtime_user" -g "$runtime_group" /srv/flyco/work /var/lib/flyco/transcripts /var/lib/flyco/sidecar /var/lib/flyco/claude /var/lib/flyco/codex /var/lib/flyco/devin /var/lib/flyco/devin-config
+  # `/var/lib/flyco` itself is listed, not just its children: a codespace's
+  # postStart appends flycod.log there as the runtime user, and a parent
+  # `install -d` made implicitly would stay root-owned.
+  install -d -o "$runtime_user" -g "$runtime_group" /srv/flyco/work /var/lib/flyco /var/lib/flyco/transcripts /var/lib/flyco/sidecar /var/lib/flyco/claude /var/lib/flyco/codex /var/lib/flyco/devin /var/lib/flyco/devin-config
   # Claude Code reads its managed policy from here and the daemon writes it
   # on every start, so it exists before the unit does and belongs to the
   # user the unit runs as.
