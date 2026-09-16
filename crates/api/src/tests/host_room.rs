@@ -312,11 +312,7 @@ async fn a_superseded_command_is_not_one_the_room_accepts() {
     // As in the session room: composed by the room, refused to it.
     let status = room.command(&ControlToHost::Superseded).await;
     assert_eq!(status, 400);
-    assert_eq!(
-        room.status().await.pending_jobs,
-        0,
-        "nothing was queued"
-    );
+    assert_eq!(room.status().await.pending_jobs, 0, "nothing was queued");
 }
 
 #[skyzen::test]
