@@ -4320,7 +4320,10 @@ export interface components {
             /** @enum {string} */
             kind: "codex_api_key";
         } | {
-            /** @description Value for `CLAUDE_CODE_OAUTH_TOKEN`, until it expires. */
+            /**
+             * @description The bearer token a session's machine provisions as
+             *     `.credentials.json`, until it expires.
+             */
             access_token: string;
             /**
              * Format: int64

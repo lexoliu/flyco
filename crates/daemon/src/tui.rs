@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use flyco_core::DriverKind;
 use portable_pty::CommandBuilder;
+use serde::Serialize;
 
 use crate::config::{ClaudeAuth, DaemonConfig};
 
@@ -26,6 +27,72 @@ pub enum TuiError {
     /// The agent's `[acp]` table declares no TUI to bridge to.
     #[error("{0} has no TUI: its [acp.tui] table is empty, so there is nothing to launch")]
     NoTui(String),
+    /// The OAuth credential file could not be written.
+    #[error("the OAuth credential could not be written: {0}")]
+    CredentialWrite(String),
+}
+
+/// The OAuth grant scopes a `claude setup-token` is minted with.
+///
+/// The CLI's own OAuth client requests this set at login; the token itself
+/// carries them server-side, and the credentials file repeats them so the
+/// resolved credential's `scopes` satisfies the rate-limit gate. The same
+/// list lives in `sidecar.ts`'s `SETUP_TOKEN_SCOPES` — the two writers
+/// cannot share a constant across languages.
+const SETUP_TOKEN_SCOPES: &[&str] = &[
+    "org:create_api_key",
+    "user:profile",
+    "user:inference",
+    "user:sessions:claude_code",
+    "user:mcp_servers",
+    "user:file_upload",
+];
+
+/// The `.credentials.json` the CLI resolves an OAuth login from.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CredentialFile<'a> {
+    claude_ai_oauth: Credential<'a>,
+}
+
+/// One OAuth credential entry, as the CLI's credentials store spells it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Credential<'a> {
+    access_token: &'a str,
+    scopes: &'static [&'static str],
+}
+
+/// Writes the OAuth credential the launched CLI resolves.
+///
+/// An env-injected `CLAUDE_CODE_OAUTH_TOKEN` resolves as env-quad auth,
+/// which the CLI's rate-limit gate treats as ineligible for plan limits —
+/// `/usage` would show nothing on every OAuth session. The credentials
+/// store — `CLAUDE_CONFIG_DIR/.credentials.json` — is the shape a real
+/// `claude login` leaves behind, so the gate passes and the plan windows
+/// read true. `claude setup-token` mints a long-lived grant with no
+/// refresh token, so the entry cannot expire or refresh from the CLI's
+/// side.
+fn provision_oauth(dir: &Path, token: &str) -> Result<(), TuiError> {
+    let io = |error: std::io::Error| TuiError::CredentialWrite(error.to_string());
+    std::fs::create_dir_all(dir).map_err(io)?;
+    let file = CredentialFile {
+        claude_ai_oauth: Credential {
+            access_token: token,
+            scopes: SETUP_TOKEN_SCOPES,
+        },
+    };
+    let body = serde_json::to_string(&file).expect("a credential file serializes");
+    let path = dir.join(".credentials.json");
+    std::fs::write(&path, body).map_err(io)?;
+    // The credential is a secret: the CLI's own store is owner-only, and
+    // this one follows it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(io)?;
+    }
+    Ok(())
 }
 
 /// How the session's harness TUI is launched.
@@ -38,6 +105,10 @@ pub struct HarnessTui {
     args: Vec<OsString>,
     resume_args: Vec<OsString>,
     env: Vec<(OsString, OsString)>,
+    /// Where an OAuth credential is provisioned, and the token it carries —
+    /// written fresh at every launch because the CLI removes the file on
+    /// some failures.
+    oauth_credential: Option<(PathBuf, String)>,
 }
 
 impl core::fmt::Debug for HarnessTui {
@@ -95,6 +166,9 @@ impl HarnessTui {
             Program::None(agent) => return Err(TuiError::NoTui(agent.clone())),
             Program::Claude(resolved) => resolved.clone()?,
         };
+        if let Some((dir, token)) = &self.oauth_credential {
+            provision_oauth(dir, token)?;
+        }
         let mut command = CommandBuilder::new(program);
         command.args(if resume {
             &self.resume_args
@@ -125,13 +199,14 @@ impl HarnessTui {
                 isolation.project_dir_name.clone().into(),
             ));
         }
+        // The OAuth token reaches the CLI as `.credentials.json` inside the
+        // isolated config tree, written at launch — env injection resolves
+        // as env-quad auth, which is ineligible for plan rate limits.
+        let mut oauth_credential = None;
         match &claude.auth {
             ClaudeAuth::Inherit => {}
-            ClaudeAuth::OauthToken { token, .. } => {
-                env.push((
-                    OsStr::new("CLAUDE_CODE_OAUTH_TOKEN").to_owned(),
-                    token.into(),
-                ));
+            ClaudeAuth::OauthToken { token, isolation } => {
+                oauth_credential = Some((isolation.config_dir.clone(), token.clone()));
             }
             ClaudeAuth::ApiKey { key, .. } => {
                 env.push((OsStr::new("ANTHROPIC_API_KEY").to_owned(), key.into()));
@@ -170,6 +245,7 @@ impl HarnessTui {
             args,
             resume_args,
             env,
+            oauth_credential,
         }
     }
 
@@ -190,6 +266,7 @@ impl HarnessTui {
                 args: Vec::new(),
                 resume_args: Vec::new(),
                 env: Vec::new(),
+                oauth_credential: None,
             };
         };
 
@@ -220,6 +297,7 @@ impl HarnessTui {
             args: fill(&tui.args),
             resume_args: fill(&tui.resume_args),
             env,
+            oauth_credential: None,
         }
     }
 }
@@ -234,6 +312,7 @@ impl HarnessTui {
             args: Vec::new(),
             resume_args: Vec::new(),
             env: Vec::new(),
+            oauth_credential: None,
         }
     }
 }
