@@ -593,8 +593,9 @@ impl crate::turnstile::SiteVerify for TestTurnstile {
         _secret: &str,
         _token: &str,
         _remote_ip: Option<&str>,
-    ) -> impl Future<Output = Result<crate::turnstile::Verification, crate::turnstile::TurnstileError>>
-           + Send {
+    ) -> impl Future<
+        Output = Result<crate::turnstile::Verification, crate::turnstile::TurnstileError>,
+    > + Send {
         std::future::ready(self.verdict.clone())
     }
 }
