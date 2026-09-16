@@ -234,10 +234,14 @@ export default function ModelChip(props: ModelChipProps) {
                   // The arriving view takes focus — the search box where
                   // there is one: the control that led here went away
                   // with the view that held it, and focus dropped to
-                  // <body> reads to the popover as leaving.
-                  (el.querySelector<HTMLElement>("input[type=search]") ?? el).focus({
-                    preventScroll: true,
-                  })
+                  // <body> reads to the popover as leaving. The ref runs
+                  // while the element is still detached, so the focus
+                  // waits a microtask for the swap to finish inserting.
+                  queueMicrotask(() =>
+                    (el.querySelector<HTMLElement>("input[type=search]") ?? el).focus({
+                      preventScroll: true,
+                    }),
+                  )
                 }
               >
                 <Show when={props.models.length > SEARCH_WORTH_IT}>
@@ -289,10 +293,14 @@ export default function ModelChip(props: ModelChipProps) {
               tabindex="-1"
               ref={(el) =>
                 // The rail's own input takes focus, so the arrow keys
-                // reach the detents without a stop on the way.
-                (el.querySelector<HTMLElement>("input[type=range]") ?? el).focus({
-                  preventScroll: true,
-                })
+                // reach the detents without a stop on the way. The ref
+                // runs while the element is still detached, so the focus
+                // waits a microtask for the swap to finish inserting.
+                queueMicrotask(() =>
+                  (el.querySelector<HTMLElement>("input[type=range]") ?? el).focus({
+                    preventScroll: true,
+                  }),
+                )
               }
             >
               <div class={styles.head}>
