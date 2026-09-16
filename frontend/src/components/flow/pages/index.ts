@@ -15,6 +15,7 @@ import { ClaudePaste, ClaudeSignIn } from "./claude";
 import { CloudChoice, CloudSignIn } from "./cloud";
 import { CodexSignIn } from "./codex";
 import { ComputeChoice } from "./computeChoice";
+import { DevinPaste, DevinSignIn } from "./devin";
 import { GcpCommands, GcpKeyFile } from "./gcp";
 import { HostEnroll } from "./host";
 import { Meet } from "./meet";
@@ -25,6 +26,8 @@ export const PAGES: PageRegistry = {
   "claude-sign-in": ClaudeSignIn,
   "claude-paste": ClaudePaste,
   "codex-sign-in": CodexSignIn,
+  "devin-sign-in": DevinSignIn,
+  "devin-paste": DevinPaste,
   "api-key": ApiKey,
   "compute-choice": ComputeChoice,
   "new-to-provider": NewToProvider,

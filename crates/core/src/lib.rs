@@ -56,10 +56,10 @@ pub use handoff::{
 };
 pub use harness::{
     Availability, ClaudeOauthStart, CodexOauthPending, CodexOauthStart, CompleteClaudeOauth,
-    ContextCost, ContextUsage, ContextWindow, DEVIN_ID_TAILS, DriverKind, Feature,
-    HarnessAccountView, HarnessCredentialInput, HarnessEvent, HarnessFeature, HarnessKind,
-    LinkHarnessAccount, ModelChoice, ModelChoiceError, ModelOption, PermissionMode, ReportModels,
-    ReportUsage, UsageLimitHit, UsageReport, availability, builtin_models, matrix,
+    CompleteDevinOauth, ContextCost, ContextUsage, ContextWindow, DEVIN_ID_TAILS, DevinOauthStart,
+    DriverKind, Feature, HarnessAccountView, HarnessCredentialInput, HarnessEvent, HarnessFeature,
+    HarnessKind, LinkHarnessAccount, ModelChoice, ModelChoiceError, ModelOption, PermissionMode,
+    ReportModels, ReportUsage, UsageLimitHit, UsageReport, availability, builtin_models, matrix,
     normalize_models,
 };
 pub use host::{
@@ -69,9 +69,10 @@ pub use host::{
 };
 pub use id::{
     ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, ClaudeOauthAttemptId, CliSessionId,
-    CodexOauthAttemptId, EnrollmentTokenId, HarnessAccountId, HarnessObservationId, HostId, Id,
-    MachineId, McpServerId, MemoryNodeId, ProviderAccountId, ProviderOauthAttemptId,
-    PushSubscriptionId, SessionId, ShellRunId, SkillId, SpendEventId, UserId, WorkdirRequestId,
+    CodexOauthAttemptId, DevinOauthAttemptId, EnrollmentTokenId, HarnessAccountId,
+    HarnessObservationId, HostId, Id, MachineId, McpServerId, MemoryNodeId, ProviderAccountId,
+    ProviderOauthAttemptId, PushSubscriptionId, SessionId, ShellRunId, SkillId, SpendEventId,
+    UserId, WorkdirRequestId,
 };
 pub use machine::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, CloudProviderKind,

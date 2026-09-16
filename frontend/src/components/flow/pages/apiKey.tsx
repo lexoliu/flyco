@@ -104,7 +104,7 @@ const VENDORS: Record<HarnessKind, KeyVendor> = {
   devin: {
     title: "Paste your Devin token",
     lede:
-      "Devin links with a token from its settings rather than a sign-in. Flyco verifies it with Devin, names the card after the account it opens, and encrypts it before storing it.",
+      "A token from Devin's settings, for when the sign-in is not an option. Flyco verifies it with Devin, names the card after the account it opens, and encrypts it before storing it.",
     label: "Devin token",
     hint: "Created in your Devin settings.",
     keysUrl: "https://app.devin.ai/settings/environment?tab=outposts",

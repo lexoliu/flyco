@@ -81,6 +81,41 @@ pub fn prefixed_token(prefix: &str) -> Result<String, CryptoError> {
     Ok(token)
 }
 
+/// The PKCE pair one OAuth sign-in attempt is bound to.
+///
+/// The verifier is the secret: it stays in the control plane's key-value
+/// store, and only its SHA-256 challenge is published in the authorize URL.
+#[derive(Clone)]
+pub struct Pkce {
+    /// Held until the code is redeemed.
+    pub verifier: String,
+    /// `code_challenge`, base64url of the verifier's SHA-256.
+    pub challenge: String,
+}
+
+impl core::fmt::Debug for Pkce {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Pkce")
+            .field("challenge", &self.challenge)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Mints a fresh verifier and its S256 challenge.
+///
+/// # Errors
+///
+/// Returns [`CryptoError::Entropy`] if the host has no usable entropy
+/// source.
+pub fn pkce() -> Result<Pkce, CryptoError> {
+    let verifier = random_token()?;
+    let challenge = BASE64URL.encode(Sha256::digest(verifier.as_bytes()));
+    Ok(Pkce {
+        verifier,
+        challenge,
+    })
+}
+
 /// Lowercase hex SHA-256 of a credential.
 ///
 /// This is the only form in which a flyco-issued credential is ever stored:
@@ -159,7 +194,7 @@ impl TokenCipher {
 
 #[cfg(test)]
 mod tests {
-    use super::{CryptoError, KEY_LEN, TokenCipher, prefixed_token, token_hash};
+    use super::{CryptoError, KEY_LEN, TokenCipher, pkce, prefixed_token, token_hash};
 
     fn cipher() -> TokenCipher {
         TokenCipher::new([7_u8; KEY_LEN])
@@ -197,6 +232,23 @@ mod tests {
         let mut tampered = sealed;
         tampered.push('A');
         assert!(cipher().open(&tampered).is_err());
+    }
+
+    #[test]
+    fn a_challenge_is_the_verifiers_sha256_and_never_the_verifier() {
+        let pair = pkce().expect("mint a verifier");
+        assert_ne!(pair.challenge, pair.verifier);
+        // base64url of 32 bytes, unpadded.
+        assert_eq!(pair.challenge.len(), 43);
+        assert!(!format!("{pair:?}").contains(&pair.verifier));
+    }
+
+    #[test]
+    fn two_attempts_never_share_a_verifier() {
+        assert_ne!(
+            pkce().expect("mint").verifier,
+            pkce().expect("mint").verifier
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::{ClaudeOauthAttemptId, CodexOauthAttemptId, HarnessAccountId};
+use crate::id::{ClaudeOauthAttemptId, CodexOauthAttemptId, DevinOauthAttemptId, HarnessAccountId};
 use crate::money::Usd;
 
 /// The coding harness driving a session. Flyco supports exactly these
@@ -923,6 +923,31 @@ pub struct CompleteClaudeOauth {
     /// What Anthropic showed the user, which is `CODE#STATE` — the bare
     /// code alone is accepted too, because a user who selects only the
     /// first half of it has still supplied everything the exchange needs.
+    pub code: String,
+}
+
+/// Response of `POST /v1/harness-accounts/devin/oauth/start`.
+///
+/// The PKCE verifier never appears here: it stays in the control plane's
+/// key-value store for the ten minutes the attempt lives, and the browser
+/// carries only the opaque attempt id that names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct DevinOauthStart {
+    /// Names the verifier and `state` the completion must be redeemed
+    /// against.
+    pub attempt_id: DevinOauthAttemptId,
+    /// Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open.
+    pub authorize_url: String,
+}
+
+/// Request body of `POST /v1/harness-accounts/devin/oauth/complete`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct CompleteDevinOauth {
+    /// The attempt this code belongs to, from [`DevinOauthStart`].
+    pub attempt_id: DevinOauthAttemptId,
+    /// The URL Devin's redirect left in the address bar —
+    /// `http://127.0.0.1:59653/callback?code=…&state=…` — or the bare code
+    /// alone, for a user who copied only the parameter out of it.
     pub code: String,
 }
 

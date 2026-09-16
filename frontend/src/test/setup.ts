@@ -317,6 +317,31 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
       ),
     );
   }
+  if (method === "POST" && path === "/v1/harness-accounts/devin/oauth/start") {
+    return Promise.resolve(
+      jsonResponse({
+        attempt_id: "77777777-6666-4555-8444-333333333333",
+        authorize_url:
+          "https://app.devin.ai/auth/cli/continue?redirect_uri=http%3A%2F%2F127.0.0.1%3A59653%2Fcallback&state=the-state",
+      }),
+    );
+  }
+  if (method === "POST" && path === "/v1/harness-accounts/devin/oauth/complete") {
+    return Promise.resolve(
+      jsonResponse(
+        {
+          id: "harness-4",
+          harness: "devin",
+          label: "Test Devin",
+          linked_at_unix: 1_787_000_000,
+          expires_at_unix: null,
+          models: [],
+          usage: [],
+        },
+        201,
+      ),
+    );
+  }
   if (method === "POST" && path === "/v1/harness-accounts/codex/oauth/start") {
     return Promise.resolve(
       jsonResponse({

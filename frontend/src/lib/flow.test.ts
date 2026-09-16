@@ -60,6 +60,11 @@ const ATTEMPT = {
   authorize_url: "https://claude.ai/oauth/authorize?x",
 };
 
+const DEVIN_ATTEMPT = {
+  attempt_id: "d",
+  authorize_url: "https://app.devin.ai/auth/cli/continue?x",
+};
+
 const ids = (state: FlowState): PageId[] =>
   pagesFor(state).map((page) => page.id);
 
@@ -109,7 +114,7 @@ describe("pagesFor", () => {
   it("swaps the sign-in's second page for the API-key page behind the link", () => {
     const claude = advance(
       advance(startFlow({ stages: ["agent"] }), { linking: "claude_code" }),
-      { routes: { claude_code: "api-key", codex: "sign-in", devin: "api-key" } },
+      { routes: { claude_code: "api-key", codex: "sign-in", devin: "sign-in" } },
     );
     expect(ids(claude)).toEqual(["agents", "claude-sign-in", "api-key"]);
     expect(currentPage(claude)).toEqual({
@@ -118,21 +123,41 @@ describe("pagesFor", () => {
     });
 
     const codex = advance(startFlow({ stages: ["agent"], agents: ["codex"] }), {
-      routes: { claude_code: "sign-in", codex: "api-key", devin: "api-key" },
+      routes: { claude_code: "sign-in", codex: "api-key", devin: "sign-in" },
     });
     expect(ids(codex)).toEqual(["codex-sign-in", "api-key"]);
     expect(currentPage(codex)).toEqual({ id: "api-key", agent: "codex" });
   });
 
-  it("walks Devin straight to the key page: there is no vendor sign-in to sit in front of it", () => {
-    const devin = advance(startFlow({ stages: ["agent"] }), {
+  it("adds Devin's paste page only while a sign-in is open", () => {
+    const signIn = advance(startFlow({ stages: ["agent"] }), {
       linking: "devin",
     });
-    expect(ids(devin)).toEqual(["agents", "api-key"]);
-    expect(currentPage(devin)).toEqual({ id: "api-key", agent: "devin" });
+    expect(ids(signIn)).toEqual(["agents", "devin-sign-in"]);
+    expect(currentPage(signIn).id).toBe("devin-sign-in");
+
+    const opened = advance(signIn, { devinAttempt: DEVIN_ATTEMPT });
+    expect(ids(opened)).toEqual(["agents", "devin-sign-in", "devin-paste"]);
+    expect(currentPage(opened).id).toBe("devin-paste");
+
     expect(
       ids(startFlow({ stages: ["agent"], agents: ["devin"] })),
-    ).toEqual(["api-key"]);
+    ).toEqual(["devin-sign-in"]);
+  });
+
+  it("puts Devin's key page behind its sign-in, like the other two", () => {
+    const devin = advance(
+      advance(startFlow({ stages: ["agent"] }), { linking: "devin" }),
+      {
+        routes: {
+          claude_code: "sign-in",
+          codex: "sign-in",
+          devin: "api-key",
+        },
+      },
+    );
+    expect(ids(devin)).toEqual(["agents", "devin-sign-in", "api-key"]);
+    expect(currentPage(devin)).toEqual({ id: "api-key", agent: "devin" });
   });
 
   it("returns to the list when an agent links, its pages gone and the list reading Linked", () => {
@@ -155,7 +180,7 @@ describe("pagesFor", () => {
     expect(isFinished(finishLink(codex, "codex", CODEX))).toBe(true);
 
     const key = advance(startFlow({ stages: ["agent"], agents: ["codex"] }), {
-      routes: { claude_code: "sign-in", codex: "api-key", devin: "api-key" },
+      routes: { claude_code: "sign-in", codex: "api-key", devin: "sign-in" },
     });
     expect(currentPage(key).id).toBe("api-key");
     expect(isFinished(finishLink(key, "codex", CODEX))).toBe(true);

@@ -28,7 +28,7 @@ use skyzen_services::{Db, Kv};
 use crate::anthropic::{self, ClaudeClient, ClaudeOauth as _, TokenRequest};
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
-use crate::crypto::random_token;
+use crate::crypto::{pkce, random_token};
 use crate::error::ApiError;
 use crate::expiring;
 use crate::harness_accounts::{self, StoredCredential};
@@ -90,7 +90,7 @@ pub async fn start(
 }
 
 async fn begin(config: &ApiConfig, kv: &Kv, user: UserId) -> Result<ClaudeOauthStart, ApiError> {
-    let pkce = anthropic::pkce()?;
+    let pkce = pkce()?;
     let state = random_token()?;
     let attempt_id = ClaudeOauthAttemptId::generate();
 

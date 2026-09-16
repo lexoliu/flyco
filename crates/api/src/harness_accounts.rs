@@ -623,7 +623,7 @@ fn seal(config: &ApiConfig, credential: &StoredCredential) -> Result<String, Api
 /// What a linked Devin account is called when the principal names no
 /// person — the same role [`claude_oauth`](crate::claude_oauth)'s
 /// `UNNAMED_ACCOUNT` plays for a nameless Claude grant.
-const UNNAMED_DEVIN_ACCOUNT: &str = "Devin account";
+pub(crate) const UNNAMED_DEVIN_ACCOUNT: &str = "Devin account";
 
 async fn link(
     db: &Db,

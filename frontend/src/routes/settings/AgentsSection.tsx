@@ -40,7 +40,7 @@ const HARNESSES: readonly { kind: HarnessKind; label: string; runsOn: string }[]
     runsOn: "Runs on your Claude subscription, or an Anthropic API key.",
   },
   { kind: "codex", label: "Codex", runsOn: "Runs on your ChatGPT subscription, or an OpenAI API key." },
-  { kind: "devin", label: "Devin", runsOn: "Runs on your Devin account, with a token from its settings." },
+  { kind: "devin", label: "Devin", runsOn: "Runs on your Devin account, signed in or with a token." },
 ];
 
 /** How often the clock this page reads against moves. */
