@@ -200,7 +200,7 @@ mod linking {
 
     fn request(credential: HarnessCredentialInput) -> LinkHarnessAccount {
         LinkHarnessAccount {
-            label: "Personal".to_owned(),
+            label: Some("Personal".to_owned()),
             credential,
         }
     }
@@ -333,13 +333,19 @@ mod linking {
 
         for invalid in [
             LinkHarnessAccount {
-                label: " ".to_owned(),
+                label: Some(" ".to_owned()),
                 credential: HarnessCredentialInput::CodexApiKey {
                     key: "present".to_owned(),
                 },
             },
             LinkHarnessAccount {
-                label: "Personal".to_owned(),
+                label: None,
+                credential: HarnessCredentialInput::CodexApiKey {
+                    key: "present".to_owned(),
+                },
+            },
+            LinkHarnessAccount {
+                label: Some("Personal".to_owned()),
                 credential: HarnessCredentialInput::ClaudeSetupToken {
                     token: " ".to_owned(),
                 },
@@ -359,6 +365,70 @@ mod linking {
                     .ends_with("invalid-harness-credential")
             );
         }
+    }
+
+    #[skyzen::test]
+    async fn a_devin_account_is_labelled_by_devin_not_the_caller(ctx: TestContext, kv: Kv, db: Db) {
+        let router = migrated_router(&db).await;
+        let user = seed_user(&db).await;
+        let token = session::issue(&kv, user.id).await.expect("issue a session");
+        let client = ctx.client(router);
+
+        for label in [None, Some("whatever the caller made up".to_owned())] {
+            let response = client
+                .post("/v1/harness-accounts")
+                .bearer(&token)
+                .json(&LinkHarnessAccount {
+                    label,
+                    credential: HarnessCredentialInput::DevinApiKey {
+                        key: crate::testing::DEVIN_API_KEY.to_owned(),
+                    },
+                })
+                .send()
+                .await;
+            response.assert_status(201);
+            let view: HarnessAccountView = response.json();
+            assert_eq!(view.harness, HarnessKind::Devin);
+            assert_eq!(view.label, crate::testing::DEVIN_ACCOUNT_NAME);
+        }
+    }
+
+    #[skyzen::test]
+    async fn a_key_devin_refuses_never_reaches_the_table(ctx: TestContext, kv: Kv, db: Db) {
+        let router = migrated_router(&db).await;
+        let user = seed_user(&db).await;
+        let token = session::issue(&kv, user.id).await.expect("issue a session");
+
+        let response = ctx
+            .client(router)
+            .post("/v1/harness-accounts")
+            .bearer(&token)
+            .json(&LinkHarnessAccount {
+                label: None,
+                credential: HarnessCredentialInput::DevinApiKey {
+                    key: "devi-not-a-real-key".to_owned(),
+                },
+            })
+            .send()
+            .await;
+        response.assert_status(422);
+        assert!(
+            response
+                .json::<Problem>()
+                .kind
+                .ends_with("invalid-harness-credential")
+        );
+
+        let user_id = user.id;
+        let count: u64 = skyzen::sql!(
+            db,
+            "SELECT COUNT(*) FROM harness_accounts \
+             WHERE user_id = {user_id} AND harness = 'devin'"
+        )
+        .fetch_scalar()
+        .await
+        .expect("count devin accounts");
+        assert_eq!(count, 0, "a refused key leaves no row behind");
     }
 }
 

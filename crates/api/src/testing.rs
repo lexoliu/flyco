@@ -17,6 +17,7 @@ use crate::anthropic::{
 use crate::app::router;
 use crate::clouds::{CloudLink, Clouds};
 use crate::config::{ApiConfig, ApiSettings};
+use crate::devin::{DevinApi, DevinClient, DevinError, DevinSelf};
 use crate::error::ApiError;
 use crate::github::{GithubClient, GithubError, GithubOauth, GithubToken, GithubUser};
 use crate::google::{self, GoogleClient, GoogleError, GoogleOauth};
@@ -685,6 +686,35 @@ impl ClaudeOauth for TestClaude {
     }
 }
 
+/// The only key [`TestDevin`] resolves an identity for.
+pub const DEVIN_API_KEY: &str = "devi-flyco-test-key";
+
+/// The name [`TestDevin`] reports, which becomes the account's label.
+pub const DEVIN_ACCOUNT_NAME: &str = "Test Devin";
+
+/// A [`DevinApi`] that answers without a network.
+///
+/// The only key it knows is [`DEVIN_API_KEY`]; anything else is Devin's
+/// refusal, so a test exercises the same accept-or-reject split the live
+/// `/v3/self` read makes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TestDevin;
+
+impl DevinApi for TestDevin {
+    fn self_identity(
+        &self,
+        key: &str,
+    ) -> impl Future<Output = Result<DevinSelf, DevinError>> + Send {
+        ready(if key == DEVIN_API_KEY {
+            Ok(DevinSelf::WindsurfSession {
+                user_name: Some(DEVIN_ACCOUNT_NAME.to_owned()),
+            })
+        } else {
+            Err(DevinError::Rejected)
+        })
+    }
+}
+
 /// The device authorization [`TestCodex`] creates.
 pub const CODEX_DEVICE_AUTH_ID: &str = "devauth_flyco-test";
 
@@ -1230,6 +1260,7 @@ pub fn test_vendors() -> Vendors {
         CodexClient::Fake(TestCodex::approved()),
         MicrosoftClient::Fake(TestMicrosoft::succeeding()),
         GoogleClient::Fake(TestGoogle::succeeding()),
+        DevinClient::Fake(TestDevin),
     )
 }
 

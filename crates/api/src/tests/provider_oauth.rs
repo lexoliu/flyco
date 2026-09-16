@@ -21,6 +21,7 @@ use skyzen_test::{TestClient, TestContext, TestResponse};
 use url::Url;
 
 use crate::anthropic::ClaudeClient;
+use crate::devin::DevinClient;
 use crate::google::GoogleClient;
 use crate::microsoft::MicrosoftClient;
 use crate::openai::CodexClient;
@@ -28,8 +29,8 @@ use crate::session;
 use crate::testing::{
     AZURE_APP_CLIENT_SECRET, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID, AZURE_SUBSCRIPTION_NAME,
     CLOUD_CODE, GCP_ACCOUNT, GCP_PROJECT_ID, GCP_PROJECT_NAME, GCP_SERVICE_ACCOUNT_JSON,
-    GOOGLE_CLIENT_ID, REDIRECT_URI, TestClaude, TestCodex, TestGithub, TestGoogle, TestMicrosoft,
-    migrate, seed_other_user, seed_user, test_router_with,
+    GOOGLE_CLIENT_ID, REDIRECT_URI, TestClaude, TestCodex, TestDevin, TestGithub, TestGoogle,
+    TestMicrosoft, migrate, seed_other_user, seed_user, test_router_with,
 };
 use crate::vendors::Vendors;
 
@@ -71,6 +72,7 @@ async fn signed_in_with(
             CodexClient::Fake(TestCodex::approved()),
             MicrosoftClient::Fake(microsoft),
             GoogleClient::Fake(google),
+            DevinClient::Fake(TestDevin),
         ),
     );
     let user = seed_user(db).await;

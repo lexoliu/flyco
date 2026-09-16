@@ -20,6 +20,7 @@ use skyzen_test::{TestClient, TestContext, TestResponse};
 use url::Url;
 
 use crate::anthropic::ClaudeClient;
+use crate::devin::DevinClient;
 use crate::google::GoogleClient;
 use crate::microsoft::MicrosoftClient;
 use crate::openai::CodexClient;
@@ -27,8 +28,9 @@ use crate::provider_accounts::StoredSecrets;
 use crate::session;
 use crate::testing::{
     CLIENT_ID, CLOUD_CODE, CODESPACES_ENV_REPO, GITHUB_ACCESS_TOKEN, GITHUB_ID, GITHUB_LOGIN,
-    TestClaude, TestCodespaces, TestCodex, TestGithub, TestGoogle, TestMicrosoft, migrate,
-    seed_codespaces_account, seed_session, seed_user, test_config, test_rooms, test_router_full,
+    TestClaude, TestCodespaces, TestCodex, TestDevin, TestGithub, TestGoogle, TestMicrosoft,
+    migrate, seed_codespaces_account, seed_session, seed_user, test_config, test_rooms,
+    test_router_full,
 };
 use crate::vendors::Vendors;
 use crate::{machines, sessions};
@@ -64,6 +66,7 @@ async fn signed_in_with(
             CodexClient::Fake(TestCodex::approved()),
             MicrosoftClient::Fake(TestMicrosoft::succeeding()),
             GoogleClient::Fake(TestGoogle::succeeding()),
+            DevinClient::Fake(TestDevin),
         ),
         codespaces,
     );

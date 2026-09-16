@@ -28,7 +28,12 @@ import styles from "./pages.module.css";
 
 /** What the control plane is sent for one pasted secret. */
 interface Linkable {
-  readonly label: string;
+  /**
+   * Omitted when the vendor names the account itself — Devin's `/v3/self`
+   * answers who a key belongs to, so a Devin card is labelled with the
+   * account's own name rather than a string the client invented.
+   */
+  readonly label?: string;
   readonly credential: HarnessCredentialInput;
 }
 
@@ -99,17 +104,14 @@ const VENDORS: Record<HarnessKind, KeyVendor> = {
   devin: {
     title: "Paste your Devin token",
     lede:
-      "Devin links with a token from its settings rather than a sign-in. Flyco encrypts it before storing it.",
+      "Devin links with a token from its settings rather than a sign-in. Flyco verifies it with Devin, names the card after the account it opens, and encrypts it before storing it.",
     label: "Devin token",
     hint: "Created in your Devin settings.",
     keysUrl: "https://app.devin.ai/settings/environment?tab=outposts",
     keysPage: "Devin settings",
     read: (value) => ({
       ok: true,
-      link: {
-        label: "Devin token",
-        credential: { kind: "devin_api_key", key: value },
-      },
+      link: { credential: { kind: "devin_api_key", key: value } },
     }),
   },
 };

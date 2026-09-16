@@ -32,6 +32,7 @@ use skyzen_services::Db;
 use crate::anthropic::{ClaudeOauth as _, TokenRequest, TokenSet};
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
+use crate::devin::DevinApi as _;
 use crate::error::ApiError;
 use crate::extract::path_id;
 use crate::observations;
@@ -481,10 +482,11 @@ async fn list(db: &Db, user: UserId) -> Result<Vec<HarnessAccountView>, ApiError
 async fn link_harness_account(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
+    State(vendors): State<Vendors>,
     Json(request): Json<LinkHarnessAccount>,
     db: Db,
 ) -> Outcome<Created<Json<HarnessAccountView>>> {
-    link(&db, &config, user.id, request)
+    link(&db, &config, &vendors, user.id, request)
         .await
         .map(|view| Created(Json(view)))
         .into()
@@ -492,13 +494,11 @@ async fn link_harness_account(
 
 fn validated(
     request: LinkHarnessAccount,
-) -> Result<(String, HarnessKind, StoredCredential), ApiError> {
-    let label = request.label.trim();
-    if label.is_empty() {
-        return Err(ApiError::InvalidHarnessCredential(
-            "the account label must not be empty",
-        ));
-    }
+) -> Result<(Option<String>, HarnessKind, StoredCredential), ApiError> {
+    let label = request
+        .label
+        .map(|label| label.trim().to_owned())
+        .filter(|label| !label.is_empty());
     if request.credential.secret().trim().is_empty() {
         return Err(ApiError::InvalidHarnessCredential(
             "the credential must not be empty",
@@ -557,7 +557,7 @@ fn validated(
             }
         }
     };
-    Ok((label.to_owned(), harness, credential))
+    Ok((label, harness, credential))
 }
 
 /// Seals a credential and writes it as the user's account for that harness.
@@ -619,13 +619,36 @@ fn seal(config: &ApiConfig, credential: &StoredCredential) -> Result<String, Api
     Ok(config.token_cipher().seal(&encoded)?)
 }
 
+/// What a linked Devin account is called when the principal names no
+/// person — the same role [`claude_oauth`](crate::claude_oauth)'s
+/// `UNNAMED_ACCOUNT` plays for a nameless Claude grant.
+const UNNAMED_DEVIN_ACCOUNT: &str = "Devin account";
+
 async fn link(
     db: &Db,
     config: &ApiConfig,
+    vendors: &Vendors,
     user: UserId,
     request: LinkHarnessAccount,
 ) -> Result<HarnessAccountView, ApiError> {
     let (label, harness, credential) = validated(request)?;
+    // A Devin key opens its principal at `/v3/self`, so the account is
+    // labelled with Devin's own name for it — like the OAuth flows beside
+    // it, where the label is the vendor's answer rather than the caller's.
+    // The read doubles as the key's validation: a key Devin refuses never
+    // reaches the table.
+    let label = match &credential {
+        StoredCredential::ApiKey { key } if harness == HarnessKind::Devin => vendors
+            .devin
+            .self_identity(key)
+            .await?
+            .account_name()
+            .unwrap_or(UNNAMED_DEVIN_ACCOUNT)
+            .to_owned(),
+        _ => label.ok_or(ApiError::InvalidHarnessCredential(
+            "the account label must not be empty",
+        ))?,
+    };
     store(db, config, user, &label, harness, &credential).await
 }
 
