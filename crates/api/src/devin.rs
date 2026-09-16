@@ -286,15 +286,15 @@ fn grant_token(response: &HttpResponse) -> Result<String, DevinError> {
         return Ok(body.token);
     }
     if (400..500).contains(&response.status) {
-        let reason = response
-            .json::<OauthError>()
-            .ok()
-            .map_or_else(|| format!("HTTP {}", response.status), |failure| {
+        let reason = response.json::<OauthError>().ok().map_or_else(
+            || format!("HTTP {}", response.status),
+            |failure| {
                 failure.error_description.map_or_else(
                     || failure.error.clone(),
                     |description| format!("{}: {description}", failure.error),
                 )
-            });
+            },
+        );
         return Err(DevinError::GrantRejected(reason));
     }
     Err(DevinError::Status(response.status))
