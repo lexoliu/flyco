@@ -28,6 +28,7 @@ mod responses;
 mod room;
 mod row_budget;
 mod schema;
+mod schema_version;
 mod sessions;
 mod skills;
 mod turnstile;

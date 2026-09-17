@@ -89,7 +89,7 @@ async fn one_objects_budget_leaves_anothers_alone() {
 #[skyzen::test]
 async fn a_room_past_its_budget_answers_429() {
     let session = SessionId::generate();
-    let mut object = SessionRoom;
+    let mut object = SessionRoom::default();
     let backend = InMemoryDurableDb::in_memory()
         .await
         .expect("an in-memory database");

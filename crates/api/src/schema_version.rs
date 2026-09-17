@@ -9,8 +9,68 @@
 //! checked its schema through it went down at once. The version now
 //! lives in an ordinary table no authorizer decision can take away.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use skyzen::durable::DurableObjectError;
 use skyzen_services::DurableDb;
+
+/// What an object remembers about its own schema: the highest version it
+/// has already verified.
+///
+/// The cell lives on the `#[durable_object]` struct itself — the value
+/// skyzen keeps with the instance and round-trips through the object's
+/// own storage — so a remembered version survives the event that produced
+/// it, and survives eviction exactly as long as the tables it describes
+/// do. `fetch` mounts a clone on every route as `State<Cache>`; the `Arc`
+/// is what makes a handler's [`Cache::record`] land in the object's own
+/// cell, where the next state write carries it.
+///
+/// Serialized as the bare version or `null` — the same shape the unit
+/// structs this field joined already wrote, so an object built before the
+/// cell existed reads back empty rather than failing.
+#[derive(Debug, Clone)]
+pub struct Cache(Arc<AtomicI64>);
+
+/// What the cell holds before the first check lands. `i64::MIN` can never
+/// name a real schema version, so "nothing verified" needs no second word.
+const UNVERIFIED: i64 = i64::MIN;
+
+impl Cache {
+    /// The version this object has already verified, when one has been.
+    fn verified(&self) -> Option<i64> {
+        let version = self.0.load(Ordering::Relaxed);
+        (version != UNVERIFIED).then_some(version)
+    }
+
+    /// Marks `version` verified: a call asking for it or anything lower
+    /// answers from the cell alone.
+    fn record(&self, version: i64) {
+        self.0.fetch_max(version, Ordering::Relaxed);
+    }
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self(Arc::new(AtomicI64::new(UNVERIFIED)))
+    }
+}
+
+impl Serialize for Cache {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.verified().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Cache {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let version = Option::<i64>::deserialize(deserializer)?;
+        Ok(Self(Arc::new(AtomicI64::new(
+            version.unwrap_or(UNVERIFIED),
+        ))))
+    }
+}
 
 /// The version table's own DDL. `CHECK (id = 0)` keeps it one row the
 /// same way the presence tables are kept one row.
@@ -21,13 +81,20 @@ const META: &str = "CREATE TABLE IF NOT EXISTS schema_meta (\
 /// Runs `statements` once per version bump, then records `expected` as
 /// the object's schema version.
 ///
-/// The meta table's `CREATE` runs on every call — it is what makes the
-/// version read safe — and the version row is the skip: an object already
-/// at `expected` answers after one create and one select rather than
-/// re-running every statement it was built with. An object built before
-/// the version lived in a table has no row, so its statements — each one
-/// idempotent (`IF NOT EXISTS`, `INSERT OR IGNORE`) — run once more and
-/// the row lands.
+/// `cache` is the object's own remembered answer — the [`Cache`] field on
+/// its `#[durable_object]` struct, handed to the request as
+/// `State<Cache>`. A cache already holding a version at or above
+/// `expected` returns without touching storage, which is what makes the
+/// check once per object rather than once per call. A bumped `expected`
+/// outruns the cached version, so the meta table's `CREATE` and the
+/// version read run again — the read being what tells a build that is
+/// genuinely new to this object from one that merely lost its cell — and
+/// only a stored version still short of `expected` re-runs the statements
+/// and lands the bump.
+///
+/// An object built before the version lived in a table has no row, so its
+/// statements — each one idempotent (`IF NOT EXISTS`, `INSERT OR IGNORE`)
+/// — run once more and the row lands.
 ///
 /// # Errors
 ///
@@ -35,9 +102,13 @@ const META: &str = "CREATE TABLE IF NOT EXISTS schema_meta (\
 /// `statements` fails.
 pub async fn ensure(
     db: &DurableDb,
+    cache: &Cache,
     expected: i64,
     statements: &[&'static str],
 ) -> Result<(), DurableObjectError> {
+    if cache.verified().is_some_and(|version| version >= expected) {
+        return Ok(());
+    }
     db.query(META)
         .execute()
         .await
@@ -47,7 +118,10 @@ pub async fn ensure(
         .fetch_scalar_optional()
         .await
         .map_err(|error| DurableObjectError::Runtime(error.to_string()))?;
-    if version.is_some_and(|version| version >= expected) {
+    if let Some(version) = version
+        && version >= expected
+    {
+        cache.record(version);
         return Ok(());
     }
     for statement in statements {
@@ -63,5 +137,6 @@ pub async fn ensure(
     .execute()
     .await
     .map_err(|error| DurableObjectError::Runtime(error.to_string()))?;
+    cache.record(expected);
     Ok(())
 }

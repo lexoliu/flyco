@@ -60,7 +60,7 @@ impl Room {
     async fn open() -> Self {
         Self {
             session: SessionId::generate(),
-            object: SessionRoom,
+            object: SessionRoom::default(),
             db: InMemoryDurableDb::in_memory()
                 .await
                 .expect("an in-memory database"),
