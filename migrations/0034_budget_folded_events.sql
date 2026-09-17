@@ -1,0 +1,13 @@
+-- The budget cache's ledger watermark.
+--
+-- `budgets.spent_micros`/`stage` cache a replay of `spend_events`, and
+-- `folded_events` records how many ledger rows that replay covered. The
+-- ledger is append-only, so a read that finds the count unchanged can serve
+-- the cache with no write at all — where keying on the newest
+-- `(at_unix, id)` instead would miss a row inserted below the current
+-- maximum, which is exactly what a spot-reclaim line backdated to the
+-- provider's announcement is.
+--
+-- -1 forces one reconcile per existing budget: no real ledger has a
+-- negative length.
+ALTER TABLE budgets ADD COLUMN folded_events INTEGER NOT NULL DEFAULT -1;

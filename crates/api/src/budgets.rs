@@ -3,8 +3,9 @@
 //! The ledger is the truth and [`flyco_core::BudgetState`] is the only thing
 //! allowed to interpret it: totals and thresholds are produced by replaying
 //! every event through the engine, never by arithmetic in SQL. The
-//! `budgets` row caches the result so a reader that does not need exactness
-//! can have it in one query, and the cache is refreshed on every replay.
+//! `budgets` row caches the result, and `folded_events` records how many
+//! ledger rows the last replay covered, so a read that finds the ledger's
+//! length unmoved serves the cache without writing.
 
 use flyco_core::{
     BudgetConfig, BudgetId, BudgetSignal, BudgetSignalId, BudgetStage, BudgetState, BudgetView,
@@ -27,7 +28,28 @@ struct SpendRow {
 struct BudgetRow {
     session_id: SessionId,
     limit_micros: Usd,
+    spent_micros: Usd,
     stage: BudgetStage,
+    folded_events: i64,
+    ledger_events: i64,
+}
+
+impl BudgetRow {
+    /// The view the last replay left in the row itself.
+    ///
+    /// Only reached while `folded_events == ledger_events`; the ledger is
+    /// append-only, so an unmoved count means the cached `spent_micros` and
+    /// `stage` are exactly what a fresh replay would produce.
+    fn cached(&self) -> Result<BudgetView, ApiError> {
+        let config = BudgetConfig::new(self.limit_micros)
+            .map_err(|_| ApiError::CorruptRecord("budgets.limit_micros is zero"))?;
+        Ok(BudgetView {
+            limit: config.limit(),
+            spent: self.spent_micros,
+            remaining: config.limit().saturating_sub(self.spent_micros),
+            stage: self.stage,
+        })
+    }
 }
 
 /// One threshold delivery waiting for the session room.
@@ -65,8 +87,9 @@ pub async fn create(
 
     sql!(
         db,
-        "INSERT INTO budgets (id, session_id, limit_micros, spent_micros, stage) \
-         VALUES ({id}, {session}, {config.limit()}, 0, {state.stage()})"
+        "INSERT INTO budgets \
+         (id, session_id, limit_micros, spent_micros, stage, folded_events) \
+         VALUES ({id}, {session}, {config.limit()}, 0, {state.stage()}, 0)"
     )
     .execute()
     .await?;
@@ -74,14 +97,24 @@ pub async fn create(
     Ok(id)
 }
 
-/// Replays the ledger for `budget` and refreshes the cached totals.
+/// The cached totals for `budget`, replaying the ledger only if it moved.
+///
+/// Every spend lands in the ledger and every write path reconciles after
+/// itself, so `folded_events` trails the ledger's length only between an
+/// append and the reconcile that follows it — and a read in that gap folds
+/// the new rows itself. When the count has not moved the cache is the
+/// replay's answer and the read issues no write.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError::CorruptRecord`] if the budget row is missing or
 /// holds a limit the engine rejects, or a database error otherwise.
 pub async fn view(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
-    reconcile(db, budget).await
+    let row = load(db, budget).await?;
+    if row.folded_events == row.ledger_events {
+        return row.cached();
+    }
+    fold(db, budget, row).await
 }
 
 /// Replays one budget, persists newly crossed thresholds in the delivery
@@ -93,15 +126,28 @@ pub async fn view(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
 /// budget once outspent the cron's CPU budget before the sweep's other
 /// legs could run.
 pub(crate) async fn reconcile(db: &Db, budget: BudgetId) -> Result<BudgetView, ApiError> {
-    let row: BudgetRow = sql!(
+    fold(db, budget, load(db, budget).await?).await
+}
+
+/// The budget row plus the ledger's current length, in one statement.
+async fn load(db: &Db, budget: BudgetId) -> Result<BudgetRow, ApiError> {
+    sql!(
         db,
-        "SELECT session_id, limit_micros, stage FROM budgets WHERE id = {budget}"
+        "SELECT session_id, limit_micros, spent_micros, stage, folded_events, \
+         (SELECT COUNT(*) FROM spend_events WHERE budget_id = budgets.id) AS ledger_events \
+         FROM budgets WHERE id = {budget}"
     )
     .fetch_optional()
     .await?
     .ok_or(ApiError::CorruptRecord(
         "a session points at a budget that does not exist",
-    ))?;
+    ))
+}
+
+/// Replays the ledger for `budget` and writes back the result: the newly
+/// crossed thresholds into the delivery outbox, and the refreshed cache —
+/// including the folded count a later read compares the ledger against.
+async fn fold(db: &Db, budget: BudgetId, row: BudgetRow) -> Result<BudgetView, ApiError> {
     let config = BudgetConfig::new(row.limit_micros)
         .map_err(|_| ApiError::CorruptRecord("budgets.limit_micros is zero"))?;
 
@@ -112,6 +158,7 @@ pub(crate) async fn reconcile(db: &Db, budget: BudgetId) -> Result<BudgetView, A
     )
     .fetch_all()
     .await?;
+    let folded = i64::try_from(events.len()).expect("a spend ledger fits in i64");
 
     let mut state = BudgetState::new(config);
     for event in events {
@@ -147,7 +194,9 @@ pub(crate) async fn reconcile(db: &Db, budget: BudgetId) -> Result<BudgetView, A
 
     sql!(
         db,
-        "UPDATE budgets SET spent_micros = {state.spent()}, stage = {state.stage()} \
+        "UPDATE budgets \
+         SET spent_micros = {state.spent()}, stage = {state.stage()}, \
+             folded_events = {folded} \
          WHERE id = {budget}"
     )
     .execute()
