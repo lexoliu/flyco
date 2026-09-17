@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use flyco_core::{BudgetId, BudgetStage, SessionId, SpendKind, Usd};
+use flyco_core::{BudgetId, BudgetStage, SpendKind, Usd};
 use skyzen::sql;
 use skyzen_services::{
     BatchStatement, Db, DbBackend, DbDialect, DbError, DbExecResult, DbTransaction, DbValue, Row,
@@ -18,9 +18,10 @@ use crate::testing::{migrate, seed_session, seed_user};
 
 /// A [`DbBackend`] that counts the statements that write.
 ///
-/// `query` serves row-returning reads; `execute` and `execute_batch` are the
-/// only paths a write can take, so a read that issues no write leaves the
-/// counter at zero.
+/// `query` serves row-returning reads; `execute` and `execute_batch` are
+/// the write paths, and a transaction is counted as one because whatever
+/// runs inside it is invisible from here — so a read that leaves the
+/// counter at zero issued no write by any route.
 #[derive(Clone)]
 struct CountingDb {
     inner: Db,
@@ -70,6 +71,7 @@ impl DbBackend for CountingDb {
     }
 
     async fn begin(&self) -> Result<DbTransaction, DbError> {
+        self.writes.fetch_add(1, Ordering::Relaxed);
         self.inner.begin().await
     }
 
@@ -82,30 +84,25 @@ impl DbBackend for CountingDb {
     }
 }
 
-async fn budget_of(db: &Db, session: SessionId) -> BudgetId {
-    sql!(db, "SELECT budget_id FROM sessions WHERE id = {session}")
+/// A seeded session's budget with `spent` already on its ledger.
+async fn a_budget_that_spent(db: &Db, spent: Usd) -> BudgetId {
+    migrate(db).await;
+    let user = seed_user(db).await;
+    let session = seed_session(db, &user).await;
+    let budget: BudgetId = sql!(db, "SELECT budget_id FROM sessions WHERE id = {session}")
         .fetch_scalar()
         .await
-        .expect("the session's budget")
+        .expect("the session's budget");
+    budgets::record(db, budget, SpendKind::Compute, spent, "machine time")
+        .await
+        .expect("record spend");
+    budget
 }
 
 #[skyzen::test]
 async fn a_view_on_an_unchanged_ledger_writes_nothing() {
     let (db, writes) = counted_db().await;
-    migrate(&db).await;
-    let user = seed_user(&db).await;
-    let session = seed_session(&db, &user).await;
-    let budget = budget_of(&db, session).await;
-
-    budgets::record(
-        &db,
-        budget,
-        SpendKind::Compute,
-        Usd::from_dollars(6),
-        "machine time",
-    )
-    .await
-    .expect("record spend");
+    let budget = a_budget_that_spent(&db, Usd::from_dollars(6)).await;
 
     let first = budgets::view(&db, budget).await.expect("the first view");
     assert_eq!(first.spent, Usd::from_dollars(6));
@@ -124,20 +121,7 @@ async fn a_view_on_an_unchanged_ledger_writes_nothing() {
 #[skyzen::test]
 async fn a_new_ledger_row_is_folded_by_the_next_view() {
     let (db, writes) = counted_db().await;
-    migrate(&db).await;
-    let user = seed_user(&db).await;
-    let session = seed_session(&db, &user).await;
-    let budget = budget_of(&db, session).await;
-
-    budgets::record(
-        &db,
-        budget,
-        SpendKind::Compute,
-        Usd::from_dollars(6),
-        "machine time",
-    )
-    .await
-    .expect("record spend");
+    let budget = a_budget_that_spent(&db, Usd::from_dollars(6)).await;
     budgets::view(&db, budget)
         .await
         .expect("fold the first read");
@@ -168,20 +152,7 @@ async fn a_new_ledger_row_is_folded_by_the_next_view() {
 #[skyzen::test]
 async fn raising_the_limit_replays_and_prunes_spent_signals() {
     let (db, _writes) = counted_db().await;
-    migrate(&db).await;
-    let user = seed_user(&db).await;
-    let session = seed_session(&db, &user).await;
-    let budget = budget_of(&db, session).await;
-
-    budgets::record(
-        &db,
-        budget,
-        SpendKind::Compute,
-        Usd::from_dollars(10),
-        "machine time",
-    )
-    .await
-    .expect("spend the whole budget");
+    let budget = a_budget_that_spent(&db, Usd::from_dollars(10)).await;
     assert_eq!(
         budgets::view(&db, budget).await.expect("exhausted").stage,
         BudgetStage::Exhausted
@@ -208,5 +179,72 @@ async fn raising_the_limit_replays_and_prunes_spent_signals() {
             .expect("outbox")
             .is_empty(),
         "the un-crossed thresholds left the outbox"
+    );
+}
+
+/// The race the watermark would otherwise make durable: a fold that read
+/// the old limit lands after `set_limit` folded under the new one.
+#[skyzen::test]
+async fn a_fold_that_read_a_stale_limit_writes_nothing_and_folds_again() {
+    let (db, _writes) = counted_db().await;
+    let budget = a_budget_that_spent(&db, Usd::from_dollars(10)).await;
+    // Read under the $10 limit: exhausted, once folded.
+    let stale = budgets::load(&db, budget).await.expect("the stale row");
+
+    let raised = budgets::set_limit(&db, budget, Usd::from_dollars(25))
+        .await
+        .expect("raise the limit");
+    assert_eq!(raised.stage, BudgetStage::Ok);
+
+    // The late fold: under its $10 it would pause the session and stamp
+    // `Exhausted` over the `Ok` the raise just produced.
+    let late = budgets::fold(&db, budget, stale)
+        .await
+        .expect("the late fold");
+    assert_eq!(
+        late.stage,
+        BudgetStage::Ok,
+        "it folded again under the new limit"
+    );
+    assert_eq!(
+        budgets::view(&db, budget).await.expect("the view").stage,
+        BudgetStage::Ok
+    );
+    assert!(
+        budgets::pending_signals(&db)
+            .await
+            .expect("outbox")
+            .is_empty(),
+        "no pause was queued for a limit that is not spent"
+    );
+}
+
+/// A read that lands between the limit change and its reconcile folds
+/// under the new limit instead of pairing it with the old stage.
+#[skyzen::test]
+async fn a_limit_change_invalidates_the_cache_in_the_same_statement() {
+    let (db, _writes) = counted_db().await;
+    let budget = a_budget_that_spent(&db, Usd::from_dollars(10)).await;
+    assert_eq!(
+        budgets::view(&db, budget).await.expect("exhausted").stage,
+        BudgetStage::Exhausted
+    );
+
+    // The first half of `set_limit`, on its own.
+    let raised = Usd::from_dollars(25);
+    sql!(
+        db,
+        "UPDATE budgets SET limit_micros = {raised}, folded_events = -1 WHERE id = {budget}"
+    )
+    .execute()
+    .await
+    .expect("change the limit");
+
+    let between = budgets::view(&db, budget).await.expect("a read in the gap");
+    assert_eq!(between.limit, Usd::from_dollars(25));
+    assert_eq!(
+        between.stage,
+        BudgetStage::Ok,
+        "folded under the new limit, not served stale"
     );
 }
