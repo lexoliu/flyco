@@ -193,6 +193,14 @@ pub fn test_host_rooms() -> HostRooms {
     HostRooms::from_native(NativeHostRooms::new())
 }
 
+/// The rows a durable object's `row_budget` ledger says it read today.
+pub async fn rows_billed(db: &skyzen_services::durable::DurableDb) -> u64 {
+    db.query("SELECT COALESCE(SUM(rows_read), 0) FROM row_budget")
+        .fetch_scalar::<u64>()
+        .await
+        .expect("the ledger reads")
+}
+
 /// The display name [`TestGithub`] reports, which is what a session's
 /// commits are authored under.
 pub const GITHUB_NAME: &str = "Lexo Liu";
