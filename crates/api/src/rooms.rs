@@ -39,7 +39,10 @@ use skyzen_services::Db;
 
 use crate::error::ApiError;
 use crate::host_room::{HEADER_HOST, HostAttachResponse, HostStatus};
-use crate::room::{AttachResponse, Emitted, HEADER_INTERNAL, HEADER_SESSION, INTERNAL};
+use crate::room::{
+    AttachResponse, Emitted, HEADER_INTERNAL, HEADER_SESSION, INTERNAL, WORKDIR_REPLY_EVENT,
+    WORKDIR_TIMEOUT_EVENT,
+};
 use crate::user_events::{HEADER_USER, PublishEvents};
 use flyco_core::wire::EventPage;
 
@@ -785,12 +788,12 @@ impl Rooms {
                 ApiError::Room(format!("a workdir answer could not be read: {error}"))
             })?;
             match event.event() {
-                Some("reply") => {
+                Some(WORKDIR_REPLY_EVENT) => {
                     return event.data::<WorkdirReply>().map_err(|error| {
                         ApiError::Room(format!("a workdir answer did not parse: {error}"))
                     });
                 }
-                Some("timeout") => {
+                Some(WORKDIR_TIMEOUT_EVENT) => {
                     tracing::warn!(%session, %id, "a daemon did not answer a workdir question in time");
                     return Err(ApiError::WorkdirTimeout);
                 }

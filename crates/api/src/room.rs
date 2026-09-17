@@ -1509,8 +1509,8 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
              cols INTEGER NOT NULL, \
              rows INTEGER NOT NULL)",
             // One row per answered question about the checkout, keyed by the
-            // id the Worker minted for it and deleted the moment that Worker
-            // collects it. A table rather than KV because these expire: the
+            // id the Worker minted for it and deleted the moment the held
+            // question serves it. A table rather than KV because these expire: the
             // sweep in `store_workdir_reply` needs to find rows by age, which
             // is a query and not a key.
             "CREATE TABLE IF NOT EXISTS workdir_replies (\
@@ -1684,6 +1684,12 @@ const WORKDIR_REPLY_TTL_SECONDS: u64 = 120;
 /// because the browser is holding a request open behind it.
 const WORKDIR_DEADLINE_SECONDS: u64 = 12;
 
+/// The terminal event of a held workdir question that carries the answer.
+pub(crate) const WORKDIR_REPLY_EVENT: &str = "reply";
+
+/// The terminal event of a held workdir question the deadline ended.
+pub(crate) const WORKDIR_TIMEOUT_EVENT: &str = "timeout";
+
 /// Keeps one answer until the Worker that asked comes back for it.
 async fn store_workdir_reply(
     db: &DurableDb,
@@ -1784,48 +1790,55 @@ struct WorkdirFeed {
 /// The feed's first tick doubles as the fallback for a reply that landed
 /// between queueing the command and opening the wait — it reads the same
 /// row either way, so a reply that raced the ask is found, not missed.
+///
+/// The deadline is read before storage is, so a read that keeps failing
+/// still ends the wait with [`WORKDIR_TIMEOUT_EVENT`] on time: the Worker
+/// holds the browser's request open on this stream's word alone.
 fn poll_workdir_reply(feed: &mut WorkdirFeed) -> crate::sse::PollFn<'_> {
     Box::pin(async move {
-        workdir_feed_step(feed)
-            .await
-            .unwrap_or(crate::sse::Poll::Idle)
+        if feed.terminal_sent {
+            return crate::sse::Poll::End;
+        }
+        let expired = now_unix() >= feed.deadline;
+        let terminal = match take_workdir_reply(&feed.db, feed.request).await {
+            Ok(Some(json)) => Event::data(json).event(WORKDIR_REPLY_EVENT),
+            Ok(None) if expired => Event::data("timed out").event(WORKDIR_TIMEOUT_EVENT),
+            Ok(None) => return crate::sse::Poll::Idle,
+            Err(error) => {
+                tracing::warn!(%error, request = %feed.request, "a workdir wait could not read its reply");
+                if !expired {
+                    return crate::sse::Poll::Idle;
+                }
+                Event::data("timed out").event(WORKDIR_TIMEOUT_EVENT)
+            }
+        };
+        feed.terminal_sent = true;
+        crate::sse::Poll::Emit(vec![terminal])
     })
 }
 
-/// One poll step, fallible so a failed read surfaces once as a warning
-/// rather than ending the wait — storage retries answer next tick.
-async fn workdir_feed_step(feed: &mut WorkdirFeed) -> Result<crate::sse::Poll, ()> {
-    if feed.terminal_sent {
-        return Ok(crate::sse::Poll::End);
+/// Takes the stored answer to one question, if it has landed.
+///
+/// Single use: the row goes with the answer, and the reply is checked
+/// ahead of the deadline so an answer that lands on the last tick is
+/// still served.
+async fn take_workdir_reply(
+    db: &DurableDb,
+    request: WorkdirRequestId,
+) -> Result<Option<String>, skyzen_services::DurableDbError> {
+    let id = request.to_string();
+    let json: Option<String> = sql!(
+        db,
+        "SELECT json FROM workdir_replies WHERE id = {id.as_str()}"
+    )
+    .fetch_scalar_optional()
+    .await?;
+    if json.is_some() {
+        sql!(db, "DELETE FROM workdir_replies WHERE id = {id.as_str()}")
+            .execute()
+            .await?;
     }
-    let db = &feed.db;
-    let id = feed.request.to_string();
-    let json: Option<String> = sql!(db, "SELECT json FROM workdir_replies WHERE id = {id}")
-        .fetch_scalar_optional()
-        .await
-        .map_err(|error| {
-            tracing::warn!(%error, "a workdir wait could not read its reply");
-        })?;
-
-    // Single use: the row goes with the answer. The reply is checked
-    // before the deadline so an answer that lands on the last tick is
-    // still served.
-    let terminal = match json {
-        Some(json) => {
-            let id = feed.request.to_string();
-            sql!(db, "DELETE FROM workdir_replies WHERE id = {id}")
-                .execute()
-                .await
-                .map_err(|error| {
-                    tracing::warn!(%error, "a workdir wait could not retire its reply");
-                })?;
-            Event::data(json).event("reply")
-        }
-        None if now_unix() >= feed.deadline => Event::data("timed out").event("timeout"),
-        None => return Ok(crate::sse::Poll::Idle),
-    };
-    feed.terminal_sent = true;
-    Ok(crate::sse::Poll::Emit(vec![terminal]))
+    Ok(json)
 }
 
 // ── The desktop stream ──
