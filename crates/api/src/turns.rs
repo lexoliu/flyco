@@ -77,6 +77,10 @@ pub async fn page(
 /// for as long as it took to walk all of them — so the walk stops once the
 /// rows it read reach [`EVENT_PAGE_LIMIT`]. Stopping early is not a lost
 /// page: the cursor comes back and the client asks again.
+///
+/// A page that reports more to read must carry at least one event, or the
+/// cursor could not advance; a room that answered otherwise is refused
+/// rather than asked again forever.
 pub(crate) async fn walk<F, Fut>(
     after: u64,
     limit: usize,
@@ -90,6 +94,11 @@ where
     let mut walked = 0_usize;
     loop {
         let page = events(fold.resume_from()).await?;
+        if page.more && page.events.is_empty() {
+            return Err(ApiError::Room(
+                "an event page claimed more to read and carried no events".to_owned(),
+            ));
+        }
         walked += page.events.len();
         fold.absorb(&page.events)?;
         if fold.is_full() {

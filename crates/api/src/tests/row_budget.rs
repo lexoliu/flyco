@@ -8,14 +8,14 @@
 
 use flyco_core::{ClientEvent, MessageOrigin, SessionId};
 use skyzen::durable::DurableObject as _;
-use skyzen::{Body, Method, Request};
+use skyzen::{Method, Request};
 use skyzen_services::durable::DurableDb;
 use skyzen_test::mock::InMemoryDurableDb;
 
 use crate::error::ApiError;
-use crate::room::{HEADER_INTERNAL, HEADER_SESSION, INTERNAL, SessionRoom};
+use crate::room::SessionRoom;
 use crate::row_budget::{self, ROWS_PER_DAY, charge_reads};
-use crate::testing::rows_billed;
+use crate::testing::{room_request, rows_billed};
 
 /// One object with its ledger schema applied.
 async fn object() -> DurableDb {
@@ -31,9 +31,8 @@ async fn object() -> DurableDb {
     db
 }
 
-/// One Worker→room call the way `rooms.rs` builds it: the internal and
-/// session headers, and the object's storage injected where the simulator
-/// would put it.
+/// One Worker→room call against `backend`, injected where the simulator
+/// would put the object's storage.
 fn call(
     backend: &InMemoryDurableDb,
     session: SessionId,
@@ -41,23 +40,7 @@ fn call(
     path: &str,
     body: Option<Vec<u8>>,
 ) -> Request {
-    let mut request = Request::new(body.map_or_else(Body::empty, Body::from));
-    *request.method_mut() = method;
-    *request.uri_mut() = format!("https://session-room.flyco.invalid{path}")
-        .parse()
-        .expect("a valid room URL");
-    for (name, value) in [
-        (HEADER_INTERNAL, INTERNAL.to_owned()),
-        (HEADER_SESSION, session.to_string()),
-    ] {
-        request
-            .headers_mut()
-            .insert(name, value.parse().expect("a valid header"));
-    }
-    request.headers_mut().insert(
-        skyzen::header::CONTENT_TYPE,
-        skyzen::header::HeaderValue::from_static("application/json"),
-    );
+    let mut request = room_request(session, method, path, body);
     request
         .extensions_mut()
         .insert(DurableDb::new(backend.clone()));

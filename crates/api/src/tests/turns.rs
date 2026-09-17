@@ -13,13 +13,13 @@ use flyco_core::{
     ClientEvent, ContextWindow, HarnessEvent, MessageOrigin, SessionId, UsageReport, Usd,
 };
 use skyzen::durable::DurableObject as _;
-use skyzen::{Body, Method, Request};
+use skyzen::{Method, Request};
 use skyzen_services::durable::DurableDb;
 use skyzen_test::mock::InMemoryDurableDb;
 
 use crate::error::ApiError;
-use crate::room::{EVENT_PAGE_LIMIT, HEADER_INTERNAL, HEADER_SESSION, INTERNAL, SessionRoom};
-use crate::testing::rows_billed;
+use crate::room::{EVENT_PAGE_LIMIT, SessionRoom};
+use crate::testing::{room_request, rows_billed};
 use crate::turns::walk;
 
 /// A session room on storage the test can inspect: the walk under test
@@ -42,25 +42,10 @@ impl Room {
         }
     }
 
-    /// One Worker→room call the way `rooms.rs` builds it.
+    /// One Worker→room call against this room's storage, injected where
+    /// the simulator would put it.
     fn request(&self, method: Method, path: &str, body: Option<Vec<u8>>) -> Request {
-        let mut request = Request::new(body.map_or_else(Body::empty, Body::from));
-        *request.method_mut() = method;
-        *request.uri_mut() = format!("https://session-room.flyco.invalid{path}")
-            .parse()
-            .expect("a valid room URL");
-        for (name, value) in [
-            (HEADER_INTERNAL, INTERNAL.to_owned()),
-            (HEADER_SESSION, self.session.to_string()),
-        ] {
-            request
-                .headers_mut()
-                .insert(name, value.parse().expect("a valid header"));
-        }
-        request.headers_mut().insert(
-            skyzen::header::CONTENT_TYPE,
-            skyzen::header::HeaderValue::from_static("application/json"),
-        );
+        let mut request = room_request(self.session, method, path, body);
         request
             .extensions_mut()
             .insert(DurableDb::new(self.db.clone()));
@@ -195,4 +180,26 @@ async fn a_long_tail_stops_at_the_row_bound_with_a_cursor() {
         u64::from(EVENT_PAGE_LIMIT) + 1,
         "one page read, bound plus the lookahead row — not eight pages of bound"
     );
+}
+
+/// A room that claims more to read without carrying an event could not
+/// advance the cursor; the walk refuses it instead of asking again forever.
+#[skyzen::test]
+async fn a_page_with_more_and_no_events_is_refused() {
+    let mut calls = 0_u32;
+    let error = walk(0, 10, |_after| {
+        calls += 1;
+        core::future::ready(Ok(EventPage {
+            events: Vec::new(),
+            more: true,
+        }))
+    })
+    .await
+    .expect_err("an empty page that claims more");
+
+    assert!(
+        matches!(error, ApiError::Room(_)),
+        "refused as a room fault, got {error:?}"
+    );
+    assert_eq!(calls, 1, "the walk stopped at the first such page");
 }
