@@ -326,6 +326,35 @@ pub enum AttachAnswer {
     /// Refuse every attach with a retryable problem, as a room mid-deploy
     /// does.
     Refuse,
+    /// Refuse every attach with `429 request-budget-exhausted` naming
+    /// this wait, as a control plane whose daily budget for the session
+    /// is spent does (issue #342).
+    Spent(std::time::Duration),
+}
+
+/// What a room answers every attach with, when it refuses them at all.
+#[derive(Debug, Clone, Copy)]
+pub struct Refusal {
+    /// Status line code.
+    pub status: u16,
+    /// The problem type's slug.
+    pub slug: &'static str,
+    /// The problem's detail.
+    pub detail: &'static str,
+    /// The `Retry-After` the answer carries, in seconds, when it does.
+    pub retry_after: Option<u64>,
+}
+
+impl Refusal {
+    /// The reply this refusal is written as.
+    #[must_use]
+    pub fn reply(&self) -> Reply {
+        let reply = Reply::problem(self.status, self.slug, self.detail);
+        match self.retry_after {
+            Some(seconds) => reply.retry_after(seconds),
+            None => reply,
+        }
+    }
 }
 
 /// One frames POST's decoded body — the same envelope both relay clients
@@ -359,7 +388,7 @@ struct RoomState {
     silenced: bool,
     /// What attaches are answered with, when they are refused at all — a
     /// room mid-deploy, or a revoked credential.
-    refusal: Option<(u16, &'static str, &'static str)>,
+    refusal: Option<Refusal>,
     /// Ends the open command stream, when one is open.
     close_stream: Option<oneshot::Sender<()>>,
     /// Whether attach POSTs park until released.
@@ -419,10 +448,7 @@ where
     ///
     /// Panics if the loopback socket cannot be bound, which would mean the
     /// test host has no usable networking.
-    async fn serve(
-        refusal: Option<(u16, &'static str, &'static str)>,
-        jobs_held_until_answered: bool,
-    ) -> Self {
+    async fn serve(refusal: Option<Refusal>, jobs_held_until_answered: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind a loopback port");
@@ -547,7 +573,18 @@ impl Room {
         Self::serve(
             match answer {
                 AttachAnswer::Accept => None,
-                AttachAnswer::Refuse => Some((503, "relay-unavailable", "the room is mid-deploy")),
+                AttachAnswer::Refuse => Some(Refusal {
+                    status: 503,
+                    slug: "relay-unavailable",
+                    detail: "the room is mid-deploy",
+                    retry_after: None,
+                }),
+                AttachAnswer::Spent(wait) => Some(Refusal {
+                    status: 429,
+                    slug: "request-budget-exhausted",
+                    detail: "this session has spent its request budget for the day",
+                    retry_after: Some(wait.as_secs()),
+                }),
             },
             false,
         )
@@ -565,11 +602,12 @@ impl HostRelay {
     /// credential is refused.
     pub async fn revoked() -> Self {
         Self::serve(
-            Some((
-                401,
-                "invalid-host-credential",
-                "the token this machine holds is revoked",
-            )),
+            Some(Refusal {
+                status: 401,
+                slug: "invalid-host-credential",
+                detail: "the token this machine holds is revoked",
+                retry_after: None,
+            }),
             true,
         )
         .await
@@ -598,8 +636,8 @@ async fn handle<Up>(
             body: serde_json::from_slice(&request.body).unwrap_or_default(),
         });
         let refusal = state.lock().expect("the room state").refusal;
-        if let Some((status, slug, detail)) = refusal {
-            let _ = write_reply(&mut stream, &Reply::problem(status, slug, detail)).await;
+        if let Some(refusal) = refusal {
+            let _ = write_reply(&mut stream, &refusal.reply()).await;
             return;
         }
         // A gated attach parks here until released — the attempt is
@@ -934,6 +972,14 @@ impl Reply {
             )],
             body: serde_json::to_vec(&problem).expect("serialize a problem"),
         }
+    }
+
+    /// This reply with a `Retry-After` header naming `seconds`.
+    #[must_use]
+    pub fn retry_after(mut self, seconds: u64) -> Self {
+        self.headers
+            .push(("retry-after".to_owned(), seconds.to_string()));
+        self
     }
 
     /// A `201 Created` carrying a freshly raised approval.

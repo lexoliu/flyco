@@ -730,6 +730,67 @@ async fn a_daemon_attaches_with_its_token_and_its_protocol_version() {
 }
 
 #[tokio::test]
+async fn a_refusal_naming_a_wait_is_honoured_before_the_next_attach() {
+    // The control plane refusing with `429` and `Retry-After` is saying
+    // when: attaching sooner is one more request charged to a budget it
+    // just said is spent (issue #342). The wait beats the ladder, whose
+    // first rung is at most one second.
+    let wait = Duration::from_secs(3);
+    let mut harness = Harness::start(AttachAnswer::Spent(wait)).await;
+
+    let Some(Seen::Attached { .. }) = harness.room.next().await else {
+        panic!("the daemon did not attempt an attach");
+    };
+    let refused_at = tokio::time::Instant::now();
+    let Some(Seen::Attached { .. }) = harness.room.next().await else {
+        panic!("the daemon did not attach again within the room's patience");
+    };
+    assert!(
+        refused_at.elapsed() >= wait,
+        "the second attach came {:?} after the refusal, before the {wait:?} it named",
+        refused_at.elapsed()
+    );
+    // A daemon that never attached has no stream to take an archive on.
+    harness.run.abort();
+}
+
+#[tokio::test]
+async fn frames_produced_within_the_window_ride_one_batch() {
+    // Two events spaced well inside `COALESCE` are one POST: the frames
+    // route is charged per request, and a harness streaming a terminal
+    // would otherwise be one request per chunk (issue #342).
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
+    harness.handshake().await;
+
+    harness
+        .emit(SessionOutput::Event {
+            event: delta("one"),
+        })
+        .await;
+    tokio::time::sleep(wire::COALESCE / 5).await;
+    harness
+        .emit(SessionOutput::Event {
+            event: delta("two"),
+        })
+        .await;
+
+    let batch = loop {
+        match harness.room.next().await {
+            Some(Seen::Batch { frames, .. }) => break frames,
+            Some(_) => {}
+            None => panic!("no batch reached the room"),
+        }
+    };
+    assert_eq!(
+        batch.len(),
+        2,
+        "two events inside one window were posted as one batch: {batch:?}"
+    );
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
 async fn nothing_is_pumped_before_an_attach_is_accepted() {
     // A room that refuses the attach gets the attempt and nothing else,
     // however much the harness produces: a frame posted to a room that has
@@ -2885,6 +2946,7 @@ mod remote_store {
                     title: "Payload Too Large".to_owned(),
                     detail: "the batch is over the 1 MiB a transcript batch may be".to_owned(),
                     kind: "payload-too-large".to_owned(),
+                    retry_after_secs: None,
                 }));
             }
             core::future::ready(

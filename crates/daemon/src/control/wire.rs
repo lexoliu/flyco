@@ -103,6 +103,21 @@ pub const BACKOFF_MIN: Duration = Duration::from_secs(1);
 /// Longest wait between reconnect attempts.
 pub const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
+/// How long a frame waits for company before its batch is posted.
+///
+/// Terminal output and desktop chunks arrive as a stream of small pieces,
+/// and posting each as it lands is one request per piece — at a busy
+/// harness's rate, the traffic that spends the account's daily request
+/// quota (issue #342). Half a second bounds a session to two batches a
+/// second however much it produces, and is under what a person notices
+/// on a terminal.
+pub const COALESCE: Duration = Duration::from_millis(500);
+
+/// How many frames a batch holds before it is posted without waiting out
+/// [`COALESCE`]: the bound on a batch's size, so a burst cannot grow one
+/// past what the room accepts in a body.
+pub const FLUSH_AT_FRAMES: usize = 128;
+
 /// How long the command stream may deliver no bytes at all — not even a
 /// ping — before the daemon calls the path dead.
 ///
@@ -638,6 +653,13 @@ struct Connection<S, T, A, W, D, H, X> {
     opening: Option<String>,
     /// How this connection decides the stream is dead.
     deadlines: Deadlines,
+    /// The wait the control plane named on the last refused batch.
+    ///
+    /// A `429` on the frames route carries `Retry-After`; the attach that
+    /// follows a dropped attachment sleeps at least that long, whatever
+    /// the backoff ladder says (issue #342). Taken by the reconnect loop,
+    /// so it applies to exactly the reconnect after the refusal.
+    retry_hint: Option<Duration>,
 }
 
 /// Why one connection ended.
@@ -688,7 +710,7 @@ impl<
     /// it rides every batch, which is how the room learns which of its
     /// queued commands are done.
     async fn flush(
-        &self,
+        &mut self,
         attach: &mut Attachment,
         pending: &mut VecDeque<DaemonToControl>,
         applied: u64,
@@ -708,6 +730,7 @@ impl<
                 frames = batch.frames.len(),
                 "a frame batch did not reach the room; retrying it on the next attach"
             );
+            self.retry_hint = error.retry_after();
             return false;
         }
         attach.next_seq = attach
@@ -724,7 +747,7 @@ impl<
     /// done. Without it, a command applied on a quiet session would sit
     /// unacknowledged until the harness next produced output, and an
     /// attach in between would redeliver it.
-    async fn ack(&self, epoch: u64, from_seq: u64, applied: u64) -> bool {
+    async fn ack(&mut self, epoch: u64, from_seq: u64, applied: u64) -> bool {
         let batch = DaemonFrames {
             epoch,
             from_seq,
@@ -733,7 +756,46 @@ impl<
         };
         if let Err(error) = self.api.frames(&batch).await {
             tracing::warn!(%error, "a command acknowledgement did not reach the room");
+            self.retry_hint = error.retry_after();
             return false;
+        }
+        true
+    }
+
+    /// Posts what one loop turn owes the room: the pending batch once its
+    /// window has closed or it is full, else a bare acknowledgement when
+    /// the command cursor moved.
+    ///
+    /// Frames first, then the bare ack: a pending batch carries
+    /// `ack_through` itself, so sending both would ack twice. `flush_at`
+    /// is the coalescing window, armed by the first frame to land in an
+    /// empty queue and cleared by the post. Answers whether the attachment
+    /// is still usable.
+    async fn settle(
+        &mut self,
+        attach: &mut Attachment,
+        pending: &mut VecDeque<DaemonToControl>,
+        applied: u64,
+        acked: &mut u64,
+        flush_at: &mut Option<tokio::time::Instant>,
+    ) -> bool {
+        if pending.is_empty() {
+            *flush_at = None;
+            if applied > *acked {
+                if !self.ack(attach.epoch, attach.next_seq, applied).await {
+                    return false;
+                }
+                *acked = applied;
+            }
+            return true;
+        }
+        let due = *flush_at.get_or_insert_with(|| tokio::time::Instant::now() + COALESCE);
+        if pending.len() >= FLUSH_AT_FRAMES || tokio::time::Instant::now() >= due {
+            if !self.flush(attach, pending, applied).await {
+                return false;
+            }
+            *acked = applied;
+            *flush_at = None;
         }
         true
     }
@@ -761,23 +823,27 @@ impl<
         // the first turn re-acknowledge everything — which is exactly the
         // batch a room holding unacknowledged rows needs to see.
         let mut acked = 0_u64;
+        // When the frames waiting in `pending` are posted: armed by the
+        // first frame to land in an empty queue, so a burst — a terminal
+        // printing, a desktop streaming — rides one batch per
+        // [`COALESCE`] rather than one per piece.
+        let mut flush_at: Option<tokio::time::Instant> = None;
 
         loop {
-            // Frames first, then the bare ack: a pending batch carries
-            // `ack_through` itself, so sending both would ack twice.
-            if !pending.is_empty() {
-                if !self.flush(attach, pending, *applied).await {
-                    return Ok(Ended::Disconnected);
-                }
-                acked = *applied;
-            } else if *applied > acked {
-                if !self.ack(attach.epoch, attach.next_seq, *applied).await {
-                    return Ok(Ended::Disconnected);
-                }
-                acked = *applied;
+            if !self
+                .settle(attach, pending, *applied, &mut acked, &mut flush_at)
+                .await
+            {
+                return Ok(Ended::Disconnected);
             }
+            // A disabled branch's expression is still evaluated, so the
+            // deadline is a real instant either way.
+            let flush_deadline = flush_at.unwrap_or_else(tokio::time::Instant::now);
 
             tokio::select! {
+                () = tokio::time::sleep_until(flush_deadline), if flush_at.is_some() => {
+                    // The window closed: the loop head posts the batch.
+                }
                 outbound = queue.recv(), if self.alive.harness.armed() => {
                     if let Some(ending) = self.on_outbound(outbound, pending).await? {
                         return Ok(ending);
@@ -1886,6 +1952,18 @@ const FATAL_REFUSALS: &[&str] = &[
     "session-not-found",
 ];
 
+impl WireError {
+    /// The wait the control plane named, when what stopped the relay was
+    /// a refusal carrying `Retry-After`.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::ControlApi(api) => api.retry_after(),
+            _ => None,
+        }
+    }
+}
+
 /// Whether an attach failure ends the run rather than backing off.
 fn fatal_attach(error: &WireError) -> bool {
     match error {
@@ -2031,6 +2109,7 @@ where
         approvals: BTreeMap::new(),
         opening: Some(opening),
         deadlines: relay.deadlines,
+        retry_hint: None,
     };
     let mut attempt = 0_u32;
     // Frames produced but never confirmed stored. They outlive the attach
@@ -2065,7 +2144,10 @@ where
                 if fatal_attach(&error) {
                     break Err(error);
                 }
-                let wait = backoff(attempt);
+                // A refusal that names its wait is honoured over the
+                // ladder: a `429` is the control plane saying when, and
+                // attaching sooner is one more refused request.
+                let wait = backoff(attempt).max(error.retry_after().unwrap_or_default());
                 tracing::warn!(%error, ?wait, attempt, "could not attach to the session room");
                 attempt = attempt.saturating_add(1);
                 tokio::time::sleep(wait).await;
@@ -2101,7 +2183,7 @@ where
                 } else {
                     attempt = 0;
                 }
-                let wait = backoff(attempt);
+                let wait = backoff(attempt).max(connection.retry_hint.take().unwrap_or_default());
                 tracing::warn!(
                     ?wait,
                     attempt,
