@@ -647,18 +647,6 @@ pub enum ApiError {
     )]
     DesktopTakeoverRequired,
 
-    /// The room has no answer to this question yet.
-    ///
-    /// Internal to the Worker⇄room hop and never rendered for a browser:
-    /// the Worker polls the room while it holds the browser's request open,
-    /// and this is the "not yet" it polls against. What a browser is told
-    /// when the polling runs out is [`WorkdirTimeout`](Self::WorkdirTimeout).
-    #[error(
-        "the room has not been given this answer yet",
-        status = StatusCode::NOT_FOUND
-    )]
-    WorkdirNotAnsweredYet,
-
     /// The daemon did not answer a question about the checkout in time.
     #[error(
         "the session's daemon did not answer a question about its checkout in time",
@@ -1587,7 +1575,6 @@ impl ApiError {
             Self::SessionDaemonOffline => "session-daemon-offline",
             Self::DesktopWatcherGone => "desktop-watcher-gone",
             Self::DesktopTakeoverRequired => "desktop-takeover-required",
-            Self::WorkdirNotAnsweredYet => "workdir-not-answered-yet",
             Self::WorkdirTimeout => "workdir-timeout",
             Self::PathNotFound { .. } => "path-not-found",
             Self::PathOutsideCheckout { .. } => "path-outside-checkout",
