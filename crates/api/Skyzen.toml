@@ -148,6 +148,33 @@ FLYCO_TURNSTILE_HOSTNAMES = "${FLYCO_TURNSTILE_HOSTNAMES}"
 enabled = true
 head_sampling_rate = 1
 
+# The per-minute request limits (issue #342), one Rate Limiting binding per
+# class of caller because a binding carries exactly one limit. Counted in
+# memory per location by the platform and free, they are the bound that is
+# checked before any storage is read. The numbers must equal
+# `flyco_api::request_budget::Limits::PRODUCTION`, which a test in that
+# module asserts by reading this file. `namespace_id` is any integer unique
+# in the account; two bindings sharing one would share counters.
+[[cloudflare.raw.ratelimits]]
+name = "LIMIT_USERS"
+namespace_id = "3421"
+simple = { limit = 300, period = 60 }
+
+[[cloudflare.raw.ratelimits]]
+name = "LIMIT_DAEMONS"
+namespace_id = "3422"
+simple = { limit = 240, period = 60 }
+
+[[cloudflare.raw.ratelimits]]
+name = "LIMIT_HOSTS"
+namespace_id = "3423"
+simple = { limit = 60, period = 60 }
+
+[[cloudflare.raw.ratelimits]]
+name = "LIMIT_PUBLIC"
+namespace_id = "3424"
+simple = { limit = 60, period = 60 }
+
 [cloudflare.service.auth_kv]
 binding = "AUTH_KV"
 

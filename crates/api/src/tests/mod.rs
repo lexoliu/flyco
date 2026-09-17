@@ -24,6 +24,7 @@ mod providers;
 mod provisioning;
 mod push;
 mod relay;
+mod request_budget;
 mod responses;
 mod room;
 mod row_budget;

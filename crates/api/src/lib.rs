@@ -57,6 +57,7 @@ pub mod push;
 pub mod relay;
 pub mod releases;
 pub mod repos;
+pub mod request_budget;
 pub mod respond;
 pub mod responses;
 pub mod room;
