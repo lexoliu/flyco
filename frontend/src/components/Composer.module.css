@@ -1,7 +1,8 @@
 /*
- * The composer: one large, low-contrast, 16px-rounded container with every
- * control inside it. It is the only primary control on the home page, so
- * nothing else on the screen is allowed to look like this.
+ * The composer: the one raised card on the page, with every control
+ * inside it. It is the only primary control on the home page, so nothing
+ * else on the screen is allowed to look like this — paper on the ground,
+ * lifted by a shadow, with a border that darkens when it has focus.
  */
 .composer {
   /* A size container: the controls split below is decided by how wide the
@@ -10,12 +11,15 @@
   container-type: inline-size;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  background: var(--color-surface-sunken);
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-3) var(--space-3);
+  background: var(--color-surface-raised);
   border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-lg);
-  transition: border-color var(--transition-fast);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-raised);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .composer:focus-within {
@@ -36,6 +40,14 @@
   margin-bottom: var(--space-2);
 }
 
+/* Off the paper, a chip has no card to sit on: it carries its own, so the
+   island reads as a row of pills over the ground rather than stray text. */
+.island .chip {
+  background: var(--color-surface-raised);
+  border-color: var(--color-border);
+  box-shadow: var(--shadow-sm);
+}
+
 /* The chips' carrier between its two homes: a box that draws no box. */
 .islandCarry {
   display: contents;
@@ -48,7 +60,7 @@
 
 .prompt {
   width: 100%;
-  min-height: 76px;
+  min-height: 72px;
   max-height: 40vh;
   resize: none;
   border: none;
@@ -85,7 +97,7 @@
   flex-wrap: wrap;
   align-items: center;
   margin-right: auto;
-  gap: var(--space-2);
+  gap: var(--space-1);
   min-width: 0;
   flex: 1;
 }
@@ -126,14 +138,17 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   flex: none;
   border: none;
   border-radius: var(--radius-full);
   background: var(--color-primary);
   color: var(--color-primary-text);
-  transition: opacity var(--transition-fast), background var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    background var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .send:hover:not(:disabled) {
@@ -141,7 +156,7 @@
 }
 
 .send:disabled {
-  opacity: 0.35;
+  opacity: 0.25;
 }
 
 .send:active:not(:disabled) {
@@ -169,33 +184,49 @@
 
 /* ── Chips ───────────────────────────────────────────────────────────── */
 
+/*
+ * A chip is a readout that opens its own picker: a quiet pill whose icon
+ * carries the identity and whose text carries the value. It has no fill
+ * until the pointer is on it, so five of them on one line read as a row
+ * of facts rather than a row of buttons.
+ */
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 6px;
   max-width: 100%;
-  /* Tighter than the app's other pills: five of these share one line with
-     the send button, and the price on the compute chip is what the row
-     must never cut. */
-  padding: var(--space-1) var(--space-2);
-  border: var(--border-width) solid var(--color-border);
+  height: 28px;
+  padding: 0 var(--space-2) 0 7px;
+  border: var(--border-width) solid transparent;
   border-radius: var(--radius-full);
-  background: var(--color-bg);
+  background: transparent;
   color: var(--color-text);
   font-size: var(--text-sm);
-  line-height: 1.6;
+  font-weight: var(--weight-medium);
+  line-height: 1;
   text-decoration: none;
   white-space: nowrap;
-  transition: border-color var(--transition-fast), color var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
-.chip:hover {
-  border-color: var(--color-border-strong);
+.chip > svg {
+  flex: none;
+  color: var(--color-text-muted);
+}
+
+.chip:hover,
+.chip[aria-expanded="true"] {
+  background: var(--color-surface-sunken);
+  border-color: var(--color-border);
 }
 
 /* A chip whose prerequisite is missing is the action, not a readout. */
 .chipMissing {
   color: var(--color-text-muted);
+  border-color: var(--color-border);
   border-style: dashed;
 }
 
@@ -205,7 +236,7 @@
  */
 .chipOn {
   background: var(--color-surface-sunken);
-  border-color: var(--color-border-strong);
+  border-color: var(--color-border);
 }
 
 .chipLabel {
@@ -218,6 +249,7 @@
 
 .chipDim {
   color: var(--color-text-faint);
+  font-weight: var(--weight-normal);
 }
 
 /* A machine whose provider bills a minimum the moment it boots. Amber on the
@@ -259,9 +291,10 @@
 
 .popoverTitle {
   margin: 0;
-  font-size: var(--text-xs);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--tracking-caps);
   color: var(--color-text-faint);
 }
 
@@ -273,12 +306,19 @@
 
 .search {
   width: 100%;
-  padding: var(--space-2) var(--space-3);
+  height: 32px;
+  padding: 0 var(--space-3);
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface-sunken);
   color: var(--color-text);
-  font-size: var(--text-md);
+  font-size: var(--text-sm);
+}
+
+.search:focus {
+  outline: none;
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-raised);
 }
 
 .options {
@@ -287,7 +327,7 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   /* No cap of its own: a scroll container is the flex child that yields,
      so it scrolls exactly when the panel around it has run out of room. */
   overflow-y: auto;
@@ -298,12 +338,13 @@
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  padding: var(--space-2);
+  min-height: 32px;
+  padding: var(--space-1) var(--space-2);
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text);
-  font-size: var(--text-md);
+  font-size: var(--text-sm);
   text-align: left;
   text-decoration: none;
   box-sizing: border-box;
@@ -315,12 +356,14 @@
 
 .optionChosen {
   background: var(--color-surface-sunken);
+  font-weight: var(--weight-medium);
 }
 
 .optionMeta {
   margin-left: auto;
   color: var(--color-text-faint);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -332,7 +375,7 @@
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
-  font-size: var(--text-md);
+  font-size: var(--text-sm);
 }
 
 .pickedSlug {
@@ -375,6 +418,6 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--text-md);
+  font-size: var(--text-sm);
   color: var(--color-text-muted);
 }

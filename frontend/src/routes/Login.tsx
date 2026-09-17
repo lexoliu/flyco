@@ -1,6 +1,6 @@
 import { Show, createSignal, onCleanup, onMount } from "solid-js";
 import { useLocation } from "@solidjs/router";
-import Logomark, { GITHUB_MARK } from "../components/Logomark";
+import Logomark, { FLYCO_MARK, GITHUB_MARK } from "../components/Logomark";
 import { beginGithubLogin } from "../api/auth";
 import { getPublicConfig } from "../api/client";
 import { TURNSTILE_ACTION, type TurnstileApi, loadTurnstile } from "../lib/turnstile";
@@ -70,7 +70,10 @@ export default function Login() {
   return (
     <div class={styles.page}>
       <div class={styles.card}>
-        <h1 class={styles.wordmark}>flyco</h1>
+        <h1 class={styles.wordmark}>
+          <Logomark mark={FLYCO_MARK} class={styles.wordmarkMark} />
+          flyco
+        </h1>
         <p class={styles.lede}>Claude Code and Codex, on a machine you own.</p>
         <button
           type="button"

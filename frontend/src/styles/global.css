@@ -1,3 +1,5 @@
+@import "@fontsource-variable/inter/index.css";
+@import "@fontsource-variable/jetbrains-mono/index.css";
 @import "./tokens.css";
 
 *,
@@ -17,9 +19,13 @@ body {
   color: var(--color-text);
   font-family: var(--font-sans);
   font-size: var(--text-md);
+  font-weight: var(--weight-normal);
   line-height: var(--line-normal);
+  /* Inter's single-storey `a` and open digits: the quieter cut. */
+  font-feature-settings: "cv11", "ss01";
   color-scheme: light dark;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 #app {
@@ -28,14 +34,15 @@ body {
   flex-direction: column;
 }
 
-/* Headings are weight 600 and never larger than --text-2xl (28px). */
+/* Headings are weight 600, set tight, and never larger than --text-2xl. */
 h1,
 h2,
 h3,
 h4 {
   font-weight: var(--weight-semibold);
   line-height: var(--line-tight);
-  letter-spacing: -0.01em;
+  letter-spacing: var(--tracking-tight);
+  text-wrap: balance;
 }
 
 h1 {
@@ -48,6 +55,11 @@ h2 {
 
 h3 {
   font-size: var(--text-lg);
+  letter-spacing: var(--tracking-snug);
+}
+
+p {
+  text-wrap: pretty;
 }
 
 code,
@@ -55,6 +67,7 @@ kbd,
 pre,
 samp {
   font-family: var(--font-mono);
+  font-feature-settings: normal;
 }
 
 a {
@@ -93,6 +106,10 @@ textarea:disabled,
 :focus-visible {
   outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
+}
+
+::selection {
+  background: rgb(27 26 24 / 12%);
 }
 
 .visually-hidden {
