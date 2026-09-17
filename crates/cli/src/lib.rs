@@ -98,6 +98,10 @@ pub struct Failure {
     pub code: Exit,
     /// What goes to stderr.
     pub text: String,
+    /// The wait the control plane named, when the failure is a `429`
+    /// carrying `Retry-After` — how long a caller may choose to sleep
+    /// before asking again.
+    pub retry_after: Option<core::time::Duration>,
 }
 
 impl Failure {
@@ -106,14 +110,26 @@ impl Failure {
         Self {
             code: Exit::Usage,
             text: text.into(),
+            retry_after: None,
         }
     }
 
     /// A refusal by the control plane, carrying its problem document.
     pub fn problem(code: Exit, text: impl Into<String>) -> Self {
+        Self::refused(code, text, None)
+    }
+
+    /// A refusal that may have named a wait: the `Retry-After` a `429`
+    /// carried, when it carried one. `None` is [`Failure::problem`].
+    pub fn refused(
+        code: Exit,
+        text: impl Into<String>,
+        retry_after: Option<core::time::Duration>,
+    ) -> Self {
         Self {
             code,
             text: text.into(),
+            retry_after,
         }
     }
 
@@ -122,6 +138,7 @@ impl Failure {
         Self {
             code: Exit::Transport,
             text: text.into(),
+            retry_after: None,
         }
     }
 }

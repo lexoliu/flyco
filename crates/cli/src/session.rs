@@ -267,14 +267,25 @@ pub async fn events(api: &Api, id: &str, after: u64, follow: bool) -> Outcome<()
         .parse()
         .map_err(|_| Failure::usage(format!("`{id}` is not a session id")))?;
     let mut cursor = after;
+    let mut pages = 0_u32;
     loop {
         let page = crate::follow::events(api, session, cursor).await?;
+        let advanced = page.events.iter().any(|stored| stored.seq > cursor);
         for stored in &page.events {
             out::emit_line(stored)?;
             cursor = stored.seq;
         }
         if !page.more {
             break;
+        }
+        // A `more` page holding nothing past the cursor — and a walk past
+        // the page cap — is a server paging forever, not a longer tail.
+        if !advanced {
+            return Err(crate::follow::paging_stalled());
+        }
+        pages += 1;
+        if pages >= crate::follow::MAX_PAGES {
+            return Err(crate::follow::paging_stalled());
         }
     }
     if !follow {
