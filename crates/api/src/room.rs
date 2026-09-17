@@ -223,17 +223,21 @@ struct PresenceRow {
 
 /// The relay room for one session.
 #[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(transparent)]
 #[skyzen::durable_object]
 pub struct SessionRoom {
-    /// The schema version this room already verified — the one memo a
-    /// field is allowed to hold, since it can only ever trail the
-    /// `schema_meta` row it describes, never lead it. See the module
-    /// docs.
+    /// The schema version this activation already verified — a memo,
+    /// reset with the object on every event, never a fact of its own: it
+    /// can only trail the `schema_meta` row, never lead it. Not part of
+    /// the state blob, which stays the `null` a rolled-back build reads.
+    #[serde(skip)]
     schema: Cache,
 }
 
 impl DurableObject for SessionRoom {
+    /// Every durable fact lives in the object's storage; there is no
+    /// blob to load and save around an event.
+    const PERSIST: bool = false;
+
     fn fetch(&mut self) -> Router {
         Route::new((
             "/internal/daemon-attach".post(attach_daemon),

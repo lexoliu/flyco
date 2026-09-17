@@ -91,18 +91,21 @@ struct EventRow {
 
 /// The per-user event stream.
 #[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(transparent)]
 #[skyzen::durable_object]
 pub struct UserEvents {
-    /// The schema version this object already verified. It is the one
-    /// field the "state lives outside the struct" rule does not cover:
-    /// it remembers a fact about this storage, so it survives eviction
-    /// exactly as long as the tables it describes do — and can only ever
-    /// trail the `schema_meta` row, never lead it.
+    /// The schema version this activation already verified — a memo,
+    /// reset with the object on every event, never a fact of its own: it
+    /// can only trail the `schema_meta` row, never lead it. Not part of
+    /// the state blob, which stays the `null` a rolled-back build reads.
+    #[serde(skip)]
     schema: Cache,
 }
 
 impl DurableObject for UserEvents {
+    /// Every durable fact lives in the object's storage; there is no
+    /// blob to load and save around an event.
+    const PERSIST: bool = false;
+
     fn fetch(&mut self) -> Router {
         Route::new((
             "/internal/publish".post(publish),

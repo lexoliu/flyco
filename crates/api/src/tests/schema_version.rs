@@ -4,9 +4,9 @@
 //! [`SqliteDurableDb`] the other object tests use, wrapped in a backend
 //! that counts every statement naming `schema_meta` — "the meta
 //! statements ran once" is an observation, not an assumption. The
-//! object-level test reloads the object from its own serialized state
-//! between requests the way the runtime does, because that round trip is
-//! what the cache has to survive.
+//! object-level test rebuilds the object from `Default` between requests
+//! the way the runtime does for one that opted out of the state blob,
+//! because a fresh activation's one read is the cost being pinned.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -74,9 +74,18 @@ impl DurableDbBackend for LoggedDb {
     }
 }
 
-/// The meta-table statements one cold `ensure` costs: the table's own
-/// `CREATE`, the version read, and the write that records the version.
-const COLD_COST: usize = 3;
+/// The meta-table statements one cold `ensure` costs: the read that
+/// finds no table, the table's own `CREATE`, the read again, and the
+/// write that records the version.
+const COLD_COST: usize = 4;
+
+/// What a fresh activation costs on an object already at the expected
+/// version: the one read.
+const WARM_COST: usize = 1;
+
+/// What a bumped `expected` costs an activation that already verified the
+/// old version: the read, and the write that records the bump.
+const BUMP_COST: usize = 2;
 
 /// A second `ensure` at a version the cache already covers runs no
 /// statement at all; a bumped `expected` checks and records again.
@@ -106,8 +115,8 @@ async fn a_bumped_version_rechecks_and_records() {
         .expect("the bumped version ran");
     assert_eq!(
         backend.meta_statements(),
-        COLD_COST * 2,
-        "a version past the cached one checks again"
+        COLD_COST + BUMP_COST,
+        "a version past the cached one reads again and records"
     );
     let version: i64 = db
         .query("SELECT version FROM schema_meta WHERE id = 0")
@@ -125,16 +134,13 @@ async fn a_bumped_version_rechecks_and_records() {
     assert_eq!(backend.meta_statements(), logged);
 }
 
-/// Two requests into one object cost one schema check — even when the
-/// object is written back to its state blob and reloaded between them,
-/// which is what the runtime does around every event.
+/// A second activation of an object costs one read, not a check: the
+/// object is rebuilt from `Default` around every event, and what it
+/// remembers within one event is the memo the poll steps share.
 #[skyzen::test]
-async fn an_object_checks_its_schema_once() {
+async fn a_second_activation_costs_one_read() {
     let backend = LoggedDb::open().await;
-    // A state blob written before the cache existed is `null` — the unit
-    // struct's shape — and must still load.
-    let mut object: UserEvents =
-        serde_json::from_slice(b"null").expect("a pre-cache state blob loads");
+    let mut object = UserEvents::default();
     let user = UserId::generate();
     let session = SessionId::generate();
 
@@ -179,10 +185,9 @@ async fn an_object_checks_its_schema_once() {
     assert_eq!(response.status().as_u16(), 204, "the publish landed");
     assert_eq!(backend.meta_statements(), COLD_COST);
 
-    // What the runtime does around every event: the object's state is
-    // written back, and the next event rebuilds the object from it.
-    let blob = serde_json::to_vec(&object).expect("the object serializes");
-    object = serde_json::from_slice(&blob).expect("the object reloads");
+    // What the runtime does around every event of an object that keeps
+    // its state in storage: the next event starts from `Default`.
+    object = UserEvents::default();
 
     let response = object
         .fetch()
@@ -192,7 +197,20 @@ async fn an_object_checks_its_schema_once() {
     assert_eq!(response.status().as_u16(), 204, "the publish landed");
     assert_eq!(
         backend.meta_statements(),
-        COLD_COST,
-        "the reloaded object still knew its schema"
+        COLD_COST + WARM_COST,
+        "a fresh activation reads the version once and creates nothing"
+    );
+
+    // A second call within the same activation answers from the memo.
+    let response = object
+        .fetch()
+        .go(publish())
+        .await
+        .expect("the object answered");
+    assert_eq!(response.status().as_u16(), 204, "the publish landed");
+    assert_eq!(
+        backend.meta_statements(),
+        COLD_COST + WARM_COST,
+        "the activation remembered its schema"
     );
 }
