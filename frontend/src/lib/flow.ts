@@ -32,7 +32,7 @@ export type Stage = "meet" | "agent" | "compute";
 export type AgentRoute =
   /**
    * The vendor's own sign-in: Anthropic's code, OpenAI's device flow, or
-   * Devin's pasted redirect.
+   * Devin's code.
    */
   | "sign-in"
   /** The one-field page behind *Use an API key instead*. */

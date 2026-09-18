@@ -1,14 +1,15 @@
 //! The Devin side of linking a Devin account.
 //!
 //! Devin runs a PKCE-only public OAuth client — the flow `devin auth
-//! login` runs — whose redirect URI allowlist admits only localhost-shaped
+//! login` runs. Its redirect URI allowlist admits only localhost-shaped
 //! addresses, because the CLI binds a port there and reads the code off
-//! the redirect. Flyco cannot listen on the user's machine, so the
-//! browser's own error page is the transport: after approval Devin
-//! redirects to a dead `127.0.0.1` address, the code sits in the address
-//! bar, and the user pastes the URL back (see [`crate::devin_oauth`]).
-//! The paste-a-key route stays beside it for a token minted in Devin's
-//! settings.
+//! the redirect, and nothing on a flyco user's machine can listen. What
+//! flyco runs instead is the CLI's own port-free variant, the one
+//! `devin auth login --force-manual-token-flow` runs: the authorize URL
+//! carries no `redirect_uri` and is marked `cli_pkce_marker=1`, and after
+//! sign-in Devin's page shows the authorization code itself, which the
+//! user copies into flyco (see [`crate::devin_oauth`]). The paste-a-key
+//! route stays beside it for a token minted in Devin's settings.
 //!
 //! The two routes mint different strings — a pasted token is already a
 //! `devi…` key, while the exchange answers a bare session JWT that opens
@@ -25,8 +26,6 @@
 //! [`HttpTransport`](flyco_provider::HttpTransport), which is zenwave in
 //! production and a table of recorded exchanges under test — the same seam
 //! [`crate::anthropic`] pins its token exchanges on.
-
-use std::borrow::Cow;
 
 use core::future::Future;
 
@@ -52,15 +51,6 @@ const TOKEN_URL: &str = "https://api.devin.ai/auth/cli/token";
 /// `devin-session-token$<jwt>`, so the exchange mints the wrapped form
 /// directly.
 const SESSION_TOKEN_PREFIX: &str = "devin-session-token$";
-
-/// The redirect URI the grant is bound to.
-///
-/// Devin's allowlist accepts only localhost-shaped URIs — the CLI binds a
-/// port there and reads the code off the redirect. Nothing listens here
-/// for flyco: the redirect is meant to fail, and the browser's own
-/// cannot-connect page keeps the `?code=…&state=…` query in the address
-/// bar, which is what the user copies back.
-pub const REDIRECT_URI: &str = "http://127.0.0.1:59653/callback";
 
 /// The principal a credential authenticates as.
 ///
@@ -155,6 +145,12 @@ fn identity(response: &HttpResponse) -> Result<DevinSelf, DevinError> {
 
 /// The URL the browser opens to approve the grant.
 ///
+/// The parameters, and their order, are the ones the Devin CLI sends for
+/// its manual flow: no `redirect_uri`, and `cli_pkce_marker=1` last,
+/// which is what makes Devin's page show the code instead of redirecting.
+/// `state` never comes back — the page shows the bare code — so it is
+/// the nonce the CLI also sends, nothing flyco reads later.
+///
 /// # Panics
 ///
 /// Panics if [`AUTHORIZE_URL`] is not an absolute URL, which would mean
@@ -163,105 +159,24 @@ fn identity(response: &HttpResponse) -> Result<DevinSelf, DevinError> {
 pub fn authorize_url(challenge: &str, state: &str) -> Url {
     let mut url = Url::parse(AUTHORIZE_URL).expect("the Devin authorize URL is absolute");
     url.query_pairs_mut()
-        .append_pair("redirect_uri", REDIRECT_URI)
         .append_pair("state", state)
         .append_pair("prompt", "select_account")
         .append_pair("code_challenge", challenge)
-        .append_pair("code_challenge_method", "S256");
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("cli_pkce_marker", "1");
     url
 }
 
-/// What the redirect Devin sends carries, read out of whatever the user
-/// pasted.
+/// The code out of what the user pasted, or `None` when the field held
+/// nothing.
 ///
-/// The expected paste is the whole address of the page that could not
-/// load — `http://127.0.0.1:59653/callback?code=…&state=…` — but a user
-/// who copied only the `code` parameter's value has still supplied
-/// everything the exchange needs, so the bare code stands alone.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PastedCode<'a> {
-    /// `code=…`, with the `state` beside it when the paste carried one.
-    Code {
-        /// The authorization code itself.
-        code: Cow<'a, str>,
-        /// The `state` Devin echoed, when present.
-        state: Option<Cow<'a, str>>,
-    },
-    /// `error=…` — the consent was declined, or Devin refused the grant
-    /// before any code was issued.
-    Refused {
-        /// Devin's machine-readable error code.
-        error: Cow<'a, str>,
-        /// Devin's human-readable explanation, when it gave one.
-        description: Option<Cow<'a, str>>,
-    },
-    /// The paste held neither a code nor a refusal.
-    Empty,
-}
-
-/// Reads the code and state out of a pasted redirect URL or a bare code.
-///
-/// Anything with a `?` is read as the redirect URL it looks like; a paste
-/// without one is either a bare code or the query fragment the user cut
-/// out of the address bar (`code=…&state=…`), told apart by the `code=`
-/// and `error=` names. Values are borrowed unless percent-decoding forces
-/// an allocation.
+/// Devin's page shows the bare code, so the paste is the code with
+/// whatever whitespace the copy picked up around it; nothing else is read
+/// into it, and Devin is the one to refuse a code that is not one.
 #[must_use]
-pub fn split_pasted_code(pasted: &str) -> PastedCode<'_> {
+pub fn pasted_code(pasted: &str) -> Option<&str> {
     let trimmed = pasted.trim();
-    if trimmed.is_empty() {
-        return PastedCode::Empty;
-    }
-
-    // A fragment is never part of the query — a user who copies the whole
-    // address should not lose the code to a trailing `#`.
-    let query = trimmed
-        .split_once('?')
-        .map_or(trimmed, |(_, query)| query)
-        .split('#')
-        .next()
-        .unwrap_or_default();
-    let is_query =
-        trimmed.contains('?') || query.starts_with("code=") || query.starts_with("error=");
-    if !is_query {
-        // A URL with no query — the dead redirect's bare address — carries
-        // no code; anything else stands alone as the bare code.
-        return if trimmed.contains("://") {
-            PastedCode::Empty
-        } else {
-            PastedCode::Code {
-                code: Cow::Borrowed(trimmed),
-                state: None,
-            }
-        };
-    }
-
-    let mut code = None;
-    let mut state = None;
-    let mut error = None;
-    let mut description = None;
-    for (name, value) in url::form_urlencoded::parse(query.as_bytes()) {
-        match name.as_ref() {
-            "code" => code = Some(value),
-            "state" => state = Some(value),
-            "error" => error = Some(value),
-            "error_description" => description = Some(value),
-            _ => {}
-        }
-    }
-    if let Some(error) = error {
-        return PastedCode::Refused {
-            error,
-            description: description.filter(|d| !d.is_empty()),
-        };
-    }
-    match code {
-        Some(code) if !code.is_empty() => PastedCode::Code {
-            code,
-            state: state.filter(|s| !s.is_empty()),
-        },
-        _ => PastedCode::Empty,
-    }
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 /// What the token endpoint answers a redeemed code with.
@@ -374,8 +289,8 @@ pub trait DevinApi: Send + Sync + Clone + 'static {
         key: &str,
     ) -> impl Future<Output = Result<DevinSelf, DevinError>> + Send;
 
-    /// Redeems the pasted authorization code for the
-    /// `devin-session-token$…` session credential.
+    /// Redeems the authorization code the user copied off Devin's page
+    /// for the `devin-session-token$…` session credential.
     ///
     /// # Errors
     ///
@@ -482,14 +397,12 @@ impl DevinApi for DevinClient {
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-
     use flyco_provider::http::HttpResponse;
     use flyco_provider::testing::RecordedTransport;
 
     use super::{
-        DevinError, DevinSelf, PastedCode, REDIRECT_URI, authorize_url, redeem_grant_over,
-        self_identity_over, self_request, split_pasted_code,
+        DevinError, DevinSelf, authorize_url, pasted_code, redeem_grant_over, self_identity_over,
+        self_request,
     };
     use crate::crypto::pkce;
 
@@ -503,80 +416,39 @@ mod tests {
     }
 
     #[test]
-    fn the_authorize_url_is_the_flow_the_devin_cli_runs() {
+    fn the_authorize_url_is_the_manual_flow_the_devin_cli_runs() {
         let pkce = pkce().expect("mint a verifier");
         let url = authorize_url(&pkce.challenge, "the-state");
 
         assert_eq!(url.host_str(), Some("app.devin.ai"));
         assert_eq!(url.path(), "/auth/cli/continue");
-        assert_eq!(query(&url, "redirect_uri"), REDIRECT_URI);
+        // What `devin auth login --force-manual-token-flow` sends, in its
+        // order: the marker is what makes the page show the code, and a
+        // redirect URI would send the browser to a port nothing binds.
+        assert_eq!(
+            url.query_pairs()
+                .map(|(name, _)| name.into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "state",
+                "prompt",
+                "code_challenge",
+                "code_challenge_method",
+                "cli_pkce_marker"
+            ]
+        );
         assert_eq!(query(&url, "state"), "the-state");
         assert_eq!(query(&url, "prompt"), "select_account");
         assert_eq!(query(&url, "code_challenge"), pkce.challenge);
         assert_eq!(query(&url, "code_challenge_method"), "S256");
+        assert_eq!(query(&url, "cli_pkce_marker"), "1");
     }
 
     #[test]
-    fn a_paste_is_read_as_code_state_or_refusal() {
-        let url = format!("{REDIRECT_URI}?code=the-code&state=the-state");
-        assert_eq!(
-            split_pasted_code(&url),
-            PastedCode::Code {
-                code: Cow::Borrowed("the-code"),
-                state: Some(Cow::Borrowed("the-state")),
-            }
-        );
-        // The query alone, cut out of the address bar.
-        assert_eq!(
-            split_pasted_code("code=the-code&state=the-state"),
-            PastedCode::Code {
-                code: Cow::Borrowed("the-code"),
-                state: Some(Cow::Borrowed("the-state")),
-            }
-        );
-        // The bare code, for a user who copied only the parameter's value.
-        assert_eq!(
-            split_pasted_code("  the-code  "),
-            PastedCode::Code {
-                code: Cow::Borrowed("the-code"),
-                state: None,
-            }
-        );
-        // A declined consent arrives as `error`, not `code`.
-        let refused = format!("{REDIRECT_URI}?error=access_denied&error_description=nope");
-        assert_eq!(
-            split_pasted_code(&refused),
-            PastedCode::Refused {
-                error: Cow::Borrowed("access_denied"),
-                description: Some(Cow::Borrowed("nope")),
-            }
-        );
-        // The dead redirect's bare address carries nothing to redeem.
-        assert_eq!(split_pasted_code(REDIRECT_URI), PastedCode::Empty);
-        assert_eq!(split_pasted_code(""), PastedCode::Empty);
-        assert_eq!(split_pasted_code("   "), PastedCode::Empty);
-    }
-
-    #[test]
-    fn a_paste_is_decoded_and_its_fragment_dropped() {
-        // A `#` trailing a copied address is a fragment, never part of the
-        // last parameter's value.
-        let url = format!("{REDIRECT_URI}?code=the-code&state=the-state#x");
-        assert_eq!(
-            split_pasted_code(&url),
-            PastedCode::Code {
-                code: Cow::Borrowed("the-code"),
-                state: Some(Cow::Borrowed("the-state")),
-            }
-        );
-        // Percent-encoded values decode.
-        assert_eq!(
-            split_pasted_code("code=the%20code&state=a%2Bb"),
-            PastedCode::Code {
-                code: Cow::Owned("the code".to_owned()),
-                state: Some(Cow::Owned("a+b".to_owned())),
-            }
-        );
+    fn a_paste_is_the_code_with_its_whitespace_dropped() {
+        assert_eq!(pasted_code("  the-code\n"), Some("the-code"));
+        assert_eq!(pasted_code(""), None);
+        assert_eq!(pasted_code("   "), None);
     }
 
     #[skyzen::test]

@@ -322,7 +322,7 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
       jsonResponse({
         attempt_id: "77777777-6666-4555-8444-333333333333",
         authorize_url:
-          "https://app.devin.ai/auth/cli/continue?redirect_uri=http%3A%2F%2F127.0.0.1%3A59653%2Fcallback&state=the-state",
+          "https://app.devin.ai/auth/cli/continue?state=the-state&prompt=select_account&code_challenge=the-challenge&code_challenge_method=S256&cli_pkce_marker=1",
       }),
     );
   }

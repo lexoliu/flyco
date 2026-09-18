@@ -3,16 +3,16 @@
  *
  * Reached from the agents list, or alone when a settings card names Devin.
  * Two pages for the same reason Claude's are two: flyco opens the page it
- * was given, and a code travels between the two screens. Devin's travels
- * back on a redirect that cannot land — its OAuth client admits only
- * localhost addresses, so the code waits in the address bar of a page the
- * browser cannot connect to, which is what the paste field takes.
+ * was given, and a code travels between the two screens. Devin's OAuth
+ * client admits only localhost redirect addresses, so flyco runs the
+ * CLI's port-free flow instead, and Devin's page shows the code after
+ * sign-in, which is what the paste field takes.
  */
 import { Show, createSignal } from "solid-js";
 import ProblemNotice from "../../ProblemNotice";
 import { useReadiness } from "../../Readiness";
 import { completeDevinOauth, startDevinOauth } from "../../../api/client";
-import { parseDevinPaste } from "../../../lib/devinOauth";
+import { pastedDevinCode } from "../../../lib/devinOauth";
 import type { PageComponent, Primary } from "../page";
 import { QuietLink, openInNewTab } from "./shared";
 import styles from "./pages.module.css";
@@ -73,7 +73,7 @@ export const DevinPaste: PageComponent<{ id: "devin-paste" }> = (props) => {
   const [pasted, setPasted] = createSignal("");
   const [refusal, setRefusal] = createSignal<unknown>(null);
 
-  const read = () => parseDevinPaste(pasted());
+  const code = () => pastedDevinCode(pasted());
 
   /**
    * A new sign-in, in place: a code that was refused, or spent by an
@@ -90,23 +90,21 @@ export const DevinPaste: PageComponent<{ id: "devin-paste" }> = (props) => {
   }
 
   const primary = (): Primary => {
-    const paste = read();
+    const parsed = code();
     return {
       label: "Link Devin",
       busy: "Linking…",
       disabled:
-        paste.kind === "empty"
-          ? "Paste the address Devin left in the address bar to continue"
-          : null,
+        parsed === null ? "Paste the code Devin showed you to continue" : null,
       onClick: async () => {
-        if (paste.kind === "empty") {
+        if (parsed === null) {
           return;
         }
         setRefusal(null);
         try {
           const account = await completeDevinOauth({
             attempt_id: attempt().attempt_id,
-            code: pasted().trim(),
+            code: parsed,
           });
           await readiness.refresh();
           props.linked("devin", account);
@@ -120,31 +118,23 @@ export const DevinPaste: PageComponent<{ id: "devin-paste" }> = (props) => {
   };
 
   return {
-    title: "Paste the address Devin sent you to",
+    title: "Paste the code Devin shows you",
     body: (
       <>
         <p class={styles.lede}>
-          After you approve, the page cannot load — it ends on a
-          <code> 127.0.0.1 </code>
-          address nothing is listening on, on purpose. Copy everything in
-          the address bar and paste it here; the code is in it.
+          After you sign in, Devin shows a code. Copy it and paste it here.
         </p>
         <div class={styles.field}>
-          <label for="devin-oauth-code">Address or code from Devin</label>
+          <label for="devin-oauth-code">Code from Devin</label>
           <input
             id="devin-oauth-code"
             class={`${styles.input} ${styles.mono}`}
             value={pasted()}
             onInput={(event) => setPasted(event.currentTarget.value)}
-            placeholder="http://127.0.0.1:59653/callback?code=…"
             autocomplete="off"
             spellcheck={false}
             autofocus
           />
-          <p class={styles.hint}>
-            It looks like <code>http://127.0.0.1:59653/callback?code=…</code> —
-            the whole address, or just the code, both work.
-          </p>
           <Show when={refusal()}>
             <ProblemNotice error={refusal()} />
           </Show>
