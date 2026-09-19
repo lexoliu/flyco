@@ -54,10 +54,14 @@
 //!
 //! # Why the state lives outside the struct
 //!
-//! [`SessionRoom`] is empty. The room's state is its tables, all of which
-//! survive the object being rebuilt around every event. A field would be
-//! a second copy of the same facts, re-serialized on every call, and the
-//! first one to drift.
+//! [`SessionRoom`] holds exactly one field, and it is not state: the
+//! schema version this object's storage was already verified at, a memo
+//! of a fact the `schema_meta` table owns. Everything else about the room
+//! is its tables, all of which survive the object being rebuilt around
+//! every event. A field holding any other fact would be a second copy of
+//! it, re-serialized on every call, and the first one to drift — the memo
+//! cannot drift, only trail: a stale answer costs one storage read and is
+//! then true again.
 
 use flyco_core::wire::{DaemonAttach, DaemonFrames, EventPage, StoredEvent};
 use flyco_core::workdir::WorkdirReply;
@@ -72,7 +76,7 @@ use skyzen::responder::Sse;
 use skyzen::responder::sse::Event;
 use skyzen::routing::{CreateRouteNode, Route, Router};
 use skyzen::sql;
-use skyzen::utils::Json;
+use skyzen::utils::{Json, State};
 use skyzen_services::durable::{DurableDb, DurableKv};
 
 use crate::ApiError;
@@ -80,6 +84,7 @@ use crate::clock::now_unix;
 use crate::extract::Headers;
 use crate::problem::Outcome;
 use crate::respond::NoContent;
+use crate::schema_version::Cache;
 
 /// Names the session a Worker→room call belongs to.
 pub const HEADER_SESSION: &str = "x-flyco-session";
@@ -219,9 +224,20 @@ struct PresenceRow {
 /// The relay room for one session.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[skyzen::durable_object]
-pub struct SessionRoom;
+pub struct SessionRoom {
+    /// The schema version this activation already verified — a memo,
+    /// reset with the object on every event, never a fact of its own: it
+    /// can only trail the `schema_meta` row, never lead it. Not part of
+    /// the state blob, which stays the `null` a rolled-back build reads.
+    #[serde(skip)]
+    schema: Cache,
+}
 
 impl DurableObject for SessionRoom {
+    /// Every durable fact lives in the object's storage; there is no
+    /// blob to load and save around an event.
+    const PERSIST: bool = false;
+
     fn fetch(&mut self) -> Router {
         Route::new((
             "/internal/daemon-attach".post(attach_daemon),
@@ -238,6 +254,7 @@ impl DurableObject for SessionRoom {
             "/internal/desktop/takeover".post(desktop_takeover),
             "/internal/desktop/input".post(desktop_input),
         ))
+        .with(State(self.schema.clone()))
         .build()
     }
 }
@@ -255,15 +272,17 @@ impl DurableObject for SessionRoom {
 async fn attach_daemon(
     headers: Headers,
     Json(attach): Json<DaemonAttach>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<Json<AttachResponse>> {
-    attach_inner(&headers, &attach, &db).await.into()
+    attach_inner(&headers, &attach, &db, &cache).await.into()
 }
 
 async fn attach_inner(
     headers: &Headers,
     attach: &DaemonAttach,
     db: &DurableDb,
+    cache: &Cache,
 ) -> Result<Json<AttachResponse>, ApiError> {
     internal(headers)?;
     if attach.protocol_version != flyco_core::WIRE_PROTOCOL_VERSION {
@@ -272,7 +291,7 @@ async fn attach_inner(
             control: flyco_core::WIRE_PROTOCOL_VERSION,
         });
     }
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
 
@@ -319,18 +338,22 @@ async fn attach_inner(
 async fn stream_commands(
     headers: Headers,
     Query(cursor): Query<CommandCursor>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<Sse> {
-    open_command_stream(&headers, cursor.epoch, db).await.into()
+    open_command_stream(&headers, cursor.epoch, db, &cache)
+        .await
+        .into()
 }
 
 async fn open_command_stream(
     headers: &Headers,
     epoch: u64,
     db: DurableDb,
+    cache: &Cache,
 ) -> Result<Sse, ApiError> {
     internal(headers)?;
-    ensure_schema(&db)
+    ensure_schema(&db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
     let presence = read_presence(&db)
@@ -350,6 +373,7 @@ async fn open_command_stream(
 
     let feed = CommandFeed {
         db,
+        cache: cache.clone(),
         epoch,
         cursor: 0,
         sent_resize: false,
@@ -446,7 +470,7 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
     let mut emitted = Vec::new();
     if feed.desktop_fresh {
         feed.desktop_fresh = false;
-        emitted.extend(fresh_desktop_announce(db, now).await);
+        emitted.extend(fresh_desktop_announce(db, &feed.cache, now).await);
     }
 
     // Reconcile the desktop leases against what the daemon was last
@@ -455,10 +479,14 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
     // only way to say so — which is also what carries the correction to
     // a fresh attach's first poll. State announcements go ahead of the
     // queued rows so a daemon learns who owns the screen before the work.
-    emitted.extend(reconcile_desktop(db, now).await.unwrap_or_else(|error| {
-        tracing::warn!(%error, "a command stream could not reconcile the desktop audience");
-        Vec::new()
-    }));
+    emitted.extend(
+        reconcile_desktop(db, &feed.cache, now)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "a command stream could not reconcile the desktop audience");
+                Vec::new()
+            }),
+    );
 
     let cursor = feed.cursor;
     let rows: Vec<CommandRow> = sql!(
@@ -500,7 +528,11 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
 /// What a *fresh* attach is owed it does not cover — `desktop_state`
 /// says what the previous daemon heard, which is replayed by the feed's
 /// `desktop_fresh` emit instead, unconditionally.
-async fn reconcile_desktop(db: &DurableDb, now: u64) -> Result<Vec<Event>, DurableObjectError> {
+async fn reconcile_desktop(
+    db: &DurableDb,
+    cache: &Cache,
+    now: u64,
+) -> Result<Vec<Event>, DurableObjectError> {
     let (watching, takeover) = desktop_aggregate(db, now).await?;
 
     let mut events = Vec::new();
@@ -517,7 +549,12 @@ async fn reconcile_desktop(db: &DurableDb, now: u64) -> Result<Vec<Event>, Durab
         ));
         // The seam between drivers is transcript whichever way it moved —
         // an expiry release is recorded exactly as an explicit one is.
-        append(db, &ClientEvent::DesktopTakeover { active: takeover }).await?;
+        append(
+            db,
+            cache,
+            &ClientEvent::DesktopTakeover { active: takeover },
+        )
+        .await?;
     }
     Ok(events)
 }
@@ -538,7 +575,7 @@ async fn reconcile_desktop(db: &DurableDb, now: u64) -> Result<Vec<Event>, Durab
 /// is still recorded once, and the poll's own reconcile does not
 /// announce the same state a second time. Rows still queued from the
 /// daemon this attach replaces are stale in its hands and swept.
-async fn fresh_desktop_announce(db: &DurableDb, now: u64) -> Vec<Event> {
+async fn fresh_desktop_announce(db: &DurableDb, cache: &Cache, now: u64) -> Vec<Event> {
     let mut emitted = Vec::new();
     let (watching, takeover) = match desktop_aggregate(db, now).await {
         Ok(aggregate) => aggregate,
@@ -561,7 +598,7 @@ async fn fresh_desktop_announce(db: &DurableDb, now: u64) -> Vec<Event> {
             }
         }
     }
-    if let Err(error) = note_desktop_state(db, watching, takeover).await {
+    if let Err(error) = note_desktop_state(db, cache, watching, takeover).await {
         tracing::warn!(%error, "a command stream could not note the desktop state");
     }
     if let Err(error) = sweep_stale_desktop_commands(db).await {
@@ -578,12 +615,18 @@ async fn fresh_desktop_announce(db: &DurableDb, now: u64) -> Vec<Event> {
 /// reconcile claim.
 async fn note_desktop_state(
     db: &DurableDb,
+    cache: &Cache,
     watching: bool,
     takeover: bool,
 ) -> Result<(), DurableObjectError> {
     note_audience(db, watching).await?;
     if note_takeover(db, takeover).await? {
-        append(db, &ClientEvent::DesktopTakeover { active: takeover }).await?;
+        append(
+            db,
+            cache,
+            &ClientEvent::DesktopTakeover { active: takeover },
+        )
+        .await?;
     }
     Ok(())
 }
@@ -708,6 +751,9 @@ fn command_event(seq: Option<u64>, command: &serde_json::Value) -> Event {
 /// The command stream's working state.
 struct CommandFeed {
     db: DurableDb,
+    /// The object's remembered schema version — the poll's `append`
+    /// reaches it through `reconcile_desktop`/`note_desktop_state`.
+    cache: Cache,
     /// The attach this stream serves; a newer one ends it.
     epoch: u64,
     /// How far down `daemon_commands` this stream has handed over.
@@ -734,10 +780,11 @@ struct CommandFeed {
 async fn accept_frames(
     headers: Headers,
     Json(batch): Json<DaemonFrames>,
+    State(cache): State<Cache>,
     db: DurableDb,
     kv: DurableKv,
 ) -> Outcome<Json<Emitted>> {
-    accept_batch(&headers, batch, &db, &kv).await.into()
+    accept_batch(&headers, batch, &db, &kv, &cache).await.into()
 }
 
 async fn accept_batch(
@@ -745,9 +792,10 @@ async fn accept_batch(
     batch: DaemonFrames,
     db: &DurableDb,
     kv: &DurableKv,
+    cache: &Cache,
 ) -> Result<Json<Emitted>, ApiError> {
     internal(headers)?;
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
     let Some(presence) = read_presence(db)
@@ -788,7 +836,7 @@ async fn accept_batch(
     let fresh = batch.frames.get(skip..).unwrap_or(&[]);
     let mut emitted = Vec::with_capacity(fresh.len());
     for frame in fresh {
-        emitted.extend(apply_daemon_frame(frame, db, kv).await?);
+        emitted.extend(apply_daemon_frame(frame, db, kv, cache).await?);
     }
     if !batch.frames.is_empty() {
         let new_through = batch
@@ -837,11 +885,12 @@ async fn apply_daemon_frame(
     frame: &DaemonToControl,
     db: &DurableDb,
     kv: &DurableKv,
+    cache: &Cache,
 ) -> Result<Vec<EmittedEvent>, ApiError> {
     // Addressed rather than fanned out: one browser is waiting on the
     // HTTP request this answers, and nobody else has any use for it.
     if let DaemonToControl::WorkdirReply { id, reply } = frame {
-        store_workdir_reply(db, *id, reply)
+        store_workdir_reply(db, cache, *id, reply)
             .await
             .map_err(|error| room_failed(&error))?;
         return Ok(Vec::new());
@@ -857,7 +906,7 @@ async fn apply_daemon_frame(
         return Ok(Vec::new());
     }
 
-    let seq = record(frame, db, kv)
+    let seq = record(frame, db, kv, cache)
         .await
         .map_err(|error| room_failed(&error))?;
     let Some(event) = ClientEvent::from_daemon(frame.clone()) else {
@@ -881,18 +930,22 @@ async fn apply_daemon_frame(
 async fn run_command(
     headers: Headers,
     Json(command): Json<ControlToDaemon>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<Json<Emitted>> {
-    dispatch_command(&headers, &command, &db).await.into()
+    dispatch_command(&headers, &command, &db, &cache)
+        .await
+        .into()
 }
 
 async fn dispatch_command(
     headers: &Headers,
     command: &ControlToDaemon,
     db: &DurableDb,
+    cache: &Cache,
 ) -> Result<Json<Emitted>, ApiError> {
     internal(headers)?;
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
 
@@ -908,10 +961,10 @@ async fn dispatch_command(
 
     match command {
         ControlToDaemon::UserMessage { text, origin } => {
-            deliver_user_message(db, live, text, *origin, &mut events).await?;
+            deliver_user_message(db, cache, live, text, *origin, &mut events).await?;
         }
         ControlToDaemon::ShellCommand { command } => {
-            deliver_shell_command(db, live, gone_announced, command, &mut events).await?;
+            deliver_shell_command(db, cache, live, gone_announced, command, &mut events).await?;
         }
         // A pane size is a state, not an instant: it is kept for whichever
         // daemon attaches next, and one that is here now is told at once.
@@ -919,7 +972,7 @@ async fn dispatch_command(
         // the pane was fitted while the machine was still being built,
         // which is the ordinary case.
         ControlToDaemon::TerminalResize { cols, rows } => {
-            remember_terminal_size(db, *cols, *rows)
+            remember_terminal_size(db, cache, *cols, *rows)
                 .await
                 .map_err(|error| room_failed(&error))?;
             if live {
@@ -964,7 +1017,7 @@ async fn dispatch_command(
                     });
                 }
             }
-            events.extend(echo_of(db, command).await?);
+            events.extend(echo_of(db, cache, command).await?);
         }
     }
     Ok(Json(Emitted { events }))
@@ -1056,6 +1109,7 @@ async fn queue_command(
 /// to know it was thrown away.
 async fn deliver_user_message(
     db: &DurableDb,
+    cache: &Cache,
     live: bool,
     text: &str,
     origin: MessageOrigin,
@@ -1063,6 +1117,7 @@ async fn deliver_user_message(
 ) -> Result<(), ApiError> {
     let seq = append(
         db,
+        cache,
         &ClientEvent::UserMessage {
             text: text.to_owned(),
             origin,
@@ -1116,6 +1171,7 @@ async fn deliver_user_message(
 /// instead of silence.
 async fn deliver_shell_command(
     db: &DurableDb,
+    cache: &Cache,
     live: bool,
     gone_announced: bool,
     command: &str,
@@ -1126,7 +1182,7 @@ async fn deliver_shell_command(
         run,
         command: command.to_owned(),
     };
-    let seq = append(db, &asked)
+    let seq = append(db, cache, &asked)
         .await
         .map_err(|error| room_failed(&error))?;
     events.push(EmittedEvent {
@@ -1159,7 +1215,7 @@ async fn deliver_shell_command(
         outcome: flyco_core::ShellOutcome::Offline,
         truncated: false,
     };
-    let seq = append(db, &offline)
+    let seq = append(db, cache, &offline)
         .await
         .map_err(|error| room_failed(&error))?;
     events.push(EmittedEvent {
@@ -1175,7 +1231,11 @@ async fn deliver_shell_command(
 /// the command or the room queued it: the change is already recorded, so
 /// a browser watching a session between machines still sees the line —
 /// the model is what the next machine comes up on.
-async fn echo_of(db: &DurableDb, command: &ControlToDaemon) -> Result<Vec<EmittedEvent>, ApiError> {
+async fn echo_of(
+    db: &DurableDb,
+    cache: &Cache,
+    command: &ControlToDaemon,
+) -> Result<Vec<EmittedEvent>, ApiError> {
     let (event, recorded) = match command {
         ControlToDaemon::ApprovalDecision { id, decision, .. } => (
             ClientEvent::ApprovalDecided {
@@ -1213,7 +1273,7 @@ async fn echo_of(db: &DurableDb, command: &ControlToDaemon) -> Result<Vec<Emitte
     // a second answer free to disagree with the first.
     let seq = if recorded {
         Some(
-            append(db, &event)
+            append(db, cache, &event)
                 .await
                 .map_err(|error| room_failed(&error))?,
         )
@@ -1235,113 +1295,77 @@ async fn record(
     frame: &DaemonToControl,
     db: &DurableDb,
     kv: &DurableKv,
+    cache: &Cache,
 ) -> Result<Option<u64>, DurableObjectError> {
-    match frame {
-        DaemonToControl::Harness { event } => append(
-            db,
-            &ClientEvent::Harness {
-                event: event.clone(),
-            },
-        )
-        .await
-        .map(Some),
+    let event = match frame {
+        DaemonToControl::Harness { event } => ClientEvent::Harness {
+            event: event.clone(),
+        },
         DaemonToControl::Started { harness_session_id } => {
-            put_latest(kv, KEY_HARNESS_SESSION, harness_session_id)
+            return put_latest(kv, KEY_HARNESS_SESSION, harness_session_id)
                 .await
-                .map(|()| None)
+                .map(|()| None);
         }
         DaemonToControl::Capabilities { capabilities } => {
-            put_latest(kv, KEY_CAPABILITIES, capabilities)
+            return put_latest(kv, KEY_CAPABILITIES, capabilities)
                 .await
-                .map(|()| None)
+                .map(|()| None);
         }
         // Appended rather than kept in KV beside the capability set, and
         // for the reason the model list is appended too: the `/` palette is
         // built from the room's replayed stream, so a browser that opens
         // the session long after the daemon reported its commands has to
         // find them there or open on flyco's own three.
-        DaemonToControl::Commands { commands } => append(
-            db,
-            &ClientEvent::Commands {
-                commands: commands.clone(),
-            },
-        )
-        .await
-        .map(Some),
+        DaemonToControl::Commands { commands } => ClientEvent::Commands {
+            commands: commands.clone(),
+        },
         // Both halves of a `!` command's answer are appended: the command
         // was recorded when it arrived, and a transcript row that replayed
         // as a command with no output and no exit status would be worse
         // than not replaying it at all. The web terminal's output is live
         // only for the opposite reason — it has no row to belong to.
-        DaemonToControl::ShellOutput { run, stream, data } => append(
-            db,
-            &ClientEvent::ShellOutput {
-                run: *run,
-                stream: *stream,
-                data: data.clone(),
-            },
-        )
-        .await
-        .map(Some),
+        DaemonToControl::ShellOutput { run, stream, data } => ClientEvent::ShellOutput {
+            run: *run,
+            stream: *stream,
+            data: data.clone(),
+        },
         DaemonToControl::ShellExited {
             run,
             outcome,
             truncated,
-        } => append(
-            db,
-            &ClientEvent::ShellExited {
-                run: *run,
-                outcome: outcome.clone(),
-                truncated: *truncated,
-            },
-        )
-        .await
-        .map(Some),
-        DaemonToControl::ProvisioningStage { stage, at_unix } => append(
-            db,
-            &ClientEvent::ProvisioningStage {
-                stage: *stage,
-                at_unix: *at_unix,
-            },
-        )
-        .await
-        .map(Some),
-        DaemonToControl::DesktopState { status, detail } => append(
-            db,
-            &ClientEvent::DesktopState {
-                status: *status,
-                detail: detail.clone(),
-            },
-        )
-        .await
-        .map(Some),
-        DaemonToControl::DesktopActive => append(db, &ClientEvent::DesktopActive).await.map(Some),
+        } => ClientEvent::ShellExited {
+            run: *run,
+            outcome: outcome.clone(),
+            truncated: *truncated,
+        },
+        DaemonToControl::ProvisioningStage { stage, at_unix } => ClientEvent::ProvisioningStage {
+            stage: *stage,
+            at_unix: *at_unix,
+        },
+        DaemonToControl::DesktopState { status, detail } => ClientEvent::DesktopState {
+            status: *status,
+            detail: detail.clone(),
+        },
+        DaemonToControl::DesktopActive => ClientEvent::DesktopActive,
         // Appended rather than only forwarded: a reclamation is something
         // that *happened* to the session, and the browser most likely to
         // want it is one opened after the machine was already gone.
-        DaemonToControl::SpotNotice { seconds_remaining } => append(
-            db,
-            &ClientEvent::SpotNotice {
-                seconds_remaining: *seconds_remaining,
-            },
-        )
-        .await
-        .map(Some),
-        DaemonToControl::RepoDirty { dir, summary } => note_checkout(kv, dir.as_ref(), summary)
-            .await
-            .map(|()| None),
-        DaemonToControl::RepoAdded { slug, branch, dir } => append(
-            db,
-            &ClientEvent::RepoAdded {
-                slug: slug.clone(),
-                branch: branch.clone(),
-                dir: dir.clone(),
-            },
-        )
-        .await
-        .map(Some),
-        _ => Ok(None),
-    }
+        DaemonToControl::SpotNotice { seconds_remaining } => ClientEvent::SpotNotice {
+            seconds_remaining: *seconds_remaining,
+        },
+        DaemonToControl::RepoDirty { dir, summary } => {
+            return note_checkout(kv, dir.as_ref(), summary)
+                .await
+                .map(|()| None);
+        }
+        DaemonToControl::RepoAdded { slug, branch, dir } => ClientEvent::RepoAdded {
+            slug: slug.clone(),
+            branch: branch.clone(),
+            dir: dir.clone(),
+        },
+        _ => return Ok(None),
+    };
+    append(db, cache, &event).await.map(Some)
 }
 
 /// Records one checkout's last-reported `git status` in the room's KV.
@@ -1384,11 +1408,15 @@ async fn note_checkout(
 /// is rebuilt around every event, and `AUTOINCREMENT` is the only thing
 /// here that stays monotonic across that and across two writes racing in
 /// one wake-up.
-async fn append(db: &DurableDb, event: &ClientEvent) -> Result<u64, DurableObjectError> {
+async fn append(
+    db: &DurableDb,
+    cache: &Cache,
+    event: &ClientEvent,
+) -> Result<u64, DurableObjectError> {
     let json = serde_json::to_string(event)
         .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
 
-    ensure_schema(db).await?;
+    ensure_schema(db, cache).await?;
     sql!(
         db,
         "INSERT INTO events (json, at_unix) VALUES ({json}, {now_unix()})"
@@ -1416,10 +1444,11 @@ struct TerminalSizeRow {
 /// Records the size of the client's terminal pane.
 async fn remember_terminal_size(
     db: &DurableDb,
+    cache: &Cache,
     cols: u16,
     rows: u16,
 ) -> Result<(), DurableObjectError> {
-    ensure_schema(db).await?;
+    ensure_schema(db, cache).await?;
     sql!(
         db,
         "INSERT INTO terminal_size (id, cols, rows) VALUES (0, {cols}, {rows}) \
@@ -1453,12 +1482,12 @@ async fn put_latest<T: Serialize + Sync>(
 /// The schema this build expects.
 ///
 /// The durable answer to "is the schema already there" lives in the
-/// `schema_meta` table [`crate::schema_version`] keeps: checking it costs
-/// one storage read where running every `CREATE` blind costs one per
-/// statement — and every hot path in the room (each event append, each
-/// page read, each attach) calls `ensure_schema` first. Bump it when the
-/// DDL below changes so a room built by an older build upgrades once, on
-/// its next call.
+/// `schema_meta` table [`crate::schema_version`] keeps, and the object
+/// itself remembers having read it: checking an answer the object already
+/// holds costs nothing at all, which is what the hot paths — each event
+/// append, each page read, each attach — need the answer to cost. Bump it
+/// when the DDL below changes so a room built by an older build upgrades
+/// once, on its next call.
 const SCHEMA_VERSION: i64 = 3;
 
 /// Creates the room's tables if this is its first write.
@@ -1466,9 +1495,10 @@ const SCHEMA_VERSION: i64 = 3;
 /// `AUTOINCREMENT` rather than a counter in the struct: the sequences
 /// have to be monotonic across the object being rebuilt around every
 /// event, and the database is the only thing here that guarantees it.
-async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
+async fn ensure_schema(db: &DurableDb, cache: &Cache) -> Result<(), DurableObjectError> {
     crate::schema_version::ensure(
         db,
+        cache,
         SCHEMA_VERSION,
         &[
             "CREATE TABLE IF NOT EXISTS events (\
@@ -1594,18 +1624,22 @@ fn internal(headers: &Headers) -> Result<(), ApiError> {
 async fn run_broadcast(
     headers: Headers,
     Json(event): Json<ClientEvent>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<Json<Emitted>> {
-    dispatch_broadcast(&headers, &event, &db).await.into()
+    dispatch_broadcast(&headers, &event, &db, &cache)
+        .await
+        .into()
 }
 
 async fn dispatch_broadcast(
     headers: &Headers,
     event: &ClientEvent,
     db: &DurableDb,
+    cache: &Cache,
 ) -> Result<Json<Emitted>, ApiError> {
     internal(headers)?;
-    let seq = append(db, event)
+    let seq = append(db, cache, event)
         .await
         .map_err(|error| room_failed(&error))?;
     Ok(Json(Emitted {
@@ -1620,14 +1654,22 @@ async fn dispatch_broadcast(
 async fn read_events(
     headers: Headers,
     Query(cursor): Query<EventCursor>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<Json<EventPage>> {
-    page(&headers, cursor.after.unwrap_or(0), &db).await.into()
+    page(&headers, cursor.after.unwrap_or(0), &db, &cache)
+        .await
+        .into()
 }
 
-async fn page(headers: &Headers, after: u64, db: &DurableDb) -> Result<Json<EventPage>, ApiError> {
+async fn page(
+    headers: &Headers,
+    after: u64,
+    db: &DurableDb,
+    cache: &Cache,
+) -> Result<Json<EventPage>, ApiError> {
     internal(headers)?;
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
 
@@ -1689,6 +1731,7 @@ pub struct WorkdirCursor {
 /// Keeps one answer until the Worker that asked comes back for it.
 async fn store_workdir_reply(
     db: &DurableDb,
+    cache: &Cache,
     id: WorkdirRequestId,
     reply: &WorkdirReply,
 ) -> Result<(), DurableObjectError> {
@@ -1696,7 +1739,7 @@ async fn store_workdir_reply(
         .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
     let key = id.to_string();
     let now = now_unix();
-    ensure_schema(db).await?;
+    ensure_schema(db, cache).await?;
     sql!(
         db,
         "INSERT INTO workdir_replies (id, json, at_unix) VALUES ({key}, {json}, {now}) \
@@ -1723,15 +1766,17 @@ async fn store_workdir_reply(
 async fn ask_workdir(
     headers: Headers,
     Json(command): Json<ControlToDaemon>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<NoContent> {
-    ask(&headers, &command, &db).await.into()
+    ask(&headers, &command, &db, &cache).await.into()
 }
 
 async fn ask(
     headers: &Headers,
     command: &ControlToDaemon,
     db: &DurableDb,
+    cache: &Cache,
 ) -> Result<NoContent, ApiError> {
     internal(headers)?;
     if !matches!(command, ControlToDaemon::InspectWorkdir { .. }) {
@@ -1740,7 +1785,7 @@ async fn ask(
                 .to_owned(),
         ));
     }
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
     if !daemon_live(db).await.map_err(|error| room_failed(&error))? {
@@ -1760,20 +1805,24 @@ async fn ask(
 async fn collect_workdir_reply(
     headers: Headers,
     Query(cursor): Query<WorkdirCursor>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<Json<WorkdirReply>> {
-    collect(&headers, cursor.id.as_deref(), &db).await.into()
+    collect(&headers, cursor.id.as_deref(), &db, &cache)
+        .await
+        .into()
 }
 
 async fn collect(
     headers: &Headers,
     id: Option<&str>,
     db: &DurableDb,
+    cache: &Cache,
 ) -> Result<Json<WorkdirReply>, ApiError> {
     internal(headers)?;
     let id =
         id.ok_or_else(|| ApiError::Room("a workdir collection named no request".to_owned()))?;
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
 
@@ -1803,13 +1852,21 @@ async fn collect(
 /// calls name, and the stream that serves the watcher is also what keeps
 /// it alive. The join cursor is the newest keyframe — a decoder starts
 /// from nothing else — and the GOP trim keeps that the table's head.
-async fn watch_desktop(headers: Headers, db: DurableDb) -> Outcome<Sse> {
-    open_desktop_stream(&headers, db).await.into()
+async fn watch_desktop(
+    headers: Headers,
+    State(cache): State<Cache>,
+    db: DurableDb,
+) -> Outcome<Sse> {
+    open_desktop_stream(&headers, db, &cache).await.into()
 }
 
-async fn open_desktop_stream(headers: &Headers, db: DurableDb) -> Result<Sse, ApiError> {
+async fn open_desktop_stream(
+    headers: &Headers,
+    db: DurableDb,
+    cache: &Cache,
+) -> Result<Sse, ApiError> {
     internal(headers)?;
-    ensure_schema(&db)
+    ensure_schema(&db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
     let now = now_unix();
@@ -1870,18 +1927,20 @@ async fn open_desktop_stream(headers: &Headers, db: DurableDb) -> Result<Sse, Ap
 async fn desktop_takeover(
     headers: Headers,
     Json(request): Json<DesktopTakeoverRequest>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<Json<Emitted>> {
-    take_desktop(&headers, &request, &db).await.into()
+    take_desktop(&headers, &request, &db, &cache).await.into()
 }
 
 async fn take_desktop(
     headers: &Headers,
     request: &DesktopTakeoverRequest,
     db: &DurableDb,
+    cache: &Cache,
 ) -> Result<Json<Emitted>, ApiError> {
     internal(headers)?;
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
     let now = now_unix();
@@ -1936,7 +1995,7 @@ async fn take_desktop(
         .map_err(|error| room_failed(&error))?
     {
         let event = ClientEvent::DesktopTakeover { active: takeover };
-        let seq = append(db, &event)
+        let seq = append(db, cache, &event)
             .await
             .map_err(|error| room_failed(&error))?;
         events.push(EmittedEvent {
@@ -1961,18 +2020,22 @@ async fn take_desktop(
 async fn desktop_input(
     headers: Headers,
     Json(request): Json<DesktopInputRequest>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<NoContent> {
-    drive_desktop_input(&headers, &request, &db).await.into()
+    drive_desktop_input(&headers, &request, &db, &cache)
+        .await
+        .into()
 }
 
 async fn drive_desktop_input(
     headers: &Headers,
     request: &DesktopInputRequest,
     db: &DurableDb,
+    cache: &Cache,
 ) -> Result<NoContent, ApiError> {
     internal(headers)?;
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
     let now = now_unix();

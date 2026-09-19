@@ -34,7 +34,7 @@ use skyzen::responder::Sse;
 use skyzen::responder::sse::Event;
 use skyzen::routing::{CreateRouteNode, Route, Router};
 use skyzen::sql;
-use skyzen::utils::Json;
+use skyzen::utils::{Json, State};
 use skyzen_services::durable::DurableDb;
 
 use crate::ApiError;
@@ -43,6 +43,7 @@ use crate::extract::Headers;
 use crate::problem::Outcome;
 use crate::respond::NoContent;
 use crate::room::{EmittedEvent, HEADER_INTERNAL, INTERNAL};
+use crate::schema_version::Cache;
 
 /// Names the user a Worker→object call belongs to.
 pub const HEADER_USER: &str = "x-flyco-user";
@@ -91,14 +92,26 @@ struct EventRow {
 /// The per-user event stream.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[skyzen::durable_object]
-pub struct UserEvents;
+pub struct UserEvents {
+    /// The schema version this activation already verified — a memo,
+    /// reset with the object on every event, never a fact of its own: it
+    /// can only trail the `schema_meta` row, never lead it. Not part of
+    /// the state blob, which stays the `null` a rolled-back build reads.
+    #[serde(skip)]
+    schema: Cache,
+}
 
 impl DurableObject for UserEvents {
+    /// Every durable fact lives in the object's storage; there is no
+    /// blob to load and save around an event.
+    const PERSIST: bool = false;
+
     fn fetch(&mut self) -> Router {
         Route::new((
             "/internal/publish".post(publish),
             "/internal/stream".at(stream),
         ))
+        .with(State(self.schema.clone()))
         .build()
     }
 }
@@ -117,17 +130,17 @@ fn internal(headers: &Headers) -> Result<(), ApiError> {
 /// The schema this build expects.
 ///
 /// The durable answer to "is the schema already there" lives in the
-/// `schema_meta` table [`crate::schema_version`] keeps: checking it costs
-/// one storage read where running every `CREATE` blind costs one per
-/// statement — and this object runs the check on every publish and every
-/// stream open. Bump it when the DDL below changes so a buffer built by
-/// an older build upgrades once, on its next call.
+/// `schema_meta` table [`crate::schema_version`] keeps, and the object
+/// itself remembers having read it: checking an answer the object already
+/// holds costs nothing at all. Bump it when the DDL below changes so a
+/// buffer built by an older build upgrades once, on its next call.
 const SCHEMA_VERSION: i64 = 2;
 
 /// Creates the buffer table if this is the object's first write.
-async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
+async fn ensure_schema(db: &DurableDb, cache: &Cache) -> Result<(), DurableObjectError> {
     crate::schema_version::ensure(
         db,
+        cache,
         SCHEMA_VERSION,
         &[
             "CREATE TABLE IF NOT EXISTS user_events (\
@@ -154,18 +167,20 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
 async fn publish(
     headers: Headers,
     Json(body): Json<PublishEvents>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<NoContent> {
-    publish_inner(&headers, body, &db).await.into()
+    publish_inner(&headers, body, &db, &cache).await.into()
 }
 
 async fn publish_inner(
     headers: &Headers,
     body: PublishEvents,
     db: &DurableDb,
+    cache: &Cache,
 ) -> Result<NoContent, ApiError> {
     internal(headers)?;
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
 
@@ -202,9 +217,10 @@ async fn publish_inner(
 async fn stream(
     headers: Headers,
     Query(cursor): Query<StreamCursor>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<Sse> {
-    open_stream(&headers, cursor.after, cursor.session, db)
+    open_stream(&headers, cursor.after, cursor.session, db, &cache)
         .await
         .into()
 }
@@ -214,9 +230,10 @@ async fn open_stream(
     after: Option<u64>,
     session: Option<SessionId>,
     db: DurableDb,
+    cache: &Cache,
 ) -> Result<Sse, ApiError> {
     internal(headers)?;
-    ensure_schema(&db)
+    ensure_schema(&db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
     let cursor = match after {
