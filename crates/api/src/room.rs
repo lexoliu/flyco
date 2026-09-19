@@ -1634,10 +1634,10 @@ async fn page(headers: &Headers, after: u64, db: &DurableDb) -> Result<Json<Even
     // One row past the page tells the caller whether to come back,
     // without a second `COUNT(*)` over a table that only grows.
     let limit = EVENT_PAGE_LIMIT + 1;
-    // Bill the page's bound before reading: a room whose day is spent is
-    // refused for the ledger's one row rather than the `limit` it asked
-    // for — the case a runaway follower makes hot.
-    crate::row_budget::charge_reads(db, u64::from(limit)).await?;
+    // The refusal check runs before the select: a room whose day is spent
+    // is turned away for the ledger's one row rather than the `limit` it
+    // asked for — the case a runaway follower makes hot.
+    crate::row_budget::check_budget(db).await?;
     let rows: Vec<EventRow> = sql!(
         db,
         "SELECT seq, json, at_unix FROM events WHERE seq > {after} ORDER BY seq LIMIT {limit}"
@@ -1645,6 +1645,9 @@ async fn page(headers: &Headers, after: u64, db: &DurableDb) -> Result<Json<Even
     .fetch_all()
     .await
     .map_err(|error| ApiError::Room(error.to_string()))?;
+    // The debit is the rows the select read, not the bound it was asked
+    // for: an empty page costs the check's ledger read and no write.
+    crate::row_budget::debit_reads(db, rows.len() as u64).await?;
 
     let more = rows.len() > EVENT_PAGE_LIMIT as usize;
     let events = rows

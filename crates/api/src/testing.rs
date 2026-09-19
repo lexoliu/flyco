@@ -4,10 +4,12 @@ use core::future::{Future, ready};
 
 use flyco_core::{
     CpuArchitecture, CurrentUser, HarnessAccountId, HarnessKind, HostFacts, HostId, MachineChoice,
-    ProviderAccountId, ProviderCredentials, UserId,
+    ProviderAccountId, ProviderCredentials, SessionId, UserId,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
+use skyzen::{Body, Method, Request};
+use skyzen_services::durable::DurableDb;
 use skyzen_services::{Db, Queue};
 use skyzen_test::mock::InMemoryQueue;
 
@@ -28,6 +30,7 @@ use crate::microsoft::{
 use crate::openai::{
     self, CodexClient, CodexOauth, DeviceAuth, DeviceCode, DevicePoll, OpenAiError,
 };
+use crate::room::{HEADER_INTERNAL, HEADER_SESSION, INTERNAL};
 use crate::rooms::{HostRooms, NativeHostRooms, NativeRooms, NativeUserStreams, Rooms};
 use crate::vendors::Vendors;
 
@@ -192,6 +195,44 @@ pub fn test_rooms() -> Rooms {
 #[must_use]
 pub fn test_host_rooms() -> HostRooms {
     HostRooms::from_native(NativeHostRooms::new())
+}
+
+/// One Worker→room call the way `rooms.rs` builds it: the internal and
+/// session headers on a JSON body. A harness that drives the object
+/// directly injects its storage on top, where the simulator would.
+#[must_use]
+pub fn room_request(
+    session: SessionId,
+    method: Method,
+    path: &str,
+    body: Option<Vec<u8>>,
+) -> Request {
+    let mut request = Request::new(body.map_or_else(Body::empty, Body::from));
+    *request.method_mut() = method;
+    *request.uri_mut() = format!("https://session-room.flyco.invalid{path}")
+        .parse()
+        .expect("a valid room URL");
+    for (name, value) in [
+        (HEADER_INTERNAL, INTERNAL.to_owned()),
+        (HEADER_SESSION, session.to_string()),
+    ] {
+        request
+            .headers_mut()
+            .insert(name, value.parse().expect("a valid header"));
+    }
+    request.headers_mut().insert(
+        skyzen::header::CONTENT_TYPE,
+        skyzen::header::HeaderValue::from_static("application/json"),
+    );
+    request
+}
+
+/// The rows a durable object's `row_budget` ledger says it read today.
+pub async fn rows_billed(db: &DurableDb) -> u64 {
+    db.query("SELECT COALESCE(SUM(rows_read), 0) FROM row_budget")
+        .fetch_scalar::<u64>()
+        .await
+        .expect("the ledger reads")
 }
 
 /// The display name [`TestGithub`] reports, which is what a session's
