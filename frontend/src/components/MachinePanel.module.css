@@ -17,6 +17,13 @@
   padding: 0;
 }
 
+.heading {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-snug);
+}
+
 .headline {
   display: flex;
   align-items: center;
@@ -67,6 +74,22 @@
   border-radius: var(--radius-full);
   background: var(--color-surface-sunken);
   flex: none;
+}
+
+/* A checkout's row names a slug, which keeps its own case. */
+.checkoutState {
+  composes: state;
+  text-transform: none;
+}
+
+.summary {
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--line-normal);
+  color: var(--color-text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .state[data-state="destroyed"],

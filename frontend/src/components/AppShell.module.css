@@ -8,6 +8,10 @@
  * The rail spends the axis there is plenty of, keeps the session list in
  * reach from inside a session, and leaves each page owning its own top
  * edge.
+ *
+ * The rail is one step down from the page — the surface colour, the page
+ * on the ground — and the two meet at a hairline. Nothing in the rail is
+ * boxed: rows are text that light up when the pointer is on them.
  */
 /* Exactly the window tall. The rail is the window's height and the work
    beside it scrolls on its own, so a page that wants to own its scrolling
@@ -25,11 +29,11 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  width: 248px;
+  gap: var(--space-2);
+  width: 256px;
   height: 100vh;
   height: 100dvh;
-  padding: var(--space-4) var(--space-3);
+  padding: var(--space-4) var(--space-3) var(--space-3);
   border-right: var(--border-width) solid var(--color-border);
   background: var(--color-surface);
 }
@@ -39,14 +43,26 @@
   align-items: center;
   gap: var(--space-2);
   padding: 0 var(--space-2);
+  margin-bottom: var(--space-2);
 }
 
+/* The mark and the word, set as one lockup. */
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text);
   font-weight: var(--weight-semibold);
   font-size: var(--text-lg);
-  letter-spacing: -0.02em;
-  color: var(--color-text);
+  letter-spacing: var(--tracking-tight);
   text-decoration: none;
+}
+
+.brandMark {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  color: var(--color-text);
 }
 
 /* Closes the drawer on a phone; the rail is permanent above that width. */
@@ -63,22 +79,35 @@
 
 /*
  * The one action the product is for. It is a link rather than a button
- * because starting a session is going to the page that opens one.
+ * because starting a session is going to the page that opens one — but
+ * it is the only row in the rail drawn as a control, because it is the
+ * only row that makes something rather than going somewhere.
  */
 .newSession {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2);
-  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-sm);
   color: var(--color-text);
   text-decoration: none;
   font-size: var(--text-md);
   font-weight: var(--weight-medium);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .newSession:hover {
-  background: var(--color-surface-sunken);
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-card);
+}
+
+.newSession svg {
+  color: var(--color-text-muted);
 }
 
 /* Identity sits at the foot, out of the way of the list, and everything
@@ -89,20 +118,23 @@
   align-items: center;
   gap: var(--space-2);
   width: 100%;
+  margin-top: var(--space-1);
   padding: var(--space-2);
   border: none;
-  border-top: var(--border-width) solid var(--color-border);
-  border-radius: 0;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--color-text);
   font-family: inherit;
-  font-size: var(--text-md);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   text-align: left;
   cursor: pointer;
+  transition: background var(--transition-fast);
 }
 
-.account:hover {
-  color: var(--color-text);
+.account:hover,
+.account[aria-expanded="true"] {
+  background: var(--color-surface-sunken);
 }
 
 .accountName {
@@ -117,13 +149,12 @@
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   border-radius: var(--radius-full);
-  border: var(--border-width) solid var(--color-border-strong);
-  background: var(--color-bg);
-  color: var(--color-text);
-  font-size: var(--text-xs);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  font-size: var(--text-2xs);
   font-weight: var(--weight-semibold);
   letter-spacing: 0.02em;
 }
@@ -140,11 +171,12 @@
   min-width: 232px;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-1);
 }
 
 .menuIdentity {
-  margin: 0;
+  margin: 0 0 var(--space-1);
+  padding: var(--space-1) var(--space-2);
   font-size: var(--text-sm);
   color: var(--color-text-muted);
 }
@@ -155,17 +187,19 @@
 }
 
 .menuLabel {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-xs);
+  margin: var(--space-2) 0 0;
+  padding: 0 var(--space-2);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--tracking-caps);
   color: var(--color-text-faint);
 }
 
 .themeRow {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .themeOption,
@@ -181,10 +215,16 @@
   background: transparent;
   color: var(--color-text);
   font-family: inherit;
-  font-size: var(--text-md);
+  font-size: var(--text-sm);
   text-align: left;
   text-decoration: none;
   cursor: pointer;
+}
+
+.themeOption svg,
+.menuAction svg,
+.menuLink svg {
+  color: var(--color-text-muted);
 }
 
 .themeOption:hover,
@@ -195,17 +235,18 @@
 
 .themeChosen {
   color: var(--color-text);
+  font-weight: var(--weight-medium);
 }
 
 .themeCheck {
   margin-left: auto;
-  color: var(--color-text-muted);
+  color: var(--color-text);
 }
 
 .menuAction {
   border-top: var(--border-width) solid var(--color-border);
   border-radius: 0 0 var(--radius-sm) var(--radius-sm);
-  margin-top: var(--space-1);
+  margin-top: var(--space-2);
   padding-top: var(--space-3);
   color: var(--color-text-muted);
 }
@@ -232,13 +273,14 @@
   top: var(--space-3);
   left: var(--space-3);
   z-index: 15;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   align-items: center;
   justify-content: center;
   border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-full);
-  background: var(--color-bg);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-card);
   color: var(--color-text);
   cursor: pointer;
 }
@@ -252,9 +294,10 @@
     position: fixed;
     top: 0;
     left: 0;
+    width: min(288px, 86vw);
     transform: translateX(-100%);
     transition: transform var(--transition-panel);
-    box-shadow: 0 0 40px rgb(0 0 0 / 12%);
+    box-shadow: var(--shadow-panel);
   }
 
   .railOpened {
@@ -271,13 +314,13 @@
     position: fixed;
     inset: 0;
     z-index: 19;
-    background: rgb(0 0 0 / 32%);
+    background: rgb(27 26 24 / 32%);
     border: none;
   }
 
   /* Room for the floating opener, which would otherwise sit on the title. */
   .main {
-    padding-top: var(--space-6);
+    padding-top: var(--space-7);
   }
 }
 
