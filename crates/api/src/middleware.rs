@@ -183,5 +183,6 @@ fn misconfigured() -> Response {
             "The control plane is misconfigured.",
         ),
         None,
+        None,
     )
 }
